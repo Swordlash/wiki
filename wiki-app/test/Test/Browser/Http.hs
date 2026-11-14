@@ -1133,7 +1133,10 @@ tell = unsafeIOToPageM . js_server_tell . toJSText . decodeUtf8 . toS . encode
 -- a request.
 comments :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
 comments m = describe "a page's comments" $ do
-  it "reads them with the page, sends a new one, hears another tab's, and catches up after a lost connection" $ runPage $ do
+  -- The wiring of the comments over HTTP and the live channel's socket:
+  -- what the page view makes of answers and messages, in any order, is
+  -- tested natively ("Test.CommentsDom").
+  it "reads them with the page, sends a new one, and hears another tab's" $ runPage $ do
     serverStarts
     serveDemo
     (hello, demoThreads) <- unsafeIOToPageM $ do
@@ -1163,72 +1166,7 @@ comments m = describe "a page's comments" $ do
     -- Another tab replies: heard, and shown.
     tell (Event hello.id (CommentAdded (comment' "thread-hello-3" "comment-elsewhere" "From another tab.")))
     eventually $ (traverse textContent =<< findAll ui "#comment-thread-thread-hello-3 .comment-body") `shouldReturn` ["Welcome! Comments here are about the whole post; select some of its text to comment on that.", "Thanks, that works.", "From another tab."]
-    -- The connection is cut: opened again after a pause, and subscribed
-    -- again; the server's answer has the comments as they are now, which
-    -- the page shows without reading them itself (were they read, the
-    -- demo's three threads would come back).
-    let threadsAt = endpointUrl (\e -> (e.comments hello.id).list)
-        readsSoFar = length . filter (\r -> r.method == "GET" && r.url == threadsAt) <$> asked
-    before <- readsSoFar
-    unsafeIOToPageM js_server_hang_up
-    eventually $ said `shouldReturn` [Subscribe hello.id, Subscribe hello.id]
-    tell (Subscribed hello.id [made] [] Events.noReaders)
-    eventually $ length <$> findAll ui ".page-comments .comment-thread" `shouldReturn` 1
-    readsSoFar `shouldReturn` before
-    length <$> findAll ui "mark.comment-mark" `shouldReturn` 0
     unmount ui
-    serverStops
-
-  it "catches up with a comment made between the page's preload and its subscription, asking nothing" $ runPage $ do
-    -- What the server's render reads at the post: who is asking, the
-    -- spaces, the blog and its pages, the post and its comments.
-    serverStarts
-    serveDemo
-    reading <- unsafeIOToPageM (newHttpEnv browserTransport)
-    (hello, preloaded) <- overHttp reading $ do
-      _ <- session
-      _ <- listSpaces
-      blog <- either (panic . show) identity <$> getSpace (slugs ["blog"])
-      _ <- listPages blog.id
-      page <- either (panic . show) identity <$> getPage blog.id (slugs ["hello-world"])
-      threads <- either (panic . show) identity <$> listThreads page.id
-      -- The bell's, the page's "Watch" button's, and its "Star" button's;
-      -- and the pages that link to it, in the sidebar.
-      _ <- notifications
-      _ <- watching (WatchPage page.id)
-      _ <- pageBacklinks page.id
-      _ <- starred
-      -- The wiki's home, whose icon is the wiki's favicon.
-      _ <- getHomeDocument
-      pure (page, threads)
-    carried <- unsafeIOToPageM (cacheOf reading)
-    serverStops
-    -- A server that answers nothing from here on, and the page with what
-    -- it carries.
-    serverStarts
-    unsafeIOToPageM (js_embed (toJSText preloadId) (toJSText (encodePreload carried)))
-    env <- fromPage
-    ui <- startServerOver m env (Page (slugs ["blog"]) (slugs ["hello-world"]))
-    find ui "mark.comment-mark[data-thread='thread-hello-1']" >>= (`shouldHaveText` "a blog that is also a wiki")
-    eventually $ said `shouldReturn` [Subscribe hello.id]
-    -- Someone commented after the page was read and before the tab
-    -- subscribed: the answer has it, and the page shows it.
-    let grace = Author {id = UserId "user-editor", name = "Grace Editor", avatar = Nothing}
-        meanwhile =
-          Thread
-            { id = CommentThreadId "thread-meanwhile"
-            , page = hello.id
-            , anchor = Nothing
-            , resolved = False
-            , createdAt = demoNow
-            , comments = [Comment {id = CommentId "comment-meanwhile", thread = CommentThreadId "thread-meanwhile", author = grace, body = "Made meanwhile.", createdAt = demoNow, editedAt = Nothing}]
-            }
-    tell (Subscribed hello.id (preloaded <> [meanwhile]) [] Events.noReaders)
-    find ui ".page-comments #comment-thread-thread-meanwhile .comment-body" >>= (`shouldHaveText` "Made meanwhile.")
-    find ui "mark.comment-mark[data-thread='thread-hello-1']" >>= (`shouldHaveText` "a blog that is also a wiki")
-    asked `shouldReturn` []
-    unmount ui
-    unsafeIOToPageM (js_unembed (toJSText preloadId))
     serverStops
 
 -- | Who is editing a page, and its saves, over the live channel (WP4.12 of
@@ -1511,19 +1449,6 @@ lateAnswers m = describe "answers that come late" $ do
           linking <- either (panic . show) identity <$> pageBacklinks notes.id
           spaces <- listSpaces
           pure (hello, notes, ps, linking, spaces)
-  it "keeps a page's threads read last when the threads read first answer after them" $ runPage $ do
-    serverStarts
-    serveDemo
-    (hello, _, _, _, _) <- demo'
-    let threadsAt = endpointUrl (\e -> (e.comments hello.id).list)
-        ada = Author {id = UserId "user-admin", name = "Ada Admin", avatar = Nothing}
-        made = Thread {id = CommentThreadId "thread-new", page = hello.id, anchor = Nothing, resolved = False, createdAt = demoNow, comments = [Comment {id = CommentId "comment-new", thread = CommentThreadId "thread-new", author = ada, body = "Made meanwhile.", createdAt = demoNow, editedAt = Nothing}]}
-    overtaken m blog hello helloAt threadsAt (answerWith "GET" threadsAt 200 [made]) $ \ui -> do
-      find ui ".page-comments #comment-thread-thread-new .comment-body" >>= (`shouldHaveText` "Made meanwhile.")
-      length <$> findAll ui "#comment-thread-thread-hello-3" `shouldReturn` 0
-      length <$> findAll ui "mark.comment-mark" `shouldReturn` 0
-    serverStops
-
   it "keeps the space's pages read last in the sidebar when the pages read first answer after them" $ runPage $ do
     serverStarts
     serveDemo

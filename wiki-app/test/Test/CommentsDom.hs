@@ -29,7 +29,7 @@ import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Control.Monad.UUID (MonadUUID (..))
 import Data.Aeson (object)
-import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List qualified as List
 import Data.Text qualified as T
 import Halogen.Router qualified as Router
@@ -53,7 +53,7 @@ import Wiki.App.Live (Heard (..))
 import Wiki.App.Route (Route (..), route)
 import Wiki.App.View.Page qualified as Page
 import Wiki.Core.Comment (Comment (..), Thread (..))
-import Wiki.Core.Id (CommentThreadId (..), PageId, UserId (..))
+import Wiki.Core.Id (CommentId (..), CommentThreadId (..), PageId, UserId (..))
 import Wiki.Core.Page qualified as P
 import Wiki.Core.Slug (Slug, mkSlug)
 import Wiki.Core.Space qualified as S
@@ -62,6 +62,8 @@ import Wiki.Core.Space qualified as S
 -- page's threads fails, and the gate a write's answer waits in, if any.
 data Control = Control
   { failNext :: IORef Bool
+  , reads :: IORef Int
+  -- ^ How many reads of a page's threads were made.
   , gate :: Maybe (Gate (Maybe PageEvent) ())
   }
 
@@ -99,10 +101,11 @@ instance (MonadEncryption m) => MonadEncryption (Commenting m)
 
 instance (MonadComments m, MonadIO m) => MonadComments (Commenting m) where
   listThreads page =
-    Commenting (asks (\c -> c.failNext)) >>= \flag ->
-      liftIO (atomicModifyIORef' flag (False,)) >>= \case
-        True -> pure (Left (Unreachable "the network"))
-        False -> lift (listThreads page)
+    Commenting (asks (\c -> c)) >>= \c ->
+      liftIO (atomicModifyIORef' c.reads (\n -> (n + 1, ()))) >> pure c.failNext >>= \flag ->
+        liftIO (atomicModifyIORef' flag (False,)) >>= \case
+          True -> pure (Left (Unreachable "the network"))
+          False -> lift (listThreads page)
   openThread p a b = made (fmap ThreadOpened) (openThread p a b)
   reply p t b = made (fmap CommentAdded) (reply p t b)
   editComment p t c b = made (fmap CommentEdited) (editComment p t c b)
@@ -132,6 +135,10 @@ data Rig = Rig
   , goTo :: [Text] -> IO ()
   , hello :: PageId
   , server :: IO [Thread]
+  , elsewhere :: Text -> IO Thread
+  -- ^ A thread about the whole post opened in the wiki by another tab of
+  -- the reader's, which nothing tells this one of.
+  , deletedElsewhere :: CommentThreadId -> IO ()
   }
 
 -- | Mount the page view for the body, its asks held by the library, or
@@ -140,8 +147,9 @@ withPage :: Maybe (Gate (Maybe PageEvent) ()) -> (Rig -> IO a) -> IO a
 withPage gate body = do
   wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-reader")})
   failNext <- newIORef False
+  readsMade <- newIORef 0
   live <- newTestFeed
-  let control = Control {failNext, gate}
+  let control = Control {failNext, reads = readsMade, gate}
       run :: Commenting (MemWiki MemDOM) a -> IO a
       run (Commenting p) = runMemDOM (runMemWiki wiki (runReaderT p control))
       orPanic = either (panic . show) identity
@@ -155,7 +163,17 @@ withPage gate body = do
     pure (me, spaces, blog, ps, post.id :: PageId)
   let inputAt path = Page.Input {context = viewContextAs router me spaces 0, space = blog, pages = ps, path = slugs path, version = Nothing, feed = Just live.feed}
   outcome <- withView run (driven Page.component (inputAt ["hello-world"])) () $ \view ->
-    body Rig {view, live, control, goTo = setInput view . inputAt, hello, server = orPanic <$> run (listThreads hello)}
+    body
+      Rig
+        { view
+        , live
+        , control
+        , goTo = setInput view . inputAt
+        , hello
+        , server = orPanic <$> run (listThreads hello)
+        , elsewhere = \text -> orPanic <$> run (lift (openThread hello Nothing text))
+        , deletedElsewhere = \tid -> orPanic <$> run (lift (deleteThread hello tid))
+        }
   Router.stop router
   pure outcome
 
@@ -322,3 +340,106 @@ spec = describe "Wiki.App.View.Page's comments, mounted on the in-memory DOM" $ 
       void (click rig.view ".comments-close")
       drain waits
       findAll rig.view ".comments-panel" >>= (`shouldBe` 0) . length
+
+  -- What the browser examples of the post's threads showed, natively.
+  describe "the post's threads" $ do
+    it "replies to a thread, and resolves it, which unmarks its quote, and reopens it" $
+      withHeldWaits $ \waits -> withPage Nothing $ \rig -> do
+        drain waits
+        let marked = findAll rig.view "mark.comment-mark[data-thread='thread-hello-1']"
+        (traverse N.textContent =<< marked) `shouldReturn` ["a blog that is also a wiki"]
+        textOf rig.view ".comments-toggle" `shouldReturn` Just "Comments (2)"
+        void (click rig.view ".comments-toggle")
+        drain waits
+        send rig.view (thread "thread-hello-1" <> " .comment-reply") "There is now."
+        drain waits
+        bodies rig.view "thread-hello-1" `shouldReturn` ["Is there a list of every post somewhere, newest first?", "The blog's space lists its pages; its administrator can order them newest first.", "There is now."]
+        void (click rig.view (thread "thread-hello-1" <> " .thread-resolve"))
+        drain waits
+        length <$> marked `shouldReturn` 0
+        textOf rig.view (thread "thread-hello-1" <> " .comment-resolved-note") `shouldReturn` Just "Resolved."
+        textOf rig.view ".comments-toggle" `shouldReturn` Just "Comments (1)"
+        void (click rig.view (thread "thread-hello-1" <> " .thread-reopen"))
+        drain waits
+        length <$> marked `shouldReturn` 1
+
+    it "edits and deletes one's own comment, and offers neither on another's" $
+      withHeldWaits $ \waits -> withPage Nothing $ \rig -> do
+        drain waits
+        void (click rig.view ".comments-toggle")
+        drain waits
+        -- Rita's first comment may be edited; Edgar's reply may not.
+        (traverse N.textContent =<< findAll rig.view (thread "thread-hello-1" <> " .comment-actions button")) `shouldReturn` ["Edit", "Delete"]
+        void (click rig.view (thread "thread-hello-1" <> " .comment-edit-button"))
+        drain waits
+        send rig.view (thread "thread-hello-1" <> " .comment-edit") "Is there a list of every post?"
+        drain waits
+        textOf rig.view (thread "thread-hello-1" <> " .comment-edited") `shouldReturn` Just "(edited)"
+        take 1 <$> bodies rig.view "thread-hello-1" `shouldReturn` ["Is there a list of every post?"]
+        -- The page thread's reply is hers too: deleted, after asking.
+        void (click rig.view (thread "thread-hello-3" <> " .comment-delete"))
+        drain waits
+        void (click rig.view (thread "thread-hello-3" <> " .comment-confirm .danger"))
+        drain waits
+        length <$> findAll rig.view (thread "thread-hello-3" <> " .comment") `shouldReturn` 1
+
+    it "shows a thread about the whole post under it, and takes a new one" $
+      withHeldWaits $ \waits -> withPage Nothing $ \rig -> do
+        drain waits
+        textOf rig.view (".page-comments " <> thread "thread-hello-3" <> " .comment-author") `shouldReturn` Just "Ada Admin"
+        send rig.view ".page-comments .comment-new" "A **fine** post."
+        drain waits
+        length <$> findAll rig.view ".page-comments .comment-thread" `shouldReturn` 2
+        (traverse N.textContent =<< findAll rig.view ".page-comments .comment-thread strong") `shouldReturn` ["fine"]
+        -- And not among the threads about the text.
+        textOf rig.view ".comments-toggle" `shouldReturn` Just "Comments (2)"
+
+    it "lists a thread whose quote the post no longer has last, saying so" $
+      withHeldWaits $ \waits -> withPage Nothing $ \rig -> do
+        drain waits
+        void (click rig.view ".comments-toggle")
+        drain waits
+        (traverse (N.attribute "data-thread") =<< findAll rig.view ".comments-panel .comment-thread") `shouldReturn` [Just "thread-hello-1", Just "thread-hello-2"]
+        textOf rig.view ".comments-panel .comment-thread.orphaned .comment-quote" `shouldReturn` Just "with the preview always beside it"
+        textOf rig.view ".comments-panel .comment-thread.orphaned .comment-orphaned" `shouldReturn` Just "The page no longer has this text."
+
+    it "hears another tab's reply, and takes the subscription's answer in place of what it shows, asking nothing" $
+      withHeldWaits $ \waits -> withPage Nothing $ \rig -> do
+        drain waits
+        threads <- rig.server
+        let comment' = case [c | t <- threads, t.id == CommentThreadId "thread-hello-3", c <- take 1 t.comments] of
+              c : _ -> c {id = CommentId "comment-elsewhere", body = "From another tab."}
+              [] -> panic "no comment"
+        rig.live.tell (Heard rig.hello (CommentAdded comment'))
+        drain waits
+        bodies rig.view "thread-hello-3" >>= (`shouldSatisfy` (\bs -> lastMay bs == Just "From another tab."))
+        -- Made between the post's read and its subscription: the answer
+        -- has it, and it is shown, with nothing read.
+        meanwhile <- rig.elsewhere "Made meanwhile."
+        readsBefore <- readIORef rig.control.reads
+        rig.live.tell (Replaced rig.hello [meanwhile])
+        drain waits
+        readIORef rig.control.reads `shouldReturn` readsBefore
+        length <$> findAll rig.view ".page-comments .comment-thread" `shouldReturn` 1
+        bodies rig.view (unThread meanwhile.id) `shouldReturn` ["Made meanwhile."]
+        length <$> findAll rig.view "mark.comment-mark" `shouldReturn` 0
+
+    it "keeps the threads read last when the threads read first answer after them" $
+      withHeldWaits $ \waits -> withPage Nothing $ \rig -> do
+        drain waits
+        rig.live.tell (Heard rig.hello ThreadsChanged)
+        first' <- newOne waits []
+        rig.live.tell (Heard rig.hello ThreadsChanged)
+        second' <- newOne waits [first']
+        made' <- rig.elsewhere "Made meanwhile."
+        release second'
+        drainBut waits [first']
+        bodies rig.view (unThread made'.id) `shouldReturn` ["Made meanwhile."]
+        -- Gone from the wiki, and the older read reads that: its answer
+        -- comes after the later one's, and is not taken.
+        rig.deletedElsewhere made'.id
+        release first'
+        drain waits
+        bodies rig.view (unThread made'.id) `shouldReturn` ["Made meanwhile."]
+  where
+    unThread (CommentThreadId t) = t

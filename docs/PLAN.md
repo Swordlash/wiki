@@ -1914,14 +1914,10 @@ WP5.92 and WP5.93 wait.
 
 - **WP5.121 The views that raced, as machines (decision 82; for the
   order above), one pull request each, in this order.** (1) The
-  page's comments: the machine and its properties are merged (#284);
-  left, on the harness (#286): the page view and the comments view
-  on the in-memory DOM with held waits (first cases: the runner
-  carrying out `Answered` and the forked lookup; a panel closed and
-  opened again while a write is out; the reader's quote, give-up,
-  close and choice reaching the machine), and then the browser
-  examples it replaces cut (four of nine in `Test/Browser/Comments.hs`,
-  two in `Test/Browser/Http.hs`, one shrunk to its wiring). (2) The
+  page's comments: done (#284 the machine, #288 the page view on the
+  in-memory DOM and the browser examples cut); left: the generated
+  runs of `Test.Threads` driven through the real component, as the
+  bell's are (about a day). (2) The
   embedded deck: the machine and its properties are merged (#287);
   left: its in-memory DOM spec on the harness (first cases: a close
   between the watch's making and its keeping, the channel made late)
@@ -3219,7 +3215,13 @@ needs. Each was true when its package merged; check before relying on one.
   failed write; the HTTP cache drops a page's threads after the
   reader's own write. Left and known. (1) The shell is covered only by
   the model's copy of its runner and by the browser groups until the
-  in-memory DOM spec exists (WP5.121, above). (2) While a write is out
+  in-memory DOM spec exists; it does since #288 (`Test.CommentsDom`:
+  each of #284's cases shown red with its line broken), which cut the
+  comments' browser examples from 9 to 5 and one of the HTTP group's.
+  A quote cannot be started natively (no selection is read there), so
+  quoting stays with the model and one browser example; the catch-up
+  after a lost connection and through the preload cache stay in the
+  browser, since nothing native goes through them. (2) While a write is out
   the reader can press the button again and send it twice; it was so
   before. (3) Not in the model: encrypted pages' threads (the channel
   says only that they changed, and they are read again), a page's own

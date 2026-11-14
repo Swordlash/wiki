@@ -2008,16 +2008,29 @@ WP5.92 and WP5.93 wait.
   341 `eventually`, 178 of them directly after an action), the
   editor's own group 105 s (9%), tasks ticked in a page 92 s (8%), the
   editor's search 65 s, the embedded presentation 58 s, the
-  assistant's keys 53 s. So the next steps, in order: (1) the slides
-  editor's group timed by phase for one example (mount, each action,
-  each wait), to say whether its cost is the program's work on wasm
-  (then WP5.115, parse less) or the tests' waits; (2) the `eventually`
+  assistant's keys 53 s. **Timed by phase (2026-11-14), the three
+  dearest examples of the slides editor's group:** the far slide of
+  sixty, 22 s, of which 12.5 s is two mounts of the sixty-slide deck
+  (about 6 s a mount, against 0.4 s for a small deck: the parse and
+  render of the slides on wasm); "never shows a slide as fitting",
+  22 s, 7 s in 18 mounts and 12 s in 576 reads that pass at the first
+  attempt (the reads cost, not retries); the random walk, 55 s, of
+  which 33 s is outside the harness (the text helpers, layout reads
+  through JavaScript, the model's checks) and 12 s is 404 actions. The
+  harness's wait after an action is 7%, 0% and 23% of them. So the
+  suite's time is the program's work, and the lever is WP5.115 (parse
+  once for a pause, only the slides that changed), which the reader
+  feels too; removing an `eventually` saves little time, since nearly
+  all pass at once. The next steps, in order: (1) WP5.115; (2) the
+  random walk's 33 s looked at (what the text helpers and layout reads
+  do for each step); (3) the `eventually`
   directly after an action removed where the harness's wait since #285
   makes it a plain read, the slides editor's group first, with the
-  ceilings of WP5.122; (3) what WP5.121 moves out of the browser (so
-  far little: the comments 4 examples of a group of a few seconds, the
-  deck 1 example); (4) a third shard if the runner's four cores carry
-  it.
+  ceilings of WP5.122 (of ten looked at, six are plain reads now, two
+  probably, two or three wait for CodeMirror's own timers and stay);
+  (4) what WP5.121 moves out of the browser (so far little: the
+  comments 4 examples of a group of a few seconds, the deck 1
+  example); (5) a third shard if the runner's four cores carry it.
 - **WP5.106 Components without JavaScript tested natively, over
   haskell-halogen's `remote` (the owner, 2026-11-13: "jeśli będzie to
   szybsze. Wszystkie pure halogen testy").** The spike (branch

@@ -450,7 +450,7 @@ component =
           -- highlighted, and its text is where the quotes are looked for.
           rendered = Body.renderedTicking (Tick <$ guard (boxesEnabled st)) (\i -> Map.findWithDefault 0 i st.staging.drawn) (Just embedded) place st.staging.shown
           -- A presentation embedded in the page: a viewer of it.
-          embedded key target caption = HH.slot_ "deck" key DeckViewer.component DeckViewer.Input {context = input.context, target = DeckViewer.Linked target place, caption, ids = embedIds key}
+          embedded key target caption = HH.slot_ "deck" key DeckViewer.component DeckViewer.Input {context = input.context, target = DeckViewer.Linked target place, caption, ids = embedIds key, watcher = DeckViewer.browserWatcher}
           text = either (const "") renderedText rendered
           -- The title and who reads the page, on one row, with who wrote
           -- it under them; when the Markdown has its own title, the
@@ -642,7 +642,7 @@ component =
     -- of docs/PLAN.md), fed with the page the view has loaded.
     viewerOf :: Body.Place -> Page -> H.ComponentHTML Action Slots m
     viewerOf place page =
-      [hh|<div class="page-deck">{{ HH.slot_ "deckView" () DeckViewer.component DeckViewer.Input {context = place.context, target = DeckViewer.Shown place page, caption = page.title, ids = "slides-"} }}</div>|]
+      [hh|<div class="page-deck">{{ HH.slot_ "deckView" () DeckViewer.component DeckViewer.Input {context = place.context, target = DeckViewer.Shown place page, caption = page.title, ids = "slides-", watcher = DeckViewer.browserWatcher} }}</div>|]
 
     -- The page's text, its quotes highlighted, with the current selection
     -- and the panel of inline threads beside it.

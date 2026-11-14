@@ -19,7 +19,7 @@ import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText)
 import Halogen.Router.Duplex qualified as Duplex
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
-import Test.Browser.Http (Asked (..), answerRaw, asked, guideLoaded, serveDemo, serverStarts, startServer)
+import Test.Browser.Http (Asked (..), answerRaw, asked, guideLoaded, pressNow, serveDemo, serverStarts, startServer)
 import Test.Browser.Mount (slugs, start, startOn, startWith)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
@@ -195,9 +195,29 @@ spec m = do
     eventually $ find ui "article.page-body .deck-embed" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The merger closes on Friday.")
 
   -- What a change of reader does to the watch and the read (one watch,
-  -- none once closed, the watch kept heard after changes close together)
-  -- is the in-memory DOM's ("Test.DeckDom"); here, what needs the
-  -- browser: the real watch, over real HTTP.
+  -- none once closed) is the in-memory DOM's ("Test.DeckDom"). A change
+  -- of reader as the watch starts stays here: no fault of the shell put
+  -- back made the in-memory case fail.
+  -- A change of reader as the viewer begins to watch its link: in memory,
+  -- another user chosen right after the page is mounted; over HTTP, the
+  -- answers that come after the first render (the session, the spaces),
+  -- which move the shell's revision on. The watch the viewer keeps then
+  -- tells with the reading it is for, so the presentation is read when its
+  -- link comes near, and no other watch runs.
+  it "reads the presentation near the window after the reader changes as the viewer starts watching" $ runPage $ do
+    before <- deckWatches
+    ui <- start m (Just "user-admin") (Page docs guide)
+    _ <- find ui "article.page-body > p > a[href$='markdown-guide/presentations/']:only-child"
+    find ui ".user-switcher-toggle" >>= click
+    pressNow ui ".user-menu button[data-login=editor]"
+    waitQuietWithin readerChanged
+    bringNear ui
+    eventuallyWithin 30000 $ position ui `shouldReturn` "1 / 9"
+    deckWatches `shouldReturn` before
+    unmount ui
+    settle
+    deckWatches `shouldReturn` before
+
   it "reads the presentation near the window when the wiki's answers come after the first render, over HTTP" $ runPage $ do
     serverStarts
     serveDemo
@@ -310,3 +330,11 @@ report :: PageM s Report
 report = do
   json <- unsafeIOToPageM (fromJSText <$> js_ids_report)
   maybe (expectationFailure ("no report: " <> json)) pure (decodeStrict (encodeUtf8 json))
+
+-- | How long one change of reader on the guide may keep the program busy,
+-- in milliseconds. Measured from the press to the program quiet
+-- (2026-11-14, 16 cores): 4.9 to 10.7 s with nothing else running, 6.3 to
+-- 24.5 s over 16 runs with a busy loop on every core and two pages side by
+-- side. The deadline is twice the longest.
+readerChanged :: Int
+readerChanged = 50000

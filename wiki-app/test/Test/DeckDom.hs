@@ -198,8 +198,11 @@ spec = describe "Wiki.App.View.DeckViewer, mounted on the in-memory DOM" $ do
       rig.view.dispose
 
   it "hears the watch kept when the reader changes as it starts" $
-    -- #275: the channel made in a wait; a change of reader in it left a
-    -- watch telling for the reading before, never heard.
+    -- #275's fault (the channel made in a wait, a change of reader in it)
+    -- left a watch telling with the generation before, never heard. Each
+    -- watch now tells its own number, and with that fault put back this
+    -- case still passes: it does not stand for the browser's example,
+    -- which stays ("Test.Browser.DeckViewer").
     withHeldWaits $ \waits -> withDeck $ \rig -> do
       rig.readAs Reading {session = rig.admin, number = 0, revision = 1}
       drain waits
@@ -225,7 +228,10 @@ spec = describe "Wiki.App.View.DeckViewer, mounted on the in-memory DOM" $ do
       length <$> made rig `shouldReturn` 2
       rig.view.dispose
 
-  it "shows no answer read for an earlier reading, and lets each read's addresses go once" $
+  it "shows no answer read for an earlier reading" $
+    -- Each read's addresses are let go of once: the shell's map of owners
+    -- already makes a second letting go nothing, and the machine's own line
+    -- is "Test.Deck"'s.
     withHeldWaits $ \waits -> withDeck $ \rig -> do
       drain waits
       nearNow rig.watches

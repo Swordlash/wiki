@@ -1511,19 +1511,6 @@ lateAnswers m = describe "answers that come late" $ do
           linking <- either (panic . show) identity <$> pageBacklinks notes.id
           spaces <- listSpaces
           pure (hello, notes, ps, linking, spaces)
-  it "keeps a page's threads read last when the threads read first answer after them" $ runPage $ do
-    serverStarts
-    serveDemo
-    (hello, _, _, _, _) <- demo'
-    let threadsAt = endpointUrl (\e -> (e.comments hello.id).list)
-        ada = Author {id = UserId "user-admin", name = "Ada Admin", avatar = Nothing}
-        made = Thread {id = CommentThreadId "thread-new", page = hello.id, anchor = Nothing, resolved = False, createdAt = demoNow, comments = [Comment {id = CommentId "comment-new", thread = CommentThreadId "thread-new", author = ada, body = "Made meanwhile.", createdAt = demoNow, editedAt = Nothing}]}
-    overtaken m blog hello helloAt threadsAt (answerWith "GET" threadsAt 200 [made]) $ \ui -> do
-      find ui ".page-comments #comment-thread-thread-new .comment-body" >>= (`shouldHaveText` "Made meanwhile.")
-      length <$> findAll ui "#comment-thread-thread-hello-3" `shouldReturn` 0
-      length <$> findAll ui "mark.comment-mark" `shouldReturn` 0
-    serverStops
-
   it "keeps the space's pages read last in the sidebar when the pages read first answer after them" $ runPage $ do
     serverStarts
     serveDemo

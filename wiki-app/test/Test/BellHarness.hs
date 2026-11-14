@@ -40,13 +40,12 @@ import Data.Text qualified as T
 import Halogen qualified as H
 import Halogen.HTML qualified as HH
 import Halogen.Router qualified as Router
-import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
 import Protolude hiding (State)
 import Test.Bell (Server (..), Step (..), World (..), emptyServer, forgotten, handleMark, handleRead, made, madeEarly, madeMany, play, start)
-import Test.Harness.MemDom (Gate, Held (..), answer, heldNow, hold, newGate)
+import Test.Harness.MemDom (Gate, Held (..), TestFeed (..), answer, heldNow, hold, newGate, newTestFeed, viewContext)
 import Wiki.Api.Notifications (Notifications (..), ReadMark (..))
-import Wiki.App.Backend (MonadLoad (..), MonadWiki, WikiError, anonymousIn)
+import Wiki.App.Backend (MonadLoad (..), MonadWiki, WikiError)
 import Wiki.App.Backend.Mem (MemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState)
 import Wiki.App.Backend.Notifications (MonadNotifications (..))
@@ -54,8 +53,6 @@ import Wiki.App.Live (Feed (..), Heard (..))
 import Wiki.App.Route (Route)
 import Wiki.App.View.Bell qualified as Bell
 import Wiki.App.View.Bell.Machine (Model (..), busy, listed, unreadCount)
-import Wiki.App.View.Common (Context (..), PageWidth (..))
-import Wiki.Core.Access (Access (..))
 import Wiki.Core.Id (NotificationId (..))
 import Wiki.Core.Notification (Notification (..))
 
@@ -116,8 +113,7 @@ parent feed router =
       }
   where
     render :: Int -> H.ComponentHTML () Slots (Gated (MemWiki n))
-    render revision = HH.div_ [HH.slot_ "bell" () Bell.component Bell.Input {context = contextAt revision, feed = Just feed}]
-    contextAt revision = Context {router, session = anonymousIn Open, sessionNumber = 0, spaces = [], icons = mempty, revision, pageWidth = Compact}
+    render revision = HH.div_ [HH.slot_ "bell" () Bell.component Bell.Input {context = viewContext router revision, feed = Just feed}]
 
 -- | What drives a mounted bell besides its page: the gate, the feed's
 -- channel, how many listen to the feed, the revision given, and how to
@@ -127,7 +123,7 @@ data Rig = Rig
   , handled :: IORef (Map.Map Int Notifications)
   -- ^ The answers the server gave to the asks it handled, by the ask's
   -- number in the gate, until they are given back.
-  , channel :: HS.Subscribe IO Heard
+  , tellFeed :: Heard -> IO ()
   , listening :: IORef Int
   -- ^ 'listen's less 'unlisten's of the feed.
   , revision :: IORef Int
@@ -141,23 +137,9 @@ newRig :: IO (Feed, (Int -> IO ()) -> IO () -> Rig)
 newRig = do
   gate <- newGate
   handled <- newIORef mempty
-  channel <- HS.create
-  listening <- newIORef (0 :: Int)
+  live <- newTestFeed
   revision <- newIORef 0
-  let feed =
-        Feed
-          { heard = channel.emitter
-          , watch = \_ -> pass
-          , unwatch = \_ -> pass
-          , restart = pass
-          , startEditing = \_ -> pass
-          , stopEditing = \_ -> pass
-          , editorsOf = \_ -> pure Nothing
-          , readersOf = \_ -> pure Nothing
-          , listen = atomicModifyIORef' listening (\n -> (n + 1, ()))
-          , unlisten = atomicModifyIORef' listening (\n -> (n - 1, ()))
-          }
-  pure (feed, \revise dispose -> Rig {gate, handled, channel, listening, revision, revise, dispose})
+  pure (live.feed, \revise dispose -> Rig {gate, handled, tellFeed = live.tell, listening = live.listening, revision, revise, dispose})
 
 -- | What the bell shows: the count; whether the list is open; each
 -- notification listed, by its number, and whether it is unread; and
@@ -222,11 +204,11 @@ drive rig ui ref gone s = do
       case server.untold of
         n : rest -> do
           writeIORef ref server {untold = rest}
-          HS.notify rig.channel.listener (Notice n)
+          rig.tellFeed (Notice n)
         [] -> pass
     Reconnect -> do
       modifyIORef' ref (\server -> server {untold = []})
-      HS.notify rig.channel.listener Reopened
+      rig.tellFeed Reopened
     HandleOut _ -> pass
     Handle -> do
       server <- readIORef ref

@@ -50,6 +50,17 @@ module Test.Harness.MemDom
   , query
   , inTurn
 
+    -- * A view under a parent that changes its input
+  , Drive (..)
+  , driven
+  , setInput
+
+    -- * What the shell gives a view
+  , viewContext
+  , viewContextAs
+  , TestFeed (..)
+  , newTestFeed
+
     -- * Acting as the reader
   , click
   , clickAt
@@ -96,9 +107,14 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Coerce (coerce)
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import Data.Row (type (.==))
 import Halogen qualified as H
 import Halogen.Activity (Activity (..), idle, quiet)
 import Halogen.Activity.Control (HeldWait, HeldWaits, TestClock, advance, pending, release, releaseAll, withHeldWaits, withTestClock)
+import Halogen.HTML qualified as HH
+import Halogen.Router (Router)
+import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Halogen.VDom.DOM.Monad.Native qualified as N
 import Halogen.VDom.Driver (runUI)
@@ -107,6 +123,13 @@ import System.IO.Unsafe (unsafePerformIO)
 import System.Timeout (timeout)
 import Web.DOM.Internal.Types (Element (..))
 import Web.HTML.HTMLInputElement (HTMLInputElement (..))
+import Wiki.App.Backend (Session, anonymousIn)
+import Wiki.App.Live (Feed (..), Heard)
+import Wiki.App.Route (Route)
+import Wiki.App.View.Common (Context (..), PageWidth (..))
+import Wiki.Core.Access (Access (..))
+import Wiki.Core.Id (PageId)
+import Wiki.Core.Space (Space)
 
 -- | A view mounted in a container of the process's document: the
 -- container, what the program is doing, and how to ask the view and to
@@ -153,6 +176,79 @@ mount run component input = do
 -- them to hold its waits and move its pauses.
 withView :: (MonadBrowserDOM m, MonadUnliftIO m) => (forall a. m a -> IO a) -> H.Component q i o m -> i -> (View q -> IO b) -> IO b
 withView run component input body = inTurn (bracket (mount run component input) (\v -> v.dispose) body)
+
+-- | 'Drive' is what a test asks of the parent 'driven' puts a view under:
+-- give the view a new input, as the shell does when the route or the
+-- wiki changes.
+data Drive i a = SetInput i a
+
+type DrivenSlots q o = ("view" .== H.Slot q o ())
+
+-- | A component under a parent that gives it its input, the one given
+-- first and then each 'setInput'. The view's own output and queries stay
+-- inside: a spec reads and acts on the page.
+driven :: forall q i o m. (Typeable i, Monad m) => H.Component q i o m -> i -> H.Component (Drive i) () Void m
+driven component given =
+  H.mkComponent
+    H.ComponentSpec
+      { initialState = \_ -> pure given
+      , render
+      , eval = H.mkEval H.defaultEval {H.handleQuery = \(SetInput i a) -> put i $> Just a}
+      }
+  where
+    render :: i -> H.ComponentHTML () (DrivenSlots q o) m
+    render i = HH.div_ [HH.slot_ "view" () component i]
+
+-- | Give a 'driven' view a new input, and wait for the parent to have
+-- taken it.
+setInput :: View (Drive i) -> i -> IO ()
+setInput view i = void (query view (SetInput i ()))
+
+-- | What the shell gives a view ('Context'), as a native spec gives it:
+-- this router, nobody signed in on an open wiki, no spaces, at a
+-- revision. Every native spec builds its context here, so that a field
+-- the context gains is given in one place.
+viewContext :: Router Route -> Int -> Context
+viewContext router = viewContextAs router (anonymousIn Open) []
+
+-- | 'viewContext' for someone signed in ('session', as the backend
+-- answers it), with the wiki's spaces.
+viewContextAs :: Router Route -> Session -> [Space] -> Int -> Context
+viewContextAs router session spaces revision = Context {router, session, sessionNumber = 0, spaces, icons = mempty, revision, pageWidth = Compact}
+
+-- | 'TestFeed' is a live channel the test tells through ('Wiki.App.Live'):
+-- the feed a view is given, how to deliver a message to it, and what the
+-- view asked of it: how many listen ('listen' less 'unlisten') and the
+-- pages watched ('watch' less 'unwatch').
+data TestFeed = TestFeed
+  { feed :: Feed
+  , tell :: Heard -> IO ()
+  , listening :: IORef Int
+  , watching :: IORef [PageId]
+  }
+
+newTestFeed :: IO TestFeed
+newTestFeed = do
+  channel <- HS.create
+  listening <- newIORef (0 :: Int)
+  watching <- newIORef []
+  let count d = atomicModifyIORef' listening (\n -> (n + d, ()))
+      feed =
+        Feed
+          { heard = channel.emitter
+          , watch = \p -> atomicModifyIORef' watching (\ps -> (p : ps, ()))
+          , unwatch = \p -> atomicModifyIORef' watching (\ps -> (deleteFirst p ps, ()))
+          , restart = pass
+          , startEditing = \_ -> pass
+          , stopEditing = \_ -> pass
+          , editorsOf = \_ -> pure Nothing
+          , readersOf = \_ -> pure Nothing
+          , listen = count 1
+          , unlisten = count (-1)
+          }
+  pure TestFeed {feed, tell = HS.notify channel.listener, listening, watching}
+  where
+    deleteFirst p ps = let (before, after) = break (== p) ps in before <> drop 1 after
 
 -- | The process's document, for one view at a time.
 theDocument :: MVar ()

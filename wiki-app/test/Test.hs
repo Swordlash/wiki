@@ -10,6 +10,7 @@ import Test.BellDom qualified as BellDom
 import Test.Blog qualified as Blog
 import Test.CommentsDom qualified as CommentsDom
 import Test.Deck qualified as Deck
+import Test.DeckDom qualified as DeckDom
 import Test.DecryptedExport qualified as DecryptedExport
 import Test.Demo qualified as Demo
 import Test.Entries qualified as Entries
@@ -69,6 +70,7 @@ main = do
       Threads.spec
       BellDom.spec
       CommentsDom.spec
+      DeckDom.spec
       Users.spec
       Deck.spec
       Latest.spec

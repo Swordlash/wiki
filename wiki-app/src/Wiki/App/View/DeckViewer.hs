@@ -31,6 +31,8 @@
 module Wiki.App.View.DeckViewer
   ( Input (..)
   , Target (..)
+  , Watcher (..)
+  , browserWatcher
   , Slots
   , component
   )
@@ -42,7 +44,7 @@ import Halogen qualified as H
 import Halogen.HTML qualified as HH
 import Halogen.HTML.Events qualified as HE
 import Halogen.HTML.Properties qualified as HP
-import Halogen.JSBits (Callback, Safety (..), browserJS, freeCallback, inBrowser, mkSyncCallback)
+import Halogen.JSBits (Callback, Safety (..), browserJS, freeCallback, mkSyncCallback)
 import Halogen.Router qualified as Router
 import Halogen.Subscription qualified as HS
 import Halogen.TH (hh)
@@ -80,6 +82,20 @@ data Input = Input
   -- ^ What every id the slides write starts with, and every link to a
   -- place in them: the viewer's own, apart from the page's and from any
   -- other viewer's on it.
+  , watcher :: Watcher
+  -- ^ How the viewer learns that its link came near the window: in a
+  -- page, the browser's ('browserWatcher').
+  }
+
+-- | 'Watcher' is how the viewer learns that its link came near the
+-- window. 'start' watches an element and runs the action once when it
+-- comes near, and gives the watch's number and what lets go of what the
+-- watch holds when the viewer closes; 'stop' stops a watch by its number.
+-- Neither waits: both run in the step that keeps the watch. A test gives
+-- one of its own and says when the link is near.
+data Watcher = Watcher
+  { start :: Element -> IO () -> IO (Int, IO ())
+  , stop :: Int -> IO ()
   }
 
 -- | What the viewer shows.
@@ -109,7 +125,7 @@ data State = State
   , root :: H.RefLabel
   , nearIds :: Map Int Int
   -- ^ The browser's watch of each watch the model runs, by its number.
-  , callbacks :: [Callback]
+  , callbacks :: [IO ()]
   -- ^ The callbacks the watches tell through, each freed once, when the
   -- viewer closes: a watch stopped, or one that told, never calls its
   -- callback again, and freeing one while it runs would break it.
@@ -192,7 +208,7 @@ component =
       Initialize -> happen M.Started
       Finalize -> do
         happen M.Finished
-        gets (\st -> st.callbacks) >>= traverse_ (H.liftEffect . liftIO . freeCallback)
+        gets (\st -> st.callbacks) >>= traverse_ (H.liftEffect . liftIO)
         modify (\st -> st {callbacks = []})
       Receive new -> do
         modify (\st -> st {input = new})
@@ -219,22 +235,19 @@ component =
     perform :: M.Effect PageLink Place -> H.HalogenM State Action Slots Void m ()
     perform = \case
       -- The link watched until it comes near the window, in a browser.
-      M.Watch w
-        | inBrowser ->
-            gets (\st -> st.root)
-              >>= H.getRef
-              >>= traverse_
-                ( \element -> do
-                    channel <- H.liftEffect (liftIO HS.create)
-                    void (H.subscribe channel.emitter)
-                    (callback, i) <- H.liftEffect . liftIO $ do
-                      callback <- mkSyncCallback (const (HS.notify channel.listener (Happen (M.Near w))))
-                      (callback,) <$> js_when_near element callback
-                    modify (\s -> s {nearIds = Map.insert w i s.nearIds, callbacks = callback : s.callbacks})
-                )
-        | otherwise -> pass
+      M.Watch w -> do
+        st <- get
+        H.getRef st.root
+          >>= traverse_
+            ( \element -> do
+                channel <- H.liftEffect (liftIO HS.create)
+                void (H.subscribe channel.emitter)
+                (i, freeIt) <- H.liftEffect (liftIO (st.input.watcher.start element (HS.notify channel.listener (Happen (M.Near w)))))
+                modify (\s -> s {nearIds = Map.insert w i s.nearIds, callbacks = freeIt : s.callbacks})
+            )
       M.Unwatch w -> do
-        gets (\st -> Map.lookup w st.nearIds) >>= traverse_ (H.liftEffect . liftIO . js_stop)
+        st <- get
+        traverse_ (H.liftEffect . liftIO . st.input.watcher.stop) (Map.lookup w st.nearIds)
         modify (\s -> s {nearIds = Map.delete w s.nearIds})
       M.Fetch f named host -> do
         owner <- H.liftEffect newUrlOwner
@@ -316,3 +329,17 @@ fetchDeck context owner host (PageLink route _) = case route of
               let place = Place {context, space, pages, path = pp, attachments = page.attachments, urls = addresses.urls, downloads = addresses.downloads, frames = addresses.frames, people}
               pure (Just ((place, page), deckOfPage page))
             _ -> pure Nothing
+
+-- | The browser's watch: an @IntersectionObserver@ ("jsbits/deck-viewer.js"),
+-- telling through a callback freed when the viewer closes: a watch
+-- stopped, or one that told, never calls its callback again, and freeing
+-- one while it runs would break it. Natively it watches nothing.
+browserWatcher :: Watcher
+browserWatcher =
+  Watcher
+    { start = \element tell -> do
+        callback <- mkSyncCallback (const tell)
+        i <- js_when_near element callback
+        pure (i, freeCallback callback)
+    , stop = js_stop
+    }

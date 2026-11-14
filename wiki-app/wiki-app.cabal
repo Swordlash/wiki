@@ -340,6 +340,7 @@ test-suite wiki-app-test
         Test.Backend.Persist
         Test.Blog
         Test.CommentsDom
+        Test.DeckDom
         Test.Counting
         Test.Demo
         Test.Entries

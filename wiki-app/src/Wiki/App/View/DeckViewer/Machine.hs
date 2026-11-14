@@ -199,7 +199,8 @@ released m = (m {shownOwner = Nothing, pendingOwners = []}, map Release (maybeTo
 settled :: Int -> Bool -> Model s l h x -> (Model s l h x, [Effect l h])
 settled f taken m
   | taken = (m {shownOwner = Just f, pendingOwners = pending}, [Release o | Just o <- [m.shownOwner], o /= f])
-  | otherwise = (m {pendingOwners = pending}, [Release f])
+  -- A read let go of at a change of reading is not let go of again.
+  | otherwise = (m {pendingOwners = pending}, [Release f | f `elem` m.pendingOwners])
   where
     pending = filter (/= f) m.pendingOwners
 

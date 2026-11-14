@@ -194,37 +194,10 @@ spec m = do
     find ui theLink >>= focus
     eventually $ find ui "article.page-body .deck-embed" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The merger closes on Friday.")
 
-  -- A change of reader starts the watch of the link again, after the
-  -- viewer has dropped what it showed. Changes that come close together
-  -- (a sign-in changes the session, then the wiki read again for the new
-  -- reader) each start one: the viewer keeps one watch, the one it stops
-  -- when it closes, and a second would watch on with nothing to stop it.
-  it "keeps one watch of its link however the reader changes, and none once the page closes" $ runPage $ do
-    before <- deckWatches
-    ui <- start m (Just "user-admin") (Page docs guide)
-    -- Far down the page: its link is watched.
-    _ <- find ui "article.page-body > p > a[href$='markdown-guide/presentations/']:only-child"
-    watching <- eventually $ do
-      n <- deckWatches
-      n `shouldSatisfy` (> before)
-      pure n
-    -- The four changes close together: each pressed as soon as its
-    -- button is there, none waited for ('pressNow'), then the program
-    -- waited for once.
-    for_ (["reader", "admin", "editor", "admin"] :: [Text]) $ \login -> do
-      pressNow ui ".user-switcher-toggle"
-      pressNow ui (".user-menu button[data-login=" <> login <> "]")
-    waitQuietWithin readersChanged
-    eventually $ deckWatches `shouldReturn` watching
-    -- The one watch is heard: near the window, the presentation is read
-    -- for the reader now, and the watch, having told, is gone.
-    bringNear ui
-    eventuallyWithin 30000 $ position ui `shouldReturn` "1 / 9"
-    deckWatches `shouldReturn` watching - 1
-    unmount ui
-    settle
-    deckWatches `shouldReturn` before
-
+  -- What a change of reader does to the watch and the read (one watch,
+  -- none once closed) is the in-memory DOM's ("Test.DeckDom"). A change
+  -- of reader as the watch starts stays here: no fault of the shell put
+  -- back made the in-memory case fail.
   -- A change of reader as the viewer begins to watch its link: in memory,
   -- another user chosen right after the page is mounted; over HTTP, the
   -- answers that come after the first render (the session, the spaces),
@@ -365,9 +338,3 @@ report = do
 -- side. The deadline is twice the longest.
 readerChanged :: Int
 readerChanged = 50000
-
--- | How long four changes of reader close together on the guide may keep
--- the program busy, in milliseconds. Measured as for 'readerChanged',
--- loaded: 23.0 to 58.2 s over 16 runs. The deadline is twice the longest.
-readersChanged :: Int
-readersChanged = 120000

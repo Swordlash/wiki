@@ -339,6 +339,7 @@ test-suite wiki-app-test
         Test.Backend.Mem
         Test.Backend.Persist
         Test.Blog
+        Test.CommentsDom
         Test.Counting
         Test.Demo
         Test.Entries

@@ -89,7 +89,7 @@ module Test.Harness.MemDom
 
     -- * Asks held by the library
   , HeldWaits
-  , HeldWait
+  , HeldWait (..)
   , withHeldWaits
   , pending
   , release
@@ -111,7 +111,7 @@ import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Row (type (.==))
 import Halogen qualified as H
 import Halogen.Activity (Activity (..), idle, quiet)
-import Halogen.Activity.Control (HeldWait, HeldWaits, TestClock, advance, pending, release, releaseAll, withHeldWaits, withTestClock)
+import Halogen.Activity.Control (HeldWait (..), HeldWaits, TestClock, advance, pending, release, releaseAll, withHeldWaits, withTestClock)
 import Halogen.HTML qualified as HH
 import Halogen.Router (Router)
 import Halogen.Subscription qualified as HS

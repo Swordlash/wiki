@@ -226,6 +226,9 @@ spec = describe "Wiki.App.View.Page's comments, mounted on the in-memory DOM" $ 
       drain waits
       let draft = ".page-comments .comment-new"
           laterVisit path = do
+            -- Sent on the post.
+            rig.goTo ["hello-world"]
+            drain waits
             send rig.view draft "Sent on the first visit."
             w <- newOne waits []
             traverse_ (\p -> rig.goTo p >> drainBut waits [w]) path
@@ -235,7 +238,7 @@ spec = describe "Wiki.App.View.Page's comments, mounted on the in-memory DOM" $ 
             valueIn rig.view (draft <> " textarea") `shouldReturn` Just "A draft of the later visit."
             findAll rig.view ".comment-thread.focused" >>= (`shouldBe` 0) . length
       laterVisit [["notes-on-haskell"]]
-      laterVisit [["hello-world"], ["notes-on-haskell"], ["hello-world"]]
+      laterVisit [["notes-on-haskell"], ["hello-world"]]
 
   -- #284's third round: a write's answer names the mount of the comments
   -- view that asked. The panel closed and opened again is a new mount,

@@ -1918,10 +1918,13 @@ WP5.92 and WP5.93 wait.
   in-memory DOM and the browser examples cut); left: the generated
   runs of `Test.Threads` driven through the real component, as the
   bell's are (about a day). (2) The
-  embedded deck: the machine and its properties are merged (#287);
-  left: its in-memory DOM spec on the harness (first cases: a close
-  between the watch's making and its keeping, the channel made late)
-  and the cut of 5 of the 11 browser examples it replaces. (3)
+  embedded deck: done (#287 the machine, #289 the viewer on the
+  in-memory DOM through a seam for "near", `DeckViewer.Watcher`). One
+  browser example of eleven was cut; left for a later look: whether
+  "reads the presentation near the window after the reader changes as
+  the viewer starts watching" (a 50 s deadline) still guards anything,
+  since no fault of the shell makes its native stand-in fail now that
+  each watch tells its own number. (3)
   The sign-in's keys (`SignIn.hs`); two days. (4) The assistant's
   panel; two days. (5) The shell's world (the session, the spaces, the
   tree, the backlinks); three days. (6) The editor's publication and

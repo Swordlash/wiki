@@ -1997,19 +1997,27 @@ WP5.92 and WP5.93 wait.
   70 ms. To take up again only if whole long texts must parse fast
   (the wiki-core suite on wasm, a guess of 50 to 100 s in place of 139
   to 248), and then the binding's fix and the crossing first.
-- **WP5.116 The browser suite's own time, and its first wait (for the
-  order above).** It sets the `wasm` job's length (two shards of five
-  to seven minutes) and doubled in two days. First, from #281's
-  measures (designed, waits for a builder's turn; branch
-  `browser-fixture-once`): the fixture built once for a page (the
-  stand-in keeps the demo's answers, each example copies them), which
-  should take about a hundred seconds of work out of the suite; and
-  after a mount a wait on the program's quiet with a plain read after
-  it, in place of `find`'s two seconds, in the groups already worked
-  in. Then: a third shard if the runner's four cores carry it; the
-  dearest examples made cheaper (the long deck's 66 seconds, the three
-  random walks, the search's table); and what WP5.121 moves out of the
-  browser.
+- **WP5.116 The browser suite's own time (for the order above).** It
+  sets the `wasm` job's length (two shards, 340 to 430 s on hosted
+  runners). **The fixture built once is set aside, by measure
+  (2026-11-14):** `serveDemo` takes about 0.31 s a call, 126 calls in
+  695 examples, so about 39 s of the 1,198 s the two shards add up to
+  (3%, some 20 s off the longer shard), against the risk of state
+  shared between examples. Where the time is, both shards together:
+  "A presentation in the editor" 189 s (16%; 122 s on its shard, with
+  341 `eventually`, 178 of them directly after an action), the
+  editor's own group 105 s (9%), tasks ticked in a page 92 s (8%), the
+  editor's search 65 s, the embedded presentation 58 s, the
+  assistant's keys 53 s. So the next steps, in order: (1) the slides
+  editor's group timed by phase for one example (mount, each action,
+  each wait), to say whether its cost is the program's work on wasm
+  (then WP5.115, parse less) or the tests' waits; (2) the `eventually`
+  directly after an action removed where the harness's wait since #285
+  makes it a plain read, the slides editor's group first, with the
+  ceilings of WP5.122; (3) what WP5.121 moves out of the browser (so
+  far little: the comments 4 examples of a group of a few seconds, the
+  deck 1 example); (4) a third shard if the runner's four cores carry
+  it.
 - **WP5.106 Components without JavaScript tested natively, over
   haskell-halogen's `remote` (the owner, 2026-11-13: "jeśli będzie to
   szybsze. Wszystkie pure halogen testy").** The spike (branch

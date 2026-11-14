@@ -19,7 +19,7 @@ import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText)
 import Halogen.Router.Duplex qualified as Duplex
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
-import Test.Browser.Http (Asked (..), answerRaw, asked, guideLoaded, pressNow, serveDemo, serverStarts, startServer)
+import Test.Browser.Http (Asked (..), answerRaw, asked, guideLoaded, serveDemo, serverStarts, startServer)
 import Test.Browser.Mount (slugs, start, startOn, startWith)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
@@ -194,57 +194,10 @@ spec m = do
     find ui theLink >>= focus
     eventually $ find ui "article.page-body .deck-embed" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The merger closes on Friday.")
 
-  -- A change of reader starts the watch of the link again, after the
-  -- viewer has dropped what it showed. Changes that come close together
-  -- (a sign-in changes the session, then the wiki read again for the new
-  -- reader) each start one: the viewer keeps one watch, the one it stops
-  -- when it closes, and a second would watch on with nothing to stop it.
-  it "keeps one watch of its link however the reader changes, and none once the page closes" $ runPage $ do
-    before <- deckWatches
-    ui <- start m (Just "user-admin") (Page docs guide)
-    -- Far down the page: its link is watched.
-    _ <- find ui "article.page-body > p > a[href$='markdown-guide/presentations/']:only-child"
-    watching <- eventually $ do
-      n <- deckWatches
-      n `shouldSatisfy` (> before)
-      pure n
-    -- The four changes close together: each pressed as soon as its
-    -- button is there, none waited for ('pressNow'), then the program
-    -- waited for once.
-    for_ (["reader", "admin", "editor", "admin"] :: [Text]) $ \login -> do
-      pressNow ui ".user-switcher-toggle"
-      pressNow ui (".user-menu button[data-login=" <> login <> "]")
-    waitQuietWithin readersChanged
-    eventually $ deckWatches `shouldReturn` watching
-    -- The one watch is heard: near the window, the presentation is read
-    -- for the reader now, and the watch, having told, is gone.
-    bringNear ui
-    eventuallyWithin 30000 $ position ui `shouldReturn` "1 / 9"
-    deckWatches `shouldReturn` watching - 1
-    unmount ui
-    settle
-    deckWatches `shouldReturn` before
-
-  -- A change of reader as the viewer begins to watch its link: in memory,
-  -- another user chosen right after the page is mounted; over HTTP, the
-  -- answers that come after the first render (the session, the spaces),
-  -- which move the shell's revision on. The watch the viewer keeps then
-  -- tells with the reading it is for, so the presentation is read when its
-  -- link comes near, and no other watch runs.
-  it "reads the presentation near the window after the reader changes as the viewer starts watching" $ runPage $ do
-    before <- deckWatches
-    ui <- start m (Just "user-admin") (Page docs guide)
-    _ <- find ui "article.page-body > p > a[href$='markdown-guide/presentations/']:only-child"
-    find ui ".user-switcher-toggle" >>= click
-    pressNow ui ".user-menu button[data-login=editor]"
-    waitQuietWithin readerChanged
-    bringNear ui
-    eventuallyWithin 30000 $ position ui `shouldReturn` "1 / 9"
-    deckWatches `shouldReturn` before
-    unmount ui
-    settle
-    deckWatches `shouldReturn` before
-
+  -- What a change of reader does to the watch and the read (one watch,
+  -- none once closed, the watch kept heard after changes close together)
+  -- is the in-memory DOM's ("Test.DeckDom"); here, what needs the
+  -- browser: the real watch, over real HTTP.
   it "reads the presentation near the window when the wiki's answers come after the first render, over HTTP" $ runPage $ do
     serverStarts
     serveDemo
@@ -357,17 +310,3 @@ report :: PageM s Report
 report = do
   json <- unsafeIOToPageM (fromJSText <$> js_ids_report)
   maybe (expectationFailure ("no report: " <> json)) pure (decodeStrict (encodeUtf8 json))
-
--- | How long one change of reader on the guide may keep the program busy,
--- in milliseconds. Measured from the press to the program quiet
--- (2026-11-14, 16 cores): 4.9 to 10.7 s with nothing else running, 6.3 to
--- 24.5 s over 16 runs with a busy loop on every core and two pages side by
--- side. The deadline is twice the longest.
-readerChanged :: Int
-readerChanged = 50000
-
--- | How long four changes of reader close together on the guide may keep
--- the program busy, in milliseconds. Measured as for 'readerChanged',
--- loaded: 23.0 to 58.2 s over 16 runs. The deadline is twice the longest.
-readersChanged :: Int
-readersChanged = 120000

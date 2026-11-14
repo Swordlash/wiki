@@ -35,8 +35,8 @@ import Wiki.App.Route (PageLink (..), Route (..), route)
 import Wiki.App.View.Body (Place (..))
 import Wiki.App.View.Common (Context (..))
 import Wiki.App.View.DeckViewer qualified as DeckViewer
-import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Access (Access (Open))
+import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Slug (Slug, mkSlug)
 import Wiki.Core.Space (Space (..))
 

@@ -9,8 +9,8 @@ import Test.Bell qualified as Bell
 import Test.BellDom qualified as BellDom
 import Test.Blog qualified as Blog
 import Test.CommentsDom qualified as CommentsDom
-import Test.DeckDom qualified as DeckDom
 import Test.Deck qualified as Deck
+import Test.DeckDom qualified as DeckDom
 import Test.DecryptedExport qualified as DecryptedExport
 import Test.Demo qualified as Demo
 import Test.Entries qualified as Entries

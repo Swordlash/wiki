@@ -129,7 +129,7 @@ import Wiki.Api.Export (dispositionFileName, formatExtension, formatMediaType)
 import Wiki.Api.Import (ImportChoices, ImportPlan, ImportSummary)
 import Wiki.Api.Links (searchParameters)
 import Wiki.Api.Links qualified as Links
-import Wiki.Api.Notifications (Notifications (..), NotificationsApi (..), Watching (..), searchable)
+import Wiki.Api.Notifications (Notifications (..), NotificationsApi (..), Watching (..), searchable, withTold)
 import Wiki.Api.Opaque (LoginChallenge (..), LoginFinish (..), LoginStart (..), Message, NewAccountRecord (..), OldPasswordProof (..), PasswordRecord (..), PasswordRecordChange (..), PasswordWrapChange (..), ProofStart (..), RegistrationChallenge (..), RegistrationFor (..), RegistrationStart (..))
 import Wiki.Api.Security (CurrentPassword (..), EmailChange (..), OneTimeCode (..), ResetRequest (..))
 import Wiki.Api.ServerSettings (MailTest (..))
@@ -1121,8 +1121,9 @@ instance (MonadIO m) => MonadNotifications (HttpWiki m) where
           Left e -> pure (Left e)
   notifications = fetchedNotices >>= either (pure . Left) (fmap Right . withSealedNotices)
   markRead m = do
+    before <- readStored
     result <- send (endpoints.notifications.markRead m)
-    when (kept result) (modifyCache (withNotices result))
+    when (kept result) (HttpWiki (ask >>= \env -> liftIO (atomicModifyIORef' env.cache (\c -> (markedAnswer before result c, ())))))
     either (pure . Left) (fmap Right . withSealedNotices) result
   watching target = cached (\c -> Map.lookup target c.watches) watch (withWatch target)
     where
@@ -1198,19 +1199,17 @@ withSealedTitles stars = do
 -- leave out (a page the reader may no longer read).
 fetchedNotices :: (MonadIO m) => HttpWiki m (Either WikiError Notifications)
 fetchedNotices = do
-  stored <- readStored
-  case stored.cache.notices of
+  first' <- readStored
+  case first'.cache.notices of
     Just known -> pure known
     Nothing -> do
+      (asked, stored) <- HttpWiki (ask >>= \env -> liftIO (atomicModifyIORef' env.cache (\c -> let (n, c') = askingNotices c in (c', (n, c')))))
       toldRef <- HttpWiki (asks (\env -> env.told))
       before <- liftIO (map (\n -> n.id) <$> readIORef toldRef)
       result <- send endpoints.notifications.list
       during <- liftIO (filter (\n -> n.id `notElem` before) <$> readIORef toldRef)
-      let merged =
-            result <&> \ns ->
-              let missing = [n | n <- during, all (\x -> x.id /= n.id) ns.items]
-               in Notifications {unread = ns.unread + length (filter (\n -> not n.read) missing), items = missing <> ns.items}
-      when (kept merged) (storeAnswer PlainRead stored (withNotices merged))
+      let merged = withTold during <$> result
+      when (kept merged) (HttpWiki (ask >>= \env -> liftIO (atomicModifyIORef' env.cache (\c -> (storedNotices asked stored (withNotices merged) c, ())))))
       pure merged
 
 -- | The notifications with the titles of pages of encrypted spaces

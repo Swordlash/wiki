@@ -172,6 +172,9 @@ module Wiki.App.Backend.Http.Cache
   , withThreads
   , withPeople
   , withNotices
+  , markedAnswer
+  , askingNotices
+  , storedNotices
   , withNotice
   , forgetNotices
   , withWatch
@@ -194,7 +197,7 @@ import Wiki.Api.Activity (Activity)
 import Wiki.Api.Admin (Directory, Invitations, ServerStatus, TexEngine, UserPage, UserQuery, WikiSettings)
 import Wiki.Api.Backups (Backups)
 import Wiki.Api.Events (PageEvent (..), applyEvent)
-import Wiki.Api.Notifications (Notifications (..))
+import Wiki.Api.Notifications (Notifications (..), withTold)
 import Wiki.Api.ServerSettings (ServerSettings)
 import Wiki.Api.Stars (StarredPage)
 import Wiki.Api.WhatsNew (WhatsNew)
@@ -204,7 +207,7 @@ import Wiki.Core.Blog (PostDetails)
 import Wiki.Core.Comment (Thread)
 import Wiki.Core.Draft (Draft)
 import Wiki.Core.Id (PageId, SpaceId)
-import Wiki.Core.Notification (Notification, PageLocation, Watch, WatchTarget)
+import Wiki.Core.Notification (Notification (..), PageLocation, Watch, WatchTarget)
 import Wiki.Core.Page (Page, PageSummary)
 import Wiki.Core.Search (SearchHit, SearchQuery)
 import Wiki.Core.Slug (Slug)
@@ -311,6 +314,9 @@ data Stored = Stored
   , contentChanges :: Int
   -- ^ The changes that drop page content alone: a page saved, the first
   -- change of route ('forgetPageContent').
+  , noticeReads :: Int
+  -- ^ How many reads of the notifications were sent to the server: the
+  -- number of the latest ('askingNotices').
   , cache :: Cache
   }
   deriving stock (Eq, Show)
@@ -322,7 +328,7 @@ data Reading = PlainRead | ContentRead
 
 -- | A cache, with no changes counted yet.
 storedOf :: Cache -> Stored
-storedOf cache = Stored {changes = 0, contentChanges = 0, cache}
+storedOf cache = Stored {changes = 0, contentChanges = 0, noticeReads = 0, cache}
 
 -- | The cache after a change that is not a read's answer stored: a write,
 -- an event, an entry dropped or replaced. It is counted.
@@ -546,10 +552,40 @@ cachedPeople logins c = Map.fromList . catMaybes <$> traverse (\l -> fmap (l,) <
 withNotices :: Either WikiError Notifications -> Cache -> Cache
 withNotices n c = c {notices = Just n}
 
+-- | The cache after the answer to a mark of notifications read: the
+-- notifications as the server had them once it marked them, put in place
+-- of the cached ones if the cache did not change and no read of them was
+-- sent since the mark was sent ('sent'); otherwise the cached ones are
+-- forgotten, and the next read asks the server. What changed the cache (a
+-- notification the live channel told of meanwhile) may be missing from the
+-- answer, and a read sent after the mark brings a newer list, which the
+-- change the answer makes keeps out of the cache. Either way a change.
+markedAnswer :: Stored -> Either WikiError Notifications -> Stored -> Stored
+markedAnswer sent result now
+  | now.changes == sent.changes && now.noticeReads == sent.noticeReads = changedBy (withNotices result) now
+  | otherwise = changedBy forgetNotices now
+
+-- | A read of the notifications sent to the server: its number, and the
+-- cache with it counted. Counting it is no change of the cache.
+askingNotices :: Stored -> (Int, Stored)
+askingNotices s = (s.noticeReads + 1, s {noticeReads = s.noticeReads + 1})
+
+-- | The answer to the read of the notifications with this number stored,
+-- as 'storedAnswer' says, and only if no read of them was sent after it:
+-- two reads out at once can be answered in either order, and the older
+-- list must not take the newer one's place.
+storedNotices :: Int -> Stored -> (Cache -> Cache) -> Stored -> Stored
+storedNotices asked sent keep now
+  | now.noticeReads == asked = storedAnswer PlainRead sent keep now
+  | otherwise = now
+
 -- | Add a notification received over the live channel at the front of the
--- cached notifications.
+-- cached notifications, unless they count it already
+-- ('Wiki.Api.Notifications.counts'): the server sends the message after
+-- the notification is made, so a read it answered in between counted it,
+-- and listed it if it was among the newest.
 withNotice :: Notification -> Cache -> Cache
-withNotice n c = c {notices = fmap (\ns -> Notifications {unread = ns.unread + 1, items = n : ns.items}) <$> c.notices}
+withNotice n c = c {notices = fmap (withTold [n]) <$> c.notices}
 
 -- | Remove the cached notifications, because some may have been missed.
 forgetNotices :: Cache -> Cache

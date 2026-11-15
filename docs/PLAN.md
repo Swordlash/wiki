@@ -1787,6 +1787,24 @@ confirms it against reality and the plan is amended if it does not hold.
     visit of a page, a mounted view, a quoting of the same text twice
     are told apart by identity. The bell is the first; the
     views that raced follow in the order under "Open work".
+83. **The shape of a test (the owner, 2026-11-15: "'jak kliknę w X to
+    powinno się pojawić Y' powinien być 1) unit testem 'X zwraca Y' i
+    2) testem prezentacji 'Y dobrze pokazuje się na ekranie'. Plus
+    pewnie jeden duży zbiorczy test przeklikiwania się przez
+    interfejs").** A test in a browser is heavy, dear and brittle, so
+    a behaviour "the reader does X, then Y is shown" is tested in two
+    native parts: the logic gives Y for X (the machine's `step`, a
+    pure function, a property), and the state Y renders as it should
+    (the view on `Test.Harness.MemDom`). A third thin native case
+    covers what lies between them where a view is a machine: the
+    component carrying out the step's effects, with its waits held
+    (#284's review found faults exactly there). The click-through is
+    the smoke suites' walks, one for each large area. A browser
+    example is written only for what needs a browser: the islands'
+    libraries, layout and measuring, focus and selection, real HTTP
+    and WebSocket, the service worker. The browser suite's existing
+    examples of the first kind move as their views are worked on
+    (WP5.121), not all at once.
 
 ## Repository layout
 

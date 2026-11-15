@@ -1957,8 +1957,11 @@ WP5.92 and WP5.93 wait.
   hspec-halogen can; otherwise more pages side by side than cores),
   and reports every example that failed with its seed; a failure there
   is a finding with a package of its own, not a re-run.
-- **WP5.115 The Markdown parser parses less (for the order above; the
-  measure is done, 2026-11-14).** Measured: the parser is 6 to 7.5
+- **WP5.115 The Markdown parser parses less (issue #290, low priority:
+  the owner, 2026-11-15, "też myślę że nie": not taken now; the
+  measure is done, 2026-11-14).** It would speed a pause while a very
+  long text is edited, not the tests: their cost is the first mount of
+  a long deck, which it does not change. Measured: the parser is 6 to 7.5
   times slower on wasm than natively (a deck of 318,000 characters:
   1.4 s against 0.2 s), and no flag changes it. The collector is 2 to
   5% of the time whatever the allocation area; `-O2` for the parser's
@@ -2018,10 +2021,13 @@ WP5.92 and WP5.93 wait.
   which 33 s is outside the harness (the text helpers, layout reads
   through JavaScript, the model's checks) and 12 s is 404 actions. The
   harness's wait after an action is 7%, 0% and 23% of them. So the
-  suite's time is the program's work, and the lever is WP5.115 (parse
-  once for a pause, only the slides that changed), which the reader
-  feels too; removing an `eventually` saves little time, since nearly
-  all pass at once. The next steps, in order: (1) WP5.115; (2) the
+  suite's time is the program's work: the first parse and render of
+  a long deck, which WP5.115 would not change (it speeds a pause in
+  typing); removing an `eventually` saves little time, since nearly
+  all pass at once. The suite is inside its budget and CI's run is 13
+  to 14 minutes, so nothing here is pressing (the owner, 2026-11-15).
+  What is left, in order, without hurry: (1) smaller decks in the
+  examples where the deck's size is not what is tested; (2) the
   random walk's 33 s looked at (what the text helpers and layout reads
   do for each step); (3) the `eventually`
   directly after an action removed where the harness's wait since #285

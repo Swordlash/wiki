@@ -1129,6 +1129,38 @@ const dismissedSlashes = StateField.define({
   },
 });
 
+// The smallest change that turns a text into another, as {from, to,
+// insert} (UTF-16 units of the old text): the two texts' common start
+// and end are left alone, never between the halves of a surrogate pair.
+// The toolbar's commands write through it (the editor's write, which
+// wiki-app/jsbits/editor.js's wiki_editor_write calls), and so does the
+// completion, so that text that does not change keeps what is on it: an
+// assistant's undecided change, a fold, a problem's mark.
+export const smallestChange = (old, text) => {
+  let prefix = 0;
+  const shorter = Math.min(old.length, text.length);
+  while (prefix < shorter && old.charCodeAt(prefix) === text.charCodeAt(prefix)) prefix++;
+  let suffix = 0;
+  while (suffix < shorter - prefix && old.charCodeAt(old.length - 1 - suffix) === text.charCodeAt(text.length - 1 - suffix)) suffix++;
+  const low = (string, at) => at > 0 && at < string.length && (string.charCodeAt(at) & 0xfc00) === 0xdc00;
+  if (low(old, prefix) || low(text, prefix)) prefix--;
+  if (low(old, old.length - suffix) || low(text, text.length - suffix)) suffix--;
+  return { from: prefix, to: old.length - suffix, insert: text.slice(prefix, text.length - suffix) };
+};
+
+// An option's text written in place of from..to of a view's text, as the
+// smallest change ('smallestChange'), selecting start..end (UTF-16 units
+// of the text written, from `from`), one step of the undo.
+const writeText = (view, completion, from, to, text, start, end) => {
+  const change = smallestChange(view.state.sliceDoc(from, to), text);
+  view.dispatch({
+    changes: { from: from + change.from, to: from + change.to, insert: change.insert },
+    selection: EditorSelection.single(from + start, from + end),
+    scrollIntoView: true,
+    annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete")],
+  });
+};
+
 // What an option of the wiki's own Markdown writes when it is chosen, in
 // a view: its snippet, or its text as it is (insert), in place of the
 // range the list was for; or, for one given the cursor's whole line (an
@@ -1140,19 +1172,14 @@ const dismissedSlashes = StateField.define({
 const writeOption = (host, option) => (view, completion, from, to) => {
   if (option.line === undefined && option.insert !== undefined) {
     // No place to fill: the text as it is, the cursor after it.
-    view.dispatch({ ...insertCompletionText(view.state, option.insert, from, to), annotations: pickedCompletion.of(completion) });
+    writeText(view, completion, from, to, option.insert, option.insert.length, option.insert.length);
   } else if (option.line === undefined) {
     snippet(option.template)(view, completion, from, to);
   } else {
     const line = view.state.doc.lineAt(from);
     if (line.text !== option.line) return;
-    const [start, end] = option.select.map((n) => line.from + unitsOf(option.insert, n));
-    view.dispatch({
-      changes: { from: line.from, to: line.to, insert: option.insert },
-      selection: EditorSelection.single(start, end),
-      scrollIntoView: true,
-      annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete")],
-    });
+    const [start, end] = option.select.map((n) => unitsOf(option.insert, n));
+    writeText(view, completion, line.from, line.to, option.insert, start, end);
   }
   if (option.action !== undefined) host.dispatchEvent(new CustomEvent("wiki-complete-action", { detail: option.action }));
 };
@@ -2944,6 +2971,13 @@ export function attach(textarea, host, original, codeTokens) {
         scrollIntoView: true,
       });
       focusText();
+    },
+    // Make the text this, as the smallest change ('smallestChange'), and
+    // select start..end (UTF-16 units of the new text), as 'replace' does:
+    // a toolbar's command, which writes the whole text.
+    write: (text, start, end) => {
+      const change = smallestChange(view.state.doc.toString(), text);
+      editor.replace(change.from, change.to, change.insert, start, end);
     },
     focus: () => focusText(),
     // The caret at the end of the first line, the page's title line (after

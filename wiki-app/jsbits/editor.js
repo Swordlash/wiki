@@ -220,7 +220,15 @@ function wiki_editor_write(host, text, start, end) {
   const editor = host.wikiEditor;
   const textarea = wikiTextarea(host);
   if (!editor && !textarea) return;
-  const old = editor ? editor.text() : textarea.value;
+  // CodeMirror's editor finds the smallest change itself, with the same
+  // function the completion writes through (web/src/editor.js's
+  // smallestChange).
+  if (editor) {
+    editor.write(text, wikiUnits(text, start), wikiUnits(text, end));
+    return;
+  }
+  // The textarea, before CodeMirror is there: the same, here.
+  const old = textarea.value;
   let prefix = 0;
   const shorter = Math.min(old.length, text.length);
   while (prefix < shorter && old.charCodeAt(prefix) === text.charCodeAt(prefix)) prefix++;
@@ -238,10 +246,6 @@ function wiki_editor_write(host, text, start, end) {
   const from = prefix;
   const to = old.length - suffix;
   const middle = text.slice(prefix, text.length - suffix);
-  if (editor) {
-    editor.replace(from, to, middle, wikiUnits(text, start), wikiUnits(text, end));
-    return;
-  }
   if (from !== to || middle !== "") {
     textarea.focus({ preventScroll: true });
     textarea.setSelectionRange(from, to);

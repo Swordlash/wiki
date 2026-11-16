@@ -18,7 +18,7 @@ import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
 import Test.Browser.Mount (slugs, startChanged, startWith)
-import Test.Browser.Text (completing, editorSelection, editorText, listReady, markdown, selectText, setMarkdown)
+import Test.Browser.Text (completing, editorSelection, editorText, listReady, markdown, proposeText, selectText, setMarkdown)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (boxes))
 import Wiki.App.Assistant (MonadAssistant)
@@ -192,6 +192,18 @@ spec m = do
     typeText text "/ta"
     eventually $ (take 1 <$> labels ui) `shouldReturn` ["Table"]
     markdown ui `shouldReturn` titleLines <> "Either /\nSome /tab\n/ta"
+    -- An assistant's undecided change on the line stays its own once an
+    -- entry is written, which changes only what differs: rejecting it puts
+    -- back what it replaced.
+    setMarkdown ui (titleLines <> "Some text")
+    proposeText ui (T.length titleLines + 5) (T.length titleLines + 9) "words"
+    selectText ui (T.length titleLines + 10) (T.length titleLines + 10)
+    typeText text " /b"
+    eventually $ (take 1 <$> labels ui) `shouldReturn` ["Bold"]
+    listReady ui
+    press "Enter"
+    find ui ".cm-wiki-change-reject" >>= click
+    eventually $ markdown ui `shouldReturn` titleLines <> "Some text **bold text**"
 
   it "opens the dialog of a link to a page from the / menu, the / and its letters gone" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor

@@ -69,9 +69,12 @@ startFor starts firstChange lineStart = fromMaybe 0 (lastMay [s | (s, end) <- ta
 -- line leaves the lines below it read as they were; the blocks after one
 -- read as it was are read as they were. What is cut off cannot change how
 -- the lines before it are read while the cut is at a start of the text as
--- it is now: a start after a change since the parse may no longer be one
--- (an end marker typed above it), which Enter then sees only on the lines
--- it is given.
+-- it is now. A start after a change since the parse may no longer be one:
+-- the caller passes only those still at a line's start after a blank line
+-- (a change across lines maps a start into the middle of one, or takes
+-- away the blank line before it); one the change has put in a block that
+-- reads on (an end marker typed above it) Enter sees only on the lines it
+-- is given.
 endFor :: [Int] -> Int -> Maybe Int
 endFor starts lineEnd = case dropWhile (<= lineEnd) starts of
   _ : end : _ -> Just end

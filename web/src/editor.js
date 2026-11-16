@@ -1518,7 +1518,10 @@ const enterRange = (state, pos) => {
   for (const start of kept.starts) {
     if (start <= line.from) {
       if (doc.lineAt(start).to <= kept.firstChange) from = start;
-    } else if (start > line.to && ++below === 2) {
+    } else if (start > line.to && doc.lineAt(start).from === start && doc.lineAt(start - 1).text.trim() === "" && ++below === 2) {
+      // Only a start still at a line's start, after a blank line: a change
+      // since the check may have moved one into a line, or taken away the
+      // blank line before it.
       to = start - 1;
       break;
     }

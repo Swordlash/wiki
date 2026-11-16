@@ -602,7 +602,12 @@ handedOver before after (Change per removed was) =
     cursor = T.length before
     lineStart = T.length (T.dropWhileEnd (/= '\n') before)
     begins = startFor [(s, s + T.length (T.takeWhile (/= '\n') (T.drop s now))) | s <- starts] firstChange lineStart
-    ends = maybe (T.length now) (subtract 1) (endFor starts cursor)
+    ends = maybe (T.length now) (subtract 1) (endFor (filter afterBlank starts) cursor)
+    -- A start still at a line's start, after a blank line, in the text now.
+    afterBlank s =
+      s > 0
+        && T.takeEnd 1 (T.take s now) == "\n"
+        && T.null (T.strip (T.takeWhileEnd (/= '\n') (T.dropEnd 1 (T.take s now))))
 
 -- | An answer, forced, and the bytes allocated to make it.
 allocations :: Enter -> IO (Enter, Int64)

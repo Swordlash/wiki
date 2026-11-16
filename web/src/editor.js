@@ -1533,38 +1533,132 @@ const leaveQuotation = ({ state, dispatch }) => {
   return true;
 };
 
-// Whether the innermost list's item at a position has a tab after its
-// mark (or after its task's box): the library writes the next item's
-// mark with the spaces it read after this one, and reads no tab there,
-// so "1.\tone" would go on as "2." with nothing after it, which is no
-// item, and "- [ ]\tone" as "- " without its box. Such an item goes on
-// with a plain line break, as the editor did before it continued lists.
-const tabAfterMark = (state, pos) => {
+// The innermost list's item at a position, as the syntax tree reads it:
+// how many items deep the position is, the item, its mark and its task's
+// box (or null), the mark's kind (its character, or a number's
+// delimiter, "." or ")"), and whether its list is numbered.
+const itemAt = (state, pos) => {
+  let depth = 0;
+  let item = null;
   for (let node = syntaxTree(state).resolveInner(pos, -1); node; node = node.parent) {
     if (node.name !== "ListItem") continue;
-    const mark = node.getChild("ListMark");
-    if (!mark) return false;
-    const line = state.doc.lineAt(mark.from);
-    const box = node.getChild("Task")?.getChild("TaskMarker");
-    const gap = (from) => /^[ \t]*/.exec(state.sliceDoc(from, line.to))[0];
-    return (box ? state.sliceDoc(mark.to, box.from) + gap(box.to) : gap(mark.to)).includes("\t");
+    depth++;
+    item ??= node;
   }
-  return false;
+  if (item === null) return { depth, item };
+  const mark = item.getChild("ListMark");
+  const box = item.getChild("Task")?.getChild("TaskMarker") ?? null;
+  const written = mark ? state.sliceDoc(mark.from, mark.to) : "";
+  return { depth, item, mark, box, kind: /^\d+([.)])$/.exec(written)?.[1] ?? written, numbered: item.parent?.name === "OrderedList" };
+};
+
+// The blanks after a position, to the end of its line.
+const blanksAfter = (state, from) => /^[ \t]*/.exec(state.sliceDoc(from, state.doc.lineAt(from).to))[0];
+
+// What separates an item's mark from its text: the blanks after the mark,
+// and after its task's box.
+const separatorOf = (state, found) =>
+  found.box ? state.sliceDoc(found.mark.to, found.box.from) + blanksAfter(state, found.box.to) : blanksAfter(state, found.mark.to);
+
+// The library's continuation of a list or a quotation, as the
+// transaction it would make, not made; null when it makes none, or throws.
+const libraryContinuation = (state) => {
+  let made = null;
+  try {
+    if (!continueMarkup({ state, dispatch: (tr) => (made = tr) })) return null;
+  } catch {
+    return null;
+  }
+  return made;
+};
+
+// Whether a transaction of the library's is what Enter must make, judged
+// by the syntax tree before it and after it, so that a gap of the
+// library's ends in a plain line break rather than in a broken item:
+//
+// - leaving (no line added): the cursor's line is one item or one
+//   quotation less deep than it was;
+// - going on (one line added): the new line is in as many quotations, and
+//   holds either their marks and blanks alone (the next line of a
+//   paragraph or a quotation), or a new item the tree reads, as deep as
+//   the cursor's was, its mark of the same kind, blanks after it that
+//   hold no tab, and a box if the item above has one.
+//
+// The library's gaps known at @codemirror/lang-markdown 6.5.2, which this
+// check and the corrections in enterMarkup turn into a line break or the
+// right continuation: a tab after a mark ("1.\tone" goes on as "2." with
+// nothing after it, "- [ ]\tone" as "- " without its box); a numbered
+// task (its box neither kept on the next item nor read when the item is
+// empty); a number read in a window of ten characters, which throws on an
+// indented number of nine digits (" 123456789. text"); and a number one
+// past nine digits, which is no mark ("999999999." goes on as
+// "1000000000."). A later version of the library may close some of them:
+// the cases of Test.Browser.Editor's table say which still hold.
+const continuationRight = (state, tr) => {
+  const head = state.selection.main.head;
+  const after = tr.state;
+  const newHead = after.selection.main.head;
+  const line = state.doc.lineAt(head);
+  const newLine = after.doc.lineAt(newHead);
+  ensureSyntaxTree(after, Math.min(after.doc.length, newLine.to + 1), 200);
+  const was = itemAt(state, head);
+  const is = itemAt(after, newHead);
+  const quotes = quoteMarksOn(state, line).length;
+  const newMarks = quoteMarksOn(after, newLine);
+  if (after.doc.lines === state.doc.lines) return is.depth < was.depth || newMarks.length < quotes;
+  if (after.doc.lines !== state.doc.lines + 1 || newMarks.length !== quotes) return false;
+  const prefix = Array.from(after.sliceDoc(newLine.from, newHead), (c, i) => (newMarks.includes(i) ? " " : c)).join("");
+  if (/^[ \t]*$/.test(prefix)) return true;
+  if (is.item === null || !is.mark || after.doc.lineAt(is.mark.from).number !== newLine.number) return false;
+  if (is.depth !== was.depth || is.kind !== was.kind) return false;
+  const separator = separatorOf(after, is);
+  return separator.length > 0 && !separator.includes("\t") && !(was.box && !is.box);
 };
 
 // What Enter makes of a state's single cursor, as a transaction of that
 // state, or null for a plain line break: in code, fenced or indented, a
 // line break and nothing more (the library leaves fenced code alone, but
 // continues the quotation or the list an indented code block is in); on
-// an item with a tab after its mark, a line break too (tabAfterMark);
-// elsewhere the wiki's leaving of a quotation, or the library's
-// continuation of a list or a quotation.
+// an item with a tab after its mark, a line break too; elsewhere the
+// wiki's leaving of a quotation, or the library's continuation of a list
+// or a quotation where continuationRight takes it. Two of its gaps are
+// mended: an empty numbered task is left as an empty item is (the
+// library, asked about the item without its box), and a numbered task's
+// next item gets its box.
 const enterMarkup = (state) => {
   const head = state.selection.main.head;
-  if (within(state, head, /^(FencedCode|CodeBlock)$/) || tabAfterMark(state, head)) return null;
+  const found = itemAt(state, head);
+  if (within(state, head, /^(FencedCode|CodeBlock)$/) || (found.mark && separatorOf(state, found).includes("\t"))) return null;
   let made = null;
-  const capture = { state, dispatch: (tr) => (made = tr) };
-  return leaveQuotation(capture) || continueMarkup(capture) ? made : null;
+  if (leaveQuotation({ state, dispatch: (tr) => (made = tr) })) return made;
+  const line = state.doc.lineAt(head);
+  if (found.box && found.numbered && head === line.to && /^[ \t]*$/.test(state.sliceDoc(found.box.to, line.to))) {
+    const unboxed = state.update({ changes: { from: found.mark.to, to: line.to, insert: " " }, selection: EditorSelection.cursor(found.mark.to + 1) });
+    const left = libraryContinuation(unboxed.state);
+    if (left === null || !continuationRight(unboxed.state, left)) return null;
+    return state.update({ changes: unboxed.changes.compose(left.changes), selection: left.selection, scrollIntoView: true, userEvent: "input" });
+  }
+  const tr = libraryContinuation(state);
+  if (tr === null) return null;
+  if (continuationRight(state, tr)) return tr;
+  if (found.box && found.numbered) {
+    const at = tr.state.selection.main.head;
+    const boxed = tr.state.update({ changes: { from: at, insert: "[ ] " }, selection: EditorSelection.cursor(at + 4) });
+    if (continuationRight(state, boxed)) {
+      return state.update({ changes: tr.changes.compose(boxed.changes), selection: boxed.selection, scrollIntoView: true, userEvent: "input" });
+    }
+  }
+  return null;
+};
+
+// enterMarkup, or null for a line break if anything in it throws: Enter
+// never throws and never does nothing.
+const enterMarkupOrNull = (state) => {
+  try {
+    return enterMarkup(state);
+  } catch {
+    return null;
+  }
 };
 
 // The editor's Enter in the master: enterMarkup, or a line break.
@@ -1575,7 +1669,7 @@ const enterMarkup = (state) => {
 const markupEnter = {
   key: "Enter",
   run: (view) => {
-    const tr = enterMarkup(view.state);
+    const tr = enterMarkupOrNull(view.state);
     if (tr === null) return insertNewline(view);
     view.dispatch(tr);
     return true;
@@ -2460,7 +2554,7 @@ export function attachRow(masterHost, rowHost, key, focus) {
       }
       const at = masterView.state.update({ selection: EditorSelection.range(now.from + main.anchor, now.from + main.head) }).state;
       ensureSyntaxTree(at, now.from + main.head, 200);
-      const tr = enterMarkup(at);
+      const tr = enterMarkupOrNull(at);
       if (tr === null) return insertNewline(rowView);
       const changes = [];
       let inside = true;

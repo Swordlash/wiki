@@ -6,7 +6,8 @@
 // mentions, emoji and the wiki's own markers, with the places of a
 // snippet to fill, and the marks of the page's problems: no line numbers,
 // no keys of its own but moving, selecting, deleting, undoing, choosing a
-// completion and moving between its places.
+// completion, moving between its places, and Enter continuing a list or a
+// quotation (markupEnter).
 //
 // web/bundle.sh bundles this into islands/editor.js, which islands.js
 // imports the first time the editor asks for it (wikiIslands.attachEditor),
@@ -135,9 +136,11 @@ import {
   unfoldEffect,
 } from "@codemirror/language";
 // The language alone, not markdown(): that brings HTML's, CSS's and
-// JavaScript's parsers for HTML in a page, list continuation on Enter and
-// tag completion, none of which the editor wants.
-import { markdownLanguage } from "@codemirror/lang-markdown";
+// JavaScript's parsers for HTML in a page and tag completion, which the
+// editor does not want, and its own keys. Of those keys the editor takes
+// only the continuation of lists and quotations on Enter, configured (see
+// markupEnter below).
+import { insertNewlineContinueMarkupCommand, markdownLanguage } from "@codemirror/lang-markdown";
 import { tagHighlighter, tags } from "@lezer/highlight";
 import { forEachDiagnostic, lintGutter, nextDiagnostic, setDiagnostics, setDiagnosticsEffect } from "@codemirror/lint";
 import { SearchQuery } from "@codemirror/search";
@@ -1372,8 +1375,8 @@ const completions = (host) => {
     if (!active) shownAt.delete(update.view);
     else if (!shownAt.has(update.view)) shownAt.set(update.view, Date.now());
   });
-  // Enter chooses as the list says; when it chooses nothing, it is a new
-  // line.
+  // Enter chooses as the list says; when it chooses nothing, it is the
+  // editor's Enter (markupEnter): a new line, or the next item of a list.
   const enter = (view) => {
     const option = shown(view.state);
     if (option?.enter?.after === undefined) return acceptCompletion(view);
@@ -1462,6 +1465,68 @@ const completions = (host) => {
 // first (completions, above).
 const toolbarKeys = new Set(["Ctrl-b", "Ctrl-e", "Ctrl-k"]);
 const textKeys = standardKeymap.filter((binding) => !toolbarKeys.has(binding.mac) && binding.key !== "Escape");
+
+// Enter in a list or a quotation (WP5.124 (a) of docs/PLAN.md, #187).
+// Enter at the end of a list's item starts the next item at the same
+// indentation (a task's with an empty box, a numbered list's with the
+// next number, the numbers after it moved on), and at the end of a
+// quoted line or a box's line the next line of the quotation. Enter on
+// an item with nothing in it takes its marker away: a nested item goes
+// up to the list it is in, and an item at the top level becomes an empty
+// line. That is @codemirror/lang-markdown's command. With nonTightLists
+// false it does so on the second item too: by default an empty second
+// item of a list without blank lines is not taken away, the command puts
+// a blank line before it instead.
+const continueMarkup = insertNewlineContinueMarkupCommand({ nonTightLists: false });
+
+// An empty line of a quotation: its ">" marks and nothing else. The
+// first group is what comes before the last mark: indentation, and the
+// marks of the quotations around this one.
+const emptyQuoteLine = /^([ \t]*(?:>[ \t]?)*)>[ \t]*$/;
+
+// Whether a position is in a quotation (a box is one) and not in code or
+// HTML inside it, where a ">" at a line's start is text.
+const inQuotation = (state, pos) => {
+  for (let node = syntaxTree(state).resolveInner(pos, -1); node; node = node.parent) {
+    if (/^(FencedCode|CodeBlock|HTMLBlock|CommentBlock)$/.test(node.name)) return false;
+    if (node.name === "Blockquote") return true;
+  }
+  return false;
+};
+
+// Enter at the end of an empty line of a quotation leaves the quotation:
+// the line's last ">" goes, and the cursor stays on the line. A quotation
+// in another (> >) goes up to that one, whose "> " stays; one at the top
+// level, or in a list's item, leaves an empty line, with no indentation
+// left on it. The library leaves a quotation only on the second empty
+// line in a row, so that an empty line inside it makes a new paragraph;
+// in the wiki one empty line is enough, as for a list (the owner, #187).
+// A new paragraph in a box is Shift+Enter on its empty "> " line, which
+// keeps that line, and "> " typed on the next.
+const leaveQuotation = ({ state, dispatch }) => {
+  let declined = false;
+  const changes = state.changeByRange((range) => {
+    const line = state.doc.lineAt(range.head);
+    const empty = range.empty && range.head === line.to ? emptyQuoteLine.exec(line.text) : null;
+    if (empty === null || !inQuotation(state, range.head)) {
+      declined = true;
+      return { range };
+    }
+    const kept = empty[1].includes(">") ? `${empty[1].trimEnd()} ` : "";
+    return { range: EditorSelection.cursor(line.from + kept.length), changes: { from: line.from, to: line.to, insert: kept } };
+  });
+  if (declined) return false;
+  dispatch(state.update(changes, { scrollIntoView: true, userEvent: "input" }));
+  return true;
+};
+
+// The editor's Enter, in the master and in a row of the slide mode: the
+// wiki's leaving of a quotation, the library's continuation, or else a
+// line break. Shift+Enter is always a line break and nothing more. Both
+// come after the completion's keys, so that Enter chooses from an open
+// list first; in code, and anywhere outside a list or a quotation, Enter
+// is a line break.
+const markupEnter = { key: "Enter", run: (view) => leaveQuotation(view) || continueMarkup(view) || insertNewline(view), shift: insertNewline };
 
 // The editors attached, so that one whose host has left the page (the
 // editor closed without its finalizer reaching it) is let go of: a view
@@ -2343,7 +2408,7 @@ export function attachRow(masterHost, rowHost, key, focus) {
         rowMatches,
         keptInRow(masterView, key),
         keymap.of([
-          { key: "Enter", run: insertNewline, shift: insertNewline },
+          markupEnter,
           ...keys,
           { key: "Backspace", run: acrossEdge(false) },
           { key: "Delete", run: acrossEdge(true) },
@@ -2823,11 +2888,12 @@ export function attach(textarea, host, original, codeTokens) {
       titled ? titleLine : [],
       changes.extensions,
       masterCompletion.of(completion.extension),
-      // Enter is a line break and nothing more, as in the textarea, except
-      // while the completion's list is open, when it may choose (the
-      // completion's keys come first); Tab and the toolbar's shortcuts are
-      // the component's (the form's keydown).
-      keymap.of([{ key: "Enter", run: insertNewline, shift: insertNewline }, ...historyKeymap, ...textKeys, ...foldKeys]),
+      // Enter continues a list or a quotation (markupEnter), except while
+      // the completion's list is open, when it may choose (the
+      // completion's keys come first); Shift+Enter is a line break, as
+      // Enter is in the textarea before CodeMirror has loaded. Tab and the
+      // toolbar's shortcuts are the component's (the form's keydown).
+      keymap.of([markupEnter, ...historyKeymap, ...textKeys, ...foldKeys]),
       EditorView.lineWrapping,
       new LanguageSupport(wikiMarkdown),
       syntaxHighlighting(highlighter),

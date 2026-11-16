@@ -663,6 +663,20 @@ spec m = do
     typeText row " too."
     markdown ui `shouldReturn` T.replace "First." "First. See [[Notes on Haskell]] too." deck
 
+  -- The cases of Enter in a list and a box are Test.Browser.Editor's, in
+  -- the raw Markdown; a row binds the same Enter.
+  it "continues a list on Enter in a row, and leaves it on Enter on an empty item" $ runPage $ do
+    (ui, _) <- openDeck deck
+    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    rowSelect 0 14 14
+    row <- openRowContent ui
+    typeText row "\n\n- one"
+    press "Enter"
+    typeText row "two"
+    traverse_ press ["Enter", "Enter", "Enter"]
+    typeText row "After."
+    markdown ui `shouldReturn` T.replace "By me." "By me.\n\n- one\n- two\n\nAfter." deck
+
   it "scrolls to the cursor of the row an undo takes it to, the editor's own text being hidden" $ runPage $ do
     let long = T.intercalate "\n\n" ("# Long" : concat [["## S" <> show i, T.intercalate "\n\n" (replicate 8 "A paragraph of its own.")] | i <- [1 .. 30 :: Int]])
     (ui, _) <- openDeck long

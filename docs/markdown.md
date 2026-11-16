@@ -54,6 +54,8 @@ A page with three headings or more has a "Contents" panel beside it (above it on
 1. Numbered lists use `1.` or `1)`.
 2. They may start from any number.
 
+In the editor, Enter at the end of an item starts the next one at the same indentation: `- ` after a bulleted item, the next number after a numbered one (the numbers below it move on), `- [ ] ` after a task. Enter on an item with nothing in it takes its marker away: a nested item goes up to the list around it, and an item at the top level becomes an empty line, which ends the list. Shift+Enter is a line break and nothing more, anywhere.
+
 Task lists show a checkbox, and a done task is struck through:
 
 - [x] write the page
@@ -368,6 +370,7 @@ The five are `NOTE`, `TIP`, `IMPORTANT`, `WARNING` and `CAUTION`. Any other word
 An administrator can define a kind, in the administration's Editor section, under "Boxes": the title its boxes show, a colour of the theme (blue, green, purple, amber, red, teal, orange, pink or grey) or a custom one picked with a colour picker, and an icon (info, lightbulb, pencil, question, check, star, book, flag, or none). The theme's colours change with the light and the dark scheme; a custom colour is the same in both. A kind nobody defined is a plain box. The five keep their own look and cannot be defined. In the editor, the toolbar's **Box** button lists the five and the kinds defined, and writes the first line of the box chosen (around the lines selected, if any); for an administrator it ends with **New kind…**, which opens a dialog with the same form as the administration's, and writes a box of the kind saved there.
 
 In the editor, `[!` on the first line of a quotation, after its `>`, opens a list of the kinds of box, the five and those defined: `> [!wa` and Enter writes `> [!WARNING]` and the box's first line, `> `, with the cursor there.
+In the editor, Enter at the end of a line of a box, or of any quotation, starts its next line with `> `. Enter on a line with nothing after its `> ` takes the `>` away and leaves the box, or goes up to the quotation around it in a quotation of a quotation. For a second paragraph in a box, press Shift+Enter on that empty line, which keeps it, and type `> ` on the next.
 
 Boxes are numbered, each kind on its own: a page's tips are Tip 1, Tip 2, and its first exercise is Exercise 1. A space chooses how, in its settings, under "Numbers of boxes":
 

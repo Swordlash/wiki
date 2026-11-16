@@ -19,7 +19,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (clickButton, slugs, startChanged, startWith)
-import Test.Browser.Text (clearBody, completing, editorSelection, editorText, markdown, mathIn, setMarkdown, utf16Length)
+import Test.Browser.Text (clearBody, completing, editorSelection, editorText, markdown, mathIn, selectText, setMarkdown, utf16Length)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (..))
 import Wiki.App.Assistant (MonadAssistant)
@@ -99,7 +99,9 @@ spec m = do
     notice `shouldHaveText` ""
     clearBody ui
     typeText text "- a list"
-    press "Enter"
+    -- A line break and nothing more: Enter would start the list's next
+    -- item.
+    press "Shift+Enter"
     press "Tab"
     typeText text "- nested"
     markdown ui `shouldReturn` "# Hello, world\n\n- a list\n  - nested"
@@ -114,7 +116,11 @@ spec m = do
     saved.body `shouldBe` "# Hello, world\n\n- a list\n  - nested"
     -- Still the same text, with the cursor where it was.
     editorText ui >>= (`shouldBeSameElement` text)
-    typeText text "\n- more"
+    -- Enter on the nested item starts another one, and Enter again on
+    -- that empty item goes up to the outer list.
+    press "Enter"
+    press "Enter"
+    typeText text "more"
     -- The notice goes by itself.
     eventuallyWithin 6000 (notice `shouldHaveText` "")
     -- A second save is made against the first: no conflict.
@@ -494,6 +500,21 @@ spec m = do
     markdown ui `shouldReturn` "# Hello, world\n\n- one\n- two\n- three"
     find ui ".editor-toolbar button[aria-label='Bulleted list']" >>= click
     markdown ui `shouldReturn` "# Hello, world\n\none\ntwo\nthree"
+
+  -- Each case of 'enterCases' on the same page: its text under the title
+  -- line, the cursor at its mark, its keys pressed, and the text and the
+  -- cursor after them.
+  it "continues a list or a box on Enter, goes up a level and out on an empty line, and breaks the line alone on Shift+Enter" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    _ <- editorText ui
+    for_ enterCases $ \(name, before, keys, after) -> do
+      let (text, at) = unmarked before
+      setMarkdown ui (titleLines <> text)
+      selectText ui (T.length titleLines + at) (T.length titleLines + at)
+      traverse_ press keys
+      now <- T.drop (T.length titleLines) <$> markdown ui
+      (cursorAt, _) <- editorSelection ui
+      (name, marked now (cursorAt - T.length titleLines)) `shouldBe` (name, after)
 
   it "leaves Ctrl+B's placeholder selected, for the typing to replace" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
@@ -1087,6 +1108,49 @@ chooseFile selector name mediaType base64 = evaluate =<< js_choose_file (toJSTex
 -- | A PNG of one pixel, as base64.
 dotPng :: Text
 dotPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+-- | Enter in a list and in a box (WP5.124 (a) of docs/PLAN.md, #187), one
+-- case a line: its name, the text with the cursor at @‸@, the keys
+-- pressed, and the text with the cursor after them. The text goes under
+-- the page's title line ('titleLines'). Offsets count UTF-16 units, so
+-- the texts are ASCII.
+enterCases :: [(Text, Text, [Text], Text)]
+enterCases =
+  [ ("an item", "- one‸", ["Enter"], "- one\n- ‸")
+  , ("an empty second item leaves the list, with no blank line put in", "- one\n- ‸", ["Enter"], "- one\n‸")
+  , ("an item, then out of the list", "- one\n- two‸", ["Enter", "Enter"], "- one\n- two\n‸")
+  , ("a nested item", "- one\n  - two‸", ["Enter"], "- one\n  - two\n  - ‸")
+  , ("an empty nested item goes up one level", "- one\n  - two\n  - ‸", ["Enter"], "- one\n  - two\n- ‸")
+  , ("a nested item, up and out", "- one\n  - two‸", ["Enter", "Enter", "Enter"], "- one\n  - two\n‸")
+  , ("a task, with an empty box", "- [x] done‸", ["Enter"], "- [x] done\n- [ ] ‸")
+  , ("a numbered list, renumbered", "1. a‸\n2. b", ["Enter"], "1. a\n2. ‸\n3. b")
+  , ("a list in a quotation", "> - a‸", ["Enter"], "> - a\n> - ‸")
+  , ("a list in a quotation, out of the list, then out of the quotation", "> - a‸", ["Enter", "Enter", "Enter"], "> - a\n‸")
+  , ("a box's marker", "> [!NOTE]‸", ["Enter"], "> [!NOTE]\n> ‸")
+  , ("a box's text", "> [!NOTE]\n> text‸", ["Enter"], "> [!NOTE]\n> text\n> ‸")
+  , ("an empty line leaves the box", "> [!NOTE]\n> text‸", ["Enter", "Enter"], "> [!NOTE]\n> text\n‸")
+  , ("a quotation in another goes up one level", "> > q‸", ["Enter", "Enter"], "> > q\n> ‸")
+  , ("a quotation in another, up and out", "> > q‸", ["Enter", "Enter", "Enter"], "> > q\n‸")
+  , ("a quotation in a list's item leaves no indentation", "- a\n  > q‸", ["Enter", "Enter"], "- a\n  > q\n‸")
+  , ("a code block", "```\n- a‸\n```", ["Enter"], "```\n- a\n‸\n```")
+  , ("a quotation's code block", "> ```\n> ‸", ["Enter"], "> ```\n> \n‸")
+  , ("a paragraph", "text‸", ["Enter"], "text\n‸")
+  , ("Shift+Enter in a list", "- one‸", ["Shift+Enter"], "- one\n‸")
+  , ("Shift+Enter on a box's empty line keeps it", "> [!NOTE]\n> text\n> ‸", ["Shift+Enter"], "> [!NOTE]\n> text\n> \n‸")
+  ]
+
+-- | What 'enterCases' write under: the page's title line, which the editor
+-- keeps, and a blank line.
+titleLines :: Text
+titleLines = "# Hello, world\n\n"
+
+-- | A text with the cursor's mark, @‸@, taken out, and where the mark was.
+unmarked :: Text -> (Text, Int)
+unmarked t = let (before, after) = T.breakOn "‸" t in (before <> T.drop 1 after, T.length before)
+
+-- | A text with the cursor's mark, @‸@, put in at a position.
+marked :: Text -> Int -> Text
+marked t at = T.take at t <> "‸" <> T.drop at t
 
 -- | A length in CSS pixels, as computed styles give it ("14.4px").
 readPx :: Text -> Double

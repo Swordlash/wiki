@@ -187,14 +187,15 @@ spec m = do
     closed ui
     typeText text "Fix the crash"
     markdown ui `shouldReturn` "# Hello, world\n\n- :bug: Fix the crash"
-    -- Indented, in a nested list.
-    press "Enter"
+    -- Indented, in a nested list. Shift+Enter is a line break alone, where
+    -- Enter would start the list's next item.
+    press "Shift+Enter"
     typeText text "  -:tad"
     _ <- listShown ui
     press "Tab"
     markdown ui `shouldReturn` "# Hello, world\n\n- :bug: Fix the crash\n  - :tada: "
     -- Escape escapes its colon.
-    press "Enter"
+    press "Shift+Enter"
     typeText text "-:ta"
     _ <- listShown ui
     press "Escape"

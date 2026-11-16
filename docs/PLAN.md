@@ -2030,6 +2030,16 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   Left out: completion after `{` (decision 65 named it; the issue does
   not); the textarea before CodeMirror loads and the comments' boxes
   get none of this.
+  **For the plugins after it (the owner, 2026-11-16).** A plugin may
+  give or extend completion: its candidates are shown in the same
+  list, each with where it comes from in grey ("xxx", then "from
+  plugin yyy"). So the framework of (b) is built for it from the
+  start, at no cost now: a candidate carries an optional origin, shown
+  as CodeMirror's `detail`, and the candidates are gathered from a
+  list of sources (the wiki's own today), so that a plugin's
+  `completion` contribution (#186's table: a trigger and the letters
+  typed give candidates) is one more source and not a change of the
+  editor.
 - **WP5.122 Checks in place of conventions (decision 82; for the
   order above).** (1) A script in CI with stored ceilings for the
   browser suite's `eventually`, `eventuallyWithin`, `find` and

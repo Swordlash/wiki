@@ -853,7 +853,9 @@ box lineStart marker = Candidate {label = written, skeleton = [Literal (written 
 -- trigger and what was typed after it) is so many characters long, or the
 -- reader moved in the list; before that, Enter is the editor's own, a new
 -- line. The emoji's list waits so, for two letters after its colon
--- (@web/src/editor.js@); the wiki's own Markdown chooses at once.
+-- (@web/src/editor.js@), and the @/@ menu for one letter after its @/@,
+-- so that a @/@ at the end of a line of prose and Enter stay a new line;
+-- the wiki's other lists choose at once.
 data EnterPolicy = EnterChooses | EnterChoosesAfter Int
   deriving stock (Eq, Show)
 
@@ -894,7 +896,7 @@ complete sources readAt at = do
       wanted = Wanted {at, typed, closable, writes}
       found = concatMap ($ wanted) sources
   guard (not (null found))
-  Just Completion {from = typed.from, through = typed.through, candidates = found, enter = EnterChooses, escape = if typed.trigger == SlashMenu then EscapeDismisses else EscapeCloses}
+  Just Completion {from = typed.from, through = typed.through, candidates = found, enter = if typed.trigger == SlashMenu then EnterChoosesAfter 2 else EnterChooses, escape = if typed.trigger == SlashMenu then EscapeDismisses else EscapeCloses}
   where
     isEnd = \case
       Ends _ -> True

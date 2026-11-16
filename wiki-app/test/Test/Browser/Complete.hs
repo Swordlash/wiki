@@ -175,11 +175,17 @@ spec m = do
     press "Control+z"
     eventually $ markdown ui `shouldReturn` typed
 
-  it "closes the / menu on Escape, and the same / does not open it again as letters are typed" $ runPage $ do
+  it "takes Enter after a / alone as a new line, closes the / menu on Escape, and the same / does not open it again as letters are typed" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     setMarkdown ui titleLines
     selectText ui (T.length titleLines) (T.length titleLines)
+    -- A / at the end of a line of prose, the list shown: Enter is still a
+    -- new line, and writes nothing of the list's.
+    typeText text "Either /"
+    listReady ui
+    press "Enter"
+    markdown ui `shouldReturn` titleLines <> "Either /\n"
     typeText text "Some /ta"
     listReady ui
     press "Escape"
@@ -191,7 +197,7 @@ spec m = do
     press "Enter"
     typeText text "/ta"
     eventually $ (take 1 <$> labels ui) `shouldReturn` ["Table"]
-    markdown ui `shouldReturn` titleLines <> "Some /tab\n/ta"
+    markdown ui `shouldReturn` titleLines <> "Either /\nSome /tab\n/ta"
 
   it "opens the dialog of a link to a page from the / menu, the / and its letters gone" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor

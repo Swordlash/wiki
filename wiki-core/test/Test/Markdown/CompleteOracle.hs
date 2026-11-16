@@ -98,6 +98,8 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
       (.writing) <$> slashCandidate "/‸" Edit.Mermaid `shouldBe` Just (LineAsText "/")
     it "closes with Escape so that the same / does not open it again" $
       (.escape) <$> listOf' "/ta‸" `shouldBe` Just EscapeDismisses
+    it "chooses with Enter only once a letter follows the /, or the reader moved in the list: a / alone at a line's end and Enter is a new line" $
+      (.enter) <$> listOf' "Either /‸" `shouldBe` Just (EnterChoosesAfter 2)
 
 ----------------------------------------------------------------------
 -- The completion, and the parser's reading

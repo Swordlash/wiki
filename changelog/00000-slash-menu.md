@@ -20,7 +20,9 @@ title: Typing / in the editor offers what the toolbar writes
   ```
 
   with "Column 1" selected; Tab goes on to "Column 2", then "Column 3".
-  "Link to a page" and "Image or attachment" open their dialogs. Escape
+  "Link to a page" and "Image or attachment" open their dialogs. A `/`
+  alone at the end of a line and Enter stay a new line: Enter chooses
+  once a letter follows the `/`, or the arrows moved in the list. Escape
   closes the list and leaves the `/` as typed. The list opens in a
   paragraph, a list's item, a quotation or a box, and not with text after
   the cursor, in a heading, a table, code, math, a link or a word such as

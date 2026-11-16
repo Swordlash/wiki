@@ -5,18 +5,38 @@
 // browser's own shortcuts (Ctrl+K focuses its address bar's search).
 
 let wikiTestKeyPrevented = null;
+// The last key that reached the window since the watch began, "" for none:
+// a key the editor stops on its way (a completion's list, a snippet's
+// place) never does.
+let wikiTestLastKey = "";
+
+// Whether this copy's listener is on the window. Each test module that
+// declares this file gets a copy of its own, with its own
+// wikiTestKeyPrevented, so the mark is the copy's too: a mark on
+// globalThis kept a second module's listener off once the first had
+// watched, and that module then read null (Emoji's toolbar menu failed
+// after Editor's specs, in one run).
+let wikiTestWatchingKeys = false;
 
 function wiki_test_watch_keys() {
   wikiTestKeyPrevented = null;
-  if (globalThis.wikiTestWatchingKeys) return;
-  globalThis.wikiTestWatchingKeys = true;
+  wikiTestLastKey = "";
+  if (wikiTestWatchingKeys) return;
+  wikiTestWatchingKeys = true;
   window.addEventListener("keydown", (event) => {
-    if (!["Control", "Meta", "Shift", "Alt"].includes(event.key)) wikiTestKeyPrevented = event.defaultPrevented;
+    if (!["Control", "Meta", "Shift", "Alt"].includes(event.key)) {
+      wikiTestKeyPrevented = event.defaultPrevented;
+      wikiTestLastKey = event.key;
+    }
   });
 }
 
 function wiki_test_last_key_prevented() {
   return wikiTestKeyPrevented === true;
+}
+
+function wiki_test_last_key() {
+  return wikiTestLastKey;
 }
 
 // Dispatch a keydown of this key to the page's body, as a key pressed with

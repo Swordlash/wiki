@@ -103,8 +103,10 @@ module Wiki.Core.Markdown.Ast
   , allInlines
   , closingMarker
   , markerAt
+  , holdsBlocks
   , parseWithMarkers
   , parseWithAllMarkers
+  , parseWithStartsAndMarkers
   , parseWithLines
   , parseWithLinesAndMarkers
   , parseWithSpans
@@ -491,6 +493,20 @@ parseWithAllMarkers source =
           , sortOn (\s -> (s.lineAt, s.columnAt)) (ordNub ss)
           , WrittenIds {headings = writtenHeadings read', taken = concatMap writtenIds read'}
           )
+  )
+    <$> parsed source
+
+-- | Parse a page's Markdown, with each top-level block and the line it
+-- starts on, the markers of its boxes and its marker lines: what the
+-- editor's completion asks of a line ("Wiki.Core.Markdown.Complete"), in
+-- one parse.
+parseWithStartsAndMarkers :: Text -> Either ParseError ([(Maybe Int, Block)], [BoxMarker], [MarkerLine])
+parseWithStartsAndMarkers source =
+  ( \(Blocks bs (Markers ms ss _) _) ->
+      ( map (first (fmap fst)) (finishedWith (toList bs))
+      , sortOn (\m -> (m.markerLine, m.markerColumn)) (ordNub ms)
+      , sortOn (\s -> (s.lineAt, s.columnAt)) (ordNub ss)
+      )
   )
     <$> parsed source
 

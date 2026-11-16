@@ -43,6 +43,7 @@ module Wiki.Core.Markdown.Box
   , boxStyle
   , definedKind
   , boxLabel
+  , boxChoices
   , maxLabelLength
 
     -- * Numbers
@@ -125,6 +126,15 @@ kindTitle :: Text -> Text
 kindTitle name = case T.uncons (T.replace "-" " " name) of
   Just (c, rest) -> T.cons (toUpper c) rest
   Nothing -> name
+
+-- | The kinds of box the editor offers (its toolbar's "Box" menu, and the
+-- completion after @[!@), each as its marker writes it (@TIP@) and as its
+-- boxes are titled: GitHub's five, then the kinds the administration
+-- defined, in the order they were defined.
+boxChoices :: [BoxKind] -> [(Text, Text)]
+boxChoices defined =
+  [(T.toUpper (alertKindName k), kindTitle (alertKindName k)) | k <- builtInKinds]
+    <> [(T.toUpper k.name, k.label) | k <- defined]
 
 ----------------------------------------------------------------------
 -- Kinds an administrator defines

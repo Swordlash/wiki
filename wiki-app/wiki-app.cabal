@@ -114,6 +114,7 @@ library
       Wiki.App.Shell
       Wiki.App.SlideFit
       Wiki.App.Editor.Browser
+      Wiki.App.Editor.Complete
       Wiki.App.Editor.Problems
       Wiki.App.Vault
       Wiki.App.View.Access
@@ -361,6 +362,7 @@ test-suite wiki-app-test
         Test.Passwords
         Test.Policy
         Test.Problems
+        Test.Complete
         Test.Readme
         Test.Rect
         Test.Route
@@ -427,6 +429,7 @@ test-suite wiki-app-browser-test
       Test.Browser.DeckViewer
       Test.Browser.Editor
       Test.Browser.EditorSearch
+      Test.Browser.Complete
       Test.Browser.Emoji
       Test.Browser.Entries
       Test.Browser.Export

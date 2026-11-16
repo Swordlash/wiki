@@ -3,9 +3,10 @@
 // larger, their markers kept but dimmed; code in its own background, fenced
 // code highlighted by highlight.js as the page will be; links, quotes and
 // lists set off), and nothing else of CodeMirror's but the completion of
-// mentions and emoji and the marks of the page's problems: no line numbers, no keys of
-// its own but moving, selecting, deleting, undoing and choosing a
-// completion.
+// mentions, emoji and the wiki's own markers, with the places of a
+// snippet to fill, and the marks of the page's problems: no line numbers,
+// no keys of its own but moving, selecting, deleting, undoing, choosing a
+// completion and moving between its places.
 //
 // web/bundle.sh bundles this into islands/editor.js, which islands.js
 // imports the first time the editor asks for it (wikiIslands.attachEditor),
@@ -54,6 +55,13 @@
 //   Haskell (Wiki.Core.Markdown.Emoji), as the users do: a "wiki-emoji"
 //   event asks ({id, letters}), and the component answers through
 //   wikiEditor.emojied(id, found).
+// - [[! and [[/ at the start of a line, and [! on a quotation's first
+//   line, open a list of the wiki's own markers and kinds of box in the
+//   same completion (see the completion of the wiki's own Markdown below).
+//   What opens it, what it offers and what an entry writes (a snippet,
+//   with places to fill) are Haskell's (Wiki.Core.Markdown.Complete): a
+//   "wiki-complete" event asks ({id, line, before, nodes}), and the
+//   component answers through wikiEditor.completed(id, found).
 // - the page's problems (WP5.65 of docs/PLAN.md: a formula, a diagram or a
 //   picture that cannot be drawn, a broken spoiler or box marker) are
 //   diagnostics of @codemirror/lint, set by the component
@@ -93,12 +101,17 @@
 import {
   acceptCompletion,
   autocompletion,
+  clearSnippet,
   closeCompletion,
   completionKeymap,
   completionStatus,
   currentCompletions,
   insertCompletionText,
+  nextSnippetField,
   pickedCompletion,
+  prevSnippetField,
+  snippet,
+  snippetKeymap,
 } from "@codemirror/autocomplete";
 import { Annotation, ChangeSet, CharCategory, Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField, Transaction, findClusterBreak } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, keymap } from "@codemirror/view";
@@ -879,11 +892,16 @@ let questions = 0;
 // answer until it comes, even after answerTime. The library waits a
 // moment after the last key before it asks a source (its
 // activateOnTypingDelay), so a name typed quickly is asked about once.
-const asker = (host, eventName) => {
+//
+// The list of the wiki's own Markdown asks with a detail of its own, the
+// cursor's place ({id, line, before, nodes}), by a key made of it; its
+// answers are not kept (`keep` false), since the same line may be answered
+// otherwise once the text above it has changed.
+const asker = (host, eventName, keep = true) => {
   const answers = new Map();
   const asking = new Map();
   const waiting = new Map();
-  const ask = (letters) => {
+  const ask = (letters, detail = { letters }) => {
     if (answers.has(letters)) return Promise.resolve(answers.get(letters));
     let question = asking.get(letters);
     if (question === undefined) {
@@ -897,12 +915,12 @@ const asker = (host, eventName) => {
           clearTimeout(timer);
           waiting.delete(id);
           if (asking.get(letters) === question) asking.delete(letters);
-          if (found !== null) answers.set(letters, found);
+          if (found !== null && keep) answers.set(letters, found);
           resolve(found);
         });
       });
       asking.set(letters, question);
-      host.dispatchEvent(new CustomEvent(eventName, { detail: { id, letters } }));
+      host.dispatchEvent(new CustomEvent(eventName, { detail: { id, ...detail } }));
     }
     return question;
   };
@@ -1029,9 +1047,6 @@ const emojiTyped = (state, pos, at = { state, pos, tree: syntaxTree(state) }) =>
   return { from: line.from + colon.index, letters: colon[0].slice(1), bullet: false };
 };
 
-// Whether the list shown is the emoji's: its entries carry their emoji.
-const emojiShown = (state) => completionStatus(state) === "active" && currentCompletions(state)[0]?.emoji !== undefined;
-
 // The completion source of emoji, asking the component through `names`;
 // `whole` says where the context is read (wholeAt).
 const emojiSource = (names, whole) => {
@@ -1041,6 +1056,11 @@ const emojiSource = (names, whole) => {
     const next = view.state.sliceDoc(to, to + 1);
     const text = bullet ? `- :${name}:${next === " " || next === "\t" ? "" : " "}` : `:${name}:`;
     view.dispatch({ ...insertCompletionText(view.state, text, from, to), annotations: pickedCompletion.of(completion) });
+  };
+  // Escape escapes the colon (see above): a backslash before it.
+  const escapeColon = (state, head, view) => {
+    const typed = emojiTyped(state, head, whole({ state, pos: head, view }));
+    return typed === null ? null : { from: typed.bullet ? typed.from + 1 : typed.from, insert: "\\" };
   };
   return async (context) => {
     const at = whole(context);
@@ -1052,8 +1072,66 @@ const emojiSource = (names, whole) => {
       from: typed.from,
       // Haskell has chosen and ordered them.
       filter: false,
-      options: found.map(({ name, emoji }) => ({ label: `:${name}:`, emoji, apply: choose(name, typed.bullet) })),
+      options: found.map(({ name, emoji }) => ({
+        label: `:${name}:`,
+        emoji,
+        apply: choose(name, typed.bullet),
+        enter: { after: enterAfter },
+        // The letters as they are now, the table read where wholeAt says
+        // (the master's text, for a row of the slide mode).
+        typed: (state, head, view) => emojiTyped(state, head, whole({ state, pos: head, view })),
+        escape: escapeColon,
+      })),
     };
+  };
+};
+
+// The completion of the wiki's own Markdown (WP5.124 (b) of
+// docs/PLAN.md): the markers of its blocks after [[! and [[/ at a line's
+// start, and the kinds of box after [! on a quotation's first line. What
+// opens a list, what it offers and what each entry writes are Haskell's
+// (Wiki.Core.Markdown.Complete): this asks the component through
+// `markup` with the cursor's place, and shows the answer. The place is
+// the cursor's line in the whole text (wholeAt: the master's, for a row of
+// the slide mode), the line up to the cursor, and the names of the syntax
+// tree's nodes at the cursor, innermost first, which say whether the
+// cursor is in code, HTML, math or a link's address.
+//
+// markupGate is what may open a list, loosely: a source is asked after
+// every key typed, and only a line that ends so asks the component.
+const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$/;
+
+// The answer is {from, options, enter, escape}: where the text an entry
+// replaces starts in the line, in characters (it ends at the cursor);
+// each option's label, its snippet (@codemirror/autocomplete's, whose
+// first place to fill the cursor goes to, and Tab to the next), and its
+// origin when it comes from elsewhere than the wiki (a plugin's, shown
+// grey beside it as the option's detail); and what Enter and Escape do,
+// for every option of the list.
+const markupSource = (markup, whole) => async (context) => {
+  const { state, pos, tree } = whole(context);
+  const line = state.doc.lineAt(pos);
+  const before = state.sliceDoc(line.from, pos);
+  if (!markupGate.test(before)) return null;
+  const nodes = [];
+  for (let node = tree.resolveInner(pos, -1); node; node = node.parent) nodes.push(node.name);
+  const detail = { line: line.number, before, nodes: nodes.join(" ") };
+  const found = await unlessAborted(context, markup.ask(JSON.stringify(detail), detail));
+  if (found === null || found.options.length === 0) return null;
+  // The line's text before the cursor is the same in a row and in the
+  // master, so the replaced text's length in units is read from it.
+  const from = context.pos - (before.length - unitsOf(before, found.from));
+  return {
+    from,
+    // Haskell has chosen and ordered them.
+    filter: false,
+    options: found.options.map((option) => ({
+      label: option.label,
+      detail: option.detail,
+      apply: snippet(option.template),
+      enter: found.enter,
+      typed: (s, head) => ({ from, letters: s.sliceDoc(from, head) }),
+    })),
   };
 };
 
@@ -1071,8 +1149,9 @@ const emojiOfOption = {
   },
 };
 
-// The completion of one editor, of mentions and of emoji, in one of the
-// library's completions (two would fight over the keys and the list), and
+// The completion of one editor, of mentions, of emoji and of the wiki's
+// own Markdown, in one of the library's completions (two would fight over
+// the keys and the list), and
 // how the component answers it. The master and the rows of the slide mode
 // share it (attachRow); slide by slide, the master's asks nothing and never
 // starts (masterCompletion, quiet), so that a row's typing, which reaches
@@ -1083,11 +1162,26 @@ const emojiOfOption = {
 // slide, and the whole one for the raw Markdown.
 const masterCompletion = new Compartment();
 
+// How long a list is shown before the library takes its keys (its own
+// default): a key pressed as the list appears is the typing's.
+const interactionDelay = 75;
+
 const completions = (host) => {
   const whole = (context) => wholeAt(host, context);
   const people = asker(host, "wiki-mention");
   const names = asker(host, "wiki-emoji");
-  // Whether the reader moved in the emoji's list with the keys (an arrow,
+  const markup = asker(host, "wiki-complete", false);
+  // What Enter and Escape do in the list shown is what its options say
+  // (its first, since every option of a list says the same): `enter` is
+  // "chooses" (or nothing), to choose at once, or {after: n}, to choose
+  // only once n letters are typed (`typed`, the letters as they are now,
+  // {from, letters}, given the state, the cursor and the view, whose
+  // whole text wholeAt reads) or the reader moved in the list; `escape` is nothing,
+  // to close the list, or what to write as it closes. A mention's list
+  // chooses at once and closes; the emoji's chooses after two letters and
+  // escapes its colon; the wiki's own Markdown says in its answer.
+  const shown = (state) => (completionStatus(state) === "active" ? (currentCompletions(state)[0] ?? null) : null);
+  // Whether the reader moved in a list that waits for letters with the keys (an arrow,
   // Page Up or Page Down) since it was shown for the letters typed: what
   // was typed then ({from, letters}), by view. A move counts whichever
   // entry it lands on, the first too (ArrowDown in a list of one, or down
@@ -1101,38 +1195,44 @@ const completions = (host) => {
     ...binding,
     run: (view) => {
       const done = binding.run(view);
-      if (done && emojiShown(view.state)) moved.set(view, emojiTyped(view.state, view.state.selection.main.head));
+      const option = shown(view.state);
+      if (done && option?.enter?.after !== undefined) moved.set(view, option.typed(view.state, view.state.selection.main.head, view));
       return done;
     },
   });
+  // When each view's list was shown, while it is: the library takes the
+  // list's keys only once it has been shown for interactionDelay, which
+  // the browser tests wait for (ready, below) before they press one.
+  const shownAt = new WeakMap();
   const forgetMoves = EditorView.updateListener.of((update) => {
-    if (moved.has(update.view) && completionStatus(update.state) !== "active") moved.delete(update.view);
+    const active = completionStatus(update.state) === "active";
+    if (moved.has(update.view) && !active) moved.delete(update.view);
+    if (!active) shownAt.delete(update.view);
+    else if (!shownAt.has(update.view)) shownAt.set(update.view, Date.now());
   });
-  // Enter chooses a mention at once, and an emoji as said above; when it
-  // chooses nothing, it is a new line.
+  // Enter chooses as the list says; when it chooses nothing, it is a new
+  // line.
   const enter = (view) => {
-    if (!emojiShown(view.state)) return acceptCompletion(view);
-    const typed = emojiTyped(view.state, view.state.selection.main.head);
+    const option = shown(view.state);
+    if (option?.enter?.after === undefined) return acceptCompletion(view);
+    const typed = option.typed(view.state, view.state.selection.main.head, view);
     if (typed === null) return false;
     const move = moved.get(view);
     const chosen = move !== undefined && move !== null && move.from === typed.from && move.letters === typed.letters;
-    if (typed.letters.length < enterAfter && !chosen) return false;
+    if (typed.letters.length < option.enter.after && !chosen) return false;
     return acceptCompletion(view);
   };
   // Escape acts only on a list that is shown: the library's closes a
   // completion still being asked for too, which would keep Escape from the
-  // form while nothing is shown. On a mention's list it closes the list
-  // and leaves the text; on the emoji's it also escapes the colon.
+  // form while nothing is shown. It closes the list, and writes what the
+  // list says, as one step of the undo.
   const escape = (view) => {
-    if (completionStatus(view.state) !== "active") return false;
-    const typed = emojiShown(view.state) ? emojiTyped(view.state, view.state.selection.main.head) : null;
+    const option = shown(view.state);
+    if (option === null) return false;
+    const written = option.escape?.(view.state, view.state.selection.main.head, view) ?? null;
     closeCompletion(view);
-    if (typed !== null) {
-      view.dispatch({
-        changes: { from: typed.bullet ? typed.from + 1 : typed.from, insert: "\\" },
-        annotations: isolateHistory.of("full"),
-        userEvent: "input.escape",
-      });
+    if (written !== null) {
+      view.dispatch({ changes: written, annotations: isolateHistory.of("full"), userEvent: "input.escape" });
     }
     return true;
   };
@@ -1149,24 +1249,40 @@ const completions = (host) => {
     { key: "Escape", run: escape },
     { key: "Tab", run: acceptCompletion },
   ];
-  const config = { icons: false, defaultKeymap: false, addToOptions: [emojiOfOption] };
+  const config = { icons: false, defaultKeymap: false, addToOptions: [emojiOfOption], interactionDelay };
   const ownKeys = Prec.highest(keymap.of(keys.map((binding) => ({ ...binding, stopPropagation: true }))));
+  // The keys of a snippet being filled in (an entry of the wiki's own
+  // Markdown chosen): Tab and Shift+Tab to its next and previous place,
+  // Escape to stop filling it in, as the library binds them, but going no
+  // further when they act, so that the form's keydown does not also
+  // indent with Tab or close a menu with Escape. (CodeMirror joins the
+  // bindings of a key at one precedence, and stops the key when any of
+  // them says so: the list's Tab and Escape above say so too.)
+  const snippetKeys = snippetKeymap.of([
+    { key: "Tab", run: nextSnippetField, shift: prevSnippetField, stopPropagation: true },
+    { key: "Escape", run: clearSnippet, stopPropagation: true },
+  ]);
   return {
     extension: [
-      autocompletion({ ...config, override: [mentionSource(people, whole), emojiSource(names, whole)] }),
+      autocompletion({ ...config, override: [mentionSource(people, whole), emojiSource(names, whole), markupSource(markup, whole)] }),
       forgetMoves,
       ownKeys,
+      snippetKeys,
     ],
     // The same, asking nothing and never starting on typing: the master's
     // slide by slide (masterCompletion). The library's state stays, so that
     // a query or a timer of its from before goes on finding it.
-    quiet: [autocompletion({ ...config, override: [], activateOnTyping: false }), forgetMoves, ownKeys],
+    quiet: [autocompletion({ ...config, override: [], activateOnTyping: false }), forgetMoves, ownKeys, snippetKeys],
     mentioned: people.answer,
     emojied: names.answer,
+    completed: markup.answer,
     status: (state) => completionStatus(state) ?? "",
+    // Whether a view's list is shown and takes its keys now.
+    ready: (view) => shownAt.has(view) && Date.now() - shownAt.get(view) >= interactionDelay,
     stop: () => {
       people.stop();
       names.stop();
+      markup.stop();
     },
   };
 };
@@ -2181,6 +2297,7 @@ export function attachRow(masterHost, rowHost, key, focus) {
       view.focus();
     },
     completing: () => completionStatus(view.state) ?? "",
+    completionReady: () => master.completionReady(view),
     hasFocus: () => view.hasFocus,
     destroy: () => {
       if (masterHost.wikiRows?.get(key) === view) masterHost.wikiRows.delete(key);
@@ -2771,6 +2888,12 @@ export function attach(textarea, host, original, codeTokens) {
     // The component's answer to the question `id` about an emoji's name:
     // the emoji, as [{name, emoji}], best first.
     emojied: (id, found) => completion.emojied(id, found),
+    // The component's answer to the question `id` about the list of the
+    // wiki's own Markdown at the cursor (markupSource), or null for none.
+    completed: (id, found) => completion.completed(id, found),
+    // Whether the list of a view (this one, or a row's) is shown and takes
+    // its keys, for the browser tests.
+    completionReady: (of = view) => completion.ready(of),
     // Whether the list of a mention's or an emoji's completion is open
     // ("active"), being asked for ("pending"), or neither (""), for the
     // browser tests.

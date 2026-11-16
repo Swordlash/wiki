@@ -8364,6 +8364,21 @@ a.mention {
   font-style: normal;
 }
 
+/* A place to fill of a snippet the completion wrote (a marker's name, a
+   block's first line), until the snippet is done: the text in the
+   editor's colour on a tint of the accent, and an empty place as a thin
+   mark in the accent. CodeMirror's own theme tints by the light or the
+   dark scheme of its own, which the editor does not set. */
+.editor-cm .cm-editor .cm-snippetField {
+  color: var(--text);
+  background-color: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-radius: 2px;
+}
+
+.editor-cm .cm-editor .cm-snippetFieldPosition {
+  border-left: 2px solid var(--accent);
+}
+
 /* The assistant's settings page. */
 .assistant-settings {
   max-width: 46rem;

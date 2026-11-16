@@ -61,6 +61,7 @@ $( browserJS
      , ("js_drop_filePromise", "wiki_test_drop_file", Safe, [t|JSText -> JSText -> JSText -> JSText -> IO (Promise ())|])
      , ("js_pastePromise", "wiki_test_paste", Safe, [t|JSText -> JSText -> JSText -> JSText -> JSText -> IO (Promise Bool)|])
      , ("js_row_text", "wiki_test_slide_row_text", Safe, [t|Int -> IO JSText|])
+     , ("js_row_completion_ready", "wiki_test_slide_row_completion_ready", Safe, [t|Int -> IO Bool|])
      , ("js_row_select", "wiki_test_slide_row_select", Safe, [t|Int -> Int -> Int -> IO Bool|])
      , ("js_rows_late", "wiki_test_rows_late", Safe, [t|Int -> IO ()|])
      , ("js_row_selection", "wiki_test_slide_row_selection", Safe, [t|Int -> IO JSText|])
@@ -631,6 +632,23 @@ spec m = do
     press "Tab"
     eventually $ markdown ui `shouldReturn` T.replace "By me." "  By me." deck
     rowFocused 0 `shouldReturn` True
+
+  -- The completion of the wiki's own markers is Test.Browser.Complete's,
+  -- in the raw Markdown; a row asks the master's text where its cursor is,
+  -- and offers a presentation's markers.
+  it "completes a presentation's marker in a row, writing its end marker with the cursor between" $ runPage $ do
+    (ui, _) <- openDeck deck
+    -- A row below the first, whose lines are not the master's.
+    rowHeader ui "One" >>= click
+    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    rowSelect 1 14 14
+    row <- openRowContent ui
+    typeText row "\n\n[[!no"
+    eventually $ (findAll ui ".editor-slides .cm-tooltip-autocomplete .cm-completionLabel" >>= traverse textContent) `shouldReturn` ["[[!notes]]"]
+    eventually $ unsafeIOToPageM (js_row_completion_ready 1) `shouldReturn` True
+    press "Enter"
+    typeText row "Say hello."
+    markdown ui `shouldReturn` T.replace "First." "First.\n\n[[!notes]]\nSay hello.\n[[/notes]]" deck
 
   it "scrolls to the cursor of the row an undo takes it to, the editor's own text being hidden" $ runPage $ do
     let long = T.intercalate "\n\n" ("# Long" : concat [["## S" <> show i, T.intercalate "\n\n" (replicate 8 "A paragraph of its own.")] | i <- [1 .. 30 :: Int]])

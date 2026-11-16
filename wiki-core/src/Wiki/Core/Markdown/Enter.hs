@@ -25,9 +25,11 @@
 -- * At the end of the last line with text of a list's item: a new item of
 --   the same list at the same indentation, with the same bullet, or the
 --   next number and the same delimiter (@.@ or @)@), and an empty box
---   after a task (@- [ ] @). The containers around the list go on before
---   it: a quotation's marks as the cursor's line writes them (@>  > @), an
---   outer item's indentation.
+--   after a task, done or not (@- [ ] @). The parser reads a task only in
+--   a bulleted list: after @1. [x] done@ comes @2. @, as after any text.
+--   The containers around the list go on before it: a quotation's marks
+--   as the cursor's line writes them (@>  > @), an outer item's
+--   indentation.
 -- * At the end of a line of a quotation or a box (lazy lines of its
 --   paragraph too): its marks on the new line, as the cursor's line writes
 --   them, @> @ where it is lazy, after the indentation of the items around
@@ -57,7 +59,10 @@
 --   CommonMark does not read as a number;
 -- * an answer the parser does not read back as meant: 'enter' parses the
 --   text it would write, and keeps its answer only when the new line is in
---   the containers the answer says ('readsAsMeant').
+--   the containers the answer says, and a new line leaves the next line
+--   with anything on it in the containers it was in ('readsAsMeant'): an
+--   empty item's text is indented by its mark and one space, so a line
+--   below indented that far would go into it.
 --
 -- Going up acts on the cursor's line alone, in the middle of a list or a
 -- quotation too: the lines after it are read anew (an item nested below
@@ -87,9 +92,13 @@ data Enter
   deriving stock (Eq, Show)
 
 -- | What Enter writes, given the text before the cursor and the text after
--- it: the top-level block the cursor is in, from its first line to its
--- last (or a whole page). The two texts are given apart so that no offset
--- crosses from the browser's UTF-16 units to Haskell's characters.
+-- it: whole lines of the page around the cursor, or the whole page. The
+-- editor gives the top-level block the cursor is in, with the block above
+-- it when no blank line is between them (whether the block's first line
+-- is an item or a lazy line depends on a paragraph above) and the block
+-- below (which 'readsAsMeant' checks a new line does not change). The two
+-- texts are given apart so that no offset crosses from the browser's
+-- UTF-16 units to Haskell's characters.
 enter :: Text -> Text -> Enter
 enter before after
   | not (T.null after || "\n" `T.isPrefixOf` after) = NewLine

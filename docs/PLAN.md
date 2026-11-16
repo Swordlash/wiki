@@ -2005,10 +2005,13 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   leaves no "not closed" problem. The snippet's Tab and Escape must
   not also reach the form's keys.
   (c) **`[[` for a page**: this space's pages, which the editor holds.
-  What is written is the owner's to choose (asked 2026-11-16): the
-  shortest relative path, the page's address as "Link to a page"
-  writes it, or the permanent link by id. Other spaces' pages need an
-  ask and come later.
+  What is written is the shortest relative path that resolves back
+  to the page, with `|Title` only when the title differs from what the
+  path shows (the owner, 2026-11-16: "jak uważasz", to the session's
+  recommendation; not the page's address nor the permanent link by
+  id). A property over generated trees of pages: the text written
+  resolves to the page chosen. Other spaces' pages need an ask and
+  come later.
   (d) **The `/` menu**: every toolbar entry that writes text, and
   "Link to a page" and "Image or attachment", which open their
   dialogs; not the colours, the emoji or "New kind…". It opens at a

@@ -63,7 +63,7 @@ sources held = [wikiSource held.kind held.boxes]
 -- worked out only when it is wanted.
 data Readings = Readings
   { above :: [Text]
-  , byLine :: Map.Map Text LineReading
+  , byLine :: Map.Map Probe LineReading
   }
 
 -- | A memo of nothing.
@@ -84,9 +84,14 @@ answer found memo text request = case T.splitOn "\n" text of
         let above = take (request.line - 1) ls
             at = At {place = placeOf request.nodes, above, before = request.before}
             kept = if memo.above == above then memo.byLine else Map.empty
-            byLine = foldl' (\m l -> Map.insertWith (\_ old -> old) l (readLine above l) m) kept (probeLines at)
-            readAt l = fromMaybe (readLine above l) (Map.lookup l byLine)
-         in (complete found readAt at, Readings {above, byLine})
+            -- Each probe the list may ask about, read only when it is
+            -- asked: the first ones, then those written from the block
+            -- the first ones find the cursor's line in.
+            add m probe = Map.insertWith (\_ old -> old) probe (readLine above probe) m
+            readFrom m probe = fromMaybe (readLine above probe) (Map.lookup probe m)
+            first' = foldl' add kept (firstProbes at)
+            byLine = foldl' add first' (probesOf (readFrom first') at)
+         in (complete found (readFrom byLine) at, Readings {above, byLine})
   _ -> (Nothing, memo)
 
 -- | An answer as @web/src/editor.js@ reads it: where the text the entry

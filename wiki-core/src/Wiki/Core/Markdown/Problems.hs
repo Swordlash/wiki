@@ -44,6 +44,7 @@ module Wiki.Core.Markdown.Problems
   , islandPlaces
   , islandProblem
   , allProblems
+  , everyBlock
   )
 where
 

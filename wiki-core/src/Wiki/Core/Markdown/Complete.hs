@@ -37,10 +37,13 @@ module Wiki.Core.Markdown.Complete
   , triggerAt
 
     -- * The parser's reading of the cursor's line
+  , Probe (..)
   , LineReading (..)
+  , firstRoles
   , LineReader
   , readLine
-  , probeLines
+  , firstProbes
+  , probesOf
 
     -- * Candidates
   , Origin (..)
@@ -68,8 +71,9 @@ where
 import Data.Char (isAsciiLower, isAsciiUpper)
 import Data.Text qualified as T
 import Protolude
-import Wiki.Core.Markdown.Ast (BoxMarker (markerLine), MarkerLine (..), MarkerName (..), MarkerRole (..), closingMarker, holdsBlocks, markerNameText, openingMarker, parseWithAllMarkers)
+import Wiki.Core.Markdown.Ast (Block (Alert, Para, Plain), BoxMarker (markerLine), MarkerLine (..), MarkerName (..), MarkerRole (..), closingMarker, holdsBlocks, markerNameText, openingMarker, parseWithStartsAndMarkers, plainText)
 import Wiki.Core.Markdown.Box (BoxKind, boxChoices)
+import Wiki.Core.Markdown.Problems (everyBlock)
 import Wiki.Core.PageKind (PageKind (..))
 
 ----------------------------------------------------------------------
@@ -153,8 +157,8 @@ triggerAt readAt at = do
   guard (at.place == InText)
   shape <- shapeAt at
   case shape.trigger of
-    StartMarker -> guard (PlacesContents `elem` (readAt (shape.prefix <> "[[!toc]]")).roles)
-    BoxMarker -> guard (readAt (shape.prefix <> "[!NOTE]")).boxed
+    StartMarker -> guard (PlacesContents `elem` firstRoles (readAt (Probe 1 [shape.prefix <> "[[!toc]]"])))
+    BoxMarker -> guard (readAt (Probe 1 [shape.prefix <> "[!NOTE]"])).boxed
     EndMarker -> pass
   Just
     Typed
@@ -216,43 +220,119 @@ isBlank c = c == ' ' || c == '\t'
 ----------------------------------------------------------------------
 -- The parser's reading of the cursor's line
 
--- | 'LineReading' is what the wiki's parser reads on a line put after the
--- lines above the cursor: the roles of the marker lines it reads there
--- ('MarkerRole'), and whether a box's marker is there.
+-- | 'Probe' is text the parser is asked about: lines put after the lines
+-- above the cursor from one of them on (from 1, all of them; or from the
+-- first line of the block that holds the cursor's line, 'enclosing'),
+-- the first of them in the cursor's line's place.
+data Probe = Probe
+  { from :: Int
+  , written :: [Text]
+  }
+  deriving stock (Eq, Ord, Show)
+
+-- | 'LineReading' is what the wiki's parser reads on a probe's lines: the
+-- roles of the marker lines it reads on each of them ('MarkerRole');
+-- whether a box's marker is on the first; the text of the paragraphs
+-- inside the boxes it reads; and the first line of the top-level block
+-- that holds the first (counted in the lines above, from 1), from which on
+-- the lines read alike whatever comes before.
 data LineReading = LineReading
-  { roles :: [MarkerRole]
+  { roles :: [[MarkerRole]]
   , boxed :: Bool
+  , inBoxes :: [Text]
+  , enclosing :: Int
   }
   deriving stock (Eq, Show)
 
--- | 'LineReader' gives the parser's reading of a line put after the lines
--- above the cursor ('At''s 'above'): 'readLine', or the editor's memo of
--- it, which keeps a reading while the lines above do not change, so that
--- the letters typed after a trigger ask the parser nothing again.
-type LineReader = Text -> LineReading
+-- | The roles read on a probe's first line.
+firstRoles :: LineReading -> [MarkerRole]
+firstRoles r = fromMaybe [] (head r.roles)
 
--- | What the parser reads on a line put after these lines: the text
--- above it is parsed whole, since a container or a block opened anywhere
--- above may hold the line. The text below is not, and does not change
--- what the line is.
-readLine :: [Text] -> Text -> LineReading
-readLine above line = case parseWithAllMarkers (T.intercalate "\n" (above <> [line])) of
-  Right (_, boxes, lines', _) -> LineReading {roles = [r | MarkerLine l _ r <- lines', l == n], boxed = any (\b -> b.markerLine == n) boxes}
-  Left _ -> LineReading {roles = [], boxed = False}
+-- | 'LineReader' gives the parser's reading of a probe ('readLine'), or
+-- the editor's memo of it, which keeps a reading while the lines above do
+-- not change, so that the letters typed after a trigger ask the parser
+-- nothing again.
+type LineReader = Probe -> LineReading
+
+-- | What the parser reads on a probe's lines, put after these lines from
+-- the probe's line on. From the first line, the text above is parsed
+-- whole, since a container or a block opened anywhere above may hold the
+-- cursor's line; from the block that holds it, only that block, which
+-- reads alike whatever comes before it. The text below is not parsed,
+-- and does not change what the lines are.
+readLine :: [Text] -> Probe -> LineReading
+readLine above probe = case parseWithStartsAndMarkers (T.intercalate "\n" (kept <> probe.written)) of
+  Right (blocks, boxes, lines') ->
+    LineReading
+      { roles = [[r | MarkerLine l _ r <- lines', l == n + k] | k <- [0 .. length probe.written - 1]]
+      , boxed = any (\b -> b.markerLine == n) boxes
+      , inBoxes = [plainText inlines | Alert _ _ bs <- concatMap (everyBlock . snd) blocks, b <- concatMap everyBlock bs, Just inlines <- [paragraphOf b]]
+      , enclosing = inAbove (fromMaybe n (lastMay [l | (Just l, _) <- blocks, l <= n]))
+      }
+  Left _ -> LineReading {roles = [], boxed = False, inBoxes = [], enclosing = inAbove n}
   where
-    n = length above + 1
+    kept = drop (probe.from - 1) above
+    n = length kept + 1
+    inAbove l = l + probe.from - 1
+    paragraphOf = \case
+      Para inlines -> Just inlines
+      Plain inlines -> Just inlines
+      _ -> Nothing
 
--- | The lines a list at this place may ask the parser about, for the
+-- | The probes a list at this place may ask the parser about, for the
 -- editor's memo: @[[!toc]]@ or @[!NOTE]@ after the line's text before the
--- trigger, or the end marker of each kind of block whose start marker the
--- lines above hold.
-probeLines :: At -> [Text]
-probeLines at = case shapeAt at of
+-- trigger, the end marker of each kind of block whose start marker the
+-- lines above hold, and, from the block that holds the cursor's line (as
+-- the first probe reads it), each skeleton a marker or a box writes
+-- ('writtenProbe').
+probesOf :: LineReader -> At -> [Probe]
+probesOf readAt at = firstProbes at <> written
+  where
+    written = case (shapeAt at, firstProbes at) of
+      (Just shape, first' : _) -> case shape.trigger of
+        StartMarker -> [writtenProbe at shape (enclosingOf first') (startMarker (continuation shape.prefix) name).skeleton | name <- filter holdsBlocks [minBound .. maxBound]]
+        BoxMarker -> [writtenProbe at shape (enclosingOf first') (boxed' (box (continuation shape.prefix) "NOTE"))]
+        _ -> []
+      _ -> []
+    enclosingOf = (.enclosing) . readAt
+
+-- | The probes a list at this place asks about first, which no other
+-- reading decides: @[[!toc]]@ or @[!NOTE]@ after the line's text before
+-- the trigger, or the end marker of each kind of block whose start marker
+-- the lines above hold, each after all the lines above.
+firstProbes :: At -> [Probe]
+firstProbes at = case shapeAt at of
   Nothing -> []
   Just shape -> case shape.trigger of
-    StartMarker -> [shape.prefix <> "[[!toc]]"]
-    BoxMarker -> [shape.prefix <> "[!NOTE]"]
-    EndMarker -> [shape.prefix <> closingMarker name | name <- startedAbove at.above]
+    EndMarker -> [Probe 1 [shape.prefix <> closingMarker name] | name <- startedAbove at.above]
+    trigger -> [Probe 1 [shape.prefix <> probeOf trigger]]
+
+-- | A skeleton as written at the cursor, as a probe from a line: its first
+-- line in place of the trigger and the letters, and each further line
+-- after the cursor line's indentation, as CodeMirror's snippet writes it.
+writtenProbe :: At -> Shape -> Int -> Skeleton -> Probe
+writtenProbe at shape from' skeleton = Probe from' lines'
+  where
+    indentation = T.takeWhile isBlank at.before
+    lines' = case T.splitOn "\n" (fst (skeletonText skeleton)) of
+      first' : rest -> (shape.prefix <> first') : map (indentation <>) rest
+      [] -> []
+
+-- | A box's skeleton with a word on its line of text, which the parser,
+-- reading the box, finds inside it ('inBoxes').
+boxed' :: Candidate -> Skeleton
+boxed' c = c.skeleton <> [Literal boxWord]
+
+-- | The word 'boxed'' writes.
+boxWord :: Text
+boxWord = "Zqxjvbox"
+
+-- | What the first probe of a trigger writes in its place.
+probeOf :: Trigger -> Text
+probeOf = \case
+  StartMarker -> "[[!toc]]"
+  BoxMarker -> "[!NOTE]"
+  EndMarker -> "[[/div]]"
 
 -- | The kinds of block whose start marker the lines above hold somewhere:
 -- the only ones an end marker may end.
@@ -282,15 +362,16 @@ data Candidate = Candidate
   }
   deriving stock (Eq, Show)
 
--- | 'Wanted' is what a source is asked for: what was typed, and the kinds
--- of block an end marker at the cursor would end, for the parser (the
+-- | 'Wanted' is what a source is asked for: what was typed; the kinds of
+-- block an end marker at the cursor would end, for the parser (the
 -- innermost block open there, if one is: an end marker of another name
--- ends nothing).
+-- ends nothing); and what the parser reads of a skeleton written at the
+-- cursor, so that a source offers what is read as it says.
 data Wanted = Wanted
   { typed :: Typed
   , closable :: [MarkerName]
+  , writes :: Skeleton -> LineReading
   }
-  deriving stock (Eq, Show)
 
 -- | 'Source' gives the candidates for what is wanted, in its order, or
 -- none. The list holds those of every source, in the sources' order.
@@ -308,12 +389,37 @@ type Source = Wanted -> [Candidate]
 -- Each one whose name starts with the letters typed, whatever their case.
 wikiSource :: PageKind -> [BoxKind] -> Source
 wikiSource kind defined wanted = case t.trigger of
-  StartMarker -> [startMarker t.lineStart name | name <- markersRead kind, matches (markerNameText name)]
+  StartMarker -> [checkedStart name | name <- markersRead kind, matches (markerNameText name)]
   EndMarker -> [endMarker name | name <- wanted.closable, matches (markerNameText name)]
-  BoxMarker -> [box t.lineStart marker | (marker, _) <- boxChoices defined, matches marker]
+  BoxMarker -> [if bodyRead then box t.lineStart marker else boxAlone marker | (marker, _) <- boxChoices defined, matches marker]
   where
     t = wanted.typed
     matches name = T.toLower t.letters `T.isPrefixOf` T.toLower name
+    -- A block's skeleton is offered where the parser reads it, written,
+    -- as one block: its start marker opening it and its end marker
+    -- ending it. Elsewhere (a tab after a list's mark, a footnote's
+    -- indentation, anything the lines after the first do not keep the
+    -- containers of) its start marker is written alone, on its line,
+    -- where the parser reads a marker; its end is the author's.
+    checkedStart name
+      | holdsBlocks name =
+          let full = startMarker t.lineStart name
+              reading = wanted.writes full.skeleton
+              ends = any isEnd (fromMaybe [] (lastMay reading.roles))
+           in if any isStart (firstRoles reading) && ends then full else startAlone name
+      | otherwise = startMarker t.lineStart name
+    -- A box's skeleton with its line of text is offered where the parser
+    -- reads that line inside the box; elsewhere its marker alone.
+    bodyRead =
+      let reading = wanted.writes (boxed' (box t.lineStart "NOTE"))
+       in reading.boxed && any (T.isInfixOf boxWord) reading.inBoxes
+    isStart = \case
+      Opens _ -> True
+      Starts _ _ -> True
+      _ -> False
+    isEnd = \case
+      Ends _ -> True
+      _ -> False
 
 -- | The markers a page of a kind reads: in a presentation every one; in a
 -- document, or a page of a kind this program does not know, none that
@@ -340,6 +446,21 @@ startMarker lineStart name = Candidate {label = openingMarker name, skeleton, or
         | holdsBlocks name -> [Literal (openingMarker name <> "\n" <> lineStart), Field 1 ""] <> closing
         | otherwise -> [Literal (openingMarker name), Field 0 ""]
     closing = [Literal ("\n" <> lineStart <> closingMarker name), Field 0 ""]
+
+-- | A start marker's candidate written alone on its line, with no end
+-- marker: a spoiler with its name and description to fill.
+startAlone :: MarkerName -> Candidate
+startAlone name = Candidate {label = openingMarker name, skeleton, origin = Nothing}
+  where
+    skeleton = case name of
+      SpoilerName -> [Literal (openingMarker name <> "{"), Field 1 "name", Literal "}(", Field 2 "Description", Literal ")", Field 0 ""]
+      _ -> [Literal (openingMarker name), Field 0 ""]
+
+-- | A kind of box's candidate written alone, its marker only.
+boxAlone :: Text -> Candidate
+boxAlone marker = Candidate {label = written, skeleton = [Literal written, Field 0 ""], origin = Nothing}
+  where
+    written = "[!" <> marker <> "]"
 
 -- | An end marker's candidate.
 endMarker :: MarkerName -> Candidate
@@ -390,9 +511,12 @@ complete sources readAt at = do
   let closable = case typed.trigger of
         EndMarker ->
           let prefix = T.take typed.from at.before
-           in [name | name <- startedAbove at.above, any isEnd (readAt (prefix <> closingMarker name)).roles]
+           in [name | name <- startedAbove at.above, any isEnd (firstRoles (readAt (Probe 1 [prefix <> closingMarker name])))]
         _ -> []
-      wanted = Wanted {typed, closable}
+      writes skeleton = case shapeAt at of
+        Just shape -> readAt (writtenProbe at shape (readAt (Probe 1 [shape.prefix <> probeOf shape.trigger])).enclosing skeleton)
+        Nothing -> LineReading {roles = [], boxed = False, inBoxes = [], enclosing = 1}
+      wanted = Wanted {typed, closable, writes}
       found = concatMap ($ wanted) sources
   guard (not (null found))
   Just Completion {from = typed.from, candidates = found, enter = EnterChooses, escape = EscapeCloses}

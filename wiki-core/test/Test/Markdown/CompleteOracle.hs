@@ -22,9 +22,10 @@ import Data.Text qualified as T
 import Protolude
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
-import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, counterexample, elements, frequency, oneof, (===))
-import Wiki.Core.Markdown.Ast (BoxMarker (..), MarkerLine (..), MarkerName (..), MarkerRole (..), closingMarker, holdsBlocks, markerNameText, parseWithAllMarkers)
+import Test.QuickCheck (Arbitrary (..), Gen, choose, counterexample, elements, frequency, (===))
+import Wiki.Core.Markdown.Ast (Block (..), BoxMarker (..), MarkerLine (..), MarkerName (..), MarkerRole (..), closingMarker, holdsBlocks, markerNameText, parseWithAllMarkers)
 import Wiki.Core.Markdown.Complete
+import Wiki.Core.Markdown.Problems (everyBlock)
 import Wiki.Core.PageKind (PageKind (..))
 
 spec :: Spec
@@ -38,7 +39,15 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
       (marker [] ">  ", oracleMarker [] ">  ") `shouldBe` (True, True)
       (ends [">  [[!div]]", "> Text"] "> ", oracleEnds [">  [[!div]]", "> Text"] "> ") `shouldBe` (["div"], ["div"])
 
-  modifyMaxSuccess (const 1000) $ do
+  describe "Codex's cases (#293, second round)" $ do
+    it "writes a block after a tab after a list's mark in a quotation as the parser reads it" $
+      readAsWritten [] ">-\t" `shouldBe` []
+    it "writes a block in a footnote's definition as the parser reads it" $
+      readAsWritten ["Text.[^a]", ""] "  [^a]: " `shouldBe` []
+
+  -- Ten times the suite's count: 1,000 cases natively, a quarter of that on
+  -- wasm, where Test.Cases cuts the count first.
+  modifyMaxSuccess (* 10) $ do
     prop "offers a start marker exactly where the parser reads one" $ \(Doc doc) (Line cursor) ->
       counterexample (toS (T.unlines (doc <> [cursor <> "[[!‸"]))) $
         marker doc cursor === oracleMarker doc cursor
@@ -48,8 +57,9 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
     prop "offers the end markers of exactly the blocks an end marker there ends" $ \(Doc doc) (Line cursor) ->
       counterexample (toS (T.unlines (doc <> [cursor <> "[[/‸"]))) $
         sort (ends doc cursor) === sort (oracleEnds doc cursor)
-    prop "writes a block's start marker with its end marker, one block for the parser" $ \(Doc doc) (Line cursor) ->
-      writesOneBlock doc cursor
+    prop "writes every marker and kind of box offered as the parser then reads it" $ \(Doc doc) (Line cursor) ->
+      counterexample (toS (T.unlines (doc <> [cursor <> "‸"]))) $
+        readAsWritten doc cursor === []
 
 ----------------------------------------------------------------------
 -- The completion, and the parser's reading
@@ -102,29 +112,49 @@ oracleEnds doc cursor =
       Ends _ -> True
       _ -> False
 
--- | That the div's start marker, chosen where it is offered, is written
--- with its end marker so that the parser reads the two as one block: the
--- start marker opens a block that the end marker two lines below ends.
--- CodeMirror's snippet puts the cursor line's indentation before each
--- further line, as this does.
-writesOneBlock :: [Text] -> Text -> Property
-writesOneBlock doc cursor = case listAt doc (cursor <> "[[!di") of
-  Just found
-    | Just chosen <- find ((== "[[!div]]") . (.label)) found.candidates ->
-        let (written, _) = skeletonText chosen.skeleton
-            indentation = T.takeWhile (\c -> c == ' ' || c == '\t') cursor
-            further = T.intercalate ("\n" <> indentation) (T.splitOn "\n" written)
-            source = T.intercalate "\n" doc <> (if null doc then "" else "\n") <> T.take found.from (cursor <> "[[!di") <> further
-            n = length doc + 1
-            roles = case parseWithAllMarkers source of
-              Right (_, _, lines', _) -> [(l, r) | MarkerLine l _ r <- lines', l == n || l == n + 2]
-              Left _ -> []
-         in counterexample (toS source) $
-              (any (isOpens . snd) [x | x@(l, _) <- roles, l == n], [r | (l, r) <- roles, l == n + 2]) === (True, [Ends n])
-  _ -> counterexample "not offered" True
+-- | The candidates offered after @[[!@ and @[!@ at a cursor that the
+-- parser does not read, once written, as they say: a skeleton with an end
+-- marker opens a block on its first line that its last line ends; a
+-- marker alone on its line is read as one; a box with a line for its text
+-- is read as a box holding that text; a box's marker alone is read as one.
+-- Each is written as CodeMirror's snippet writes it, the cursor line's
+-- indentation before each further line. None is the expected answer.
+readAsWritten :: [Text] -> Text -> [Text]
+readAsWritten doc cursor =
+  [ c.label
+  | trigger <- ["[[!", "[!"]
+  , Just found <- [listAt doc (cursor <> trigger)]
+  , c <- found.candidates
+  , not (readsAs found c)
+  ]
   where
-    isOpens = \case
+    indentation = T.takeWhile (\c -> c == ' ' || c == '\t') cursor
+    n = length doc + 1
+    readsAs found c =
+      let (written, _) = skeletonText c.skeleton
+          further = T.splitOn "\n" written
+          sentinel = "Zqxjv"
+          lines' = case further of
+            first' : rest -> (T.take found.from cursor <> first') : [indentation <> l <> (if T.isPrefixOf "[!" c.label then sentinel else "") | l <- rest]
+            [] -> []
+          source = T.intercalate "\n" (doc <> lines')
+       in case parseWithAllMarkers source of
+            Left _ -> False
+            Right (blocks, boxes, markerLines, _) ->
+              let rolesAt k = [r | MarkerLine l _ r <- markerLines, l == k]
+               in if T.isPrefixOf "[!" c.label
+                    then
+                      any (\b -> b.markerLine == n) boxes
+                        && (length lines' < 2 || any (holds sentinel) (concatMap everyBlock blocks))
+                    else case lines' of
+                      [_] -> not (null (rolesAt n))
+                      _ -> any isStart (rolesAt n) && Ends n `elem` rolesAt (n + length lines' - 1)
+    isStart = \case
       Opens _ -> True
+      Starts _ _ -> True
+      _ -> False
+    holds sentinel = \case
+      Alert _ _ bs -> any (\b -> sentinel `T.isInfixOf` show b) bs
       _ -> False
 
 ----------------------------------------------------------------------
@@ -132,7 +162,15 @@ writesOneBlock doc cursor = case listAt doc (cursor <> "[[!di") of
 
 -- | A container a line is in: a quotation, with the spaces before its
 -- mark and after it (0 to 3), or a list's item.
-data Layer = Quote Int Int | Item
+data Layer
+  = -- | A quotation: the spaces before its mark, and after it the spaces
+    -- or a tab.
+    Quote Int (Either Int ())
+  | -- | A list's item: the spaces before its mark, the mark, and after it
+    -- one to three spaces or a tab.
+    Item Int Text (Either Int ())
+  | -- | A footnote's definition, its later lines indented four spaces.
+    Footnote
   deriving stock (Eq, Show)
 
 -- | A document: its lines.
@@ -156,15 +194,28 @@ instance Arbitrary Line where
 layers :: Gen [Layer]
 layers = do
   k <- choose (0, 3)
-  replicateM k (oneof [Quote <$> choose (0, 3) <*> choose (0, 3), pure Item])
+  replicateM k $
+    frequency
+      [ (3, Quote <$> choose (0, 3) <*> spacing)
+      , (3, Item <$> choose (0, 3) <*> elements ["-", "*", "1.", "2)"] <*> spacing)
+      , (1, pure Footnote)
+      ]
+  where
+    spacing = frequency [(4, Left <$> choose (0, 3)), (1, pure (Right ()))]
 
 -- | The text a line in these containers starts with: a quotation's mark
--- with its spaces, an item's marker on its first line and its indentation
--- on the others.
+-- with its spaces or tab, an item's marker on its first line and its
+-- indentation on the others, a footnote's label on its first line and four
+-- spaces on the others.
 prefix :: Bool -> [Layer] -> Text
 prefix firstLine = foldMap $ \case
-  Quote spaces spacesAfter -> T.replicate spaces " " <> ">" <> T.replicate spacesAfter " "
-  Item -> if firstLine then "- " else "  "
+  Quote spaces gap -> T.replicate spaces " " <> ">" <> blanks gap
+  Item spaces mark gap
+    | firstLine -> T.replicate spaces " " <> mark <> either (\k -> T.replicate (max 1 k) " ") (const "\t") gap
+    | otherwise -> T.replicate (spaces + T.length mark + either (max 1) (const 4) gap) " "
+  Footnote -> if firstLine then "[^a]: " else "    "
+  where
+    blanks = either (`T.replicate` " ") (const "\t")
 
 -- | Some lines of a document, in containers: a paragraph (with a lazy line
 -- after it, sometimes), a marker of a block's start or end, indented code

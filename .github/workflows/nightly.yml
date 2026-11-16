@@ -1,0 +1,327 @@
+name: Nightly
+
+# A search for races on purpose, once a night and by hand (WP5.114 and
+# WP5.122 of docs/PLAN.md). Never on a pull request or a push: a pull
+# request does not wait for it, and its result is a finding, not a gate.
+# A failure here is a finding with a work package of its own, not a flake
+# to run again: the run's summary lists what failed, with the seed and
+# hspec's line to run it again, and the shrunk run of a property.
+#
+#   - properties: the native properties of the views' machines (the
+#     describe blocks whose name ends in .Machine in wiki-app-test: the
+#     bell, the page's threads, the deck) with many more cases than the
+#     pull requests' 20,000. Decision 82: 2,000 cases let a real fault of
+#     the bell through in 2 runs of 30.
+#   - browser: wiki-app-browser-test several times, each with a seed of its
+#     own, under the same load every time. hspec-halogen at the pinned
+#     commit cannot slow a page's processor the way the smoke suites'
+#     driver does (HALOGEN_PLAYWRIGHT_THROTTLE), so the load is more pages
+#     side by side than the runner has cores: HSPEC_HALOGEN_JOBS is twice
+#     the cores, and each page then runs at about half its speed.
+#
+# Both run on GitHub's hosted runners. Their setup steps are copies of
+# build.yml's for a hosted runner (the native job's for properties, the
+# wasm job's for browser), as server-page.yml's are: a step list in YAML
+# cannot be shared between two workflow files, and a reusable workflow or
+# a composite action would mean rewriting build.yml's jobs. build.yml's
+# comments say why each step is as it is. The copies differ in three
+# ways: no self-hosted branch; every cache is restored and never saved,
+# under the same keys and paths as build.yml's, so that a scheduled run
+# (on main) takes main's newest copies and leaves them as they are; and the
+# pins are read from toolchain/pins.env, which holds the same values as
+# build.yml's env, rather than written here a third time.
+on:
+  schedule:
+    - cron: '43 1 * * *'
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: "Cases for each property of the machines"
+        type: string
+        default: '500000'
+      runs:
+        description: "Runs of the browser suite"
+        type: string
+        default: '4'
+
+permissions:
+  contents: read
+
+# The numbers a scheduled run uses, and a run by hand by default.
+#
+# CASES: the machines' 81 examples took 17.6 s at 20,000 cases, four at a
+# time, on a laptop's i7-1270P (2026-11-16), and 1,666 s (28 minutes) at
+# 1,000,000; the slowest example alone took 309 s. A hosted runner's four
+# cores are two physical ones, about one and a half to two times slower
+# for four jobs, so a million would take 40 to 55 minutes there. 500,000
+# is the largest round number that fits in about half an hour: 14 minutes
+# locally, about 21 to 28 on a hosted runner. The bursts (Test.Bell's
+# `bursts`) keep their own 2,000 cases whatever this says
+# (modifyMaxSuccess (const 2000)).
+#
+# RUNS: about 10 minutes of setup and build, then each run of the browser
+# suite about 6 to 7 minutes at eight pages on four cores (its two shards
+# take 340 to 430 s at two pages, with wiki-core-test beside them): 10 +
+# 4 x 7 = 38 minutes, under the forty the job is meant to take.
+env:
+  CASES: ${{ inputs.cases || '500000' }}
+  RUNS: ${{ inputs.runs || '4' }}
+
+jobs:
+  properties:
+    name: the machines' properties
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v5
+
+    - name: Read the toolchain's pins
+      run: grep -E '^(GHC_VERSION|CABAL_VERSION)=' toolchain/pins.env >> "$GITHUB_ENV"
+
+    - name: Pin the cabal directory
+      run: echo "CABAL_DIR=$HOME/.cabal" >> "$GITHUB_ENV"
+
+    - uses: haskell-actions/setup@v2
+      id: setup
+      with:
+        ghc-version: ${{ env.GHC_VERSION }}
+        cabal-version: ${{ env.CABAL_VERSION }}
+        cabal-update: false
+
+    - name: Identify the apt cache platform
+      id: apt-platform
+      run: |
+        . /etc/os-release
+        echo "os=$ID-$VERSION_ID" >> "$GITHUB_OUTPUT"
+        echo "image=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore native apt archives
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.cache/wiki-apt/*.deb
+        key: ${{ runner.os }}-${{ runner.arch }}-apt-v1-${{ steps.apt-platform.outputs.os }}-${{ steps.apt-platform.outputs.image }}-${{ hashFiles('toolchain/ci-native-*-packages.txt') }}
+        restore-keys: ${{ runner.os }}-${{ runner.arch }}-apt-v1-${{ steps.apt-platform.outputs.os }}-
+
+    - name: Install the system packages the build links with
+      run: sh toolchain/ci-native-deps.sh base
+
+    - name: Read the libsodium pin
+      id: libsodium
+      run: |
+        . toolchain/pins.env
+        echo "version=$LIBSODIUM_VERSION" >> "$GITHUB_OUTPUT"
+        echo "sha256=$LIBSODIUM_SHA256" >> "$GITHUB_OUTPUT"
+
+    - name: Restore libsodium
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.wiki-toolchain/libsodium-${{ steps.libsodium.outputs.version }}
+        key: ${{ runner.os }}-libsodium-${{ steps.libsodium.outputs.version }}-${{ steps.libsodium.outputs.sha256 }}-${{ hashFiles('toolchain/libsodium.sh') }}
+
+    - name: Build libsodium
+      run: |
+        sh toolchain/libsodium.sh install
+        sh toolchain/libsodium.sh env >> "$GITHUB_ENV"
+
+    - name: Update Cabal package index
+      run: cabal update
+
+    - name: Restore cached dependencies
+      uses: actions/cache/restore@v5
+      env:
+        key: ${{ runner.os }}-native-store-cabal-${{ steps.setup.outputs.cabal-version }}-${{ runner.environment }}-v1
+      with:
+        path: ${{ steps.setup.outputs.cabal-store }}
+        key: ${{ env.key }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          ${{ env.key }}-
+
+    - name: Restore native build directories
+      uses: actions/cache/restore@v5
+      env:
+        compatibility: ${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-native-build-v1-ghc-${{ env.GHC_VERSION }}
+      with:
+        path: dist-newstyle/native
+        key: ${{ env.compatibility }}-cabal-${{ env.CABAL_VERSION }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: ${{ env.compatibility }}-
+
+    - name: Build wiki-app's native tests
+      run: |
+        sh toolchain/changelog-stamp.sh
+        cabal build wiki-app:test:wiki-app-test --builddir=dist-newstyle/native
+
+    # Every describe block whose name ends in .Machine, so that a machine
+    # added later is searched too; the in-memory DOM's specs are named
+    # otherwise and are left out. The suite runs four examples at a time
+    # (Test.hs), which a hosted runner's four cores carry. A seed drawn
+    # here, so that the summary can name it; toolchain/ci-findings.sh
+    # fails the step if no example ran.
+    - name: Run the machines' properties
+      env:
+        LANG: C.UTF-8
+      run: |
+        bin=$(cabal list-bin -v0 --builddir=dist-newstyle/native wiki-app:test:wiki-app-test)
+        seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' \n')
+        echo "### The machines' properties, $CASES cases each, on $(nproc) cores" >> "$GITHUB_STEP_SUMMARY"
+        cd wiki-app
+        sh ../toolchain/ci-findings.sh "wiki-app-test --match .Machine/, $CASES cases, seed $seed" \
+          "$bin" --match '.Machine/' --qc-max-success "$CASES" --seed "$seed" --print-slow-items=10
+
+  browser:
+    name: the browser suite, under load
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # As in build.yml's wasm job: the test bundle's digest takes it in.
+    env:
+      HALOGEN_BASE_PATH: /${{ github.event.repository.name }}/
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v5
+
+    - name: Read the toolchain's pins
+      run: grep -E '^(GHC_VERSION|CABAL_VERSION|WASM_GHC_VERSION|GHC_WASM_META_REV|GHC_WASM_FLAVOUR|NODE_VERSION)=' toolchain/pins.env >> "$GITHUB_ENV"
+
+    - name: Pin the cabal directory
+      run: echo "CABAL_DIR=$HOME/.cabal" >> "$GITHUB_ENV"
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v5
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: npm
+
+    - name: Restore wasm sysroot
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.ghc-wasm
+        key: ${{ runner.os }}-ghc-wasm-sysroot-${{ env.GHC_WASM_META_REV }}
+
+    - name: Restore wasm cross-compiler
+      uses: actions/cache/restore@v5
+      with:
+        path: /usr/local/.ghcup/ghc/wasm32-wasi-${{ env.WASM_GHC_VERSION }}
+        key: ${{ runner.os }}-ghcup-wasm32-wasi-${{ env.WASM_GHC_VERSION }}
+
+    - name: Install GHC WebAssembly toolchain
+      run: |
+        mkdir -p "$RUNNER_TEMP/ghc-wasm-meta"
+        curl --fail --location --retry 5 "https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta/-/archive/$GHC_WASM_META_REV/ghc-wasm-meta-$GHC_WASM_META_REV.tar.gz" | tar xz --strip-components=1 --directory "$RUNNER_TEMP/ghc-wasm-meta"
+        if [ ! -x "$HOME/.ghc-wasm/add_to_github_path.sh" ]; then
+          SKIP_GHC=1 FLAVOUR="$GHC_WASM_FLAVOUR" "$RUNNER_TEMP/ghc-wasm-meta/setup.sh"
+        fi
+        touch "$HOME/.ghc-wasm/.bootstrap-$GHC_WASM_META_REV"
+        # shellcheck source=/dev/null
+        . ~/.ghc-wasm/env
+        if ! ghcup whereis cabal "$CABAL_VERSION" >/dev/null 2>&1; then
+          ghcup install cabal "$CABAL_VERSION"
+        fi
+        ghcup set cabal "$CABAL_VERSION"
+        if ! ghcup whereis ghc "wasm32-wasi-$WASM_GHC_VERSION" >/dev/null 2>&1; then
+          # CONFIGURE_ARGS is a list of arguments, split on purpose.
+          # shellcheck disable=SC2086
+          ghcup -s "file://$RUNNER_TEMP/ghc-wasm-meta/ghcup-wasm-0.0.9.yaml" install ghc "wasm32-wasi-$WASM_GHC_VERSION" --set -- $CONFIGURE_ARGS
+        fi
+        ghcup set ghc "wasm32-wasi-$WASM_GHC_VERSION"
+
+    - name: Install host GHC
+      run: |
+        if ! ghcup whereis ghc "$GHC_VERSION" >/dev/null 2>&1; then
+          ghcup install ghc "$GHC_VERSION"
+        fi
+        ghcup set ghc "$GHC_VERSION"
+
+    - name: Activate toolchain
+      run: |
+        echo "$(ghcup whereis basedir)/ghc/wasm32-wasi-$WASM_GHC_VERSION/bin" >> "$GITHUB_PATH"
+        echo "$(ghcup whereis basedir)/bin" >> "$GITHUB_PATH"
+
+    - name: Install libpq and SQLite
+      run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpq-dev libsqlite3-dev
+
+    - name: Read the libsodium pin
+      id: libsodium
+      run: |
+        . toolchain/pins.env
+        echo "version=$LIBSODIUM_VERSION" >> "$GITHUB_OUTPUT"
+        echo "sha256=$LIBSODIUM_SHA256" >> "$GITHUB_OUTPUT"
+
+    - name: Restore libsodium
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.wiki-toolchain/libsodium-${{ steps.libsodium.outputs.version }}
+        key: ${{ runner.os }}-libsodium-${{ steps.libsodium.outputs.version }}-${{ steps.libsodium.outputs.sha256 }}-${{ hashFiles('toolchain/libsodium.sh') }}
+
+    - name: Build libsodium
+      run: |
+        sh toolchain/libsodium.sh install
+        sh toolchain/libsodium.sh env >> "$GITHUB_ENV"
+
+    - name: Install JavaScript dependencies
+      run: npm ci
+
+    - name: Update Cabal package index
+      run: cabal update
+
+    - name: Restore cached dependencies
+      uses: actions/cache/restore@v5
+      env:
+        key: ${{ runner.os }}-wasm-store-cabal-${{ env.CABAL_VERSION }}-${{ runner.environment }}-v1
+      with:
+        path: ${{ env.CABAL_DIR }}/store
+        key: ${{ env.key }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          ${{ env.key }}-
+
+    - name: Restore wasm and native build directories
+      uses: actions/cache/restore@v5
+      env:
+        compatibility: ${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-wasm-build-v2-ghc-${{ env.GHC_VERSION }}-wasm-${{ env.WASM_GHC_VERSION }}
+      with:
+        path: |
+          dist-newstyle/native-fast
+          dist-newstyle/wasm/build
+          dist-newstyle/wasm/cache
+          dist-newstyle/wasm/packagedb
+          dist-newstyle/wasm/src
+        key: ${{ env.compatibility }}-cabal-${{ env.CABAL_VERSION }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: ${{ env.compatibility }}-
+
+    - name: Restore Chromium
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.cache/ms-playwright
+        key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+
+    - name: Install Chromium
+      run: npx playwright install --only-shell chromium
+
+    # npm run test-wasm builds every wasm suite as the wasm job does, and
+    # hands each to toolchain/nightly-browser-runs.sh in place of the
+    # maker's wrapper: it skips the suites without a page and runs the
+    # browser suite RUNS times, each run's failures in the summary. Twice
+    # as many pages as cores, and a deadline for a whole run of half an
+    # hour in place of hspec-halogen's ten minutes, so that a run slowed
+    # by the load is not cut short as if it had hung. The count of runs
+    # made is checked after, so that a browser suite that was never run
+    # (renamed, or skipped by the wrapper) fails the step rather than
+    # passing it.
+    - name: Run the browser suite under load
+      env:
+        WIKI_NIGHTLY_RUNS: ${{ env.RUNS }}
+        HSPEC_HALOGEN_TIMEOUT: '1800'
+      run: |
+        HSPEC_HALOGEN_JOBS=$((2 * $(nproc)))
+        WIKI_NIGHTLY_MARK=$RUNNER_TEMP/browser-runs
+        export HSPEC_HALOGEN_JOBS WIKI_NIGHTLY_MARK
+        echo "### The browser suite, $RUNS runs of $HSPEC_HALOGEN_JOBS pages side by side on $(nproc) cores" >> "$GITHUB_STEP_SUMMARY"
+        status=0
+        npm run test-wasm -- --test-show-details=direct --test-wrapper="$PWD/toolchain/nightly-browser-runs.sh" || status=$?
+        made=$(cat "$WIKI_NIGHTLY_MARK" 2>/dev/null || echo 0)
+        if [ "$made" != "$WIKI_NIGHTLY_RUNS" ]; then
+          echo "::error title=The browser suite did not run::$made of $WIKI_NIGHTLY_RUNS runs of wiki-app-browser-test were made"
+          exit 1
+        fi
+        exit "$status"

@@ -3121,6 +3121,17 @@ changes only Markdown outside `changelog/` runs no CI, and so no check either.
 Every build of a run is given `WIKI_BUILD_VERSION`, the commit (a pull
 request's head), for the version the page "What's new?" shows.
 
+`.github/workflows/nightly.yml` looks for races on purpose, once a night on
+`main` and by hand, never for a pull request. Its job `properties` runs the
+views' machines' properties (every describe block named `….Machine` in
+`wiki-app-test`) with many more cases than a pull request's run, and its job
+`browser` runs `wiki-app-browser-test` several times with twice as many pages
+side by side as the runner has cores (`toolchain/nightly-browser-runs.sh`), each
+run with a seed of its own. A nightly failure is a finding, not a flake to
+run again: the run's summary lists each failed example with its seed and
+hspec's line to run it again (`--match … --seed …`), and a property's shrunk
+run (`toolchain/ci-findings.sh`), and the finding gets a work package of its own.
+
 The native job installs `libxml2-utils` and checks `xmllint` before testing, so
 Atom and RSS schema checks run in CI. It also checks for XeLaTeX, Pandoc's Latin Modern style and the `mhchem`,
 TikZ, `soul` and Beamer packages before testing. If any are missing, it installs

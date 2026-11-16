@@ -13,11 +13,15 @@ name: Nightly
 #     pull requests' 20,000. Decision 82: 2,000 cases let a real fault of
 #     the bell through in 2 runs of 30.
 #   - browser: wiki-app-browser-test several times, each with a seed of its
-#     own, under the same load every time. hspec-halogen at the pinned
-#     commit cannot slow a page's processor the way the smoke suites'
-#     driver does (HALOGEN_PLAYWRIGHT_THROTTLE), so the load is more pages
-#     side by side than the runner has cores: HSPEC_HALOGEN_JOBS is twice
-#     the cores, and each page then runs at about half its speed.
+#     own, under load. The load the plan asks for first, the same every
+#     time, is a page's processor slowed through the driver, as the smoke
+#     suites' HALOGEN_PLAYWRIGHT_THROTTLE does; hspec-halogen at the pinned
+#     commit cannot do that. So this is the fallback: more pages side by
+#     side than the runner has cores (HSPEC_HALOGEN_JOBS twice the cores),
+#     each page then at roughly half its speed. Pages side by side slow
+#     each other by whatever the others do at that moment (build.yml says
+#     so of the smoke suites), so a race found here may not show again in
+#     the next run: its seed and example are still the finding.
 #
 # Both run on GitHub's hosted runners. Their setup steps are copies of
 # build.yml's for a hosted runner (the native job's for properties, the
@@ -25,9 +29,11 @@ name: Nightly
 # cannot be shared between two workflow files, and a reusable workflow or
 # a composite action would mean rewriting build.yml's jobs. build.yml's
 # comments say why each step is as it is. The copies differ in three
-# ways: no self-hosted branch; every cache is restored and never saved,
-# under the same keys and paths as build.yml's, so that a scheduled run
-# (on main) takes main's newest copies and leaves them as they are; and the
+# ways: no self-hosted branch; every cache of build.yml's is restored and
+# never saved, under the same keys and paths, so that a scheduled run (on
+# main) takes main's newest copies and leaves them as they are (only
+# setup-node's own npm cache, keyed by the lockfile, is saved on a miss,
+# as it is in build.yml); and the
 # pins are read from toolchain/pins.env, which holds the same values as
 # build.yml's env, rather than written here a third time.
 on:
@@ -51,18 +57,24 @@ permissions:
 #
 # CASES: the machines' 81 examples took 17.6 s at 20,000 cases, four at a
 # time, on a laptop's i7-1270P (2026-11-16), and 1,666 s (28 minutes) at
-# 1,000,000; the slowest example alone took 309 s. A hosted runner's four
-# cores are two physical ones, about one and a half to two times slower
-# for four jobs, so a million would take 40 to 55 minutes there. 500,000
+# 1,000,000; the slowest example alone took 309 s; the bell's 42 alone
+# took 800 s at 500,000. Those are of the build CI makes, wiki-app at -O0
+# (cabal.project); at -O1 the 20,000 took 16.9 s, no quicker, so the
+# cached -O0 build is kept. A hosted runner's four cores are slower for
+# four jobs: by an estimate, not a measure, one and a half to two times,
+# so a million would take 40 to 55 minutes there. 500,000
 # is the largest round number that fits in about half an hour: 14 minutes
 # locally, about 21 to 28 on a hosted runner. The bursts (Test.Bell's
 # `bursts`) keep their own 2,000 cases whatever this says
 # (modifyMaxSuccess (const 2000)).
 #
 # RUNS: about 10 minutes of setup and build, then each run of the browser
-# suite about 6 to 7 minutes at eight pages on four cores (its two shards
-# take 340 to 430 s at two pages, with wiki-core-test beside them): 10 +
-# 4 x 7 = 38 minutes, under the forty the job is meant to take.
+# suite about 6 to 7 minutes at eight pages on four cores: 10 + 4 x 7 = 38
+# minutes, under the forty the job is meant to take. The 7 is an estimate,
+# not a measure: the suite's two shards take 340 to 430 s at two pages,
+# with wiki-core-test beside them, and eight pages do the same work on
+# the same four cores. The first nights' logs give the real time; lower
+# RUNS if a run takes longer.
 env:
   CASES: ${{ inputs.cases || '500000' }}
   RUNS: ${{ inputs.runs || '4' }}

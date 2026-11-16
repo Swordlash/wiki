@@ -20,7 +20,8 @@
 # A suite that ran no example at all fails here too: a --match that
 # matches nothing, or a runner that stopped before the suite reported,
 # would otherwise pass in silence. The last 60 lines of its output then go
-# to the summary.
+# to the summary, as they do for a command that failed with no failed
+# example (the runner's deadline, errors in the page, a crashed shard).
 #
 # It exits with the command's status when that is not 0, 1 when the
 # command passed but ran no example, and 0 otherwise.
@@ -77,8 +78,14 @@ fi
 {
   printf '\n#### %s: failed\n\n' "$title"
   printf 'Exit status %s; %s examples, %s failures, in %s reports.\n\n' "$status" "$examples" "$failures" "$reports"
-  if [ "$examples" -eq 0 ]; then
-    printf 'No example ran. The output ends:\n\n~~~~\n'
+  if [ "$examples" -eq 0 ] || ! grep -q '^  To rerun use: ' "$work/log"; then
+    # No example ran, or the command failed with no failed example: the
+    # runner's deadline, errors in the page, a shard that crashed.
+    if [ "$examples" -eq 0 ]; then
+      printf 'No example ran. The output ends:\n\n~~~~\n'
+    else
+      printf 'No example failed, but the command did. The output ends:\n\n~~~~\n'
+    fi
     tail -n 60 "$work/log"
     printf '~~~~\n'
   else

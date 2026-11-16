@@ -6,7 +6,8 @@
 -- 'resolvePageLink' over generated trees of pages.
 module Test.Complete (spec) where
 
-import Data.Aeson (Value, object, (.=))
+import Data.Aeson (Value (..), object, (.=))
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.List (lookup, nub)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
@@ -19,13 +20,15 @@ import Test.QuickCheck (Gen, Property, checkCoverage, choose, conjoin, counterex
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Editor.Complete
+import Wiki.App.Editor.Tools (Control (..), controlName, htmlTags, notOffered, slashEntries, toolbarGroups)
 import Wiki.App.Route (PageLink (..), pageLinkText, pageRoute, resolvePageLink)
 import Wiki.Core.Id (PageId (..))
 import Wiki.Core.Markdown (Destination (..), classifyDestination)
 import Wiki.Core.Markdown.Ast (Block (..), Footnote (..), Inline (..), ListItem (..), allInlines, parseMarkdown, parseWithStartsAndMarkers, plainText)
 import Wiki.Core.Markdown.Ast qualified as Ast
-import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
+import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..), boxChoices)
 import Wiki.Core.Markdown.Complete
+import Wiki.Core.Markdown.Edit (htmlTagLabel)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind (..))
 import Wiki.Core.Slug (Slug, mkSlug, slugText, slugify)
@@ -85,8 +88,8 @@ spec = describe "Wiki.App.Editor.Complete" $ do
           , linkable "inside" "The user guide" ["projects", "the-user-guide"]
           , linkable "other" "Projects" ["projects"]
           ]
-        onHandbook = Held {kind = Document, boxes = [], editing = PageId "editing", pages = linkablesFrom handbookEditing pages}
-        offered typed = map (\c -> (c.label, c.place)) . (.candidates) <$> answered (sources onHandbook) typed (lineRequest typed "")
+        onHandbook = Held {kind = Document, boxes = [], editing = PageId "editing", pages = linkablesFrom handbookEditing pages, entries = []}
+        offered typed = map (\c -> (c.label, c.note)) . (.candidates) <$> answered (sources onHandbook) typed (lineRequest typed "")
     it "offers every page but the one edited, the nearer first: siblings, then its branch, then the others" $
       (map fst <$> offered "[[")
         `shouldBe` Just ["Guide", "Old notes", "Handbook", "Guide to deploys", "Team", "Projects", "Guide", "The user guide"]
@@ -122,6 +125,51 @@ spec = describe "Wiki.App.Editor.Complete" $ do
     modifyMaxSuccess (* 5) . prop "leaves one wiki link to the page chosen at the cursor, with the label read there, and every other inline as before, or offers nothing" $
       checkCoverage (forAll genLinkLine (choosesPage onHandbook))
 
+  describe "the / menu, made from the toolbar" $ do
+    let menuHeld = (held Document [BoxKind {name = "exercise", label = "Exercise", colour = Teal, icon = Pencil}]) {entries = slashEntries (boxChoices [BoxKind {name = "exercise", label = "Exercise", colour = Teal, icon = Pencil}])}
+        menu typed = map (\c -> (c.label, c.note)) . (.candidates) <$> answered (sources menuHeld) ("Some text " <> typed) (lineRequest ("Some text " <> typed) "")
+        labelsFor typed = map fst <$> menu typed
+    it "lists everything the toolbar writes, in its order, before a letter is typed" $
+      (take 8 <$> labelsFor "/") `shouldBe` Just ["Bold", "Italic", "Strikethrough", "Inline spoiler", "Heading", "Bulleted list", "Numbered list", "Task list"]
+    it "puts a label's start first, the shorter label first, then a later word, then a keyword" $ do
+      (take 2 <$> labelsFor "/ta") `shouldBe` Just ["Table", "Task list"]
+      (head =<< labelsFor "/b") `shouldBe` Just "Bold"
+      labelsFor "/latex" `shouldBe` Just ["Inline math", "Display math", "TikZ picture"]
+      labelsFor "/kbd" `shouldBe` Just ["Keyboard key"]
+      (filter (`elem` ["Note", "Exercise"]) <$> labelsFor "/box") `shouldBe` Just ["Note", "Exercise"]
+      labelsFor "/list" `shouldBe` Just ["Task list", "Bulleted list", "Numbered list"]
+    it "shows what each entry writes in grey" $ do
+      (lookup "Table" =<< menu "/ta") `shouldBe` Just (Just "| a | b |")
+      (lookup "Exercise" =<< menu "/ex") `shouldBe` Just (Just "> [!EXERCISE]")
+      (lookup "Link to a page" =<< menu "/li") `shouldBe` Just (Just "[Title](page)")
+    it "opens nothing for letters no entry has" $
+      labelsFor "/zqx" `shouldBe` Nothing
+    it "offers every control of the toolbar, or names it among those it does not offer" $ do
+      let offeredNames = map (.label) (slashEntries (boxChoices []))
+          namesOf = \case
+            BoxControl -> map snd (boxChoices [])
+            HtmlControl -> map htmlTagLabel htmlTags
+            control -> [controlName control]
+          -- Each name of each control offered is an entry; none of a
+          -- control left out is.
+          missing c
+            | controlName c `elem` notOffered = filter (`elem` offeredNames) (namesOf c)
+            | otherwise = filter (`notElem` offeredNames) (namesOf c)
+      concatMap missing (concat toolbarGroups) `shouldBe` []
+      filter (`elem` offeredNames) notOffered `shouldBe` []
+    it "says in its answer what an entry writes in place of the line, and which opens a dialog" $ do
+      let answerOf typed = completionJson <$> answered (sources menuHeld) typed (lineRequest typed "")
+          optionOf name typed =
+            answerOf typed >>= \case
+              Object o -> case KeyMap.lookup "options" o of
+                Just (Array options) -> find (\case Object x -> KeyMap.lookup "label" x == Just (String name); _ -> False) (toList options)
+                _ -> Nothing
+              _ -> Nothing
+      optionOf "Table" "/ta" `shouldBe` Just (object ["label" .= ("Table" :: Text), "template" .= ("| ${1:Column 1} | ${2:Column 2} | ${3:Column 3} |\n| -------- | -------- | -------- |\n| Text     | Text     | Text     |" :: Text), "line" .= ("/ta" :: Text), "detail" .= ("| a | b |" :: Text)])
+      optionOf "Link to a page" "/li" `shouldBe` Just (object ["label" .= ("Link to a page" :: Text), "template" .= ("${0}" :: Text), "detail" .= ("[Title](page)" :: Text), "action" .= ("link-page" :: Text)])
+      optionOf "Mermaid diagram" "/me" `shouldBe` Just (object ["label" .= ("Mermaid diagram" :: Text), "insert" .= ("```mermaid\ngraph LR\n  A --> B\n```" :: Text), "select" .= [11 :: Int, 29], "line" .= ("/me" :: Text), "detail" .= ("```mermaid" :: Text)])
+      (answerOf "/ta" >>= \case Object o -> KeyMap.lookup "escape" o; _ -> Nothing) `shouldBe` Just (String "dismisses")
+
   describe "the pages offered in a space of 10,000 pages" $
     it "are matched and ranked within a bound of allocation, their paths and links worked out before, and again no more" $ do
       -- The work is counted, not timed ('allocated'). Each answer only
@@ -131,7 +179,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       -- page's path (each page above it searched for in the list) and its
       -- link, as the editor did before #294's review, allocated 11 GB.
       let kept = linkables space largeSpace (slugs ["section-0", "page-77"])
-          h = Held {kind = Document, boxes = [], editing = PageId "p77", pages = kept}
+          h = Held {kind = Document, boxes = [], editing = PageId "p77", pages = kept, entries = []}
       _ <- evaluate (kept == kept)
       let asked typed = answered (sources h) typed (lineRequest typed "")
       for_ ["[[", "[[pag", "[[zz"] $ \typed -> do
@@ -146,7 +194,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       -- link that ends further away is offered nothing. Asking the parser
       -- again for each character of what followed the cursor, as before
       -- #294's second review, allocated 1.6 GB for 1,000 characters.
-      let h = Held {kind = Document, boxes = [], editing = PageId "none", pages = linkablesFrom [] [linkable "guide" "Guide" ["guide"]]}
+      let h = Held {kind = Document, boxes = [], editing = PageId "none", pages = linkablesFrom [] [linkable "guide" "Guide" ["guide"]], entries = []}
       for_ [1_000, 10_000] $ \n -> do
         let lineAfter = T.replicate n "x" <> "|label]] end"
             page = "Some text\n\nSee [[Gu" <> lineAfter
@@ -170,9 +218,9 @@ spec = describe "Wiki.App.Editor.Complete" $ do
   describe "completionJson" $ do
     it "shows a candidate's place and its origin as the detail, the wiki's own marker neither" $ do
       let made = Completion {from = 2, through = 0, candidates = [own, page, fromPlugin], enter = EnterChooses, escape = EscapeCloses}
-          own = Candidate {label = "[[!div]]", skeleton = [Literal "[[!div]]", Field 0 ""], place = Nothing, writing = AsSnippet, origin = Nothing}
-          page = Candidate {label = "Guide", skeleton = [Literal "[[Guide]]", Field 0 ""], place = Just "handbook/guide", writing = AsSnippet, origin = Nothing}
-          fromPlugin = Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]{", Field 1 "date", Literal "}"], place = Just "today", writing = AsSnippet, origin = Just (FromPlugin "calendar")}
+          own = Candidate {label = "[[!div]]", skeleton = [Literal "[[!div]]", Field 0 ""], writing = AsSnippet, action = Nothing, note = Nothing, origin = Nothing}
+          page = Candidate {label = "Guide", skeleton = [Literal "[[Guide]]", Field 0 ""], writing = AsSnippet, action = Nothing, note = Just "handbook/guide", origin = Nothing}
+          fromPlugin = Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]{", Field 1 "date", Literal "}"], writing = AsSnippet, action = Nothing, note = Just "today", origin = Just (FromPlugin "calendar")}
       completionJson made
         `shouldBe` object
           [ "from" .= (2 :: Int)
@@ -406,7 +454,7 @@ largeSpace =
 
 -- | What the editor holds of a page of a kind, with no page to link to.
 held :: PageKind -> [BoxKind] -> Held
-held kind boxes = Held {kind, boxes, editing = PageId "none", pages = []}
+held kind boxes = Held {kind, boxes, editing = PageId "none", pages = [], entries = []}
 
 -- | The path of the page edited in the tests of the pages offered.
 handbookEditing :: [Slug]

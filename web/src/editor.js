@@ -1105,7 +1105,61 @@ const emojiSource = (names, whole) => {
 // never less: after [[, anything but a "]" (which ends a wiki link's text
 // for the parser) or a "|" (after which the cursor is in a label, where
 // no list opens). A "[" may stand in a link's address.
-const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$/;
+//
+// A "/" at the line's start or after a space or a tab, and letters after
+// it, asks too: the "/" menu of what the toolbar writes (WP5.124 (d)).
+const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$|(^|[ \t])\/[A-Za-z]*$/;
+
+// The "/" whose menu Escape closed, by position in each state, kept
+// where the text around them moves: the letters typed after such a "/"
+// do not open its menu again (as the emoji's Escape escapes its colon),
+// until the "/" is typed anew. A "/" deleted is forgotten.
+const dismissSlash = StateEffect.define();
+const dismissedSlashes = StateField.define({
+  create: () => [],
+  update: (positions, tr) => {
+    const kept = [];
+    for (const at of positions) {
+      const from = tr.changes.mapPos(at, 1);
+      const to = tr.changes.mapPos(at + 1, -1);
+      if (to - from === 1 && tr.newDoc.sliceString(from, to) === "/") kept.push(from);
+    }
+    for (const effect of tr.effects) if (effect.is(dismissSlash)) kept.push(effect.value);
+    return kept;
+  },
+});
+
+// What an option of the wiki's own Markdown writes when it is chosen, in
+// a view: its snippet, or its text as it is (insert), in place of the
+// range the list was for; or, for one
+// given the cursor's whole line (an entry of the "/" menu), the snippet or
+// the text to insert in place of that line, if it still reads as the
+// line the answer was made for (a list kept from before the last key
+// writes nothing); then, for an entry that opens a dialog, a
+// "wiki-complete-action" event on the host, which the component answers.
+const writeOption = (host, option) => (view, completion, from, to) => {
+  if (option.line === undefined && option.insert !== undefined) {
+    // No place to fill: the text as it is, the cursor after it.
+    view.dispatch({ ...insertCompletionText(view.state, option.insert, from, to), annotations: pickedCompletion.of(completion) });
+  } else if (option.line === undefined) {
+    snippet(option.template)(view, completion, from, to);
+  } else {
+    const line = view.state.doc.lineAt(from);
+    if (line.text !== option.line) return;
+    if (option.insert === undefined) {
+      snippet(option.template)(view, completion, line.from, line.to);
+    } else {
+      const [start, end] = option.select.map((n) => line.from + unitsOf(option.insert, n));
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: option.insert },
+        selection: EditorSelection.single(start, end),
+        scrollIntoView: true,
+        annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete")],
+      });
+    }
+  }
+  if (option.action !== undefined) host.dispatchEvent(new CustomEvent("wiki-complete-action", { detail: option.action }));
+};
 
 // The answer is {from, through, options, enter, escape}: where the text
 // an entry replaces starts in the line, and how many characters after the
@@ -1115,8 +1169,10 @@ const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$/;
 // the text it writes as it is (insert), and
 // what is shown grey beside it as the option's detail (where a page is,
 // and where a plugin's entry comes from); and what Enter and Escape do,
-// for every option of the list.
-const markupSource = (markup, whole) => async (context) => {
+// for every option of the list. An option may also say what it writes in
+// place of the cursor's whole line, and what the editor does then
+// (writeOption).
+const markupSource = (host, markup, whole) => async (context) => {
   const { state, pos, tree } = whole(context);
   const line = state.doc.lineAt(pos);
   const before = state.sliceDoc(line.from, pos);
@@ -1130,6 +1186,7 @@ const markupSource = (markup, whole) => async (context) => {
   // The line's text before the cursor is the same in a row and in the
   // master, so the replaced text's length in units is read from it.
   const from = context.pos - (before.length - unitsOf(before, found.from));
+  if (found.escape === "dismisses" && context.state.field(dismissedSlashes, false)?.includes(from)) return null;
   // What the entry replaces after the cursor may run over lines below (a
   // link that ends there): its length in units is read from the text
   // after the cursor, two units at most for each character.
@@ -1142,11 +1199,10 @@ const markupSource = (markup, whole) => async (context) => {
     options: found.options.map((option) => ({
       label: option.label,
       detail: option.detail,
-      // An option written as it is (insert) has no place to fill: the
-      // cursor goes after it.
-      apply: option.insert === undefined ? snippet(option.template) : option.insert,
+      apply: writeOption(host, option),
       enter: found.enter,
       typed: (s, head) => ({ from, letters: s.sliceDoc(from, head) }),
+      dismiss: found.escape === "dismisses" ? () => dismissSlash.of(from) : undefined,
     })),
   };
 };
@@ -1193,9 +1249,11 @@ const completions = (host) => {
   // only once n letters are typed (`typed`, the letters as they are now,
   // {from, letters}, given the state, the cursor and the view, whose
   // whole text wholeAt reads) or the reader moved in the list; `escape` is nothing,
-  // to close the list, or what to write as it closes. A mention's list
-  // chooses at once and closes; the emoji's chooses after two letters and
-  // escapes its colon; the wiki's own Markdown says in its answer.
+  // to close the list, or what to write as it closes; `dismiss` is
+  // nothing, or the effect that keeps the list's "/" from opening it again
+  // (dismissedSlashes). A mention's list chooses at once and closes; the
+  // emoji's chooses after two letters and escapes its colon; the wiki's
+  // own Markdown says in its answer, its "/" menu dismissing its "/".
   const shown = (state) => (completionStatus(state) === "active" ? (currentCompletions(state)[0] ?? null) : null);
   // Whether the reader moved in a list that waits for letters with the keys (an arrow,
   // Page Up or Page Down) since it was shown for the letters typed: what
@@ -1250,6 +1308,7 @@ const completions = (host) => {
     if (written !== null) {
       view.dispatch({ changes: written, annotations: isolateHistory.of("full"), userEvent: "input.escape" });
     }
+    if (option.dismiss !== undefined) view.dispatch({ effects: option.dismiss() });
     return true;
   };
   // The list's keys: the library's, Enter and Escape as above, and Tab,
@@ -1280,7 +1339,8 @@ const completions = (host) => {
   ]);
   return {
     extension: [
-      autocompletion({ ...config, override: [mentionSource(people, whole), emojiSource(names, whole), markupSource(markup, whole)] }),
+      autocompletion({ ...config, override: [mentionSource(people, whole), emojiSource(names, whole), markupSource(host, markup, whole)] }),
+      dismissedSlashes,
       forgetMoves,
       ownKeys,
       snippetKeys,
@@ -1288,7 +1348,7 @@ const completions = (host) => {
     // The same, asking nothing and never starting on typing: the master's
     // slide by slide (masterCompletion). The library's state stays, so that
     // a query or a timer of its from before goes on finding it.
-    quiet: [autocompletion({ ...config, override: [], activateOnTyping: false }), forgetMoves, ownKeys, snippetKeys],
+    quiet: [autocompletion({ ...config, override: [], activateOnTyping: false }), dismissedSlashes, forgetMoves, ownKeys, snippetKeys],
     mentioned: people.answer,
     emojied: names.answer,
     completed: markup.answer,

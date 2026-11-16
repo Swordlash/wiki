@@ -26,6 +26,7 @@ import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..), pageLinkText)
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
+import Wiki.Core.Markdown.Edit qualified as Edit
 
 -- The last key that reached the window: test/jsbits/test-keys.js.
 $( browserJS
@@ -138,6 +139,72 @@ spec m = do
     -- Tab, which the form takes to indent.
     reached "Escape" `shouldReturn` "Escape"
     reached "Tab" `shouldReturn` "Tab"
+  -- The "/" menu (WP5.124 (d)): what each entry writes, and where it
+  -- opens, are tested natively ("Test.Markdown.CompleteOracle"); here,
+  -- that CodeMirror writes it as one step of the undo, with Tab going to
+  -- its places, that Escape keeps the "/" from opening it again, and that
+  -- an entry opens the toolbar's dialog.
+  it "writes the table after /ta in the middle of the long Markdown guide, its header's cells as places in turn, and undo takes it back" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-admin") (EditPage (slugs ["docs"]) (slugs ["markdown-guide"]))
+    text <- editorText ui
+    guide <- eventually $ markdown ui >>= \t -> t <$ (t `shouldSatisfy` ((> 10_000) . T.length))
+    -- An empty line between two paragraphs in the middle: thousands of
+    -- characters before it and after it. The editor counts UTF-16 units.
+    let (upTo, _) = T.breakOn "\n\n" (T.drop (T.length guide `div` 2) guide)
+        at = T.length guide `div` 2 + T.length upTo + 1
+        units = at + T.length (T.filter ((> 0xFFFF) . ord) (T.take at guide))
+        typed = T.take at guide <> "/ta" <> T.drop at guide
+        -- What the toolbar's command writes there, the / and its letters
+        -- gone.
+        (table, Edit.Selection _ selected) = Edit.apply Edit.Table guide (Edit.cursor at)
+    selectText ui units units
+    typeText text "/ta"
+    eventually $ (take 2 <$> labels ui) `shouldReturn` ["Table", "Task list"]
+    listReady ui
+    press "Enter"
+    markdown ui `shouldReturn` table
+    -- The first place is "Column 1", selected; Tab goes to "Column 2",
+    -- typed over.
+    (snd <$> editorSelection ui) `shouldReturn` selected + (units - at)
+    press "Tab"
+    typeText text "Two"
+    markdown ui `shouldReturn` T.replace "Column 2" "Two" table
+    -- Undo takes the typing back, then the table, leaving "/ta" as typed.
+    press "Control+z"
+    eventually $ markdown ui `shouldReturn` table
+    press "Control+z"
+    eventually $ markdown ui `shouldReturn` typed
+
+  it "closes the / menu on Escape, and the same / does not open it again as letters are typed" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    text <- editorText ui
+    setMarkdown ui titleLines
+    selectText ui (T.length titleLines) (T.length titleLines)
+    typeText text "Some /ta"
+    listReady ui
+    press "Escape"
+    eventually $ length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    typeText text "b"
+    eventually (completing ui `shouldReturn` "")
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    -- With no list, Enter is a new line; a / typed anew opens it.
+    press "Enter"
+    typeText text "/ta"
+    eventually $ (take 1 <$> labels ui) `shouldReturn` ["Table"]
+    markdown ui `shouldReturn` titleLines <> "Some /tab\n/ta"
+
+  it "opens the dialog of a link to a page from the / menu, the / and its letters gone" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    text <- editorText ui
+    setMarkdown ui titleLines
+    selectText ui (T.length titleLines) (T.length titleLines)
+    typeText text "See /li"
+    eventually $ (take 2 <$> labels ui) `shouldReturn` ["Link", "Link to a page"]
+    listReady ui
+    press "ArrowDown"
+    press "Enter"
+    eventually $ length <$> findAll ui ".link-dialog" `shouldReturn` 1
+    markdown ui `shouldReturn` titleLines <> "See "
   where
     helloEditor = EditPage (slugs ["blog"]) (slugs ["hello-world"])
     exercise = BoxKind {name = "exercise", label = "Exercise", colour = Teal, icon = Pencil}

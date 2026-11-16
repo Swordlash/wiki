@@ -22,9 +22,10 @@ import Data.Text qualified as T
 import Protolude
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
-import Test.QuickCheck (Arbitrary (..), Gen, choose, counterexample, elements, frequency, (===))
+import Test.QuickCheck (Arbitrary (..), Gen, Property, checkCoverage, choose, conjoin, counterexample, cover, elements, forAll, frequency, property, (===))
 import Wiki.Core.Markdown.Ast (Block (..), BoxMarker (..), MarkerLine (..), MarkerName (..), MarkerRole (..), closingMarker, holdsBlocks, markerNameText, parseWithAllMarkers)
 import Wiki.Core.Markdown.Complete
+import Wiki.Core.Markdown.Edit qualified as Edit
 import Wiki.Core.Markdown.Problems (everyBlock)
 import Wiki.Core.PageKind (PageKind (..))
 
@@ -60,6 +61,43 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
     prop "writes every marker and kind of box offered as the parser then reads it" $ \(Doc doc) (Line cursor) ->
       counterexample (toS (T.unlines (doc <> [cursor <> "‸"]))) $
         readAsWritten doc cursor === []
+    prop "writes each entry of the / menu as the toolbar's command writes it on the whole text, selection included" $
+      checkCoverage (forAll genSlashCase slashWritesAsApply)
+
+  describe "the / menu" $ do
+    it "opens at the end of a line of a paragraph, a list's item, a quotation, a box's text or a spoiler's body, and on an empty line" $
+      map slashOpens ["Some text /ta‸", "- an item /‸", "> a quotation /‸", "> [!NOTE]\n> Its text /‸", "[[!spoiler]]{s}(More)\nIts body /‸", "/‸", "Text\n\n/‸   ", "Text\n/‸"]
+        `shouldBe` replicate 8 True
+    it "opens nowhere else: text after the cursor, code, math, HTML, a link, emphasis, a heading, a table's cell, a box's title, a spoiler's description, a footnote, a word, an address, a construct the lines below close" $
+      map slashOpens ["*Some /‸\nmore*", "[see /‸\nmore](https://example.com)", "Title /‸\n===", "| a | b /‸\n| --- | --- |", "Some /‸ text", "Some `code /‸` here", "```\n/‸", "Text\n\n    /‸", "Math $a /‸$ here", "[see /‸ more](https://example.com)", "[a]( /‸)", "<span title=\"a /‸\">b</span>", "*Some /‸*", "# Title /‸", "| a | b |\n| --- | --- |\n| x /‸", "> [!NOTE] Its title /‸", "[[!spoiler]]{s}(See /‸", "[^n]: A note /‸", "and/‸", "https://example.com/pa‸", "Text /a‸b"]
+        `shouldBe` replicate 21 False
+    it "opens before a text longer than the bound, and not in a paragraph still open where the text read is cut" $ do
+      let lines' = T.intercalate "\n" (replicate 60 "More words of a paragraph that goes on and on.")
+      slashOpens ("Text /‸\n\n" <> lines') `shouldBe` True
+      slashOpens ("Text /‸\n" <> lines') `shouldBe` False
+      -- In a long list, quotation or box, the block after the cursor's
+      -- paragraph is inside the same top-level block.
+      slashOpens ("- An item /‸\n" <> T.intercalate "\n" (replicate 60 "- Another item of the same long list")) `shouldBe` True
+      slashOpens ("> A quotation /‸\n>\n" <> T.intercalate "\n>\n" (replicate 60 "> Another paragraph of the same quotation")) `shouldBe` True
+      slashOpens ("> [!NOTE]\n> A box /‸\n>\n" <> T.intercalate "\n>\n" (replicate 60 "> Another paragraph of the same box")) `shouldBe` True
+    modifyMaxSuccess (* 10) . prop "opens where the place is text and not elsewhere, over generated places" $
+      forAll genSlashPlace $
+        \(marked, expected) -> counterexample (toS marked) (slashOpens marked === expected)
+    it "gives a table its other header cells as further places, and any other entry the command's selection alone" $ do
+      slashPlaces "/ta‸" Edit.Table `shouldBe` Just ["Column 1", "Column 2", "Column 3"]
+      slashPlaces "/‸" Edit.SpoilerBlock `shouldBe` Just ["name"]
+      slashPlaces "Go /‸" Edit.Link `shouldBe` Just ["link text"]
+      slashPlaces "/‸" Edit.CodeBlock `shouldBe` Just [""]
+      slashPlaces "/‸" (Edit.Html Edit.Details) `shouldBe` Just ["Details"]
+      slashPlaces "/‸" Edit.Bold `shouldBe` Just ["bold text"]
+    it "writes a block on an indented line as it is, its selection and no other place, since a snippet would indent its lines" $ do
+      let c = slashCandidate "  - item /ta‸" Edit.Table
+      (.writing) <$> c `shouldBe` Just (LineAsText "  - item /ta")
+      (map fst . snd . skeletonText . (.skeleton) <$> c) `shouldBe` Just [1]
+      slashPlaces "/‸" Edit.Mermaid `shouldBe` Just ["graph LR\n  A --> B"]
+      (.writing) <$> slashCandidate "/‸" Edit.Mermaid `shouldBe` Just (LineAsText "/")
+    it "closes with Escape so that the same / does not open it again" $
+      (.escape) <$> listOf' "/ta‸" `shouldBe` Just EscapeDismisses
 
 ----------------------------------------------------------------------
 -- The completion, and the parser's reading
@@ -156,6 +194,161 @@ readAsWritten doc cursor =
     holds sentinel = \case
       Alert _ _ bs -> any (\b -> sentinel `T.isInfixOf` show b) bs
       _ -> False
+
+----------------------------------------------------------------------
+-- The / menu
+
+-- | Every command the toolbar's @/@ menu offers, each as an entry by its
+-- name ("Wiki.App.Editor.Tools" makes the editor's, from the toolbar).
+slashCommands :: [Edit.Command]
+slashCommands =
+  [Edit.Bold, Edit.Italic, Edit.Strikethrough, Edit.Spoiler, Edit.Heading, Edit.BulletList, Edit.NumberedList, Edit.TaskList, Edit.Quote, Edit.InlineCode, Edit.CodeBlock, Edit.Link, Edit.Table]
+    <> [Edit.InlineMath, Edit.DisplayMath, Edit.Mermaid, Edit.Tikz, Edit.HtmlBlock, Edit.HorizontalRule, Edit.SpoilerBlock, Edit.Box "NOTE", Edit.Box "EXERCISE"]
+    <> map Edit.Html [minBound .. maxBound]
+
+slashEntries' :: [SlashEntry]
+slashEntries' = [SlashEntry {label = show command, keywords = [], sample = "", does = WritesCommand command} | command <- slashCommands]
+
+-- | A marked text as a place: the lines above the cursor's, the cursor's
+-- before the mark and after it, and the lines below.
+slashAt :: Text -> At
+slashAt marked =
+  At {place = InText, above = initDef [] ls, before = fromMaybe "" (lastMay ls), after = T.takeWhile (/= '\n') (T.drop 1 rest), below = drop 1 (T.splitOn "\n" (T.drop 1 rest))}
+  where
+    (upTo, rest) = T.breakOn "‸" marked
+    ls = T.splitOn "\n" upTo
+
+listOf' :: Text -> Maybe Completion
+listOf' marked = let at = slashAt marked in complete [slashSource slashEntries'] (readLine at.above) at
+
+-- | Whether the @/@ menu opens at the mark.
+slashOpens :: Text -> Bool
+slashOpens = isJust . listOf'
+
+-- | The candidate of a command at the mark.
+slashCandidate :: Text -> Edit.Command -> Maybe Candidate
+slashCandidate marked command = listOf' marked >>= find ((== show command) . (.label)) . (.candidates)
+
+-- | What the places of a command's candidate hold, in their order.
+slashPlaces :: Text -> Edit.Command -> Maybe [Text]
+slashPlaces marked command = do
+  c <- slashCandidate marked command
+  let (text, ranges) = skeletonText c.skeleton
+  Just [T.take (e - s) (T.drop s text) | (_, (s, e)) <- ranges]
+
+-- | A place for the @/@ menu: the lines above, the cursor's line before the
+-- @/@ (in containers), what follows the cursor on its line, and the lines
+-- below. Above are the document's generated lines and what may stand
+-- right above a block (a heading, a rule, a fence, a line of spaces).
+genSlashCase :: Gen ([Text], Text, Text, [Text])
+genSlashCase = do
+  Doc doc <- arbitrary
+  last' <- elements [[], ["# Title"], ["---"], ["```", "code", "```"], ["Text", ""], ["   "], ["Text"]]
+  Line cursor <- arbitrary
+  words' <- elements ["", "Some words "]
+  after' <- elements ["", "  "]
+  below <- elements [[], [""], ["", "", "Next"], ["Next"], ["  ", "- item"], ["", "  "], "" : T.splitOn "\n" longText]
+  longAbove <- elements [[], T.splitOn "\n" longText <> [""]]
+  pure (longAbove <> doc <> last', cursor <> words', after', below)
+
+-- | Wherever the menu opens on a generated place, each entry that writes
+-- writes, in place of the cursor's line, what the toolbar's command
+-- ('Edit.apply') writes on the whole text with the @/@ taken away and the
+-- cursor where it was, and selects what it selects: the skeleton's text
+-- (its places holding what the command writes there, a snippet's further
+-- lines after the cursor line's indentation as CodeMirror writes them)
+-- and its first place. The entry is worked out on the lines around the
+-- cursor's alone ('Window'), so this is the check that they are enough.
+slashWritesAsApply :: ([Text], Text, Text, [Text]) -> Property
+slashWritesAsApply (above, typedBefore, after', below) = cover 50 (isJust opened) "the menu opens" $ case opened of
+  Nothing -> property True
+  Just found ->
+    conjoin $
+      -- With no letters, every entry: none is left out for a text its
+      -- command could not be written in.
+      (map (.label) found.candidates === map show slashCommands)
+        : [ counterexample (toS (c.label <> ":\n" <> whole)) $ written c === Just (Edit.apply command whole (Edit.cursor at'))
+          | c <- found.candidates
+          , command <- [k | k <- slashCommands, show k == c.label]
+          ]
+  where
+    opened = complete [slashSource slashEntries'] (readLine above) at
+    at = At {place = InText, above, before = typedBefore <> "/", after = after', below}
+    lineStart = sum (map ((+ 1) . T.length) above)
+    at' = lineStart + T.length typedBefore
+    whole = T.intercalate "\n" (above <> [typedBefore <> after'] <> below)
+    indentation = T.takeWhile (\c -> c == ' ' || c == '\t') typedBefore
+    written c = do
+      let (text, ranges) = skeletonText c.skeleton
+      text' <- case c.writing of
+        LineAsSnippet _ -> Just (T.intercalate ("\n" <> indentation) (T.splitOn "\n" text))
+        LineAsText _ -> Just text
+        _ -> Nothing
+      (s, e) <- snd <$> head ranges
+      -- A snippet's first place is on its first line, or no indentation is
+      -- added before it.
+      let shifted n = n + T.length indentation * T.count "\n" (T.take n text)
+          (s', e') = case c.writing of
+            LineAsSnippet _ -> (shifted s, shifted e)
+            _ -> (s, e)
+      Just (T.intercalate "\n" (above <> [text'] <> below), Edit.Selection (lineStart + s') (lineStart + e'))
+
+-- | A place where the @/@ menu opens (text of a paragraph, a list's item,
+-- a quotation, a table's cell, a heading) or does not (code of both kinds,
+-- math, a link's text and its address, HTML, an address, a word), marked,
+-- and whether it opens.
+genSlashPlace :: Gen (Text, Bool)
+genSlashPlace = do
+  word <- elements ["text", "Some words", "a"]
+  letters <- elements ["", "ta", "b"]
+  -- Before it, nothing, a paragraph, or a text longer than every bound;
+  -- after it, nothing, a paragraph, or such a text.
+  intro <- elements ["", "Intro.\n\n", longText <> "\n\n"]
+  outro <- elements ["", "\n\nAfter.", "\n\n" <> longText]
+  let at' = "/" <> letters <> "‸"
+  (marked, opens) <-
+    elements
+      [ (word <> " " <> at', True)
+      , ("- " <> word <> " " <> at', True)
+      , ("1. " <> word <> " " <> at', True)
+      , ("> " <> word <> " " <> at', True)
+      , ("> [!NOTE]\n> " <> word <> " " <> at', True)
+      , ("- " <> word <> " " <> at' <> "\n" <> longList, True)
+      , ("> " <> word <> " " <> at' <> "\n>\n" <> longQuote, True)
+      , ("> [!NOTE]\n> " <> word <> " " <> at' <> "\n>\n" <> longQuote, True)
+      , (word <> " " <> at' <> "\n" <> longLines, False)
+      , ("[[!spoiler]]{s}(More)\n" <> word <> " " <> at' <> "\n[[/spoiler]]", True)
+      , ("[[!div]]\n" <> word <> " " <> at' <> "\n[[/div]]", True)
+      , (at', True)
+      , (word <> "\n" <> at', True)
+      , (word <> " " <> at' <> " more", False)
+      , ("`" <> word <> " " <> at' <> "`", False)
+      , ("```\n" <> word <> " " <> at' <> "\n```", False)
+      , ("    " <> word <> " " <> at', False)
+      , ("$" <> word <> " " <> at' <> "$", False)
+      , ("[" <> word <> " " <> at' <> "](https://example.com)", False)
+      , ("*" <> word <> " " <> at' <> "*", False)
+      , ("# " <> word <> " " <> at', False)
+      , ("| a | b |\n| --- | --- |\n| " <> word <> " " <> at', False)
+      , ("> [!NOTE] " <> word <> " " <> at', False)
+      , ("[[!spoiler]]{s}(" <> word <> " " <> at', False)
+      , ("[^n]: " <> word <> " " <> at', False)
+      , ("<span title=\"" <> word <> " " <> at' <> "\">x</span>", False)
+      , ("https://example.com" <> at', False)
+      , (word <> at', False)
+      ]
+  pure (intro <> marked <> outro, opens)
+
+-- | A list, a quotation's paragraphs and a paragraph's lines, each
+-- longer than every bound of the completion.
+longList, longQuote, longLines :: Text
+longList = T.intercalate "\n" (replicate 60 "- Another item of the same long list")
+longQuote = T.intercalate "\n>\n" (replicate 60 "> Another paragraph of the same quotation")
+longLines = T.intercalate "\n" (replicate 60 "More words of a paragraph that goes on and on.")
+
+-- | A text longer than every bound of the completion: forty paragraphs.
+longText :: Text
+longText = T.intercalate "\n\n" (replicate 40 (T.replicate 6 "Some more words. "))
 
 ----------------------------------------------------------------------
 -- Generated documents

@@ -314,6 +314,7 @@ import Wiki.App.Editor.Browser
   , changesLeft
   , chosenFiles
   , clickElement
+  , completeAction
   , completeAsked
   , currentText
   , cursorLine
@@ -1966,6 +1967,7 @@ component =
                 {{ HE.handler' (EventType "wiki-mention") (\ev -> uncurry MentionAsked <$> mentionAsked ev) }}
                 {{ HE.handler' (EventType "wiki-emoji") (\ev -> uncurry EmojiAsked <$> emojiAsked ev) }}
                 {{ HE.handler' (EventType "wiki-complete") (\ev -> uncurry CompleteAsked <$> completeAsked ev) }}
+                {{ HE.handler' (EventType "wiki-complete-action") (completeAction >=> dialogOf) }}
                 {{ HE.handler' (EventType "wiki-cursor-line") (fmap CursorAt . cursorLineOf) }}
                 {{ HE.handler' (EventType "wiki-ready") (\ev -> Just $! EditorReady (readyFocused ev)) }}
                 {{ HE.handler' (EventType "wiki-editor-failed") (const (Just EditorFailed)) }}
@@ -3688,7 +3690,16 @@ heldFor st work =
     , boxes = st.input.context.session.boxes
     , editing = work.page.id
     , pages = st.linkables
+    , entries = slashEntries (boxChoices st.input.context.session.boxes)
     }
+
+-- | The action an entry of the @/@ menu asks for once it is written
+-- ('completeAction'): the toolbar's own, as its button runs it.
+dialogOf :: Text -> Maybe Action
+dialogOf = \case
+  "link-page" -> Just LinkPage
+  "attach" -> Just AttachOrImage
+  _ -> Nothing
 
 -- | The pages of the input's space a link from the page edited may name,
 -- with their paths and links ('Complete.linkables'), worked out in full

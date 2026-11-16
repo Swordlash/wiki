@@ -52,6 +52,8 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       typedAt "[[On‸" `shouldBe` Just (LinkToPage, "On", 0)
       typedAt "See [[on c‸" `shouldBe` Just (LinkToPage, "on c", 4)
       typedAt "> - [[Gu‸" `shouldBe` Just (LinkToPage, "Gu", 4)
+    it "takes a / typed in a link's address as part of the address: the pages' list, not the / menu" $
+      typedAt "[[Ops /de‸" `shouldBe` Just (LinkToPage, "Ops /de", 0)
     it "takes the last [[ of the line" $
       typedAt "[[a]] and [[b‸" `shouldBe` Just (LinkToPage, "b", 10)
     it "leaves [[! and [[/ to the markers: at a line's start a marker, elsewhere nothing" $ do
@@ -168,7 +170,7 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
 
   describe "sources and origins" $ do
     let calendar :: Source
-        calendar wanted = [Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]"], place = Nothing, writing = AsSnippet, origin = Just (FromPlugin "calendar")} | wanted.typed.trigger == StartMarker]
+        calendar wanted = [Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]"], writing = AsSnippet, action = Nothing, note = Nothing, origin = Just (FromPlugin "calendar")} | wanted.typed.trigger == StartMarker]
     it "shows a plugin's origin as from the plugin" $
       originText (FromPlugin "calendar") `shouldBe` "from plugin calendar"
     it "lists every source's candidates, in the sources' order, each with its origin" $ do

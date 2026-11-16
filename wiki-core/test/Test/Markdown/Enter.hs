@@ -91,6 +91,9 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     "[^a]: - note‸" `becomes` "[^a]: - note\n‸"
     "| a | b |\n| - | - |‸" `becomes` "| a | b |\n| - | - |\n‸"
 
+  -- Each case the reviews of #292 found in the JavaScript built on the
+  -- library, made of the generator's own chunks, so that the properties
+  -- below can meet it: the answer the parser's reading gives now.
   describe "the cases of #292's reviews" $ do
     let review name doc cursor expected = it name $ do
           let (before, after) = cursorAfter doc cursor
@@ -107,39 +110,58 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
   -- Ten times the suite's count: 1,000 documents natively, a quarter of
   -- that on wasm (Test.Cases), each pressed at every line's end.
   modifyMaxSuccess (* 10) $ do
+    -- The answer is forced at every line's end, and its text holds no line
+    -- break: what it writes stays on the cursor's line and one new line.
     prop "writes only on the cursor's line and one new line, and never throws" $ \doc ->
       atEveryLineEnd doc $ \_ _ answer -> case answer of
         NewLine -> property True
         NewLineWith t -> counterexample "a new line's start with a line break in it" (not ("\n" `T.isInfixOf` t))
         LineBecomes t -> counterexample "a line with a line break in it" (not ("\n" `T.isInfixOf` t))
+    -- The parser reads the cursor's line as code or HTML (alone, or in a
+    -- quotation or an item): Enter is a plain line break.
     prop "breaks the line alone in code and HTML" $ \doc ->
       atEveryLineEnd doc $ \before after answer ->
         let n = T.count "\n" before + 1
          in if inCode (before <> after) n then answer === NewLine else property True
+    -- A new line the parser reads as a new item: the tree is the old tree
+    -- with one empty item after one of a list's items (a task after a
+    -- task), and nothing else changed, the lines below included.
     prop "adds exactly one empty item, after an item, where it starts a new item" $ \doc ->
       atEveryLineEnd doc $ \before after answer -> case answer of
         NewLineWith _ | newItemOn before after answer -> itemAdded before after answer
         _ -> property True
+    -- Any other new line is in the same quotations and items, in order,
+    -- as the cursor's line.
     prop "keeps a new quoted line in the quotations and items of the cursor's line" $ \doc ->
       atEveryLineEnd doc $ \before after answer -> case answer of
         NewLineWith _ | not (newItemOn before after answer) -> quotedLineKept before after answer
         _ -> property True
+    -- A line replaced is one container less deep (an item of the list
+    -- around counts as deep as its sibling), with nothing after its marks.
     prop "takes an empty item or quoted line up one level" $ \doc ->
       atEveryLineEnd doc $ \before after answer -> case answer of
         LineBecomes _ -> wentUp before after answer
         _ -> property True
+    -- What the editor hands over (the cursor's top-level block, with the
+    -- block above when nothing is between and the block below) gives the
+    -- answer the whole page gives.
     prop "answers the same for the cursor's top-level block as for the whole text" $ \doc ->
       atEveryLineEnd doc $ \before after answer ->
         let (blockBefore, blockAfter) = topLevelBlock before after
          in counterexample (show (blockBefore, blockAfter)) (enter blockBefore blockAfter === answer)
+    -- Not only safe but useful: in containers written as CommonMark reads
+    -- them without doubt, Enter at the end of an item's or a quotation's
+    -- text goes on in it, as the containers say.
     prop "goes on in a list or a quotation written plainly" $ \(Plain doc) ->
       let rendered = render doc
           expected = plainExpected doc
        in counterexample (toS (rendered <> "‸"))
             $ coverage
-            $ cover 30 (isItemAnswer expected) "an item"
-            $ cover 20 (not (isItemAnswer expected)) "a quoted line"
+            $ cover 30 (isNewItem expected) "an item"
+            $ cover 20 (not (isNewItem expected)) "a quoted line"
             $ enter rendered "" === expected
+    -- The documents meet every kind of answer often enough for the
+    -- properties above to mean something.
     prop "covers every answer" $ \doc ->
       let answers = [enter b a | (b, a) <- lineEnds (render doc)]
        in coverage
@@ -157,7 +179,6 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     isUp = \case
       LineBecomes _ -> True
       _ -> False
-    isItemAnswer = isNewItem
 
 ----------------------------------------------------------------------
 -- Unit cases

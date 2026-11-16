@@ -1136,6 +1136,8 @@ enterCases =
   , ("indented code", "    code‸", ["Enter"], "    code\n‸")
   , ("indented code in a quotation", ">     code‸", ["Enter"], ">     code\n‸")
   , ("indented code in a list's item", "- a\n\n      code‸", ["Enter"], "- a\n\n      code\n‸")
+  , ("a numbered item with a tab after its mark: a line break alone", "1.\tone‸", ["Enter"], "1.\tone\n‸")
+  , ("a task with a tab after its box: a line break alone", "- [ ]\tone‸", ["Enter"], "- [ ]\tone\n‸")
   , ("a code block", "```\n- a‸\n```", ["Enter"], "```\n- a\n‸\n```")
   , ("a quotation's code block", "> ```\n> ‸", ["Enter"], "> ```\n> \n‸")
   , ("a paragraph", "text‸", ["Enter"], "text\n‸")

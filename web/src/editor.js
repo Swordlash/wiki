@@ -1533,19 +1533,53 @@ const leaveQuotation = ({ state, dispatch }) => {
   return true;
 };
 
-// The editor's Enter, in the master and in a row of the slide mode: in
-// code, fenced or indented, a line break and nothing more (the library
-// leaves fenced code alone, but continues the quotation or the list an
-// indented code block is in); elsewhere the wiki's leaving of a
-// quotation, the library's continuation, or else a line break.
-// Shift+Enter is always a line break and nothing more. Both come after
-// the completion's keys, so that Enter chooses from an open list first.
+// Whether the innermost list's item at a position has a tab after its
+// mark (or after its task's box): the library writes the next item's
+// mark with the spaces it read after this one, and reads no tab there,
+// so "1.\tone" would go on as "2." with nothing after it, which is no
+// item, and "- [ ]\tone" as "- " without its box. Such an item goes on
+// with a plain line break, as the editor did before it continued lists.
+const tabAfterMark = (state, pos) => {
+  for (let node = syntaxTree(state).resolveInner(pos, -1); node; node = node.parent) {
+    if (node.name !== "ListItem") continue;
+    const mark = node.getChild("ListMark");
+    if (!mark) return false;
+    const line = state.doc.lineAt(mark.from);
+    const box = node.getChild("Task")?.getChild("TaskMarker");
+    const gap = (from) => /^[ \t]*/.exec(state.sliceDoc(from, line.to))[0];
+    return (box ? state.sliceDoc(mark.to, box.from) + gap(box.to) : gap(mark.to)).includes("\t");
+  }
+  return false;
+};
+
+// What Enter makes of a state's single cursor, as a transaction of that
+// state, or null for a plain line break: in code, fenced or indented, a
+// line break and nothing more (the library leaves fenced code alone, but
+// continues the quotation or the list an indented code block is in); on
+// an item with a tab after its mark, a line break too (tabAfterMark);
+// elsewhere the wiki's leaving of a quotation, or the library's
+// continuation of a list or a quotation.
+const enterMarkup = (state) => {
+  const head = state.selection.main.head;
+  if (within(state, head, /^(FencedCode|CodeBlock)$/) || tabAfterMark(state, head)) return null;
+  let made = null;
+  const capture = { state, dispatch: (tr) => (made = tr) };
+  return leaveQuotation(capture) || continueMarkup(capture) ? made : null;
+};
+
+// The editor's Enter in the master: enterMarkup, or a line break.
+// Shift+Enter is always a line break and nothing more. Both come after the
+// completion's keys, so that Enter chooses from an open list first. A row
+// of the slide mode has an Enter of its own (attachRow), which asks the
+// master's text.
 const markupEnter = {
   key: "Enter",
-  run: (view) =>
-    within(view.state, view.state.selection.main.head, /^(FencedCode|CodeBlock)$/)
-      ? insertNewline(view)
-      : leaveQuotation(view) || continueMarkup(view) || insertNewline(view),
+  run: (view) => {
+    const tr = enterMarkup(view.state);
+    if (tr === null) return insertNewline(view);
+    view.dispatch(tr);
+    return true;
+  },
   shift: insertNewline,
 };
 
@@ -2409,6 +2443,37 @@ export function attachRow(masterHost, rowHost, key, focus) {
     });
     return true;
   };
+  // Enter in the row (markupEnter in the master): what Enter makes of the
+  // master's text at the row's cursor, its changes brought back into the
+  // row, which sends them on to the master as it sends its typing. A row's
+  // own syntax tree does not hold what the rows above left open (a fence,
+  // which makes the row's lines code), and the master's does. A change
+  // outside the row, or a row the master does not hold as it is (a
+  // moment between the two), is a plain line break.
+  const rowEnter = {
+    key: "Enter",
+    run: (rowView) => {
+      const now = rangeOf(masterView.state, key);
+      const { main } = rowView.state.selection;
+      if (now === null || rowView.state.selection.ranges.length > 1 || masterView.state.sliceDoc(now.from, now.to) !== rowView.state.doc.toString()) {
+        return insertNewline(rowView);
+      }
+      const at = masterView.state.update({ selection: EditorSelection.range(now.from + main.anchor, now.from + main.head) }).state;
+      ensureSyntaxTree(at, now.from + main.head, 200);
+      const tr = enterMarkup(at);
+      if (tr === null) return insertNewline(rowView);
+      const changes = [];
+      let inside = true;
+      tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+        if (fromA < now.from || toA > now.to) inside = false;
+        changes.push({ from: fromA - now.from, to: toA - now.from, insert: inserted });
+      });
+      if (!inside) return insertNewline(rowView);
+      rowView.dispatch({ changes, selection: EditorSelection.cursor(tr.selection.main.head - now.from), scrollIntoView: true, userEvent: "input" });
+      return true;
+    },
+    shift: insertNewline,
+  };
   const { anchor, head } = masterView.state.selection.main;
   const inside = (at) => at >= range.from && at <= range.to;
   const titled = masterHost.dataset.titleLine !== "false";
@@ -2429,7 +2494,7 @@ export function attachRow(masterHost, rowHost, key, focus) {
         rowMatches,
         keptInRow(masterView, key),
         keymap.of([
-          markupEnter,
+          rowEnter,
           ...keys,
           { key: "Backspace", run: acrossEdge(false) },
           { key: "Delete", run: acrossEdge(true) },

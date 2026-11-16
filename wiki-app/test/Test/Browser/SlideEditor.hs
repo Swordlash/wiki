@@ -677,6 +677,23 @@ spec m = do
     typeText row "After."
     markdown ui `shouldReturn` T.replace "By me." "By me.\n\n- one\n- two\n\nAfter." deck
 
+  -- A row's own text does not hold a fence a row above left open; the
+  -- master's does, and Enter reads it there.
+  it "breaks the line alone on Enter in a row that a fence left open above makes code" $ runPage $ do
+    let quoted = T.intercalate "\n" ["# Deck", "", "By me.", "", "## One", "", "First.", "", "## Two", "", "> ", "", "- code"]
+    (ui, _) <- openDeck quoted
+    for_ ["One", "Two"] $ \title -> rowHeader ui title >>= click
+    eventually $ openTitles ui `shouldReturn` ["Deck", "One", "Two"]
+    rowSelect 1 14 14
+    rowContent ui "One" >>= (`typeText` "\n\n```")
+    eventually $ (findAll ui ".editor-slides .slide-row-part" >>= traverse textContent) `shouldReturn` ["part of slide 2"]
+    -- At the end of "> ", and after "- code", in "Two".
+    rowSelect 2 10 10
+    press "Enter"
+    rowSelect 2 19 19
+    press "Enter"
+    markdown ui `shouldReturn` T.replace "- code" "- code\n" (T.replace "> \n" "> \n\n" (T.replace "First." "First.\n\n```" quoted))
+
   it "scrolls to the cursor of the row an undo takes it to, the editor's own text being hidden" $ runPage $ do
     let long = T.intercalate "\n\n" ("# Long" : concat [["## S" <> show i, T.intercalate "\n\n" (replicate 8 "A paragraph of its own.")] | i <- [1 .. 30 :: Int]])
     (ui, _) <- openDeck long

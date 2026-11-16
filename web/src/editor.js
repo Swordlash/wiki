@@ -1475,58 +1475,55 @@ const textKeys = standardKeymap.filter((binding) => !toolbarKeys.has(binding.mac
 // unanswered are a line break and nothing more: Enter never does
 // nothing.
 
-// The lines of the top-level block of a state's text a position is in or
-// at the end of, as {from, to}, from the start of the block's first line
-// to the end of its last; the position's line alone when it is in no
-// block (a blank line). The block above comes too when no blank line is
-// between them, and the first line of the block below (or the blank
-// lines to the end of the text, when no block is below): whether the
-// block's first line is an item or a lazy line of a paragraph depends on
-// the paragraph above, and Wiki.Core.Markdown.Enter checks that a new
-// line leaves the first line below it with anything on it in the
-// containers it was in. The tree knows no footnote's definition
-// ("[^1]: ") and none of the wiki's own blocks that hold others
-// ("[[!notes]]"; not "[[!pause]]" or "[[!style]]", one line each), whose
-// lines below may still be theirs (indented, lazy, or up to the end
-// marker). So the text starts at the first line of a block of the tree
-// that starts the outermost of the wiki's blocks still open above (no
-// end marker after it starts a block of the tree), or else at the nearest
-// footnote's definition above, open or not. The syntax tree is parsed
-// on until the line below,
-// so that a fence a block above left open shows (the block is then the
-// fence, to the end of the text) and no block is cut where the parse
-// stopped. Null when the tree cannot be parsed that far in time.
-const blockAt = (state, pos) => {
+// Where the wiki's parser starts a top-level block with nothing open
+// above it, in the text the component last checked
+// (Wiki.Core.Markdown.Starts, given by Wiki.App.Editor.Browser's
+// offerStarts): {starts, firstChange}, the starts as offsets mapped through
+// the changes since, and where the first of those changes is. The text
+// before firstChange is the text checked, so a start whose line ends at
+// or before it is still one. Until the first check, only the start of the
+// text, which is always one. CodeMirror's own tree cannot say
+// where such a start is: it knows no footnote's definition, none of the
+// wiki's own blocks, and reads HTML in a page otherwise.
+const setEnterStarts = StateEffect.define();
+const enterStarts = StateField.define({
+  create: () => ({ starts: [0], firstChange: 0 }),
+  update: (value, tr) => {
+    for (const effect of tr.effects) if (effect.is(setEnterStarts)) return effect.value;
+    if (!tr.docChanged) return value;
+    let { firstChange } = value;
+    tr.changes.iterChangedRanges((fromA) => {
+      firstChange = Math.min(firstChange, fromA);
+    });
+    return { starts: value.starts.map((start) => tr.changes.mapPos(start, 1)), firstChange };
+  },
+});
+
+// The text Enter hands to Haskell at a position, as {from, to}: from the
+// last start at or before the position's line whose own line ends at or
+// before the first change since the check (Wiki.Core.Markdown.Starts'
+// startFor), to just before the second start after the position's line,
+// the block below coming whole, or to the end of the text (its endFor).
+// Null for a text longer than Wiki.Core.Markdown.Enter's textLimit (2000
+// characters), where Enter is a line break alone: before the first check,
+// any text longer than that from its start.
+const enterRange = (state, pos) => {
+  const kept = state.field(enterStarts, false);
+  if (kept === undefined) return null;
   const { doc } = state;
-  let upto = Math.min(doc.length, doc.lineAt(pos).to + 1);
-  for (;;) {
-    const tree = ensureSyntaxTree(state, upto, 200);
-    if (tree === null) return null;
-    let top = null;
-    for (let node = tree.resolveInner(pos, -1); node && !node.type.isTop; node = node.parent) top = node;
-    if (top === null) {
-      const line = doc.lineAt(pos);
-      return { from: line.from, to: line.to };
+  const line = doc.lineAt(pos);
+  let from = 0;
+  let below = 0;
+  let to = doc.length;
+  for (const start of kept.starts) {
+    if (start <= line.from) {
+      if (doc.lineAt(start).to <= kept.firstChange) from = start;
+    } else if (start > line.to && ++below === 2) {
+      to = start - 1;
+      break;
     }
-    const above = top.prevSibling;
-    const below = top.nextSibling;
-    let first = above && doc.lineAt(above.to).number >= doc.lineAt(top.from).number - 1 ? above : top;
-    let note = null;
-    let open = null;
-    let closed = 0;
-    for (let node = first; node; node = node.prevSibling) {
-      const text = doc.lineAt(node.from).text;
-      const marker = /^ {0,3}\[\[([!/])(spoiler|notes|incremental|div)\]\]/.exec(text);
-      if (note === null && /^ {0,3}\[\^[^\]]+\]:/.test(text)) note = node;
-      else if (marker?.[1] === "/") closed++;
-      else if (marker && closed > 0) closed--;
-      else if (marker) open = node;
-    }
-    first = open ?? note ?? first;
-    const to = below ? doc.lineAt(below.from).to : doc.length;
-    if ((below && to < upto) || upto === doc.length) return { from: doc.lineAt(first.from).from, to };
-    upto = Math.min(doc.length, Math.max(upto, to) + 100);
   }
+  return to - from > 2000 ? null : { from, to };
 };
 
 // What Enter writes at a position of a state, asked of Haskell through the
@@ -1537,7 +1534,7 @@ const blockAt = (state, pos) => {
 const askEnter = (host, state, pos) => {
   const enter = host.wikiEnter;
   if (typeof enter !== "function") return null;
-  const block = blockAt(state, pos);
+  const block = enterRange(state, pos);
   if (block === null) return null;
   const ask = { before: state.sliceDoc(block.from, pos), after: state.sliceDoc(pos, block.to), insert: null, line: null };
   try {
@@ -2439,8 +2436,9 @@ export function attachRow(masterHost, rowHost, key, focus) {
   // Enter in the row (markupEnter in the master): Haskell is asked about
   // the master's text at the row's cursor, and the answer is made in the
   // row, which sends it on to the master as it sends its typing. A row's
-  // own syntax tree does not hold what the rows above left open (a fence,
-  // which makes the row's lines code), and the master's does. A row the
+  // own text does not hold what the rows above left open (a fence, which
+  // makes the row's lines code); the master's text, cut where the master's
+  // starts say (enterStarts), does. A row the
   // master does not hold as it is (a moment between the two), or a
   // cursor's line that starts before the row, is a plain line break.
   const rowEnter = {
@@ -2969,6 +2967,7 @@ export function attach(textarea, host, original, codeTokens) {
       // Enter is in the textarea before CodeMirror has loaded. Tab and the
       // toolbar's shortcuts are the component's (the form's keydown).
       keymap.of([markupEnter(host), ...historyKeymap, ...textKeys, ...foldKeys]),
+      enterStarts,
       EditorView.lineWrapping,
       new LanguageSupport(wikiMarkdown),
       syntaxHighlighting(highlighter),
@@ -3252,6 +3251,15 @@ export function attach(textarea, host, original, codeTokens) {
       const ranges = (Array.isArray(list) ? list : []).map((fold) => linesRange(doc, fold.from, fold.to)).filter((range) => range !== null);
       view.dispatch({ effects: offerFolds.of(ranges) });
     },
+    // Where Enter may cut the text it hands to Haskell (enterStarts): the
+    // lines, from 1, at which a top-level block of `text` starts with
+    // nothing open above it, taken only while the editor holds that text.
+    startable: (text, lines) => {
+      if (text !== view.state.doc.toString()) return;
+      const { doc } = view.state;
+      const starts = (Array.isArray(lines) ? lines : []).filter((n) => Number.isInteger(n) && n > 1 && n <= doc.lines).map((n) => doc.line(n).from);
+      view.dispatch({ effects: setEnterStarts.of({ starts: [0, ...starts], firstChange: doc.length }) });
+    },
     // Fold each range of `ranges`, JSON [[first, last]], lines from 1, in
     // any order, `first` staying in sight: any range, offered or not. A
     // range the text does not have, or of one line, folds nothing. The
@@ -3498,10 +3506,11 @@ export function attach(textarea, host, original, codeTokens) {
     },
   };
   host.wikiEditor = editor;
-  // The problems found before CodeMirror had loaded, and the folds, if
-  // they were found in the text it was given.
+  // The problems found before CodeMirror had loaded, and the folds and
+  // Enter's starts, if they were found in the text it was given.
   if (host.wikiProblems) editor.problems(host.wikiProblems);
   if (host.wikiFolds) editor.foldable(host.wikiFolds.text, host.wikiFolds.folds);
+  if (host.wikiStarts) editor.startable(host.wikiStarts.text, host.wikiStarts.starts);
   // For the browser tests, which find the text by what one types into.
   view.contentDOM.wikiEditor = editor;
   editors.add(editor);

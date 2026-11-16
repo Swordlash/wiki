@@ -81,6 +81,7 @@ module Wiki.App.Editor.Browser
 
     -- * Folds
   , offerFolds
+  , offerStarts
   , foldLines
   , unfoldLines
   , foldedLines
@@ -221,6 +222,7 @@ $( browserJS
      , ("js_problems", "wiki_editor_problems", Safe, [t|Element -> JSText -> JSText -> IO Bool|])
      , ("js_next_problem", "wiki_editor_next_problem", Safe, [t|Element -> IO ()|])
      , ("js_offer_folds", "wiki_editor_offer_folds", Safe, [t|Element -> JSText -> JSText -> IO ()|])
+     , ("js_enter_starts", "wiki_editor_enter_starts", Safe, [t|Element -> JSText -> JSText -> IO ()|])
      , ("js_search", "wiki_editor_search", Safe, [t|Element -> JSText -> IO ()|])
      , ("js_search_step", "wiki_editor_search_step", Safe, [t|Element -> Bool -> IO Int|])
      , ("js_search_replace", "wiki_editor_search_replace", Safe, [t|Element -> IO Int|])
@@ -655,6 +657,15 @@ nextProblem = liftIO . js_next_problem
 offerFolds :: (MonadIO m) => Element -> Text -> [Fold] -> m ()
 offerFolds host text found =
   liftIO (js_offer_folds host (toJSText text) (jsonText [object ["from" .= f.from, "to" .= f.to] | f <- found]))
+
+-- | Give CodeMirror the lines at which a top-level block of a text starts
+-- with nothing open above it ("Wiki.Core.Markdown.Starts"), found by the
+-- check of that text: where its Enter may cut the text it hands to
+-- 'enterCallback'. CodeMirror takes them only while it holds that text,
+-- and maps them through the changes after. Before CodeMirror has loaded,
+-- they are kept on the host, as the folds are.
+offerStarts :: (MonadIO m) => Element -> Text -> [Int] -> m ()
+offerStarts host text found = liftIO (js_enter_starts host (toJSText text) (jsonText found))
 
 -- | Fold ranges of the editor's lines, each its first and last line (from
 -- 1, both included, as "Wiki.Core.Markdown.Folds" counts them), in any

@@ -19,7 +19,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (clickButton, slugs, startChanged, startWith)
-import Test.Browser.Text (clearBody, completing, editorSelection, editorText, markdown, mathIn, selectText, setMarkdown, utf16Length)
+import Test.Browser.Text (clearBody, completing, editorSelection, editorText, markdown, mathIn, problemsMarked, selectText, setMarkdown, utf16Length)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (..))
 import Wiki.App.Assistant (MonadAssistant)
@@ -518,6 +518,30 @@ spec m = do
       now <- T.drop (T.length titleLines) <$> markdown ui
       (cursorAt, _) <- editorSelection ui
       (name, marked now (cursorAt - offset)) `shouldBe` (name, after)
+
+  -- Enter reads the text from where the last check of the whole text
+  -- found a block starting with nothing open above it (Wiki.Core.Markdown.Starts),
+  -- no more than Wiki.Core.Markdown.Enter's limit. A paragraph longer than
+  -- the limit above a list: Enter there continues the list only from the
+  -- list's start, which the check gives (its problem, a marker line of no
+  -- block, is its signal). Then HTML that reads on over a heading and a
+  -- list (Codex's case on #292): the list's line is HTML, and Enter a
+  -- line break alone.
+  it "reads the text from where the last check found a block starting, past a long paragraph and over HTML that reads on" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    _ <- editorText ui
+    let long = T.intercalate " " (replicate 500 "word")
+        listed = titleLines <> long <> "\n\n[[!nothing]]\n\n- one"
+        html = titleLines <> long <> "\n\n[[!nothing]]\n\n[[!nothing]]\n\n- a\n<a>\n# Heading\n- "
+        enterAtEnd text count = do
+          setMarkdown ui text
+          eventually $ length <$> problemsMarked ui `shouldReturn` count
+          selectText ui (utf16Length text) (utf16Length text)
+          press "Enter"
+    enterAtEnd listed 1
+    markdown ui `shouldReturn` listed <> "\n- "
+    enterAtEnd html 2
+    markdown ui `shouldReturn` html <> "\n"
 
   it "leaves Ctrl+B's placeholder selected, for the typing to replace" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor

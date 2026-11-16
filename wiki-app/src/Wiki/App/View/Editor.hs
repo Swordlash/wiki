@@ -341,6 +341,7 @@ import Wiki.App.Editor.Browser
   , mentionAsked
   , nextProblem
   , offerFolds
+  , offerStarts
   , onPreviewEntry
   , paneShown
   , pastedFiles
@@ -3147,7 +3148,7 @@ component =
           Ready w -> do
             found <- H.async (liftIO (evaluate (force (Problems.checkText w.page.kind w.body))))
             modify $ \st -> measuredNow (keepDrawnFailures st {checkWait = Nothing, checked = found, checkedText = w.body})
-            gets (\st -> st.hostElement) >>= traverse_ (\host -> H.liftEffect (offerFolds host w.body found.folds))
+            gets (\st -> st.hostElement) >>= traverse_ (\host -> H.liftEffect (offerFolds host w.body found.folds >> offerStarts host w.body found.starts))
             -- Cut first: the rows a block left open swallows are problems.
             -- One publication for the pause, after the re-cut.
             recutRowsWith False False

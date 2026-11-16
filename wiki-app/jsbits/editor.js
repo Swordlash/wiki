@@ -450,3 +450,13 @@ function wiki_editor_offer_folds(host, text, folds) {
   host.wikiFolds = { text, folds: JSON.parse(folds) };
   host.wikiEditor?.foldable(text, host.wikiFolds.folds);
 }
+
+// The lines at which a top-level block of `text` starts with nothing open
+// above it, as JSON [n], lines from 1 (Wiki.Core.Markdown.Starts): where
+// Enter may cut the text it hands to Haskell. Kept on the host with the
+// text, as the folds are, for a CodeMirror that loads later, and given to
+// the CodeMirror there is, which takes them only for the text it holds.
+function wiki_editor_enter_starts(host, text, starts) {
+  host.wikiStarts = { text, starts: JSON.parse(starts) };
+  host.wikiEditor?.startable(text, host.wikiStarts.starts);
+}

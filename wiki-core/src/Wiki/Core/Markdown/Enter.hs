@@ -57,6 +57,7 @@
 --   column);
 -- * a numbered item whose next number would have ten digits, which
 --   CommonMark does not read as a number;
+-- * a text longer than 'textLimit';
 -- * an answer the parser does not read back as meant: 'enter' parses the
 --   text it would write, and keeps its answer only when the new line is in
 --   the containers the answer says, and every line below with anything on
@@ -73,6 +74,7 @@ module Wiki.Core.Markdown.Enter
   ( Enter (..)
   , enter
   , written
+  , textLimit
   )
 where
 
@@ -80,7 +82,7 @@ import Data.List (zip3)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Protolude
-import Wiki.Core.Markdown.Ast (ItemMark (..), Shape (..), ShapeKind (..), parseShapes)
+import Wiki.Core.Markdown.Ast (ItemMark (..), Shape (..), ShapeKind (..), parseShapes, shapeLines)
 
 -- | 'Enter' is what Enter writes at the cursor.
 data Enter
@@ -110,6 +112,7 @@ data Enter
 enter :: Text -> Text -> Enter
 enter before after
   | not (T.null after || "\n" `T.isPrefixOf` after) = NewLine
+  | T.length before + T.length after > textLimit = NewLine
   | otherwise = fromMaybe NewLine $ do
       let text = before <> after
           n = T.count "\n" before + 1
@@ -118,6 +121,15 @@ enter before after
       (answer, expected) <- decide (T.splitOn "\n" text) n place
       guard (readsAsMeant before after shapes answer expected)
       pure answer
+
+-- | 'textLimit' is the most text, in characters, 'enter' reads: past it,
+-- Enter is a plain line break. The text is parsed twice, about 25 to 35
+-- microseconds a character on the everyday WebAssembly build (measured
+-- 2026-11-16: 3 ms for 149 characters, 10 to 17 ms for 691, 330 to 380
+-- ms for 10,900, a list of a thousand items), so that Enter stays under
+-- about 50 ms. web/src/editor.js hands over no more than this.
+textLimit :: Int
+textLimit = 2000
 
 -- | The text after Enter's answer, as the text before the cursor and the
 -- text after it.
@@ -186,7 +198,8 @@ placeOf shapes n = go [] Nothing shapes
     covers s = let (a, b) = extent s in a <= n && n <= b
 
 -- | How each line is read, whatever is on it: the quotations, lists,
--- items and the wiki's own blocks over it (0 to 4), each by the line it
+-- items, footnotes' definitions and the wiki's own blocks over it (0 to
+-- 4), each by the line it
 -- starts on, the outermost first; the kind of the innermost block over
 -- it; and the column the innermost block that starts a part on the line
 -- starts it at. A list counts, so that two lists a new blank line makes
@@ -204,6 +217,7 @@ readings = foldl' (go []) Map.empty
             QuoteShape -> held <> [(0, a)]
             ListShape -> held <> [(1, a)]
             ItemShape _ _ -> held <> [(2, a)]
+            NoteShape -> held <> [(3, a)]
             OtherShape | not (null s.inner) -> held <> [(4, a)]
             _ -> held
           column l = maybe 0 (\(_, c) -> c) . lastMay $ [(l', c) | ((l', c), _) <- s.parts, l' == l]
@@ -211,13 +225,9 @@ readings = foldl' (go []) Map.empty
           marked = foldl' (\m l -> Map.insert l (here, s.kind, if column l > 0 then column l else kept l) m) acc [a .. b]
        in foldl' (go here) marked s.inner
 
--- | The first and the last line of a shape, its inner shapes' included.
+-- | The first and the last line of a shape ('shapeLines').
 extent :: Shape -> (Int, Int)
-extent s =
-  let own = [(l, if c == 1 then l' - 1 else l') | ((l, _), (l', c)) <- s.parts]
-   in ( fromMaybe 0 (minimumMay (map fst own <> map (fst . extent) s.inner))
-      , fromMaybe 0 (maximumMay (map snd own <> map (snd . extent) s.inner))
-      )
+extent = shapeLines
 
 -- | The last line of a shape with text on it. A container's blank lines
 -- at its end are not text; an empty one's is its first line.

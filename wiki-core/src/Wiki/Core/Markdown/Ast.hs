@@ -97,6 +97,7 @@ module Wiki.Core.Markdown.Ast
   , ShapeKind (..)
   , ItemMark (..)
   , parseShapes
+  , shapeLines
 
     -- * Markers
   , MarkerName (..)
@@ -639,13 +640,13 @@ parseDeckSpans :: Text -> Either ParseError [(Maybe (Int, Int), Block)]
 parseDeckSpans source = (\(Blocks bs _ _) -> finishedFlatWith (toList bs)) <$> parsed source
 
 -- | 'parseWithLinesAndMarkers', with 'parseDeckSpans'' blocks too, each
--- with the line it starts on: one parse for the editor's check of a
--- text, which reads both.
-parseWithLinesMarkersAndDeck :: Text -> Either ParseError ([(Maybe Int, Block)], [MarkerLine], [(Maybe Int, Block)])
+-- with the line it starts on, and the shapes ('parseShapes'): one parse
+-- for the editor's check of a text, which reads them all.
+parseWithLinesMarkersAndDeck :: Text -> Either ParseError ([(Maybe Int, Block)], [MarkerLine], [(Maybe Int, Block)], [Shape])
 parseWithLinesMarkersAndDeck source =
-  ( \(Blocks bs (Markers _ ss _ _) _) ->
+  ( \(Blocks bs (Markers _ ss _ hs) _) ->
       let located = toList bs
-       in (map (first (fmap fst)) (finishedWith located), sortOn (\s -> (s.lineAt, s.columnAt)) (ordNub ss), map (first (fmap fst)) (finishedFlatWith located))
+       in (map (first (fmap fst)) (finishedWith located), sortOn (\s -> (s.lineAt, s.columnAt)) (ordNub ss), map (first (fmap fst)) (finishedFlatWith located), hs)
   )
     <$> parsed source
 
@@ -1246,6 +1247,16 @@ data Shape = Shape
   }
   deriving stock (Eq, Show)
 
+-- | The first and the last line of a shape, its inner shapes' included.
+-- A shape the parser gave no part of its own (a footnote's definition)
+-- has the lines of the shapes inside it.
+shapeLines :: Shape -> (Int, Int)
+shapeLines s =
+  let own = [(l, if c == 1 then l' - 1 else l') | ((l, _), (l', c)) <- s.parts]
+   in ( fromMaybe 0 (minimumMay (map fst own <> map (fst . shapeLines) s.inner))
+      , fromMaybe 0 (maximumMay (map snd own <> map (snd . shapeLines) s.inner))
+      )
+
 -- | 'ShapeKind' is what a block in a 'Shape' is, as far as the editor's
 -- Enter needs to know.
 data ShapeKind
@@ -1261,7 +1272,10 @@ data ShapeKind
     -- math, an @html@ fence); HTML written in the page; display math that
     -- is all of its paragraph.
     CodeShape
-  | -- | A footnote's definition.
+  | -- | A footnote's definition. The parser places the blocks in it, not
+    -- the definition itself (commonmark-extensions keeps a note aside
+    -- until the page's end), so its shape has no parts of its own: its
+    -- lines are its blocks'.
     NoteShape
   | -- | Anything else: a table, a rule, the wiki's own blocks and marker
     -- lines, a link's definition.
@@ -1514,7 +1528,9 @@ instance CME.HasTaskList Inlines Blocks where
       Nothing
 
 instance CME.HasFootnote Inlines Blocks where
-  footnote number label = around (Footnotes . pure . Footnote number label)
+  footnote number label inside =
+    let Blocks xs (Markers bs ss ts hs) at = around (Footnotes . pure . Footnote number label) inside
+     in Blocks xs (Markers bs ss ts [Shape {kind = NoteShape, parts = [], inner = hs}]) at
   footnoteList notes =
     let all' = mconcat notes
      in Blocks (Seq.singleton . (Nothing,) $ (Footnotes (concat [ns | Footnotes ns <- blocks all']))) (markersOf all') Nothing

@@ -12,9 +12,10 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Protolude
+import System.Mem (getAllocationCounter, setAllocationCounter)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
-import Test.QuickCheck (Gen, Property, choose, conjoin, counterexample, elements, forAll, (===))
+import Test.QuickCheck (Gen, Property, choose, conjoin, counterexample, elements, forAll, property, (===))
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Editor.Complete
@@ -83,7 +84,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
           , linkable "inside" "The user guide" ["projects", "the-user-guide"]
           , linkable "other" "Projects" ["projects"]
           ]
-        onHandbook = Held {kind = Document, boxes = [], editing = PageId "editing", editingPath = slugs ["handbook", "editing"], pages}
+        onHandbook = Held {kind = Document, boxes = [], editing = PageId "editing", pages = linkablesFrom handbookEditing pages}
         offered typed = map (\c -> (c.label, c.place)) . (.candidates) <$> answered (sources onHandbook) typed (lineRequest typed "")
     it "offers every page but the one edited, the nearer first: siblings, then its branch, then the others" $
       (map fst <$> offered "[[")
@@ -110,6 +111,25 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       written onHandbook "[[Gui" "de]] now" `shouldBe` Just "[[Guide]]${0}"
       reach "[[Old" "|Mine]]" `shouldBe` Just (0, 7)
       written onHandbook "[[Old" "|Mine]]" `shouldBe` Just "[[guide-old|Mine]]${0}"
+    modifyMaxSuccess (* 10) . prop "replaces the address of the link the parser reads at the cursor, keeps its label as read, and leaves the rest of the line" $
+      forAll genLinkLine (choosesPage onHandbook)
+
+  describe "the pages offered in a space of 10,000 pages" $
+    it "are matched and ranked within a bound of allocation, their paths and links worked out before, and again no more" $ do
+      -- The work is counted, not timed ('allocated'). Each answer only
+      -- matches and ranks the pages kept, and allocates under 1 MB
+      -- natively when the letters match pages, 18 MB when they match none
+      -- and every page is looked at. An answer that worked out each
+      -- page's path (each page above it searched for in the list) and its
+      -- link, as the editor did before #294's review, allocated 11 GB.
+      let kept = linkables space largeSpace (slugs ["section-0", "page-77"])
+          h = Held {kind = Document, boxes = [], editing = PageId "p77", pages = kept}
+      _ <- evaluate (kept == kept)
+      let asked typed = answered (sources h) typed (lineRequest typed "")
+      for_ ["[[", "[[pag", "[[zz"] $ \typed -> do
+        first' <- evaluate typed >>= \t -> allocated (let a = asked t in a == a)
+        again <- evaluate (T.copy typed) >>= \t -> allocated (let a = asked t in a == a)
+        (typed, first' < answerBound, again <= first') `shouldBe` (typed, True, True)
 
   describe "pageLinkText, over generated trees of pages" $ do
     it "names a sibling by its title when the title reads back as its slug" $
@@ -145,9 +165,92 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       completionJson Completion {from = 0, through = 0, candidates = [], enter = EnterChoosesAfter 2, escape = EscapeCloses}
         `shouldBe` object ["from" .= (0 :: Int), "through" .= (0 :: Int), "options" .= ([] :: [Value]), "enter" .= object ["after" .= (2 :: Int)], "escape" .= ("closes" :: Text)]
 
+-- | 'LinkLine' is a line with a wiki link being typed in it: the text
+-- before the link, what of the address is before the cursor and after
+-- it, the label written (with its @|@, escaped or not), whether the link
+-- is closed, and the text after it.
+data LinkLine = LinkLine {pre :: Text, typed :: Text, rest :: Text, label :: Text, closed :: Bool, after :: Text}
+  deriving stock (Show)
+
+genLinkLine :: Gen LinkLine
+genLinkLine =
+  LinkLine
+    <$> elements ["", "See ", "- ", "> ", "[[x]] and ", "`a` "]
+    <*> elements ["", "Gu", "Ol", "Pro", "gu "]
+    <*> elements ["", "ide", "-a", " x", "a&amp;b", "a\\", "a[b"]
+    <*> elements ["", "|Mine", "|[draft&#93;", "|a [b", "\\|escaped", "|Q&amp;A", "|", "|x|y", "| spaced "]
+    <*> elements [True, False]
+    <*> elements ["", " now", " and [[b]]", " [[c|C]] end", " `x`"]
+
+-- | Choosing the first page offered on a 'LinkLine', read by the wiki's
+-- parser. The line as written is read with the link the generator meant
+-- (or none at the cursor, when it is not closed). After the choice, the
+-- text before the link is as it was, and so is the text after the link:
+-- the link's end and what follows it when it was closed, everything
+-- after the cursor when it was not. The line is read with the links it
+-- had, the one at the cursor now to the page chosen, with the label that
+-- was read there, or the page's own label when it had none.
+choosesPage :: Held -> LinkLine -> Property
+choosesPage h l = case answered (sources h) line (lineRequest typedUpTo afterCursor) of
+  Nothing -> counterexample "no list" (property False)
+  Just found -> case head found.candidates of
+    Nothing -> counterexample "no page" (property False)
+    Just c ->
+      let (text, _) = skeletonText c.skeleton
+          result = T.take found.from typedUpTo <> text <> T.drop found.through afterCursor
+          page = fromMaybe (panic "no page") (find (\p -> p.title == c.label) h.pages)
+          (address, own) = pageLinkText handbookEditing page.path page.title
+          title
+            | l.closed && not (T.null l.label) = maybe "" snd (head (drop (length (linksOf l.pre)) (linksOf line)))
+            | otherwise = maybe address (const page.title) own
+          kept = if l.closed then l.after else afterCursor
+       in counterexample (toS (line <> "  =>  " <> result)) $
+            conjoin
+              [ T.take (T.length l.pre) result === l.pre
+              , T.takeEnd (T.length kept) result === kept
+              , linksOf result === linksOf l.pre <> [(address, title)] <> linksOf kept
+              , if l.closed then length (linksOf line) === length (linksOf l.pre) + 1 + length (linksOf l.after) else property True
+              ]
+  where
+    typedUpTo = l.pre <> "[[" <> l.typed
+    afterCursor = l.rest <> l.label <> (if l.closed then "]]" else "") <> l.after
+    line = typedUpTo <> afterCursor
+    linksOf t = case parseMarkdown t of
+      Right blocks -> [(address, plainText text) | Link attributes address _ text <- allInlines blocks, ("class", "wikilink") `elem` attributes]
+      Left _ -> []
+
+-- | The bytes allocated in forcing a value: what its work costs, counted
+-- rather than timed, so that a slow or a busy machine changes nothing.
+allocated :: Bool -> IO Int64
+allocated value = do
+  setAllocationCounter 0
+  _ <- evaluate value
+  negate <$> getAllocationCounter
+
+-- | The allocation an answer over 'largeSpace' stays within.
+answerBound :: Int64
+answerBound = 40_000_000
+
+-- | A space of 10,000 pages under its home page: a hundred sections of a
+-- hundred pages each, titled "Page n" (the sections "Section n").
+largeSpace :: [PageSummary]
+largeSpace =
+  summary "p0" Nothing "Home" (slugOf "home") 0
+    : concat
+      [ summary ("s" <> show s) (Just (PageId "p0")) ("Section " <> show s) (slugOf ("section-" <> show s)) s
+          : [summary ("p" <> show n) (Just (PageId ("s" <> show s))) ("Page " <> show n) (slugOf ("page-" <> show n)) n | k <- [1 .. 99 :: Int], let n = s * 100 + k]
+      | s <- [0 .. 99 :: Int]
+      ]
+  where
+    slugOf = either (panic . show) identity . mkSlug
+
 -- | What the editor holds of a page of a kind, with no page to link to.
 held :: PageKind -> [BoxKind] -> Held
-held kind boxes = Held {kind, boxes, editing = PageId "none", editingPath = [], pages = []}
+held kind boxes = Held {kind, boxes, editing = PageId "none", pages = []}
+
+-- | The path of the page edited in the tests of the pages offered.
+handbookEditing :: [Slug]
+handbookEditing = slugs ["handbook", "editing"]
 
 -- | A question about the first line of a text: before the cursor and after.
 lineRequest :: Text -> Text -> Request
@@ -160,8 +263,8 @@ written h typed afterwards = do
   first' <- head found.candidates
   Just (snippetTemplate first'.skeleton)
 
-linkable :: Text -> Text -> [Text] -> Linkable
-linkable i title path = Linkable {id = PageId i, title, path = slugs path}
+linkable :: Text -> Text -> [Text] -> (PageId, Text, [Slug])
+linkable i title path = (PageId i, title, slugs path)
 
 slugs :: [Text] -> [Slug]
 slugs = map (either (panic . show) identity . mkSlug)

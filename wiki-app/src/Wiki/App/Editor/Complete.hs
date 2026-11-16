@@ -15,6 +15,8 @@ module Wiki.App.Editor.Complete
   ( Request (..)
   , Held (..)
   , Linkable (..)
+  , linkables
+  , linkablesFrom
   , sources
   , pageSource
   , Readings
@@ -26,14 +28,17 @@ where
 
 import Data.Aeson (Value (String), object, (.=))
 import Data.Map.Lazy qualified as Map
+import Data.Map.Strict qualified as Strict
 import Data.Text qualified as T
 import Protolude
 import Wiki.App.Route (pageLinkText)
 import Wiki.Core.Id (PageId)
 import Wiki.Core.Markdown.Box (BoxKind)
 import Wiki.Core.Markdown.Complete
+import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind)
 import Wiki.Core.Slug (Slug, slugText, slugify)
+import Wiki.Core.Space (Space, pagePath)
 
 -- | 'Request' is CodeMirror's question: the cursor's line, from 1, in the
 -- whole text (the master's, for a row of a presentation edited slide by
@@ -49,27 +54,95 @@ data Request = Request
 
 -- | 'Held' is what the editor holds that the sources read: the page's
 -- kind, which says the markers it reads; the kinds of box the
--- administration defined; the page being edited, by its id and its path
--- (what a link from it is read against: a new page has its path from the
--- moment it is made, before its first save); and the pages of its space a
--- link may name.
+-- administration defined; the page being edited, by its id; and the
+-- pages of its space a link may name, as the editor keeps them
+-- ('linkables').
 data Held = Held
   { kind :: PageKind
   , boxes :: [BoxKind]
   , editing :: PageId
-  , editingPath :: [Slug]
   , pages :: [Linkable]
   }
 
--- | 'Linkable' is a page of the space a link may name: its id, its title,
--- and its path under the space's home page ('Wiki.Core.Space.pagePath';
--- the home page's is empty).
+-- | 'Linkable' is a page of the space a link may name, with what the list
+-- shows of it and what choosing it writes, worked out once for the page
+-- being edited ('linkable'): its id, its title, and its path under the
+-- space's home page ('Wiki.Core.Space.pagePath'; the home page's is
+-- empty); the link's address and label ('pageLinkText'); how near it is
+-- to the page edited (0 a sibling, 1 a page of its branch, 2 another);
+-- and its title in lower case, the words of that, its path's segments,
+-- and those joined with @/@, which the letters typed are matched against
+-- and the list shows.
+--
+-- A completion's answer only matches and ranks these: the paths and the
+-- links are the editor's to work out when the pages, or the page's own
+-- path, change, not at each letter typed (a space of 10,000 pages took a
+-- second an answer when each answer worked them out).
 data Linkable = Linkable
   { id :: PageId
   , title :: Text
   , path :: [Slug]
+  , address :: Text
+  , label :: Maybe Text
+  , nearness :: Int
+  , lowerTitle :: Text
+  , titleWords :: [Text]
+  , segments :: [Text]
+  , joined :: Text
   }
   deriving stock (Eq, Show)
+
+-- | A page a link from the page at the first path may name: its id, its
+-- title and its path.
+linkable :: [Slug] -> PageId -> Text -> [Slug] -> Linkable
+linkable editingPath i title path =
+  Linkable
+    { id = i
+    , title
+    , path
+    , address
+    , label
+    , nearness
+    , lowerTitle
+    , titleWords = drop 1 (T.split (not . isAlphaNum) lowerTitle)
+    , segments = map slugText path
+    , joined = T.intercalate "/" (map slugText path)
+    }
+  where
+    (address, label) = pageLinkText editingPath path title
+    lowerTitle = T.toLower title
+    parentOf p = take (length p - 1) p
+    nearness
+      | not (null path) && parentOf path == parentOf editingPath = 0
+      | (_ : _, _ : _) <- (path, editingPath), take 1 path == take 1 editingPath = 1
+      | otherwise = 2
+
+-- | The pages of a space a link from the page at the path may name, as the
+-- editor keeps them: every one but a template, each with its path (the
+-- pages looked up by id in a map, not searched for in the list), in the
+-- order the list offers them in before anything is typed ('pageSource').
+linkables :: Space -> [PageSummary] -> [Slug] -> [Linkable]
+linkables space summaries editingPath =
+  linkablesFrom
+    editingPath
+    [ (p.id, p.title, path)
+    | p <- summaries
+    , not p.template
+    , Just path <- [pagePath space (`Strict.lookup` byId) p.id]
+    ]
+  where
+    byId = Strict.fromList [(p.id, p) | p <- summaries]
+
+-- | The pages a link from the page at the path may name, each given by its
+-- id, its title and its path, as the editor keeps them ('linkables').
+linkablesFrom :: [Slug] -> [(PageId, Text, [Slug])] -> [Linkable]
+linkablesFrom editingPath found = sortOn baseOrder [linkable editingPath i title path | (i, title, path) <- found]
+
+-- | The order of the pages within one group of matches ('pageSource'):
+-- the nearer first, then the shorter link, then the title in
+-- alphabetical order, then the path.
+baseOrder :: Linkable -> (Int, Int, Text, [Text])
+baseOrder p = (p.nearness, T.length p.address + maybe 0 (\l -> 1 + T.length l) p.label, p.lowerTitle, p.segments)
 
 -- | The sources of the editor's list, in the order their candidates are
 -- listed: the wiki's own markers and kinds of box, and the space's pages.
@@ -101,48 +174,34 @@ sources held = [wikiSource held.kind held.boxes, pageSource held]
 pageSource :: Held -> Source
 pageSource held wanted
   | wanted.typed.trigger /= LinkToPage = []
-  | otherwise =
-      [ candidate p
-      | (_, p) <-
-          take shownPages . sortOn fst $
-            [ ((rank, nearness p, T.length (linkText p), T.toLower p.title, map slugText p.path), p)
-            | p <- held.pages
-            , p.id /= held.editing
-            , Just rank <- [matchOf p]
-            ]
-      ]
+  | otherwise = map candidate (take shownPages (concat [[p | (r, p) <- matched, r == rank] | rank <- [1, 2, 3 :: Int]]))
   where
     typed = wanted.typed
+    -- The pages are kept in the order of each group ('linkables'), so
+    -- the list takes the first of each group in turn, and goes through
+    -- the pages no further than it needs: each page is matched once.
+    matched = [(r, p) | p <- held.pages, p.id /= held.editing, Just r <- [matchOf p]]
     query = T.toLower (T.strip typed.letters)
     querySlug = maybe query slugText (slugify query)
     matchOf p
-      | T.null query || query `T.isPrefixOf` titleLower = Just (1 :: Int)
-      | any (query `T.isPrefixOf`) (drop 1 (T.split (not . isAlphaNum) titleLower)) = Just 2
-      | any ((querySlug `T.isPrefixOf`) . slugText) p.path = Just 2
-      | query `T.isInfixOf` titleLower || querySlug `T.isInfixOf` T.intercalate "/" (map slugText p.path) = Just 3
+      | T.null query || query `T.isPrefixOf` p.lowerTitle = Just (1 :: Int)
+      | any (query `T.isPrefixOf`) p.titleWords = Just 2
+      | any (querySlug `T.isPrefixOf`) p.segments = Just 2
+      | query `T.isInfixOf` p.lowerTitle || querySlug `T.isInfixOf` p.joined = Just 3
       | otherwise = Nothing
-      where
-        titleLower = T.toLower p.title
-    parentOf path = take (length path - 1) path
-    nearness p
-      | not (null p.path) && parentOf p.path == parentOf held.editingPath = 0 :: Int
-      | (_ : _, _ : _) <- (p.path, held.editingPath), take 1 p.path == take 1 held.editingPath = 1
-      | otherwise = 2
-    linkText p = let (address, label) = pageLinkText held.editingPath p.path p.title in maybe address (\l -> address <> "|" <> l) label
     candidate p =
       Candidate
         { label = p.title
         , skeleton = [Literal written, Field 0 ""]
-        , place = Just (if null p.path then "the home page" else T.intercalate "/" (map slugText p.path))
+        , place = Just (if null p.path then "the home page" else p.joined)
         , origin = Nothing
         }
       where
-        (address, label) = pageLinkText held.editingPath p.path p.title
         -- The reader's own label, typed already, stays; otherwise the
         -- link's own, and its end.
         written
-          | T.null typed.kept = "[[" <> address <> maybe "" ("|" <>) label <> "]]"
-          | otherwise = "[[" <> address <> typed.kept
+          | T.null typed.kept = "[[" <> p.address <> maybe "" ("|" <>) p.label <> "]]"
+          | otherwise = "[[" <> p.address <> typed.kept
 
 -- | How many pages the list offers at most: enough to scroll through, few
 -- enough for a space of thousands of pages to answer at once.

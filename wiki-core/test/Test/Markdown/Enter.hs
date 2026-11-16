@@ -131,12 +131,24 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
   -- editor hands over, the cursor's block and the one below it, and past
   -- 'textLimit' by nothing at all.
   describe "what Enter costs" $ do
-    it "breaks the line alone at the end of a list of a thousand items, reading nothing" $ do
+    it "breaks the line alone past its limit, reading nothing" $ do
       let items = T.intercalate "\n" ["- item " <> show i | i <- [1 .. 1000 :: Int]]
       _ <- evaluate (T.length items)
       (answer, allocated) <- allocations (enter items "")
       -- 1,488 bytes measured natively on 2026-11-16, unoptimised.
       (answer, allocated < 100_000) `shouldBe` (NewLine, True)
+    -- A page-level list's items are starts: the editor hands over the
+    -- items around the cursor's, not the whole list.
+    it "goes on at the end and in the middle of a list of a thousand items, reading a few of them" $ do
+      let ls = "# Items" : "" : ["- item " <> show i | i <- [1 .. 1000 :: Int]]
+          at n = handedOver (T.intercalate "\n" (take n ls)) (mconcat ["\n" <> l | l <- drop n ls]) (Change 0 0 "")
+      for_ [length ls, 502] $ \n -> do
+        let (given, taken) = at n
+        _ <- evaluate (T.length given + T.length taken)
+        (answer, allocated) <- allocations (enter given taken)
+        -- 31 to 34 characters and 0.4 MB measured natively on
+        -- 2026-11-17, unoptimised.
+        (answer, T.length given + T.length taken < 100, allocated < 5_000_000) `shouldBe` (NewLineWith "- ", True, True)
     it "reads only the cursor's block and the one below it in a far slide of a long deck" $ do
       let ls = T.splitOn "\n" longDeck
           -- The end of slide 50's last item.
@@ -602,12 +614,9 @@ handedOver before after (Change per removed was) =
     cursor = T.length before
     lineStart = T.length (T.dropWhileEnd (/= '\n') before)
     begins = startFor [(s, s + T.length (T.takeWhile (/= '\n') (T.drop s now))) | s <- starts] firstChange lineStart
-    ends = maybe (T.length now) (subtract 1) (endFor (filter afterBlank starts) cursor)
-    -- A start still at a line's start, after a blank line, in the text now.
-    afterBlank s =
-      s > 0
-        && T.takeEnd 1 (T.take s now) == "\n"
-        && T.null (T.strip (T.takeWhileEnd (/= '\n') (T.dropEnd 1 (T.take s now))))
+    ends = maybe (T.length now) (subtract 1) (endFor (filter atLineStart starts) cursor)
+    -- A start still at a line's start in the text now.
+    atLineStart s = s > 0 && T.takeEnd 1 (T.take s now) == "\n"
 
 -- | An answer, forced, and the bytes allocated to make it.
 allocations :: Enter -> IO (Enter, Int64)

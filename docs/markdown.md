@@ -54,7 +54,7 @@ A page with three headings or more has a "Contents" panel beside it (above it on
 1. Numbered lists use `1.` or `1)`.
 2. They may start from any number.
 
-In the editor, Enter at the end of an item starts the next one at the same indentation: `- ` after a bulleted item, the next number after a numbered one, `- [ ] ` after a task. Enter on an item with nothing in it goes up one level: a nested item becomes the next item of the list around it, and an item at the top level becomes an empty line, which ends the list. Enter at the end of a line with more of its item below it (a nested list, a second paragraph), in the middle of a line, with text selected, in a footnote, or in a list longer than about 2,000 characters, is a line break and nothing more; so is Shift+Enter, anywhere.
+In the editor, Enter at the end of an item starts the next one at the same indentation: `- ` after a bulleted item, the next number after a numbered one, `- [ ] ` after a task. Enter on an item with nothing in it goes up one level: a nested item becomes the next item of the list around it, and an item at the top level becomes an empty line, which ends the list. Enter at the end of a line with more of its item below it (a nested list, a second paragraph), in the middle of a line, with text selected, in a footnote, or in a list item longer than about 2,000 characters, is a line break and nothing more; so is Shift+Enter, anywhere.
 
 Task lists show a checkbox, and a done task is struck through:
 

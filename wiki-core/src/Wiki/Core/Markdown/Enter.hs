@@ -126,8 +126,11 @@ enter before after
 -- Enter is a plain line break. The text is parsed twice, about 25 to 35
 -- microseconds a character on the everyday WebAssembly build (measured
 -- 2026-11-16: 3 ms for 149 characters, 10 to 17 ms for 691, 330 to 380
--- ms for 10,900, a list of a thousand items), so that Enter stays under
--- about 50 ms. web/src/editor.js hands over no more than this.
+-- ms for 10,900, a whole list of a thousand items), so that Enter stays
+-- under about 50 ms. web/src/editor.js hands over no more than this. A
+-- list's items are where it may cut the text (Wiki.Core.Markdown.Starts),
+-- so what is still past the limit is one long block: a paragraph, a
+-- quotation or a box, a single item.
 textLimit :: Int
 textLimit = 2000
 

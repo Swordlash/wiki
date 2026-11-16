@@ -35,15 +35,23 @@ import Wiki.Core.Markdown.Ast (Shape (..), ShapeKind (..), shapeLines)
 -- nothing open above it, in order, the first line always among them: the
 -- first line of each block of the page's own (not one in a footnote's
 -- definition, which the parser places at the page's end) that comes after
--- a blank line. A block of HTML that reads on, a fence left open, one of
+-- a blank line, and the first line of each item after the first of a list
+-- of the page's own (not nested, not in a quotation, a footnote or a
+-- block of the wiki's own). Cut at such an item, the rest reads as a list
+-- of the same kind beginning with it, which is all Enter needs: the mark
+-- and its number are on the item's line, and whether the list is loose
+-- does not change what Enter writes. So in a list of any length Enter
+-- reads only the items around the cursor's. A block of HTML that reads on, a fence left open, one of
 -- the wiki's own blocks not closed is one block to its end, with no start
 -- inside it; so is a footnote's definition. A block right after another
 -- is read as it is because of the one before: an item may start a list
 -- after a paragraph's line only if it has text, and is no task then.
 blockStarts :: Text -> [Shape] -> [Int]
 blockStarts source shapes =
-  ordNub (1 : sort [a | s <- shapes, s.kind /= NoteShape, let a = fst (shapeLines s), a > 1, afterBlank a, not (any (holds a) notes)])
+  ordNub (1 : sort ([a | s <- shapes, s.kind /= NoteShape, let { a = fst (shapeLines s) }, a > 1, afterBlank a, not (any (holds a) notes)] <> items))
   where
+    -- The items after the first of a list at the page's own level.
+    items = [fst (shapeLines i) | s <- shapes, s.kind == ListShape, i <- drop 1 s.inner, not (any (holds (fst (shapeLines i))) notes)]
     notes = [shapeLines s | s <- shapes, s.kind == NoteShape]
     holds l (a, b) = a <= l && l <= b
     sourceLines = T.splitOn "\n" source
@@ -73,11 +81,10 @@ startFor starts firstChange lineStart = fromMaybe 0 (lastMay [s | (s, end) <- ta
 -- read as it was are read as they were. What is cut off cannot change how
 -- the lines before it are read while the cut is at a start of the text as
 -- it is now. A start after a change since the parse may no longer be one:
--- the caller passes only those still at a line's start after a blank line
--- (a change across lines maps a start into the middle of one, or takes
--- away the blank line before it); one the change has put in a block that
--- reads on (an end marker typed above it) Enter sees only on the lines it
--- is given.
+-- the caller passes only those still at a line's start (a change across
+-- lines maps a start into the middle of one); one the change has put in a
+-- block that reads on (an end marker typed above it) Enter sees only on
+-- the lines it is given.
 endFor :: [Int] -> Int -> Maybe Int
 endFor starts lineEnd = case dropWhile (<= lineEnd) starts of
   _ : end : _ -> Just end

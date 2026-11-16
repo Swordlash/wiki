@@ -31,6 +31,6 @@ title: Enter continues lists and boxes in the editor
   numbers of the items below stay as they are, and the page still numbers
   them one after another. Enter with text selected, in the middle of a
   line, in code, in a footnote, on a line with more of its item below it
-  (a nested list), or in a list or a box longer than about 2,000
+  (a nested list), or in a box or a quotation longer than about 2,000
   characters, is a line break and nothing more, and so is Shift+Enter: it
   keeps an empty `> ` line in a box, for a second paragraph.

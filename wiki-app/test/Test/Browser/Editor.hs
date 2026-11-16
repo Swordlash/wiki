@@ -526,8 +526,9 @@ spec m = do
   -- list's start, which the check gives (its problem, a marker line of no
   -- block, is its signal). Then HTML that reads on over a heading and a
   -- list (Codex's case on #292): the list's line is HTML, and Enter a
-  -- line break alone.
-  it "reads the text from where the last check found a block starting, past a long paragraph and over HTML that reads on" $ runPage $ do
+  -- line break alone. Then a list of two hundred items, longer than the
+  -- limit: each item starts a text Enter may read, so it goes on.
+  it "reads the text from where the last check found a block starting, past a long paragraph, over HTML that reads on, and in a long list" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     _ <- editorText ui
     let long = T.intercalate " " (replicate 500 "word")
@@ -542,6 +543,9 @@ spec m = do
     markdown ui `shouldReturn` listed <> "\n- "
     enterAtEnd html 2
     markdown ui `shouldReturn` html <> "\n"
+    let items = titleLines <> "[[!nothing]]\n\n" <> T.intercalate "\n" ["- item " <> show i | i <- [1 .. 200 :: Int]]
+    enterAtEnd items 1
+    markdown ui `shouldReturn` items <> "\n- "
 
   it "leaves Ctrl+B's placeholder selected, for the typing to replace" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor

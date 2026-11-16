@@ -24,7 +24,7 @@ import Wiki.Api.ServerSettings (ServerSettingsOf (boxes))
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Route (..))
+import Wiki.App.Route (Route (..), pageLinkText)
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
 
 -- The last key that reached the window: test/jsbits/test-keys.js.
@@ -94,6 +94,25 @@ spec m = do
     listReady ui
     press "Enter"
     withSelection ui `shouldReturn` "And [[Notes on Haskell]]‸ too."
+
+  it "links a page typed in the middle of the long Markdown guide, the rest of the guide as it was" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-admin") (EditPage (slugs ["docs"]) (slugs ["markdown-guide"]))
+    text <- editorText ui
+    guide <- eventually $ markdown ui >>= \t -> t <$ (t `shouldSatisfy` ((> 10_000) . T.length))
+    -- A line of its own between two paragraphs in the middle: thousands
+    -- of characters before it and after it.
+    let (upTo, rest) = T.breakOn "\n\n" (T.drop (T.length guide `div` 2) guide)
+        at = T.length guide `div` 2 + T.length upTo + 1
+        (address, label) = pageLinkText (slugs ["markdown-guide"]) (slugs ["markdown-guide", "diagrams"]) "Diagrams"
+        -- The editor counts UTF-16 units: an emoji above is two.
+        units = at + T.length (T.filter ((> 0xFFFF) . ord) (T.take at guide))
+    T.null rest `shouldBe` False
+    selectText ui units units
+    typeText text "See [[Diag"
+    eventually $ labels ui `shouldReturn` ["Diagrams"]
+    listReady ui
+    press "Enter"
+    markdown ui `shouldReturn` T.take at guide <> "See [[" <> address <> maybe "" ("|" <>) label <> "]]" <> T.drop at guide
 
   it "keeps the list's Escape and the snippet's Tab and Escape from the form, and lets them through once neither is there" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor

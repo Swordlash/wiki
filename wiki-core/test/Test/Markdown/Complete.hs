@@ -86,6 +86,11 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       endOf "[[!spoiler]]{s}(See [[Gu‸)" `shouldBe` (0, "")
       endOf "> [!NOTE] See [[Gu‸ide|it]] here" `shouldBe` (T.length "ide|it]]", "|it]]")
       endOf "[See [[Gu‸ide]] there](https://example.com)" `shouldBe` (T.length "ide]]", "")
+    it "opens before a long text, where the block ends before the bound, and not in a block still open at it (#294, fifth round)" $ do
+      let long = T.intercalate "\n\n" (replicate 40 (T.replicate 12 "Some words. "))
+      endOf ("See [[Gu‸\n\n" <> long) `shouldBe` (0, "")
+      endOf ("See [[Gu‸ide]] now\n\n" <> long) `shouldBe` (T.length "ide]]", "")
+      endOf ("See [[Gu‸ " <> T.replicate 400 "words ") `shouldBe` (-1, "no list")
     it "writes a label after an escaped bar in a table's cell, and after a bar elsewhere (#294, third round)" $ do
       labelsOf "| h | i |\n| --- | --- |\n| [[Gu‸]] | x |" `shouldBe` Just EscapedLabel
       labelsOf "| h | i |\n| --- | --- |\n| [[Gu‸ | x |" `shouldBe` Just EscapedLabel

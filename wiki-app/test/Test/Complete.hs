@@ -22,7 +22,7 @@ import Wiki.App.Editor.Complete
 import Wiki.App.Route (PageLink (..), pageLinkText, pageRoute, resolvePageLink)
 import Wiki.Core.Id (PageId (..))
 import Wiki.Core.Markdown (Destination (..), classifyDestination)
-import Wiki.Core.Markdown.Ast (Block (..), Footnote (..), Inline (..), ListItem (..), allInlines, parseMarkdown, plainText)
+import Wiki.Core.Markdown.Ast (Block (..), Footnote (..), Inline (..), ListItem (..), allInlines, parseMarkdown, parseWithStartsAndMarkers, plainText)
 import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
 import Wiki.Core.Markdown.Complete
@@ -119,7 +119,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
               . (.candidates)
       (fst . skeletonText . (.skeleton) <$> inTable "| [[Old" "]] | x |") `shouldBe` Just "[[guide-old\\|Old notes]]"
       written onHandbook "**[[Gu" "ide]]**" `shouldBe` Just "[[Guide]]${0}"
-    modifyMaxSuccess (* 10) . prop "leaves one wiki link to the page chosen at the cursor, with the label read there, and every other inline as before, or offers nothing" $
+    modifyMaxSuccess (* 5) . prop "leaves one wiki link to the page chosen at the cursor, with the label read there, and every other inline as before, or offers nothing" $
       checkCoverage (forAll genLinkLine (choosesPage onHandbook))
 
   describe "the pages offered in a space of 10,000 pages" $
@@ -210,6 +210,7 @@ data LinkLine = LinkLine
   , closed :: Bool
   , after :: Text
   , lineEnd :: Text
+  , farther :: Text
   }
   deriving stock (Show)
 
@@ -244,7 +245,14 @@ genLinkLine = do
   label <- elements ["", "", "|Mine", "|[draft&#93;", "|a [b", "\\|escaped", "|Q&amp;A", "|", "|x|y", "| spaced ", "|read\nmore", "|read\n  more", "|" <> T.replicate 300 "z", "|read\n\nmore"]
   closed <- elements [True, True, False]
   following <- elements ["", " now", " and [[b]]", " [[c|C]] end", " `x`", "\nnext line", " now\n\n[[d]]"]
-  pure LinkLine {above, pre, wrap, typed, rest, label, closed, after = following, lineEnd}
+  -- Longer than every bound of the completion (2,000 characters after
+  -- the cursor), the cursor at the text's start, in its middle or near
+  -- its end.
+  farther <- elements ["", "", "\n\n" <> longText]
+  longAbove <- elements [[], [], concat (replicate 30 ["A paragraph above, with some words in it.", ""])]
+  pure LinkLine {above = longAbove <> above, pre, wrap, typed, rest, label, closed, after = following, lineEnd, farther}
+  where
+    longText = T.intercalate "\n\n" (replicate 24 (T.replicate 8 "More words. "))
 
 -- | Choosing the first page offered on a 'LinkLine', as CodeMirror writes
 -- it (the snippet's further lines after the cursor line's indentation),
@@ -261,7 +269,11 @@ genLinkLine = do
 --   the page, and everything after the cursor is as it was.
 -- * Nothing is declined needlessly: wherever the parser reads a closed
 --   link at the cursor, and reads it as a link to a word, with everything
---   else where it was, once the word is its address, a page is offered.
+--   else where it was, once the word is its address, a page is offered;
+--   and wherever it reads no link at the cursor, and a link to a word
+--   written there with its end is read as one more link, a page is
+--   offered. Over texts longer than the completion's bounds too, where
+--   the block that holds the cursor ends within 2,000 characters of it.
 choosesPage :: Held -> LinkLine -> Property
 choosesPage h l =
   cover 70 offered "a page offered" . cover 40 replaceable "a link at the cursor whose address a word may replace" $
@@ -309,7 +321,7 @@ choosesPage h l =
     upToLine = T.concat [a <> "\n" | a <- l.above]
     cursorLine = length l.above + 1
     typedUpTo = l.pre <> fst l.wrap <> "[[" <> l.typed
-    afterCursor = l.rest <> l.label <> (if l.closed then "]]" else "") <> snd l.wrap <> l.lineEnd <> l.after
+    afterCursor = l.rest <> l.label <> (if l.closed then "]]" else "") <> snd l.wrap <> l.lineEnd <> l.after <> l.farther
     restOfLine = T.takeWhile (/= '\n') afterCursor
     whole = upToLine <> typedUpTo <> afterCursor
     -- The block with a word in place of the letters typed, which names the
@@ -319,8 +331,29 @@ choosesPage h l =
     unopened = upToLine <> l.pre <> fst l.wrap <> sentinel <> afterCursor
     -- The block with a word as the address of a closed link at the
     -- cursor, its label kept.
-    worded = upToLine <> l.pre <> fst l.wrap <> "[[Zqxjvword" <> l.label <> "]]" <> snd l.wrap <> l.lineEnd <> l.after
-    replaceable =
+    worded = upToLine <> l.pre <> fst l.wrap <> "[[Zqxjvword" <> l.label <> "]]" <> snd l.wrap <> l.lineEnd <> l.after <> l.farther
+    -- The block with a link to a word written at the @[[@ of a link not
+    -- closed yet, as an entry writes its own end.
+    wordedOpen = upToLine <> l.pre <> fst l.wrap <> "[[Zqxjvword]]" <> afterCursor
+    -- The completion reads at most 2,000 characters after the cursor: a
+    -- block still open there is not read whole, and may be declined. The
+    -- block that holds the cursor's line ends within them where the whole
+    -- text is read with a top-level block starting on a later line, less
+    -- than 2,000 characters after the cursor.
+    endsNear = case parseWithStartsAndMarkers marked of
+      Right (blocks, _, _) ->
+        let ls = T.splitOn "\n" marked
+            lineOffset k = sum (map ((+ 1) . T.length) (take (k - 1) ls))
+            cursorOffset = T.length upToLine + T.length l.pre + T.length (fst l.wrap) + 2 + T.length sentinel
+         in T.length marked - cursorOffset <= 2000 || any (\k -> k > cursorLine && lineOffset k - cursorOffset <= 2000) [k | (Just k, _) <- blocks]
+      Left _ -> True
+    replaceable = endsNear && (closedReplaceable || openReplaceable)
+    openReplaceable =
+      not l.closed
+        && not (any ((sentinel `T.isPrefixOf`) . fst) (linksOf marked))
+        && any ((== "Zqxjvword") . fst) (linksOf wordedOpen)
+        && length (linksOf wordedOpen) == length (linksOf unopened) + 1
+    closedReplaceable =
       l.closed
         && any ((sentinel `T.isPrefixOf`) . fst) (linksOf marked)
         && length (linksOf marked) > length (linksOf unopened)

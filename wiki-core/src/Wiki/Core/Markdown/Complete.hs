@@ -270,8 +270,10 @@ linkWord = "Zqxjvlink"
 
 -- | How many characters after the cursor the end of a link to a page is
 -- looked for in: the rest of the cursor's line and the lines below, to
--- the text's end at most. A link that the parser reads ending further
--- away gets no list ('linkAt'), so that an answer parses a bounded text.
+-- the text's end at most, so that an answer parses a bounded text. Where
+-- the block that holds the cursor is still open at the bound, no list
+-- opens ('linkAt'); where it ends before, the text after it is not
+-- needed.
 afterBound :: Int
 afterBound = 2000
 
@@ -319,22 +321,31 @@ stretchOf at = go (T.length at.after) [at.after] at.below
 -- after an escaped bar ('LabelForm'): the first read so is how a label is
 -- written, and with neither, an entry writes its address alone, which
 -- leads to the same page. Otherwise 'Nothing', and no list: an entry never
--- leaves a text the parser reads otherwise. Nor when the link's end is
--- not found within 'afterBound'. The parser reads the block two times,
+-- leaves a text the parser reads otherwise. Nor when the text after the
+-- cursor was cut at 'afterBound' and the block that holds the cursor is
+-- still open there (the parser reads no block starting after the
+-- cursor's line): what follows could change how it is read. A block
+-- that ends before the cut is read as the whole text reads it, however
+-- long the text. The parser reads the block two times,
 -- then at most 8 times for a label kept, or 3 for an end of the entry's
 -- own.
 linkAt :: LineReader -> At -> Int -> Int -> (Maybe (Int, Text, LabelForm), [Probe])
-linkAt readAt at start from' = case linkFrom opened of
-  Just (through, _, text)
-    | not (takenOver through) ->
-        if linkWord `T.isInfixOf` text
-          then ownEnd through
-          else firstRead [(through, T.drop i written) | let { written = T.take through stretch }, i <- labelStarts written] text
-  Nothing | cut -> (Nothing, [opened, unopened])
-  _ -> ownEnd 0
+linkAt readAt at start from'
+  | cut && not settled = (Nothing, [opened])
+  | otherwise = case linkFrom opened of
+      Just (through, _, text)
+        | not (takenOver through) ->
+            if linkWord `T.isInfixOf` text
+              then ownEnd through
+              else firstRead [(through, T.drop i written) | let { written = T.take through stretch }, i <- labelStarts written] text
+      _ -> ownEnd 0
   where
     pre = T.take start at.before
     (stretch, cut) = stretchOf at
+    -- Whether the block that holds the cursor's line ends before the cut:
+    -- the parser reads a block starting on a later line, and what follows
+    -- the cut cannot change how the cursor's block is read.
+    settled = any (> 0) (readAt opened).blockStarts
     probeOn t = Probe from' (T.splitOn "\n" (pre <> t))
     opened = probeOn ("[[" <> linkWord <> stretch)
     unopened = probeOn (linkWord <> stretch)
@@ -515,6 +526,7 @@ data Probe = Probe
 -- inside the boxes it reads; the wiki links it reads, each by its
 -- address and its text, and where each starts and ends, as (line,
 -- column) pairs, the probe's first line counted as line 0 ('WikiLinkTo');
+-- the lines the top-level blocks start on, counted so;
 -- every inline it reads ('allInlines'); and the first line of the
 -- top-level block that holds the first (counted in the lines above, from
 -- 1), from which on the lines read alike whatever comes before.
@@ -524,6 +536,7 @@ data LineReading = LineReading
   , inBoxes :: [Text]
   , wikiLinks :: [(Text, Text)]
   , linkSpans :: [((Int, Int), (Int, Int))]
+  , blockStarts :: [Int]
   , inlinesRead :: [Inline]
   , blocksRead :: [Block]
   , enclosing :: Int
@@ -533,7 +546,7 @@ data LineReading = LineReading
 -- | A reading of nothing, the block that holds the line starting at this
 -- line.
 noReading :: Int -> LineReading
-noReading enclosing = LineReading {roles = [], boxed = False, inBoxes = [], wikiLinks = [], linkSpans = [], inlinesRead = [], blocksRead = [], enclosing}
+noReading enclosing = LineReading {roles = [], boxed = False, inBoxes = [], wikiLinks = [], linkSpans = [], blockStarts = [], inlinesRead = [], blocksRead = [], enclosing}
 
 -- | The roles read on a probe's first line.
 firstRoles :: LineReading -> [MarkerRole]
@@ -560,6 +573,7 @@ readLine above probe = case parseWithStartsAndMarkers (T.intercalate "\n" (kept 
       , inBoxes = [plainText inlines | Alert _ _ bs <- concatMap (everyBlock . snd) blocks, b <- concatMap everyBlock bs, Just inlines <- [paragraphOf b]]
       , wikiLinks = [(address, plainText text) | Link attributes address _ text <- inlines', ("class", "wikilink") `elem` attributes]
       , linkSpans = [((l - n, c), (l' - n, c')) | MarkerLine l c (WikiLinkTo l' c') <- lines']
+      , blockStarts = [l - n | (Just l, _) <- blocks]
       , inlinesRead = inlines'
       , blocksRead = map snd blocks
       , enclosing = inAbove (fromMaybe n (lastMay [l | (Just l, _) <- blocks, l <= n]))

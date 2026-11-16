@@ -116,6 +116,7 @@ library
       Wiki.App.Editor.Browser
       Wiki.App.Editor.Complete
       Wiki.App.Editor.Problems
+      Wiki.App.Editor.Tools
       Wiki.App.Vault
       Wiki.App.View.Access
       Wiki.App.View.Activity

@@ -30,8 +30,11 @@ function wikiTextarea(host) {
 // Put CodeMirror in the host in place of the textarea, once its module has
 // loaded; `original` is the Markdown the textarea was made with, which the
 // browser has made the textarea's line endings "\n" in. Without the page's
-// islands.js the textarea stays.
-function wiki_editor_attach(host, original) {
+// islands.js the textarea stays. `enter` is the Haskell callback
+// CodeMirror's Enter asks (Wiki.App.Editor.Browser's enterCallback), kept
+// on the host as `wikiEnter` for the master and its rows.
+function wiki_editor_attach(host, original, enter) {
+  host.wikiEnter = enter;
   const textarea = wikiTextarea(host);
   if (textarea) globalThis.wikiIslands?.attachEditor?.(textarea, host, original);
 }

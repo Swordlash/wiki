@@ -502,19 +502,22 @@ spec m = do
     markdown ui `shouldReturn` "# Hello, world\n\none\ntwo\nthree"
 
   -- Each case of 'enterCases' on the same page: its text under the title
-  -- line, the cursor at its mark, its keys pressed, and the text and the
-  -- cursor after them.
+  -- line, its selection made, its keys pressed, and the text and the
+  -- cursor after them. What Enter writes is Wiki.Core.Markdown.Enter's,
+  -- tested natively; these show the keymap asking it and making its
+  -- answer, in the master.
   it "continues a list or a box on Enter, goes up a level and out on an empty line, and breaks the line alone on Shift+Enter" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     _ <- editorText ui
     for_ enterCases $ \(name, before, keys, after) -> do
-      let (text, at) = unmarked before
+      let (text, start, end) = unmarked before
+          offset = utf16Length titleLines
       setMarkdown ui (titleLines <> text)
-      selectText ui (T.length titleLines + at) (T.length titleLines + at)
+      selectText ui (offset + utf16Length (T.take start text)) (offset + utf16Length (T.take end text))
       traverse_ press keys
       now <- T.drop (T.length titleLines) <$> markdown ui
       (cursorAt, _) <- editorSelection ui
-      (name, marked now (cursorAt - T.length titleLines)) `shouldBe` (name, after)
+      (name, marked now (cursorAt - offset)) `shouldBe` (name, after)
 
   it "leaves Ctrl+B's placeholder selected, for the typing to replace" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
@@ -1110,52 +1113,23 @@ dotPng :: Text
 dotPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
 -- | Enter in a list and in a box (WP5.124 (a) of docs/PLAN.md, #187), one
--- case a line: its name, the text with the cursor at @‸@, the keys
--- pressed, and the text with the cursor after them. The text goes under
--- the page's title line ('titleLines'). Offsets count UTF-16 units, so
--- the texts are ASCII.
+-- case a line: its name, the text with the cursor at @‸@ or a selection
+-- between @«@ and @»@, the keys pressed, and the text with the cursor
+-- after them. The text goes under the page's title line ('titleLines').
+-- Each case is one way the keymap goes: an answer that writes a new line's
+-- start, one that replaces the cursor's line, none (code), Shift+Enter, a
+-- selection, which is never asked about, and a character of two UTF-16
+-- units before the cursor, which the ask must not count wrong.
 enterCases :: [(Text, Text, [Text], Text)]
 enterCases =
   [ ("an item", "- one‸", ["Enter"], "- one\n- ‸")
-  , ("an empty second item leaves the list, with no blank line put in", "- one\n- ‸", ["Enter"], "- one\n‸")
-  , ("an item, then out of the list", "- one\n- two‸", ["Enter", "Enter"], "- one\n- two\n‸")
-  , ("a nested item", "- one\n  - two‸", ["Enter"], "- one\n  - two\n  - ‸")
-  , ("an empty nested item goes up one level", "- one\n  - two\n  - ‸", ["Enter"], "- one\n  - two\n- ‸")
-  , ("a nested item, up and out", "- one\n  - two‸", ["Enter", "Enter", "Enter"], "- one\n  - two\n‸")
-  , ("a task, with an empty box", "- [x] done‸", ["Enter"], "- [x] done\n- [ ] ‸")
-  , ("a numbered list, renumbered", "1. a‸\n2. b", ["Enter"], "1. a\n2. ‸\n3. b")
-  , ("a list in a quotation", "> - a‸", ["Enter"], "> - a\n> - ‸")
-  , ("a list in a quotation, out of the list, then out of the quotation", "> - a‸", ["Enter", "Enter", "Enter"], "> - a\n‸")
-  , ("a box's marker", "> [!NOTE]‸", ["Enter"], "> [!NOTE]\n> ‸")
-  , ("a box's text", "> [!NOTE]\n> text‸", ["Enter"], "> [!NOTE]\n> text\n> ‸")
-  , ("an empty line leaves the box", "> [!NOTE]\n> text‸", ["Enter", "Enter"], "> [!NOTE]\n> text\n‸")
-  , ("a quotation in another goes up one level", "> > q‸", ["Enter", "Enter"], "> > q\n> ‸")
-  , ("a quotation in another, up and out", "> > q‸", ["Enter", "Enter", "Enter"], "> > q\n‸")
-  , ("a quotation in a list's item leaves no indentation", "- a\n  > q‸", ["Enter", "Enter"], "- a\n  > q\n‸")
-  , ("a quotation in another, two spaces apart, goes up one level", ">  > q\n>  > ‸", ["Enter"], ">  > q\n> ‸")
-  , ("indented code", "    code‸", ["Enter"], "    code\n‸")
-  , ("indented code in a quotation", ">     code‸", ["Enter"], ">     code\n‸")
-  , ("indented code in a list's item", "- a\n\n      code‸", ["Enter"], "- a\n\n      code\n‸")
-  , ("a numbered item with a tab after its mark: a line break alone", "1.\tone‸", ["Enter"], "1.\tone\n‸")
-  , ("a task with a tab after its box: a line break alone", "- [ ]\tone‸", ["Enter"], "- [ ]\tone\n‸")
-  , ("a numbered task, its box kept on the next item", "1. [x] done‸", ["Enter"], "1. [x] done\n2. [ ] ‸")
-  , ("an empty numbered task leaves the list", "1. one\n2. [ ] ‸", ["Enter"], "1. one\n‸")
-  , ("an indented number of nine digits: a line break, no error", " 123456789. text‸", ["Enter"], " 123456789. text\n‸")
-  , ("nine digits do not go on as ten, which is no mark", "999999999. a‸", ["Enter"], "999999999. a\n‸")
-  , ("renumbering stops at a number of nine digits", "1. a‸\n123456789. b", ["Enter"], "1. a\n2. ‸\n123456789. b")
-  , ("numbers with a parenthesis", "1) a‸", ["Enter"], "1) a\n2) ‸")
-  , ("an item of a star", "* a‸", ["Enter"], "* a\n* ‸")
-  , ("an item of a plus", "+ a‸", ["Enter"], "+ a\n+ ‸")
-  , ("an item's second paragraph goes on in the item", "- one\n\n  more‸", ["Enter"], "- one\n\n  more\n  ‸")
-  , ("a quotation in a list's item goes on", "- a\n  > q\n  > r‸", ["Enter"], "- a\n  > q\n  > r\n  > ‸")
-  , ("an item split at the cursor", "- on‸e", ["Enter"], "- on\n- ‸e")
-  , ("a mark with nothing after it: a line break", "- one\n-‸", ["Enter"], "- one\n-\n‸")
-  , ("a mark and five spaces, which make its text code: a line break", "-     a‸", ["Enter"], "-     a\n‸")
-  , ("a code block", "```\n- a‸\n```", ["Enter"], "```\n- a\n‸\n```")
-  , ("a quotation's code block", "> ```\n> ‸", ["Enter"], "> ```\n> \n‸")
-  , ("a paragraph", "text‸", ["Enter"], "text\n‸")
+  , ("a nested item, then up a level and out", "- one\n  - two‸", ["Enter", "Enter", "Enter"], "- one\n  - two\n‸")
+  , ("a box, left on its empty line", "> [!NOTE]\n> text‸", ["Enter", "Enter"], "> [!NOTE]\n> text\n‸")
+  , ("a numbered item with a box, which the parser reads as text", "1. [x] done‸", ["Enter"], "1. [x] done\n2. ‸")
   , ("Shift+Enter in a list", "- one‸", ["Shift+Enter"], "- one\n‸")
-  , ("Shift+Enter on a box's empty line keeps it", "> [!NOTE]\n> text\n> ‸", ["Shift+Enter"], "> [!NOTE]\n> text\n> \n‸")
+  , ("a selection, replaced by a line break", "- «one»", ["Enter"], "- \n‸")
+  , ("code", "```\n- a‸\n```", ["Enter"], "```\n- a\n‸\n```")
+  , ("an emoji before the cursor", "> 🎉 one‸", ["Enter"], "> 🎉 one\n> ‸")
   ]
 
 -- | What 'enterCases' write under: the page's title line, which the editor
@@ -1163,13 +1137,24 @@ enterCases =
 titleLines :: Text
 titleLines = "# Hello, world\n\n"
 
--- | A text with the cursor's mark, @‸@, taken out, and where the mark was.
-unmarked :: Text -> (Text, Int)
-unmarked t = let (before, after) = T.breakOn "‸" t in (before <> T.drop 1 after, T.length before)
+-- | A text with its selection's marks taken out (@«@ and @»@, or @‸@ for a
+-- cursor), and where the selection starts and ends, in characters.
+unmarked :: Text -> (Text, Int, Int)
+unmarked t = case T.breakOn "‸" t of
+  (before, after)
+    | not (T.null after) -> (before <> T.drop 1 after, T.length before, T.length before)
+    | otherwise ->
+        let (start, rest) = T.breakOn "«" t
+            (inside, end) = T.breakOn "»" (T.drop 1 rest)
+         in (start <> inside <> T.drop 1 end, T.length start, T.length start + T.length inside)
 
--- | A text with the cursor's mark, @‸@, put in at a position.
+-- | A text with the cursor's mark, @‸@, put in at a position in UTF-16
+-- units.
 marked :: Text -> Int -> Text
-marked t at = T.take at t <> "‸" <> T.drop at t
+marked t at =
+  -- The characters that end at or before the position.
+  let n = length (takeWhile (<= at) (drop 1 (scanl (+) 0 (map (utf16Length . T.singleton) (toS t :: [Char])))))
+   in T.take n t <> "‸" <> T.drop n t
 
 -- | A length in CSS pixels, as computed styles give it ("14.4px").
 readPx :: Text -> Double

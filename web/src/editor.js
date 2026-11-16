@@ -136,11 +136,10 @@ import {
   unfoldEffect,
 } from "@codemirror/language";
 // The language alone, not markdown(): that brings HTML's, CSS's and
-// JavaScript's parsers for HTML in a page and tag completion, which the
-// editor does not want, and its own keys. Of those keys the editor takes
-// only the continuation of lists and quotations on Enter, configured (see
-// markupEnter below).
-import { insertNewlineContinueMarkupCommand, markdownLanguage } from "@codemirror/lang-markdown";
+// JavaScript's parsers for HTML in a page, list continuation on Enter and
+// tag completion, none of which the editor wants: Enter in a list is the
+// wiki's own (markupEnter below).
+import { markdownLanguage } from "@codemirror/lang-markdown";
 import { tagHighlighter, tags } from "@lezer/highlight";
 import { forEachDiagnostic, lintGutter, nextDiagnostic, setDiagnostics, setDiagnosticsEffect } from "@codemirror/lint";
 import { SearchQuery } from "@codemirror/search";
@@ -1466,216 +1465,95 @@ const completions = (host) => {
 const toolbarKeys = new Set(["Ctrl-b", "Ctrl-e", "Ctrl-k"]);
 const textKeys = standardKeymap.filter((binding) => !toolbarKeys.has(binding.mac) && binding.key !== "Escape");
 
-// Enter in a list or a quotation (WP5.124 (a) of docs/PLAN.md, #187).
-// Enter at the end of a list's item starts the next item at the same
-// indentation (a task's with an empty box, a numbered list's with the
-// next number, the numbers after it moved on), and at the end of a
-// quoted line or a box's line the next line of the quotation. Enter on
-// an item with nothing in it takes its marker away: a nested item goes
-// up to the list it is in, and an item at the top level becomes an empty
-// line. That is @codemirror/lang-markdown's command. With nonTightLists
-// false it does so on the second item too: by default an empty second
-// item of a list without blank lines is not taken away, the command puts
-// a blank line before it instead.
-const continueMarkup = insertNewlineContinueMarkupCommand({ nonTightLists: false });
+// Enter in a list or a quotation (WP5.124 (a) of docs/PLAN.md, #187). What
+// Enter writes is decided in Haskell (Wiki.Core.Markdown.Enter's enter,
+// with the wiki's own parser): a line break alone, a line break and the
+// start of the next item or quoted line, or the cursor's line replaced,
+// an empty item or quoted line gone up a level. This asks it and makes
+// the answer one transaction, one step of the undo. A selection, several
+// cursors, a host without the callback, an ask that throws or comes back
+// unanswered are a line break and nothing more: Enter never does
+// nothing.
 
-// Whether a position is in a node of one of these names, or under one.
-// Which lines are code, HTML or a quotation, and where a quotation's marks
-// are, is read off the syntax tree, never from the characters: the
-// tree's Markdown parser follows CommonMark's rules for containers (the
-// spaces a mark may have before and after it, lazy lines, indented code)
-// that a pattern would have to write again.
-const within = (state, pos, names) => {
-  for (let node = syntaxTree(state).resolveInner(pos, -1); node; node = node.parent) if (names.test(node.name)) return true;
-  return false;
-};
-
-// Where the marks of the quotations a line is in are, as the syntax tree
-// reads them (QuoteMark), in characters from the line's start.
-const quoteMarksOn = (state, line) => {
-  const marks = [];
-  syntaxTree(state).iterate({
-    from: line.from,
-    to: line.to,
-    enter: (node) => {
-      if (node.name === "QuoteMark" && node.from >= line.from && node.to <= line.to) marks.push(node.from - line.from);
-    },
-  });
-  return marks;
-};
-
-// Enter at the end of an empty line of a quotation (nothing on it but its
-// marks) leaves the quotation: the line's last ">" goes, and the cursor
-// stays on the line. A quotation in another (> >, with any spaces the
-// tree reads between them) goes up to that one, whose "> " stays; one at the top
-// level, or in a list's item, leaves an empty line, with no indentation
-// left on it. The library leaves a quotation only on the second empty
-// line in a row, so that an empty line inside it makes a new paragraph;
-// in the wiki one empty line is enough, as for a list (the owner, #187).
-// A new paragraph in a box is Shift+Enter on its empty "> " line, which
-// keeps that line, and "> " typed on the next.
-const leaveQuotation = ({ state, dispatch }) => {
-  let declined = false;
-  const changes = state.changeByRange((range) => {
-    const line = state.doc.lineAt(range.head);
-    // A line in code or HTML holds no marks of its own.
-    const marks = range.empty && range.head === line.to && !within(state, range.head, /^(FencedCode|CodeBlock|HTMLBlock|CommentBlock)$/) ? quoteMarksOn(state, line) : [];
-    const rest = Array.from(line.text, (c, i) => (marks.includes(i) ? " " : c)).join("");
-    if (marks.length === 0 || /\S/.test(rest)) {
-      declined = true;
-      return { range };
+// The lines of the top-level block of a state's text a position is in or
+// at the end of, as {from, to}, from the start of the block's first line
+// to the end of its last; the position's line alone when it is in no
+// block (a blank line). The block above comes too when no blank line is
+// between them, and the block below: whether the block's first line is
+// an item or a lazy line of a paragraph depends on the paragraph above,
+// and Wiki.Core.Markdown.Enter checks that a new line does not change how
+// the block below is read. The syntax tree is parsed past the position's
+// line, and on until the last of these blocks ends before where it is
+// parsed to, so that a fence a block above left open shows (the block is
+// then the fence, to the end of the text) and no block is cut where the
+// parse stopped. Null when the tree cannot be parsed that far in time.
+const blockAt = (state, pos) => {
+  const { doc } = state;
+  let upto = Math.min(doc.length, doc.lineAt(pos).to + 1);
+  for (;;) {
+    const tree = ensureSyntaxTree(state, upto, 200);
+    if (tree === null) return null;
+    let top = null;
+    for (let node = tree.resolveInner(pos, -1); node && !node.type.isTop; node = node.parent) top = node;
+    if (top === null) {
+      const line = doc.lineAt(pos);
+      return { from: line.from, to: line.to };
     }
-    const kept = marks.length > 1 ? `${line.text.slice(0, marks[marks.length - 1]).trimEnd()} ` : "";
-    return { range: EditorSelection.cursor(line.from + kept.length), changes: { from: line.from, to: line.to, insert: kept } };
-  });
-  if (declined) return false;
-  dispatch(state.update(changes, { scrollIntoView: true, userEvent: "input" }));
-  return true;
-};
-
-// The innermost list's item at a position, as the syntax tree reads it:
-// how many items deep the position is, the item, its mark and its task's
-// box (or null), the mark's kind (its character, or a number's
-// delimiter, "." or ")"), and whether its list is numbered.
-const itemAt = (state, pos) => {
-  let depth = 0;
-  let item = null;
-  for (let node = syntaxTree(state).resolveInner(pos, -1); node; node = node.parent) {
-    if (node.name !== "ListItem") continue;
-    depth++;
-    item ??= node;
+    const above = top.prevSibling;
+    const below = top.nextSibling;
+    const first = above && doc.lineAt(above.to).number >= doc.lineAt(top.from).number - 1 ? above : top;
+    const last = below ?? top;
+    if (last.to < upto || upto === doc.length) return { from: doc.lineAt(first.from).from, to: doc.lineAt(last.to).to };
+    upto = Math.min(doc.length, Math.max(upto, last.to) + 1);
   }
-  if (item === null) return { depth, item };
-  const mark = item.getChild("ListMark");
-  const box = item.getChild("Task")?.getChild("TaskMarker") ?? null;
-  const written = mark ? state.sliceDoc(mark.from, mark.to) : "";
-  return { depth, item, mark, box, kind: /^\d+([.)])$/.exec(written)?.[1] ?? written, numbered: item.parent?.name === "OrderedList" };
 };
 
-// The blanks after a position, to the end of its line.
-const blanksAfter = (state, from) => /^[ \t]*/.exec(state.sliceDoc(from, state.doc.lineAt(from).to))[0];
-
-// What separates an item's mark from its text: the blanks after the mark,
-// and after its task's box.
-const separatorOf = (state, found) =>
-  found.box ? state.sliceDoc(found.mark.to, found.box.from) + blanksAfter(state, found.box.to) : blanksAfter(state, found.mark.to);
-
-// The library's continuation of a list or a quotation, as the
-// transaction it would make, not made; null when it makes none, or throws.
-const libraryContinuation = (state) => {
-  let made = null;
+// What Enter writes at a position of a state, asked of Haskell through the
+// host's wikiEnter (Wiki.App.Editor.Browser's enterCallback): {insert}, the
+// text after a line break, or {line}, what the position's line becomes; null
+// for a line break alone. The callback answers before it returns, on the
+// object it is given.
+const askEnter = (host, state, pos) => {
+  const enter = host.wikiEnter;
+  if (typeof enter !== "function") return null;
+  const block = blockAt(state, pos);
+  if (block === null) return null;
+  const ask = { before: state.sliceDoc(block.from, pos), after: state.sliceDoc(pos, block.to), insert: null, line: null };
   try {
-    if (!continueMarkup({ state, dispatch: (tr) => (made = tr) })) return null;
+    enter(ask);
   } catch {
     return null;
   }
-  return made;
-};
-
-// Whether a transaction of the library's is what Enter must make, judged
-// by the syntax tree before it and after it, so that a gap of the
-// library's ends in a plain line break rather than in a broken item:
-//
-// - leaving (no line added): the cursor's line is one item or one
-//   quotation less deep than it was;
-// - going on (one line added): the new line is in as many quotations, and
-//   holds either their marks and blanks alone (the next line of a
-//   paragraph or a quotation), or a new item the tree reads, as deep as
-//   the cursor's was, its mark of the same kind, blanks after it that
-//   hold no tab, and a box if the item above has one.
-//
-// The library's gaps known at @codemirror/lang-markdown 6.5.2, which this
-// check and the corrections in enterMarkup turn into a line break or the
-// right continuation: a tab after a mark ("1.\tone" goes on as "2." with
-// nothing after it, "- [ ]\tone" as "- " without its box); a numbered
-// task (its box neither kept on the next item nor read when the item is
-// empty); a number read in a window of ten characters, which throws on an
-// indented number of nine digits (" 123456789. text"); and a number one
-// past nine digits, which is no mark ("999999999." goes on as
-// "1000000000."). A later version of the library may close some of them:
-// the cases of Test.Browser.Editor's table say which still hold.
-const continuationRight = (state, tr) => {
-  const head = state.selection.main.head;
-  const after = tr.state;
-  const newHead = after.selection.main.head;
-  const line = state.doc.lineAt(head);
-  const newLine = after.doc.lineAt(newHead);
-  ensureSyntaxTree(after, Math.min(after.doc.length, newLine.to + 1), 200);
-  const was = itemAt(state, head);
-  const is = itemAt(after, newHead);
-  const quotes = quoteMarksOn(state, line).length;
-  const newMarks = quoteMarksOn(after, newLine);
-  if (after.doc.lines === state.doc.lines) return is.depth < was.depth || newMarks.length < quotes;
-  if (after.doc.lines !== state.doc.lines + 1 || newMarks.length !== quotes) return false;
-  const prefix = Array.from(after.sliceDoc(newLine.from, newHead), (c, i) => (newMarks.includes(i) ? " " : c)).join("");
-  if (/^[ \t]*$/.test(prefix)) return true;
-  if (is.item === null || !is.mark || after.doc.lineAt(is.mark.from).number !== newLine.number) return false;
-  if (is.depth !== was.depth || is.kind !== was.kind) return false;
-  const separator = separatorOf(after, is);
-  return separator.length > 0 && !separator.includes("\t") && !(was.box && !is.box);
-};
-
-// What Enter makes of a state's single cursor, as a transaction of that
-// state, or null for a plain line break: in code, fenced or indented, a
-// line break and nothing more (the library leaves fenced code alone, but
-// continues the quotation or the list an indented code block is in); on
-// an item with a tab after its mark, a line break too; elsewhere the
-// wiki's leaving of a quotation, or the library's continuation of a list
-// or a quotation where continuationRight takes it. Two of its gaps are
-// mended: an empty numbered task is left as an empty item is (the
-// library, asked about the item without its box), and a numbered task's
-// next item gets its box.
-const enterMarkup = (state) => {
-  const head = state.selection.main.head;
-  const found = itemAt(state, head);
-  if (within(state, head, /^(FencedCode|CodeBlock)$/) || (found.mark && separatorOf(state, found).includes("\t"))) return null;
-  let made = null;
-  if (leaveQuotation({ state, dispatch: (tr) => (made = tr) })) return made;
-  const line = state.doc.lineAt(head);
-  if (found.box && found.numbered && head === line.to && /^[ \t]*$/.test(state.sliceDoc(found.box.to, line.to))) {
-    const unboxed = state.update({ changes: { from: found.mark.to, to: line.to, insert: " " }, selection: EditorSelection.cursor(found.mark.to + 1) });
-    const left = libraryContinuation(unboxed.state);
-    if (left === null || !continuationRight(unboxed.state, left)) return null;
-    return state.update({ changes: unboxed.changes.compose(left.changes), selection: left.selection, scrollIntoView: true, userEvent: "input" });
-  }
-  const tr = libraryContinuation(state);
-  if (tr === null) return null;
-  if (continuationRight(state, tr)) return tr;
-  if (found.box && found.numbered) {
-    const at = tr.state.selection.main.head;
-    const boxed = tr.state.update({ changes: { from: at, insert: "[ ] " }, selection: EditorSelection.cursor(at + 4) });
-    if (continuationRight(state, boxed)) {
-      return state.update({ changes: tr.changes.compose(boxed.changes), selection: boxed.selection, scrollIntoView: true, userEvent: "input" });
-    }
-  }
+  if (typeof ask.insert === "string") return { insert: ask.insert };
+  if (typeof ask.line === "string") return { line: ask.line };
   return null;
 };
 
-// enterMarkup, or null for a line break if anything in it throws: Enter
-// never throws and never does nothing.
-const enterMarkupOrNull = (state) => {
-  try {
-    return enterMarkup(state);
-  } catch {
-    return null;
-  }
+// The transaction of an answer of askEnter at a cursor, in a state whose
+// cursor's line is the line asked about.
+const enterAnswered = (state, head, answer) => {
+  const line = state.doc.lineAt(head);
+  const change = answer.line === undefined ? { from: head, insert: `\n${answer.insert}` } : { from: line.from, to: line.to, insert: answer.line };
+  return { changes: change, selection: EditorSelection.cursor(change.from + change.insert.length), scrollIntoView: true, userEvent: "input" };
 };
 
-// The editor's Enter in the master: enterMarkup, or a line break.
+// The editor's Enter in the master: askEnter's answer, or a line break.
 // Shift+Enter is always a line break and nothing more. Both come after the
 // completion's keys, so that Enter chooses from an open list first. A row
-// of the slide mode has an Enter of its own (attachRow), which asks the
-// master's text.
-const markupEnter = {
+// of the slide mode has an Enter of its own (attachRow), which asks about
+// the master's text.
+const markupEnter = (host) => ({
   key: "Enter",
   run: (view) => {
-    const tr = enterMarkupOrNull(view.state);
-    if (tr === null) return insertNewline(view);
-    view.dispatch(tr);
+    const { state } = view;
+    const { main } = state.selection;
+    const answer = state.selection.ranges.length === 1 && main.empty ? askEnter(host, state, main.head) : null;
+    if (answer === null) return insertNewline(view);
+    view.dispatch(enterAnswered(state, main.head, answer));
     return true;
   },
   shift: insertNewline,
-};
+});
 
 // The editors attached, so that one whose host has left the page (the
 // editor closed without its finalizer reaching it) is let go of: a view
@@ -2537,33 +2415,29 @@ export function attachRow(masterHost, rowHost, key, focus) {
     });
     return true;
   };
-  // Enter in the row (markupEnter in the master): what Enter makes of the
-  // master's text at the row's cursor, its changes brought back into the
-  // row, which sends them on to the master as it sends its typing. A row's
+  // Enter in the row (markupEnter in the master): Haskell is asked about
+  // the master's text at the row's cursor, and the answer is made in the
+  // row, which sends it on to the master as it sends its typing. A row's
   // own syntax tree does not hold what the rows above left open (a fence,
-  // which makes the row's lines code), and the master's does. A change
-  // outside the row, or a row the master does not hold as it is (a
-  // moment between the two), is a plain line break.
+  // which makes the row's lines code), and the master's does. A row the
+  // master does not hold as it is (a moment between the two), or a
+  // cursor's line that starts before the row, is a plain line break.
   const rowEnter = {
     key: "Enter",
     run: (rowView) => {
       const now = rangeOf(masterView.state, key);
-      const { main } = rowView.state.selection;
-      if (now === null || rowView.state.selection.ranges.length > 1 || masterView.state.sliceDoc(now.from, now.to) !== rowView.state.doc.toString()) {
-        return insertNewline(rowView);
-      }
-      const at = masterView.state.update({ selection: EditorSelection.range(now.from + main.anchor, now.from + main.head) }).state;
-      ensureSyntaxTree(at, now.from + main.head, 200);
-      const tr = enterMarkupOrNull(at);
-      if (tr === null) return insertNewline(rowView);
-      const changes = [];
-      let inside = true;
-      tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-        if (fromA < now.from || toA > now.to) inside = false;
-        changes.push({ from: fromA - now.from, to: toA - now.from, insert: inserted });
-      });
-      if (!inside) return insertNewline(rowView);
-      rowView.dispatch({ changes, selection: EditorSelection.cursor(tr.selection.main.head - now.from), scrollIntoView: true, userEvent: "input" });
+      const { state } = rowView;
+      const { main } = state.selection;
+      const master = masterView.state;
+      const usable =
+        now !== null &&
+        state.selection.ranges.length === 1 &&
+        main.empty &&
+        master.sliceDoc(now.from, now.to) === state.doc.toString() &&
+        master.doc.lineAt(now.from + main.head).from === now.from + state.doc.lineAt(main.head).from;
+      const answer = usable ? askEnter(masterHost, master, now.from + main.head) : null;
+      if (answer === null) return insertNewline(rowView);
+      rowView.dispatch(enterAnswered(state, main.head, answer));
       return true;
     },
     shift: insertNewline,
@@ -3073,7 +2947,7 @@ export function attach(textarea, host, original, codeTokens) {
       // completion's keys come first); Shift+Enter is a line break, as
       // Enter is in the textarea before CodeMirror has loaded. Tab and the
       // toolbar's shortcuts are the component's (the form's keydown).
-      keymap.of([markupEnter, ...historyKeymap, ...textKeys, ...foldKeys]),
+      keymap.of([markupEnter(host), ...historyKeymap, ...textKeys, ...foldKeys]),
       EditorView.lineWrapping,
       new LanguageSupport(wikiMarkdown),
       syntaxHighlighting(highlighter),

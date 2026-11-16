@@ -146,6 +146,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..), decodeStrict, eitherDecodeStrict,
 import Data.ByteString.Lazy qualified as BSL
 import Data.Coerce (coerce)
 import Data.Foreign (foreignToInt)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (lookup)
 import Data.Text qualified as T
 import Halogen.JSBits (Callback, Inert (..), JSText, JSVal, Safety (..), browserJS, freeCallback, fromJSText, inBrowser, isNull, jsValText, mkSyncCallback, toJSText)
@@ -157,6 +158,7 @@ import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Numeric.Natural (Natural)
 import Protolude hiding (wait)
+import System.IO.Unsafe (unsafePerformIO)
 import Web.Clipboard.ClipboardEvent (ClipboardEvent (..))
 import Web.DOM.Element qualified as Element
 -- With their constructors: the FFI passes the value inside each newtype.
@@ -179,6 +181,7 @@ import Wiki.Core.Assistant.Edit (Change (..), Decision (..), Edit, Refusal, Repl
 import Wiki.Core.Assistant.Prompt (Span (..))
 import Wiki.Core.Markdown.Complete (Completion)
 import Wiki.Core.Markdown.Edit (Command (..), Selection (..), apply, cursor)
+import Wiki.Core.Markdown.Enter (Enter (..), enter)
 import Wiki.Core.Markdown.Folds (Fold (..))
 import Wiki.Core.SlideRows (Row (..), RowKey (..), Rows (..), rowStarts)
 import Wiki.Core.SlideRows qualified as SlideRows
@@ -189,7 +192,7 @@ import Wiki.Core.User (Login (..), User (..))
 -- of its own, which stays JavaScript.
 $( browserJS
      ["jsbits/editor.js"]
-     [ ("js_attach", "wiki_editor_attach", Safe, [t|Element -> JSText -> IO ()|])
+     [ ("js_attach", "wiki_editor_attach", Safe, [t|Element -> JSText -> Callback -> IO ()|])
      , ("js_attach_row", "wiki_editor_attach_row", Safe, [t|Element -> Element -> Int -> Bool -> IO ()|])
      , ("js_detach_row", "wiki_editor_detach_row", Safe, [t|Element -> IO ()|])
      , ("js_available", "wiki_editor_available", Safe, [t|IO Bool|])
@@ -412,6 +415,64 @@ pickedFiles (Files files) =
 readPickedFile :: (MonadIO m) => PickedFile -> m ByteString
 readPickedFile picked = liftIO (evaluate =<< wait =<< picked.file.bytes)
 
+-- | 'EnterAsk' is what CodeMirror's Enter asks Haskell, as
+-- @web/src/editor.js@ makes it: the text of the block the cursor is in,
+-- before the cursor and after it; and what 'answerEnter' sets on it for
+-- the keymap to read when the call returns: the text to write after a
+-- line break, or the text the cursor's line becomes. Neither is set for a
+-- plain line break.
+newtype EnterAsk = EnterAsk JSVal
+  deriving newtype (Inert)
+
+$( jsFields
+     ''EnterAsk
+     [ Fixed "before" [t|Text|]
+     , Fixed "after" [t|Text|]
+     , Writable "insert" [t|Maybe Text|]
+     , Writable "line" [t|Maybe Text|]
+     ]
+ )
+
+-- | The callback CodeMirror's Enter calls with an 'EnterAsk', in the
+-- master and in a presentation's rows ("Wiki.Core.Markdown.Enter"). It is
+-- a sync callback ('mkSyncCallback'), so the answer is set before the
+-- call returns to the keymap: 'enter' is pure and never waits, and the
+-- callback reads and writes nothing but the ask, so it may run in the
+-- middle of anything the component is doing. An exception in 'enter'
+-- leaves the ask unanswered, which the keymap takes for a plain line
+-- break. One callback serves every editor of the page, made the first
+-- time an editor is attached and kept for the page's life: it holds
+-- nothing of any editor, so there is nothing to free when one goes.
+enterCallback :: IO Callback
+enterCallback = do
+  made <- readIORef enterCallbackRef
+  case made of
+    Just callback -> pure callback
+    Nothing -> do
+      callback <- mkSyncCallback (answerEnter . EnterAsk)
+      writeIORef enterCallbackRef (Just callback)
+      pure callback
+
+{-# NOINLINE enterCallbackRef #-}
+enterCallbackRef :: IORef (Maybe Callback)
+enterCallbackRef = unsafePerformIO (newIORef Nothing)
+
+-- | Answer an 'EnterAsk' with what 'enter' writes, forced first, so that
+-- an exception in it leaves the ask unanswered rather than reaching the
+-- keymap.
+answerEnter :: EnterAsk -> IO ()
+answerEnter asked = do
+  answered <- try @SomeException $ do
+    answer <- evaluate (enter asked.before asked.after)
+    case answer of
+      NewLine -> pure answer
+      NewLineWith t -> answer <$ evaluate (T.length t)
+      LineBecomes t -> answer <$ evaluate (T.length t)
+  case answered of
+    Right (NewLineWith t) -> asked.insert_set (Just t)
+    Right (LineBecomes t) -> asked.line_set (Just t)
+    _ -> pure ()
+
 -- | Put CodeMirror in the host element (an empty element the editor
 -- renders just before its textarea) in place of the textarea, once the
 -- page has loaded CodeMirror. It starts with the Markdown the textarea was
@@ -423,8 +484,12 @@ readPickedFile picked = liftIO (evaluate =<< wait =<< picked.file.bytes)
 --
 -- The functions here that edit the text take the host, and act on
 -- CodeMirror if it is there and on the textarea if not.
+--
+-- The host is given 'enterCallback' too, which CodeMirror's Enter calls.
 attachEditor :: (MonadIO m) => Element -> Text -> m ()
-attachEditor host original = liftIO (js_attach host (toJSText original))
+attachEditor host original = liftIO $ do
+  callback <- enterCallback
+  js_attach host (toJSText original) callback
 
 -- | Remove the host's CodeMirror, if it has one.
 detachEditor :: (MonadIO m) => Element -> m ()

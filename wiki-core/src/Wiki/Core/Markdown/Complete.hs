@@ -200,6 +200,7 @@ triggerAt readAt at = do
   guard (at.place == InText)
   case shapeAt at of
     Just shape -> do
+      guard (not (heldReturn at))
       case shape.trigger of
         StartMarker -> guard (PlacesContents `elem` firstRoles (readAt (Probe 1 [shape.prefix <> "[[!toc]]"])))
         BoxMarker -> guard (readAt (Probe 1 [shape.prefix <> "[!NOTE]"])).boxed
@@ -215,6 +216,15 @@ triggerAt readAt at = do
           , labels = PlainLabel
           }
     Nothing -> pageLink readAt at <|> slash readAt at
+
+-- | Whether the text the parser is asked about for a marker, a box or a
+-- link to a page holds a carriage return: the parser reads it as a line
+-- break, and the editor, which breaks lines at line feeds alone, does
+-- not, so the lines the readings name are not the editor's. No list opens
+-- there for those triggers. (The @/@ menu asks the parser nothing by its
+-- lines, and opens.)
+heldReturn :: At -> Bool
+heldReturn at = any (T.any (== '\r')) (at.before : fst (stretchOf at) : at.above)
 
 -- | 'Shape' is a trigger the cursor's line ends with, before the parser is
 -- asked about it: the trigger, the letters typed after it, and what of the
@@ -254,6 +264,7 @@ shapeAt at =
 -- cannot say, no list opens.
 pageLink :: LineReader -> At -> Maybe Typed
 pageLink readAt at = do
+  guard (not (heldReturn at))
   (start, letters) <- pageLinkShape at
   let first' = readAt (pageLinkProbe at start)
       pre = T.take start at.before
@@ -712,9 +723,11 @@ data Candidate = Candidate
 
 -- | 'Writes' is how a candidate's skeleton is written: as CodeMirror's
 -- snippet in place of what was typed ('Completion''s range), the cursor at
--- its first place; or as it is there, the cursor after it (a link to a
--- page whose label, kept, runs over lines); or as it is in place of the
--- cursor's whole line, which
+-- its first place, where the snippet writes it as the skeleton says
+-- ('snippetWrites'); or as it is there, the cursor after it (a link to a
+-- page whose label, kept, runs over lines; a skeleton a snippet would
+-- write otherwise, its further lines after the cursor line's
+-- indentation); or as it is in place of the cursor's whole line, which
 -- read as the text given when the list was made, its first place selected
 -- (an entry of the @/@ menu, whose command may change the line's start
 -- and write lines after it).
@@ -890,7 +903,7 @@ complete sources readAt at = do
       wanted = Wanted {at, typed, closable, writes}
       found = concatMap ($ wanted) sources
   guard (not (null found))
-  Just Completion {from = typed.from, through = typed.through, candidates = found, enter = if typed.trigger == SlashMenu then EnterChoosesAfter 2 else EnterChooses, escape = if typed.trigger == SlashMenu then EscapeDismisses else EscapeCloses}
+  Just Completion {from = typed.from, through = typed.through, candidates = map (asWrittenAt at typed) found, enter = if typed.trigger == SlashMenu then EnterChoosesAfter 2 else EnterChooses, escape = if typed.trigger == SlashMenu then EscapeDismisses else EscapeCloses}
   where
     isEnd = \case
       Ends _ -> True
@@ -1115,6 +1128,32 @@ lineCandidate at (written, (start, end)) =
   where
     slice a b = T.take (b - a) (T.drop a written)
     skeleton = [Literal (slice 0 start) | start > 0] <> [Field 1 (slice start end)] <> [Literal (T.drop end written) | end < T.length written]
+
+-- | Whether CodeMirror's snippet writes a skeleton in place of what was
+-- typed as the skeleton says, its further lines after the indentation of
+-- the cursor's line as the wiki's parser reads it (spaces and tabs, as
+-- 'writtenProbe' and the skeletons write them). The snippet takes as the
+-- line's indentation what JavaScript's @\s@ matches at its start, which
+-- holds other white space too (a no-break space), and reads a carriage
+-- return in its text as a line break: so the line's leading white space
+-- must be spaces and tabs, and nothing written or replaced may hold a
+-- carriage return.
+snippetWrites :: Text -> Text -> Typed -> Skeleton -> Bool
+snippetWrites before after typed skeleton =
+  T.all isBlank (T.takeWhile jsSpace (before <> after))
+    && not (T.any (== '\r') (fst (skeletonText skeleton)))
+    && not (T.any (== '\r') (T.drop typed.from before <> T.take typed.through after))
+  where
+    jsSpace c = isSpace c || c `elem` ['\xfeff', '\x2028', '\x2029']
+
+-- | A candidate as the editor is to write it: a snippet where it writes
+-- what the candidate says ('snippetWrites'), and otherwise its text as it
+-- is, each further line after the cursor line's indentation, the cursor
+-- after it.
+asWrittenAt :: At -> Typed -> Candidate -> Candidate
+asWrittenAt at typed c
+  | c.writing /= AsSnippet || snippetWrites at.before at.after typed c.skeleton = c
+  | otherwise = c {skeleton = [Literal (T.intercalate ("\n" <> T.takeWhile isBlank at.before) (T.splitOn "\n" (fst (skeletonText c.skeleton))))], writing = AsText}
 
 ----------------------------------------------------------------------
 -- Skeletons

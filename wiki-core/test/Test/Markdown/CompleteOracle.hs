@@ -169,14 +169,22 @@ readAsWritten doc cursor =
   , not (readsAs found c)
   ]
   where
-    indentation = T.takeWhile (\c -> c == ' ' || c == '\t') cursor
     n = length doc + 1
     readsAs found c =
       let (written, _) = skeletonText c.skeleton
-          further = T.splitOn "\n" written
+          -- As CodeMirror writes it: a snippet's lines split at any line
+          -- break, each further one after the line's leading white space
+          -- as JavaScript's \s reads it; a text as it is.
+          further = case c.writing of
+            AsSnippet -> map ((T.takeWhile jsSpace cursor <>) <$>) (splitLines written)
+            _ -> map Right (T.splitOn "\n" written)
+          splitLines t = case T.splitOn "\n" (T.replace "\r" "\n" (T.replace "\r\n" "\n" t)) of
+            first' : rest -> Left first' : map Right rest
+            [] -> []
+          jsSpace ch = isSpace ch || ch `elem` ['\xfeff', '\x2028', '\x2029']
           sentinel = "Zqxjv"
-          lines' = case further of
-            first' : rest -> (T.take found.from cursor <> first') : [indentation <> l <> (if T.isPrefixOf "[!" c.label then sentinel else "") | l <- rest]
+          lines' = case map (either identity identity) further of
+            first' : rest -> (T.take found.from cursor <> first') : [l <> (if T.isPrefixOf "[!" c.label then sentinel else "") | l <- rest]
             [] -> []
           source = T.intercalate "\n" (doc <> lines')
        in case parseWithAllMarkers source of
@@ -380,9 +388,11 @@ instance Arbitrary Doc where
   arbitrary = Doc . concat <$> (choose (0, 8) >>= \k -> replicateM k chunk)
 
 -- | A cursor's line starts in up to three containers, or none (which is a
--- lazy line after a quotation's paragraph).
+-- lazy line after a quotation's paragraph), sometimes after a no-break
+-- space, which CodeMirror's snippet takes as indentation and the parser
+-- as text.
 instance Arbitrary Line where
-  arbitrary = Line . prefix True <$> layers
+  arbitrary = Line <$> ((<>) <$> frequency [(8, pure ""), (1, pure "\160")] <*> (prefix True <$> layers))
 
 -- | Up to three containers, the outermost first.
 layers :: Gen [Layer]

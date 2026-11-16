@@ -122,6 +122,8 @@ spec = describe "Wiki.App.Editor.Complete" $ do
               . (.candidates)
       (fst . skeletonText . (.skeleton) <$> inTable "| [[Old" "]] | x |") `shouldBe` Just "[[guide-old\\|Old notes]]"
       written onHandbook "**[[Gu" "ide]]**" `shouldBe` Just "[[Guide]]${0}"
+    it "opens no list where the text holds a carriage return, which the parser reads as a line break and the editor does not (#295's first round)" $
+      answered (sources onHandbook) "See [[Guide|a\rb]] now" (lineRequest "See [[Gu" "ide|a\rb]] now") `shouldBe` Nothing
     modifyMaxSuccess (* 5) . prop "leaves one wiki link to the page chosen at the cursor, with the label read there, and every other inline as before, or offers nothing" $
       checkCoverage (forAll genLinkLine (choosesPage onHandbook))
 

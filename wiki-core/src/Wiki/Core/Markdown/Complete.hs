@@ -8,15 +8,18 @@
 -- the cursor's line up to the cursor), and the component answers with
 -- 'complete'. So every rule here is a pure function, tested natively.
 --
--- * __Where a list opens__ ('triggerAt'): @[[!@ (a start marker) and
---   @[[/@ (an end marker) at a line's start, after its indentation and
---   any @>@ of a quotation, as the parser reads a marker
---   ("Wiki.Core.Markdown.Ast"); @[!@ (a kind of box) on the first line of
---   a quotation, after its @>@. Never in code, HTML, a comment, math or a
---   link's address ('placeOf').
+-- * __Where a list opens__ ('triggerAt'): @[[!@ (a start marker) where
+--   the wiki's parser ("Wiki.Core.Markdown.Ast") would read a marker on
+--   the cursor's line; @[!@ (a kind of box) where it would read a box's
+--   marker; @[[/@ (an end marker) where an end marker would end a block.
+--   Never in code, HTML, a comment, math or a link's address
+--   ('placeOf'). Which line is in which quotation, list's item or code
+--   block is CommonMark's to say, and the parser says it: the line is
+--   asked about with what would be written on it ('readLine'), rather
+--   than its containers read again from its characters.
 -- * __What it offers__: candidates, from a list of 'Source's. The wiki's
 --   own is 'wikiSource': the markers the page's kind reads, the blocks
---   open at the cursor ('openBlocks', innermost first), the kinds of box.
+--   an end marker at the cursor would end, the kinds of box.
 --   A plugin will give a source of its own (#186), whose candidates say
 --   where they come from ('Origin'), shown grey beside each one.
 -- * __What choosing writes__: a 'Skeleton', literal text and numbered
@@ -33,8 +36,11 @@ module Wiki.Core.Markdown.Complete
   , Typed (..)
   , triggerAt
 
-    -- * Blocks open at the cursor
-  , openBlocks
+    -- * The parser's reading of the cursor's line
+  , LineReading (..)
+  , LineReader
+  , readLine
+  , probeLines
 
     -- * Candidates
   , Origin (..)
@@ -60,10 +66,9 @@ module Wiki.Core.Markdown.Complete
 where
 
 import Data.Char (isAsciiLower, isAsciiUpper)
-import Data.List (nub)
 import Data.Text qualified as T
 import Protolude
-import Wiki.Core.Markdown.Ast (MarkerName (..), MarkerStart (..), closingMarker, holdsBlocks, markerAt, markerNameText, openingMarker)
+import Wiki.Core.Markdown.Ast (BoxMarker (markerLine), MarkerLine (..), MarkerName (..), MarkerRole (..), closingMarker, holdsBlocks, markerNameText, openingMarker, parseWithAllMarkers)
 import Wiki.Core.Markdown.Box (BoxKind, boxChoices)
 import Wiki.Core.PageKind (PageKind (..))
 
@@ -132,95 +137,127 @@ data Typed = Typed
   }
   deriving stock (Eq, Show)
 
--- | What opens a list at a place, if anything.
+-- | What opens a list at a place, if anything, the parser asked through
+-- the given reading of a line put after 'above' ('LineReader').
 --
--- A line's start is after its indentation and the @>@ of the quotations
--- it is in, each with one space or none after it. 'lineStart' is those
--- @>@ without the indentation: CodeMirror's snippet puts the indentation
--- of the cursor's line before each further line of a skeleton itself,
--- and the skeleton adds the @>@, so that a block written in a quotation
--- or in a list's item stays in it.
---
--- A kind of box opens on the first line of a quotation: the line before
--- is in fewer quotations (or none), since a box's marker is its
--- quotation's first line.
-triggerAt :: At -> Maybe Typed
-triggerAt at = do
+-- The trigger and the letters after it are the last ones the cursor's
+-- line ends with ('shapeAt'). A start marker's list opens where the parser
+-- reads @[[!toc]]@ written in their place as a marker, and a box's where
+-- it reads @[!NOTE]@ as a box's marker: on a line of its own or a
+-- quotation's first line, after any container's marks and spaces the
+-- parser takes, and not in code, a lazy line of a paragraph, or the middle
+-- of a line. An end marker's list is asked for after @[[/@ anywhere; its
+-- candidates are the blocks an end marker there ends ('complete').
+triggerAt :: LineReader -> At -> Maybe Typed
+triggerAt readAt at = do
   guard (at.place == InText)
-  let (indentation, afterIndentation) = T.span isBlank at.before
-      (marks, rest) = quotationMarks afterIndentation
-      start = T.length indentation + T.length marks
-      typed trigger prefix allowed = do
-        letters <- T.stripPrefix prefix rest
-        guard (T.all allowed letters)
-        Just Typed {trigger, letters, from = start, lineStart = marks}
+  shape <- shapeAt at
+  case shape.trigger of
+    StartMarker -> guard (PlacesContents `elem` (readAt (shape.prefix <> "[[!toc]]")).roles)
+    BoxMarker -> guard (readAt (shape.prefix <> "[!NOTE]")).boxed
+    EndMarker -> pass
+  Just
+    Typed
+      { trigger = shape.trigger
+      , letters = shape.letters
+      , from = T.length shape.prefix
+      , lineStart = continuation shape.prefix
+      }
+
+-- | 'Shape' is a trigger the cursor's line ends with, before the parser is
+-- asked about it: the trigger, the letters typed after it, and what of the
+-- line comes before it.
+data Shape = Shape {trigger :: Trigger, letters :: Text, prefix :: Text}
+
+-- | The trigger the line ends with, followed by letters a name may have:
+-- @[[!@ or @[[/@ and lower-case letters, or @[!@ (not the end of @[[!@)
+-- and letters or dashes.
+shapeAt :: At -> Maybe Shape
+shapeAt at =
   asum
-    [ typed StartMarker "[[!" isAsciiLower
-    , typed EndMarker "[[/" isAsciiLower
+    [ shaped StartMarker "[[!" isAsciiLower
+    , shaped EndMarker "[[/" isAsciiLower
     , do
-        guard (depth marks > maybe 0 (depth . fst . quotationMarks . T.dropWhile isBlank) (lastMay at.above))
-        typed BoxMarker "[!" (\c -> isAsciiLower c || isAsciiUpper c || c == '-')
+        shape <- shaped BoxMarker "[!" (\c -> isAsciiLower c || isAsciiUpper c || c == '-')
+        guard (not ("[" `T.isSuffixOf` shape.prefix))
+        Just shape
     ]
   where
-    depth = T.count ">"
+    shaped trigger written allowed = do
+      let (upTo, letters) = T.breakOnEnd written at.before
+      guard (not (T.null upTo) && T.all allowed letters)
+      Just Shape {trigger, letters, prefix = T.dropEnd (T.length written) upTo}
 
--- | The @>@ a line starts with (each with a space or a tab after it, or
--- none), and the rest of the line.
-quotationMarks :: Text -> (Text, Text)
-quotationMarks t = case T.stripPrefix ">" t of
-  Just rest ->
-    let (space, after) = T.splitAt (if T.take 1 rest `elem` [" ", "\t"] then 1 else 0) rest
-        (more, final) = quotationMarks after
-     in (">" <> space <> more, final)
-  Nothing -> ("", t)
+-- | What each further line of a skeleton starts with, after the
+-- indentation of the cursor's line (which CodeMirror's snippet adds): the
+-- line's text before the trigger, its own indentation taken away, its
+-- quotations' marks and spaces kept, and anything else (a list's item's
+-- marker) made spaces, so that the further lines stay in the containers
+-- the parser read the cursor's line in. A @>@ with no space after it gets
+-- one: the space after a quotation's mark is the mark's own when it is
+-- there, so without it the columns after the mark would not line up with
+-- the cursor's line. The properties check this against the parser
+-- ("Test.Markdown.CompleteOracle").
+continuation :: Text -> Text
+continuation = go . T.dropWhile isBlank
+  where
+    go t = case T.uncons t of
+      Nothing -> ""
+      Just ('>', rest)
+        | Just (c, _) <- T.uncons rest, isBlank c -> ">" <> go rest
+        | otherwise -> "> " <> go rest
+      Just (c, rest)
+        | isBlank c -> T.cons c (go rest)
+        | otherwise -> " " <> go rest
 
 isBlank :: Char -> Bool
 isBlank c = c == ' ' || c == '\t'
 
 ----------------------------------------------------------------------
--- Blocks open at the cursor
+-- The parser's reading of the cursor's line
 
--- | The blocks of the wiki's own open after these lines, the innermost
--- first: those a start marker opened ('holdsBlocks') and no end marker
--- closed. The lines are read one by one, not parsed: a line is a marker
--- by 'markerAt', after its indentation and its quotations' @>@; the lines
--- of a fenced code block are code, and are skipped. An end marker closes
--- the innermost open block when it has its name, and otherwise nothing,
--- as the parser reads it.
---
--- Not read: an HTML block or a comment holding a marker line, and a
--- quotation or a list's item that ends before its block's end marker.
--- Either reads as open here a block the parser has closed or never
--- opened; the list then offers its end marker first, which writes text
--- the page shows as a problem, as typing it would.
-openBlocks :: [Text] -> [MarkerName]
-openBlocks = go Nothing []
+-- | 'LineReading' is what the wiki's parser reads on a line put after the
+-- lines above the cursor: the roles of the marker lines it reads there
+-- ('MarkerRole'), and whether a box's marker is there.
+data LineReading = LineReading
+  { roles :: [MarkerRole]
+  , boxed :: Bool
+  }
+  deriving stock (Eq, Show)
+
+-- | 'LineReader' gives the parser's reading of a line put after the lines
+-- above the cursor ('At''s 'above'): 'readLine', or the editor's memo of
+-- it, which keeps a reading while the lines above do not change, so that
+-- the letters typed after a trigger ask the parser nothing again.
+type LineReader = Text -> LineReading
+
+-- | What the parser reads on a line put after these lines: the text
+-- above it is parsed whole, since a container or a block opened anywhere
+-- above may hold the line. The text below is not, and does not change
+-- what the line is.
+readLine :: [Text] -> Text -> LineReading
+readLine above line = case parseWithAllMarkers (T.intercalate "\n" (above <> [line])) of
+  Right (_, boxes, lines', _) -> LineReading {roles = [r | MarkerLine l _ r <- lines', l == n], boxed = any (\b -> b.markerLine == n) boxes}
+  Left _ -> LineReading {roles = [], boxed = False}
   where
-    go :: Maybe (Char, Int) -> [MarkerName] -> [Text] -> [MarkerName]
-    go _ open [] = open
-    go fence open (line : rest) =
-      let content = snd (quotationMarks (T.dropWhile isBlank line))
-       in case fence of
-            Just (c, n)
-              | closesFence c n content -> go Nothing open rest
-              | otherwise -> go fence open rest
-            Nothing
-              | Just opened <- fenceOf content -> go (Just opened) open rest
-              | otherwise -> case markerAt content of
-                  Just (Opening name) | holdsBlocks name -> go Nothing (name : open) rest
-                  Just (Closing name) | take 1 open == [name] -> go Nothing (drop 1 open) rest
-                  _ -> go Nothing open rest
-    fenceOf content = do
-      c <- head (T.unpack (T.take 1 content))
-      guard (c == '`' || c == '~')
-      let run = T.takeWhile (== c) content
-      guard (T.length run >= 3)
-      -- A backtick fence's info string holds no backtick.
-      guard (c /= '`' || not (T.any (== '`') (T.drop (T.length run) content)))
-      Just (c, T.length run)
-    closesFence c n content =
-      let run = T.takeWhile (== c) content
-       in T.length run >= n && T.all isBlank (T.drop (T.length run) content)
+    n = length above + 1
+
+-- | The lines a list at this place may ask the parser about, for the
+-- editor's memo: @[[!toc]]@ or @[!NOTE]@ after the line's text before the
+-- trigger, or the end marker of each kind of block whose start marker the
+-- lines above hold.
+probeLines :: At -> [Text]
+probeLines at = case shapeAt at of
+  Nothing -> []
+  Just shape -> case shape.trigger of
+    StartMarker -> [shape.prefix <> "[[!toc]]"]
+    BoxMarker -> [shape.prefix <> "[!NOTE]"]
+    EndMarker -> [shape.prefix <> closingMarker name | name <- startedAbove at.above]
+
+-- | The kinds of block whose start marker the lines above hold somewhere:
+-- the only ones an end marker may end.
+startedAbove :: [Text] -> [MarkerName]
+startedAbove above = [name | name <- filter holdsBlocks [minBound .. maxBound], any (T.isInfixOf ("[[!" <> markerNameText name)) above]
 
 ----------------------------------------------------------------------
 -- Candidates
@@ -245,11 +282,13 @@ data Candidate = Candidate
   }
   deriving stock (Eq, Show)
 
--- | 'Wanted' is what a source is asked for: what was typed, and the
--- blocks open at the cursor, innermost first.
+-- | 'Wanted' is what a source is asked for: what was typed, and the kinds
+-- of block an end marker at the cursor would end, for the parser (the
+-- innermost block open there, if one is: an end marker of another name
+-- ends nothing).
 data Wanted = Wanted
   { typed :: Typed
-  , open :: [MarkerName]
+  , closable :: [MarkerName]
   }
   deriving stock (Eq, Show)
 
@@ -262,7 +301,7 @@ type Source = Wanted -> [Candidate]
 --
 -- * after @[[!@, the markers the page's kind reads ('markersRead'), each
 --   written with its end marker where it has one;
--- * after @[[/@, the blocks open at the cursor, the innermost first;
+-- * after @[[/@, the blocks an end marker at the cursor would end;
 -- * after @[!@, GitHub's five kinds of box and the defined ones
 --   ('boxChoices').
 --
@@ -270,7 +309,7 @@ type Source = Wanted -> [Candidate]
 wikiSource :: PageKind -> [BoxKind] -> Source
 wikiSource kind defined wanted = case t.trigger of
   StartMarker -> [startMarker t.lineStart name | name <- markersRead kind, matches (markerNameText name)]
-  EndMarker -> [endMarker name | name <- nub wanted.open, matches (markerNameText name)]
+  EndMarker -> [endMarker name | name <- wanted.closable, matches (markerNameText name)]
   BoxMarker -> [box t.lineStart marker | (marker, _) <- boxChoices defined, matches marker]
   where
     t = wanted.typed
@@ -345,13 +384,22 @@ data Completion = Completion
 
 -- | The list for a place, from the sources, or 'Nothing' when nothing
 -- opens there or no source has a candidate.
-complete :: [Source] -> At -> Maybe Completion
-complete sources at = do
-  typed <- triggerAt at
-  let wanted = Wanted {typed, open = openBlocks at.above}
+complete :: [Source] -> LineReader -> At -> Maybe Completion
+complete sources readAt at = do
+  typed <- triggerAt readAt at
+  let closable = case typed.trigger of
+        EndMarker ->
+          let prefix = T.take typed.from at.before
+           in [name | name <- startedAbove at.above, any isEnd (readAt (prefix <> closingMarker name)).roles]
+        _ -> []
+      wanted = Wanted {typed, closable}
       found = concatMap ($ wanted) sources
   guard (not (null found))
   Just Completion {from = typed.from, candidates = found, enter = EnterChooses, escape = EscapeCloses}
+  where
+    isEnd = \case
+      Ends _ -> True
+      _ -> False
 
 ----------------------------------------------------------------------
 -- Skeletons

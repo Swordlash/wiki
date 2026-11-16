@@ -12,6 +12,10 @@ import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.PageKind (PageKind (..))
 
+-- | The answer, from no memo of the parser's readings.
+answered :: [Source] -> Text -> Request -> Maybe Completion
+answered found text request = fst (answer found noReadings text request)
+
 spec :: Spec
 spec = describe "Wiki.App.Editor.Complete" $ do
   let text = "# Title\n\n[[!div]]\n\n[[/"
@@ -19,25 +23,33 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       document = sources Held {kind = Document, boxes = []}
   describe "answer" $ do
     it "answers from the text the editor holds, at the request's line" $
-      (map (.label) . (.candidates) <$> answer document text atEnd) `shouldBe` Just ["[[/div]]"]
+      (map (.label) . (.candidates) <$> answered document text atEnd) `shouldBe` Just ["[[/div]]"]
     it "answers nothing when the line no longer starts as CodeMirror saw it" $ do
       -- The block is open still, but the line was typed over since.
-      answer document "# Title\n\n[[!div]]\n\nText" atEnd `shouldBe` Nothing
-      answer document "# Title\n\n[[!div]]\n\n[[" atEnd `shouldBe` Nothing
+      answered document "# Title\n\n[[!div]]\n\nText" atEnd `shouldBe` Nothing
+      answered document "# Title\n\n[[!div]]\n\n[[" atEnd `shouldBe` Nothing
     it "answers nothing for a line the text does not have" $ do
-      answer document text Request {line = 9, before = "[[/", nodes = []} `shouldBe` Nothing
-      answer document text Request {line = 0, before = "[[/", nodes = []} `shouldBe` Nothing
+      answered document text Request {line = 9, before = "[[/", nodes = []} `shouldBe` Nothing
+      answered document text Request {line = 0, before = "[[/", nodes = []} `shouldBe` Nothing
     it "answers nothing where the syntax tree says the text is its own" $
-      answer document text Request {line = 5, before = "[[/", nodes = ["CodeText", "FencedCode", "Document"]} `shouldBe` Nothing
+      answered document text Request {line = 5, before = "[[/", nodes = ["CodeText", "FencedCode", "Document"]} `shouldBe` Nothing
+
+    it "answers from the memo of the parser's readings as from none, and forgets it when the lines above change" $ do
+      let (first', memo) = answer document noReadings text atEnd
+          (again, _) = answer document memo text atEnd
+          (other, _) = answer document memo "# Title\n\n[[!notes]]\n\n[[/" atEnd
+      (map (.label) . (.candidates) <$> first') `shouldBe` Just ["[[/div]]"]
+      again `shouldBe` first'
+      (map (.label) . (.candidates) <$> other) `shouldBe` Just ["[[/notes]]"]
 
   describe "sources" $ do
     it "offers a document's markers, and a presentation's" $ do
-      let offered kind = map (.label) . (.candidates) <$> answer (sources Held {kind, boxes = []}) "[[!" Request {line = 1, before = "[[!", nodes = []}
+      let offered kind = map (.label) . (.candidates) <$> answered (sources Held {kind, boxes = []}) "[[!" Request {line = 1, before = "[[!", nodes = []}
       offered Document `shouldBe` Just ["[[!spoiler]]", "[[!div]]", "[[!toc]]"]
       length <$> offered Presentation `shouldBe` Just 7
     it "offers the kinds of box the administration defined" $ do
       let defined = [BoxKind {name = "exercise", label = "Exercise", colour = Teal, icon = Pencil}]
-      (map (.label) . (.candidates) <$> answer (sources Held {kind = Document, boxes = defined}) "> [!ex" Request {line = 1, before = "> [!ex", nodes = []})
+      (map (.label) . (.candidates) <$> answered (sources Held {kind = Document, boxes = defined}) "> [!ex" Request {line = 1, before = "> [!ex", nodes = []})
         `shouldBe` Just ["[!EXERCISE]"]
 
   describe "completionJson" $ do

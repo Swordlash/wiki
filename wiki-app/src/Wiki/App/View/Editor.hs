@@ -617,6 +617,10 @@ data State = State
   , emojiQuery :: Text
   -- ^ What is typed in the "Emoji" menu's field: the menu shows the emoji
   -- whose names match it ('emojiMatches').
+  , readings :: Complete.Readings
+  -- ^ The parser's readings of the cursor's line the completion of the
+  -- wiki's own Markdown asked for, kept while the lines above it do not
+  -- change ('Complete.Readings').
   , host :: H.RefLabel
   -- ^ The element where CodeMirror goes, in the textarea's place; the
   -- text is reached through it ("Wiki.App.Editor.Browser").
@@ -1163,6 +1167,7 @@ component =
               , menuHolder
               , menuWatch = Nothing
               , emojiQuery = ""
+              , readings = Complete.noReadings
               , host
               , fileInput
               , backButton
@@ -2411,11 +2416,14 @@ component =
       -- CodeMirror asks for the list of the wiki's own Markdown at its
       -- cursor: the answer, from the text and the kinds of box held now,
       -- in this step (no ask of the backend).
+      -- The parser's readings of the cursor's line are kept for the next
+      -- question ('Complete.Readings').
       CompleteAsked i request -> do
         st <- get
-        let found = case st.loaded of
-              Ready w -> Complete.answer (Complete.sources Complete.Held {kind = w.page.kind, boxes = st.input.context.session.boxes}) w.body request
-              _ -> Nothing
+        let (found, readings) = case st.loaded of
+              Ready w -> Complete.answer (Complete.sources Complete.Held {kind = w.page.kind, boxes = st.input.context.session.boxes}) st.readings w.body request
+              _ -> (Nothing, st.readings)
+        modify (\s -> s {readings})
         for_ st.hostElement $ \h -> H.liftEffect (answerCompletion h i found)
       SearchEmoji emojiQuery -> modify (\st -> st {emojiQuery})
       -- The emoji chosen in the menu, as its shortcode, at the cursor; the

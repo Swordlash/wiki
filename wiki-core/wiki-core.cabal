@@ -176,6 +176,7 @@ test-suite wiki-core-test
       Test.Markdown.Comments
       Test.Markdown.Edit
       Test.Markdown.Complete
+      Test.Markdown.CompleteOracle
       Test.Markdown.Emoji
       Test.Markdown.Folds
       Test.Markdown.Frame

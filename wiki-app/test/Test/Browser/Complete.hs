@@ -129,7 +129,7 @@ snippetCases =
   , ("a block in a list's item", "- a\n\n  ‸", "[[!di", ["[[!div]]"], [("Enter", "- a\n\n  [[!div]]\n  ‸\n  [[/div]]")])
   , ("a document's markers", "‸", "[[!", ["[[!spoiler]]", "[[!div]]", "[[!toc]]"], [("ArrowDown", "[[!‸"), ("ArrowDown", "[[!‸"), ("Enter", "[[!toc]]‸")])
   , ("a spoiler's places in turn, its braces read back", "‸", "[[!sp", ["[[!spoiler]]"], spoilerSteps)
-  , ("the innermost block's end", "[[!spoiler]]{a}(A)\n\n[[!div]]\n\nText\n\n‸", "[[/", ["[[/div]]", "[[/spoiler]]"], [("Enter", "[[!spoiler]]{a}(A)\n\n[[!div]]\n\nText\n\n[[/div]]‸")])
+  , ("the innermost block's end", "[[!spoiler]]{a}(A)\n\n[[!div]]\n\nText\n\n‸", "[[/", ["[[/div]]"], [("Enter", "[[!spoiler]]{a}(A)\n\n[[!div]]\n\nText\n\n[[/div]]‸")])
   , ("a box's kind", "> ‸", "[!wa", ["[!WARNING]"], [("Enter", "> [!WARNING]\n> ‸")])
   ]
   where

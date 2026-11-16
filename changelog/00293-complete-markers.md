@@ -21,9 +21,10 @@ title: The editor completes the wiki's markers and kinds of box
   A spoiler is written with its name selected to type over; Tab then goes
   to its description, and Tab again to its first line.
 
-- `[[/` at the start of a line offers the end markers of the blocks still
-  open there, the innermost first: `[[/` and Enter after the block above
-  writes `[[/div]]`.
+- `[[/` at the start of a line offers the end marker of the innermost
+  block still open there: `[[/` and Enter after the block above writes
+  `[[/div]]`. The lists open only where the marker would be read as one,
+  in a quotation or a list's item too, and not in code.
 
 - `[!` on the first line of a quotation offers the kinds of box, GitHub's
   five and those the administration defined. Typing `> [!wa` and Enter

@@ -1058,8 +1058,8 @@ const emojiSource = (names, whole) => {
     view.dispatch({ ...insertCompletionText(view.state, text, from, to), annotations: pickedCompletion.of(completion) });
   };
   // Escape escapes the colon (see above): a backslash before it.
-  const escapeColon = (state, head) => {
-    const typed = emojiTyped(state, head);
+  const escapeColon = (state, head, view) => {
+    const typed = emojiTyped(state, head, whole({ state, pos: head, view }));
     return typed === null ? null : { from: typed.bullet ? typed.from + 1 : typed.from, insert: "\\" };
   };
   return async (context) => {
@@ -1077,7 +1077,9 @@ const emojiSource = (names, whole) => {
         emoji,
         apply: choose(name, typed.bullet),
         enter: { after: enterAfter },
-        typed: emojiTyped,
+        // The letters as they are now, the table read where wholeAt says
+        // (the master's text, for a row of the slide mode).
+        typed: (state, head, view) => emojiTyped(state, head, whole({ state, pos: head, view })),
         escape: escapeColon,
       })),
     };
@@ -1173,7 +1175,8 @@ const completions = (host) => {
   // (its first, since every option of a list says the same): `enter` is
   // "chooses" (or nothing), to choose at once, or {after: n}, to choose
   // only once n letters are typed (`typed`, the letters as they are now,
-  // {from, letters}) or the reader moved in the list; `escape` is nothing,
+  // {from, letters}, given the state, the cursor and the view, whose
+  // whole text wholeAt reads) or the reader moved in the list; `escape` is nothing,
   // to close the list, or what to write as it closes. A mention's list
   // chooses at once and closes; the emoji's chooses after two letters and
   // escapes its colon; the wiki's own Markdown says in its answer.
@@ -1193,7 +1196,7 @@ const completions = (host) => {
     run: (view) => {
       const done = binding.run(view);
       const option = shown(view.state);
-      if (done && option?.enter?.after !== undefined) moved.set(view, option.typed(view.state, view.state.selection.main.head));
+      if (done && option?.enter?.after !== undefined) moved.set(view, option.typed(view.state, view.state.selection.main.head, view));
       return done;
     },
   });
@@ -1212,7 +1215,7 @@ const completions = (host) => {
   const enter = (view) => {
     const option = shown(view.state);
     if (option?.enter?.after === undefined) return acceptCompletion(view);
-    const typed = option.typed(view.state, view.state.selection.main.head);
+    const typed = option.typed(view.state, view.state.selection.main.head, view);
     if (typed === null) return false;
     const move = moved.get(view);
     const chosen = move !== undefined && move !== null && move.from === typed.from && move.letters === typed.letters;
@@ -1226,7 +1229,7 @@ const completions = (host) => {
   const escape = (view) => {
     const option = shown(view.state);
     if (option === null) return false;
-    const written = option.escape?.(view.state, view.state.selection.main.head) ?? null;
+    const written = option.escape?.(view.state, view.state.selection.main.head, view) ?? null;
     closeCompletion(view);
     if (written !== null) {
       view.dispatch({ changes: written, annotations: isolateHistory.of("full"), userEvent: "input.escape" });

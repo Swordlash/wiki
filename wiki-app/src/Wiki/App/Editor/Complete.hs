@@ -14,12 +14,15 @@ module Wiki.App.Editor.Complete
   ( Request (..)
   , Held (..)
   , sources
+  , Readings
+  , noReadings
   , answer
   , completionJson
   )
 where
 
 import Data.Aeson (Value (String), object, (.=))
+import Data.Map.Lazy qualified as Map
 import Data.Text qualified as T
 import Protolude
 import Wiki.Core.Markdown.Box (BoxKind)
@@ -50,16 +53,41 @@ data Held = Held
 sources :: Held -> [Source]
 sources held = [wikiSource held.kind held.boxes]
 
+-- | 'Readings' is the editor's memo of what the wiki's parser reads on a
+-- line put after the lines above a cursor ('readLine'): the lines above,
+-- and each line asked about with its reading, kept while the lines above
+-- do not change. Typing the letters after a trigger changes only the
+-- cursor's line, and the line asked about is the same each time (the
+-- letters replaced by a whole name), so the parser reads the text above
+-- once for each trigger typed, not once for each letter. A reading is
+-- worked out only when it is wanted.
+data Readings = Readings
+  { above :: [Text]
+  , byLine :: Map.Map Text LineReading
+  }
+
+-- | A memo of nothing.
+noReadings :: Readings
+noReadings = Readings {above = [], byLine = Map.empty}
+
 -- | The list for a request, against the text the editor holds, or
 -- 'Nothing': when nothing opens there, and when the cursor's line in that
 -- text does not start with the request's (the text has changed since
--- CodeMirror asked, and CodeMirror asks again as more is typed).
-answer :: [Source] -> Text -> Request -> Maybe Completion
-answer found text request = do
-  let ls = T.splitOn "\n" text
-  current <- ls `atMay` (request.line - 1)
-  guard (request.line >= 1 && request.before `T.isPrefixOf` current)
-  complete found At {place = placeOf request.nodes, above = take (request.line - 1) ls, before = request.before}
+-- CodeMirror asked, and CodeMirror asks again as more is typed); and the
+-- memo of the parser's readings, to answer the next request with.
+answer :: [Source] -> Readings -> Text -> Request -> (Maybe Completion, Readings)
+answer found memo text request = case T.splitOn "\n" text of
+  ls
+    | request.line >= 1
+    , Just current <- ls `atMay` (request.line - 1)
+    , request.before `T.isPrefixOf` current ->
+        let above = take (request.line - 1) ls
+            at = At {place = placeOf request.nodes, above, before = request.before}
+            kept = if memo.above == above then memo.byLine else Map.empty
+            byLine = foldl' (\m l -> Map.insertWith (\_ old -> old) l (readLine above l) m) kept (probeLines at)
+            readAt l = fromMaybe (readLine above l) (Map.lookup l byLine)
+         in (complete found readAt at, Readings {above, byLine})
+  _ -> (Nothing, memo)
 
 -- | An answer as @web/src/editor.js@ reads it: where the text the entry
 -- chosen replaces starts in the line, in characters; the options, each

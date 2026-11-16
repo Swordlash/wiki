@@ -8,12 +8,9 @@ module Test.Markdown.Complete (spec) where
 import Data.Text qualified as T
 import Protolude
 import Test.Hspec
-import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
-import Test.QuickCheck (Gen, Property, choose, counterexample, elements, forAll, frequency, listOf, sized, (===))
-import Wiki.Core.Markdown.Ast (MarkerName (..), closingMarker, holdsBlocks, openingMarker)
+import Wiki.Core.Markdown.Ast (openingMarker)
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
 import Wiki.Core.Markdown.Complete
-import Wiki.Core.Markdown.Problems (Checked (..), Problem (..), checkText)
 import Wiki.Core.PageKind (PageKind (..))
 
 spec :: Spec
@@ -36,17 +33,18 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
     it "opens no box after [! on a quotation's later line, or outside a quotation" $ do
       typedAt "> Text\n> [!no‸" `shouldBe` Nothing
       typedAt "[!no‸" `shouldBe` Nothing
+    it "opens on a list's item's first line, where the parser reads a marker" $
+      typedAt "- [[!no‸" `shouldBe` Just (StartMarker, "no", 2)
     it "opens nothing in the middle of a line" $ do
       typedAt "Text [[!no‸" `shouldBe` Nothing
       typedAt "> Text [!no‸" `shouldBe` Nothing
-      typedAt "- [[!no‸" `shouldBe` Nothing
     it "closes once a character no name has is typed" $ do
       typedAt "[[!no ‸" `shouldBe` Nothing
       typedAt "[[!notes]‸" `shouldBe` Nothing
       typedAt "[[!No‸" `shouldBe` Nothing
     it "opens nothing where the syntax tree says the text is its own" $
       for_ ["FencedCode", "CodeBlock", "InlineCode", "HTMLBlock", "CommentBlock", "TeXMath", "URL", "LinkReference"] $ \node ->
-        (node, triggerAt (atIn [node, "Document"] "[[!no‸")) `shouldBe` (node, Nothing)
+        (node, triggerAt (readLine []) (atIn [node, "Document"] "[[!no‸")) `shouldBe` (node, Nothing)
 
   describe "placeOf" $ do
     it "is text in a paragraph, a quotation, a list and a link's text" $
@@ -86,33 +84,18 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       (completeIn Document "  [[!di‸" <&> (.from)) `shouldBe` Just 2
 
   describe "the end markers offered" $ do
-    it "offers the blocks open at the cursor, the innermost first" $
-      labels Presentation "[[!notes]]\n\n[[!div]]{.a}\n\nText\n\n[[/‸" `shouldBe` ["[[/div]]", "[[/notes]]"]
-    it "offers those whose names start with the letters" $
-      labels Presentation "[[!notes]]\n[[!div]]\n[[/n‸" `shouldBe` ["[[/notes]]"]
+    it "offers the end of the innermost block open at the cursor, which alone an end marker there ends" $
+      labels Presentation "[[!notes]]\n\n[[!div]]{.a}\n\nText\n\n[[/‸" `shouldBe` ["[[/div]]"]
+    it "offers no end of an outer block, which the innermost keeps open" $
+      labels Presentation "[[!notes]]\n[[!div]]\n[[/n‸" `shouldBe` []
+    it "offers no end of a block its quotation closed" $
+      labels Presentation "> [[!div]]\n> Text\n\n[[/‸" `shouldBe` []
     it "offers no block that is closed, nor a marker in code" $
       labels Document "[[!div]]\n[[/div]]\n[[!spoiler]]{a}(A)\n```\n[[!div]]\n```\n[[/‸" `shouldBe` ["[[/spoiler]]"]
     it "opens no list when no block is open" $
       completeIn Document "Text\n[[/‸" `shouldBe` Nothing
     it "writes the end marker" $
       written Document "[[!div]]\n[[/‸" `shouldBe` Just "[[!div]]\n[[/div]]‸"
-
-  describe "openBlocks" $ do
-    it "reads an end marker that ends no open block of its name as ending nothing" $
-      openBlocks ["[[!notes]]", "[[!div]]", "[[/notes]]"] `shouldBe` [DivName, NotesName]
-    it "takes no one-line marker as a block" $
-      openBlocks ["[[!toc]]", "[[!pause]]", "[[!style]]{theme=dark}"] `shouldBe` []
-    it "skips a fence's lines, a fence of tildes, and a longer fence's shorter closing" $
-      openBlocks ["~~~~", "[[!div]]", "~~~", "[[!notes]]", "~~~~", "[[!spoiler]]{a}(A)"] `shouldBe` [SpoilerName]
-    it "reads markers in a quotation" $
-      openBlocks ["> [[!div]]", "> Text"] `shouldBe` [DivName]
-    modifyMaxSuccess (const 2000) . prop "is the blocks the lines leave open, by a model of them" $
-      forAll genBlocks $
-        \bs -> openBlocks (blockLines bs) === modelOpen bs
-
-  describe "the end marker written, by the wiki's parser"
-    $ modifyMaxSuccess (const 500) . prop "closes the innermost open block, and is no problem of its own"
-    $ forAll genBlocks closesInnermost
 
   describe "the kinds of box offered" $ do
     let exercise = BoxKind {name = "exercise", label = "Exercise", colour = Teal, icon = Pencil}
@@ -131,11 +114,11 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
     it "shows a plugin's origin as from the plugin" $
       originText (FromPlugin "calendar") `shouldBe` "from plugin calendar"
     it "lists every source's candidates, in the sources' order, each with its origin" $ do
-      let found = complete [wikiSource Document [], calendar] (atIn [] "[[!‸")
+      let found = complete [wikiSource Document [], calendar] (readLine []) (atIn [] "[[!‸")
       (map (\c -> (c.label, c.origin)) . (.candidates) <$> found)
         `shouldBe` Just [("[[!spoiler]]", Nothing), ("[[!div]]", Nothing), ("[[!toc]]", Nothing), ("[[!day]]", Just (FromPlugin "calendar"))]
     it "opens a list with one source's candidates when the others have none" $
-      (map (.label) . (.candidates) <$> complete [wikiSource Document [], calendar] (atIn [] "[[!d‸"))
+      (map (.label) . (.candidates) <$> complete [wikiSource Document [], calendar] (readLine []) (atIn [] "[[!d‸"))
         `shouldBe` Just ["[[!div]]", "[[!day]]"]
     it "chooses with Enter at once and closes with Escape" $
       ((\c -> (c.enter, c.escape)) <$> completeIn Document "[[!‸") `shouldBe` Just (EnterChooses, EscapeCloses)
@@ -160,13 +143,17 @@ atIn nodes marked = At {place = placeOf nodes, above = initDef [] ls, before = f
     ls = T.splitOn "\n" (fst (T.breakOn "‸" marked))
 
 typedAt :: Text -> Maybe (Trigger, Text, Int)
-typedAt marked = (\t -> (t.trigger, t.letters, t.from)) <$> triggerAt (atIn [] marked)
+typedAt marked = (\t -> (t.trigger, t.letters, t.from)) <$> triggerAt (readLine at.above) at
+  where
+    at = atIn [] marked
 
 completeIn :: PageKind -> Text -> Maybe Completion
 completeIn kind = completeWith kind []
 
 completeWith :: PageKind -> [BoxKind] -> Text -> Maybe Completion
-completeWith kind defined marked = complete [wikiSource kind defined] (atIn [] marked)
+completeWith kind defined marked = complete [wikiSource kind defined] (readLine at.above) at
+  where
+    at = atIn [] marked
 
 labels :: PageKind -> Text -> [Text]
 labels kind = labelsWith kind []
@@ -200,73 +187,3 @@ places kind marked = do
   chosen <- head c.candidates
   let (text, ranges) = skeletonText chosen.skeleton
   Just [T.take (e - s) (T.drop s text) | (n, (s, e)) <- ranges, n /= 0]
-
-----------------------------------------------------------------------
--- Generated nestings of blocks
-
--- | A block of a generated text: one that opens (and holds the blocks
--- after it until it is closed), the end of the innermost open block, a
--- paragraph, or a fenced code block whose lines look like markers.
-data Block = Opens MarkerName | Closes | Paragraph | Fenced [MarkerName]
-  deriving stock (Eq, Show)
-
--- | Blocks whose ends close only blocks open: a model of a text an author
--- writes, with blocks left open at its end.
-genBlocks :: Gen [Block]
-genBlocks = sized $ \size -> do
-  n <- choose (0, min 20 size)
-  go n (0 :: Int)
-  where
-    holding = filter holdsBlocks [minBound .. maxBound]
-    go 0 _ = pure []
-    go n depth = do
-      b <-
-        frequency
-          ( [(3, Opens <$> elements holding), (2, pure Paragraph), (1, Fenced <$> listOf (elements holding))]
-              <> [(3, pure Closes) | depth > 0]
-          )
-      let depth' = case b of
-            Opens _ -> depth + 1
-            Closes -> depth - 1
-            _ -> depth
-      (b :) <$> go (n - 1 :: Int) depth'
-
--- | The lines of the blocks, a blank line between two blocks. A spoiler
--- has a name and a description, as it must.
-blockLines :: [Block] -> [Text]
-blockLines bs = intercalate [""] (snd (mapAccumL line [] (zip [0 :: Int ..] bs)))
-  where
-    line open (i, b) = case b of
-      Opens SpoilerName -> (SpoilerName : open, ["[[!spoiler]]{s" <> show i <> "}(A spoiler)"])
-      Opens name -> (name : open, [openingMarker name])
-      Closes -> (drop 1 open, [maybe "" closingMarker (head open)])
-      Paragraph -> (open, ["Some text."])
-      Fenced names -> (open, ["```"] <> map openingMarker names <> ["```"])
-
--- | The blocks left open, innermost first, by the blocks' own count.
-modelOpen :: [Block] -> [MarkerName]
-modelOpen = foldl' step []
-  where
-    step open = \case
-      Opens name -> name : open
-      Closes -> drop 1 open
-      _ -> open
-
--- | That the end marker the completion writes after the blocks, on a line
--- of its own, closes the innermost open block for the wiki's parser: one
--- fewer block is "not closed", and the line itself has no problem.
-closesInnermost :: [Block] -> Property
-closesInnermost bs =
-  case modelOpen bs of
-    [] -> completeIn Presentation (text <> "\n\n[[/‸") === Nothing
-    _ ->
-      let marked = text <> "\n\n[[/‸"
-          completed = fromMaybe "" (T.replace "‸" "" <$> written Presentation marked)
-          lineCount = length (T.splitOn "\n" completed)
-          problems source = (checkText Presentation source).problems
-          notClosed source = length [p | p <- problems source, "not closed" `T.isInfixOf` p.message]
-          onLine = [p | p <- problems completed, p.from <= lineCount, p.to >= lineCount]
-       in counterexample (toS completed) $
-            (onLine, notClosed completed) === ([], notClosed text - 1)
-  where
-    text = T.intercalate "\n" (blockLines bs)

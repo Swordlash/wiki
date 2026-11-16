@@ -59,14 +59,16 @@
 --   CommonMark does not read as a number;
 -- * an answer the parser does not read back as meant: 'enter' parses the
 --   text it would write, and keeps its answer only when the new line is in
---   the containers the answer says, and a new line leaves the next line
---   with anything on it in the containers it was in ('readsAsMeant'): an
---   empty item's text is indented by its mark and one space, so a line
---   below indented that far would go into it.
+--   the containers the answer says, and every line below with anything on
+--   it is read as before ('readsAsMeant'): an empty item's text is
+--   indented by its mark and one space, so a line below indented that far
+--   would go into it; a quoted line in the middle of a paragraph can make
+--   the lines below code; a line gone up can join two lists, or take an
+--   item nested below into the new one.
 --
--- Going up acts on the cursor's line alone, in the middle of a list or a
--- quotation too: the lines after it are read anew (an item nested below
--- an empty nested item that goes up becomes the new item's).
+-- So an empty item or quoted line in the middle of a list or a quotation
+-- goes up only when the lines after it keep their reading; otherwise
+-- Enter there is a plain line break.
 module Wiki.Core.Markdown.Enter
   ( Enter (..)
   , enter

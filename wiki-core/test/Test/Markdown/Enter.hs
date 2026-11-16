@@ -55,6 +55,8 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     "- [x] a\n  - [x] b\n  - [ ] ‸" `becomes` "- [x] a\n  - [x] b\n- [ ] ‸"
     "> - a\n> - ‸" `becomes` "> - a\n> ‸"
     "- [ ] ‸" `becomes` "‸"
+    it "breaks the line alone with an item below that going up would take in" $
+      press "- a\n  - ‸\n  - c" `shouldBe` "- a\n  - \n‸\n  - c"
 
   describe "a quotation or a box" $ do
     "> a‸" `becomes` "> a\n> ‸"

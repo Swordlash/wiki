@@ -197,7 +197,8 @@ jobs:
   # is its base as GitHub merged it: main, or the lower branch of a stack.
   # The base is not named by its branch, origin/<base>: a stacked pull
   # request's base branch is deleted when the lower one merges, and a
-  # re-run after that (for the label) would find no such branch.
+  # re-run after that (for the label) would find no such branch. The job
+  # also checks the browser suite's ceilings, in its last step.
   changelog:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -218,6 +219,20 @@ jobs:
       run: |
         labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name' 2>/dev/null) || labels=$EVENT_LABELS
         sh toolchain/check-changelog.sh --pr "$PR" --base 'HEAD^1' --labels "$labels"
+
+    # The browser suite's waits and examples against their ceilings
+    # (toolchain/check-test-ceilings.sh, WP5.122 of docs/PLAN.md): a pull
+    # request that lowers a count must write the lower number, and one that
+    # passes a ceiling fails unless the number was raised by hand, which
+    # the log then names in a notice. Here because this is the cheapest
+    # job every pull request runs: a second, with no toolchain, and the
+    # history the changelog's check fetched names the files that grew, and
+    # the ceilings raised, since the base.
+    # It runs even when the changelog's check failed, so that both say
+    # what is wrong in one run.
+    - name: Check the browser suite's ceilings
+      if: ${{ !cancelled() }}
+      run: sh toolchain/check-test-ceilings.sh --base 'HEAD^1'
 
   # What the run does and where, decided on a hosted runner for every run:
   # whether the build jobs need to run at all (on a push), and which runner
@@ -560,6 +575,12 @@ jobs:
     - name: Test check-changelog.sh
       if: matrix.group == 'unit'
       run: sh toolchain/test-check-changelog.sh
+
+    # The changelog job's check of the browser suite's ceilings, on a
+    # suite of its own in a repository of its own: a second.
+    - name: Test check-test-ceilings.sh
+      if: matrix.group == 'unit'
+      run: sh toolchain/test-check-test-ceilings.sh
 
     # The script that starts PostgreSQL for the tests, against containers
     # of the test's own names: started twice it keeps the same container

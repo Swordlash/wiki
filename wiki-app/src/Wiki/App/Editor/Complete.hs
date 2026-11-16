@@ -275,7 +275,9 @@ answer found memo text request = case T.splitOn "\n" text of
 -- @insert@ as it is, the cursor after it; or, with @line@, the text
 -- @insert@ written as it is in place of the cursor's whole line, which
 -- must still read as @line@ (the editor writes nothing otherwise),
--- @select@ selected in it (from and to, in characters).
+-- @select@ selected in it (from and to, in characters), the @/@ and its
+-- letters, at @query@ in @line@ (from and to, in characters), taken away
+-- as a change of their own.
 completionJson :: Completion -> Value
 completionJson c =
   object
@@ -300,7 +302,7 @@ completionJson c =
     written candidate = case candidate.writing of
       AsSnippet -> ["template" .= snippetTemplate candidate.skeleton]
       AsText -> ["insert" .= fst (skeletonText candidate.skeleton)]
-      LineAsText line ->
+      LineAsText line (queryFrom, queryTo) ->
         let (text, places) = skeletonText candidate.skeleton
             (selectFrom, selectTo) = maybe (T.length text, T.length text) snd (head places)
-         in ["insert" .= text, "select" .= [selectFrom, selectTo], "line" .= line]
+         in ["insert" .= text, "select" .= [selectFrom, selectTo], "line" .= line, "query" .= [queryFrom, queryTo]]

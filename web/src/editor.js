@@ -1179,7 +1179,33 @@ const writeOption = (host, option) => (view, completion, from, to) => {
     const line = view.state.doc.lineAt(from);
     if (line.text !== option.line) return;
     const [start, end] = option.select.map((n) => unitsOf(option.insert, n));
-    writeText(view, completion, line.from, line.to, option.insert, start, end);
+    // Two changes in one transaction: the / and its letters taken away,
+    // and the command's edit, the smallest change between the line
+    // without them and the text written, its ends moved past them. So
+    // the text the two leave alone between them is not written again (an
+    // assistant's undecided change on it stays). An edit that would run
+    // across them (none of the toolbar's, at an empty selection) is one
+    // change.
+    const [queryFrom, queryTo] = option.query.map((n) => unitsOf(option.line, n));
+    const size = queryTo - queryFrom;
+    const edit = smallestChange(option.line.slice(0, queryFrom) + option.line.slice(queryTo), option.insert);
+    const changes =
+      edit.from < queryFrom && edit.to > queryFrom
+        ? [{ from: line.from + edit.from, to: line.from + edit.to + size, insert: edit.insert }]
+        : [
+            { from: line.from + queryFrom, to: line.from + queryTo, insert: "" },
+            {
+              from: line.from + (edit.from < queryFrom || (edit.from === queryFrom && edit.to === queryFrom) ? edit.from : edit.from + size),
+              to: line.from + (edit.to <= queryFrom ? edit.to : edit.to + size),
+              insert: edit.insert,
+            },
+          ];
+    view.dispatch({
+      changes,
+      selection: EditorSelection.single(line.from + start, line.from + end),
+      scrollIntoView: true,
+      annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete")],
+    });
   }
   if (option.action !== undefined) host.dispatchEvent(new CustomEvent("wiki-complete-action", { detail: option.action }));
 };

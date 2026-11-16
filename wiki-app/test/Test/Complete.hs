@@ -167,9 +167,9 @@ spec = describe "Wiki.App.Editor.Complete" $ do
                 Just (Array options) -> find (\case Object x -> KeyMap.lookup "label" x == Just (String name); _ -> False) (toList options)
                 _ -> Nothing
               _ -> Nothing
-      optionOf "Table" "/ta" `shouldBe` Just (object ["label" .= ("Table" :: Text), "insert" .= ("| Column 1 | Column 2 | Column 3 |\n| -------- | -------- | -------- |\n| Text     | Text     | Text     |" :: Text), "select" .= [2 :: Int, 10], "line" .= ("/ta" :: Text), "detail" .= ("| a | b |" :: Text)])
+      optionOf "Table" "/ta" `shouldBe` Just (object ["label" .= ("Table" :: Text), "insert" .= ("| Column 1 | Column 2 | Column 3 |\n| -------- | -------- | -------- |\n| Text     | Text     | Text     |" :: Text), "select" .= [2 :: Int, 10], "line" .= ("/ta" :: Text), "query" .= [0 :: Int, 3], "detail" .= ("| a | b |" :: Text)])
       optionOf "Link to a page" "/li" `shouldBe` Just (object ["label" .= ("Link to a page" :: Text), "template" .= ("${0}" :: Text), "detail" .= ("[Title](page)" :: Text), "action" .= ("link-page" :: Text)])
-      optionOf "Mermaid diagram" "/me" `shouldBe` Just (object ["label" .= ("Mermaid diagram" :: Text), "insert" .= ("```mermaid\ngraph LR\n  A --> B\n```" :: Text), "select" .= [11 :: Int, 29], "line" .= ("/me" :: Text), "detail" .= ("```mermaid" :: Text)])
+      optionOf "Mermaid diagram" "/me" `shouldBe` Just (object ["label" .= ("Mermaid diagram" :: Text), "insert" .= ("```mermaid\ngraph LR\n  A --> B\n```" :: Text), "select" .= [11 :: Int, 29], "line" .= ("/me" :: Text), "query" .= [0 :: Int, 3], "detail" .= ("```mermaid" :: Text)])
       (answerOf "/ta" >>= \case Object o -> KeyMap.lookup "escape" o; _ -> Nothing) `shouldBe` Just (String "dismisses")
 
   describe "the pages offered in a space of 10,000 pages" $

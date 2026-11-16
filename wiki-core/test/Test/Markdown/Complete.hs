@@ -111,8 +111,9 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       endOf "[[On‸|a]b]]" `shouldBe` (0, "")
 
   describe "placeOf" $ do
-    it "is text in a paragraph, a quotation, a list and a link's text" $
-      placeOf ["Link", "Paragraph", "Blockquote", "ListItem", "BulletList", "Document"] `shouldBe` InText
+    it "is text in a paragraph, a quotation and a list, and text in a link's" $ do
+      placeOf ["Paragraph", "Blockquote", "ListItem", "BulletList", "Document"] `shouldBe` InText
+      placeOf ["Link", "Paragraph", "Blockquote", "ListItem", "BulletList", "Document"] `shouldBe` InLinkText
     it "is the text's own in code, HTML, a comment, math and a link's address" $
       for_ [["CodeText", "FencedCode", "Document"], ["HTMLBlock", "Document"], ["URL", "Link", "Paragraph"], ["TeXMath", "Paragraph"]] $ \nodes ->
         placeOf nodes `shouldBe` InOwnText

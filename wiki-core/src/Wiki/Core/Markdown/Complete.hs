@@ -98,18 +98,25 @@ import Wiki.Core.PageKind (PageKind (..))
 -- Where a list opens
 
 -- | 'Place' is what the syntax tree says of the cursor's place: in text,
--- where the wiki's markup counts, or in something whose text is its own
--- (code, HTML, a comment, math, a link's address), where no list opens.
-data Place = InText | InOwnText
+-- where the wiki's markup counts; in text inside brackets the tree reads
+-- as a link, which may be one (the wiki's parser reads a reference whose
+-- definition may be anywhere, past what the completion reads), where the
+-- @/@ menu opens nothing and the wiki's markup counts; or in something
+-- whose text is its own (code, HTML, a comment, math, a link's address),
+-- where no list opens.
+data Place = InText | InLinkText | InOwnText
   deriving stock (Eq, Show)
 
 -- | The place the cursor is in, from the names of the syntax tree's nodes
 -- around it, innermost first, as CodeMirror's Markdown parser names them
 -- (and the editor's @TeXMath@, in @web/src/editor.js@). A link's text is
--- text: CodeMirror reads @[[!notes]]@ as brackets around a link, which
--- the wiki's parser does not.
+-- text for the wiki's markup: CodeMirror reads @[[!notes]]@ as brackets
+-- around a link, which the wiki's parser does not.
 placeOf :: [Text] -> Place
-placeOf nodes = if any (`elem` ownText) nodes then InOwnText else InText
+placeOf nodes
+  | any (`elem` ownText) nodes = InOwnText
+  | "Link" `elem` nodes = InLinkText
+  | otherwise = InText
   where
     ownText =
       [ "FencedCode"
@@ -197,7 +204,7 @@ data LabelForm = PlainLabel | EscapedLabel | NoLabel
 -- candidates are the blocks an end marker there ends ('complete').
 triggerAt :: LineReader -> At -> Maybe Typed
 triggerAt readAt at = do
-  guard (at.place == InText)
+  guard (at.place /= InOwnText)
   case shapeAt at of
     Just shape -> do
       guard (not (heldReturn at))
@@ -730,8 +737,12 @@ data Candidate = Candidate
 -- indentation); or as it is in place of the cursor's whole line, which
 -- read as the text given when the list was made, its first place selected
 -- (an entry of the @/@ menu, whose command may change the line's start
--- and write lines after it).
-data Writes = AsSnippet | AsText | LineAsText Text
+-- and write lines after it), with where in that line the @/@ and its
+-- letters were, in characters: they go as a change of their own, and the
+-- command's edit as the smallest change between the line without them and
+-- the text written, so that no text the two leave alone between them is
+-- written again.
+data Writes = AsSnippet | AsText | LineAsText Text (Int, Int)
   deriving stock (Eq, Show)
 
 -- | 'Wanted' is what a source is asked for: where (the cursor's place and
@@ -940,7 +951,9 @@ slashShape at = do
 -- * inside a word (@and\/or@) or an address (@https:\/\/…@);
 -- * in code (inline or a block, fenced or indented), math or HTML;
 -- * in a link's text or its address, an image's, emphasis, strong or
---   struck text, an inline spoiler, or any other inline;
+--   struck text, an inline spoiler, or any other inline; nor in brackets
+--   the syntax tree reads as a link ('InLinkText'), which a reference
+--   defined anywhere may make one;
 -- * in a heading, a table's cell, a box's title, a spoiler's description,
 --   a marker line or a footnote's definition;
 -- * where the block that holds the cursor is still open where the text
@@ -948,6 +961,7 @@ slashShape at = do
 --   make the line something else.
 slash :: LineReader -> At -> Maybe Typed
 slash readAt at = do
+  guard (at.place == InText)
   (prefix, letters) <- slashShape at
   let reading = readAt (slashProbe at prefix)
   guard (slashWord `elem` plainWords reading.blocksRead)
@@ -1078,7 +1092,7 @@ slashSource entries wanted
       OpensDialog action -> Just Candidate {label = e.label, skeleton = [Field 0 ""], writing = AsSnippet, action = Just action, note = Just e.sample, origin = Nothing}
       WritesCommand command -> do
         written <- slashWritten window command
-        Just (lineCandidate wanted.at written) {label = e.label, note = Just e.sample}
+        Just (lineCandidate wanted.at wanted.typed written) {label = e.label, note = Just e.sample}
 
 -- | 'Window' is the text a command of the @/@ menu is applied to: the
 -- lines above the cursor's line from the nearest one with text in it (or
@@ -1119,12 +1133,13 @@ slashWritten window command = do
 
 -- | An entry of the @/@ menu that writes, as a candidate: the cursor's
 -- line replaced by what the command writes there ('slashWritten'), as it
--- is, with the command's selection ('LineAsText'). Never a snippet, whose
+-- is, with the command's selection, and where the @/@ and the letters were
+-- ('LineAsText'). Never a snippet, whose
 -- rules (the indentation it puts before further lines, the line breaks it
 -- reads in its template) would write something else than the command.
-lineCandidate :: At -> (Text, (Int, Int)) -> Candidate
-lineCandidate at (written, (start, end)) =
-  Candidate {label = "", skeleton, writing = LineAsText (at.before <> at.after), action = Nothing, note = Nothing, origin = Nothing}
+lineCandidate :: At -> Typed -> (Text, (Int, Int)) -> Candidate
+lineCandidate at typed (written, (start, end)) =
+  Candidate {label = "", skeleton, writing = LineAsText (at.before <> at.after) (typed.from, T.length at.before), action = Nothing, note = Nothing, origin = Nothing}
   where
     slice a b = T.take (b - a) (T.drop a written)
     skeleton = [Literal (slice 0 start) | start > 0] <> [Field 1 (slice start end)] <> [Literal (T.drop end written) | end < T.length written]

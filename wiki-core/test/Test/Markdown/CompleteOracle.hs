@@ -83,6 +83,10 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
     modifyMaxSuccess (* 10) . prop "opens where the place is text and not elsewhere, over generated places" $
       forAll genSlashPlace $
         \(marked, expected) -> counterexample (toS marked) (slashOpens marked === expected)
+    it "opens nothing in brackets the syntax tree reads as a link, which a reference defined anywhere may make one (#295's third round)" $ do
+      let at = slashAt "[see /ta‸\nmore]\n\n[see /ta more]: /url"
+      isJust (complete [slashSource slashEntries'] (readLine at.above) at {place = placeOf ["Link", "Paragraph", "Document"]}) `shouldBe` False
+      isJust (complete [slashSource slashEntries'] (readLine at.above) at) `shouldBe` True
     it "writes each entry as its text in place of the line, the command's selection its one place, never as a snippet" $ do
       slashPlaces "/ta‸" Edit.Table `shouldBe` Just ["Column 1"]
       slashPlaces "/‸" Edit.SpoilerBlock `shouldBe` Just ["name"]
@@ -90,13 +94,13 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
       slashPlaces "/‸" Edit.CodeBlock `shouldBe` Just [""]
       slashPlaces "/‸" Edit.Bold `shouldBe` Just ["bold text"]
       slashPlaces "/‸" Edit.Mermaid `shouldBe` Just ["graph LR\n  A --> B"]
-      (.writing) <$> slashCandidate "  - item /ta‸" Edit.Table `shouldBe` Just (LineAsText "  - item /ta")
+      (.writing) <$> slashCandidate "  - item /ta‸" Edit.Table `shouldBe` Just (LineAsText "  - item /ta" (9, 12))
     it "writes what the command writes after a no-break space at the line's start, and with a carriage return in the line (#295)" $ do
       let asWritten c = (c.writing, fst (skeletonText c.skeleton))
       (asWritten <$> slashCandidate "\160hello /ta‸" Edit.Table)
-        `shouldBe` Just (LineAsText "\160hello /ta", fst (Edit.apply Edit.Table "\160hello " (Edit.cursor 7)))
+        `shouldBe` Just (LineAsText "\160hello /ta" (7, 10), fst (Edit.apply Edit.Table "\160hello " (Edit.cursor 7)))
       (asWritten <$> slashCandidate "Some\rtext /b‸" Edit.Bold)
-        `shouldBe` Just (LineAsText "Some\rtext /b", fst (Edit.apply Edit.Bold "Some\rtext " (Edit.cursor 10)))
+        `shouldBe` Just (LineAsText "Some\rtext /b" (10, 12), fst (Edit.apply Edit.Bold "Some\rtext " (Edit.cursor 10)))
     it "closes with Escape so that the same / does not open it again" $
       (.escape) <$> listOf' "/ta‸" `shouldBe` Just EscapeDismisses
     it "chooses with Enter only once a letter follows the /, or the reader moved in the list: a / alone at a line's end and Enter is a new line" $
@@ -297,7 +301,7 @@ slashWritesAsApply (above, typedBefore, after', below) = cover 50 (isJust opened
     written c = do
       let (text, ranges) = skeletonText c.skeleton
       text' <- case c.writing of
-        LineAsText _ -> Just text
+        LineAsText _ _ -> Just text
         _ -> Nothing
       (s, e) <- snd <$> head ranges
       Just (T.intercalate "\n" (above <> [text'] <> below), Edit.Selection (lineStart + s) (lineStart + e))

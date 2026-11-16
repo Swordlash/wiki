@@ -2005,13 +2005,7 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   anything outside the contract, and any failure, is the plain new
   line. Shift+Enter stays a plain new line; Backspace is left as it
   is.
-  (b) **The framework, with `[[!`, `[[/` and `[!`**: the markers the
-  page's kind reads (a document is offered no `notes`, `incremental`,
-  `pause` or `style`), each written with its end marker and the cursor
-  inside; `[[/` offers the innermost open block; the kinds of box, the
-  administrator's among them. A property: the end marker written
-  leaves no "not closed" problem. The snippet's Tab and Escape must
-  not also reach the form's keys.
+  (b) **The framework, with `[[!`, `[[/` and `[!`**: merged (#293).
   (c) **`[[` for a page**: this space's pages, which the editor holds.
   What is written is the shortest relative path that resolves back
   to the page, with `|Title` only when the title differs from what the
@@ -3180,11 +3174,21 @@ needs. Each was true when its package merged; check before relying on one.
   parser and CodeMirror count its lines differently); folds do not
   survive a reload; fold-all is not offered (AltGr sends Ctrl+Alt on
   Windows, and its keys would catch typed brackets).
-- **A browser spec that depends on its neighbours.** Emoji's "inserts the
-  emoji chosen in the toolbar's menu" fails when run in one group with the
-  editor's other specs and passes alone, on `main` as on every branch
-  (Enter in the empty emoji search is expected to be prevented and is
-  not); CI's sharding happens to pass it. Nobody has looked for the cause.
+- **The completion's framework (#293, WP5.124 (b)).**
+  `Wiki.Core.Markdown.Complete` decides, purely, which trigger applies,
+  the candidates and what each writes; the wiki's own parser is asked
+  where a marker or a box would be read and whether what a candidate
+  would write is read as intended, and it is the oracle of the
+  properties (generated documents with tabs, lazy lines, indented
+  code, footnote definitions). Where the parser would not read a
+  skeleton's end marker, the start marker is written alone. A
+  candidate carries an optional origin for a plugin's completion
+  (#186). Not handled, said in the code: marker lines inside HTML
+  blocks or comments; `[[!div]]` is written without attributes. The
+  textarea before CodeMirror loads and the comments' boxes get no
+  completion. Closed with it: Emoji's toolbar example failing beside
+  Editor's (the test's keys file kept its "listener added" mark on
+  `globalThis` while each test module had its own copy of the rest).
 - **Two pull requests merged without a run together broke `main`
   (2026-11-13, #261).** #255 added a top-level `writable` to
   `Wiki.App.View.Common` and #259 bound a local `writable` in

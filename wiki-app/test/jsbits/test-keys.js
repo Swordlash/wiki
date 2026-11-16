@@ -6,10 +6,18 @@
 
 let wikiTestKeyPrevented = null;
 
+// Whether this copy's listener is on the window. Each test module that
+// declares this file gets a copy of its own, with its own
+// wikiTestKeyPrevented, so the mark is the copy's too: a mark on
+// globalThis kept a second module's listener off once the first had
+// watched, and that module then read null (Emoji's toolbar menu failed
+// after Editor's specs, in one run).
+let wikiTestWatchingKeys = false;
+
 function wiki_test_watch_keys() {
   wikiTestKeyPrevented = null;
-  if (globalThis.wikiTestWatchingKeys) return;
-  globalThis.wikiTestWatchingKeys = true;
+  if (wikiTestWatchingKeys) return;
+  wikiTestWatchingKeys = true;
   window.addEventListener("keydown", (event) => {
     if (!["Control", "Meta", "Shift", "Alt"].includes(event.key)) wikiTestKeyPrevented = event.defaultPrevented;
   });

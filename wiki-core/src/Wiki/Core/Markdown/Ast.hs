@@ -506,7 +506,7 @@ parseWithAllMarkers source =
 -- one parse.
 parseWithStartsAndMarkers :: Text -> Either ParseError ([(Maybe Int, Block)], [BoxMarker], [MarkerLine])
 parseWithStartsAndMarkers source =
-  ( \(Blocks bs (Markers ms ss _) _) ->
+  ( \(Blocks bs (Markers ms ss _ _) _) ->
       ( map (first (fmap fst)) (finishedWith (toList bs))
       , sortOn (\m -> (m.markerLine, m.markerColumn)) (ordNub ms)
       , sortOn (\s -> (s.lineAt, s.columnAt)) (ordNub ss)

@@ -338,8 +338,8 @@ stretchOf at = go (T.length at.after) [at.after] at.below
 -- leads to the same page. Otherwise 'Nothing', and no list: an entry never
 -- leaves a text the parser reads otherwise. Nor when the text after the
 -- cursor was cut at 'afterBound' and the block that holds the cursor is
--- still open there (the parser reads no block starting after the
--- cursor's line): what follows could change how it is read. A block
+-- still open there (the parser reads no block after it, at any depth):
+-- what follows could change how it is read. A block
 -- that ends before the cut is read as the whole text reads it, however
 -- long the text. The parser reads the block two times,
 -- then at most 8 times for a label kept, or 3 for an end of the entry's
@@ -357,10 +357,12 @@ linkAt readAt at start from'
   where
     pre = T.take start at.before
     (stretch, cut) = stretchOf at
-    -- Whether the block that holds the cursor's line ends before the cut:
-    -- the parser reads a block starting on a later line, and what follows
-    -- the cut cannot change how the cursor's block is read.
-    settled = any (> 0) (readAt opened).blockStarts
+    -- Whether the block that holds the link ends before the cut: the
+    -- parser reads a block after it, at any depth ('followed'), and what
+    -- follows the cut cannot change how it is read. (A block of a long
+    -- list or quotation is followed by the next, inside the same
+    -- top-level block.)
+    settled = followed holdsLink (readAt opened).blocksRead
     probeOn t = Probe from' (T.splitOn "\n" (pre <> t))
     opened = probeOn ("[[" <> linkWord <> stretch)
     unopened = probeOn (linkWord <> stretch)
@@ -541,7 +543,6 @@ data Probe = Probe
 -- inside the boxes it reads; the wiki links it reads, each by its
 -- address and its text, and where each starts and ends, as (line,
 -- column) pairs, the probe's first line counted as line 0 ('WikiLinkTo');
--- the lines the top-level blocks start on, counted so;
 -- every inline it reads ('allInlines'); and the first line of the
 -- top-level block that holds the first (counted in the lines above, from
 -- 1), from which on the lines read alike whatever comes before.
@@ -551,7 +552,6 @@ data LineReading = LineReading
   , inBoxes :: [Text]
   , wikiLinks :: [(Text, Text)]
   , linkSpans :: [((Int, Int), (Int, Int))]
-  , blockStarts :: [Int]
   , inlinesRead :: [Inline]
   , blocksRead :: [Block]
   , enclosing :: Int
@@ -561,7 +561,7 @@ data LineReading = LineReading
 -- | A reading of nothing, the block that holds the line starting at this
 -- line.
 noReading :: Int -> LineReading
-noReading enclosing = LineReading {roles = [], boxed = False, inBoxes = [], wikiLinks = [], linkSpans = [], blockStarts = [], inlinesRead = [], blocksRead = [], enclosing}
+noReading enclosing = LineReading {roles = [], boxed = False, inBoxes = [], wikiLinks = [], linkSpans = [], inlinesRead = [], blocksRead = [], enclosing}
 
 -- | The roles read on a probe's first line.
 firstRoles :: LineReading -> [MarkerRole]
@@ -588,7 +588,6 @@ readLine above probe = case parseWithStartsAndMarkers (T.intercalate "\n" (kept 
       , inBoxes = [plainText inlines | Alert _ _ bs <- concatMap (everyBlock . snd) blocks, b <- concatMap everyBlock bs, Just inlines <- [paragraphOf b]]
       , wikiLinks = [(address, plainText text) | Link attributes address _ text <- inlines', ("class", "wikilink") `elem` attributes]
       , linkSpans = [((l - n, c), (l' - n, c')) | MarkerLine l c (WikiLinkTo l' c') <- lines']
-      , blockStarts = [l - n | (Just l, _) <- blocks]
       , inlinesRead = inlines'
       , blocksRead = map snd blocks
       , enclosing = inAbove (fromMaybe n (lastMay [l | (Just l, _) <- blocks, l <= n]))
@@ -943,7 +942,7 @@ slash readAt at = do
   (prefix, letters) <- slashShape at
   let reading = readAt (slashProbe at prefix)
   guard (slashWord `elem` plainWords reading.blocksRead)
-  guard (not (snd (stretchOf at)) || followed reading.blocksRead)
+  guard (not (snd (stretchOf at)) || followed holdsSlash reading.blocksRead)
   Just Typed {trigger = SlashMenu, letters, from = T.length prefix, lineStart = "", through = 0, kept = "", labels = PlainLabel}
 
 -- | The cursor's line with 'slashWord' in place of the @/@ and the letters,
@@ -955,12 +954,15 @@ slashProbe at prefix = Probe 1 (T.splitOn "\n" (prefix <> slashWord <> fst (stre
 slashWord :: Text
 slashWord = "Zqxjvslash"
 
--- | Whether the parser reads a block after the paragraph that holds
--- 'slashWord', at any depth, in the order of the text (the footnotes,
--- which it reads last, aside): the paragraph then ends within the text
--- read, and what follows the cut cannot change it.
-followed :: [Block] -> Bool
-followed blocks = case break holdsWord (concatMap inOrder [b | b <- blocks, not (isFootnotes b)]) of
+-- | Whether the parser reads a block after the block that holds a word
+-- (its own text, not a block inside it), at any depth, in the order of
+-- the text (the footnotes, which it reads last, aside): that block then
+-- ends within the text read, and what follows the cut cannot change it.
+-- The word is 'slashWord' in a paragraph ('slash'), or 'linkWord' as a
+-- wiki link's address in a paragraph, a heading, a table, a box's title
+-- or a spoiler's description ('linkAt').
+followed :: (Block -> Bool) -> [Block] -> Bool
+followed holdsWord blocks = case break holdsWord (concatMap inOrder [b | b <- blocks, not (isFootnotes b)]) of
   (_, _ : _ : _) -> True
   _ -> False
   where
@@ -975,9 +977,32 @@ followed blocks = case break holdsWord (concatMap inOrder [b | b <- blocks, not 
     isFootnotes = \case
       Footnotes _ -> True
       _ -> False
-    holdsWord = \case
-      Para xs -> slashWord `elem` concat [T.words t | Str t <- xs]
-      Plain xs -> slashWord `elem` concat [T.words t | Str t <- xs]
+
+-- | Whether a paragraph's own text holds 'slashWord'.
+holdsSlash :: Block -> Bool
+holdsSlash = \case
+  Para xs -> slashWord `elem` concat [T.words t | Str t <- xs]
+  Plain xs -> slashWord `elem` concat [T.words t | Str t <- xs]
+  _ -> False
+
+-- | Whether a block's own text holds the wiki link to 'linkWord', or the
+-- word as text (a link with no end yet): a paragraph's, a heading's, a
+-- table's, a box's title, a spoiler's description.
+holdsLink :: Block -> Bool
+holdsLink = \case
+  Alert _ boxHead _ -> ours (fromMaybe [] boxHead.title)
+  Spoiler spoilerHead _ -> ours spoilerHead.description
+  BlockQuote _ -> False
+  List _ _ -> False
+  Div _ _ -> False
+  Footnotes _ -> False
+  b -> any isOurs (allInlines [b])
+  where
+    ours xs = any isOurs (allInlines [Plain xs])
+    isOurs = \case
+      Link attributes address _ _ -> ("class", "wikilink") `elem` attributes && linkWord `T.isPrefixOf` address
+      -- A link with no end yet is text.
+      Str t -> linkWord `T.isInfixOf` t
       _ -> False
 
 -- | The words of the paragraphs where the @/@ menu opens ('slash'), each

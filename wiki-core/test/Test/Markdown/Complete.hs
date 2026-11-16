@@ -93,6 +93,10 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       endOf ("See [[Gu‸\n\n" <> long) `shouldBe` (0, "")
       endOf ("See [[Gu‸ide]] now\n\n" <> long) `shouldBe` (T.length "ide]]", "")
       endOf ("See [[Gu‸ " <> T.replicate 400 "words ") `shouldBe` (-1, "no list")
+    it "opens in an early item of a long list, quotation or box, a block of its own following the cursor's" $ do
+      endOf ("- [[Gu‸\n" <> T.intercalate "\n" (replicate 60 "- Another item of the same long list")) `shouldBe` (0, "")
+      endOf ("> [[Gu‸\n>\n" <> T.intercalate "\n>\n" (replicate 60 "> Another paragraph of the same quotation")) `shouldBe` (0, "")
+      endOf ("> [!NOTE]\n> See [[Gu‸ide]]\n>\n" <> T.intercalate "\n>\n" (replicate 60 "> Another paragraph of the same box")) `shouldBe` (T.length "ide]]", "")
     it "writes a label after an escaped bar in a table's cell, and after a bar elsewhere (#294, third round)" $ do
       labelsOf "| h | i |\n| --- | --- |\n| [[Gu‸]] | x |" `shouldBe` Just EscapedLabel
       labelsOf "| h | i |\n| --- | --- |\n| [[Gu‸ | x |" `shouldBe` Just EscapedLabel

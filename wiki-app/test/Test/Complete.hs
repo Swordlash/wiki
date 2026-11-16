@@ -24,7 +24,7 @@ import Wiki.App.Editor.Tools (Control (..), controlName, htmlTags, notOffered, s
 import Wiki.App.Route (PageLink (..), pageLinkText, pageRoute, resolvePageLink)
 import Wiki.Core.Id (PageId (..))
 import Wiki.Core.Markdown (Destination (..), classifyDestination)
-import Wiki.Core.Markdown.Ast (Block (..), Footnote (..), Inline (..), ListItem (..), allInlines, parseMarkdown, parseWithStartsAndMarkers, plainText)
+import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), Footnote (..), Inline (..), ListItem (..), allInlines, parseMarkdown, plainText)
 import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..), boxChoices)
 import Wiki.Core.Markdown.Complete
@@ -296,11 +296,16 @@ genLinkLine = do
   -- Longer than every bound of the completion (2,000 characters after
   -- the cursor), the cursor at the text's start, in its middle or near
   -- its end.
-  farther <- elements ["", "", "\n\n" <> longText]
+  -- A long list's further items, or a long quotation's paragraphs, which
+  -- the link's list or quotation takes in: one top-level block longer
+  -- than the bound, a block of its own after the cursor's.
+  farther <- elements ["", "", "\n\n" <> longText, "\n" <> longList, "\n>\n" <> longQuote]
   longAbove <- elements [[], [], concat (replicate 30 ["A paragraph above, with some words in it.", ""])]
   pure LinkLine {above = longAbove <> above, pre, wrap, typed, rest, label, closed, after = following, lineEnd, farther}
   where
     longText = T.intercalate "\n\n" (replicate 24 (T.replicate 8 "More words. "))
+    longList = T.intercalate "\n" (replicate 60 "- Another item of the same long list")
+    longQuote = T.intercalate "\n>\n" (replicate 60 "> Another paragraph of the same quotation")
 
 -- | Choosing the first page offered on a 'LinkLine', as CodeMirror writes
 -- it (the snippet's further lines after the cursor line's indentation),
@@ -385,16 +390,36 @@ choosesPage h l =
     wordedOpen = upToLine <> l.pre <> fst l.wrap <> "[[Zqxjvword]]" <> afterCursor
     -- The completion reads at most 2,000 characters after the cursor: a
     -- block still open there is not read whole, and may be declined. The
-    -- block that holds the cursor's line ends within them where the whole
-    -- text is read with a top-level block starting on a later line, less
-    -- than 2,000 characters after the cursor.
-    endsNear = case parseWithStartsAndMarkers marked of
-      Right (blocks, _, _) ->
-        let ls = T.splitOn "\n" marked
-            lineOffset k = sum (map ((+ 1) . T.length) (take (k - 1) ls))
-            cursorOffset = T.length upToLine + T.length l.pre + T.length (fst l.wrap) + 2 + T.length sentinel
-         in T.length marked - cursorOffset <= 2000 || any (\k -> k > cursorLine && lineOffset k - cursorOffset <= 2000) [k | (Just k, _) <- blocks]
-      Left _ -> True
+    -- block that holds the cursor ends within them where the text cut
+    -- there is read with a block after it, at any depth, in the order of
+    -- the text (footnotes aside: the parser puts them last).
+    endsNear =
+      let cursorOffset = T.length upToLine + T.length l.pre + T.length (fst l.wrap) + 2 + T.length sentinel
+          inOrder b =
+            b : case b of
+              BlockQuote bs -> concatMap inOrder bs
+              List _ items -> concat [concatMap inOrder bs | ListItem _ bs <- items]
+              Alert _ _ bs -> concatMap inOrder bs
+              Div _ bs -> concatMap inOrder bs
+              Spoiler _ bs -> concatMap inOrder bs
+              _ -> []
+          holdsOurs b = case b of
+            Footnotes _ -> False
+            Alert _ boxHead _ -> any isOurs (allInlines [Plain (fromMaybe [] boxHead.title)])
+            Spoiler spoilerHead _ -> any isOurs (allInlines [Plain spoilerHead.description])
+            BlockQuote _ -> False
+            List _ _ -> False
+            Div _ _ -> False
+            _ -> any isOurs (allInlines [b])
+          isOurs = \case
+            Link attributes address _ _ -> ("class", "wikilink") `elem` attributes && sentinel `T.isPrefixOf` address
+            _ -> False
+          notFootnotes = \case
+            Footnotes _ -> False
+            _ -> True
+       in T.length marked - cursorOffset <= 2000 || case break holdsOurs (concatMap inOrder (filter notFootnotes (blocksOf (T.take (cursorOffset + 2000) marked)))) of
+            (_, _ : _ : _) -> True
+            _ -> False
     replaceable = endsNear && (closedReplaceable || openReplaceable)
     openReplaceable =
       not l.closed

@@ -1,0 +1,18 @@
+# The browser suite's ceilings (wiki-app-browser-test; WP5.122 of
+# docs/PLAN.md): how many waits and examples its source may hold at most.
+# toolchain/check-test-ceilings.sh counts them in code, outside comments,
+# strings and imports, and the CI job `changelog` fails a pull request
+# whose count is above or below a number here. Its usage text says what
+# each name counts; `examples` counts the lines with `it`, not the
+# examples hspec runs.
+#
+# A number only goes down. A browser example is for what needs a browser
+# (decision 83), and a wait on a clock is a race left open (decision 82):
+# test the logic natively, and wait on the program. When a change removes
+# some, put the new count here in the same pull request, by hand or with
+# `sh toolchain/check-test-ceilings.sh --lower`.
+eventually 1335
+eventuallyWithin 78
+find 2790
+threadDelay 24
+examples 679

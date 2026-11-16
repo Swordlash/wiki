@@ -3113,7 +3113,10 @@ Besides them, on a pull request only, the job `changelog` checks the pull
 request's changelog entry (`toolchain/check-changelog.sh`, [Changelog
 entries](#changelog-entries)), in a few seconds and without waiting for any
 build. It reads the pull request's labels as it runs, so after the label
-`no-changelog` is added, re-running that job alone passes. A pull request that
+`no-changelog` is added, re-running that job alone passes. Its last step checks
+the browser suite's waits and examples against their ceilings
+(`toolchain/check-test-ceilings.sh`, under [Commands](#commands)), and
+runs even when the entry's check failed. A pull request that
 changes only Markdown outside `changelog/` runs no CI, and so no check either.
 Every build of a run is given `WIKI_BUILD_VERSION`, the commit (a pull
 request's head), for the version the page "What's new?" shows.
@@ -3420,6 +3423,7 @@ npm run smoke-waits             # that the Haskell smoke suites' waits hold on t
 npm run dev-test                # wiki-app-browser-test in browser GHCi, rerun on save (needs ghciwatch)
 npm run format                  # fourmolu over every package
 npm run format-check            # the same, failing on what it would change (as CI does)
+npm run check-test-ceilings     # the browser suite's waits and examples against their ceilings (as CI does; --lower writes a lower count)
 npm run clean                   # remove dist-newstyle/wasm/public
 ```
 
@@ -3561,6 +3565,16 @@ program is quiet) and the slides' walk's `rowsSettled`. `eventually` stays
 for what the program does not know of: what the live channel or another tab
 pushes, a library's own drawing, the stand-in server's state. A failing read
 says what it found and what the program was doing.
+
+The suite's `eventually`, `eventuallyWithin`, `find` (with `findIn`),
+`threadDelay` and examples (`it`) are counted against ceilings in
+`wiki-app/test/browser-ceilings.txt` (`npm run check-test-ceilings`, which
+CI's `changelog` job runs on every pull request). A browser example is
+heavy, slow and brittle, so it is written only for what needs a browser
+(decision 83 of `docs/PLAN.md`): the logic is a native property, and how a
+state shows is tested on the in-memory DOM (below). A ceiling only goes
+down: a pull request that passes one fails, and one that removes some
+writes the lower number (`--lower`).
 
 ### A view's native tests
 

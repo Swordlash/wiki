@@ -15,14 +15,14 @@ import Protolude
 import System.Mem (getAllocationCounter, setAllocationCounter)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
-import Test.QuickCheck (Gen, Property, choose, conjoin, counterexample, elements, forAll, property, (===))
+import Test.QuickCheck (Gen, Property, checkCoverage, choose, conjoin, counterexample, cover, elements, forAll, property, (===))
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Editor.Complete
 import Wiki.App.Route (PageLink (..), pageLinkText, pageRoute, resolvePageLink)
 import Wiki.Core.Id (PageId (..))
 import Wiki.Core.Markdown (Destination (..), classifyDestination)
-import Wiki.Core.Markdown.Ast (Inline (..), allInlines, parseMarkdown, plainText)
+import Wiki.Core.Markdown.Ast (Block (Plain), Inline (..), allInlines, parseMarkdown, plainText)
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.Page (PageSummary (..))
@@ -111,8 +111,8 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       written onHandbook "[[Gui" "de]] now" `shouldBe` Just "[[Guide]]${0}"
       reach "[[Old" "|Mine]]" `shouldBe` Just (0, 7)
       written onHandbook "[[Old" "|Mine]]" `shouldBe` Just "[[guide-old|Mine]]${0}"
-    modifyMaxSuccess (* 10) . prop "replaces the address of the link the parser reads at the cursor, keeps its label as read, and leaves the rest of the line" $
-      forAll genLinkLine (choosesPage onHandbook)
+    modifyMaxSuccess (* 10) . prop "leaves one wiki link to the page chosen at the cursor, with the label read there, and every other inline as before, or offers nothing" $
+      checkCoverage (forAll genLinkLine (choosesPage onHandbook))
 
   describe "the pages offered in a space of 10,000 pages" $
     it "are matched and ranked within a bound of allocation, their paths and links worked out before, and again no more" $ do
@@ -130,6 +130,22 @@ spec = describe "Wiki.App.Editor.Complete" $ do
         first' <- evaluate typed >>= \t -> allocated (let a = asked t in a == a)
         again <- evaluate (T.copy typed) >>= \t -> allocated (let a = asked t in a == a)
         (typed, first' < answerBound, again <= first') `shouldBe` (typed, True, True)
+
+  describe "a link with a long address or label after the cursor" $
+    it "is answered within a bound of allocation, whatever its length, and not at all past 2,000 characters" $ do
+      -- The parser is asked about at most 'afterBound' characters after
+      -- the cursor, a few times: under 4 MB natively for either link. A
+      -- link that ends further away is offered nothing. Asking the parser
+      -- again for each character of what followed the cursor, as before
+      -- #294's second review, allocated 1.6 GB for 1,000 characters.
+      let h = Held {kind = Document, boxes = [], editing = PageId "none", pages = linkablesFrom [] [linkable "guide" "Guide" ["guide"]]}
+      for_ [1_000, 10_000] $ \n -> do
+        let lineAfter = T.replicate n "x" <> "|label]] end"
+            page = "Some text\n\nSee [[Gu" <> lineAfter
+        _ <- evaluate (T.length page)
+        cost <- allocated (let a = answered (sources h) page (Request {line = 3, before = "See [[Gu", after = lineAfter, nodes = ["Paragraph", "Document"]}) in a == a)
+        let offered = isJust (answered (sources h) page (Request {line = 3, before = "See [[Gu", after = lineAfter, nodes = ["Paragraph", "Document"]}))
+        (n, cost < linkBound, offered) `shouldBe` (n, True, n < 2_000)
 
   describe "pageLinkText, over generated trees of pages" $ do
     it "names a sibling by its title when the title reads back as its slug" $
@@ -165,59 +181,98 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       completionJson Completion {from = 0, through = 0, candidates = [], enter = EnterChoosesAfter 2, escape = EscapeCloses}
         `shouldBe` object ["from" .= (0 :: Int), "through" .= (0 :: Int), "options" .= ([] :: [Value]), "enter" .= object ["after" .= (2 :: Int)], "escape" .= ("closes" :: Text)]
 
--- | 'LinkLine' is a line with a wiki link being typed in it: the text
--- before the link, what of the address is before the cursor and after
--- it, the label written (with its @|@, escaped or not), whether the link
--- is closed, and the text after it.
-data LinkLine = LinkLine {pre :: Text, typed :: Text, rest :: Text, label :: Text, closed :: Bool, after :: Text}
+-- | 'LinkLine' is a block with a wiki link being typed in it: the lines
+-- above, the text before the link on its line, what of the address is
+-- before the cursor and after it, the label written (with its @|@,
+-- escaped or not; on several lines, long, or across a blank line, which
+-- ends the block before the link would end), whether the link is closed,
+-- and the text after it (lines below too).
+data LinkLine = LinkLine {above :: [Text], pre :: Text, typed :: Text, rest :: Text, label :: Text, closed :: Bool, after :: Text}
   deriving stock (Show)
 
 genLinkLine :: Gen LinkLine
 genLinkLine =
   LinkLine
-    <$> elements ["", "See ", "- ", "> ", "[[x]] and ", "`a` "]
+    <$> elements [[], ["# Notes", ""], ["Some text"], ["- an item"]]
+    <*> elements ["", "See ", "- ", "> ", "[[x]] and ", "`a` ", "  - "]
     <*> elements ["", "Gu", "Ol", "Pro", "gu "]
-    <*> elements ["", "ide", "-a", " x", "a&amp;b", "a\\", "a[b"]
-    <*> elements ["", "|Mine", "|[draft&#93;", "|a [b", "\\|escaped", "|Q&amp;A", "|", "|x|y", "| spaced "]
+    <*> elements ["", "ide", "-a", " x", "a&amp;b", "a\\", "a[b", T.replicate 300 "y", "ide\nto it"]
+    <*> elements ["", "|Mine", "|[draft&#93;", "|a [b", "\\|escaped", "|Q&amp;A", "|", "|x|y", "| spaced ", "|read\nmore", "|read\n  more", "|" <> T.replicate 300 "z", "|read\n\nmore"]
     <*> elements [True, False]
-    <*> elements ["", " now", " and [[b]]", " [[c|C]] end", " `x`"]
+    <*> elements ["", " now", " and [[b]]", " [[c|C]] end", " `x`", "\nnext line", " now\n\n[[d]]"]
 
--- | Choosing the first page offered on a 'LinkLine', read by the wiki's
--- parser. The line as written is read with the link the generator meant
--- (or none at the cursor, when it is not closed). After the choice, the
--- text before the link is as it was, and so is the text after the link:
--- the link's end and what follows it when it was closed, everything
--- after the cursor when it was not. The line is read with the links it
--- had, the one at the cursor now to the page chosen, with the label that
--- was read there, or the page's own label when it had none.
+-- | Choosing the first page offered on a 'LinkLine', as CodeMirror writes
+-- it (the snippet's further lines after the cursor line's indentation),
+-- read by the wiki's parser:
+--
+-- * When the entry replaces text after the cursor (a link there, closed),
+--   the block is read with one wiki link to the page at the cursor, its
+--   text the label read there before, or the page's own when it had
+--   none, and every other inline as before.
+-- * When it replaces nothing after the cursor, the link had no end of its
+--   own: the parser read no link at the cursor before, or one that took a
+--   later link's end. The block is read with one wiki link more than
+--   without the @[[@ typed, one to the page with its own text, and
+--   everything after the cursor is as it was.
 choosesPage :: Held -> LinkLine -> Property
-choosesPage h l = case answered (sources h) line (lineRequest typedUpTo afterCursor) of
-  Nothing -> counterexample "no list" (property False)
+choosesPage h l = cover 80 offered "a page offered" $ case answered (sources h) whole (Request {line = cursorLine, before = typedUpTo, after = restOfLine, nodes = ["Paragraph", "Document"]}) of
+  -- Nothing offered where accepting could not be checked so.
+  Nothing -> property True
   Just found -> case head found.candidates of
     Nothing -> counterexample "no page" (property False)
     Just c ->
       let (text, _) = skeletonText c.skeleton
-          result = T.take found.from typedUpTo <> text <> T.drop found.through afterCursor
+          indentation = T.takeWhile (\ch -> ch == ' ' || ch == '\t') typedUpTo
+          snippet' = T.intercalate ("\n" <> indentation) (T.splitOn "\n" text)
+          result = upToLine <> T.take found.from typedUpTo <> snippet' <> T.drop found.through afterCursor
           page = fromMaybe (panic "no page") (find (\p -> p.title == c.label) h.pages)
-          (address, own) = pageLinkText handbookEditing page.path page.title
-          title
-            | l.closed && not (T.null l.label) = maybe "" snd (head (drop (length (linksOf l.pre)) (linksOf line)))
-            | otherwise = maybe address (const page.title) own
-          kept = if l.closed then l.after else afterCursor
-       in counterexample (toS (line <> "  =>  " <> result)) $
-            conjoin
-              [ T.take (T.length l.pre) result === l.pre
-              , T.takeEnd (T.length kept) result === kept
-              , linksOf result === linksOf l.pre <> [(address, title)] <> linksOf kept
-              , if l.closed then length (linksOf line) === length (linksOf l.pre) + 1 + length (linksOf l.after) else property True
-              ]
+          ownTitle = maybe page.address (const page.title) page.label
+       in counterexample (toS (whole <> "\n  =>\n" <> result)) $
+            if found.through > 0
+              then
+                let readBefore = linksOf marked
+                    title = maybe "" snd (find ((sentinel `T.isPrefixOf`) . fst) readBefore)
+                    expectedTitle = if sentinel `T.isInfixOf` title then ownTitle else title
+                 in conjoin
+                      [ outside (== page.address) result === outside (sentinel `T.isPrefixOf`) marked
+                      , filter ((== page.address) . fst) (linksOf result) === [(page.address, expectedTitle)]
+                      ]
+              else
+                conjoin
+                  [ -- Before, the parser read no link at the cursor, or one
+                    -- that took a later link's end, not one of its own.
+                    counterexample "a link of its own was there" $
+                      not (any ((sentinel `T.isPrefixOf`) . fst) (linksOf marked)) || length (linksOf marked) <= length (linksOf unopened)
+                  , T.takeEnd (T.length afterCursor) result === afterCursor
+                  , length (linksOf result) === length (linksOf unopened) + 1
+                  , filter ((== page.address) . fst) (linksOf result) === [(page.address, ownTitle)]
+                  ]
   where
+    offered = isJust (answered (sources h) whole (Request {line = cursorLine, before = typedUpTo, after = restOfLine, nodes = ["Paragraph", "Document"]}))
+    upToLine = T.concat [a <> "\n" | a <- l.above]
+    cursorLine = length l.above + 1
     typedUpTo = l.pre <> "[[" <> l.typed
     afterCursor = l.rest <> l.label <> (if l.closed then "]]" else "") <> l.after
-    line = typedUpTo <> afterCursor
-    linksOf t = case parseMarkdown t of
-      Right blocks -> [(address, plainText text) | Link attributes address _ text <- allInlines blocks, ("class", "wikilink") `elem` attributes]
-      Left _ -> []
+    restOfLine = T.takeWhile (/= '\n') afterCursor
+    whole = upToLine <> typedUpTo <> afterCursor
+    -- The block with a word in place of the letters typed, which names the
+    -- link at the cursor; and without the @[[@ and the letters.
+    sentinel = "Zqxjvtest"
+    marked = upToLine <> l.pre <> "[[" <> sentinel <> afterCursor
+    unopened = upToLine <> l.pre <> afterCursor
+    parsedInlines t = either (const []) allInlines (parseMarkdown t)
+    linksOf t = [(address, plainText text) | Link attributes address _ text <- parsedInlines t, ("class", "wikilink") `elem` attributes]
+    -- The inlines read, the link at the cursor (and what it holds) one
+    -- mark in its place.
+    outside isOurs t = go (parsedInlines t)
+      where
+        go = \case
+          [] -> []
+          Link attributes address _ text : more
+            | ("class", "wikilink") `elem` attributes
+            , isOurs address ->
+                Str "\0" : go (drop (length (allInlines [Plain text])) more)
+          x : more -> x : go more
 
 -- | The bytes allocated in forcing a value: what its work costs, counted
 -- rather than timed, so that a slow or a busy machine changes nothing.
@@ -226,6 +281,11 @@ allocated value = do
   setAllocationCounter 0
   _ <- evaluate value
   negate <$> getAllocationCounter
+
+-- | The allocation an answer about a link with a long text after the
+-- cursor stays within.
+linkBound :: Int64
+linkBound = 20_000_000
 
 -- | The allocation an answer over 'largeSpace' stays within.
 answerBound :: Int64

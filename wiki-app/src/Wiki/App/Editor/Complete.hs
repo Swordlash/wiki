@@ -237,7 +237,7 @@ answer found memo text request = case T.splitOn "\n" text of
     , Just current <- ls `atMay` (request.line - 1)
     , current == request.before <> request.after ->
         let above = take (request.line - 1) ls
-            at = At {place = placeOf request.nodes, above, before = request.before, after = request.after}
+            at = At {place = placeOf request.nodes, above, before = request.before, after = request.after, below = drop request.line ls}
             kept = if memo.above == above then memo.byLine else Map.empty
             -- Each probe the list may ask about, read only when it is
             -- asked: the first ones, then those written from the block

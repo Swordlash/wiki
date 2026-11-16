@@ -77,6 +77,9 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       endOf "[[‸|Label]]" `shouldBe` (T.length "|Label]]", "|Label]]")
     it "keeps a label the parser reads with a bracket or a character reference in it (#294)" $
       endOf "[[q‸-a|[draft&#93;]]" `shouldBe` (T.length "-a|[draft&#93;]]", "|[draft&#93;]]")
+    it "replaces a link to its end on a line below, and keeps its label's lines (#294)" $ do
+      endOf "[[Gu‸ide|read\nmore]] now" `shouldBe` (T.length "ide|read\nmore]]", "|read\nmore]]")
+      endOf "[[Gu‸ide\nto it]] now" `shouldBe` (T.length "ide\nto it]]", "")
     it "replaces nothing after the cursor when the link has no end there" $ do
       endOf "[[On‸ and [[b]]" `shouldBe` (0, "")
       endOf "[[On‸call" `shouldBe` (0, "")
@@ -181,6 +184,7 @@ atIn nodes marked =
     , above = initDef [] ls
     , before = fromMaybe "" (lastMay ls)
     , after = T.takeWhile (/= '\n') (T.drop 1 rest)
+    , below = drop 1 (T.splitOn "\n" (T.drop 1 rest))
     }
   where
     (upTo, rest) = T.breakOn "‸" marked

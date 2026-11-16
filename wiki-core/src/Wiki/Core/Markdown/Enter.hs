@@ -438,7 +438,6 @@ readsAsMeant before after oldShapes answer expected = fromMaybe False $ do
       textLines = T.splitOn "\n" text
       n = T.count "\n" before' + 1
   shapes <- rightToMaybe (parseShapes text)
-  place <- placeOf shapes n
   -- Every line after the cursor's with anything on it is read as before:
   -- in the same quotations and items, each by the line it starts on in the
   -- text before the answer (0 for the new line's own), and as the same
@@ -456,6 +455,7 @@ readsAsMeant before after oldShapes answer expected = fromMaybe False $ do
   line <- atMay textLines (n - 1)
   -- The line's containers, what it holds of each, and the rest of it.
   let marks = do
+        place <- placeOf shapes n
         layout <- layouts textLines place.containers
         (taken, rest) <- walkLine n line (zip place.containers layout)
         pure (effective n (T.null (T.strip rest)) place.containers, taken, rest)
@@ -468,8 +468,10 @@ readsAsMeant before after oldShapes answer expected = fromMaybe False $ do
     QuotedLine outer -> do
       (kept, taken, rest) <- marks
       pure (signature kept == outer && Lazy `notElem` take (length kept) taken && T.null (T.strip rest))
-    -- A line of blanks holds no marks: the items it is in, it is a blank
-    -- line of (placeOf has said it is in no code). No quotation goes on
-    -- over it (the parser reads one on over a blank line after an empty
-    -- item in it, commonmark 0.3.1).
-    Outside -> pure (T.null (T.strip line) && maybe True (\(cs, _, _) -> not (any ((== 0) . fst) cs)) (Map.lookup n (readings shapes)))
+    -- A line of blanks holds no marks: the items and the footnote's
+    -- definition it is in, it is a blank line of. It is in no code, and no
+    -- quotation goes on over it (the parser reads one on over a blank line
+    -- after an empty item in it, commonmark 0.3.1). What is above the
+    -- text 'enter' is given decides nothing more: a footnote's definition
+    -- above takes in a blank line as one of its own.
+    Outside -> pure (T.null (T.strip line) && maybe True (\(cs, kind, _) -> kind /= CodeShape && not (any ((== 0) . fst) cs)) (Map.lookup n (readings shapes)))

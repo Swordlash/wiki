@@ -493,7 +493,8 @@ plain = \case
   other -> other
 
 -- | The quotations and items a line is in, for the parser, each with the
--- line it starts on. On a line in no block of text or code, only marks,
+-- line it starts on. On a blank line, or one in no block of text or code,
+-- only marks,
 -- the items at the end that do not start on it are left out: such a line
 -- is a blank line of those items, no item's own.
 containersAt :: Text -> Int -> Maybe [(Bool, Int)]
@@ -501,7 +502,8 @@ containersAt text n = do
   shapes <- rightToMaybe (parseShapes text)
   let found = shapesAt shapes n
       held = [(isQuote s, fst (linesOf s)) | s <- found, isQuote s || isItem s]
-      marksOnly = maybe True (\s -> isQuote s || isItem s || s.kind == ListShape) (lastMay found)
+      blank = maybe True (T.null . T.strip) (atMay (T.splitOn "\n" text) (n - 1))
+      marksOnly = blank || maybe True (\s -> isQuote s || isItem s || s.kind == ListShape) (lastMay found)
   pure (if marksOnly then reverse (dropWhile (\(q, l) -> not q && l /= n) (reverse held)) else held)
   where
     isQuote s = s.kind == QuoteShape

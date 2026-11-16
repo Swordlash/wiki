@@ -16,6 +16,12 @@ function wiki_test_slide_row_text(index) {
   return wikiTestSlideRow(index)?.text() ?? "";
 }
 
+// Whether the row at an index shows a completion's list that takes its
+// keys now (Test.Browser.Text's listReady, for a row).
+function wiki_test_slide_row_completion_ready(index) {
+  return wikiTestSlideRow(index)?.completionReady() ?? false;
+}
+
 // Select from anchor to head in the row at an index, and give the row the
 // focus, as a click would: whether the row had its editor to select in (a
 // row shown open gets its CodeMirror a moment later); and the row's

@@ -94,6 +94,14 @@
 -- The toolbar's "Emoji" menu searches the same names, in a field of its
 -- own, and writes the one chosen at the cursor.
 --
+-- It completes the wiki's own Markdown (WP5.124 (b) of docs/PLAN.md):
+-- @[[!@ and @[[/@ at a line's start, and @[!@ on a quotation's first line,
+-- open a list of the markers the page's kind reads, of the blocks open
+-- there, and of the kinds of box ("Wiki.Core.Markdown.Complete").
+-- CodeMirror asks with a @wiki-complete@ event, saying where its cursor is,
+-- and the component answers in the same step from the text and the kinds
+-- of box it holds ("Wiki.App.Editor.Complete", 'answerCompletion').
+--
 -- CodeMirror folds spoilers (WP5.96 of docs/PLAN.md): a block spoiler, and
 -- the section of a heading spoiler, fold and unfold by a marker in a gutter
 -- beside the text, by a click on the mark a fold leaves, and by
@@ -296,6 +304,7 @@ import Wiki.App.Editor.Browser
   , RowWanted (..)
   , Stepped (..)
   , announceUpload
+  , answerCompletion
   , answerEmoji
   , answerMention
   , applyCommand
@@ -303,6 +312,7 @@ import Wiki.App.Editor.Browser
   , changesLeft
   , chosenFiles
   , clickElement
+  , completeAsked
   , currentText
   , cursorLine
   , cursorLineOf
@@ -358,6 +368,7 @@ import Wiki.App.Editor.Browser
   , typedText
   , undoIn
   )
+import Wiki.App.Editor.Complete qualified as Complete
 import Wiki.App.Editor.Problems (problemRanges)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Islands qualified as Islands
@@ -405,7 +416,7 @@ import Wiki.Core.Diff (Diff (..), diffText)
 import Wiki.Core.Draft qualified as D
 import Wiki.Core.Id (PageId, UserId)
 import Wiki.Core.Markdown (attachmentReference)
-import Wiki.Core.Markdown.Box (BoxKind (label, name), alertKindName, builtInKinds, kindTitle)
+import Wiki.Core.Markdown.Box (BoxKind (name), boxChoices)
 import Wiki.Core.Markdown.Edit
   ( Command (..)
   , HtmlTag (..)
@@ -800,6 +811,7 @@ data Action
   | Decide Decision Int
   | MentionAsked Int Text
   | EmojiAsked Int Text
+  | CompleteAsked Int Complete.Request
   | SearchEmoji Text
   | PickEmoji Text
   | EmojiFocus Int
@@ -1930,6 +1942,7 @@ component =
                 {{ HE.handler' (EventType "wiki-decide") (\ev -> uncurry Decide <$> decision ev) }}
                 {{ HE.handler' (EventType "wiki-mention") (\ev -> uncurry MentionAsked <$> mentionAsked ev) }}
                 {{ HE.handler' (EventType "wiki-emoji") (\ev -> uncurry EmojiAsked <$> emojiAsked ev) }}
+                {{ HE.handler' (EventType "wiki-complete") (\ev -> uncurry CompleteAsked <$> completeAsked ev) }}
                 {{ HE.handler' (EventType "wiki-cursor-line") (fmap CursorAt . cursorLineOf) }}
                 {{ HE.handler' (EventType "wiki-ready") (\ev -> Just $! EditorReady (readyFocused ev)) }}
                 {{ HE.handler' (EventType "wiki-editor-failed") (const (Just EditorFailed)) }}
@@ -2395,6 +2408,15 @@ component =
       EmojiAsked i letters -> do
         host <- gets (\st -> st.hostElement)
         for_ host $ \h -> H.liftEffect (answerEmoji h i (emojiMatches letters))
+      -- CodeMirror asks for the list of the wiki's own Markdown at its
+      -- cursor: the answer, from the text and the kinds of box held now,
+      -- in this step (no ask of the backend).
+      CompleteAsked i request -> do
+        st <- get
+        let found = case st.loaded of
+              Ready w -> Complete.answer (Complete.sources Complete.Held {kind = w.page.kind, boxes = st.input.context.session.boxes}) w.body request
+              _ -> Nothing
+        for_ st.hostElement $ \h -> H.liftEffect (answerCompletion h i found)
       SearchEmoji emojiQuery -> modify (\st -> st {emojiQuery})
       -- The emoji chosen in the menu, as its shortcode, at the cursor; the
       -- text has the focus again.
@@ -3623,14 +3645,6 @@ data Menu = HtmlMenu | ColourMenu | BoxMenu | EmojiMenu
 -- this many.
 emojiColumns :: Int
 emojiColumns = 8
-
--- | The kinds of box the toolbar offers, each as its marker writes it
--- (@TIP@) and as its boxes are titled: GitHub's five, then the kinds the
--- administration defined, in the order they were defined.
-boxChoices :: [BoxKind] -> [(Text, Text)]
-boxChoices defined =
-  [(T.toUpper (alertKindName k), kindTitle (alertKindName k)) | k <- builtInKinds]
-    <> [(T.toUpper k.name, k.label) | k <- defined]
 
 -- | Whether the one asking may define kinds of box: an administrator of
 -- the wiki, who writes the server's settings.

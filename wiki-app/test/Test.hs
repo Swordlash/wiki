@@ -9,6 +9,7 @@ import Test.Bell qualified as Bell
 import Test.BellDom qualified as BellDom
 import Test.Blog qualified as Blog
 import Test.CommentsDom qualified as CommentsDom
+import Test.Complete qualified as Complete
 import Test.Deck qualified as Deck
 import Test.DeckDom qualified as DeckDom
 import Test.DecryptedExport qualified as DecryptedExport
@@ -83,6 +84,7 @@ main = do
       Manifest.spec
       Policy.spec
       Problems.spec
+      Complete.spec
       Licence.spec
       Readme.spec
     around_ (holding maxBound) $ do

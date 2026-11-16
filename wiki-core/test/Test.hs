@@ -16,6 +16,7 @@ import Test.Markdown.Allowlist qualified as Allowlist
 import Test.Markdown.Ast qualified as Ast
 import Test.Markdown.Box qualified as Box
 import Test.Markdown.Comments qualified as Comments
+import Test.Markdown.Complete qualified as Complete
 import Test.Markdown.Edit qualified as Edit
 import Test.Markdown.Emoji qualified as Emoji
 import Test.Markdown.Folds qualified as Folds
@@ -53,6 +54,7 @@ main = hspec . parallel . wasmCases $ do
   Box.spec
   Slides.spec
   SlideRows.spec
+  Complete.spec
   Edit.spec
   Tikz.spec
   Math.spec

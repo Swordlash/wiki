@@ -49,6 +49,13 @@ function wiki_test_editor_completing() {
   return wikiTestEditor()?.completing() ?? "";
 }
 
+// Whether the open editor's completion shows a list that takes its keys
+// now: the library takes Enter, Tab and the arrows only once a list has
+// been shown for a moment (web/src/editor.js's interactionDelay).
+function wiki_test_editor_completion_ready() {
+  return wikiTestEditor()?.completionReady() ?? false;
+}
+
 // Make the open editor's text this, as one edit, with the cursor at its
 // start.
 function wiki_test_editor_set(text) {

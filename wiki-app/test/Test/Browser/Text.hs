@@ -13,6 +13,7 @@ module Test.Browser.Text
   , utf16Length
   , movedBy
   , completing
+  , listReady
   , setMarkdown
   , insertText
   , clearBody
@@ -39,6 +40,7 @@ $( browserJS
      , ("js_selection_end", "wiki_test_editor_selection_end", Safe, [t|IO Int|])
      , ("js_jump", "wiki_test_editor_jump", Safe, [t|IO JSText|])
      , ("js_completing", "wiki_test_editor_completing", Safe, [t|IO JSText|])
+     , ("js_completion_ready", "wiki_test_editor_completion_ready", Safe, [t|IO Bool|])
      , ("js_set", "wiki_test_editor_set", Safe, [t|JSText -> IO ()|])
      , ("js_insert", "wiki_test_editor_insert", Safe, [t|Int -> JSText -> IO ()|])
      , ("js_clear_body", "wiki_test_editor_clear_body", Safe, [t|IO ()|])
@@ -92,6 +94,15 @@ completing :: Mounted s q o m -> PageM s Text
 completing ui = do
   _ <- editorText ui
   unsafeIOToPageM (fromJSText <$> js_completing)
+
+-- | Wait until the editor's completion shows a list that takes its keys:
+-- the library takes Enter, Tab and the arrows only once a list has been
+-- shown for a moment (@web/src/editor.js@'s @interactionDelay@), and a key
+-- pressed before goes to the text.
+listReady :: Mounted s q o m -> PageM s ()
+listReady ui = do
+  _ <- editorText ui
+  eventually (unsafeIOToPageM js_completion_ready `shouldReturn` True)
 
 -- | Make the editor's text this, as one edit.
 setMarkdown :: Mounted s q o m -> Text -> PageM s ()

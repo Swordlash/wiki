@@ -10,9 +10,10 @@
 // tells of the selection, of how many changes are left and of a decision
 // made on one by events on the host, which these read.
 //
-// So do the completions of mentions and emoji: CodeMirror asks which users
-// a mention may name, and which emoji a name may be, by an event on the
-// host, which these read, and is answered through the host's CodeMirror.
+// So do the completions of mentions, emoji and the wiki's own Markdown:
+// CodeMirror asks which users a mention may name, which emoji a name may
+// be, and what a marker or a box may be, by an event on the host, which
+// these read, and is answered through the host's CodeMirror.
 //
 // The editor's text is the textarea the component renders until CodeMirror
 // has taken its place (web/src/editor.js, through the page's islands.js), in
@@ -332,6 +333,13 @@ function wiki_editor_mentioned(host, id, people) {
 // [{name, emoji}], best first.
 function wiki_editor_emojied(host, id, found) {
   host.wikiEditor?.emojied(id, JSON.parse(found));
+}
+
+// The answer to the question `id` about the list of the wiki's own
+// Markdown at the cursor: `found` is JSON, {from, options, enter, escape}
+// (Wiki.App.Editor.Complete), or "" for no list.
+function wiki_editor_completed(host, id, found) {
+  host.wikiEditor?.completed(id, found === "" ? null : JSON.parse(found));
 }
 
 // The preview of a page being edited, in a window of its own (WP5.36 of

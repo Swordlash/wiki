@@ -7,7 +7,8 @@
 -- which of the editor's keys was pressed; the browser's warning before a
 -- reload or a close loses unsaved changes; the writing assistant's
 -- edits, as changes the author accepts or rejects; the questions
--- CodeMirror asks to complete a mention or an emoji, with their answers;
+-- CodeMirror asks to complete a mention, an emoji or the wiki's own
+-- Markdown, with their answers;
 -- the folds of its text; and the search over the whole text, which
 -- @web/src/editor.js@ runs with @\@codemirror/search@. The files, the keys and the events
 -- CodeMirror sends are read through the Web types' fields; what works on the text itself (CodeMirror, or the
@@ -130,6 +131,10 @@ module Wiki.App.Editor.Browser
   , emojiAsked
   , answerEmoji
 
+    -- * The completion of the wiki's own Markdown
+  , completeAsked
+  , answerCompletion
+
     -- * Leaving the page
   , guardUnload
   )
@@ -167,9 +172,11 @@ import Web.HTML.HTMLTextAreaElement (HTMLTextAreaElement)
 import Web.HTML.HTMLTextAreaElement qualified as HTMLTextAreaElement
 import Web.UIEvent.KeyboardEvent (KeyboardEvent (..))
 import Wiki.App.Browser (forgetPreviewEntry, historyBack, onPreviewEntry, pushPreviewEntry)
+import Wiki.App.Editor.Complete qualified as Complete
 import Wiki.App.Editor.Problems (ProblemRange)
 import Wiki.Core.Assistant.Edit (Change (..), Decision (..), Edit, Refusal, Replacement (..), plan, propose, settle)
 import Wiki.Core.Assistant.Prompt (Span (..))
+import Wiki.Core.Markdown.Complete (Completion)
 import Wiki.Core.Markdown.Edit (Command (..), Selection (..), apply, cursor)
 import Wiki.Core.Markdown.Folds (Fold (..))
 import Wiki.Core.SlideRows (Row (..), RowKey (..), Rows (..), rowStarts)
@@ -205,6 +212,7 @@ $( browserJS
      , ("js_settle", "wiki_editor_settle", Safe, [t|Element -> JSText -> JSText -> IO ()|])
      , ("js_mentioned", "wiki_editor_mentioned", Safe, [t|Element -> Int -> JSText -> IO ()|])
      , ("js_emojied", "wiki_editor_emojied", Safe, [t|Element -> Int -> JSText -> IO ()|])
+     , ("js_completed", "wiki_editor_completed", Safe, [t|Element -> Int -> JSText -> IO ()|])
      , ("js_title_line", "wiki_editor_title_line", Safe, [t|Element -> IO ()|])
      , ("js_problems", "wiki_editor_problems", Safe, [t|Element -> JSText -> JSText -> IO Bool|])
      , ("js_next_problem", "wiki_editor_next_problem", Safe, [t|Element -> IO ()|])
@@ -294,6 +302,20 @@ $( jsFields
      , Fixed "close" ''Bool
      , Fixed "focus" ''Bool
      , Fixed "reason" ''Text
+     ]
+ )
+
+-- | The detail of a @wiki-complete@ event: a question about the list of
+-- the wiki's own Markdown ('completeAsked').
+newtype CompletionDetail = CompletionDetail JSVal
+  deriving newtype (Inert)
+
+$( jsFields
+     ''CompletionDetail
+     [ Fixed "id" ''Int
+     , Fixed "line" ''Int
+     , Fixed "before" ''Text
+     , Fixed "nodes" ''Text
      ]
  )
 
@@ -824,6 +846,24 @@ emojiAsked = questionOf
 answerEmoji :: (MonadIO m) => Element -> Int -> [(Text, Text)] -> m ()
 answerEmoji host i found =
   liftIO . js_emojied host i $ jsonText [object ["name" .= name, "emoji" .= emoji] | (name, emoji) <- found]
+
+-- | The question a @wiki-complete@ event asks: its number, and where the
+-- cursor is ("Wiki.App.Editor.Complete"'s 'Complete.Request'; the nodes'
+-- names come separated by spaces). CodeMirror asks it a moment after a
+-- trigger of the list is typed (@web/src/editor.js@), and waits for
+-- 'answerCompletion'. Pure, since the event does not change.
+completeAsked :: Event -> Maybe (Int, Complete.Request)
+completeAsked event = do
+  detail <- CompletionDetail <$> detailOf event
+  guard (detail.id > 0)
+  Just (detail.id, Complete.Request {line = detail.line, before = detail.before, nodes = T.words detail.nodes})
+
+-- | Answer the question with this number: the list, or 'Nothing' for none
+-- ("Wiki.App.Editor.Complete"'s 'Complete.completionJson'). CodeMirror
+-- shows the list, and asks again as more is typed.
+answerCompletion :: (MonadIO m) => Element -> Int -> Maybe Completion -> m ()
+answerCompletion host i found =
+  liftIO . js_completed host i $ maybe (toJSText "") (jsonText . Complete.completionJson) found
 
 ----------------------------------------------------------------------
 -- A presentation's rows

@@ -7,8 +7,8 @@
 -- when the text is undone back to what a hidden preview shows; a spoiler that
 -- is not closed, which the parser finds without the preview; and the count
 -- beside the buttons, which moves to the next problem at each click; and
--- the box a problem's mark opens, and the completion's list, readable in
--- the light and the dark scheme.
+-- the box a problem's mark opens, the completion's list and a snippet's
+-- place to fill, readable in the light and the dark scheme.
 --
 -- A TikZ picture's failure goes the same way as a diagram's, through the
 -- islands' script's event; TeX runs in a worker and takes long, so it is
@@ -23,7 +23,7 @@ import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
 import Test.Browser.Mount (slugs, startWith)
-import Test.Browser.Text (editorHost, editorSelection, editorText, insertText, markdown, problemsMarked, setMarkdown)
+import Test.Browser.Text (editorHost, editorSelection, editorText, insertText, listReady, markdown, problemsMarked, setMarkdown)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Editor.Browser (showProblems)
@@ -159,7 +159,7 @@ spec m = do
     find ui ".editor-problems" >>= click
     eventually $ editorSelection ui `shouldReturn` linesOf text 3 3
 
-  it "draws the box of a warning and of an error, and the completion's list, in colours that can be read, in the light and the dark scheme" $ runPage $ do
+  it "draws the box of a warning and of an error, the completion's list and a snippet's place, in colours that can be read, in the light and the dark scheme" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     -- A marker only a presentation reads, in a document, is a warning; a
     -- spoiler not closed is an error.
@@ -188,6 +188,12 @@ spec m = do
       readable ".cm-tooltip-autocomplete li:not([aria-selected]) .cm-completionLabel"
       press "Escape"
       eventually $ length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+      -- A snippet's place to fill, the completion of a marker chosen.
+      markdown ui >>= \now -> insertText ui (T.length now) "\n\n"
+      editorText ui >>= (`typeText` "[[!sp")
+      listReady ui
+      press "Enter"
+      readable ".cm-snippetField"
   where
     helloEditor = EditPage (slugs ["blog"]) (slugs ["hello-world"])
 

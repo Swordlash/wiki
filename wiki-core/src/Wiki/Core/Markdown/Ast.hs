@@ -103,6 +103,7 @@ module Wiki.Core.Markdown.Ast
   , allInlines
   , closingMarker
   , markerAt
+  , holdsBlocks
   , parseWithMarkers
   , parseWithAllMarkers
   , parseWithLines

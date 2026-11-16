@@ -1930,6 +1930,22 @@ this order: tests that fail by chance and faults of timing, then how
 long things take. The packages below marked for it come first; WP5.84,
 WP5.92 and WP5.93 wait.
 
+**Features again (the owner, 2026-11-16, his usage reset; on 2026-11-15
+he judged nothing pressing left in the tests' time).** Two things
+finish the order above: WP5.122's ceilings and the nightly search for
+races (being built), and smaller decks in the examples where the
+deck's size is not what is tested (WP5.116). The other views become
+machines when a feature touches them, not ahead of it (decision 83).
+Then the features, in his order: **#187, autocompletion, first** ("bo
+pluginy to refactor"; WP5.124, its scope being written), and #186,
+plugins, after it. He added to #186 on 2026-11-15 a hook that rewrites
+the tree before it is rendered (a list with a `sorted` attribute
+sorted; perhaps every extension beyond CommonMark as a plugin on the
+server's side): a page is rendered in the browser, in the server's
+prerender and in the exports, so such a hook is a built-in plugin's
+(Haskell, run in all three); for an external plugin in its frame it
+would be a block's stand-in at most. To settle when WP5.84 is cut.
+
 - **WP5.121 The views that raced, as machines (decision 82; for the
   order above), one pull request each, in this order.** (1) The
   page's comments: done (#284 the machine, #288 the page view on the

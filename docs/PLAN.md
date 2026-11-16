@@ -3171,6 +3171,14 @@ needs. Each was true when its package merged; check before relying on one.
   parser and CodeMirror count its lines differently); folds do not
   survive a reload; fold-all is not offered (AltGr sends Ctrl+Alt on
   Windows, and its keys would catch typed brackets).
+- **Two of the editor's browser examples hold the program to a clock
+  (seen 2026-11-16).** "moves the cursor to a far slide…" fails when its
+  first jump takes more than 1,000 ms (1,079 and 2,071 ms under a load
+  of 9 to 11 from another build), and "loses no keystroke while the
+  preview catches up with a long page" when the program is still busy
+  after 5,000 ms. Both passed once the load ended. By decision 81 a
+  cost is asserted as a count, not a time: to be turned into bounds on
+  allocation or on steps, with the slides editor's group (WP5.116).
 - **`[[` completing a page's link (#294, WP5.124 (c)).** Six rounds
   of review, most about completing inside a link that is already
   there, which the issue did not ask for; the lesson is in the next

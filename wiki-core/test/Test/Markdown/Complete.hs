@@ -60,12 +60,13 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       typedAt "See [[!no‸" `shouldBe` Nothing
       -- An address from the top of the wiki: no end marker is read there.
       completeIn Document "See [[/docs‸" `shouldBe` Nothing
-    it "opens nothing after a |, a bracket, or an escaped [[" $ do
+    it "opens nothing after a |, a closing bracket, or an escaped [[" $ do
       typedAt "[[guide|Gu‸" `shouldBe` Nothing
       typedAt "[[a]‸" `shouldBe` Nothing
-      typedAt "[[a[b‸" `shouldBe` Nothing
       typedAt "\\[[a‸" `shouldBe` Nothing
       typedAt "\\\\[[a‸" `shouldBe` Just (LinkToPage, "a", 2)
+    it "opens after an opening bracket, which the parser reads in an address" $
+      typedAt "[[a[b‸" `shouldBe` Just (LinkToPage, "a[b", 0)
     it "opens nothing in code, math, HTML or a link's address" $
       for_ ["InlineCode", "FencedCode", "TeXMath", "HTMLTag", "URL"] $ \node ->
         (node, triggerAt (readLine []) (atIn [node, "Paragraph"] "[[gu‸")) `shouldBe` (node, Nothing)
@@ -74,6 +75,8 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       endOf "[[On‸]]" `shouldBe` (2, "")
       endOf "[[On‸call|Who is on call]] now" `shouldBe` (T.length "call|Who is on call]]", "|Who is on call]]")
       endOf "[[‸|Label]]" `shouldBe` (T.length "|Label]]", "|Label]]")
+    it "keeps a label the parser reads with a bracket or a character reference in it (#294)" $
+      endOf "[[q‸-a|[draft&#93;]]" `shouldBe` (T.length "-a|[draft&#93;]]", "|[draft&#93;]]")
     it "replaces nothing after the cursor when the link has no end there" $ do
       endOf "[[On‸ and [[b]]" `shouldBe` (0, "")
       endOf "[[On‸call" `shouldBe` (0, "")

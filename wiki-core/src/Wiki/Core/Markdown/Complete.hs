@@ -38,7 +38,6 @@ module Wiki.Core.Markdown.Complete
   , Trigger (..)
   , Typed (..)
   , triggerAt
-  , linkEnd
 
     -- * The parser's reading of the cursor's line
   , Probe (..)
@@ -143,9 +142,10 @@ data Trigger
 -- entry chosen replaces up to the cursor, and what each further line of
 -- a skeleton starts with ('lineStart'). After the cursor, the entry
 -- replaces 'through' characters too, and writes 'kept' back after its own
--- text: for a link to a page whose end the reader had typed already, the
--- rest of its address and its @]]@, or its @|label]]@, which stays the
--- reader's ('linkEnd'). Both are none for the other triggers.
+-- text: for a link to a page that the parser reads closed after the
+-- cursor already, the rest of its address and its @]]@, or its
+-- @|label]]@, which stays the reader's ('linkAt'). Both are none for the
+-- other triggers.
 data Typed = Typed
   { trigger :: Trigger
   , letters :: Text
@@ -212,28 +212,33 @@ shapeAt at =
       Just Shape {trigger, letters, prefix = T.dropEnd (T.length written) upTo}
 
 -- | The last @[[@ before the cursor, and what was typed after it, where
--- the wiki's parser reads a wiki link: the line's text before the @[[@,
--- then @[[@, a word and @]]@, is read with a wiki link to that word
--- ('pageLinkProbe'). So a @[[@ escaped by a backslash, or in code or math
--- the parser reads on the line, opens nothing. What was typed after the
--- @[[@ holds no bracket and no @|@, as a wiki link's address does not;
--- @[[!@ and @[[/@ are markers, or an address from the top of the wiki,
--- which no list completes.
+-- the wiki's parser reads a wiki link, and reads the cursor in its
+-- address. The line's text before the @[[@, then @[[@, a word and @]]@,
+-- is read with a wiki link to that word ('pageLinkProbe'): so a @[[@
+-- escaped by a backslash, or in code or math the parser reads on the
+-- line, opens nothing. The same with what was typed between the @[[@ and
+-- the word is read with a link whose address ends with the word: so a
+-- @|@ typed (the cursor in a label) or a @]@ (the link ended) opens
+-- nothing. @[[!@ and @[[/@ are markers, or an address from the top of
+-- the wiki, which no list completes. What of a link the entry replaces
+-- after the cursor is the parser's to say too ('linkAt').
 pageLink :: LineReader -> At -> Maybe Typed
 pageLink readAt at = do
   (start, letters) <- pageLinkShape at
-  guard (linkWord `elem` (readAt (pageLinkProbe at start)).wikiLinks)
-  let (through, kept) = linkEnd at.after
+  let first' = readAt (pageLinkProbe at start)
+      pre = T.take start at.before
+  guard (linkWord `elem` map fst first'.wikiLinks)
+  guard (any (T.isSuffixOf linkWord . fst) (readAt (Probe first'.enclosing [pre <> "[[" <> letters <> linkWord <> "]]"])).wikiLinks)
+  (through, kept) <- linkAt (readAt . linkProbe at start first'.enclosing) (readAt (unopenedProbe at start first'.enclosing)) at.after
   Just Typed {trigger = LinkToPage, letters, from = start, lineStart = "", through, kept}
 
 -- | Where the last @[[@ before the cursor starts, and what was typed after
--- it, if it may begin a link to a page.
+-- it, if it is no marker's start and no address from the top.
 pageLinkShape :: At -> Maybe (Int, Text)
 pageLinkShape at = do
   let (upTo, letters) = T.breakOnEnd "[[" at.before
       start = T.length upTo - 2
   guard (start >= 0)
-  guard (not (T.any (`elem` ("[]|" :: [Char])) letters))
   guard (not (T.isPrefixOf "!" letters || T.isPrefixOf "/" letters))
   Just (start, letters)
 
@@ -246,24 +251,56 @@ pageLinkProbe at start = Probe 1 [T.take start at.before <> "[[" <> linkWord <> 
 linkWord :: Text
 linkWord = "Zqxjvlink"
 
--- | What of a link's end the reader had typed after the cursor already,
--- as (how many characters an entry replaces after the cursor, what it
--- writes back of them). The rest of the address up to @]]@ is replaced,
--- @]]@ included, and the entry writes its own end: (n, ""). The rest of
--- the address up to a @|label]]@ is replaced, and the label and its
--- @]]@ are written back as they were: the reader's label stays. Anything
--- else, or no end on the line, replaces nothing after the cursor.
-linkEnd :: Text -> (Int, Text)
-linkEnd after
-  | Just _ <- T.stripPrefix "]]" rest = (T.length address + 2, "")
-  | Just labelled <- T.stripPrefix "|" rest
-  , (label, end) <- T.breakOn "]]" labelled
-  , not (T.null end)
-  , not (T.any (`elem` ("[]" :: [Char])) label) =
-      (T.length address + 1 + T.length label + 2, "|" <> label <> "]]")
-  | otherwise = (0, "")
+-- | The cursor's line from the block that holds it, with 'linkWord' in
+-- place of the @[[@'s letters, and the given text after it: what 'linkAt'
+-- asks the parser about.
+linkProbe :: At -> Int -> Int -> Text -> Probe
+linkProbe at start from' rest = Probe from' [T.take start at.before <> "[[" <> linkWord <> rest]
+
+-- | The cursor's line from the block that holds it, with 'linkWord' in
+-- place of the @[[@ and its letters: the line as it was before the @[[@
+-- was typed, for 'linkAt'.
+unopenedProbe :: At -> Int -> Int -> Probe
+unopenedProbe at start from' = Probe from' [T.take start at.before <> linkWord <> at.after]
+
+-- | What of the link at the cursor the reader had written after the
+-- cursor already, as (how many characters an entry replaces after the
+-- cursor, what it writes back of them), asked of the parser through a
+-- reading of the line with 'linkWord' in place of the letters typed and
+-- the given text after it ('linkProbe'). The link at the cursor is the
+-- wiki link whose address starts with that word.
+--
+-- * When the parser reads none on the line as it is, the link has no end
+--   yet: nothing after the cursor is replaced, (0, "").
+-- * Nor when the line without the @[[@ (the second reading given) is read
+--   with as many wiki links: the @[[@ typed has taken a later link's
+--   end as its own (@[[On‸ and [[b]]@ is one link for the parser), and
+--   the link being typed has no end of its own yet.
+-- * Otherwise it ends where the line cut there is read with the same
+--   link, the first such place; the rest of its address and its end are
+--   replaced. A link whose text is its address (the word is in both) has
+--   no label: the entry writes its own end, (n, "").
+-- * A link with a label of its own keeps it as the reader wrote it: what
+--   is written back is the link's end from the first place where the
+--   line, with the rest of the address taken away there, is read with a
+--   link whose address is the word alone and whose text is the same.
+--
+-- 'Nothing' when the parser reads the link otherwise than this says,
+-- which leaves the list closed rather than write a link the parser would
+-- read as something else.
+linkAt :: (Text -> LineReading) -> LineReading -> Text -> Maybe (Int, Text)
+linkAt reading unopened after = case ours after of
+  Just read'@(_, text) | length (reading after).wikiLinks > length unopened.wikiLinks -> do
+    end <- find (\k -> ours (T.take k after) == Just read') [0 .. T.length after]
+    let written = T.take end after
+        rest = T.drop end after
+        labelOnly p = ours (T.drop p written <> rest) == Just (linkWord, text)
+    if linkWord `T.isInfixOf` text
+      then Just (end, "")
+      else (\p -> (end, T.drop p written)) <$> find labelOnly [0 .. end]
+  _ -> Just (0, "")
   where
-    (address, rest) = T.break (`elem` ("[]|" :: [Char])) after
+    ours rest = find (T.isPrefixOf linkWord . fst) (reading rest).wikiLinks
 
 -- | What each further line of a skeleton starts with, after the
 -- indentation of the cursor's line (which CodeMirror's snippet adds): the
@@ -306,7 +343,8 @@ data Probe = Probe
 -- | 'LineReading' is what the wiki's parser reads on a probe's lines: the
 -- roles of the marker lines it reads on each of them ('MarkerRole');
 -- whether a box's marker is on the first; the text of the paragraphs
--- inside the boxes it reads; the addresses of the wiki links it reads;
+-- inside the boxes it reads; the wiki links it reads, each by its
+-- address and its text;
 -- and the first line of the top-level block
 -- that holds the first (counted in the lines above, from 1), from which on
 -- the lines read alike whatever comes before.
@@ -314,7 +352,7 @@ data LineReading = LineReading
   { roles :: [[MarkerRole]]
   , boxed :: Bool
   , inBoxes :: [Text]
-  , wikiLinks :: [Text]
+  , wikiLinks :: [(Text, Text)]
   , enclosing :: Int
   }
   deriving stock (Eq, Show)
@@ -342,7 +380,7 @@ readLine above probe = case parseWithStartsAndMarkers (T.intercalate "\n" (kept 
       { roles = [[r | MarkerLine l _ r <- lines', l == n + k] | k <- [0 .. length probe.written - 1]]
       , boxed = any (\b -> b.markerLine == n) boxes
       , inBoxes = [plainText inlines | Alert _ _ bs <- concatMap (everyBlock . snd) blocks, b <- concatMap everyBlock bs, Just inlines <- [paragraphOf b]]
-      , wikiLinks = [address | Link attributes address _ _ <- allInlines (map snd blocks), ("class", "wikilink") `elem` attributes]
+      , wikiLinks = [(address, plainText text) | Link attributes address _ text <- allInlines (map snd blocks), ("class", "wikilink") `elem` attributes]
       , enclosing = inAbove (fromMaybe n (lastMay [l | (Just l, _) <- blocks, l <= n]))
       }
   Left _ -> LineReading {roles = [], boxed = False, inBoxes = [], wikiLinks = [], enclosing = inAbove n}
@@ -369,7 +407,18 @@ probesOf readAt at = firstProbes at <> written
         StartMarker -> [writtenProbe at shape (enclosingOf first') (startMarker (continuation shape.prefix) name).skeleton | name <- filter holdsBlocks [minBound .. maxBound]]
         BoxMarker -> [writtenProbe at shape (enclosingOf first') (boxed' (box (continuation shape.prefix) "NOTE"))]
         _ -> []
+      (Nothing, first' : _) | Just (start, letters) <- pageLinkShape at -> linkProbes start letters (enclosingOf first')
       _ -> []
+    -- The line with the letters typed, then the line as it is and each
+    -- cut of it that 'linkAt' reads, up to the link's end: those of
+    -- them that do not change as letters are typed are kept for the next
+    -- letter.
+    linkProbes start letters from' =
+      Probe from' [T.take start at.before <> "[[" <> letters <> linkWord <> "]]"]
+        : unopenedProbe at start from'
+        : map (linkProbe at start from') (at.after : [cut | k <- [0 .. end], cut <- [T.take k at.after, T.drop k (T.take end at.after) <> T.drop end at.after]])
+      where
+        end = maybe 0 fst (linkAt (readAt . linkProbe at start from') (readAt (unopenedProbe at start from')) at.after)
     enclosingOf = (.enclosing) . readAt
 
 -- | The probes a list at this place asks about first, which no other

@@ -1100,8 +1100,12 @@ const emojiSource = (names, whole) => {
 // whether the cursor is in code, HTML, math or a link's address.
 //
 // markupGate is what may open a list, loosely: a source is asked after
-// every key typed, and only a line that ends so asks the component.
-const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^[\]|]*$/;
+// every key typed, and only a line that ends so asks the component, which
+// asks the wiki's parser. It lets through more than the parser reads,
+// never less: after [[, anything but a "]" (which ends a wiki link's text
+// for the parser) or a "|" (after which the cursor is in a label, where
+// no list opens). A "[" may stand in a link's address.
+const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$/;
 
 // The answer is {from, through, options, enter, escape}: where the text
 // an entry replaces starts in the line, and how many characters after the

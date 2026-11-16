@@ -245,7 +245,7 @@ pageLink readAt at = do
   let first' = readAt (pageLinkProbe at start)
       pre = T.take start at.before
   guard (linkWord `elem` map fst first'.wikiLinks)
-  guard (any (T.isSuffixOf linkWord . fst) (readAt (Probe first'.enclosing [pre <> "[[" <> letters <> linkWord <> "]]"])).wikiLinks)
+  guard (any (T.isSuffixOf linkWord . fst) (readAt (Probe first'.enclosing (T.splitOn "\n" (pre <> "[[" <> letters <> linkWord <> "]]" <> fst (stretchOf at))))).wikiLinks)
   (through, kept, labels) <- fst (linkAt readAt at start first'.enclosing)
   Just Typed {trigger = LinkToPage, letters, from = start, lineStart = "", through, kept, labels}
 
@@ -262,7 +262,7 @@ pageLinkShape at = do
 -- | The cursor's line with a wiki link to 'linkWord' in place of the
 -- @[[@ and what follows it.
 pageLinkProbe :: At -> Int -> Probe
-pageLinkProbe at start = Probe 1 [T.take start at.before <> "[[" <> linkWord <> "]]"]
+pageLinkProbe at start = Probe 1 (T.splitOn "\n" (T.take start at.before <> "[[" <> linkWord <> "]]" <> fst (stretchOf at)))
 
 -- | The word 'pageLinkProbe' links to.
 linkWord :: Text
@@ -437,8 +437,8 @@ besides = besidesLink (T.isPrefixOf linkWord)
 -- | Blocks with each wiki link whose address is one of these (and what
 -- it holds) a mark where it stands, inside whatever holds it: emphasis, a
 -- heading, a table's cell, a list's item, a quotation, a box, a spoiler,
--- a footnote; and a heading's identifier, which is made from its text, left
--- out. Two texts whose blocks are alike so differ in those links alone.
+-- a footnote; and a heading's identifier, which is made from its text,
+-- and a spoiler's start marker as written, left out. Two texts whose blocks are alike so differ in those links alone.
 besidesLink :: (Text -> Bool) -> [Block] -> [Block]
 besidesLink isIt = map onBlock
   where
@@ -452,7 +452,8 @@ besidesLink isIt = map onBlock
       Table aligns header rows -> Table aligns (map onInlines header) (map (map onInlines) rows)
       Div attributes bs -> Div attributes (onBlocks bs)
       Alert kind boxHead bs -> Alert kind boxHead {title = onInlines <$> boxHead.title} (onBlocks bs)
-      Spoiler spoilerHead bs -> Spoiler spoilerHead {Ast.description = onInlines spoilerHead.description} (onBlocks bs)
+      -- A spoiler's start marker as written holds the link's text.
+      Spoiler spoilerHead bs -> Spoiler spoilerHead {Ast.description = onInlines spoilerHead.description, Ast.marker = ""} (onBlocks bs)
       Footnotes notes -> Footnotes [Footnote n label (onBlocks bs) | Footnote n label bs <- notes]
       other -> other
     onBlocks = besidesLink isIt
@@ -593,7 +594,7 @@ probesOf readAt at = firstProbes at <> written
         | Just (start, letters) <- pageLinkShape at ->
             -- The line with the letters typed, then what 'linkAt' asks,
             -- which does not change as letters are typed.
-            Probe (enclosingOf first') [T.take start at.before <> "[[" <> letters <> linkWord <> "]]"] : snd (linkAt readAt at start (enclosingOf first'))
+            Probe (enclosingOf first') (T.splitOn "\n" (T.take start at.before <> "[[" <> letters <> linkWord <> "]]" <> fst (stretchOf at))) : snd (linkAt readAt at start (enclosingOf first'))
       _ -> []
     enclosingOf = (.enclosing) . readAt
 

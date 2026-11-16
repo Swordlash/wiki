@@ -81,6 +81,11 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       endOf "**[[Gu‸ide]]**" `shouldBe` (T.length "ide]]", "")
       endOf "Text _a [[Gu‸ide|Mine]] b_" `shouldBe` (T.length "ide|Mine]]", "|Mine]]")
       endOf "| h | i |\n| --- | --- |\n| [[Gu‸ide]] | x |" `shouldBe` (T.length "ide]]", "")
+    it "reads a link where what follows the cursor makes the line what it is: a spoiler's description, a box's title, a link's text (#294, fourth round)" $ do
+      endOf "[[!spoiler]]{s}(See [[Gu‸ide]])" `shouldBe` (T.length "ide]]", "")
+      endOf "[[!spoiler]]{s}(See [[Gu‸)" `shouldBe` (0, "")
+      endOf "> [!NOTE] See [[Gu‸ide|it]] here" `shouldBe` (T.length "ide|it]]", "|it]]")
+      endOf "[See [[Gu‸ide]] there](https://example.com)" `shouldBe` (T.length "ide]]", "")
     it "writes a label after an escaped bar in a table's cell, and after a bar elsewhere (#294, third round)" $ do
       labelsOf "| h | i |\n| --- | --- |\n| [[Gu‸]] | x |" `shouldBe` Just EscapedLabel
       labelsOf "| h | i |\n| --- | --- |\n| [[Gu‸ | x |" `shouldBe` Just EscapedLabel

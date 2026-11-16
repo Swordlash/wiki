@@ -22,7 +22,8 @@ import Wiki.App.Editor.Complete
 import Wiki.App.Route (PageLink (..), pageLinkText, pageRoute, resolvePageLink)
 import Wiki.Core.Id (PageId (..))
 import Wiki.Core.Markdown (Destination (..), classifyDestination)
-import Wiki.Core.Markdown.Ast (Inline (..), allInlines, parseMarkdown, plainText)
+import Wiki.Core.Markdown.Ast (Block (..), Footnote (..), Inline (..), ListItem (..), allInlines, parseMarkdown, plainText)
+import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.Page (PageSummary (..))
@@ -195,8 +196,10 @@ spec = describe "Wiki.App.Editor.Complete" $ do
 -- the address is before the cursor and after it, the label written (with
 -- its @|@, escaped or not; on several lines, long, or across a blank
 -- line, which ends the block before the link would end), whether the
--- link is closed, the text after it (lines below too), and what closes
--- its line (the table's cells after it).
+-- link is closed, what follows it on its line and makes the line what it
+-- is (a table's cells, a spoiler's description closed, a box's title, a
+-- link's or an image's text closed, a heading's closing marks, a
+-- parenthesis or a bracket), and the text after that (lines below too).
 data LinkLine = LinkLine
   { above :: [Text]
   , pre :: Text
@@ -226,6 +229,14 @@ genLinkLine = do
       , (["Text.[^n]", ""], "[^n]: ", "")
       , ([], "[[x]] and ", "")
       , ([], "`a` ", "")
+      , -- What follows the link on its line makes the line what it is.
+        ([], "[[!spoiler]]{s}(See ", ")")
+      , ([], "> [!NOTE] See ", " here")
+      , ([], "[See ", " there](https://example.com)")
+      , ([], "![See ", " there](picture.png)")
+      , ([], "## See ", " ##")
+      , ([], "Text (see ", ") and more")
+      , ([], "Text [see ", "] and more")
       ]
   wrap <- elements [("", ""), ("", ""), ("**", "**"), ("_", "_"), ("~~", "~~"), ("||", "||")]
   typed <- elements ["", "Gu", "Ol", "Pro", "gu "]
@@ -278,7 +289,7 @@ choosesPage h l =
                 let title = maybe "" snd (find ((sentinel `T.isPrefixOf`) . fst) (linksOf marked))
                     titleNow = map snd (filter ((== page.address) . fst) (linksOf result))
                  in conjoin
-                      [ besidesLink (== page.address) (blocksOf result) === besidesLink (sentinel `T.isPrefixOf`) (blocksOf marked)
+                      [ outside (== page.address) (blocksOf result) === outside (sentinel `T.isPrefixOf`) (blocksOf marked)
                       , counterexample (show titleNow) $ case titleNow of
                           [t] -> if sentinel `T.isInfixOf` title then t `elem` ownTitles else t == title
                           _ -> False
@@ -298,7 +309,7 @@ choosesPage h l =
     upToLine = T.concat [a <> "\n" | a <- l.above]
     cursorLine = length l.above + 1
     typedUpTo = l.pre <> fst l.wrap <> "[[" <> l.typed
-    afterCursor = l.rest <> l.label <> (if l.closed then "]]" else "") <> snd l.wrap <> l.after <> l.lineEnd
+    afterCursor = l.rest <> l.label <> (if l.closed then "]]" else "") <> snd l.wrap <> l.lineEnd <> l.after
     restOfLine = T.takeWhile (/= '\n') afterCursor
     whole = upToLine <> typedUpTo <> afterCursor
     -- The block with a word in place of the letters typed, which names the
@@ -308,14 +319,26 @@ choosesPage h l =
     unopened = upToLine <> l.pre <> fst l.wrap <> sentinel <> afterCursor
     -- The block with a word as the address of a closed link at the
     -- cursor, its label kept.
-    worded = upToLine <> l.pre <> fst l.wrap <> "[[Zqxjvword" <> l.label <> "]]" <> snd l.wrap <> l.after <> l.lineEnd
+    worded = upToLine <> l.pre <> fst l.wrap <> "[[Zqxjvword" <> l.label <> "]]" <> snd l.wrap <> l.lineEnd <> l.after
     replaceable =
       l.closed
         && any ((sentinel `T.isPrefixOf`) . fst) (linksOf marked)
         && length (linksOf marked) > length (linksOf unopened)
         && any ((== "Zqxjvword") . fst) (linksOf worded)
-        && besidesLink (== "Zqxjvword") (blocksOf worded) == besidesLink (sentinel `T.isPrefixOf`) (blocksOf marked)
+        && outside (== "Zqxjvword") (blocksOf worded) == outside (sentinel `T.isPrefixOf`) (blocksOf marked)
     blocksOf t = either (const []) identity (parseMarkdown t)
+    -- The blocks with the link at the cursor a mark where it stands
+    -- ('besidesLink'), and each spoiler's start marker as written, which
+    -- holds the link's text, left out.
+    outside isOurs = map unmarked . besidesLink isOurs
+    unmarked = \case
+      Spoiler spoilerHead bs -> Spoiler spoilerHead {Ast.marker = ""} (map unmarked bs)
+      BlockQuote bs -> BlockQuote (map unmarked bs)
+      List kind items -> List kind [ListItem task (map unmarked bs) | ListItem task bs <- items]
+      Div attributes bs -> Div attributes (map unmarked bs)
+      Alert kind boxHead bs -> Alert kind boxHead (map unmarked bs)
+      Footnotes notes -> Footnotes [Footnote n label (map unmarked bs) | Footnote n label bs <- notes]
+      other -> other
     linksOf t = [(address, plainText text) | Link attributes address _ text <- allInlines (blocksOf t), ("class", "wikilink") `elem` attributes]
 
 -- | The bytes allocated in forcing a value: what its work costs, counted

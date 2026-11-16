@@ -46,6 +46,39 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       for_ ["FencedCode", "CodeBlock", "InlineCode", "HTMLBlock", "CommentBlock", "TeXMath", "URL", "LinkReference"] $ \node ->
         (node, triggerAt (readLine []) (atIn [node, "Document"] "[[!no‸")) `shouldBe` (node, Nothing)
 
+  describe "triggerAt, for a link to a page" $ do
+    it "opens after [[ anywhere a wiki link is read, with what was typed after it" $ do
+      typedAt "[[‸" `shouldBe` Just (LinkToPage, "", 0)
+      typedAt "[[On‸" `shouldBe` Just (LinkToPage, "On", 0)
+      typedAt "See [[on c‸" `shouldBe` Just (LinkToPage, "on c", 4)
+      typedAt "> - [[Gu‸" `shouldBe` Just (LinkToPage, "Gu", 4)
+    it "takes the last [[ of the line" $
+      typedAt "[[a]] and [[b‸" `shouldBe` Just (LinkToPage, "b", 10)
+    it "leaves [[! and [[/ to the markers: at a line's start a marker, elsewhere nothing" $ do
+      typedAt "[[!no‸" `shouldBe` Just (StartMarker, "no", 0)
+      typedAt "[[/sp‸" `shouldBe` Just (EndMarker, "sp", 0)
+      typedAt "See [[!no‸" `shouldBe` Nothing
+      -- An address from the top of the wiki: no end marker is read there.
+      completeIn Document "See [[/docs‸" `shouldBe` Nothing
+    it "opens nothing after a |, a bracket, or an escaped [[" $ do
+      typedAt "[[guide|Gu‸" `shouldBe` Nothing
+      typedAt "[[a]‸" `shouldBe` Nothing
+      typedAt "[[a[b‸" `shouldBe` Nothing
+      typedAt "\\[[a‸" `shouldBe` Nothing
+      typedAt "\\\\[[a‸" `shouldBe` Just (LinkToPage, "a", 2)
+    it "opens nothing in code, math, HTML or a link's address" $
+      for_ ["InlineCode", "FencedCode", "TeXMath", "HTMLTag", "URL"] $ \node ->
+        (node, triggerAt (readLine []) (atIn [node, "Paragraph"] "[[gu‸")) `shouldBe` (node, Nothing)
+    it "replaces the end of a link typed already, and keeps a label typed already" $ do
+      endOf "[[On‸call]] now" `shouldBe` (6, "")
+      endOf "[[On‸]]" `shouldBe` (2, "")
+      endOf "[[On‸call|Who is on call]] now" `shouldBe` (T.length "call|Who is on call]]", "|Who is on call]]")
+      endOf "[[‸|Label]]" `shouldBe` (T.length "|Label]]", "|Label]]")
+    it "replaces nothing after the cursor when the link has no end there" $ do
+      endOf "[[On‸ and [[b]]" `shouldBe` (0, "")
+      endOf "[[On‸call" `shouldBe` (0, "")
+      endOf "[[On‸|a]b]]" `shouldBe` (0, "")
+
   describe "placeOf" $ do
     it "is text in a paragraph, a quotation, a list and a link's text" $
       placeOf ["Link", "Paragraph", "Blockquote", "ListItem", "BulletList", "Document"] `shouldBe` InText
@@ -110,7 +143,7 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
 
   describe "sources and origins" $ do
     let calendar :: Source
-        calendar wanted = [Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]"], origin = Just (FromPlugin "calendar")} | wanted.typed.trigger == StartMarker]
+        calendar wanted = [Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]"], place = Nothing, origin = Just (FromPlugin "calendar")} | wanted.typed.trigger == StartMarker]
     it "shows a plugin's origin as from the plugin" $
       originText (FromPlugin "calendar") `shouldBe` "from plugin calendar"
     it "lists every source's candidates, in the sources' order, each with its origin" $ do
@@ -136,16 +169,28 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       skeletonText [Literal "ab", Field 0 "", Field 2 "x", Field 1 "yz"] `shouldBe` ("abxyz", [(1, (3, 5)), (2, (2, 3)), (0, (2, 2))])
 
 -- | Where the cursor of a marked text is, for 'triggerAt': in text, under
--- the lines before the cursor's, at the cursor's line up to the mark.
+-- the lines before the cursor's, at the cursor's line, before the mark
+-- and after it.
 atIn :: [Text] -> Text -> At
-atIn nodes marked = At {place = placeOf nodes, above = initDef [] ls, before = fromMaybe "" (lastMay ls)}
+atIn nodes marked =
+  At
+    { place = placeOf nodes
+    , above = initDef [] ls
+    , before = fromMaybe "" (lastMay ls)
+    , after = T.takeWhile (/= '\n') (T.drop 1 rest)
+    }
   where
-    ls = T.splitOn "\n" (fst (T.breakOn "‸" marked))
+    (upTo, rest) = T.breakOn "‸" marked
+    ls = T.splitOn "\n" upTo
 
 typedAt :: Text -> Maybe (Trigger, Text, Int)
 typedAt marked = (\t -> (t.trigger, t.letters, t.from)) <$> triggerAt (readLine at.above) at
   where
     at = atIn [] marked
+
+-- | What a link's entry replaces after the cursor, and writes back of it.
+endOf :: Text -> (Int, Text)
+endOf marked = maybe (-1, "no list") (\t -> (t.through, t.kept)) (triggerAt (readLine []) (atIn [] marked))
 
 completeIn :: PageKind -> Text -> Maybe Completion
 completeIn kind = completeWith kind []

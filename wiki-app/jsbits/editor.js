@@ -336,8 +336,8 @@ function wiki_editor_emojied(host, id, found) {
 }
 
 // The answer to the question `id` about the list of the wiki's own
-// Markdown at the cursor: `found` is JSON, {from, options, enter, escape}
-// (Wiki.App.Editor.Complete), or "" for no list.
+// Markdown at the cursor: `found` is JSON, {from, through, options, enter,
+// escape} (Wiki.App.Editor.Complete), or "" for no list.
 function wiki_editor_completed(host, id, found) {
   host.wikiEditor?.completed(id, found === "" ? null : JSON.parse(found));
 }

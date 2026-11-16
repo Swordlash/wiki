@@ -1,6 +1,7 @@
 -- | 'Complete' is the editor's completion of the wiki's own Markdown
--- (WP5.124 (b) of docs/PLAN.md, #187): what a list opens after @[[!@,
--- @[[/@ and @[!@, what it offers, and what choosing an entry writes.
+-- (WP5.124 (b) and (c) of docs/PLAN.md, #187): what a list opens after
+-- @[[!@, @[[/@, @[!@ and @[[@, what it offers, and what choosing an entry
+-- writes.
 --
 -- The editor's CodeMirror (@web/src/editor.js@) shows the list, moves in
 -- it and writes the entry chosen. It decides nothing of this: it says
@@ -11,15 +12,17 @@
 -- * __Where a list opens__ ('triggerAt'): @[[!@ (a start marker) where
 --   the wiki's parser ("Wiki.Core.Markdown.Ast") would read a marker on
 --   the cursor's line; @[!@ (a kind of box) where it would read a box's
---   marker; @[[/@ (an end marker) where an end marker would end a block.
---   Never in code, HTML, a comment, math or a link's address
---   ('placeOf'). Which line is in which quotation, list's item or code
---   block is CommonMark's to say, and the parser says it: the line is
---   asked about with what would be written on it ('readLine'), rather
---   than its containers read again from its characters.
+--   marker; @[[/@ (an end marker) where an end marker would end a block;
+--   @[[@ (a link to a page) anywhere a wiki link is read. Never in code,
+--   HTML, a comment, math or a link's address ('placeOf'). Which line is
+--   in which quotation, list's item or code block is CommonMark's to say,
+--   and the parser says it: the line is asked about with what would be
+--   written on it ('readLine'), rather than its containers read again
+--   from its characters.
 -- * __What it offers__: candidates, from a list of 'Source's. The wiki's
 --   own is 'wikiSource': the markers the page's kind reads, the blocks
---   an end marker at the cursor would end, the kinds of box.
+--   an end marker at the cursor would end, the kinds of box; the pages
+--   are the editor's own source.
 --   A plugin will give a source of its own (#186), whose candidates say
 --   where they come from ('Origin'), shown grey beside each one.
 -- * __What choosing writes__: a 'Skeleton', literal text and numbered
@@ -35,6 +38,7 @@ module Wiki.Core.Markdown.Complete
   , Trigger (..)
   , Typed (..)
   , triggerAt
+  , linkEnd
 
     -- * The parser's reading of the cursor's line
   , Probe (..)
@@ -49,6 +53,7 @@ module Wiki.Core.Markdown.Complete
   , Origin (..)
   , originText
   , Candidate (..)
+  , candidateDetail
   , Wanted (..)
   , Source
   , wikiSource
@@ -71,7 +76,7 @@ where
 import Data.Char (isAsciiLower, isAsciiUpper)
 import Data.Text qualified as T
 import Protolude
-import Wiki.Core.Markdown.Ast (Block (Alert, Para, Plain), BoxMarker (markerLine), MarkerLine (..), MarkerName (..), MarkerRole (..), closingMarker, holdsBlocks, markerNameText, openingMarker, parseWithStartsAndMarkers, plainText)
+import Wiki.Core.Markdown.Ast (Block (Alert, Para, Plain), BoxMarker (markerLine), Inline (Link), MarkerLine (..), MarkerName (..), MarkerRole (..), allInlines, closingMarker, holdsBlocks, markerNameText, openingMarker, parseWithStartsAndMarkers, plainText)
 import Wiki.Core.Markdown.Box (BoxKind, boxChoices)
 import Wiki.Core.Markdown.Problems (everyBlock)
 import Wiki.Core.PageKind (PageKind (..))
@@ -111,11 +116,12 @@ placeOf nodes = if any (`elem` ownText) nodes then InOwnText else InText
 
 -- | 'At' is where a completion is asked for: the place, the lines of the
 -- text above the cursor's line (in order), and the cursor's line up to
--- the cursor.
+-- the cursor and after it.
 data At = At
   { place :: Place
   , above :: [Text]
   , before :: Text
+  , after :: Text
   }
   deriving stock (Eq, Show)
 
@@ -127,17 +133,26 @@ data Trigger
     EndMarker
   | -- | @[!@ on the first line of a quotation: a box's kind.
     BoxMarker
+  | -- | @[[@ anywhere a wiki link is read, not followed by @!@ or @/@: a
+    -- link to a page.
+    LinkToPage
   deriving stock (Eq, Show)
 
 -- | 'Typed' is what was typed: the trigger, the letters after it, where
 -- the trigger starts in the cursor's line (in characters), which the
 -- entry chosen replaces up to the cursor, and what each further line of
--- a skeleton starts with ('lineStart').
+-- a skeleton starts with ('lineStart'). After the cursor, the entry
+-- replaces 'through' characters too, and writes 'kept' back after its own
+-- text: for a link to a page whose end the reader had typed already, the
+-- rest of its address and its @]]@, or its @|label]]@, which stays the
+-- reader's ('linkEnd'). Both are none for the other triggers.
 data Typed = Typed
   { trigger :: Trigger
   , letters :: Text
   , from :: Int
   , lineStart :: Text
+  , through :: Int
+  , kept :: Text
   }
   deriving stock (Eq, Show)
 
@@ -155,18 +170,22 @@ data Typed = Typed
 triggerAt :: LineReader -> At -> Maybe Typed
 triggerAt readAt at = do
   guard (at.place == InText)
-  shape <- shapeAt at
-  case shape.trigger of
-    StartMarker -> guard (PlacesContents `elem` firstRoles (readAt (Probe 1 [shape.prefix <> "[[!toc]]"])))
-    BoxMarker -> guard (readAt (Probe 1 [shape.prefix <> "[!NOTE]"])).boxed
-    EndMarker -> pass
-  Just
-    Typed
-      { trigger = shape.trigger
-      , letters = shape.letters
-      , from = T.length shape.prefix
-      , lineStart = continuation shape.prefix
-      }
+  case shapeAt at of
+    Just shape -> do
+      case shape.trigger of
+        StartMarker -> guard (PlacesContents `elem` firstRoles (readAt (Probe 1 [shape.prefix <> "[[!toc]]"])))
+        BoxMarker -> guard (readAt (Probe 1 [shape.prefix <> "[!NOTE]"])).boxed
+        _ -> pass
+      Just
+        Typed
+          { trigger = shape.trigger
+          , letters = shape.letters
+          , from = T.length shape.prefix
+          , lineStart = continuation shape.prefix
+          , through = 0
+          , kept = ""
+          }
+    Nothing -> pageLink readAt at
 
 -- | 'Shape' is a trigger the cursor's line ends with, before the parser is
 -- asked about it: the trigger, the letters typed after it, and what of the
@@ -191,6 +210,60 @@ shapeAt at =
       let (upTo, letters) = T.breakOnEnd written at.before
       guard (not (T.null upTo) && T.all allowed letters)
       Just Shape {trigger, letters, prefix = T.dropEnd (T.length written) upTo}
+
+-- | The last @[[@ before the cursor, and what was typed after it, where
+-- the wiki's parser reads a wiki link: the line's text before the @[[@,
+-- then @[[@, a word and @]]@, is read with a wiki link to that word
+-- ('pageLinkProbe'). So a @[[@ escaped by a backslash, or in code or math
+-- the parser reads on the line, opens nothing. What was typed after the
+-- @[[@ holds no bracket and no @|@, as a wiki link's address does not;
+-- @[[!@ and @[[/@ are markers, or an address from the top of the wiki,
+-- which no list completes.
+pageLink :: LineReader -> At -> Maybe Typed
+pageLink readAt at = do
+  (start, letters) <- pageLinkShape at
+  guard (linkWord `elem` (readAt (pageLinkProbe at start)).wikiLinks)
+  let (through, kept) = linkEnd at.after
+  Just Typed {trigger = LinkToPage, letters, from = start, lineStart = "", through, kept}
+
+-- | Where the last @[[@ before the cursor starts, and what was typed after
+-- it, if it may begin a link to a page.
+pageLinkShape :: At -> Maybe (Int, Text)
+pageLinkShape at = do
+  let (upTo, letters) = T.breakOnEnd "[[" at.before
+      start = T.length upTo - 2
+  guard (start >= 0)
+  guard (not (T.any (`elem` ("[]|" :: [Char])) letters))
+  guard (not (T.isPrefixOf "!" letters || T.isPrefixOf "/" letters))
+  Just (start, letters)
+
+-- | The cursor's line with a wiki link to 'linkWord' in place of the
+-- @[[@ and what follows it.
+pageLinkProbe :: At -> Int -> Probe
+pageLinkProbe at start = Probe 1 [T.take start at.before <> "[[" <> linkWord <> "]]"]
+
+-- | The word 'pageLinkProbe' links to.
+linkWord :: Text
+linkWord = "Zqxjvlink"
+
+-- | What of a link's end the reader had typed after the cursor already,
+-- as (how many characters an entry replaces after the cursor, what it
+-- writes back of them). The rest of the address up to @]]@ is replaced,
+-- @]]@ included, and the entry writes its own end: (n, ""). The rest of
+-- the address up to a @|label]]@ is replaced, and the label and its
+-- @]]@ are written back as they were: the reader's label stays. Anything
+-- else, or no end on the line, replaces nothing after the cursor.
+linkEnd :: Text -> (Int, Text)
+linkEnd after
+  | Just _ <- T.stripPrefix "]]" rest = (T.length address + 2, "")
+  | Just labelled <- T.stripPrefix "|" rest
+  , (label, end) <- T.breakOn "]]" labelled
+  , not (T.null end)
+  , not (T.any (`elem` ("[]" :: [Char])) label) =
+      (T.length address + 1 + T.length label + 2, "|" <> label <> "]]")
+  | otherwise = (0, "")
+  where
+    (address, rest) = T.break (`elem` ("[]|" :: [Char])) after
 
 -- | What each further line of a skeleton starts with, after the
 -- indentation of the cursor's line (which CodeMirror's snippet adds): the
@@ -233,13 +306,15 @@ data Probe = Probe
 -- | 'LineReading' is what the wiki's parser reads on a probe's lines: the
 -- roles of the marker lines it reads on each of them ('MarkerRole');
 -- whether a box's marker is on the first; the text of the paragraphs
--- inside the boxes it reads; and the first line of the top-level block
+-- inside the boxes it reads; the addresses of the wiki links it reads;
+-- and the first line of the top-level block
 -- that holds the first (counted in the lines above, from 1), from which on
 -- the lines read alike whatever comes before.
 data LineReading = LineReading
   { roles :: [[MarkerRole]]
   , boxed :: Bool
   , inBoxes :: [Text]
+  , wikiLinks :: [Text]
   , enclosing :: Int
   }
   deriving stock (Eq, Show)
@@ -267,9 +342,10 @@ readLine above probe = case parseWithStartsAndMarkers (T.intercalate "\n" (kept 
       { roles = [[r | MarkerLine l _ r <- lines', l == n + k] | k <- [0 .. length probe.written - 1]]
       , boxed = any (\b -> b.markerLine == n) boxes
       , inBoxes = [plainText inlines | Alert _ _ bs <- concatMap (everyBlock . snd) blocks, b <- concatMap everyBlock bs, Just inlines <- [paragraphOf b]]
+      , wikiLinks = [address | Link attributes address _ _ <- allInlines (map snd blocks), ("class", "wikilink") `elem` attributes]
       , enclosing = inAbove (fromMaybe n (lastMay [l | (Just l, _) <- blocks, l <= n]))
       }
-  Left _ -> LineReading {roles = [], boxed = False, inBoxes = [], enclosing = inAbove n}
+  Left _ -> LineReading {roles = [], boxed = False, inBoxes = [], wikiLinks = [], enclosing = inAbove n}
   where
     kept = drop (probe.from - 1) above
     n = length kept + 1
@@ -302,7 +378,7 @@ probesOf readAt at = firstProbes at <> written
 -- the lines above hold, each after all the lines above.
 firstProbes :: At -> [Probe]
 firstProbes at = case shapeAt at of
-  Nothing -> []
+  Nothing -> [pageLinkProbe at start | Just (start, _) <- [pageLinkShape at]]
   Just shape -> case shape.trigger of
     EndMarker -> [Probe 1 [shape.prefix <> closingMarker name] | name <- startedAbove at.above]
     trigger -> [Probe 1 [shape.prefix <> probeOf trigger]]
@@ -333,6 +409,8 @@ probeOf = \case
   StartMarker -> "[[!toc]]"
   BoxMarker -> "[!NOTE]"
   EndMarker -> "[[/div]]"
+  -- A shape is never a link to a page ('pageLink').
+  LinkToPage -> ""
 
 -- | The kinds of block whose start marker the lines above hold somewhere:
 -- the only ones an end marker may end.
@@ -352,12 +430,23 @@ newtype Origin = FromPlugin Text
 originText :: Origin -> Text
 originText (FromPlugin name) = "from plugin " <> name
 
+-- | What the list shows in grey beside a candidate's label: where what it
+-- names is, and where it comes from, as many as it has, parted by a
+-- middle dot (@team\/on-call · from plugin calendar@).
+candidateDetail :: Candidate -> Maybe Text
+candidateDetail c = case catMaybes [c.place, originText <$> c.origin] of
+  [] -> Nothing
+  parts -> Just (T.intercalate " · " parts)
+
 -- | 'Candidate' is an entry of the list: what it shows, what choosing it
--- writes in place of what was typed, and where it comes from ('Nothing'
--- for the wiki's own).
+-- writes in place of what was typed, where what it names is, if that
+-- tells two entries of one label apart (a page's path), and where it
+-- comes from ('Nothing' for the wiki's own). The list shows the last two
+-- in grey beside the label, the place first ('candidateDetail').
 data Candidate = Candidate
   { label :: Text
   , skeleton :: Skeleton
+  , place :: Maybe Text
   , origin :: Maybe Origin
   }
   deriving stock (Eq, Show)
@@ -392,6 +481,8 @@ wikiSource kind defined wanted = case t.trigger of
   StartMarker -> [checkedStart name | name <- markersRead kind, matches (markerNameText name)]
   EndMarker -> [endMarker name | name <- wanted.closable, matches (markerNameText name)]
   BoxMarker -> [if bodyRead then box t.lineStart marker else boxAlone marker | (marker, _) <- boxChoices defined, matches marker]
+  -- The pages are the editor's to know ("Wiki.App.Editor.Complete").
+  LinkToPage -> []
   where
     t = wanted.typed
     matches name = T.toLower t.letters `T.isPrefixOf` T.toLower name
@@ -435,7 +526,7 @@ markersRead = \case
 -- A spoiler's name and description are places to fill first; a
 -- presentation's look has its theme to fill.
 startMarker :: Text -> MarkerName -> Candidate
-startMarker lineStart name = Candidate {label = openingMarker name, skeleton, origin = Nothing}
+startMarker lineStart name = Candidate {label = openingMarker name, skeleton, place = Nothing, origin = Nothing}
   where
     skeleton = case name of
       SpoilerName ->
@@ -450,7 +541,7 @@ startMarker lineStart name = Candidate {label = openingMarker name, skeleton, or
 -- | A start marker's candidate written alone on its line, with no end
 -- marker: a spoiler with its name and description to fill.
 startAlone :: MarkerName -> Candidate
-startAlone name = Candidate {label = openingMarker name, skeleton, origin = Nothing}
+startAlone name = Candidate {label = openingMarker name, skeleton, place = Nothing, origin = Nothing}
   where
     skeleton = case name of
       SpoilerName -> [Literal (openingMarker name <> "{"), Field 1 "name", Literal "}(", Field 2 "Description", Literal ")", Field 0 ""]
@@ -458,19 +549,19 @@ startAlone name = Candidate {label = openingMarker name, skeleton, origin = Noth
 
 -- | A kind of box's candidate written alone, its marker only.
 boxAlone :: Text -> Candidate
-boxAlone marker = Candidate {label = written, skeleton = [Literal written, Field 0 ""], origin = Nothing}
+boxAlone marker = Candidate {label = written, skeleton = [Literal written, Field 0 ""], place = Nothing, origin = Nothing}
   where
     written = "[!" <> marker <> "]"
 
 -- | An end marker's candidate.
 endMarker :: MarkerName -> Candidate
-endMarker name = Candidate {label = closingMarker name, skeleton = [Literal (closingMarker name), Field 0 ""], origin = Nothing}
+endMarker name = Candidate {label = closingMarker name, skeleton = [Literal (closingMarker name), Field 0 ""], place = Nothing, origin = Nothing}
 
 -- | A kind of box's candidate: its marker (the kind's name in capitals,
 -- as 'boxChoices' gives it), and the box's first line of text under it,
 -- the cursor there.
 box :: Text -> Text -> Candidate
-box lineStart marker = Candidate {label = written, skeleton = [Literal (written <> "\n" <> lineStart), Field 1 ""], origin = Nothing}
+box lineStart marker = Candidate {label = written, skeleton = [Literal (written <> "\n" <> lineStart), Field 1 ""], place = Nothing, origin = Nothing}
   where
     written = "[!" <> marker <> "]"
 
@@ -493,10 +584,12 @@ data EscapePolicy = EscapeCloses
   deriving stock (Eq, Show)
 
 -- | 'Completion' is the answer: where the text the entry chosen replaces
--- starts in the cursor's line (in characters; it ends at the cursor), the
--- candidates, and what Enter and Escape do.
+-- starts in the cursor's line (in characters), how many characters after
+-- the cursor it replaces too ('Typed''s 'through'), the candidates, and
+-- what Enter and Escape do.
 data Completion = Completion
   { from :: Int
+  , through :: Int
   , candidates :: [Candidate]
   , enter :: EnterPolicy
   , escape :: EscapePolicy
@@ -515,11 +608,11 @@ complete sources readAt at = do
         _ -> []
       writes skeleton = case shapeAt at of
         Just shape -> readAt (writtenProbe at shape (readAt (Probe 1 [shape.prefix <> probeOf shape.trigger])).enclosing skeleton)
-        Nothing -> LineReading {roles = [], boxed = False, inBoxes = [], enclosing = 1}
+        Nothing -> LineReading {roles = [], boxed = False, inBoxes = [], wikiLinks = [], enclosing = 1}
       wanted = Wanted {typed, closable, writes}
       found = concatMap ($ wanted) sources
   guard (not (null found))
-  Just Completion {from = typed.from, candidates = found, enter = EnterChooses, escape = EscapeCloses}
+  Just Completion {from = typed.from, through = typed.through, candidates = found, enter = EnterChooses, escape = EscapeCloses}
   where
     isEnd = \case
       Ends _ -> True

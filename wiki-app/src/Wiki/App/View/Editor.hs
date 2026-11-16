@@ -97,7 +97,9 @@
 -- It completes the wiki's own Markdown (WP5.124 (b) of docs/PLAN.md):
 -- @[[!@ and @[[/@ at a line's start, and @[!@ on a quotation's first line,
 -- open a list of the markers the page's kind reads, of the blocks open
--- there, and of the kinds of box ("Wiki.Core.Markdown.Complete").
+-- there, and of the kinds of box ("Wiki.Core.Markdown.Complete"); @[[@
+-- anywhere else, of the space's pages, each written as a link relative to
+-- this page (WP5.124 (c)).
 -- CodeMirror asks with a @wiki-complete@ event, saying where its cursor is,
 -- and the component answers in the same step from the text and the kinds
 -- of box it holds ("Wiki.App.Editor.Complete", 'answerCompletion').
@@ -443,6 +445,7 @@ import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.Slides qualified as Slides
 import Wiki.Core.Slug (Slug)
 import Wiki.Core.Space (Space (encryption, id))
+import Wiki.Core.Space qualified as S
 import Wiki.Core.User (Login (..), User (displayName, id, login))
 import Wiki.Core.Version (Author (..), Version (author))
 
@@ -2421,7 +2424,7 @@ component =
       CompleteAsked i request -> do
         st <- get
         let (found, readings) = case st.loaded of
-              Ready w -> Complete.answer (Complete.sources Complete.Held {kind = w.page.kind, boxes = st.input.context.session.boxes}) st.readings w.body request
+              Ready w -> Complete.answer (Complete.sources (heldFor st.input w)) st.readings w.body request
               _ -> (Nothing, st.readings)
         modify (\s -> s {readings})
         for_ st.hostElement $ \h -> H.liftEffect (answerCompletion h i found)
@@ -3653,6 +3656,25 @@ data Menu = HtmlMenu | ColourMenu | BoxMenu | EmojiMenu
 -- this many.
 emojiColumns :: Int
 emojiColumns = 8
+
+-- | What the completion of the wiki's own Markdown reads of the editor
+-- ("Wiki.App.Editor.Complete"): the page's kind, the kinds of box, the
+-- page being edited, and the pages of its space a link may name, each
+-- with its path. A template is not one.
+heldFor :: Input -> Work -> Complete.Held
+heldFor input work =
+  Complete.Held
+    { kind = work.page.kind
+    , boxes = input.context.session.boxes
+    , editing = work.page.id
+    , editingPath = input.path
+    , pages =
+        [ Complete.Linkable {id = p.id, title = p.title, path}
+        | p <- input.pages
+        , not p.template
+        , Just path <- [S.pagePath input.space (\i -> find (\q -> q.id == i) input.pages) p.id]
+        ]
+    }
 
 -- | Whether the one asking may define kinds of box: an administrator of
 -- the wiki, who writes the server's settings.

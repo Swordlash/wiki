@@ -1989,14 +1989,22 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   CodeMirror owns the popup, the keys and the snippet's fields. One
   source more in the same `autocompletion`, not a second one. Five
   pull requests, in a row (all touch `web/src/editor.js`):
-  (a) **Enter in lists and boxes**: lang-markdown's
-  `insertNewlineContinueMarkupCommand` with `nonTightLists: false`,
-  bound in the master and in the slides' rows; a new item at the same
-  indentation, a task's box, an ordered list renumbered; a second
-  Enter on an empty item goes up one level, and an empty `>` line in a
-  box leaves the box at once (the issue's words; the library wants two
-  empty lines, so a few lines of the wiki's own); Shift+Enter stays a
-  plain new line; Backspace is left as it is. Small.
+  (a) **Enter in lists and boxes** (#292, being reworked since
+  2026-11-16). The first build bound lang-markdown's continuation
+  command with lines of the wiki's own in JavaScript; four rounds of
+  review found new edge cases each time (spacing between quotation
+  marks, indented code, a row's own syntax tree, tabs, numbered tasks,
+  an exception in the library, then holes in a check of the library's
+  answer), because logic in JavaScript is exercised by a reviewer only.
+  Now: a narrower contract (an empty selection only; only the cursor's
+  line and the new line change; later items are not renumbered, which
+  renders the same) and the decision as a pure function in wiki-core
+  over the enclosing block, with the wiki's parser as the oracle of
+  its properties; CodeMirror's keymap calls it synchronously
+  (`mkSyncCallback`, as the live preview does) and applies the answer;
+  anything outside the contract, and any failure, is the plain new
+  line. Shift+Enter stays a plain new line; Backspace is left as it
+  is.
   (b) **The framework, with `[[!`, `[[/` and `[!`**: the markers the
   page's kind reads (a document is offered no `notes`, `incremental`,
   `pause` or `style`), each written with its end marker and the cursor
@@ -3327,6 +3335,16 @@ needs. Each was true when its package merged; check before relying on one.
   in-memory DOM listens on the one window until `Router.stop`. All
   four are in the pull request's notes for the library's owner. (5)
   `Wiki.App.Static`'s prerender still settles by polling a clock.
+- **A key handled in Haskell reads and writes the whole text
+  (measured 2026-11-16).** Tab (`IndentKey`) runs synchronously in the
+  key's dispatch through `edit`, which reads the master's whole text,
+  applies a pure command and writes the whole text back. On the
+  Markdown guide Tab then a letter take 82 ms; in a far row of the
+  sixty-slide deck (300 KB) 4.2 s, with the page held for 0.7 s a key
+  (the read and write, and what `Typed` does after). Every toolbar
+  command pays the same. A binding that hands over and takes back one
+  block would remove most of it (WP5.124 (a)'s Enter is built that
+  way); with #290 (parse less) if long texts are ever taken up.
 - **Ceilings for the browser suite and the nightly (#291, WP5.122 and
   WP5.114).** `toolchain/check-test-ceilings.sh` holds the browser
   suite's `eventually`, `eventuallyWithin`, `find` (with `findIn`),

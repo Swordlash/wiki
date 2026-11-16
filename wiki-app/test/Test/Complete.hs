@@ -104,24 +104,24 @@ spec = describe "Wiki.App.Editor.Complete" $ do
     it "opens no list when no page has the letters" $
       offered "[[zebra" `shouldBe` Nothing
     it "writes the link with its end, the cursor after it" $ do
-      written onHandbook "[[Gui" "" `shouldBe` Just "[[Guide]]${0}"
-      written onHandbook "[[Old" "" `shouldBe` Just "[[guide-old|Old notes]]${0}"
-      written onHandbook "[[Projects" "" `shouldBe` Just "[[../projects|Projects]]${0}"
+      written onHandbook "[[Gui" "" `shouldBe` Just "[[Guide]]"
+      written onHandbook "[[Old" "" `shouldBe` Just "[[guide-old|Old notes]]"
+      written onHandbook "[[Projects" "" `shouldBe` Just "[[../projects|Projects]]"
     it "replaces the end typed already, and keeps a label typed already" $ do
       -- The cursor after "Gui" of "[[Gui|For me]]": the entry replaces
       -- "[[Gui" and "|For me]]", and writes the label back as it was.
       let reach typed afterwards = (\c -> (c.from, c.through)) <$> answered (sources onHandbook) (typed <> afterwards) (lineRequest typed afterwards)
       reach "[[Gui" "de]] now" `shouldBe` Just (0, 4)
-      written onHandbook "[[Gui" "de]] now" `shouldBe` Just "[[Guide]]${0}"
+      written onHandbook "[[Gui" "de]] now" `shouldBe` Just "[[Guide]]"
       reach "[[Old" "|Mine]]" `shouldBe` Just (0, 7)
-      written onHandbook "[[Old" "|Mine]]" `shouldBe` Just "[[guide-old|Mine]]${0}"
+      written onHandbook "[[Old" "|Mine]]" `shouldBe` Just "[[guide-old|Mine]]"
     it "escapes the bar of a label it writes in a table's cell, and reads a link inside emphasis (#294, third round)" $ do
       let inTable typed afterwards =
             answered (sources onHandbook) ("| h | i |\n| --- | --- |\n" <> typed <> afterwards) (Request {line = 3, before = typed, after = afterwards, nodes = ["Paragraph", "Document"]})
               >>= head
               . (.candidates)
       (fst . skeletonText . (.skeleton) <$> inTable "| [[Old" "]] | x |") `shouldBe` Just "[[guide-old\\|Old notes]]"
-      written onHandbook "**[[Gu" "ide]]**" `shouldBe` Just "[[Guide]]${0}"
+      written onHandbook "**[[Gu" "ide]]**" `shouldBe` Just "[[Guide]]"
     it "opens no list where the text holds a carriage return, which the parser reads as a line break and the editor does not (#295's first round)" $
       answered (sources onHandbook) "See [[Guide|a\rb]] now" (lineRequest "See [[Gu" "ide|a\rb]] now") `shouldBe` Nothing
     modifyMaxSuccess (* 5) . prop "leaves one wiki link to the page chosen at the cursor, with the label read there, and every other inline as before, or offers nothing" $
@@ -491,12 +491,13 @@ handbookEditing = slugs ["handbook", "editing"]
 lineRequest :: Text -> Text -> Request
 lineRequest typed rest = Request {line = 1, before = typed, after = rest, nodes = ["Paragraph", "Document"]}
 
--- | What the first entry writes, as its snippet, for a line typed so far.
+-- | What the first entry writes, as text, for a line typed so far.
 written :: Held -> Text -> Text -> Maybe Text
 written h typed afterwards = do
   found <- answered (sources h) (typed <> afterwards) (lineRequest typed afterwards)
   first' <- head found.candidates
-  Just (snippetTemplate first'.skeleton)
+  guard (first'.writing == AsText)
+  Just (fst (skeletonText first'.skeleton))
 
 linkable :: Text -> Text -> [Text] -> (PageId, Text, [Slug])
 linkable i title path = (PageId i, title, slugs path)

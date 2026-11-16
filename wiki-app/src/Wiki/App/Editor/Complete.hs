@@ -195,7 +195,10 @@ pageSource held wanted
       Candidate
         { label = p.title
         , skeleton = [Literal written, Field 0 ""]
-        , writing = if "\n" `T.isInfixOf` written then AsText else AsSnippet
+        , -- As text, which the editor writes as the smallest change: the
+          -- end of a link kept is not written again, and what is on it (an
+          -- assistant's undecided change) stays.
+          writing = AsText
         , action = Nothing
         , note = Just (if null p.path then "the home page" else p.joined)
         , origin = Nothing

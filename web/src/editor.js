@@ -1161,6 +1161,16 @@ const writeText = (view, completion, from, to, text, start, end) => {
   });
 };
 
+// Whether a view's text is still, outside the range an entry replaces
+// (from..to, and on to the cursor), the text an answer was made from
+// outside its range (asked: {text, from, to}, in the master's text for a
+// row of the slide mode).
+const unchangedSince = (host, view, asked, from, to) => {
+  const { state, pos } = wholeAt(host, { state: view.state, pos: from, view });
+  const end = pos + Math.max(to, view.state.selection.main.head) - from;
+  return state.doc.sliceString(0, pos) === asked.text.sliceString(0, asked.from) && state.doc.sliceString(end) === asked.text.sliceString(asked.to);
+};
+
 // What an option of the wiki's own Markdown writes when it is chosen, in
 // a view: its snippet, or its text as it is (insert), in place of the
 // range the list was for; or, for one given the cursor's whole line (an
@@ -1169,7 +1179,18 @@ const writeText = (view, completion, from, to, text, start, end) => {
 // (a list kept from before the last key writes nothing); then, for an
 // entry that opens a dialog, a "wiki-complete-action" event on the host,
 // which the component answers.
-const writeOption = (host, option) => (view, completion, from, to) => {
+const writeOption = (host, option, asked) => (view, completion, from, to) => {
+  // Decided in the step that writes: the answer was made from the text it
+  // read (for a row of the slide mode, the master's: wholeAt), all of it,
+  // not the cursor's line alone (an assistant's change below the line,
+  // made while the list was open, changes what a block needs around it).
+  // Where the text outside what the entry replaces (and the letters typed
+  // since, up to the cursor) is not that text any more, nothing is written
+  // and the list closes; the next letter is answered afresh.
+  if (!unchangedSince(host, view, asked, from, to)) {
+    closeCompletion(view);
+    return;
+  }
   if (option.line === undefined && option.insert !== undefined) {
     // No place to fill: the text as it is, the cursor after it.
     writeText(view, completion, from, to, option.insert, option.insert.length, option.insert.length);
@@ -1240,6 +1261,9 @@ const markupSource = (host, markup, whole) => async (context) => {
   // link that ends there): its length in units is read from the text
   // after the cursor, two units at most for each character.
   const following = state.sliceDoc(pos, Math.min(state.doc.length, pos + 2 * found.through));
+  // The text the answer was made from, and the range an entry replaces in
+  // it, for the check that it is still that text when an entry is chosen.
+  const asked = { text: state.doc, from: pos - (context.pos - from), to: pos + unitsOf(following, found.through) };
   return {
     from,
     to: context.pos + unitsOf(following, found.through),
@@ -1248,7 +1272,7 @@ const markupSource = (host, markup, whole) => async (context) => {
     options: found.options.map((option) => ({
       label: option.label,
       detail: option.detail,
-      apply: writeOption(host, option),
+      apply: writeOption(host, option, asked),
       enter: found.enter,
       typed: (s, head) => ({ from, letters: s.sliceDoc(from, head) }),
       dismiss: found.escape === "dismisses" ? () => dismissSlash.of(from) : undefined,

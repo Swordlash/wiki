@@ -215,6 +215,17 @@ spec m = do
     press "Enter"
     find ui ".cm-wiki-change-reject" >>= click
     eventually $ markdown ui `shouldReturn` titleLines <> "# Some text "
+    -- A change below the line while the list is open: the answer was made
+    -- from the text before it, and Enter writes nothing and closes the
+    -- list.
+    setMarkdown ui (titleLines <> "\n\nEnd.")
+    selectText ui (T.length titleLines) (T.length titleLines)
+    typeText text "/ta"
+    listReady ui
+    proposeText ui (T.length titleLines + 4) (T.length titleLines + 4) "New prose"
+    press "Enter"
+    markdown ui `shouldReturn` titleLines <> "/ta\nNew prose\nEnd."
+    completing ui `shouldReturn` ""
 
   it "opens the dialog of a link to a page from the / menu, the / and its letters gone" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor

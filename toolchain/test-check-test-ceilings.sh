@@ -20,16 +20,23 @@ trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 passed=0
 out=$TMP/out
 
+# The output of a failed case, printed for the reader. A workflow command
+# in it ("::notice …" at the start of a line) is shown indented, so that
+# the CI log it is printed to does not take it as one and raise a false
+# annotation.
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
-  [ ! -f "$out" ] || { printf -- '--- output\n' >&2; cat "$out" >&2; }
+  [ ! -f "$out" ] || { printf -- '--- output\n' >&2; sed 's/^::/  ::/' "$out" >&2; }
   exit 1
 }
 assert_contains() { grep -F -- "$1" "$out" >/dev/null || fail "the output lacks: $1"; }
 assert_lacks() { if grep -F -- "$1" "$out" >/dev/null; then fail "the output has: $1"; fi; }
 pass() { passed=$((passed + 1)); printf 'ok %s - %s\n' "$passed" "$*"; }
 
-check() { (cd "$REPO" && sh "$CHECK" "$@") >"$out" 2>&1; }
+# The check, with GITHUB_ACTIONS unset: the cases decide for themselves
+# whether it runs as in GitHub Actions, whatever the shell running this
+# test has (CI's runner sets it to true).
+check() { (cd "$REPO" && unset GITHUB_ACTIONS && sh "$CHECK" "$@") >"$out" 2>&1; }
 expect_ok() { check "$@" || fail "the check refused: $*"; }
 expect_status() {
   want=$1
@@ -203,7 +210,7 @@ assert_contains 'notice: the ceiling of find was raised from 5 to 6 (by 1) since
 assert_contains 'notice: the ceiling of examples was raised from 4 to 5 (by 1) since the merge base'
 assert_lacks 'threadDelay was raised'
 assert_lacks '::notice'
-(cd "$REPO" && GITHUB_ACTIONS=true sh "$CHECK" --base main) >"$out" 2>&1 || fail 'the check refused the raise in GitHub Actions'
+(cd "$REPO" && GITHUB_ACTIONS=true && export GITHUB_ACTIONS && sh "$CHECK" --base main) >"$out" 2>&1 || fail 'the check refused the raise in GitHub Actions'
 assert_contains '::notice title=A browser ceiling raised::the ceiling of examples was raised from 4 to 5 (by 1) since the merge base (wiki-app/test/browser-ceilings.txt)'
 expect_ok
 assert_lacks 'notice'

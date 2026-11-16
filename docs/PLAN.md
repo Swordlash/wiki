@@ -2006,15 +2006,12 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   line. Shift+Enter stays a plain new line; Backspace is left as it
   is.
   (b) **The framework, with `[[!`, `[[/` and `[!`**: merged (#293).
-  (c) **`[[` for a page**: this space's pages, which the editor holds.
-  What is written is the shortest relative path that resolves back
-  to the page, with `|Title` only when the title differs from what the
-  path shows (the owner, 2026-11-16: "jak uważasz", to the session's
-  recommendation; not the page's address nor the permanent link by
-  id). A property over generated trees of pages: the text written
-  resolves to the page chosen. Other spaces' pages need an ask and
-  come later.
-  (d) **The `/` menu**: every toolbar entry that writes text, and
+  (c) **`[[` for a page**: merged (#294).
+  (d) **The `/` menu** (narrow from the start, the owner on
+  2026-11-16 finding the feature far too slow to land: it opens only
+  at a line's start or after a space with nothing after the cursor,
+  in a paragraph, a list item, a quotation or a box; everywhere else
+  there is no list): every toolbar entry that writes text, and
   "Link to a page" and "Image or attachment", which open their
   dialogs; not the colours, the emoji or "New kind…". It opens at a
   line's start or after a space, never in code, math, a link or HTML.
@@ -3174,6 +3171,28 @@ needs. Each was true when its package merged; check before relying on one.
   parser and CodeMirror count its lines differently); folds do not
   survive a reload; fold-all is not offered (AltGr sends Ctrl+Alt on
   Windows, and its keys would catch typed brackets).
+- **`[[` completing a page's link (#294, WP5.124 (c)).** Six rounds
+  of review, most about completing inside a link that is already
+  there, which the issue did not ask for; the lesson is in the next
+  entries' briefs (a narrow contract, documents longer than every
+  bound in the properties, a property's "no needless decline" half
+  with a comparison of its own). How it stands: the tree records
+  where a wiki link starts and ends; the link at the cursor is read
+  off one parse of the block with up to 2,000 characters after the
+  cursor; three shapes of what would be written are parsed in place
+  before a list opens (a label's bar is escaped in a table cell); the
+  pages' paths are computed once when the input's pages change. Known
+  and left: the first request after a trigger is typed parses the
+  whole text above the cursor (natively 130 ms on the guide, about
+  1 s on wasm in a far row of the long deck), once for each trigger
+  while the lines above stay the same: a package of its own, by
+  reusing the editor's last whole parse (the check's), since cutting
+  at the block CodeMirror's tree sees is unsound (**a footnote
+  definition is a container in the wiki's parser and unknown to
+  CodeMirror**, so that cut can go through one); a link still open
+  2,000 characters after the cursor gets no list; other spaces' pages
+  are not offered; no browser example has a link that ends on a later
+  line.
 - **A broken wiki link is not reported in the editor (noted
   2026-11-16, with WP5.124 (c)).** A link by path breaks when its page
   moves or is renamed; the page and the preview show it as text without

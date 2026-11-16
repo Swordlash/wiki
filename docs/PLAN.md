@@ -2040,27 +2040,12 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   `completion` contribution (#186's table: a trigger and the letters
   typed give candidates) is one more source and not a change of the
   editor.
-- **WP5.122 Checks in place of conventions (decision 82; for the
-  order above).** (1) A script in CI with stored ceilings for the
-  browser suite's `eventually`, `eventuallyWithin`, `find` and
-  `threadDelay` (about 1,340, 80, 2,700 and 28 today): a pull request
-  may lower a ceiling and never pass one. (2) The machines in a
-  package, or a part of one, that does not depend on
-  haskell-halogen-core, so that the compiler refuses a step that
-  waits. (3) A nightly job that runs the native properties with a
-  million cases each and reports a failure with its seed as a finding.
-  (`wiki-app-remote-test` is gone, #286: the native spec checks all
-  it checked of the wiki.)
-- **WP5.114 The browser suite searched for races on purpose (for the
-  order above).** The smoke suites have a throttled job that finds a
-  race again once it has found it; the browser suite has none, and its
-  races were met by chance on pull requests (2026-11-13 and 14: five
-  different examples). A job, nightly or weekly and by hand, that runs
-  `wiki-app-browser-test` several times under a load that is the same
-  every time (the pages' processor slowed through the driver if
-  hspec-halogen can; otherwise more pages side by side than cores),
-  and reports every example that failed with its seed; a failure there
-  is a finding with a package of its own, not a re-run.
+- **WP5.122 Checks in place of conventions (decision 82): what is
+  left.** The ceilings and the nightly are merged (#291, with
+  WP5.114). Left: the machines in a package, or a part of one, that
+  does not depend on haskell-halogen-core, so that the compiler
+  refuses a step that waits; and the first nights of the nightly read
+  (below, in the known gaps).
 - **WP5.115 The Markdown parser parses less (issue #290, low priority:
   the owner, 2026-11-15, "też myślę że nie": not taken now; the
   measure is done, 2026-11-14).** It would speed a pause while a very
@@ -3342,6 +3327,26 @@ needs. Each was true when its package merged; check before relying on one.
   in-memory DOM listens on the one window until `Router.stop`. All
   four are in the pull request's notes for the library's owner. (5)
   `Wiki.App.Static`'s prerender still settles by polling a clock.
+- **Ceilings for the browser suite and the nightly (#291, WP5.122 and
+  WP5.114).** `toolchain/check-test-ceilings.sh` holds the browser
+  suite's `eventually`, `eventuallyWithin`, `find` (with `findIn`),
+  `threadDelay` and its lines with `it` to the numbers in
+  `wiki-app/test/browser-ceilings.txt` (1,335, 78, 2,790, 24 and 679
+  when it merged); a count above fails, a count below fails until the
+  number is lowered, and a raise is by hand only, for an example that
+  needs a browser, with a notice in CI's log. Two open pull requests
+  that change the same count conflict on one line of that file, so
+  they are stacked. `.github/workflows/nightly.yml` runs at 01:43 UTC
+  and by hand: the machines' properties with 500,000 cases (a million
+  does not fit half an hour), and the browser suite four times with
+  twice as many pages side by side as cores (hspec-halogen has no
+  processor throttle at the pin: asked of the library when next
+  written to, since a load of pages varies and a race found may not
+  show again). **Nothing of the nightly had run on GitHub when it
+  merged**: the first nights have to show that the caches hit, the
+  real times, and a line for each run with its seed; and they may be
+  red for the HTTP group under load, which is known. A red night is a
+  finding to read, not a run to repeat.
 - **The page's comments as a machine (#284, WP5.121's first).**
   `View/Comments/Machine.hs`, held in the page view's state; the
   comments view asks for a write and is told its answer. Costs: one

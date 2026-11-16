@@ -3,10 +3,19 @@
 # ceilings (WP5.122 of docs/PLAN.md): the CI job `changelog` runs it on
 # every pull request. Decision 83 says a browser example is written only
 # for what needs a browser, and decision 82 that a test waits on the
-# program, not on a clock. Each ceiling is a number that may only go down:
-# a pull request that adds a wait or an example over the stored number
-# fails, and one that removes some must lower the stored number with it, so
-# that the file always holds today's exact count.
+# program, not on a clock. A pull request that adds a wait or an example
+# over the stored number fails, and one that removes some must lower the
+# stored number with it, so that the file always holds today's exact
+# count.
+#
+# A ceiling is raised only by hand, by editing its number in the file, so
+# that the raise is seen in review. `examples`, and the `find` and
+# `eventually` a new example needs, may be raised when the new example is
+# for what needs a browser: the islands' libraries (CodeMirror and the
+# rest), layout and measuring, focus and selection, real HTTP and
+# WebSocket, the service worker. The pull request's description then says
+# why. `threadDelay` and `eventuallyWithin` are not raised. With --base,
+# each ceiling higher than at the merge base is named in a notice.
 #
 #   sh toolchain/check-test-ceilings.sh [--base REF] [--ceilings FILE] [--root DIR]
 #   sh toolchain/check-test-ceilings.sh --count [--root DIR]
@@ -34,7 +43,8 @@
 # name and its number a line, and comments after #. With --base, a count
 # over its ceiling also names the files whose count grew since the merge
 # base of REF and HEAD (CI gives HEAD^1, the pull request's base as GitHub
-# merged it). --count prints today's counts in the file's form. --lower
+# merged it), and a ceiling stored higher than at the merge base is named
+# with its raise, which changes no exit status. --count prints today's counts in the file's form. --lower
 # writes today's count for every name below its ceiling into the file,
 # and never raises one. DIR is the repository's root (the current
 # directory by default).
@@ -250,6 +260,33 @@ if [ -n "$base" ]; then
   fi
 fi
 
+# A ceiling stored higher than at the merge base: a raise made by hand,
+# named so that CI's log and a reviewer see it without reading the diff.
+# A notice only: it changes no exit status. In GitHub Actions it is also
+# an annotation on the run.
+if [ -n "${merge_base:-}" ]; then
+  relative=${ceilings#"$root"/}
+  if [ "$relative" != "$ceilings" ] && git -C "$root" cat-file -e "$merge_base:$relative" 2>/dev/null; then
+    raised=$(
+      {
+        git -C "$root" show "$merge_base:$relative" | awk '{ sub(/#.*/, "") } NF == 2 && $2 ~ /^[0-9]+$/ { print "before", $1, $2 }'
+        printf '%s\n' "$stored" | awk '{ print "now", $1, $2 }'
+      } | awk '
+        $1 == "before" { was[$2] = $3; next }
+        ($2 in was) && $3 > was[$2] { printf "%s %d %d\n", $2, was[$2], $3 }
+      '
+    )
+    printf '%s\n' "$raised" | while read -r name from to; do
+      [ -n "$name" ] || continue
+      line="the ceiling of $name was raised from $from to $to (by $((to - from))) since the merge base"
+      printf '%s: notice: %s\n' "$PROG" "$line"
+      if [ "${GITHUB_ACTIONS:-}" = true ]; then
+        printf '::notice title=A browser ceiling raised::%s (%s)\n' "$line" "$relative"
+      fi
+    done
+  fi
+fi
+
 status=0
 for name in $NAMES; do
   now=$(printf '%s\n' "$counts" | total "$name")
@@ -258,13 +295,21 @@ for name in $NAMES; do
     status=1
     printf '%s: %s is %s, above its ceiling of %s.\n' "$PROG" "$name" "$now" "$ceiling"
     if [ "$name" = examples ]; then
-      printf '  A browser example is only for what needs a browser (decision 83 of docs/PLAN.md):\n'
-      printf '  test the logic natively, and how a state shows on the in-memory DOM.\n'
+      printf '  By default, take the new example out: test the logic natively, and how a state\n'
+      printf '  shows on the in-memory DOM (decision 83 of docs/PLAN.md).\n'
     else
-      printf '  A browser test waits on the program, not on a clock (decision 82 of docs/PLAN.md):\n'
-      printf '  after an action, read the page once, or wait with waitQuiet.\n'
+      printf '  By default, take the new uses out: wait on the program, not on a clock; after an\n'
+      printf '  action, read the page once, or wait with waitQuiet (decision 82 of docs/PLAN.md).\n'
     fi
-    printf '  A ceiling is never raised: take out as many as were added, here or elsewhere.\n'
+    case $name in
+      examples | find | eventually)
+        printf '  A raise is right only for a new example of what needs a browser (an island'"'"'s library\n'
+        printf '  such as CodeMirror, layout and measuring, focus and selection, real HTTP and WebSocket,\n'
+        printf '  the service worker): then edit the number in %s by hand, and say why\n' "${ceilings#"$root"/}"
+        printf '  in the pull request'"'"'s description.\n'
+        ;;
+      *) printf '  This ceiling is not raised.\n' ;;
+    esac
     if [ -n "$base" ] && [ -n "${merge_base:-}" ]; then
       grew=$(
         {

@@ -5,8 +5,10 @@
 # imports, qualified names, findAll), the suite's files taken from the
 # stanza and from Test/Browser/, counts at their ceilings (ok), a count
 # above its ceiling with the file that grew since the merge base, a count
-# below its ceiling, --lower, --count, and a malformed ceilings file. Then
-# this repository's own suite against its own ceilings.
+# below its ceiling, --lower, --count, ceilings raised by hand (passing,
+# each named in a notice), what a count above its ceiling says of a raise,
+# and a malformed ceilings file. Then this repository's own suite against
+# its own ceilings.
 #
 #   sh toolchain/test-check-test-ceilings.sh
 set -eu
@@ -182,6 +184,43 @@ grep -x 'threadDelay 1' "$REPO/wiki-app/test/browser-ceilings.txt" >/dev/null ||
 grep -x 'eventually 4' "$REPO/wiki-app/test/browser-ceilings.txt" >/dev/null || fail '--lower raised eventually'
 grep -x 'find 5   # find and findIn' "$REPO/wiki-app/test/browser-ceilings.txt" >/dev/null || fail '--lower changed a line it had no reason to'
 pass '--lower lowers a ceiling, never raises one, and keeps the rest of the file'
+
+# A branch that adds an example with a find and an eventually, and
+# raises those three ceilings by hand: it passes, and each raise is named
+# in a notice, as an annotation too in GitHub Actions.
+git -C "$REPO" checkout -q -f main
+git -C "$REPO" checkout -q -b raised
+cat >>"$REPO/wiki-app/test/Test/Browser/B.hs" <<'EOF'
+completes = it "completes in CodeMirror" (find ui ".cm-tooltip" >> eventually (pure ()))
+EOF
+sed 's/^eventually 4$/eventually 5/; s/^find 5 /find 6 /; s/^examples 4$/examples 5/' \
+  "$REPO/wiki-app/test/browser-ceilings.txt" >"$TMP/ceilings"
+cp "$TMP/ceilings" "$REPO/wiki-app/test/browser-ceilings.txt"
+git -C "$REPO" commit -q -a -m raised
+expect_ok --base main
+assert_contains 'notice: the ceiling of eventually was raised from 4 to 5 (by 1) since the merge base'
+assert_contains 'notice: the ceiling of find was raised from 5 to 6 (by 1) since the merge base'
+assert_contains 'notice: the ceiling of examples was raised from 4 to 5 (by 1) since the merge base'
+assert_lacks 'threadDelay was raised'
+assert_lacks '::notice'
+(cd "$REPO" && GITHUB_ACTIONS=true sh "$CHECK" --base main) >"$out" 2>&1 || fail 'the check refused the raise in GitHub Actions'
+assert_contains '::notice title=A browser ceiling raised::the ceiling of examples was raised from 4 to 5 (by 1) since the merge base (wiki-app/test/browser-ceilings.txt)'
+expect_ok
+assert_lacks 'notice'
+pass 'a ceiling raised by hand passes, and --base names each raise in a notice'
+
+# Above its ceiling, a wait that is not raised says so; a find says when
+# a raise is right.
+cat >>"$REPO/wiki-app/test/Test/Browser/B.hs" <<'EOF'
+slept = threadDelay 10 >> find ui ".x"
+EOF
+expect_status 1
+assert_contains 'threadDelay is 3, above its ceiling of 2.'
+assert_contains 'This ceiling is not raised.'
+assert_contains 'find is 7, above its ceiling of 6.'
+assert_contains 'A raise is right only for a new example of what needs a browser'
+assert_contains "say why"
+pass 'above its ceiling: what to do by default, and when a raise is right'
 
 git -C "$REPO" checkout -q -f main
 printf 'eventually 4\nfind 5\nthreadDelay 2\nexamples 4\n' >"$REPO/wiki-app/test/browser-ceilings.txt"

@@ -222,10 +222,12 @@ jobs:
 
     # The browser suite's waits and examples against their ceilings
     # (toolchain/check-test-ceilings.sh, WP5.122 of docs/PLAN.md): a pull
-    # request may lower a ceiling, and must write the lower number, but
-    # never pass one. Here because this is the cheapest job every pull
-    # request runs: a second, with no toolchain, and the history the
-    # changelog's check fetched names the files that grew since the base.
+    # request that lowers a count must write the lower number, and one that
+    # passes a ceiling fails unless the number was raised by hand, which
+    # the log then names in a notice. Here because this is the cheapest
+    # job every pull request runs: a second, with no toolchain, and the
+    # history the changelog's check fetched names the files that grew, and
+    # the ceilings raised, since the base.
     # It runs even when the changelog's check failed, so that both say
     # what is wrong in one run.
     - name: Check the browser suite's ceilings

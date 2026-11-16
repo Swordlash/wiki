@@ -3583,9 +3583,14 @@ The suite's `eventually`, `eventuallyWithin`, `find` (with `findIn`),
 CI's `changelog` job runs on every pull request). A browser example is
 heavy, slow and brittle, so it is written only for what needs a browser
 (decision 83 of `docs/PLAN.md`): the logic is a native property, and how a
-state shows is tested on the in-memory DOM (below). A ceiling only goes
-down: a pull request that passes one fails, and one that removes some
-writes the lower number (`--lower`).
+state shows is tested on the in-memory DOM (below). A pull request that
+passes a ceiling fails, and one that removes some writes the lower number
+(`--lower`). A ceiling is raised only by hand, in the file, for a new
+example of what needs a browser (an island's library such as CodeMirror,
+layout and measuring, focus and selection, real HTTP and WebSocket, the
+service worker): `examples`, and the `find` and `eventually` it needs, with
+the reason in the pull request's description. CI's log names each raise in
+a notice. `threadDelay` and `eventuallyWithin` are not raised.
 
 ### A view's native tests
 

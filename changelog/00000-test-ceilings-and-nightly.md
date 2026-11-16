@@ -8,8 +8,9 @@ technical: true
 
 - Every pull request now checks the browser tests' waits and examples
   against stored ceilings (`npm run check-test-ceilings`). A count may go
-  down, and the stored number with it, but never up: a behaviour is tested
-  natively, and a browser example is kept for what needs a browser.
+  down, and the stored number with it. It goes up only by a raise made by
+  hand for a new example of what needs a browser, which the check names:
+  a behaviour is tested natively.
 
   ```text
   check-test-ceilings: eventually is 1336, above its ceiling of 1335.

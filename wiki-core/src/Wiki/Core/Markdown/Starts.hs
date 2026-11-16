@@ -50,8 +50,11 @@ blockStarts source shapes =
     afterBlank l = maybe False (T.null . T.strip) (atMay sourceLines (l - 2))
 
 -- | Where the text handed to a parse starts, for a cursor: the last start
--- at or before the start of the cursor's line whose line ends at or
--- before the first change since the starts were found, or 0. The starts
+-- before the start of the cursor's line whose line ends at or before the
+-- first change since the starts were found, or 0. Before it, not at it:
+-- on a line that starts a block, the block above comes too, since Enter
+-- may empty that line, and a block above that goes on over blank lines
+-- (a fence left open in an item) would take the emptied line in. The starts
 -- are offsets in the text as it is now (mapped through the changes; those
 -- before the first change are where they were), in order, each with the
 -- end of its line; the positions are offsets too. Typing in the cursor's
@@ -59,7 +62,7 @@ blockStarts source shapes =
 -- its first line, until the next parse, gives an earlier start and a
 -- longer text.
 startFor :: [(Int, Int)] -> Int -> Int -> Int
-startFor starts firstChange lineStart = fromMaybe 0 (lastMay [s | (s, end) <- takeWhile ((<= lineStart) . fst) starts, end <= firstChange])
+startFor starts firstChange lineStart = fromMaybe 0 (lastMay [s | (s, end) <- takeWhile ((< lineStart) . fst) starts, end <= firstChange])
 
 -- | Where the text handed to a parse ends, for a cursor: just before the
 -- second start after the end of the cursor's line, so that the block

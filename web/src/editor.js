@@ -1500,9 +1500,8 @@ const enterStarts = StateField.define({
 });
 
 // The text Enter hands to Haskell at a position, as {from, to}: from the
-// last start at or before the position's line whose own line ends at or
-// before the first change since the check (Wiki.Core.Markdown.Starts'
-// startFor), to just before the second start after the position's line,
+// last start before the position's line whose own line ends at or before
+// the first change since the check (Wiki.Core.Markdown.Starts' startFor), to just before the second start after the position's line,
 // the block below coming whole, or to the end of the text (its endFor).
 // Null for a text longer than Wiki.Core.Markdown.Enter's textLimit (2000
 // characters), where Enter is a line break alone: before the first check,
@@ -1516,7 +1515,7 @@ const enterRange = (state, pos) => {
   let below = 0;
   let to = doc.length;
   for (const start of kept.starts) {
-    if (start <= line.from) {
+    if (start < line.from) {
       if (doc.lineAt(start).to <= kept.firstChange) from = start;
     } else if (start > line.to && doc.lineAt(start).from === start && doc.lineAt(start - 1).text.trim() === "" && ++below === 2) {
       // Only a start still at a line's start, after a blank line: a change

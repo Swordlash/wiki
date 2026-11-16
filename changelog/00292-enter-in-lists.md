@@ -7,11 +7,10 @@ title: Enter continues lists and boxes in the editor
 
 - In the editor, Enter at the end of a list's item starts the next item
   at the same indentation: `- ` after a bulleted item, the next number
-  after a numbered one (the numbers below move on), `- [ ] ` after a
-  task. Enter on an empty item goes up one level in a nested list, and
-  out of the list at the top level. Typing `- Milk`, Enter, `Eggs`,
-  Enter, Enter writes the list and leaves the cursor on the empty line
-  after it:
+  after a numbered one, `- [ ] ` after a task. Enter on an empty item
+  goes up one level in a nested list, and out of the list at the top
+  level. Typing `- Milk`, Enter, `Eggs`, Enter, Enter writes the list and
+  leaves the cursor on the empty line after it:
 
   ```markdown
   - Milk
@@ -28,5 +27,9 @@ title: Enter continues lists and boxes in the editor
   > Read it twice.
   ```
 
-- Shift+Enter is a line break and nothing more, in a list or a box too:
-  it keeps an empty `> ` line in a box, for a second paragraph.
+- Enter changes only the line it is pressed on and the new line: the
+  numbers of the items below stay as they are, and the page still numbers
+  them one after another. Enter with text selected, in the middle of a
+  line, in code, or on a line with more of its item below it (a nested
+  list), is a line break and nothing more, and so is Shift+Enter: it keeps
+  an empty `> ` line in a box, for a second paragraph.

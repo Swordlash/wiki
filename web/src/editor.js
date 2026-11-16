@@ -1479,24 +1479,35 @@ const textKeys = standardKeymap.filter((binding) => !toolbarKeys.has(binding.mac
 // a blank line before it instead.
 const continueMarkup = insertNewlineContinueMarkupCommand({ nonTightLists: false });
 
-// An empty line of a quotation: its ">" marks and nothing else. The
-// first group is what comes before the last mark: indentation, and the
-// marks of the quotations around this one.
-const emptyQuoteLine = /^([ \t]*(?:>[ \t]?)*)>[ \t]*$/;
-
-// Whether a position is in a quotation (a box is one) and not in code or
-// HTML inside it, where a ">" at a line's start is text.
-const inQuotation = (state, pos) => {
-  for (let node = syntaxTree(state).resolveInner(pos, -1); node; node = node.parent) {
-    if (/^(FencedCode|CodeBlock|HTMLBlock|CommentBlock)$/.test(node.name)) return false;
-    if (node.name === "Blockquote") return true;
-  }
+// Whether a position is in a node of one of these names, or under one.
+// Which lines are code, HTML or a quotation, and where a quotation's marks
+// are, is read off the syntax tree, never from the characters: the
+// tree's Markdown parser follows CommonMark's rules for containers (the
+// spaces a mark may have before and after it, lazy lines, indented code)
+// that a pattern would have to write again.
+const within = (state, pos, names) => {
+  for (let node = syntaxTree(state).resolveInner(pos, -1); node; node = node.parent) if (names.test(node.name)) return true;
   return false;
 };
 
-// Enter at the end of an empty line of a quotation leaves the quotation:
-// the line's last ">" goes, and the cursor stays on the line. A quotation
-// in another (> >) goes up to that one, whose "> " stays; one at the top
+// Where the marks of the quotations a line is in are, as the syntax tree
+// reads them (QuoteMark), in characters from the line's start.
+const quoteMarksOn = (state, line) => {
+  const marks = [];
+  syntaxTree(state).iterate({
+    from: line.from,
+    to: line.to,
+    enter: (node) => {
+      if (node.name === "QuoteMark" && node.from >= line.from && node.to <= line.to) marks.push(node.from - line.from);
+    },
+  });
+  return marks;
+};
+
+// Enter at the end of an empty line of a quotation (nothing on it but its
+// marks) leaves the quotation: the line's last ">" goes, and the cursor
+// stays on the line. A quotation in another (> >, with any spaces the
+// tree reads between them) goes up to that one, whose "> " stays; one at the top
 // level, or in a list's item, leaves an empty line, with no indentation
 // left on it. The library leaves a quotation only on the second empty
 // line in a row, so that an empty line inside it makes a new paragraph;
@@ -1507,12 +1518,14 @@ const leaveQuotation = ({ state, dispatch }) => {
   let declined = false;
   const changes = state.changeByRange((range) => {
     const line = state.doc.lineAt(range.head);
-    const empty = range.empty && range.head === line.to ? emptyQuoteLine.exec(line.text) : null;
-    if (empty === null || !inQuotation(state, range.head)) {
+    // A line in code or HTML holds no marks of its own.
+    const marks = range.empty && range.head === line.to && !within(state, range.head, /^(FencedCode|CodeBlock|HTMLBlock|CommentBlock)$/) ? quoteMarksOn(state, line) : [];
+    const rest = Array.from(line.text, (c, i) => (marks.includes(i) ? " " : c)).join("");
+    if (marks.length === 0 || /\S/.test(rest)) {
       declined = true;
       return { range };
     }
-    const kept = empty[1].includes(">") ? `${empty[1].trimEnd()} ` : "";
+    const kept = marks.length > 1 ? `${line.text.slice(0, marks[marks.length - 1]).trimEnd()} ` : "";
     return { range: EditorSelection.cursor(line.from + kept.length), changes: { from: line.from, to: line.to, insert: kept } };
   });
   if (declined) return false;
@@ -1520,13 +1533,21 @@ const leaveQuotation = ({ state, dispatch }) => {
   return true;
 };
 
-// The editor's Enter, in the master and in a row of the slide mode: the
-// wiki's leaving of a quotation, the library's continuation, or else a
-// line break. Shift+Enter is always a line break and nothing more. Both
-// come after the completion's keys, so that Enter chooses from an open
-// list first; in code, and anywhere outside a list or a quotation, Enter
-// is a line break.
-const markupEnter = { key: "Enter", run: (view) => leaveQuotation(view) || continueMarkup(view) || insertNewline(view), shift: insertNewline };
+// The editor's Enter, in the master and in a row of the slide mode: in
+// code, fenced or indented, a line break and nothing more (the library
+// leaves fenced code alone, but continues the quotation or the list an
+// indented code block is in); elsewhere the wiki's leaving of a
+// quotation, the library's continuation, or else a line break.
+// Shift+Enter is always a line break and nothing more. Both come after
+// the completion's keys, so that Enter chooses from an open list first.
+const markupEnter = {
+  key: "Enter",
+  run: (view) =>
+    within(view.state, view.state.selection.main.head, /^(FencedCode|CodeBlock)$/)
+      ? insertNewline(view)
+      : leaveQuotation(view) || continueMarkup(view) || insertNewline(view),
+  shift: insertNewline,
+};
 
 // The editors attached, so that one whose host has left the page (the
 // editor closed without its finalizer reaching it) is let go of: a view

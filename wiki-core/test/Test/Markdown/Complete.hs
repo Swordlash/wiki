@@ -77,6 +77,15 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       endOf "[[‸|Label]]" `shouldBe` (T.length "|Label]]", "|Label]]")
     it "keeps a label the parser reads with a bracket or a character reference in it (#294)" $
       endOf "[[q‸-a|[draft&#93;]]" `shouldBe` (T.length "-a|[draft&#93;]]", "|[draft&#93;]]")
+    it "reads the link at the cursor inside emphasis, and in a table's cell (#294, third round)" $ do
+      endOf "**[[Gu‸ide]]**" `shouldBe` (T.length "ide]]", "")
+      endOf "Text _a [[Gu‸ide|Mine]] b_" `shouldBe` (T.length "ide|Mine]]", "|Mine]]")
+      endOf "| h | i |\n| --- | --- |\n| [[Gu‸ide]] | x |" `shouldBe` (T.length "ide]]", "")
+    it "writes a label after an escaped bar in a table's cell, and after a bar elsewhere (#294, third round)" $ do
+      labelsOf "| h | i |\n| --- | --- |\n| [[Gu‸]] | x |" `shouldBe` Just EscapedLabel
+      labelsOf "| h | i |\n| --- | --- |\n| [[Gu‸ | x |" `shouldBe` Just EscapedLabel
+      labelsOf "See [[Gu‸]] now" `shouldBe` Just PlainLabel
+      labelsOf "See **[[Gu‸** now" `shouldBe` Just PlainLabel
     it "replaces a link to its end on a line below, and keeps its label's lines (#294)" $ do
       endOf "[[Gu‸ide|read\nmore]] now" `shouldBe` (T.length "ide|read\nmore]]", "|read\nmore]]")
       endOf "[[Gu‸ide\nto it]] now" `shouldBe` (T.length "ide\nto it]]", "")
@@ -149,7 +158,7 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
 
   describe "sources and origins" $ do
     let calendar :: Source
-        calendar wanted = [Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]"], place = Nothing, origin = Just (FromPlugin "calendar")} | wanted.typed.trigger == StartMarker]
+        calendar wanted = [Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]"], place = Nothing, writing = AsSnippet, origin = Just (FromPlugin "calendar")} | wanted.typed.trigger == StartMarker]
     it "shows a plugin's origin as from the plugin" $
       originText (FromPlugin "calendar") `shouldBe` "from plugin calendar"
     it "lists every source's candidates, in the sources' order, each with its origin" $ do
@@ -195,9 +204,17 @@ typedAt marked = (\t -> (t.trigger, t.letters, t.from)) <$> triggerAt (readLine 
   where
     at = atIn [] marked
 
+-- | How a link's entry writes a label of its own there.
+labelsOf :: Text -> Maybe LabelForm
+labelsOf marked = (.labels) <$> triggerAt (readLine at.above) at
+  where
+    at = atIn [] marked
+
 -- | What a link's entry replaces after the cursor, and writes back of it.
 endOf :: Text -> (Int, Text)
-endOf marked = maybe (-1, "no list") (\t -> (t.through, t.kept)) (triggerAt (readLine []) (atIn [] marked))
+endOf marked = maybe (-1, "no list") (\t -> (t.through, t.kept)) (triggerAt (readLine at.above) at)
+  where
+    at = atIn [] marked
 
 completeIn :: PageKind -> Text -> Maybe Completion
 completeIn kind = completeWith kind []

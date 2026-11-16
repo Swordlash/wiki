@@ -37,7 +37,9 @@ module Wiki.Core.Markdown.Complete
   , At (..)
   , Trigger (..)
   , Typed (..)
+  , LabelForm (..)
   , triggerAt
+  , besidesLink
 
     -- * The parser's reading of the cursor's line
   , Probe (..)
@@ -52,6 +54,7 @@ module Wiki.Core.Markdown.Complete
   , Origin (..)
   , originText
   , Candidate (..)
+  , Writes (..)
   , candidateDetail
   , Wanted (..)
   , Source
@@ -75,7 +78,8 @@ where
 import Data.Char (isAsciiLower, isAsciiUpper)
 import Data.Text qualified as T
 import Protolude
-import Wiki.Core.Markdown.Ast (Block (Alert, Para, Plain), BoxMarker (markerLine), Inline (Link, Str), MarkerLine (..), MarkerName (..), MarkerRole (..), allInlines, closingMarker, holdsBlocks, markerNameText, openingMarker, parseWithStartsAndMarkers, plainText)
+import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), BoxMarker (markerLine), Footnote (..), Inline (..), ListItem (..), MarkerLine (..), MarkerName (..), MarkerRole (..), allInlines, closingMarker, holdsBlocks, markerNameText, openingMarker, parseWithStartsAndMarkers, plainText)
+import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxKind, boxChoices)
 import Wiki.Core.Markdown.Problems (everyBlock)
 import Wiki.Core.PageKind (PageKind (..))
@@ -155,7 +159,16 @@ data Typed = Typed
   , lineStart :: Text
   , through :: Int
   , kept :: Text
+  , labels :: LabelForm
   }
+  deriving stock (Eq, Show)
+
+-- | 'LabelForm' is how a link to a page written at the cursor may hold a
+-- label of its own, as the parser reads the shapes there ('linkAt'): after
+-- a bar; after a bar escaped with a backslash, its own bars so too (in a
+-- table's cell, whose bars the table takes otherwise); or not at all,
+-- the link written with its address alone.
+data LabelForm = PlainLabel | EscapedLabel | NoLabel
   deriving stock (Eq, Show)
 
 -- | What opens a list at a place, if anything, the parser asked through
@@ -186,6 +199,7 @@ triggerAt readAt at = do
           , lineStart = continuation shape.prefix
           , through = 0
           , kept = ""
+          , labels = PlainLabel
           }
     Nothing -> pageLink readAt at
 
@@ -232,14 +246,8 @@ pageLink readAt at = do
       pre = T.take start at.before
   guard (linkWord `elem` map fst first'.wikiLinks)
   guard (any (T.isSuffixOf linkWord . fst) (readAt (Probe first'.enclosing [pre <> "[[" <> letters <> linkWord <> "]]"])).wikiLinks)
-  (through, written) <- fst (linkAt readAt at start first'.enclosing)
-  -- CodeMirror's snippet writes each further line of what is kept after
-  -- the indentation of the cursor's line: it is taken away here.
-  let indentation = T.takeWhile isBlank at.before
-  kept <- case T.splitOn "\n" written of
-    first'' : rest -> T.intercalate "\n" . (first'' :) <$> traverse (T.stripPrefix indentation) rest
-    [] -> Just ""
-  Just Typed {trigger = LinkToPage, letters, from = start, lineStart = "", through, kept}
+  (through, kept, labels) <- fst (linkAt readAt at start first'.enclosing)
+  Just Typed {trigger = LinkToPage, letters, from = start, lineStart = "", through, kept, labels}
 
 -- | Where the last @[[@ before the cursor starts, and what was typed after
 -- it, if it is no marker's start and no address from the top.
@@ -300,22 +308,30 @@ stretchOf at = go (T.length at.after) [at.after] at.below
 --   cursor: the @[[@ typed took that link's end as its own (@[[On‸ and
 --   [[b]]@ is one link for the parser).
 --
--- Whatever is to be written, the parser reads it first, with the word as
--- the address: a link to the word starting at the @[[@, with the label
--- kept, and every other inline of the block as it was ('besides'), or one
--- more wiki link than the block without the @[[@ has, for a link with no
--- end. Otherwise 'Nothing', and no list: an entry never leaves a text
--- the parser reads otherwise. Nor when the link's end is not found
--- within 'afterBound'.
-linkAt :: LineReader -> At -> Int -> Int -> (Maybe (Int, Text), [Probe])
+-- Whatever is to be written, the parser reads it first, in each shape it
+-- may take, with stand-in words of that shape (a word as the address, and
+-- for a label a word with a bar and character references): a link at the
+-- @[[@ with the address and the text written, and every other inline of
+-- the block where it was ('besides'), or, for a link with no end yet, one
+-- more wiki link than the block without the @[[@ has. A label kept is
+-- read so as it is. An end of the entry's own is read with the address
+-- alone first, which must be read so, and with a label after a bar and
+-- after an escaped bar ('LabelForm'): the first read so is how a label is
+-- written, and with neither, an entry writes its address alone, which
+-- leads to the same page. Otherwise 'Nothing', and no list: an entry never
+-- leaves a text the parser reads otherwise. Nor when the link's end is
+-- not found within 'afterBound'. The parser reads the block two times,
+-- then at most 8 times for a label kept, or 3 for an end of the entry's
+-- own.
+linkAt :: LineReader -> At -> Int -> Int -> (Maybe (Int, Text, LabelForm), [Probe])
 linkAt readAt at start from' = case linkFrom opened of
   Just (through, _, text)
     | not (takenOver through) ->
         if linkWord `T.isInfixOf` text
-          then firstRead [(through, "", linkWord)]
-          else firstRead [(through, T.drop i written, text) | let written = T.take through stretch, i <- labelStarts written]
+          then ownEnd through
+          else firstRead [(through, T.drop i written) | let { written = T.take through stretch }, i <- labelStarts written] text
   Nothing | cut -> (Nothing, [opened, unopened])
-  _ -> firstRead [(0, "", linkWord)]
+  _ -> ownEnd 0
   where
     pre = T.take start at.before
     (stretch, cut) = stretchOf at
@@ -350,23 +366,46 @@ linkAt readAt at start from' = case linkFrom opened of
         [ [j - 1 | j > 0, T.index written (j - 1) == '\\'] <> [j]
         | j <- take 4 [k | (k, c) <- zip [0 ..] (T.unpack written), c == '|']
         ]
-    -- The first of these that the parser reads as it should once written
-    -- with the word as the address, and the probes asked.
-    firstRead tries = go tries []
+    -- The first of these ends kept that the parser reads as it should,
+    -- with the text given, and the probes asked.
+    firstRead tries text = go tries []
       where
         go [] asked = (Nothing, [opened, unopened] <> reverse asked)
-        go ((through, kept, text) : more) asked =
-          let probe = probeOn ("[[" <> linkWord <> (if T.null kept then "]]" else kept) <> T.drop through stretch)
-           in if readsAs probe through text then (Just (through, kept), [opened, unopened] <> reverse (probe : asked)) else go more (probe : asked)
+        go ((through, kept) : more) asked =
+          let probe = probeOn ("[[" <> linkWord <> kept <> T.drop through stretch)
+           in if readsAs probe through text then (Just (through, kept, PlainLabel), [opened, unopened] <> reverse (probe : asked)) else go more (probe : asked)
+    -- An end of the entry's own, in place of what of the link follows the
+    -- cursor: the address alone, then with a label after a bar, then
+    -- after an escaped bar.
+    ownEnd through =
+      let rest = T.drop through stretch
+          bare = probeOn ("[[" <> linkWord <> "]]" <> rest)
+          plain = probeOn ("[[" <> linkWord <> "|" <> labelWord <> "]]" <> rest)
+          escaped = probeOn ("[[" <> linkWord <> "\\|" <> T.replace "|" "\\|" labelWord <> "]]" <> rest)
+          form
+            | readsAs plain through labelRead = PlainLabel
+            | readsAs escaped through labelRead = EscapedLabel
+            | otherwise = NoLabel
+       in ( if readsAs bare through linkWord then Just (through, "", form) else Nothing
+          , [opened, unopened, bare, plain, escaped]
+          )
     -- What a probe written so must read: a link to the word at the @[[@,
-    -- with this text; and every other inline of the block as before, or,
-    -- for a link with no end yet, one more wiki link than without the
+    -- with this text; and every other inline of the block where it was,
+    -- or, for a link with no end yet, one more wiki link than without the
     -- @[[@.
     readsAs probe through text =
       fmap (\(_, a, t) -> (a, t)) (linkFrom probe) == Just (linkWord, text)
-        && if through == 0 && linkWord == text
+        && if through == 0
           then length (readAt probe).wikiLinks == length (readAt unopened).wikiLinks + 1
-          else besides (readAt probe).inlinesRead == besides (readAt opened).inlinesRead
+          else besides (readAt probe).blocksRead == besides (readAt opened).blocksRead
+
+-- | The label 'linkAt' writes to read how a label is written at the
+-- cursor: a word with a bar and the character references a label of
+-- 'Wiki.App.Route.pageLinkText' holds; and its text as the parser reads
+-- it.
+labelWord, labelRead :: Text
+labelWord = "Zqxjv label | &amp;&#93;"
+labelRead = "Zqxjv label | &]"
 
 -- | The column (from 1) just after a text on its line, as the parser
 -- counts it: a tab goes on to the next column of four.
@@ -390,16 +429,46 @@ offsetIn written (line, column) = do
           [] -> Nothing
           ch : more -> go (k + 1 :: Int) (if ch == '\t' then c + 4 - (c - 1) `mod` 4 else c + 1) more
 
--- | The inlines a block is read with, but for the wiki link to
--- 'linkWord' and what it holds, which is one mark in its place.
-besides :: [Inline] -> [Inline]
-besides = \case
-  [] -> []
-  Link attributes address _ text : rest
-    | ("class", "wikilink") `elem` attributes
-    , linkWord `T.isPrefixOf` address ->
-        Str "\0" : besides (drop (length (allInlines [Plain text])) rest)
-  x : rest -> x : besides rest
+-- | The blocks read, the wiki link to 'linkWord' (and what it holds) a
+-- mark where it stands ('besidesLink').
+besides :: [Block] -> [Block]
+besides = besidesLink (T.isPrefixOf linkWord)
+
+-- | Blocks with each wiki link whose address is one of these (and what
+-- it holds) a mark where it stands, inside whatever holds it: emphasis, a
+-- heading, a table's cell, a list's item, a quotation, a box, a spoiler,
+-- a footnote; and a heading's identifier, which is made from its text, left
+-- out. Two texts whose blocks are alike so differ in those links alone.
+besidesLink :: (Text -> Bool) -> [Block] -> [Block]
+besidesLink isIt = map onBlock
+  where
+    onBlock = \case
+      Para xs -> Para (onInlines xs)
+      Plain xs -> Plain (onInlines xs)
+      -- A heading's identifier is made from its text, the link's with it.
+      Heading n attributes xs -> Heading n (filter ((/= "id") . fst) attributes) (onInlines xs)
+      BlockQuote bs -> BlockQuote (onBlocks bs)
+      List kind items -> List kind [ListItem task (onBlocks bs) | ListItem task bs <- items]
+      Table aligns header rows -> Table aligns (map onInlines header) (map (map onInlines) rows)
+      Div attributes bs -> Div attributes (onBlocks bs)
+      Alert kind boxHead bs -> Alert kind boxHead {title = onInlines <$> boxHead.title} (onBlocks bs)
+      Spoiler spoilerHead bs -> Spoiler spoilerHead {Ast.description = onInlines spoilerHead.description} (onBlocks bs)
+      Footnotes notes -> Footnotes [Footnote n label (onBlocks bs) | Footnote n label bs <- notes]
+      other -> other
+    onBlocks = besidesLink isIt
+    onInlines = map $ \case
+      Link attributes address _ _
+        | ("class", "wikilink") `elem` attributes
+        , isIt address ->
+            Str "\0"
+      Emph xs -> Emph (onInlines xs)
+      Strong xs -> Strong (onInlines xs)
+      Strikeout xs -> Strikeout (onInlines xs)
+      Hidden xs -> Hidden (onInlines xs)
+      Link attributes address title xs -> Link attributes address title (onInlines xs)
+      Image attributes address title xs -> Image attributes address title (onInlines xs)
+      Marked attributes xs -> Marked attributes (onInlines xs)
+      other -> other
 
 -- | What each further line of a skeleton starts with, after the
 -- indentation of the cursor's line (which CodeMirror's snippet adds): the
@@ -455,6 +524,7 @@ data LineReading = LineReading
   , wikiLinks :: [(Text, Text)]
   , linkSpans :: [((Int, Int), (Int, Int))]
   , inlinesRead :: [Inline]
+  , blocksRead :: [Block]
   , enclosing :: Int
   }
   deriving stock (Eq, Show)
@@ -462,7 +532,7 @@ data LineReading = LineReading
 -- | A reading of nothing, the block that holds the line starting at this
 -- line.
 noReading :: Int -> LineReading
-noReading enclosing = LineReading {roles = [], boxed = False, inBoxes = [], wikiLinks = [], linkSpans = [], inlinesRead = [], enclosing}
+noReading enclosing = LineReading {roles = [], boxed = False, inBoxes = [], wikiLinks = [], linkSpans = [], inlinesRead = [], blocksRead = [], enclosing}
 
 -- | The roles read on a probe's first line.
 firstRoles :: LineReading -> [MarkerRole]
@@ -490,6 +560,7 @@ readLine above probe = case parseWithStartsAndMarkers (T.intercalate "\n" (kept 
       , wikiLinks = [(address, plainText text) | Link attributes address _ text <- inlines', ("class", "wikilink") `elem` attributes]
       , linkSpans = [((l - n, c), (l' - n, c')) | MarkerLine l c (WikiLinkTo l' c') <- lines']
       , inlinesRead = inlines'
+      , blocksRead = map snd blocks
       , enclosing = inAbove (fromMaybe n (lastMay [l | (Just l, _) <- blocks, l <= n]))
       }
     where
@@ -601,8 +672,18 @@ data Candidate = Candidate
   { label :: Text
   , skeleton :: Skeleton
   , place :: Maybe Text
+  , writing :: Writes
   , origin :: Maybe Origin
   }
+  deriving stock (Eq, Show)
+
+-- | 'Writes' is how a candidate's skeleton is written in place of what was
+-- typed ('Completion''s range): as CodeMirror's snippet, the cursor at its
+-- first place; or as it is, the cursor after it, for one with no place to
+-- fill whose further lines must not get the cursor line's indentation,
+-- which a snippet puts before them (a link to a page whose label, kept,
+-- runs over lines).
+data Writes = AsSnippet | AsText
   deriving stock (Eq, Show)
 
 -- | 'Wanted' is what a source is asked for: what was typed; the kinds of
@@ -680,7 +761,7 @@ markersRead = \case
 -- A spoiler's name and description are places to fill first; a
 -- presentation's look has its theme to fill.
 startMarker :: Text -> MarkerName -> Candidate
-startMarker lineStart name = Candidate {label = openingMarker name, skeleton, place = Nothing, origin = Nothing}
+startMarker lineStart name = Candidate {label = openingMarker name, skeleton, place = Nothing, writing = AsSnippet, origin = Nothing}
   where
     skeleton = case name of
       SpoilerName ->
@@ -695,7 +776,7 @@ startMarker lineStart name = Candidate {label = openingMarker name, skeleton, pl
 -- | A start marker's candidate written alone on its line, with no end
 -- marker: a spoiler with its name and description to fill.
 startAlone :: MarkerName -> Candidate
-startAlone name = Candidate {label = openingMarker name, skeleton, place = Nothing, origin = Nothing}
+startAlone name = Candidate {label = openingMarker name, skeleton, place = Nothing, writing = AsSnippet, origin = Nothing}
   where
     skeleton = case name of
       SpoilerName -> [Literal (openingMarker name <> "{"), Field 1 "name", Literal "}(", Field 2 "Description", Literal ")", Field 0 ""]
@@ -703,19 +784,19 @@ startAlone name = Candidate {label = openingMarker name, skeleton, place = Nothi
 
 -- | A kind of box's candidate written alone, its marker only.
 boxAlone :: Text -> Candidate
-boxAlone marker = Candidate {label = written, skeleton = [Literal written, Field 0 ""], place = Nothing, origin = Nothing}
+boxAlone marker = Candidate {label = written, skeleton = [Literal written, Field 0 ""], place = Nothing, writing = AsSnippet, origin = Nothing}
   where
     written = "[!" <> marker <> "]"
 
 -- | An end marker's candidate.
 endMarker :: MarkerName -> Candidate
-endMarker name = Candidate {label = closingMarker name, skeleton = [Literal (closingMarker name), Field 0 ""], place = Nothing, origin = Nothing}
+endMarker name = Candidate {label = closingMarker name, skeleton = [Literal (closingMarker name), Field 0 ""], place = Nothing, writing = AsSnippet, origin = Nothing}
 
 -- | A kind of box's candidate: its marker (the kind's name in capitals,
 -- as 'boxChoices' gives it), and the box's first line of text under it,
 -- the cursor there.
 box :: Text -> Text -> Candidate
-box lineStart marker = Candidate {label = written, skeleton = [Literal (written <> "\n" <> lineStart), Field 1 ""], place = Nothing, origin = Nothing}
+box lineStart marker = Candidate {label = written, skeleton = [Literal (written <> "\n" <> lineStart), Field 1 ""], place = Nothing, writing = AsSnippet, origin = Nothing}
   where
     written = "[!" <> marker <> "]"
 

@@ -22,7 +22,7 @@ import Wiki.App.Editor.Complete
 import Wiki.App.Route (PageLink (..), pageLinkText, pageRoute, resolvePageLink)
 import Wiki.Core.Id (PageId (..))
 import Wiki.Core.Markdown (Destination (..), classifyDestination)
-import Wiki.Core.Markdown.Ast (Block (Plain), Inline (..), allInlines, parseMarkdown, plainText)
+import Wiki.Core.Markdown.Ast (Inline (..), allInlines, parseMarkdown, plainText)
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.Page (PageSummary (..))
@@ -111,6 +111,13 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       written onHandbook "[[Gui" "de]] now" `shouldBe` Just "[[Guide]]${0}"
       reach "[[Old" "|Mine]]" `shouldBe` Just (0, 7)
       written onHandbook "[[Old" "|Mine]]" `shouldBe` Just "[[guide-old|Mine]]${0}"
+    it "escapes the bar of a label it writes in a table's cell, and reads a link inside emphasis (#294, third round)" $ do
+      let inTable typed afterwards =
+            answered (sources onHandbook) ("| h | i |\n| --- | --- |\n" <> typed <> afterwards) (Request {line = 3, before = typed, after = afterwards, nodes = ["Paragraph", "Document"]})
+              >>= head
+              . (.candidates)
+      (fst . skeletonText . (.skeleton) <$> inTable "| [[Old" "]] | x |") `shouldBe` Just "[[guide-old\\|Old notes]]"
+      written onHandbook "**[[Gu" "ide]]**" `shouldBe` Just "[[Guide]]${0}"
     modifyMaxSuccess (* 10) . prop "leaves one wiki link to the page chosen at the cursor, with the label read there, and every other inline as before, or offers nothing" $
       checkCoverage (forAll genLinkLine (choosesPage onHandbook))
 
@@ -162,9 +169,9 @@ spec = describe "Wiki.App.Editor.Complete" $ do
   describe "completionJson" $ do
     it "shows a candidate's place and its origin as the detail, the wiki's own marker neither" $ do
       let made = Completion {from = 2, through = 0, candidates = [own, page, fromPlugin], enter = EnterChooses, escape = EscapeCloses}
-          own = Candidate {label = "[[!div]]", skeleton = [Literal "[[!div]]", Field 0 ""], place = Nothing, origin = Nothing}
-          page = Candidate {label = "Guide", skeleton = [Literal "[[Guide]]", Field 0 ""], place = Just "handbook/guide", origin = Nothing}
-          fromPlugin = Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]{", Field 1 "date", Literal "}"], place = Just "today", origin = Just (FromPlugin "calendar")}
+          own = Candidate {label = "[[!div]]", skeleton = [Literal "[[!div]]", Field 0 ""], place = Nothing, writing = AsSnippet, origin = Nothing}
+          page = Candidate {label = "Guide", skeleton = [Literal "[[Guide]]", Field 0 ""], place = Just "handbook/guide", writing = AsSnippet, origin = Nothing}
+          fromPlugin = Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]{", Field 1 "date", Literal "}"], place = Just "today", writing = AsSnippet, origin = Just (FromPlugin "calendar")}
       completionJson made
         `shouldBe` object
           [ "from" .= (2 :: Int)
@@ -182,60 +189,99 @@ spec = describe "Wiki.App.Editor.Complete" $ do
         `shouldBe` object ["from" .= (0 :: Int), "through" .= (0 :: Int), "options" .= ([] :: [Value]), "enter" .= object ["after" .= (2 :: Int)], "escape" .= ("closes" :: Text)]
 
 -- | 'LinkLine' is a block with a wiki link being typed in it: the lines
--- above, the text before the link on its line, what of the address is
--- before the cursor and after it, the label written (with its @|@,
--- escaped or not; on several lines, long, or across a blank line, which
--- ends the block before the link would end), whether the link is closed,
--- and the text after it (lines below too).
-data LinkLine = LinkLine {above :: [Text], pre :: Text, typed :: Text, rest :: Text, label :: Text, closed :: Bool, after :: Text}
+-- above, the text before the link on its line (a container's marks, a
+-- heading's, a table's cell or a footnote's label among them), what
+-- wraps the link (emphasis, strong, struck, an inline spoiler), what of
+-- the address is before the cursor and after it, the label written (with
+-- its @|@, escaped or not; on several lines, long, or across a blank
+-- line, which ends the block before the link would end), whether the
+-- link is closed, the text after it (lines below too), and what closes
+-- its line (the table's cells after it).
+data LinkLine = LinkLine
+  { above :: [Text]
+  , pre :: Text
+  , wrap :: (Text, Text)
+  , typed :: Text
+  , rest :: Text
+  , label :: Text
+  , closed :: Bool
+  , after :: Text
+  , lineEnd :: Text
+  }
   deriving stock (Show)
 
 genLinkLine :: Gen LinkLine
-genLinkLine =
-  LinkLine
-    <$> elements [[], ["# Notes", ""], ["Some text"], ["- an item"]]
-    <*> elements ["", "See ", "- ", "> ", "[[x]] and ", "`a` ", "  - "]
-    <*> elements ["", "Gu", "Ol", "Pro", "gu "]
-    <*> elements ["", "ide", "-a", " x", "a&amp;b", "a\\", "a[b", T.replicate 300 "y", "ide\nto it"]
-    <*> elements ["", "|Mine", "|[draft&#93;", "|a [b", "\\|escaped", "|Q&amp;A", "|", "|x|y", "| spaced ", "|read\nmore", "|read\n  more", "|" <> T.replicate 300 "z", "|read\n\nmore"]
-    <*> elements [True, False]
-    <*> elements ["", " now", " and [[b]]", " [[c|C]] end", " `x`", "\nnext line", " now\n\n[[d]]"]
+genLinkLine = do
+  (above, pre, lineEnd) <-
+    elements
+      [ ([], "", "")
+      , (["Some text"], "", "")
+      , (["# Notes", ""], "See ", "")
+      , ([], "# ", "")
+      , (["| h | i |", "| --- | --- |"], "| ", " | x |")
+      , (["| h | i | j |", "| --- | --- | --- |"], "| a | ", " | x | y |")
+      , ([], "- ", "")
+      , (["- an item"], "  - ", "")
+      , ([], "> ", "")
+      , (["Text.[^n]", ""], "[^n]: ", "")
+      , ([], "[[x]] and ", "")
+      , ([], "`a` ", "")
+      ]
+  wrap <- elements [("", ""), ("", ""), ("**", "**"), ("_", "_"), ("~~", "~~"), ("||", "||")]
+  typed <- elements ["", "Gu", "Ol", "Pro", "gu "]
+  rest <- elements ["", "ide", "-a", " x", "a&amp;b", "a\\", "a[b", T.replicate 300 "y", "ide\nto it"]
+  label <- elements ["", "", "|Mine", "|[draft&#93;", "|a [b", "\\|escaped", "|Q&amp;A", "|", "|x|y", "| spaced ", "|read\nmore", "|read\n  more", "|" <> T.replicate 300 "z", "|read\n\nmore"]
+  closed <- elements [True, True, False]
+  following <- elements ["", " now", " and [[b]]", " [[c|C]] end", " `x`", "\nnext line", " now\n\n[[d]]"]
+  pure LinkLine {above, pre, wrap, typed, rest, label, closed, after = following, lineEnd}
 
 -- | Choosing the first page offered on a 'LinkLine', as CodeMirror writes
 -- it (the snippet's further lines after the cursor line's indentation),
--- read by the wiki's parser:
+-- read by the wiki's parser, in two halves:
 --
--- * When the entry replaces text after the cursor (a link there, closed),
---   the block is read with one wiki link to the page at the cursor, its
---   text the label read there before, or the page's own when it had
---   none, and every other inline as before.
--- * When it replaces nothing after the cursor, the link had no end of its
---   own: the parser read no link at the cursor before, or one that took a
---   later link's end. The block is read with one wiki link more than
---   without the @[[@ typed, one to the page with its own text, and
---   everything after the cursor is as it was.
+-- * Whatever is offered, accepted, reads so. When the entry replaces text
+--   after the cursor (a link there, closed), the block is read with one
+--   wiki link to the page at the cursor, its text the label read there
+--   before, or the page's own when it had none (or its address, where no
+--   label can be written), and every other inline where it was. When it
+--   replaces nothing after the cursor, the parser read no link of the
+--   cursor's own before (none, or one that took a later link's end); the
+--   block is read with one wiki link more than without the @[[@, one to
+--   the page, and everything after the cursor is as it was.
+-- * Nothing is declined needlessly: wherever the parser reads a closed
+--   link at the cursor, and reads it as a link to a word, with everything
+--   else where it was, once the word is its address, a page is offered.
 choosesPage :: Held -> LinkLine -> Property
-choosesPage h l = cover 80 offered "a page offered" $ case answered (sources h) whole (Request {line = cursorLine, before = typedUpTo, after = restOfLine, nodes = ["Paragraph", "Document"]}) of
-  -- Nothing offered where accepting could not be checked so.
-  Nothing -> property True
-  Just found -> case head found.candidates of
-    Nothing -> counterexample "no page" (property False)
-    Just c ->
+choosesPage h l =
+  cover 70 offered "a page offered" . cover 40 replaceable "a link at the cursor whose address a word may replace" $
+    conjoin
+      [ counterexample "a link whose address a word may replace, and no page offered" (not replaceable || offered)
+      , case found of
+          Nothing -> property True
+          Just answer' -> case head answer'.candidates of
+            Nothing -> counterexample "no page" (property False)
+            Just c -> accepted answer' c
+      ]
+  where
+    found = answered (sources h) whole (Request {line = cursorLine, before = typedUpTo, after = restOfLine, nodes = ["Paragraph", "Document"]})
+    offered = maybe False (not . null . (.candidates)) found
+    accepted answer' c =
       let (text, _) = skeletonText c.skeleton
           indentation = T.takeWhile (\ch -> ch == ' ' || ch == '\t') typedUpTo
-          snippet' = T.intercalate ("\n" <> indentation) (T.splitOn "\n" text)
-          result = upToLine <> T.take found.from typedUpTo <> snippet' <> T.drop found.through afterCursor
+          snippet' = if c.writing == AsText then text else T.intercalate ("\n" <> indentation) (T.splitOn "\n" text)
+          result = upToLine <> T.take answer'.from typedUpTo <> snippet' <> T.drop answer'.through afterCursor
           page = fromMaybe (panic "no page") (find (\p -> p.title == c.label) h.pages)
-          ownTitle = maybe page.address (const page.title) page.label
+          ownTitles = [page.title, page.address]
        in counterexample (toS (whole <> "\n  =>\n" <> result)) $
-            if found.through > 0
+            if answer'.through > 0
               then
-                let readBefore = linksOf marked
-                    title = maybe "" snd (find ((sentinel `T.isPrefixOf`) . fst) readBefore)
-                    expectedTitle = if sentinel `T.isInfixOf` title then ownTitle else title
+                let title = maybe "" snd (find ((sentinel `T.isPrefixOf`) . fst) (linksOf marked))
+                    titleNow = map snd (filter ((== page.address) . fst) (linksOf result))
                  in conjoin
-                      [ outside (== page.address) result === outside (sentinel `T.isPrefixOf`) marked
-                      , filter ((== page.address) . fst) (linksOf result) === [(page.address, expectedTitle)]
+                      [ besidesLink (== page.address) (blocksOf result) === besidesLink (sentinel `T.isPrefixOf`) (blocksOf marked)
+                      , counterexample (show titleNow) $ case titleNow of
+                          [t] -> if sentinel `T.isInfixOf` title then t `elem` ownTitles else t == title
+                          _ -> False
                       ]
               else
                 conjoin
@@ -245,34 +291,32 @@ choosesPage h l = cover 80 offered "a page offered" $ case answered (sources h) 
                       not (any ((sentinel `T.isPrefixOf`) . fst) (linksOf marked)) || length (linksOf marked) <= length (linksOf unopened)
                   , T.takeEnd (T.length afterCursor) result === afterCursor
                   , length (linksOf result) === length (linksOf unopened) + 1
-                  , filter ((== page.address) . fst) (linksOf result) === [(page.address, ownTitle)]
+                  , counterexample "no link to the page" $ case filter ((== page.address) . fst) (linksOf result) of
+                      [(_, t)] -> t `elem` ownTitles
+                      _ -> False
                   ]
-  where
-    offered = isJust (answered (sources h) whole (Request {line = cursorLine, before = typedUpTo, after = restOfLine, nodes = ["Paragraph", "Document"]}))
     upToLine = T.concat [a <> "\n" | a <- l.above]
     cursorLine = length l.above + 1
-    typedUpTo = l.pre <> "[[" <> l.typed
-    afterCursor = l.rest <> l.label <> (if l.closed then "]]" else "") <> l.after
+    typedUpTo = l.pre <> fst l.wrap <> "[[" <> l.typed
+    afterCursor = l.rest <> l.label <> (if l.closed then "]]" else "") <> snd l.wrap <> l.after <> l.lineEnd
     restOfLine = T.takeWhile (/= '\n') afterCursor
     whole = upToLine <> typedUpTo <> afterCursor
     -- The block with a word in place of the letters typed, which names the
-    -- link at the cursor; and without the @[[@ and the letters.
+    -- link at the cursor; and the same without the @[[@.
     sentinel = "Zqxjvtest"
-    marked = upToLine <> l.pre <> "[[" <> sentinel <> afterCursor
-    unopened = upToLine <> l.pre <> afterCursor
-    parsedInlines t = either (const []) allInlines (parseMarkdown t)
-    linksOf t = [(address, plainText text) | Link attributes address _ text <- parsedInlines t, ("class", "wikilink") `elem` attributes]
-    -- The inlines read, the link at the cursor (and what it holds) one
-    -- mark in its place.
-    outside isOurs t = go (parsedInlines t)
-      where
-        go = \case
-          [] -> []
-          Link attributes address _ text : more
-            | ("class", "wikilink") `elem` attributes
-            , isOurs address ->
-                Str "\0" : go (drop (length (allInlines [Plain text])) more)
-          x : more -> x : go more
+    marked = upToLine <> l.pre <> fst l.wrap <> "[[" <> sentinel <> afterCursor
+    unopened = upToLine <> l.pre <> fst l.wrap <> sentinel <> afterCursor
+    -- The block with a word as the address of a closed link at the
+    -- cursor, its label kept.
+    worded = upToLine <> l.pre <> fst l.wrap <> "[[Zqxjvword" <> l.label <> "]]" <> snd l.wrap <> l.after <> l.lineEnd
+    replaceable =
+      l.closed
+        && any ((sentinel `T.isPrefixOf`) . fst) (linksOf marked)
+        && length (linksOf marked) > length (linksOf unopened)
+        && any ((== "Zqxjvword") . fst) (linksOf worded)
+        && besidesLink (== "Zqxjvword") (blocksOf worded) == besidesLink (sentinel `T.isPrefixOf`) (blocksOf marked)
+    blocksOf t = either (const []) identity (parseMarkdown t)
+    linksOf t = [(address, plainText text) | Link attributes address _ text <- allInlines (blocksOf t), ("class", "wikilink") `elem` attributes]
 
 -- | The bytes allocated in forcing a value: what its work costs, counted
 -- rather than timed, so that a slow or a busy machine changes nothing.

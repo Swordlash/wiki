@@ -194,14 +194,21 @@ pageSource held wanted
         { label = p.title
         , skeleton = [Literal written, Field 0 ""]
         , place = Just (if null p.path then "the home page" else p.joined)
+        , writing = if "\n" `T.isInfixOf` written then AsText else AsSnippet
         , origin = Nothing
         }
       where
         -- The reader's own label, typed already, stays; otherwise the
-        -- link's own, and its end.
+        -- link's own, as a label is written at the cursor (in a table's
+        -- cell, its bars escaped; where none reads as one, none), and its
+        -- end.
         written
-          | T.null typed.kept = "[[" <> p.address <> maybe "" ("|" <>) p.label <> "]]"
+          | T.null typed.kept = "[[" <> p.address <> labelPart <> "]]"
           | otherwise = "[[" <> p.address <> typed.kept
+        labelPart = case (p.label, typed.labels) of
+          (Just label, PlainLabel) -> "|" <> label
+          (Just label, EscapedLabel) -> "\\|" <> T.replace "|" "\\|" label
+          _ -> ""
 
 -- | How many pages the list offers at most: enough to scroll through, few
 -- enough for a space of thousands of pages to answer at once.
@@ -270,6 +277,10 @@ completionJson c =
   where
     option candidate =
       object
-        ( ["label" .= candidate.label, "template" .= snippetTemplate candidate.skeleton]
+        ( ["label" .= candidate.label]
+            <> ( case candidate.writing of
+                   AsSnippet -> ["template" .= snippetTemplate candidate.skeleton]
+                   AsText -> ["insert" .= fst (skeletonText candidate.skeleton)]
+               )
             <> ["detail" .= detail | Just detail <- [candidateDetail candidate]]
         )

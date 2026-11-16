@@ -1111,7 +1111,8 @@ const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$/;
 // an entry replaces starts in the line, and how many characters after the
 // cursor it replaces too (the end of a link typed already, on this line
 // or a line below), in characters; each option's label, its snippet (@codemirror/autocomplete's,
-// whose first place to fill the cursor goes to, and Tab to the next), and
+// whose first place to fill the cursor goes to, and Tab to the next) or
+// the text it writes as it is (insert), and
 // what is shown grey beside it as the option's detail (where a page is,
 // and where a plugin's entry comes from); and what Enter and Escape do,
 // for every option of the list.
@@ -1141,7 +1142,9 @@ const markupSource = (markup, whole) => async (context) => {
     options: found.options.map((option) => ({
       label: option.label,
       detail: option.detail,
-      apply: snippet(option.template),
+      // An option written as it is (insert) has no place to fill: the
+      // cursor goes after it.
+      apply: option.insert === undefined ? snippet(option.template) : option.insert,
       enter: found.enter,
       typed: (s, head) => ({ from, letters: s.sliceDoc(from, head) }),
     })),

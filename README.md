@@ -1,6 +1,6 @@
 # blog
 
-[![CI](https://github.com/Swordlash/blog/actions/workflows/build.yml/badge.svg)](https://github.com/Swordlash/blog/actions/workflows/build.yml)
+[![CI](https://github.com/Swordlash/wiki/actions/workflows/build.yml/badge.svg)](https://github.com/Swordlash/wiki/actions/workflows/build.yml)
 
 A wiki in the manner of Confluence, written in Haskell and running in the
 browser: spaces and subspaces, each a tree of pages written in Markdown with
@@ -14,7 +14,7 @@ waits for a server. It runs as a serverless demo that keeps its wiki in the
 browser, served as static files, or over its own server, `wiki-server`, which
 keeps the wiki in PostgreSQL, or in SQLite where a second process is too much.
 
-**The demo: <https://swordlash.github.io/blog/>.** It opens at a tour that says
+**The demo: <https://swordlash.github.io/wiki/>.** It opens at a tour that says
 what to try, and nothing written there leaves your browser.
 
 It runs in browsers released within the last year: Chrome and Edge 140 or
@@ -34,7 +34,7 @@ extensions, and what the wiki adds to it is written in Markdown too. Each exampl
 below is part of a page of the demo, as its author typed it, and the line under
 it links to that page, where it renders. The complete reference for authors is
 [docs/markdown.md](docs/markdown.md); the demo's
-[Markdown guide](https://swordlash.github.io/blog/s/docs/p/markdown-guide/) is
+[Markdown guide](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/) is
 the same, written in what it describes (open any page's "Source" to see its
 Markdown).
 
@@ -61,7 +61,7 @@ $$
 ```
 
 Euler's identity in the line, and a matrix's inverse set on its own:
-[Mathematics](https://swordlash.github.io/blog/s/docs/p/markdown-guide/mathematics/).
+[Mathematics](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/mathematics/).
 
 KaTeX has no `\usepackage`; macros take its place, in three layers. Some are
 built in for every page (`\abs`, `\norm`, `\dv`, `\E`, `\Var` and more), which
@@ -76,7 +76,7 @@ own; these are the demo's `Docs` space's:
 \newcommand{\eps}{\epsilon}
 ```
 
-They are on [Docs' pages and settings](https://swordlash.github.io/blog/s/docs/pages/),
+They are on [Docs' pages and settings](https://swordlash.github.io/wiki/s/docs/pages/),
 and every page of the space and of its subspaces may use them:
 
 ```markdown
@@ -84,7 +84,7 @@ This space has its own, in its settings, which its pages and its subspaces' page
 ```
 
 A bold vector, an upright Hom, and the space's `\eps` set over the built-in one:
-[Mathematics](https://swordlash.github.io/blog/s/docs/p/markdown-guide/mathematics/#macros).
+[Mathematics](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/mathematics/#macros).
 And a formula may define its own, which then holds in every formula after it on
 the page, as in a LaTeX document:
 
@@ -98,7 +98,7 @@ so that from here on $\dist{x}{x} = 0$.
 ```
 
 The triangle inequality, and the macro used again further down:
-[Mathematics](https://swordlash.github.io/blog/s/docs/p/markdown-guide/mathematics/#macros).
+[Mathematics](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/mathematics/#macros).
 Chemistry is mhchem's `\ce`, which KaTeX comes with:
 
 ```markdown
@@ -108,7 +108,7 @@ $$\ce{CO2 + C -> 2 CO}$$
 ```
 
 Formulas and a reaction, with sub- and superscripts in their places:
-[Mathematics](https://swordlash.github.io/blog/s/docs/p/markdown-guide/mathematics/#chemistry).
+[Mathematics](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/mathematics/#chemistry).
 
 ### Diagrams, with Mermaid
 
@@ -124,9 +124,9 @@ flowchart TD
 ````
 
 A flowchart of how a page is rendered:
-[Markdown guide](https://swordlash.github.io/blog/s/docs/p/markdown-guide/#diagrams);
+[Markdown guide](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/#diagrams);
 a class diagram and a pie chart are on
-[Diagrams](https://swordlash.github.io/blog/s/docs/p/markdown-guide/diagrams/).
+[Diagrams](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/diagrams/).
 
 ### Pictures, with TikZ
 
@@ -149,7 +149,7 @@ diagram, and the lines at its top that load a library or a package:
 ````
 
 Three boxes in a row, placed by `positioning`, joined by `arrows.meta`'s arrows:
-[Diagrams](https://swordlash.github.io/blog/s/docs/p/markdown-guide/diagrams/),
+[Diagrams](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/diagrams/),
 beside a commutative diagram and a plot drawn with pgfplots. Which libraries and
 packages TeX has is in [docs/markdown.md](docs/markdown.md#pictures).
 
@@ -165,7 +165,7 @@ main = putStrLn "Hello, world"
 ````
 
 Haskell, coloured by its syntax:
-[Markdown guide](https://swordlash.github.io/blog/s/docs/p/markdown-guide/#code).
+[Markdown guide](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/#code).
 The names a fence may give each of some seventy languages are listed in
 [docs/markdown.md](docs/markdown.md#code).
 
@@ -190,7 +190,7 @@ main = print (take 20 fibs)
 ````
 
 Three lines of it show, and the rest scrolls inside the block:
-[Markdown guide](https://swordlash.github.io/blog/s/docs/p/markdown-guide/#code).
+[Markdown guide](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/#code).
 ` ```{.haskell rows=3} ` says the same, and a value that is not a whole number
 above zero is ignored.
 
@@ -211,7 +211,7 @@ GitHub's alerts make a box of their kind (`NOTE`, `TIP`, `IMPORTANT`,
 ```
 
 A note, marked as one, at the top of the
-[Tour](https://swordlash.github.io/blog/s/docs/p/tour/). Any other word makes
+[Tour](https://swordlash.github.io/wiki/s/docs/p/tour/). Any other word makes
 a box too, `> [!EXERCISE]`, titled with the word, with a title of its own after
 it on the line if you like (`> [!EXERCISE] Area of $\pi r^2$`, math and all);
 an administrator gives a kind a title, a colour (the theme's or any other) and
@@ -221,7 +221,7 @@ Tip 2, Exercise 1), within the page, after the page's number (`Tip 2.3`) or
 after the section's too (`Tip 2.1.3`), as the space's settings say; a star,
 `> [!TIP*]`, makes a box without one. The editor's **Box** button writes the
 marker for you. See the Markdown guide's
-[Notes and boxes](https://swordlash.github.io/blog/s/docs/p/markdown-guide/#notes-and-boxes).
+[Notes and boxes](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/#notes-and-boxes).
 
 ### Spoilers
 
@@ -245,7 +245,7 @@ print(6 * 7)
 ````
 
 Two spoilers, one inside the other, each closed until it is clicked:
-[Markdown guide](https://swordlash.github.io/blog/s/docs/p/markdown-guide/#spoilers).
+[Markdown guide](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/#spoilers).
 The name in braces is one word of letters, digits, `-` and `_`; the
 description in parentheses, which may hold Markdown, is what the reader clicks
 to open it. Any blocks go between the markers, with no prefix on their lines:
@@ -273,7 +273,7 @@ As deep as headings go, down to `######`.
 ```
 
 Three questions, the third inside the second, each closed under its heading:
-[Markdown guide](https://swordlash.github.io/blog/s/docs/p/markdown-guide/#spoilers).
+[Markdown guide](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/#spoilers).
 The heading shows, with its anchor and its entry in the contents, and a click
 on it opens the section, up to the next heading of the same or a higher level
 or the end of the quotation, box or spoiler the heading is in. A name in braces
@@ -316,7 +316,7 @@ Private to the team: only people granted a permission on this space, or on the w
 ```
 
 The page's headings, listed where `[[!toc]]` is, each a link to its section:
-[Team handbook](https://swordlash.github.io/blog/s/team/p/team-handbook/) (in
+[Team handbook](https://swordlash.github.io/wiki/s/team/p/team-handbook/) (in
 the private `Team` space, which the demo's `admin`, whom it starts as, may read).
 
 ### Images and attachments
@@ -330,7 +330,7 @@ An image from the web:
 ```
 
 The photograph, under the guide's
-[Images, video and attachments](https://swordlash.github.io/blog/s/docs/p/markdown-guide/#images-video-and-attachments),
+[Images, video and attachments](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/#images-video-and-attachments),
 beside a video from the web written the same way. A file attached to the page
 is named with `attachment:`, and shows as what it is: an image, a video or audio
 player, or else a link that downloads it.
@@ -342,7 +342,7 @@ And a file attached to this page, by its name:
 ```
 
 The attached image, under the photograph and the video:
-[Markdown guide](https://swordlash.github.io/blog/s/docs/p/markdown-guide/#images-video-and-attachments).
+[Markdown guide](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/#images-video-and-attachments).
 The editor writes these for you when a file is dropped or pasted into it.
 
 ### Links between pages
@@ -356,7 +356,7 @@ Paragraphs, *emphasis*, **strong emphasis**, ~~strikethrough~~, `inline code` an
 ```
 
 Links to the guide's subpage and to the tour, a wiki link with a label of its
-own, and a footnote: [Markdown guide](https://swordlash.github.io/blog/s/docs/p/markdown-guide/#text).
+own, and a footnote: [Markdown guide](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/#text).
 A link to a page that is not there is shown as broken.
 
 The editor writes these links for you. **Link to a page** (Ctrl+Shift+K), next
@@ -395,7 +395,7 @@ full.
 
 A presentation is a kind of page, chosen under **New page** beside a
 document, and its text is Markdown all the same. This is the
-demo's [Presentations](https://swordlash.github.io/blog/s/docs/p/markdown-guide/presentations/),
+demo's [Presentations](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/presentations/),
 whole:
 
 ````markdown
@@ -498,7 +498,7 @@ A `[[!style]]` line at the top level of the page says how the slides look:
 Themes are `beamer` (the default), `light` and `dark`; slides are `16:9` (the default) or `4:3`.
 ````
 
-It is [these nine slides](https://swordlash.github.io/blog/s/docs/p/markdown-guide/presentations/slides/)
+It is [these nine slides](https://swordlash.github.io/wiki/s/docs/p/markdown-guide/presentations/slides/)
 (`Wiki.Core.Slides` cuts them):
 
 - **What makes it a deck.** Its kind: a presentation is made with **New
@@ -1146,7 +1146,7 @@ the demo).
 
 ## Running the demo
 
-The demo runs at **<https://swordlash.github.io/blog/>**, deployed from `main` by
+The demo runs at **<https://swordlash.github.io/wiki/>**, deployed from `main` by
 CI (below): everything you write there stays in your browser.
 
 Or build it and serve it on <http://127.0.0.1:8080>, with the toolchain below:
@@ -3128,7 +3128,7 @@ therefore run in CI. The refusal test temporarily hides the engine from PATH,
 so it also runs on a machine with XeLaTeX.
 
 A fourth, `deploy`, publishes the demo on GitHub Pages, at
-<https://swordlash.github.io/blog/>, on a push to `main` once the three have
+<https://swordlash.github.io/wiki/>, on a push to `main` once the three have
 passed, and on a run by hand from `main` (*Run workflow*) to redeploy. It takes the
 `app` artifact the `wasm` job built (every run builds the page for Pages' base path,
 `HALOGEN_BASE_PATH=/blog/`, and the smoke test serves it under that path); when

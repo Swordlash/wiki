@@ -40,7 +40,7 @@ root = ".."
 
 -- | Where the demo is published (WP5.2), which the README links into.
 demoAddress :: Text
-demoAddress = "https://swordlash.github.io/blog"
+demoAddress = "https://swordlash.github.io/wiki"
 
 demo :: MemState
 demo = demoState demoNow

@@ -83,19 +83,20 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
     modifyMaxSuccess (* 10) . prop "opens where the place is text and not elsewhere, over generated places" $
       forAll genSlashPlace $
         \(marked, expected) -> counterexample (toS marked) (slashOpens marked === expected)
-    it "gives a table its other header cells as further places, and any other entry the command's selection alone" $ do
-      slashPlaces "/ta‸" Edit.Table `shouldBe` Just ["Column 1", "Column 2", "Column 3"]
+    it "writes each entry as its text in place of the line, the command's selection its one place, never as a snippet" $ do
+      slashPlaces "/ta‸" Edit.Table `shouldBe` Just ["Column 1"]
       slashPlaces "/‸" Edit.SpoilerBlock `shouldBe` Just ["name"]
       slashPlaces "Go /‸" Edit.Link `shouldBe` Just ["link text"]
       slashPlaces "/‸" Edit.CodeBlock `shouldBe` Just [""]
-      slashPlaces "/‸" (Edit.Html Edit.Details) `shouldBe` Just ["Details"]
       slashPlaces "/‸" Edit.Bold `shouldBe` Just ["bold text"]
-    it "writes a block on an indented line as it is, its selection and no other place, since a snippet would indent its lines" $ do
-      let c = slashCandidate "  - item /ta‸" Edit.Table
-      (.writing) <$> c `shouldBe` Just (LineAsText "  - item /ta")
-      (map fst . snd . skeletonText . (.skeleton) <$> c) `shouldBe` Just [1]
       slashPlaces "/‸" Edit.Mermaid `shouldBe` Just ["graph LR\n  A --> B"]
-      (.writing) <$> slashCandidate "/‸" Edit.Mermaid `shouldBe` Just (LineAsText "/")
+      (.writing) <$> slashCandidate "  - item /ta‸" Edit.Table `shouldBe` Just (LineAsText "  - item /ta")
+    it "writes what the command writes after a no-break space at the line's start, and with a carriage return in the line (#295)" $ do
+      let asWritten c = (c.writing, fst (skeletonText c.skeleton))
+      (asWritten <$> slashCandidate "\160hello /ta‸" Edit.Table)
+        `shouldBe` Just (LineAsText "\160hello /ta", fst (Edit.apply Edit.Table "\160hello " (Edit.cursor 7)))
+      (asWritten <$> slashCandidate "Some\rtext /b‸" Edit.Bold)
+        `shouldBe` Just (LineAsText "Some\rtext /b", fst (Edit.apply Edit.Bold "Some\rtext " (Edit.cursor 10)))
     it "closes with Escape so that the same / does not open it again" $
       (.escape) <$> listOf' "/ta‸" `shouldBe` Just EscapeDismisses
     it "chooses with Enter only once a letter follows the /, or the reader moved in the list: a / alone at a line's end and Enter is a new line" $
@@ -247,11 +248,15 @@ genSlashCase = do
   Doc doc <- arbitrary
   last' <- elements [[], ["# Title"], ["---"], ["```", "code", "```"], ["Text", ""], ["   "], ["Text"]]
   Line cursor <- arbitrary
-  words' <- elements ["", "Some words "]
+  -- Before the line's own text: nothing, a no-break space, which is no
+  -- indentation for the parser but is for CodeMirror's snippet; and words
+  -- with a carriage return, which the toolbar's command leaves as it is.
+  lead <- elements ["", "", "\160"]
+  words' <- elements ["", "Some words ", "Some\rtext "]
   after' <- elements ["", "  "]
   below <- elements [[], [""], ["", "", "Next"], ["Next"], ["  ", "- item"], ["", "  "], "" : T.splitOn "\n" longText]
   longAbove <- elements [[], T.splitOn "\n" longText <> [""]]
-  pure (longAbove <> doc <> last', cursor <> words', after', below)
+  pure (longAbove <> doc <> last', lead <> cursor <> words', after', below)
 
 -- | Wherever the menu opens on a generated place, each entry that writes
 -- writes, in place of the cursor's line, what the toolbar's command
@@ -279,21 +284,15 @@ slashWritesAsApply (above, typedBefore, after', below) = cover 50 (isJust opened
     lineStart = sum (map ((+ 1) . T.length) above)
     at' = lineStart + T.length typedBefore
     whole = T.intercalate "\n" (above <> [typedBefore <> after'] <> below)
-    indentation = T.takeWhile (\c -> c == ' ' || c == '\t') typedBefore
+    -- Every entry is written as its text, in place of the line, its first
+    -- place selected.
     written c = do
       let (text, ranges) = skeletonText c.skeleton
       text' <- case c.writing of
-        LineAsSnippet _ -> Just (T.intercalate ("\n" <> indentation) (T.splitOn "\n" text))
         LineAsText _ -> Just text
         _ -> Nothing
       (s, e) <- snd <$> head ranges
-      -- A snippet's first place is on its first line, or no indentation is
-      -- added before it.
-      let shifted n = n + T.length indentation * T.count "\n" (T.take n text)
-          (s', e') = case c.writing of
-            LineAsSnippet _ -> (shifted s, shifted e)
-            _ -> (s, e)
-      Just (T.intercalate "\n" (above <> [text'] <> below), Edit.Selection (lineStart + s') (lineStart + e'))
+      Just (T.intercalate "\n" (above <> [text'] <> below), Edit.Selection (lineStart + s) (lineStart + e))
 
 -- | A place where the @/@ menu opens (text of a paragraph, a list's item,
 -- a quotation, a table's cell, a heading) or does not (code of both kinds,

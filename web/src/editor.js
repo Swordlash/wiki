@@ -1131,12 +1131,12 @@ const dismissedSlashes = StateField.define({
 
 // What an option of the wiki's own Markdown writes when it is chosen, in
 // a view: its snippet, or its text as it is (insert), in place of the
-// range the list was for; or, for one
-// given the cursor's whole line (an entry of the "/" menu), the snippet or
-// the text to insert in place of that line, if it still reads as the
-// line the answer was made for (a list kept from before the last key
-// writes nothing); then, for an entry that opens a dialog, a
-// "wiki-complete-action" event on the host, which the component answers.
+// range the list was for; or, for one given the cursor's whole line (an
+// entry of the "/" menu), its text in place of that line, with its
+// selection, if the line still reads as the one the answer was made for
+// (a list kept from before the last key writes nothing); then, for an
+// entry that opens a dialog, a "wiki-complete-action" event on the host,
+// which the component answers.
 const writeOption = (host, option) => (view, completion, from, to) => {
   if (option.line === undefined && option.insert !== undefined) {
     // No place to fill: the text as it is, the cursor after it.
@@ -1146,17 +1146,13 @@ const writeOption = (host, option) => (view, completion, from, to) => {
   } else {
     const line = view.state.doc.lineAt(from);
     if (line.text !== option.line) return;
-    if (option.insert === undefined) {
-      snippet(option.template)(view, completion, line.from, line.to);
-    } else {
-      const [start, end] = option.select.map((n) => line.from + unitsOf(option.insert, n));
-      view.dispatch({
-        changes: { from: line.from, to: line.to, insert: option.insert },
-        selection: EditorSelection.single(start, end),
-        scrollIntoView: true,
-        annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete")],
-      });
-    }
+    const [start, end] = option.select.map((n) => line.from + unitsOf(option.insert, n));
+    view.dispatch({
+      changes: { from: line.from, to: line.to, insert: option.insert },
+      selection: EditorSelection.single(start, end),
+      scrollIntoView: true,
+      annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete")],
+    });
   }
   if (option.action !== undefined) host.dispatchEvent(new CustomEvent("wiki-complete-action", { detail: option.action }));
 };

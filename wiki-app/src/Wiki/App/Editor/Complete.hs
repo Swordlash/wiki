@@ -269,11 +269,10 @@ answer found memo text request = case T.splitOn "\n" text of
 --
 -- What an option writes ('Writes') is its snippet (@template@,
 -- 'snippetTemplate') in place of the answer's range, or there the text
--- @insert@ as it is, the cursor after it; or in place of the
--- cursor's whole line, given as @line@, which must still read so (the
--- editor writes nothing otherwise); or, with @line@, the text @insert@
--- written as it is, @select@ selected in it (from and to, in
--- characters).
+-- @insert@ as it is, the cursor after it; or, with @line@, the text
+-- @insert@ written as it is in place of the cursor's whole line, which
+-- must still read as @line@ (the editor writes nothing otherwise),
+-- @select@ selected in it (from and to, in characters).
 completionJson :: Completion -> Value
 completionJson c =
   object
@@ -298,7 +297,6 @@ completionJson c =
     written candidate = case candidate.writing of
       AsSnippet -> ["template" .= snippetTemplate candidate.skeleton]
       AsText -> ["insert" .= fst (skeletonText candidate.skeleton)]
-      LineAsSnippet line -> ["template" .= snippetTemplate candidate.skeleton, "line" .= line]
       LineAsText line ->
         let (text, places) = skeletonText candidate.skeleton
             (selectFrom, selectTo) = maybe (T.length text, T.length text) snd (head places)

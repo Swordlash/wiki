@@ -19,7 +19,7 @@ title: Typing / in the editor offers what the toolbar writes
   | Text     | Text     | Text     |
   ```
 
-  with "Column 1" selected; Tab goes on to "Column 2", then "Column 3".
+  with "Column 1" selected, as the toolbar's button selects it.
   "Link to a page" and "Image or attachment" open their dialogs. A `/`
   alone at the end of a line and Enter stay a new line: Enter chooses
   once a letter follows the `/`, or the arrows moved in the list. Escape

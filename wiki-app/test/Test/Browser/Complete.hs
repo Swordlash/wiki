@@ -144,7 +144,7 @@ spec m = do
   -- that CodeMirror writes it as one step of the undo, with Tab going to
   -- its places, that Escape keeps the "/" from opening it again, and that
   -- an entry opens the toolbar's dialog.
-  it "writes the table after /ta in the middle of the long Markdown guide, its header's cells as places in turn, and undo takes it back" $ runPage $ do
+  it "writes the table after /ta in the middle of the long Markdown guide, its first cell selected, and one undo takes it back" $ runPage $ do
     (ui, _) <- startWith m (Just "user-admin") (EditPage (slugs ["docs"]) (slugs ["markdown-guide"]))
     text <- editorText ui
     guide <- eventually $ markdown ui >>= \t -> t <$ (t `shouldSatisfy` ((> 10_000) . T.length))
@@ -163,15 +163,9 @@ spec m = do
     listReady ui
     press "Enter"
     markdown ui `shouldReturn` table
-    -- The first place is "Column 1", selected; Tab goes to "Column 2",
-    -- typed over.
+    -- "Column 1" is selected, as the toolbar selects it.
     (snd <$> editorSelection ui) `shouldReturn` selected + (units - at)
-    press "Tab"
-    typeText text "Two"
-    markdown ui `shouldReturn` T.replace "Column 2" "Two" table
-    -- Undo takes the typing back, then the table, leaving "/ta" as typed.
-    press "Control+z"
-    eventually $ markdown ui `shouldReturn` table
+    -- One undo takes the table back, leaving "/ta" as typed.
     press "Control+z"
     eventually $ markdown ui `shouldReturn` typed
 

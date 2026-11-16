@@ -69,7 +69,6 @@ module Wiki.Core.Markdown.Complete
   , SlashEntry (..)
   , SlashDoes (..)
   , slashSource
-  , furtherPlaces
 
     -- * The answer
   , EnterPolicy (..)
@@ -92,7 +91,6 @@ import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), BoxMarker (markerLine),
 import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxKind, boxChoices)
 import Wiki.Core.Markdown.Edit (Command, Selection (..), apply, cursor)
-import Wiki.Core.Markdown.Edit qualified as Edit
 import Wiki.Core.Markdown.Problems (everyBlock)
 import Wiki.Core.PageKind (PageKind (..))
 
@@ -714,17 +712,13 @@ data Candidate = Candidate
 
 -- | 'Writes' is how a candidate's skeleton is written: as CodeMirror's
 -- snippet in place of what was typed ('Completion''s range), the cursor at
--- its first place; or as it is there, the cursor after it, for one with no
--- place to fill whose further lines must not get the cursor line's
--- indentation, which a snippet puts before them (a link to a page whose
--- label, kept, runs over lines); as a snippet in place of the cursor's
--- whole line, which read as the text given when the list was made (an
--- entry of the @/@ menu, whose command may change the line's start and
--- write lines after it); or so, but written as it is, its first place
--- selected and no other, where a snippet would not write it as it is (its
--- places hold a line break or a brace, or its further lines would get the
--- cursor line's indentation).
-data Writes = AsSnippet | AsText | LineAsSnippet Text | LineAsText Text
+-- its first place; or as it is there, the cursor after it (a link to a
+-- page whose label, kept, runs over lines); or as it is in place of the
+-- cursor's whole line, which
+-- read as the text given when the list was made, its first place selected
+-- (an entry of the @/@ menu, whose command may change the line's start
+-- and write lines after it).
+data Writes = AsSnippet | AsText | LineAsText Text
   deriving stock (Eq, Show)
 
 -- | 'Wanted' is what a source is asked for: where (the cursor's place and
@@ -1051,10 +1045,9 @@ data SlashDoes = WritesCommand Command | OpensDialog Text
 --
 -- Choosing an entry that writes takes the @/@ and the letters away and
 -- writes what the toolbar's command writes at that place, selection and
--- all ('slashWritten'): as a snippet, its selection the first place to
--- fill and, where the command's result has others ('furtherPlaces'), the
--- next ones Tab goes to. An entry that opens a dialog takes the @/@ and
--- the letters away, and the editor opens it.
+-- all ('slashWritten'), as text with that selection ('lineCandidate'). An
+-- entry that opens a dialog takes the @/@ and the letters away, and the
+-- editor opens it.
 slashSource :: [SlashEntry] -> Source
 slashSource entries wanted
   | wanted.typed.trigger /= SlashMenu = []
@@ -1072,7 +1065,7 @@ slashSource entries wanted
       OpensDialog action -> Just Candidate {label = e.label, skeleton = [Field 0 ""], writing = AsSnippet, action = Just action, note = Just e.sample, origin = Nothing}
       WritesCommand command -> do
         written <- slashWritten window command
-        Just (lineCandidate wanted.at command written) {label = e.label, note = Just e.sample}
+        Just (lineCandidate wanted.at written) {label = e.label, note = Just e.sample}
 
 -- | 'Window' is the text a command of the @/@ menu is applied to: the
 -- lines above the cursor's line from the nearest one with text in it (or
@@ -1112,47 +1105,16 @@ slashWritten window command = do
   Just (written, (start, end))
 
 -- | An entry of the @/@ menu that writes, as a candidate: the cursor's
--- line replaced by what the command writes there ('slashWritten'), the
--- selection the first place to fill and the command's further places the
--- next ('furtherPlaces'). Written as a snippet where CodeMirror's snippet
--- writes it as it is: its places hold no line break and no brace, and it
--- is one line, or the cursor's line has no indentation (which the snippet
--- would put before each further line) and no further line starts with a
--- tab (which the snippet makes an indentation). Otherwise it is written
--- as it is, with the selection and no further place ('LineAsText').
-lineCandidate :: At -> Command -> (Text, (Int, Int)) -> Candidate
-lineCandidate at command (written, selected@(_, end)) =
-  Candidate {label = "", skeleton, writing, action = Nothing, note = Nothing, origin = Nothing}
+-- line replaced by what the command writes there ('slashWritten'), as it
+-- is, with the command's selection ('LineAsText'). Never a snippet, whose
+-- rules (the indentation it puts before further lines, the line breaks it
+-- reads in its template) would write something else than the command.
+lineCandidate :: At -> (Text, (Int, Int)) -> Candidate
+lineCandidate at (written, (start, end)) =
+  Candidate {label = "", skeleton, writing = LineAsText (at.before <> at.after), action = Nothing, note = Nothing, origin = Nothing}
   where
-    line = at.before <> at.after
-    indentation = T.takeWhile isBlank at.before
-    further = [(p, p + T.length t) | (offset, t) <- furtherPlaces command, let p = end + offset, T.take (T.length t) (T.drop p written) == t, p + T.length t <= T.length written]
-    places = selected : if length further == length (furtherPlaces command) then further else []
-    slice (a, b) = T.take (b - a) (T.drop a written)
-    asSnippet =
-      (T.null indentation || not ("\n" `T.isInfixOf` written))
-        && not (any ("\t" `T.isPrefixOf`) (drop 1 (T.splitOn "\n" written)))
-        && all (not . T.any (`elem` ("{}\n" :: [Char])) . slice) places
-    (skeleton, writing)
-      | asSnippet = (piecesOf places, LineAsSnippet line)
-      | otherwise = (piecesOf [selected], LineAsText line)
-    piecesOf ps = go 0 (zip [1 ..] ps)
-      where
-        go at' = \case
-          [] -> [Literal (T.drop at' written) | at' < T.length written]
-          (n, range@(a, b)) : rest -> [Literal (slice (at', a)) | a > at'] <> [Field n (slice range)] <> go b rest
-
--- | The places after the one a command selects that a skeleton of the @/@
--- menu gives too, Tab going to each in turn: where each starts after the
--- end of the selection, in characters, and what it holds as the command
--- writes it ("Wiki.Core.Markdown.Edit"'s templates): a table's other
--- header cells, and nothing else, the command's own selection being the
--- one place of any other. A place is given only where the text written
--- holds what it should there ('lineCandidate').
-furtherPlaces :: Command -> [(Int, Text)]
-furtherPlaces = \case
-  Edit.Table -> [(3, "Column 2"), (14, "Column 3")]
-  _ -> []
+    slice a b = T.take (b - a) (T.drop a written)
+    skeleton = [Literal (slice 0 start) | start > 0] <> [Field 1 (slice start end)] <> [Literal (T.drop end written) | end < T.length written]
 
 ----------------------------------------------------------------------
 -- Skeletons

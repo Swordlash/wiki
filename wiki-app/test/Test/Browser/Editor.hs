@@ -1119,7 +1119,9 @@ dotPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChw
 -- Each case is one way the keymap goes: an answer that writes a new line's
 -- start, one that replaces the cursor's line, none (code), Shift+Enter, a
 -- selection, which is never asked about, and a character of two UTF-16
--- units before the cursor, which the ask must not count wrong.
+-- units before the cursor, with text after it, which the ask must split
+-- where the cursor is: the text before the cursor and after it are given
+-- apart, so that no offset in UTF-16 units reaches Haskell's characters.
 enterCases :: [(Text, Text, [Text], Text)]
 enterCases =
   [ ("an item", "- one‸", ["Enter"], "- one\n- ‸")
@@ -1129,7 +1131,7 @@ enterCases =
   , ("Shift+Enter in a list", "- one‸", ["Shift+Enter"], "- one\n‸")
   , ("a selection, replaced by a line break", "- «one»", ["Enter"], "- \n‸")
   , ("code", "```\n- a‸\n```", ["Enter"], "```\n- a\n‸\n```")
-  , ("an emoji before the cursor", "> 🎉 one‸", ["Enter"], "> 🎉 one\n> ‸")
+  , ("an emoji before the cursor, a line after it", "> 🎉 one‸\n> two", ["Enter"], "> 🎉 one\n> ‸\n> two")
   ]
 
 -- | What 'enterCases' write under: the page's title line, which the editor

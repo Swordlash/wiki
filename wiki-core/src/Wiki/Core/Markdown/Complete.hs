@@ -112,10 +112,29 @@ data Place = InText | InLinkText | InOwnText
 -- (and the editor's @TeXMath@, in @web/src/editor.js@). A link's text is
 -- text for the wiki's markup: CodeMirror reads @[[!notes]]@ as brackets
 -- around a link, which the wiki's parser does not.
+--
+-- The inline nodes CodeMirror's parser names (GFM's, with the editor's
+-- math), and what each does to the @/@ menu, which opens only in a
+-- paragraph's own text:
+--
+-- * its own text, no list: @InlineCode@, @HTMLTag@, @Comment@,
+--   @ProcessingInstruction@, @Autolink@, @URL@, @TeXMath@ (and the blocks
+--   @FencedCode@, @CodeBlock@, @HTMLBlock@, @CommentBlock@,
+--   @ProcessingInstructionBlock@, @LinkReference@);
+-- * a link's or an image's text, no menu ('InLinkText'): @Link@, @Image@,
+--   and @LinkLabel@ and @LinkTitle@ inside them;
+-- * text the wiki's parser reads inside an inline, which its probe
+--   refuses ("plainWords"): @Emphasis@, @StrongEmphasis@,
+--   @Strikethrough@;
+-- * nothing to be inside of at a line's end: @Escape@, @Entity@,
+--   @HardBreak@, @Emoji@, and the marks (@EmphasisMark@, @CodeMark@,
+--   @LinkMark@, @StrikethroughMark@, @SubscriptMark@, @SuperscriptMark@);
+--   @Subscript@ and @Superscript@ are text to the wiki's parser, which
+--   has neither, and the menu opens there as in any text.
 placeOf :: [Text] -> Place
 placeOf nodes
   | any (`elem` ownText) nodes = InOwnText
-  | "Link" `elem` nodes = InLinkText
+  | any (`elem` ["Link", "Image"]) nodes = InLinkText
   | otherwise = InText
   where
     ownText =

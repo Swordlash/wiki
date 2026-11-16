@@ -87,6 +87,10 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
       let at = slashAt "[see /ta‸\nmore]\n\n[see /ta more]: /url"
       isJust (complete [slashSource slashEntries'] (readLine at.above) at {place = placeOf ["Link", "Paragraph", "Document"]}) `shouldBe` False
       isJust (complete [slashSource slashEntries'] (readLine at.above) at) `shouldBe` True
+      -- A reference image's text over lines, which Lezer names Image (#295's
+      -- fourth round).
+      let image = slashAt "![see /ta‸\nmore]\n\n[see /ta more]: /url"
+      isJust (complete [slashSource slashEntries'] (readLine image.above) image {place = placeOf ["Image", "Paragraph", "Document"]}) `shouldBe` False
     it "writes each entry as its text in place of the line, the command's selection its one place, never as a snippet" $ do
       slashPlaces "/ta‸" Edit.Table `shouldBe` Just ["Column 1"]
       slashPlaces "/‸" Edit.SpoilerBlock `shouldBe` Just ["name"]

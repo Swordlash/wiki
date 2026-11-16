@@ -3174,6 +3174,14 @@ needs. Each was true when its package merged; check before relying on one.
   parser and CodeMirror count its lines differently); folds do not
   survive a reload; fold-all is not offered (AltGr sends Ctrl+Alt on
   Windows, and its keys would catch typed brackets).
+- **A broken wiki link is not reported in the editor (noted
+  2026-11-16, with WP5.124 (c)).** A link by path breaks when its page
+  moves or is renamed; the page and the preview show it as text without
+  a link (`link-unresolved`), but the editor's check
+  (`Wiki.Core.Markdown.Problems`) reports no broken link. With `[[`
+  completing links by path there will be more of them. A small package
+  of its own: a problem for a wiki link that resolves to no page the
+  editor holds, with the pages it might mean.
 - **The completion's framework (#293, WP5.124 (b)).**
   `Wiki.Core.Markdown.Complete` decides, purely, which trigger applies,
   the candidates and what each writes; the wiki's own parser is asked

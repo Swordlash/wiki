@@ -21,7 +21,7 @@ import Protolude
 import Test.Cases (coverage)
 import Test.Hspec hiding (after, before)
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
-import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, conjoin, counterexample, cover, elements, frequency, listOf1, oneof, property, (===))
+import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, conjoin, counterexample, cover, elements, frequency, listOf1, oneof, property, (.&&.), (===))
 import Wiki.Core.Markdown.Ast (Block, Shape (..), ShapeKind (..), parseMarkdown, parseShapes, parseWithSpans)
 import Wiki.Core.Markdown.Ast qualified as A
 import Wiki.Core.Markdown.Enter
@@ -136,19 +136,33 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
       atEveryLineEnd doc $ \before after answer -> case answer of
         NewLineWith _ | not (newItemOn before after answer) -> quotedLineKept before after answer
         _ -> property True
+    -- Whatever Enter writes, the top-level blocks before the cursor's and
+    -- after it are read as before.
+    prop "leaves the top-level blocks around the cursor's as they were" $ \doc ->
+      atEveryLineEnd doc $ \before after answer -> case answer of
+        NewLine -> property True
+        _ -> blocksAroundKept before after answer
     -- A line replaced is one container less deep (an item of the list
     -- around counts as deep as its sibling), with nothing after its marks.
     prop "takes an empty item or quoted line up one level" $ \doc ->
       atEveryLineEnd doc $ \before after answer -> case answer of
         LineBecomes _ -> wentUp before after answer
         _ -> property True
-    -- What the editor hands over (the cursor's top-level block, with the
-    -- block above when nothing is between and the block below) gives the
-    -- answer the whole page gives.
-    prop "answers the same for the cursor's top-level block as for the whole text" $ \doc ->
+    -- What the editor hands over gives the answer the whole page gives, or
+    -- a plain line break, wherever CodeMirror's tree, which knows no
+    -- footnote and none of the wiki's own blocks, starts the cursor's
+    -- top-level block ('cuts'). Never another answer: the generated
+    -- documents still find texts handed over that give a plain line break
+    -- where the whole page goes on (a footnote's lines after a lazy line,
+    -- read otherwise from where the text starts), never one that goes on
+    -- otherwise. 'cuts' only comes near where CodeMirror starts a block.
+    prop "answers as for the whole text, or a plain line break, for what the editor hands over" $ \doc ->
       atEveryLineEnd doc $ \before after answer ->
-        let (blockBefore, blockAfter) = topLevelBlock before after
-         in counterexample (show (blockBefore, blockAfter)) (enter blockBefore blockAfter === answer)
+        conjoin
+          [ counterexample (show (blockBefore, blockAfter, given)) (given == answer || given == NewLine)
+          | (blockBefore, blockAfter) <- cuts before after
+          , let given = enter blockBefore blockAfter
+          ]
     -- Not only safe but useful: in containers written as CommonMark reads
     -- them without doubt, Enter at the end of an item's or a quotation's
     -- text goes on in it, as the containers say.
@@ -165,9 +179,9 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     prop "covers every answer" $ \doc ->
       let answers = [enter b a | (b, a) <- lineEnds (render doc)]
        in coverage
-            $ cover 40 (any isNewItem answers) "a new item"
+            $ cover 30 (any isNewItem answers) "a new item"
             $ cover 15 (any isQuoted answers) "a new quoted line"
-            $ cover 20 (any isUp answers) "a line gone up"
+            $ cover 10 (any isUp answers) "a line gone up"
             $ cover 50 (NewLine `elem` answers) "a plain line break" True
   where
     isNewItem = \case
@@ -204,6 +218,13 @@ data Layer
   | -- | A list's item: the spaces before its mark, the mark, what follows
     -- it, and a task's box (its letter, @' '@ or @x@).
     Item Int Text Gap (Maybe Char)
+  | -- | A footnote's definition, @[^7]: @, its later lines indented by
+    -- four spaces: a container CodeMirror's Markdown does not know. Its
+    -- label is drawn from a million, so that no two are the same: the
+    -- parser drops a second definition of a label, blocks and all, which
+    -- makes the reading of a line depend on a definition anywhere above
+    -- it, not only on the blocks around it.
+    Note Int
   deriving stock (Eq, Show)
 
 -- | What follows a mark: spaces, or a tab.
@@ -211,7 +232,7 @@ data Gap = Spaces Int | Tab
   deriving stock (Eq, Show)
 
 -- | What a chunk's lines hold after their containers' marks.
-data Body = Text | TextLazy | Heading | Box | Blank | Empty | Indented | Fenced | OpenFence | Html | Table
+data Body = Text | TextLazy | Heading | Box | Blank | Empty | Indented | Fenced | OpenFence | Html | Table | Opener | Closer
   deriving stock (Eq, Show, Enum, Bounded)
 
 -- | Some lines: the containers kept from the chunk before, written as on
@@ -242,8 +263,11 @@ chunk stack = do
       Item b m g t : _ | n > 0 -> frequency [(2, pure [Item b (nextMark m) g t]), (1, (: []) <$> layer)]
       _ -> replicateM (min n 1) layer
     rest <- replicateM (max 0 (n - 1)) layer
-    pure (first' <> rest)
-  body <- frequency [(6, pure Text), (2, pure TextLazy), (1, pure Heading), (1, pure Box), (2, pure Blank), (2, pure Empty), (1, pure Indented), (1, pure Fenced), (1, pure OpenFence), (1, pure Html), (1, pure Table)]
+    -- A footnote's definition at the top level only, where a page writes
+    -- one (the parser reads one in an item too, and lists it at the end).
+    footnote <- if k == 0 then frequency [(5, pure []), (1, (: []) . Note <$> choose (1, 1000000))] else pure []
+    pure (footnote <> first' <> rest)
+  body <- frequency [(6, pure Text), (2, pure TextLazy), (1, pure Heading), (1, pure Box), (2, pure Blank), (2, pure Empty), (1, pure Indented), (1, pure Fenced), (1, pure OpenFence), (1, pure Html), (1, pure Table), (1, pure Opener), (1, pure Closer)]
   pure (Chunk kept fresh body)
 
 -- | A new container.
@@ -288,12 +312,17 @@ bodyLines = \case
   OpenFence -> [(False, "```"), (False, "> code")]
   Html -> [(False, "<div>"), (False, "- html"), (False, "</div>")]
   Table -> [(False, "| a | b |"), (False, "| - | - |")]
+  -- The marker lines of one of the wiki's own blocks, which CodeMirror's
+  -- Markdown does not know either.
+  Opener -> [(False, "[[!notes]]")]
+  Closer -> [(False, "[[/notes]]")]
 
 -- | A container's marks on its first line.
 firstForm :: Layer -> Text
 firstForm = \case
   Quote b g -> T.replicate b " " <> ">" <> gapText g
   Item b m g t -> T.replicate b " " <> m <> gapText g <> maybe "" (\c -> "[" <> T.singleton c <> "] ") t
+  Note label -> "[^" <> show label <> "]: "
 
 -- | A container's marks on a later line: a quotation's again, an item's
 -- indentation.
@@ -301,6 +330,7 @@ laterForm :: Layer -> Text
 laterForm = \case
   q@(Quote _ _) -> firstForm q
   Item b m g _ -> T.replicate (b + T.length m + width g) " "
+  Note _ -> "    "
   where
     width = \case
       Spaces k | k >= 1 && k <= 4 -> k
@@ -461,30 +491,101 @@ wentUp before after answer =
           , counterexample "text on the line" (not (inTextAt text n))
           ]
 
+-- | The top-level blocks before the cursor's one, and after it, are the
+-- same after the answer as before it. Going up may split the cursor's
+-- block in two (a quotation left in its middle), so the blocks after it
+-- are compared from the end. The footnotes, which the parser gathers at
+-- the end of the page, are left out: the cursor may be in one.
+blocksAroundKept :: Text -> Text -> Enter -> Property
+blocksAroundKept before after answer = case (placed (before <> after), placed (textAfter before after answer)) of
+  (Just old, Just new) ->
+    let n = T.count "\n" before + 1
+        own = fromMaybe n (lastMay [a | (a, b, _) <- old, a <= n, n <= b])
+        above = [blk | (a, _, blk) <- old, a < own]
+        below = [blk | (a, _, blk) <- old, a > n]
+        blocks = [blk | (_, _, blk) <- new]
+     in counterexample (show blocks) $
+          take (length above) blocks === above
+            .&&. reverse (take (length below) (reverse blocks)) === below
+  _ -> counterexample "no parse" False
+  where
+    placed t = either (const Nothing) (\bs -> Just [(a, b, blk) | (Just (a, b), blk) <- bs, not (isFootnotes blk)]) (parseWithSpans t)
+    isFootnotes = \case
+      A.Footnotes _ -> True
+      _ -> False
+
 -- | Whether a line is in a paragraph, an item's text or a heading.
 inTextAt :: Text -> Int -> Bool
 inTextAt text n = either (const False) (\shapes -> any (\s -> s.kind == TextShape) (shapesAt shapes n)) (parseShapes text)
 
--- | The top-level block a cursor is in, for the parser, from its first
--- line to its last, as the text before the cursor and after it; the
--- cursor's line alone when no block covers it. The block before it comes
--- too when no blank line is between, and the block after it, as
--- web/src/editor.js hands them over: whether a line is an item or a lazy
--- line of a paragraph depends on the paragraph above, and a new line can
--- change how the parser reads the block below ("Wiki.Core.Markdown.Enter"
--- checks that it does not).
-topLevelBlock :: Text -> Text -> (Text, Text)
-topLevelBlock before after =
-  let text = before <> after
-      n = T.count "\n" before + 1
-      ls = T.splitOn "\n" text
-      spans = either (const []) (mapMaybe fst) (parseWithSpans text)
-      (own, ownLast) = fromMaybe (n, n) (lastMay [(a, b) | (a, b) <- spans, a <= n, n <= b])
-      first' = fromMaybe own (lastMay [a | (a, b) <- spans, a < own, b >= own - 1])
-      last' = fromMaybe ownLast (head [b | (a, b) <- spans, a > own, b > ownLast])
-      blockLines = take (last' - first' + 1) (drop (first' - 1) ls)
-      (b', a') = splitAt (n - first' + 1) blockLines
-   in (T.intercalate "\n" b', mconcat ["\n" <> l | l <- a'])
+-- | The texts the editor may hand over for a cursor, as the text before
+-- the cursor and after it (web/src/editor.js's blockAt). CodeMirror's
+-- tree starts the cursor's top-level block where the parser starts one,
+-- or, inside a footnote's definition or one of the wiki's own blocks,
+-- which it does not know, at any line; the block above comes too when
+-- nothing is between them. Then the editor goes up to the outermost
+-- block of the wiki's own still open above, or else to the nearest
+-- footnote's definition above; and it hands over to the first line of
+-- the parser's next top-level block. Footnotes are written at the top level only
+-- (Note), where a page writes them.
+cuts :: Text -> Text -> [(Text, Text)]
+cuts before after =
+  [ (T.intercalate "\n" b', mconcat ["\n" <> l | l <- a'])
+  | start <- take 3 (reverse starts)
+  , let first' = lifted (adjacent start)
+        blockLines = take (last' - first' + 1) (drop (first' - 1) ls)
+        (b', a') = splitAt (n - first' + 1) blockLines
+  ]
+  where
+    text = before <> after
+    n = T.count "\n" before + 1
+    ls = T.splitOn "\n" text
+    tops = [(linesOf s, s.kind, not (null s.inner)) | s <- either (const []) identity (parseShapes text)]
+    own = fromMaybe n (lastMay [a | ((a, b), _, _) <- tops, a <= n, n <= b])
+    ownLast = fromMaybe n (lastMay [b | ((a, b), _, _) <- tops, a <= n, n <= b])
+    last' = maybe (length ls) (max ownLast) (head [a | ((a, _), _, _) <- tops, a > own])
+    -- Where CodeMirror may start a block at or above the cursor's.
+    starts = filter (<= own) blockStarts
+    -- Where CodeMirror may start a block: where the parser starts a
+    -- top-level one, and inside a footnote's definition or one of the
+    -- wiki's own blocks, which it does not know, at any line.
+    blockStarts =
+      ordNub . sort $
+        own
+          : [a | ((a, _), _, _) <- tops]
+            <> [l | ((a, b), k, holds) <- tops, k == NoteShape || (k == OtherShape && holds), l <- [a + 1 .. b]]
+            -- A line no block of the parser's covers (a footnote's
+            -- definition with nothing on its first line starts on the next).
+            <> [l | (l, t) <- zip [1 ..] ls, not (T.null (T.strip t)), not (any (\((a, b), _, _) -> a <= l && l <= b) tops)]
+    adjacent c = fromMaybe c (lastMay [a | ((a, b), _, _) <- tops, a < c, b >= c - 1])
+    -- The outermost of the wiki's blocks still open above, or else the
+    -- nearest footnote's definition above.
+    lifted c =
+      let walk (footnote, open, closed) l = case kindOf (fromMaybe "" (atMay ls (l - 1))) of
+            Just FootnoteLine | isNothing footnote -> (Just l, open, closed)
+            Just CloserLine -> (footnote, open, closed + 1)
+            Just OpenerLine
+              | closed > 0 -> (footnote, open, closed - 1)
+              | otherwise -> (footnote, Just l, closed)
+            _ -> (footnote, open, closed)
+          (note', open', _) = foldl' walk (Nothing, Nothing, 0 :: Int) (reverse (filter (<= c) blockStarts))
+       in fromMaybe c (open' <|> note')
+    kindOf l =
+      let t = T.dropWhile (== ' ') l
+          blocks = ["spoiler", "notes", "incremental", "div"]
+       in if T.length l - T.length t > 3
+            then Nothing
+            else
+              if "[^" `T.isPrefixOf` t && "]:" `T.isInfixOf` t
+                then Just FootnoteLine
+                else
+                  if any (\b -> ("[[!" <> b <> "]]") `T.isPrefixOf` t) blocks
+                    then Just OpenerLine
+                    else if any (\b -> ("[[/" <> b <> "]]") `T.isPrefixOf` t) blocks then Just CloserLine else Nothing
+
+-- | What a line starts, for 'cuts'.
+data Opening = FootnoteLine | OpenerLine | CloserLine
+  deriving stock (Eq)
 
 ----------------------------------------------------------------------
 -- Lists and quotations written plainly

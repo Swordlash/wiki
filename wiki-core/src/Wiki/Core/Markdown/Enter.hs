@@ -75,6 +75,7 @@ module Wiki.Core.Markdown.Enter
 where
 
 import Data.List (zip3)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Protolude
 import Wiki.Core.Markdown.Ast (ItemMark (..), Shape (..), ShapeKind (..), parseShapes)
@@ -93,12 +94,17 @@ data Enter
 
 -- | What Enter writes, given the text before the cursor and the text after
 -- it: whole lines of the page around the cursor, or the whole page. The
--- editor gives the top-level block the cursor is in, with the block above
--- it when no blank line is between them (whether the block's first line
--- is an item or a lazy line depends on a paragraph above) and the block
--- below (which 'readsAsMeant' checks a new line does not change). The two
--- texts are given apart so that no offset crosses from the browser's
--- UTF-16 units to Haskell's characters.
+-- editor gives the top-level block the cursor is in as CodeMirror's tree
+-- reads it, with the block above it when no blank line is between them
+-- (whether the block's first line is an item or a lazy line depends on a
+-- paragraph above), from the nearest footnote's definition or start
+-- marker of the wiki's own blocks above, which that tree does not know,
+-- and to the first line of the block below (which 'readsAsMeant' checks
+-- a new line does not change). The answer is the one the whole page would
+-- give; the exception is a label defined twice: the parser drops the
+-- second footnote's definition of a label, with its blocks. The two texts
+-- are given apart so that no offset crosses from the browser's UTF-16
+-- units to Haskell's characters.
 enter :: Text -> Text -> Enter
 enter before after
   | not (T.null after || "\n" `T.isPrefixOf` after) = NewLine
@@ -177,17 +183,31 @@ placeOf shapes n = go [] Nothing shapes
         _ -> Nothing
     covers s = let (a, b) = extent s in a <= n && n <= b
 
--- | The quotations and items over a line, whatever is on it, each by the
--- line it starts on, the outermost first.
-over :: [Shape] -> Int -> [(Bool, Int)]
-over shapes n = case lastMay (filter covers shapes) of
-  Nothing -> []
-  Just s -> case s.kind of
-    QuoteShape -> (True, fst (extent s)) : over s.inner n
-    ItemShape _ _ -> (False, fst (extent s)) : over s.inner n
-    _ -> over s.inner n
+-- | How each line is read, whatever is on it: the quotations, lists,
+-- items and the wiki's own blocks over it (0 to 4), each by the line it
+-- starts on, the outermost first; the kind of the innermost block over
+-- it; and the column the innermost block that starts a part on the line
+-- starts it at. A list counts, so that two lists a new blank line makes
+-- one read otherwise; the column, so that lines a footnote's definition
+-- takes in read otherwise (the parser places no footnote, only what is in
+-- it). One walk of the shapes, a later or deeper shape over a line
+-- taking it from those before (as 'placeOf' takes the last of the shapes
+-- over a line).
+readings :: [Shape] -> Map Int ([(Int, Int)], ShapeKind, Int)
+readings = foldl' (go []) Map.empty
   where
-    covers s = let (a, b) = extent s in a <= n && n <= b
+    go held acc s =
+      let (a, b) = extent s
+          here = case s.kind of
+            QuoteShape -> held <> [(0, a)]
+            ListShape -> held <> [(1, a)]
+            ItemShape _ _ -> held <> [(2, a)]
+            OtherShape | not (null s.inner) -> held <> [(4, a)]
+            _ -> held
+          column l = maybe 0 (\(_, c) -> c) . lastMay $ [(l', c) | ((l', c), _) <- s.parts, l' == l]
+          kept l = maybe 0 (\(_, _, c) -> c) (Map.lookup l acc)
+          marked = foldl' (\m l -> Map.insert l (here, s.kind, if column l > 0 then column l else kept l) m) acc [a .. b]
+       in foldl' (go here) marked s.inner
 
 -- | The first and the last line of a shape, its inner shapes' included.
 extent :: Shape -> (Int, Int)
@@ -407,19 +427,20 @@ readsAsMeant before after oldShapes answer expected = fromMaybe False $ do
       n = T.count "\n" before' + 1
   shapes <- rightToMaybe (parseShapes text)
   place <- placeOf shapes n
-  -- The quotations and items over the first line after the new one with
-  -- anything on it, whatever that line is (code too), each by the line it
-  -- starts on in the text before the answer (0 for the new line's own). A
-  -- blank line between belongs to no item.
-  let readingAt found m renumber = map (second renumber) (over found m)
-      unshifted l
-        | l == n = 0
-        | l > n = l - 1
-        | otherwise = l
-      next = head [m | (m, l) <- zip [n ..] (drop (n - 1) (T.splitOn "\n" (before <> after))), not (T.null (T.strip l))]
-  case (answer, next) of
-    (NewLineWith _, Just m) -> guard (readingAt oldShapes m identity == readingAt shapes (m + 1) unshifted)
-    _ -> pure ()
+  -- Every line after the cursor's with anything on it is read as before:
+  -- in the same quotations and items, each by the line it starts on in the
+  -- text before the answer (0 for the new line's own), and as the same
+  -- kind of block (text, code). A blank line belongs to no item.
+  let cursor = T.count "\n" before + 1
+      oldLines = T.splitOn "\n" (before <> after)
+      below = [m | (m, l) <- zip [cursor + 1 ..] (drop cursor oldLines), not (T.null (T.strip l))]
+      (moved, renumber) = case answer of
+        NewLineWith _ -> (1, \l -> if l == n then 0 else if l > n then l - 1 else l)
+        _ -> (0, identity)
+      old = readings oldShapes
+      new = readings shapes
+      unshifted (containers, kind, column) = (map (second renumber) containers, kind, column)
+  guard (all (\m -> Map.lookup m old == fmap unshifted (Map.lookup (m + moved) new)) below)
   line <- atMay textLines (n - 1)
   -- The line's containers, what it holds of each, and the rest of it.
   let marks = do
@@ -439,4 +460,4 @@ readsAsMeant before after oldShapes answer expected = fromMaybe False $ do
     -- line of (placeOf has said it is in no code). No quotation goes on
     -- over it (the parser reads one on over a blank line after an empty
     -- item in it, commonmark 0.3.1).
-    Outside -> pure (T.null (T.strip line) && not (any fst (over shapes n)))
+    Outside -> pure (T.null (T.strip line) && maybe True (\(cs, _, _) -> not (any ((== 0) . fst) cs)) (Map.lookup n (readings shapes)))

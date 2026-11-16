@@ -1479,14 +1479,23 @@ const textKeys = standardKeymap.filter((binding) => !toolbarKeys.has(binding.mac
 // at the end of, as {from, to}, from the start of the block's first line
 // to the end of its last; the position's line alone when it is in no
 // block (a blank line). The block above comes too when no blank line is
-// between them, and the block below: whether the block's first line is
-// an item or a lazy line of a paragraph depends on the paragraph above,
-// and Wiki.Core.Markdown.Enter checks that a new line does not change how
-// the block below is read. The syntax tree is parsed past the position's
-// line, and on until the last of these blocks ends before where it is
-// parsed to, so that a fence a block above left open shows (the block is
-// then the fence, to the end of the text) and no block is cut where the
-// parse stopped. Null when the tree cannot be parsed that far in time.
+// between them, and the first line of the block below (or the blank
+// lines to the end of the text, when no block is below): whether the
+// block's first line is an item or a lazy line of a paragraph depends on
+// the paragraph above, and Wiki.Core.Markdown.Enter checks that a new
+// line leaves the first line below it with anything on it in the
+// containers it was in. The tree knows no footnote's definition
+// ("[^1]: ") and none of the wiki's own blocks that hold others
+// ("[[!notes]]"; not "[[!pause]]" or "[[!style]]", one line each), whose
+// lines below may still be theirs (indented, lazy, or up to the end
+// marker). So the text starts at the first line of a block of the tree
+// that starts the outermost of the wiki's blocks still open above (no
+// end marker after it starts a block of the tree), or else at the nearest
+// footnote's definition above, open or not. The syntax tree is parsed
+// on until the line below,
+// so that a fence a block above left open shows (the block is then the
+// fence, to the end of the text) and no block is cut where the parse
+// stopped. Null when the tree cannot be parsed that far in time.
 const blockAt = (state, pos) => {
   const { doc } = state;
   let upto = Math.min(doc.length, doc.lineAt(pos).to + 1);
@@ -1501,10 +1510,22 @@ const blockAt = (state, pos) => {
     }
     const above = top.prevSibling;
     const below = top.nextSibling;
-    const first = above && doc.lineAt(above.to).number >= doc.lineAt(top.from).number - 1 ? above : top;
-    const last = below ?? top;
-    if (last.to < upto || upto === doc.length) return { from: doc.lineAt(first.from).from, to: doc.lineAt(last.to).to };
-    upto = Math.min(doc.length, Math.max(upto, last.to) + 1);
+    let first = above && doc.lineAt(above.to).number >= doc.lineAt(top.from).number - 1 ? above : top;
+    let note = null;
+    let open = null;
+    let closed = 0;
+    for (let node = first; node; node = node.prevSibling) {
+      const text = doc.lineAt(node.from).text;
+      const marker = /^ {0,3}\[\[([!/])(spoiler|notes|incremental|div)\]\]/.exec(text);
+      if (note === null && /^ {0,3}\[\^[^\]]+\]:/.test(text)) note = node;
+      else if (marker?.[1] === "/") closed++;
+      else if (marker && closed > 0) closed--;
+      else if (marker) open = node;
+    }
+    first = open ?? note ?? first;
+    const to = below ? doc.lineAt(below.from).to : doc.length;
+    if ((below && to < upto) || upto === doc.length) return { from: doc.lineAt(first.from).from, to };
+    upto = Math.min(doc.length, Math.max(upto, to) + 100);
   }
 };
 

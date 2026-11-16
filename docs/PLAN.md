@@ -1162,7 +1162,8 @@ confirms it against reality and the plan is amended if it does not hold.
     `[[!name]]{attributes}(Title)` on a line of its own, its blocks, then
     `[[/name]]`: `spoiler` (the only one with a description in
     parentheses), `notes`, `incremental` and `div`. Three are one line
-    with no end marker: `[[!slides]]{theme=dark aspect=4:3}`, `[[!pause]]`
+    with no end marker: `[[!slides]]{theme=dark aspect=4:3}` (named
+    `[[!style]]` since #253), `[[!pause]]`
     and `[[!toc]]`. The exclamation mark keeps a block apart from a wiki
     link (the owner: every name added later, a plugin's too, would
     otherwise take a page's name from `[[page]]`): a page's address cannot
@@ -1970,6 +1971,62 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   to what needs a browser, with the counts before and after. The
   about forty asks WP5.95 left are taken with the view each belongs
   to; the ones in views with a single ask keep `View.Latest`.
+- **WP5.124 Autocompletion in the editor (#187; the first feature
+  after the tests, the owner, 2026-11-16).** Scope read from the code
+  on 2026-11-16. The editor's CodeMirror already has one
+  `autocompletion` with two sources (mentions, emoji) whose candidates
+  the component gives; every toolbar command is the pure
+  `Wiki.Core.Markdown.Edit.apply`, which returns the text and one
+  selected place to fill. The shape, by decisions 82 and 83:
+  JavaScript keeps what only CodeMirror knows (a loose gate on the
+  characters before the cursor, where the cursor is in the syntax
+  tree, the enclosing block's text); pure Haskell decides the rest
+  (`Wiki.Core.Markdown.Complete`: which trigger applies, the
+  candidates and their order, the skeleton with its places to fill,
+  written as a CodeMirror snippet) and is tested natively in the
+  `«‸»` notation of `Test/Markdown/Edit.hs`; the component answers
+  from its state in one step (no ask of the backend, so no machine);
+  CodeMirror owns the popup, the keys and the snippet's fields. One
+  source more in the same `autocompletion`, not a second one. Five
+  pull requests, in a row (all touch `web/src/editor.js`):
+  (a) **Enter in lists and boxes**: lang-markdown's
+  `insertNewlineContinueMarkupCommand` with `nonTightLists: false`,
+  bound in the master and in the slides' rows; a new item at the same
+  indentation, a task's box, an ordered list renumbered; a second
+  Enter on an empty item goes up one level, and an empty `>` line in a
+  box leaves the box at once (the issue's words; the library wants two
+  empty lines, so a few lines of the wiki's own); Shift+Enter stays a
+  plain new line; Backspace is left as it is. Small.
+  (b) **The framework, with `[[!`, `[[/` and `[!`**: the markers the
+  page's kind reads (a document is offered no `notes`, `incremental`,
+  `pause` or `style`), each written with its end marker and the cursor
+  inside; `[[/` offers the innermost open block; the kinds of box, the
+  administrator's among them. A property: the end marker written
+  leaves no "not closed" problem. The snippet's Tab and Escape must
+  not also reach the form's keys.
+  (c) **`[[` for a page**: this space's pages, which the editor holds.
+  What is written is the owner's to choose (asked 2026-11-16): the
+  shortest relative path, the page's address as "Link to a page"
+  writes it, or the permanent link by id. Other spaces' pages need an
+  ask and come later.
+  (d) **The `/` menu**: every toolbar entry that writes text, and
+  "Link to a page" and "Image or attachment", which open their
+  dialogs; not the colours, the emoji or "New kind…". It opens at a
+  line's start or after a space, never in code, math, a link or HTML.
+  Accepting removes `/query` and writes what the toolbar would, as one
+  undo step, with the first place selected and Tab going to the next.
+  A property: for every tool, text and cursor the result equals
+  `apply` on the text without `/query`.
+  (e) **`\` in math**: KaTeX's commands (it exports no list: a script
+  at bundle time reads its tables into a small JSON and fails the
+  build if they move), the wiki's, the space chain's and the page's
+  macros with their numbers of arguments, `\begin{env}` written with
+  its `\end`; "in math" for a formula not closed yet is decided in
+  Haskell from the block's text, with the wiki's parser as the oracle
+  of a property.
+  Left out: completion after `{` (decision 65 named it; the issue does
+  not); the textarea before CodeMirror loads and the comments' boxes
+  get none of this.
 - **WP5.122 Checks in place of conventions (decision 82; for the
   order above).** (1) A script in CI with stored ceilings for the
   browser suite's `eventually`, `eventuallyWithin`, `find` and

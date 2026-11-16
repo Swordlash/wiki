@@ -66,7 +66,7 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
 
 -- | The list at a cursor typed after the document's lines.
 listAt :: [Text] -> Text -> Maybe Completion
-listAt doc cursor = complete [wikiSource Presentation []] (readLine doc) At {place = InText, above = doc, before = cursor}
+listAt doc cursor = complete [wikiSource Presentation []] (readLine doc) At {place = InText, above = doc, before = cursor, after = "", below = []}
 
 -- | Whether the list after a line's prefix and @[[!@ offers markers.
 marker :: [Text] -> Text -> Bool

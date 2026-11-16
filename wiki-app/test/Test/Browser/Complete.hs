@@ -4,7 +4,8 @@
 -- (WP5.124 (b) of docs/PLAN.md): what only CodeMirror shows of it. What
 -- opens a list, what it offers and what an entry writes are tested
 -- natively ("Test.Markdown.Complete" of wiki-core, and "Test.Complete");
--- here, that the list opens on typing, that Enter writes the entry's
+-- here, that the list opens on typing (after @[[@, with the space's
+-- pages, which the preview then leads to), that Enter writes the entry's
 -- snippet with the cursor at its first place and Tab moves to the next
 -- (a brace of the snippet read back exactly, the indentation of a list's
 -- item added), and that the list's and the snippet's keys stop on their
@@ -23,7 +24,7 @@ import Wiki.Api.ServerSettings (ServerSettingsOf (boxes))
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Route (..))
+import Wiki.App.Route (Route (..), pageLinkText)
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
 
 -- The last key that reached the window: test/jsbits/test-keys.js.
@@ -67,6 +68,51 @@ spec m = do
     listReady ui
     press "Enter"
     withSelection ui `shouldReturn` "> [!EXERCISE]\n> ‸"
+
+  it "links the page chosen after [[ as the preview leads it, writing no second ]] when one was typed already" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    text <- editorText ui
+    find ui ".editor-side-by-side" >>= click
+    setMarkdown ui titleLines
+    selectText ui (T.length titleLines) (T.length titleLines)
+    typeText text "See [[not"
+    -- The space's pages: the blog's other post, by its title, with where
+    -- it is beside it.
+    eventually $ labels ui `shouldReturn` ["Notes on Haskell"]
+    (findAll ui ".cm-tooltip-autocomplete .cm-completionDetail" >>= traverse textContent) `shouldReturn` ["notes-on-haskell"]
+    listReady ui
+    press "Enter"
+    -- The preview leads it to the page: a link, not a link to nothing.
+    eventually $ length <$> findAll ui ".editor-preview .page-body a.wikilink[href$='/s/blog/p/notes-on-haskell/']" `shouldReturn` 1
+    length <$> findAll ui ".editor-preview .page-body .link-unresolved" `shouldReturn` 0
+    withSelection ui `shouldReturn` "See [[Notes on Haskell]]‸"
+    -- With the end typed already, the link takes it.
+    setMarkdown ui (titleLines <> "And [[]] too.")
+    selectText ui (T.length titleLines + 6) (T.length titleLines + 6)
+    typeText text "Not"
+    eventually $ labels ui `shouldReturn` ["Notes on Haskell"]
+    listReady ui
+    press "Enter"
+    withSelection ui `shouldReturn` "And [[Notes on Haskell]]‸ too."
+
+  it "links a page typed in the middle of the long Markdown guide, the rest of the guide as it was" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-admin") (EditPage (slugs ["docs"]) (slugs ["markdown-guide"]))
+    text <- editorText ui
+    guide <- eventually $ markdown ui >>= \t -> t <$ (t `shouldSatisfy` ((> 10_000) . T.length))
+    -- A line of its own between two paragraphs in the middle: thousands
+    -- of characters before it and after it.
+    let (upTo, rest) = T.breakOn "\n\n" (T.drop (T.length guide `div` 2) guide)
+        at = T.length guide `div` 2 + T.length upTo + 1
+        (address, label) = pageLinkText (slugs ["markdown-guide"]) (slugs ["markdown-guide", "diagrams"]) "Diagrams"
+        -- The editor counts UTF-16 units: an emoji above is two.
+        units = at + T.length (T.filter ((> 0xFFFF) . ord) (T.take at guide))
+    T.null rest `shouldBe` False
+    selectText ui units units
+    typeText text "See [[Diag"
+    eventually $ labels ui `shouldReturn` ["Diagrams"]
+    listReady ui
+    press "Enter"
+    markdown ui `shouldReturn` T.take at guide <> "See [[" <> address <> maybe "" ("|" <>) label <> "]]" <> T.drop at guide
 
   it "keeps the list's Escape and the snippet's Tab and Escape from the form, and lets them through once neither is there" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor

@@ -315,6 +315,7 @@ $( jsFields
      [ Fixed "id" ''Int
      , Fixed "line" ''Int
      , Fixed "before" ''Text
+     , Fixed "after" ''Text
      , Fixed "nodes" ''Text
      ]
  )
@@ -856,7 +857,7 @@ completeAsked :: Event -> Maybe (Int, Complete.Request)
 completeAsked event = do
   detail <- CompletionDetail <$> detailOf event
   guard (detail.id > 0)
-  Just (detail.id, Complete.Request {line = detail.line, before = detail.before, nodes = T.words detail.nodes})
+  Just (detail.id, Complete.Request {line = detail.line, before = detail.before, after = detail.after, nodes = T.words detail.nodes})
 
 -- | Answer the question with this number: the list, or 'Nothing' for none
 -- ("Wiki.App.Editor.Complete"'s 'Complete.completionJson'). CodeMirror

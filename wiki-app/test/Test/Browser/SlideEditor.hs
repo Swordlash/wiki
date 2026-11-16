@@ -650,6 +650,19 @@ spec m = do
     typeText row "Say hello."
     markdown ui `shouldReturn` T.replace "First." "First.\n\n[[!notes]]\nSay hello.\n[[/notes]]" deck
 
+  it "completes a link to a page in a row, as in the raw Markdown" $ runPage $ do
+    (ui, _) <- openDeck deck
+    rowHeader ui "One" >>= click
+    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    rowSelect 1 14 14
+    row <- openRowContent ui
+    typeText row " See [[not"
+    eventually $ (findAll ui ".editor-slides .cm-tooltip-autocomplete .cm-completionLabel" >>= traverse textContent) `shouldReturn` ["Notes on Haskell"]
+    eventually $ unsafeIOToPageM (js_row_completion_ready 1) `shouldReturn` True
+    press "Enter"
+    typeText row " too."
+    markdown ui `shouldReturn` T.replace "First." "First. See [[Notes on Haskell]] too." deck
+
   it "scrolls to the cursor of the row an undo takes it to, the editor's own text being hidden" $ runPage $ do
     let long = T.intercalate "\n\n" ("# Long" : concat [["## S" <> show i, T.intercalate "\n\n" (replicate 8 "A paragraph of its own.")] | i <- [1 .. 30 :: Int]])
     (ui, _) <- openDeck long

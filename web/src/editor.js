@@ -57,10 +57,11 @@
 //   wikiEditor.emojied(id, found).
 // - [[! and [[/ at the start of a line, and [! on a quotation's first
 //   line, open a list of the wiki's own markers and kinds of box in the
-//   same completion (see the completion of the wiki's own Markdown below).
-//   What opens it, what it offers and what an entry writes (a snippet,
-//   with places to fill) are Haskell's (Wiki.Core.Markdown.Complete): a
-//   "wiki-complete" event asks ({id, line, before, nodes}), and the
+//   same completion, and [[ anywhere else a list of the space's pages to
+//   link to (see the completion of the wiki's own Markdown below). What
+//   opens it, what it offers and what an entry writes (a snippet, with
+//   places to fill) are Haskell's (Wiki.Core.Markdown.Complete): a
+//   "wiki-complete" event asks ({id, line, before, after, nodes}), and the
 //   component answers through wikiEditor.completed(id, found).
 // - the page's problems (WP5.65 of docs/PLAN.md: a formula, a diagram or a
 //   picture that cannot be drawn, a broken spoiler or box marker) are
@@ -1086,49 +1087,64 @@ const emojiSource = (names, whole) => {
   };
 };
 
-// The completion of the wiki's own Markdown (WP5.124 (b) of
+// The completion of the wiki's own Markdown (WP5.124 (b) and (c) of
 // docs/PLAN.md): the markers of its blocks after [[! and [[/ at a line's
-// start, and the kinds of box after [! on a quotation's first line. What
+// start, the kinds of box after [! on a quotation's first line, and the
+// pages of the space after [[ anywhere a wiki link is read. What
 // opens a list, what it offers and what each entry writes are Haskell's
 // (Wiki.Core.Markdown.Complete): this asks the component through
 // `markup` with the cursor's place, and shows the answer. The place is
 // the cursor's line in the whole text (wholeAt: the master's, for a row of
-// the slide mode), the line up to the cursor, and the names of the syntax
-// tree's nodes at the cursor, innermost first, which say whether the
-// cursor is in code, HTML, math or a link's address.
+// the slide mode), the line before the cursor and after it, and the names
+// of the syntax tree's nodes at the cursor, innermost first, which say
+// whether the cursor is in code, HTML, math or a link's address.
 //
 // markupGate is what may open a list, loosely: a source is asked after
-// every key typed, and only a line that ends so asks the component.
-const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$/;
+// every key typed, and only a line that ends so asks the component, which
+// asks the wiki's parser. It lets through more than the parser reads,
+// never less: after [[, anything but a "]" (which ends a wiki link's text
+// for the parser) or a "|" (after which the cursor is in a label, where
+// no list opens). A "[" may stand in a link's address.
+const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$/;
 
-// The answer is {from, options, enter, escape}: where the text an entry
-// replaces starts in the line, in characters (it ends at the cursor);
-// each option's label, its snippet (@codemirror/autocomplete's, whose
-// first place to fill the cursor goes to, and Tab to the next), and its
-// origin when it comes from elsewhere than the wiki (a plugin's, shown
-// grey beside it as the option's detail); and what Enter and Escape do,
+// The answer is {from, through, options, enter, escape}: where the text
+// an entry replaces starts in the line, and how many characters after the
+// cursor it replaces too (the end of a link typed already, on this line
+// or a line below), in characters; each option's label, its snippet (@codemirror/autocomplete's,
+// whose first place to fill the cursor goes to, and Tab to the next) or
+// the text it writes as it is (insert), and
+// what is shown grey beside it as the option's detail (where a page is,
+// and where a plugin's entry comes from); and what Enter and Escape do,
 // for every option of the list.
 const markupSource = (markup, whole) => async (context) => {
   const { state, pos, tree } = whole(context);
   const line = state.doc.lineAt(pos);
   const before = state.sliceDoc(line.from, pos);
   if (!markupGate.test(before)) return null;
+  const after = state.sliceDoc(pos, line.to);
   const nodes = [];
   for (let node = tree.resolveInner(pos, -1); node; node = node.parent) nodes.push(node.name);
-  const detail = { line: line.number, before, nodes: nodes.join(" ") };
+  const detail = { line: line.number, before, after, nodes: nodes.join(" ") };
   const found = await unlessAborted(context, markup.ask(JSON.stringify(detail), detail));
   if (found === null || found.options.length === 0) return null;
   // The line's text before the cursor is the same in a row and in the
   // master, so the replaced text's length in units is read from it.
   const from = context.pos - (before.length - unitsOf(before, found.from));
+  // What the entry replaces after the cursor may run over lines below (a
+  // link that ends there): its length in units is read from the text
+  // after the cursor, two units at most for each character.
+  const following = state.sliceDoc(pos, Math.min(state.doc.length, pos + 2 * found.through));
   return {
     from,
+    to: context.pos + unitsOf(following, found.through),
     // Haskell has chosen and ordered them.
     filter: false,
     options: found.options.map((option) => ({
       label: option.label,
       detail: option.detail,
-      apply: snippet(option.template),
+      // An option written as it is (insert) has no place to fill: the
+      // cursor goes after it.
+      apply: option.insert === undefined ? snippet(option.template) : option.insert,
       enter: found.enter,
       typed: (s, head) => ({ from, letters: s.sliceDoc(from, head) }),
     })),

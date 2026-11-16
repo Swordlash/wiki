@@ -19,8 +19,8 @@
 # measuring, focus and selection, real HTTP and WebSocket, the service
 # worker. The pull request's description then says why. `threadDelay` and
 # `eventuallyWithin` are not raised.
-eventually 1342
+eventually 1350
 eventuallyWithin 78
-find 2790
+find 2791
 threadDelay 24
-examples 683
+examples 686

@@ -99,6 +99,7 @@ module Wiki.App.Route
   , PageLink (..)
   , resolvePageLink
   , resolvePageLinkWith
+  , pageLinkText
   , LinkReading (..)
   , Step (..)
   , Reading (..)
@@ -780,6 +781,58 @@ resolvePageLinkWith spaces spacePath home pageById childOf pagePath destination 
     withoutRoot = \case
       top : rest | Just (nodeId top) == home -> rest
       chain -> chain
+
+-- | 'pageLinkText' is what a wiki link from one page to another of its
+-- space writes between its brackets (WP5.124 (c) of docs/PLAN.md): the
+-- shortest address that 'resolvePageLink' reads, from the first page, as
+-- the second, and the title after a @|@ when the address does not show
+-- it as it is: (the address, the label if any). Both pages are given by
+-- their paths ('Wiki.Core.Space.pagePath': under the space's home page,
+-- which is the empty path), the second with its title.
+--
+-- The address is relative, read from the first page's parent: @..@ for
+-- each level up to the nearest page above both, then the slugs down to
+-- the second page. A page above the first one is named by its levels up
+-- alone, and the parent itself by @.@. Two forms of the same steps are
+-- weighed, and the shorter written (with its label) is taken, the first
+-- on a tie: every segment a slug; and the last segment the title itself,
+-- where the title reads back as that slug ('asSlug') and holds nothing a
+-- link's address reads otherwise (only letters, digits, spaces and
+-- dashes, not at an end). So a sibling titled "On-call" is @On-call@,
+-- with no label, and one titled "Who is on call?" is
+-- @who-is-on-call|Who is on call?@. An address from the top of the wiki,
+-- or the page's own address (@\/s\/…\/p\/…\/@), is longer than the
+-- relative one or as long, but for a page many levels away, and is not
+-- written: the owner chose the relative path (2026-11-16).
+--
+-- The label is written as the wiki link's text is read
+-- (commonmark-extensions' wiki links, which hold no bracket and decode
+-- character references): @&@ as @&amp;@ and @]@ as @&#93;@. A path, like
+-- any path, leads elsewhere once the page moves.
+pageLinkText :: [Slug] -> [Slug] -> Text -> (Text, Maybe Text)
+pageLinkText linking linked title = fromMaybe slugForm (find shorter titleForm)
+  where
+    parent = take (length linking - 1) linking
+    common = length (takeWhile identity (zipWith (==) parent linked))
+    ups = replicate (length parent - common) ".."
+    down = drop common linked
+    joined = \case
+      [] -> "."
+      segments -> T.intercalate "/" segments
+    labelled address = (address, if address == title then Nothing else Just (escapeLabel title))
+    slugForm = labelled (joined (ups <> map slugText down))
+    titleForm = do
+      (above, final) <- unsnoc down
+      guard (readable && asSlug title == Just final)
+      Just (labelled (joined (ups <> map slugText above <> [title])))
+    readable =
+      T.all (\c -> isAlphaNum c || c == ' ' || c == '-') title
+        && T.strip title == title
+        && not (T.null title)
+        && not ("-" `T.isPrefixOf` title || "-" `T.isSuffixOf` title)
+    shorter form = written form < written slugForm
+    written (address, label) = T.length address + maybe 0 (\l -> 1 + T.length l) label
+    escapeLabel = T.replace "]" "&#93;" . T.replace "&" "&amp;"
 
 -- | 'LinkReading' is a destination as 'resolvePageLink' reads it before it
 -- looks at the wiki: what its text names, each segment decoded and made a

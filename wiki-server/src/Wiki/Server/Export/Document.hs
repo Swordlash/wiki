@@ -450,6 +450,8 @@ markerEdits doc markers = Map.fromList [(m.lineAt, (m.columnAt, e)) | m <- marke
       HeadingMarker end -> Just (DropMarker end)
       -- An inline spoiler's bars are rewritten apart ('withBoxes').
       InlineBars _ _ -> Nothing
+      -- A wiki link is written as it is.
+      WikiLinkTo _ _ -> Nothing
       -- A line of attributes alone, @{.sorted}@, which pandoc's reader
       -- would show as text.
       SetsAttributes -> Just DropAttributes

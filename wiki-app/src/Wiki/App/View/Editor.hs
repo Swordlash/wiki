@@ -97,7 +97,9 @@
 -- It completes the wiki's own Markdown (WP5.124 (b) of docs/PLAN.md):
 -- @[[!@ and @[[/@ at a line's start, and @[!@ on a quotation's first line,
 -- open a list of the markers the page's kind reads, of the blocks open
--- there, and of the kinds of box ("Wiki.Core.Markdown.Complete").
+-- there, and of the kinds of box ("Wiki.Core.Markdown.Complete"); @[[@
+-- anywhere else, of the space's pages, each written as a link relative to
+-- this page (WP5.124 (c)).
 -- CodeMirror asks with a @wiki-complete@ event, saying where its cursor is,
 -- and the component answers in the same step from the text and the kinds
 -- of box it holds ("Wiki.App.Editor.Complete", 'answerCompletion').
@@ -621,6 +623,9 @@ data State = State
   -- ^ The parser's readings of the cursor's line the completion of the
   -- wiki's own Markdown asked for, kept while the lines above it do not
   -- change ('Complete.Readings').
+  , linkables :: [Complete.Linkable]
+  -- ^ The pages a link may name, with their paths and links, worked out
+  -- when the input's pages or the page's path change ('linkablesOf').
   , host :: H.RefLabel
   -- ^ The element where CodeMirror goes, in the textarea's place; the
   -- text is reached through it ("Wiki.App.Editor.Browser").
@@ -1168,6 +1173,7 @@ component =
               , menuWatch = Nothing
               , emojiQuery = ""
               , readings = Complete.noReadings
+              , linkables = linkablesOf input
               , host
               , fileInput
               , backButton
@@ -2143,7 +2149,12 @@ component =
           f.unwatch page
       -- The work belongs to the editor: a reload of the wiki around it
       -- (after a change elsewhere, or someone signing in) leaves it alone.
-      Receive input -> modify (\st -> st {input})
+      Receive input -> modify $ \st ->
+        -- The pages' paths and links change only with the pages, the
+        -- space, or the page's own path.
+        if (input.space, input.pages, input.path) == (st.input.space, st.input.pages, st.input.path)
+          then st {input}
+          else st {input, linkables = linkablesOf input}
       -- Cancel, from the preview shown alone, takes the preview's entry of
       -- the history, as Save and close does (see "Wiki.App.Shell").
       Followed f@(Router.Follow route _) -> do
@@ -2421,7 +2432,7 @@ component =
       CompleteAsked i request -> do
         st <- get
         let (found, readings) = case st.loaded of
-              Ready w -> Complete.answer (Complete.sources Complete.Held {kind = w.page.kind, boxes = st.input.context.session.boxes}) st.readings w.body request
+              Ready w -> Complete.answer (Complete.sources (heldFor st w)) st.readings w.body request
               _ -> (Nothing, st.readings)
         modify (\s -> s {readings})
         for_ st.hostElement $ \h -> H.liftEffect (answerCompletion h i found)
@@ -3653,6 +3664,26 @@ data Menu = HtmlMenu | ColourMenu | BoxMenu | EmojiMenu
 -- this many.
 emojiColumns :: Int
 emojiColumns = 8
+
+-- | What the completion of the wiki's own Markdown reads of the editor
+-- ("Wiki.App.Editor.Complete"): the page's kind, the kinds of box, the
+-- page being edited, and the pages of its space a link may name, as the
+-- state keeps them ('linkables').
+heldFor :: State -> Work -> Complete.Held
+heldFor st work =
+  Complete.Held
+    { kind = work.page.kind
+    , boxes = st.input.context.session.boxes
+    , editing = work.page.id
+    , pages = st.linkables
+    }
+
+-- | The pages of the input's space a link from the page edited may name,
+-- with their paths and links ('Complete.linkables'), worked out in full
+-- here, in the step that takes the input, so that no answer of the
+-- completion works them out again.
+linkablesOf :: Input -> [Complete.Linkable]
+linkablesOf input = let found = Complete.linkables input.space input.pages input.path in if found == found then found else found
 
 -- | Whether the one asking may define kinds of box: an administrator of
 -- the wiki, who writes the server's settings.

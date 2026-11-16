@@ -46,6 +46,64 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       for_ ["FencedCode", "CodeBlock", "InlineCode", "HTMLBlock", "CommentBlock", "TeXMath", "URL", "LinkReference"] $ \node ->
         (node, triggerAt (readLine []) (atIn [node, "Document"] "[[!no‸")) `shouldBe` (node, Nothing)
 
+  describe "triggerAt, for a link to a page" $ do
+    it "opens after [[ anywhere a wiki link is read, with what was typed after it" $ do
+      typedAt "[[‸" `shouldBe` Just (LinkToPage, "", 0)
+      typedAt "[[On‸" `shouldBe` Just (LinkToPage, "On", 0)
+      typedAt "See [[on c‸" `shouldBe` Just (LinkToPage, "on c", 4)
+      typedAt "> - [[Gu‸" `shouldBe` Just (LinkToPage, "Gu", 4)
+    it "takes the last [[ of the line" $
+      typedAt "[[a]] and [[b‸" `shouldBe` Just (LinkToPage, "b", 10)
+    it "leaves [[! and [[/ to the markers: at a line's start a marker, elsewhere nothing" $ do
+      typedAt "[[!no‸" `shouldBe` Just (StartMarker, "no", 0)
+      typedAt "[[/sp‸" `shouldBe` Just (EndMarker, "sp", 0)
+      typedAt "See [[!no‸" `shouldBe` Nothing
+      -- An address from the top of the wiki: no end marker is read there.
+      completeIn Document "See [[/docs‸" `shouldBe` Nothing
+    it "opens nothing after a |, a closing bracket, or an escaped [[" $ do
+      typedAt "[[guide|Gu‸" `shouldBe` Nothing
+      typedAt "[[a]‸" `shouldBe` Nothing
+      typedAt "\\[[a‸" `shouldBe` Nothing
+      typedAt "\\\\[[a‸" `shouldBe` Just (LinkToPage, "a", 2)
+    it "opens after an opening bracket, which the parser reads in an address" $
+      typedAt "[[a[b‸" `shouldBe` Just (LinkToPage, "a[b", 0)
+    it "opens nothing in code, math, HTML or a link's address" $
+      for_ ["InlineCode", "FencedCode", "TeXMath", "HTMLTag", "URL"] $ \node ->
+        (node, triggerAt (readLine []) (atIn [node, "Paragraph"] "[[gu‸")) `shouldBe` (node, Nothing)
+    it "replaces the end of a link typed already, and keeps a label typed already" $ do
+      endOf "[[On‸call]] now" `shouldBe` (6, "")
+      endOf "[[On‸]]" `shouldBe` (2, "")
+      endOf "[[On‸call|Who is on call]] now" `shouldBe` (T.length "call|Who is on call]]", "|Who is on call]]")
+      endOf "[[‸|Label]]" `shouldBe` (T.length "|Label]]", "|Label]]")
+    it "keeps a label the parser reads with a bracket or a character reference in it (#294)" $
+      endOf "[[q‸-a|[draft&#93;]]" `shouldBe` (T.length "-a|[draft&#93;]]", "|[draft&#93;]]")
+    it "reads the link at the cursor inside emphasis, and in a table's cell (#294, third round)" $ do
+      endOf "**[[Gu‸ide]]**" `shouldBe` (T.length "ide]]", "")
+      endOf "Text _a [[Gu‸ide|Mine]] b_" `shouldBe` (T.length "ide|Mine]]", "|Mine]]")
+      endOf "| h | i |\n| --- | --- |\n| [[Gu‸ide]] | x |" `shouldBe` (T.length "ide]]", "")
+    it "reads a link where what follows the cursor makes the line what it is: a spoiler's description, a box's title, a link's text (#294, fourth round)" $ do
+      endOf "[[!spoiler]]{s}(See [[Gu‸ide]])" `shouldBe` (T.length "ide]]", "")
+      endOf "[[!spoiler]]{s}(See [[Gu‸)" `shouldBe` (0, "")
+      endOf "> [!NOTE] See [[Gu‸ide|it]] here" `shouldBe` (T.length "ide|it]]", "|it]]")
+      endOf "[See [[Gu‸ide]] there](https://example.com)" `shouldBe` (T.length "ide]]", "")
+    it "opens before a long text, where the block ends before the bound, and not in a block still open at it (#294, fifth round)" $ do
+      let long = T.intercalate "\n\n" (replicate 40 (T.replicate 12 "Some words. "))
+      endOf ("See [[Gu‸\n\n" <> long) `shouldBe` (0, "")
+      endOf ("See [[Gu‸ide]] now\n\n" <> long) `shouldBe` (T.length "ide]]", "")
+      endOf ("See [[Gu‸ " <> T.replicate 400 "words ") `shouldBe` (-1, "no list")
+    it "writes a label after an escaped bar in a table's cell, and after a bar elsewhere (#294, third round)" $ do
+      labelsOf "| h | i |\n| --- | --- |\n| [[Gu‸]] | x |" `shouldBe` Just EscapedLabel
+      labelsOf "| h | i |\n| --- | --- |\n| [[Gu‸ | x |" `shouldBe` Just EscapedLabel
+      labelsOf "See [[Gu‸]] now" `shouldBe` Just PlainLabel
+      labelsOf "See **[[Gu‸** now" `shouldBe` Just PlainLabel
+    it "replaces a link to its end on a line below, and keeps its label's lines (#294)" $ do
+      endOf "[[Gu‸ide|read\nmore]] now" `shouldBe` (T.length "ide|read\nmore]]", "|read\nmore]]")
+      endOf "[[Gu‸ide\nto it]] now" `shouldBe` (T.length "ide\nto it]]", "")
+    it "replaces nothing after the cursor when the link has no end there" $ do
+      endOf "[[On‸ and [[b]]" `shouldBe` (0, "")
+      endOf "[[On‸call" `shouldBe` (0, "")
+      endOf "[[On‸|a]b]]" `shouldBe` (0, "")
+
   describe "placeOf" $ do
     it "is text in a paragraph, a quotation, a list and a link's text" $
       placeOf ["Link", "Paragraph", "Blockquote", "ListItem", "BulletList", "Document"] `shouldBe` InText
@@ -110,7 +168,7 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
 
   describe "sources and origins" $ do
     let calendar :: Source
-        calendar wanted = [Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]"], origin = Just (FromPlugin "calendar")} | wanted.typed.trigger == StartMarker]
+        calendar wanted = [Candidate {label = "[[!day]]", skeleton = [Literal "[[!day]]"], place = Nothing, writing = AsSnippet, origin = Just (FromPlugin "calendar")} | wanted.typed.trigger == StartMarker]
     it "shows a plugin's origin as from the plugin" $
       originText (FromPlugin "calendar") `shouldBe` "from plugin calendar"
     it "lists every source's candidates, in the sources' order, each with its origin" $ do
@@ -136,14 +194,35 @@ spec = describe "Wiki.Core.Markdown.Complete" $ do
       skeletonText [Literal "ab", Field 0 "", Field 2 "x", Field 1 "yz"] `shouldBe` ("abxyz", [(1, (3, 5)), (2, (2, 3)), (0, (2, 2))])
 
 -- | Where the cursor of a marked text is, for 'triggerAt': in text, under
--- the lines before the cursor's, at the cursor's line up to the mark.
+-- the lines before the cursor's, at the cursor's line, before the mark
+-- and after it.
 atIn :: [Text] -> Text -> At
-atIn nodes marked = At {place = placeOf nodes, above = initDef [] ls, before = fromMaybe "" (lastMay ls)}
+atIn nodes marked =
+  At
+    { place = placeOf nodes
+    , above = initDef [] ls
+    , before = fromMaybe "" (lastMay ls)
+    , after = T.takeWhile (/= '\n') (T.drop 1 rest)
+    , below = drop 1 (T.splitOn "\n" (T.drop 1 rest))
+    }
   where
-    ls = T.splitOn "\n" (fst (T.breakOn "‸" marked))
+    (upTo, rest) = T.breakOn "‸" marked
+    ls = T.splitOn "\n" upTo
 
 typedAt :: Text -> Maybe (Trigger, Text, Int)
 typedAt marked = (\t -> (t.trigger, t.letters, t.from)) <$> triggerAt (readLine at.above) at
+  where
+    at = atIn [] marked
+
+-- | How a link's entry writes a label of its own there.
+labelsOf :: Text -> Maybe LabelForm
+labelsOf marked = (.labels) <$> triggerAt (readLine at.above) at
+  where
+    at = atIn [] marked
+
+-- | What a link's entry replaces after the cursor, and writes back of it.
+endOf :: Text -> (Int, Text)
+endOf marked = maybe (-1, "no list") (\t -> (t.through, t.kept)) (triggerAt (readLine at.above) at)
   where
     at = atIn [] marked
 

@@ -788,6 +788,11 @@ data MarkerRole
     -- parser read as a spoiler's are listed, so the export knows them
     -- apart from an escaped bar, a character reference and code.
     InlineBars Int Int
+  | -- | A wiki link, @[[address|text]]@, starts here; the line and the
+    -- column just after its @]]@. The editor's completion of a link to a
+    -- page reads where the link at the cursor ends from it
+    -- ("Wiki.Core.Markdown.Complete").
+    WikiLinkTo Int Int
   | -- | A line of attributes in braces alone, @{.sorted}@, which the
     -- block after it takes (a list is put in a 'Div' with them). Pandoc's
     -- reader would read it as text, so the export leaves it out.
@@ -1163,8 +1168,9 @@ data Inlines = Inlines (Seq Inline) [MarkerLine] Fresh
 
 -- | 'Fresh' says whether some inlines are one just made whose place the
 -- parser gives next ('CM.Rangeable'), and which: an inline spoiler, whose
--- bars' place is kept, or a pause, which takes its place.
-data Fresh = NotFresh | FreshBars | FreshPause
+-- bars' place is kept, a pause, which takes its place, or a wiki link,
+-- whose place is kept ('WikiLinkTo').
+data Fresh = NotFresh | FreshBars | FreshPause | FreshLink
   deriving stock (Eq, Show)
 
 instance Semigroup Inlines where
@@ -1250,6 +1256,10 @@ instance CM.Rangeable Inlines where
       | Just (start, _) <- head ranges
       , Just (_, end) <- lastMay ranges ->
           Inlines xs (bs <> [MarkerLine (Parsec.sourceLine start) (Parsec.sourceColumn start) (InlineBars (Parsec.sourceLine end) (Parsec.sourceColumn end - 2))]) NotFresh
+    Inlines xs bs FreshLink
+      | Just (start, _) <- head ranges
+      , Just (_, end) <- lastMay ranges ->
+          Inlines xs (bs <> [MarkerLine (Parsec.sourceLine start) (Parsec.sourceColumn start) (WikiLinkTo (Parsec.sourceLine end) (Parsec.sourceColumn end))]) NotFresh
     Inlines xs bs FreshPause
       | Just (start, _) <- head ranges ->
           let placed = \case
@@ -1374,13 +1384,14 @@ instance CME.HasStrikethrough Inlines where
 instance CME.HasEmoji Inlines where
   emoji keyword = inline . Emoji keyword
 
--- | A wiki link, and @[[!pause]]@ among a line's words, which is a pause
--- ('InlinePause'), placed once the parser says where it is. A page's
--- address cannot hold an exclamation mark, so no link is lost to it.
+-- | A wiki link, whose place is kept once the parser says where it is
+-- ('WikiLinkTo'), and @[[!pause]]@ among a line's words, which is a pause
+-- ('InlinePause'), placed so. A page's address cannot hold an
+-- exclamation mark, so no link is lost to it.
 instance CME.HasWikilinks Inlines where
   wikilink destination description
     | destination == "!" <> markerNameText PauseName = Inlines (Seq.singleton (InlinePause 0 0)) [] FreshPause
-    | otherwise = wrapping (Link [("class", "wikilink")] destination "") description
+    | otherwise = let Inlines made bs _ = wrapping (Link [("class", "wikilink")] destination "") description in Inlines made bs FreshLink
 
 instance CME.HasPipeTable Inlines Blocks where
   pipeTable aligns header rows =

@@ -117,14 +117,23 @@ data Kept = Kept
 -- block cut short reads otherwise (a table's header without its delimiter
 -- row is a paragraph), and Enter checks that a new line leaves the lines
 -- below it read as they were; the blocks after one read as it was are
--- read as they were. A start the changes have put in a block that reads
--- on (an end marker typed above it) Enter sees only on the lines it is
--- given.
+-- read as they were. A start after the first change counts there only
+-- if its line is flush ('Kept'). A change above a start can make an
+-- indented line part of a block above: a deletion of the block between
+-- an item and an indented line, since the check, makes the line the
+-- item's next paragraph, and the deleted block's start lands on the blank
+-- line above it, which is no start either; an item typed above an
+-- indented line takes it in the same way. No block above takes in a
+-- flush line by its indentation. One may take it in as a lazy line, but
+-- then the first start below the cursor's line is a flush line taken in
+-- too, and it comes whole: Enter reads that the cursor's block goes on
+-- below it. A start the changes have put in a block that reads on (an end
+-- marker typed above it) Enter sees only on the lines it is given.
 textRange :: [Kept] -> Int -> Int -> Int -> Int -> Maybe (Int, Int)
 textRange kept firstChange lineStart lineEnd len = do
   let starts = ordNub (sort [k | k <- kept, k.at == k.lineFrom])
       begins = fromMaybe 0 (lastMay [k.at | k <- starts, k.at < lineStart, k.lineTo <= firstChange])
-      below = ordNub (map (.at) starts)
+      below = ordNub [k.at | k <- starts, k.lineTo <= firstChange || k.flush]
       ends = case dropWhile (<= lineEnd) below of
         _ : end : _ -> end - 1
         _ -> len

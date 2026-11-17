@@ -3151,14 +3151,27 @@ needs. Each was true when its package merged; check before relying on one.
   parser and CodeMirror count its lines differently); folds do not
   survive a reload; fold-all is not offered (AltGr sends Ctrl+Alt on
   Windows, and its keys would catch typed brackets).
-- **Two of the editor's browser examples hold the program to a clock
-  (seen 2026-11-16).** "moves the cursor to a far slide…" fails when its
-  first jump takes more than 1,000 ms (1,079 and 2,071 ms under a load
-  of 9 to 11 from another build), and "loses no keystroke while the
-  preview catches up with a long page" when the program is still busy
-  after 5,000 ms. Both passed once the load ended. By decision 81 a
-  cost is asserted as a count, not a time: to be turned into bounds on
-  allocation or on steps, with the slides editor's group (WP5.116).
+- **The editor's browser examples count work instead of timing it
+  (#315).** Four examples held the program to milliseconds, and one
+  made CI's `wasm` job red on a slow runner (not by its own bound of a
+  second for a jump, but by the driver's five-second wait on a deck of
+  300,000 characters: the long deck had to leave the browser). Now
+  the preview's parse of a long deck is bounded by allocation
+  natively (`Test.Preview`, on `Preview.reparsed`), the browser
+  examples run on short pages and count measures and published
+  problems, and the order "a render of the preview's turn between a
+  DOM edit and the handling of its input" (the fault of e9055578) is
+  forced natively in `Test.EditorDom` under the test's clock. Left:
+  a parse inside the preview's `render` is caught by neither test;
+  natively the editor's text is the textarea, so a render that
+  disturbed CodeMirror's host would not be seen; "puts every key typed
+  through a split and a join…" (the slides' editor) still paces keys
+  with real pauses and needs held waits as well as the clock; sleeps
+  that stand for a library's own timer (CodeMirror's autocompletion
+  delay and history grouping, "no list opens" after a second) and
+  deadlines for a library's loading (Mermaid, decks, drafts) remain,
+  in `Test/Browser/SlideEditor.hs`, `SlideRows.hs`, `Emoji.hs`,
+  `Encrypted.hs`, `Policy.hs`, `Editor.hs` and `Folds.hs`.
 - **Enter in lists and boxes, and where a text is cut for a parse
   (#292, WP5.124 (a)).** Nine rounds of review: the first four on a
   library's command bound in JavaScript with lines of the wiki's own,

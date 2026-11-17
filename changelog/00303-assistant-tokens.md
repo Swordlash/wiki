@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 303
 title: The assistant shows the tokens each answer took
 ---
 

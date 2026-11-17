@@ -29,6 +29,7 @@ import Halogen qualified as H
 import Halogen.Query.Event.Window qualified as WindowEvent
 import Halogen.Subscription (Emitter)
 import Halogen.Subscription qualified as HS
+import Halogen.Sync qualified as Sync
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude
 import Web.DOM.Element qualified as Element
@@ -43,17 +44,21 @@ import Web.UIEvent.KeyboardEvent qualified as KeyboardEvent
 -- the holder in the page, so the ref finds it. The result is the
 -- subscription, for the component to end when the popup closes; it is
 -- 'Nothing' when the holder is not in the page.
+--
+-- It cannot wait (it is written against "Halogen.Sync"'s 'Sync.MonadSync'),
+-- so a machine's effect carried out in place ('Halogen.Machine.Now') can
+-- start it, as the bell's does; a handler calls it as any program.
 watchPopup
-  :: (MonadBrowserDOM m, MonadUnliftIO m)
+  :: (Sync.MonadSync st action slots output m h, MonadBrowserDOM m, MonadUnliftIO m)
   => H.RefLabel
   -> action
-  -> H.HalogenM st action slots output m (Maybe H.SubscriptionId)
+  -> h (Maybe H.SubscriptionId)
 watchPopup holder close = do
-  found <- H.getRef holder
+  found <- Sync.getRef holder
   for found $ \element -> do
-    presses <- H.liftEffect (pressedOutside element)
-    escapes <- H.liftEffect (escapePressed element)
-    H.subscribe (close <$ (presses <|> escapes))
+    presses <- Sync.sync (pressedOutside element)
+    escapes <- Sync.sync (escapePressed element)
+    Sync.subscribe (close <$ (presses <|> escapes))
 
 -- | A press anywhere outside an element, heard on the document. A press,
 -- not a click: a click needs the pointer let go on the same element, and a

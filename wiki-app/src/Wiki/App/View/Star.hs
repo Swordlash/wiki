@@ -94,7 +94,7 @@ component =
           Just (Right starredPages) -> do
             pid <- gets (\st -> st.input.page)
             modify (\st -> st {busy = True, problem = Nothing})
-            result <- lift (setStarred pid (not (isStarred pid starredPages)))
+            result <- H.async (setStarred pid (not (isStarred pid starredPages)))
             modify $ \st -> case result of
               Right after -> st {busy = False, stars = Just (Right after)}
               Left e -> st {busy = False, problem = Just e}
@@ -102,5 +102,5 @@ component =
 
     load :: H.HalogenM State Action Empty output m ()
     load = do
-      result <- lift starred
+      result <- H.async starred
       modify (\st -> st {stars = Just result})

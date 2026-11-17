@@ -690,7 +690,7 @@ component =
     handleAction = \case
       Initialize -> do
         H.liftEffect prepareAssistant
-        channel <- liftIO HS.create
+        channel <- H.async (liftIO HS.create)
         void (H.subscribe (FromTalk <$> channel.emitter))
         modify (\st -> st {listener = Just channel.listener})
       Finalize -> do
@@ -724,7 +724,7 @@ component =
       ChooseEffort e -> modify (\st -> st {effortChoice = Just e})
       TryAgain p -> H.raise (Retry p)
       Tick -> do
-        t <- liftIO getCurrentTime
+        t <- H.async (liftIO getCurrentTime)
         modify (\st -> st {now = Just t})
 
     -- The provider the editor's button asked for (which the editor makes
@@ -768,7 +768,7 @@ component =
             decided <- outcomes host
             -- The clock read on the loop, without a wait ('H.liftEffect'):
             -- from the check above to the turn begun below is one step.
-            -- Read through 'liftIO', the second click of a double click
+            -- Read through 'H.async', the second click of a double click
             -- came between, found the panel idle as well, and sent the
             -- message again in a conversation of its own.
             sentAt <- H.liftEffect (liftIO getCurrentTime)
@@ -811,7 +811,7 @@ component =
       HeardCall call name input -> do
         (edited, told, ok) <- edit name input
         -- The model goes on once it has the answer: a new wait.
-        t <- liftIO getCurrentTime
+        t <- H.async (liftIO getCurrentTime)
         modifyReply (\r -> (settle r) {notes = r.notes <> [edited], stage = Waiting, quietSince = t})
         modify (\st -> st {now = Just t})
         gets (\st -> st.talk) >>= traverse_ (\talk -> H.liftEffect (answerCall talk call told ok))
@@ -890,7 +890,7 @@ component =
     -- the ticker stopped.
     finish :: Stage -> H.HalogenM State Action Empty Output m ()
     finish stage = do
-      t <- liftIO getCurrentTime
+      t <- H.async (liftIO getCurrentTime)
       modifyReply (\r -> (settle r) {stage, took = Just (diffUTCTime t r.began)})
       gets (\st -> st.ticker) >>= traverse_ H.kill
       modify (\st -> st {talking = False, ticker = Nothing, now = Nothing})
@@ -901,19 +901,19 @@ component =
     -- fork the page is idle the moment Send has rendered, and a test that
     -- waits for the program to be quiet (haskell-halogen-playwright's
     -- waitQuiet) would read the panel before the answer. The fork waits in
-    -- a liftIO until 'endTurn' fills the turn's variable: when the turn
+    -- an H.async until 'endTurn' fills the turn's variable: when the turn
     -- ends ('finish': done, stopped or failed), the panel closes, or the
     -- component goes. Making the variable and filling it do not wait, and
     -- run through 'H.liftEffect': 'send' begins the turn and sends the
     -- message in one step, so a Stop clicked right after finds the message
-    -- sent, and stops its turn. Through 'liftIO' the message went out
+    -- sent, and stops its turn. Through 'H.async' the message went out
     -- after the wait, even when Stop had come in it.
     countTurn :: H.HalogenM State Action Empty Output m ()
     countTurn = do
       endTurn
       ended <- H.liftEffect (liftIO newEmptyMVar)
       modify (\st -> st {ended = Just ended})
-      void (H.fork (liftIO (takeMVar ended)))
+      void (H.fork (H.async (liftIO (takeMVar ended))))
 
     -- Let the fork of 'countTurn' end, if a turn is counted.
     endTurn :: H.HalogenM State Action Empty Output m ()

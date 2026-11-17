@@ -165,7 +165,7 @@ component =
         st <- get
         for_ st.input.accounts $ \a -> unless st.busy $ do
           modify (\s -> s {busy = True, problem = Nothing})
-          lift (a.acceptInvitation st.input.token NewAccount {login = st.typedLogin, displayName = st.typedName, password = Password st.typedPassword, email = Nothing}) >>= \case
+          H.async (a.acceptInvitation st.input.token NewAccount {login = st.typedLogin, displayName = st.typedName, password = Password st.typedPassword, email = Nothing}) >>= \case
             Left e -> modify (\s -> s {busy = False, problem = Just (accountErrorText e)})
             Right s -> do
               modify (\x -> x {busy = False, typedPassword = ""})
@@ -174,5 +174,5 @@ component =
     load :: H.HalogenM (State m) Action Empty Output m ()
     load =
       gets (\st -> st.input) >>= \input -> for_ input.accounts $ \a -> do
-        result <- lift (a.invitationFor input.token)
+        result <- H.async (a.invitationFor input.token)
         modify (\st -> st {loaded = either Failed Ready result})

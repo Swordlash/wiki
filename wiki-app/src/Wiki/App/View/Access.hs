@@ -247,11 +247,11 @@ component =
       MakeInvitation -> do
         email <- gets (\st -> st.typedEmail)
         modify (\st -> st {busy = True, problem = Nothing, made = Nothing, copied = False})
-        lift (invite email) >>= \case
+        H.async (invite email) >>= \case
           Left e -> modify (\st -> st {busy = False, problem = Just e})
           Right invited -> do
             router <- gets (\st -> st.input.context.router)
-            url <- for invited.token $ \t -> absoluteUrl (Router.href router (Route.Invite t))
+            url <- for invited.token $ \t -> H.async (absoluteUrl (Router.href router (Route.Invite t)))
             modify (\st -> st {typedEmail = "", made = Just Made {email = invited.invitation.email, link = url, mailError = invited.mailError}})
             H.raise (Changed Nothing)
       Revoke i -> change (revokeInvitation i)
@@ -260,7 +260,7 @@ component =
           >>= H.getRef
           >>= traverse_
             ( \element -> do
-                ok <- liftIO (copyText element url)
+                ok <- H.async (liftIO (copyText element url))
                 modify (\st -> st {copied = ok})
             )
 
@@ -282,7 +282,7 @@ component =
 
     load :: H.HalogenM State Action Empty ViewOutput m ()
     load = do
-      result <- lift readBoth
+      result <- H.async readBoth
       modify (\st -> st {loaded = fromRead result, busy = False})
 
 -- | Fetch the settings and the invitations together.

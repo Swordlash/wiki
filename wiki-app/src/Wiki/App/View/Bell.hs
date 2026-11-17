@@ -234,8 +234,8 @@ component =
       Unwatch -> do
         gets (\st -> st.listWatch) >>= traverse_ H.unsubscribe
         modify (\st -> st {listWatch = Nothing})
-      Load asked -> void . H.fork $ lift notifications >>= handleAction . Happened . M.Loaded asked
-      M.MarkRead asked r -> void . H.fork $ lift (markRead r) >>= handleAction . Happened . Marked asked
+      Load asked -> void . H.fork $ H.async notifications >>= handleAction . Happened . M.Loaded asked
+      M.MarkRead asked r -> void . H.fork $ H.async (markRead r) >>= handleAction . Happened . Marked asked
       M.Follow f -> do
         router <- gets (\st -> st.input.context.router)
         Router.follow router f

@@ -724,7 +724,7 @@ component =
           EditingProvider _ form -> do
             onProvider (\f -> f {formCheck = Just Checking})
             let change = providerChangeOf form
-            result <- lift (checkProvider change.name (Just change))
+            result <- H.async (checkProvider change.name (Just change))
             onProvider (\f -> f {formCheck = Just (CheckedAs result)})
           _ -> pass
       SaveProvider ->
@@ -738,7 +738,7 @@ component =
           _ -> pass
       CheckProvider name -> do
         modify (\st -> st {checks = Map.insert name Checking st.checks})
-        result <- lift (checkProvider name Nothing)
+        result <- H.async (checkProvider name Nothing)
         modify (\st -> st {checks = Map.insert name (CheckedAs result) st.checks})
       AddService -> modify (\st -> st {editing = EditingService Nothing ServiceForm {typedServiceName = "", typedBaseUrl = "", chosenApi = OpenAiApi}, refusal = Nothing})
       EditService i -> withSettings $ \s ->
@@ -763,14 +763,14 @@ component =
       -- follow what it found, so the shell is told, as after a save.
       CheckEngine -> do
         modify (\st -> st {checkingEngine = True})
-        result <- lift checkTexEngine
+        result <- H.async checkTexEngine
         modify (\st -> st {checkingEngine = False, engine = Just result})
         when (isRight result) (H.raise (Changed Nothing))
       TypedTestTo t -> modify (\st -> st {testTo = t})
       SendTest -> do
         to' <- gets (\st -> st.testTo)
         modify (\st -> st {busy = True, tested = Nothing})
-        result <- lift (sendTestMail (T.strip to'))
+        result <- H.async (sendTestMail (T.strip to'))
         modify (\st -> st {busy = False, tested = Just result})
 
     withSettings :: (ServerSettings -> H.HalogenM State Action Slots ViewOutput m ()) -> H.HalogenM State Action Slots ViewOutput m ()
@@ -801,7 +801,7 @@ component =
     save :: (ServerSettings -> ServerSettingsChange) -> H.HalogenM State Action Slots ViewOutput m ()
     save change = withSettings $ \s -> do
       modify (\st -> st {busy = True, refusal = Nothing})
-      lift (setServerSettings (change s)) >>= \case
+      H.async (setServerSettings (change s)) >>= \case
         Left e -> modify (\st -> st {busy = False, refusal = Just e})
         Right new -> do
           modify (\st -> st {busy = False, loaded = Ready new, editing = NotEditing, checks = mempty, tested = Nothing})
@@ -809,8 +809,8 @@ component =
 
     load :: H.HalogenM State Action Slots ViewOutput m ()
     load = do
-      result <- lift serverSettings
-      engine <- lift texEngine
+      result <- H.async serverSettings
+      engine <- H.async texEngine
       modify (\st -> st {loaded = either Failed Ready result, busy = False, engine = Just engine})
 
 -- | How many lines of xelatex's output are shown as they are; more are

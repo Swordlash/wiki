@@ -2399,7 +2399,7 @@ component =
             unless (current == Just p) $ changeAssistant (chooseProvider p)
             -- A model list more than a day old, or a provider that could
             -- not be reached, is asked again.
-            now <- liftIO getCurrentTime
+            now <- H.async (liftIO getCurrentTime)
             gets (\st' -> st'.assistantSettings) >>= \case
               Just (Right s) | listStale now (settingsOf p s) || (settingsOf p s).unreachable -> checkProvider p
               _ -> pass
@@ -2673,7 +2673,7 @@ component =
     -- Navigate to the page, as Cancel does, without the shell asking about
     -- the work again: the author has said what becomes of it. The address
     -- is written on the loop, in this step ('H.liftEffect'): through
-    -- 'liftIO' it was written on a thread of its own, after whatever ran
+    -- 'H.async' it was written on a thread of its own, after whatever ran
     -- meanwhile, and a route the reader had gone to since was left again.
     leave :: H.HalogenM State Action Slots ViewOutput m ()
     leave = do
@@ -2726,7 +2726,7 @@ component =
       gets me >>= \case
         Nothing -> modify (\st -> st {assistantSettings = Just (Left "Sign in to use the assistant: its settings are kept for each user.")})
         Just user -> do
-          settings <- lift (loadFollowedKeys user) <&> (>>= unlockedSettings)
+          settings <- H.async (loadFollowedKeys user) <&> (>>= unlockedSettings)
           modify (\st -> st {assistantSettings = Just settings})
           scripted <- gets (\st -> st.scripted)
           for_ (rightToMaybe settings) $ \s ->
@@ -2741,7 +2741,7 @@ component =
       gets me
         >>= traverse_
           ( \user ->
-              lift (changeKeys user f) >>= \case
+              H.async (changeKeys user f) >>= \case
                 Right k -> modify (\st -> st {assistantSettings = Just (Right k.settings), assistantProblem = Nothing})
                 Left why -> modify (\st -> st {assistantProblem = Just why})
           )
@@ -2761,8 +2761,8 @@ component =
           , not (Set.member p st.checking) -> do
               modify (\st' -> st' {checking = Set.insert p st'.checking})
               void . H.fork $ do
-                now <- liftIO getCurrentTime
-                result <- lift (listModels r)
+                now <- H.async (liftIO getCurrentTime)
+                result <- H.async (listModels r)
                 modify (\st' -> st' {checking = Set.delete p st'.checking})
                 changeAssistant $ \s' ->
                   if either (const False) (\r' -> r'.key == r.key && r'.baseUrl == r.baseUrl) (readyFor p s')
@@ -3134,7 +3134,7 @@ component =
     -- Check the text for problems once the typing has stopped for the
     -- given time (in seconds), as the preview follows it: a wait of
     -- its own, which the next change kills. The check runs on a worker
-    -- thread ('liftIO'), so a long page does not hold up the typing. The
+    -- thread ('H.async'), so a long page does not hold up the typing. The
     -- same check, from the same parse, finds the spoilers CodeMirror
     -- offers to fold (WP5.96), which it takes only for the text they were
     -- found in.
@@ -3145,7 +3145,7 @@ component =
         when (delay > 0) $ H.delayCounted delay
         gets (\st -> st.loaded) >>= \case
           Ready w -> do
-            found <- liftIO (evaluate (force (Problems.checkText w.page.kind w.body)))
+            found <- H.async (liftIO (evaluate (force (Problems.checkText w.page.kind w.body))))
             modify $ \st -> measuredNow (keepDrawnFailures st {checkWait = Nothing, checked = found, checkedText = w.body})
             gets (\st -> st.hostElement) >>= traverse_ (\host -> H.liftEffect (offerFolds host w.body found.folds))
             -- Cut first: the rows a block left open swallows are problems.
@@ -3225,7 +3225,7 @@ component =
             _ -> False
       when holdsChecked $ do
         let ranges = problemRanges st.checkedText problems
-        _ <- liftIO (evaluate (length ranges))
+        _ <- H.async (liftIO (evaluate (length ranges)))
         whenM (gets current) $
           traverse_ (\host -> void (H.liftEffect (showProblems host st.checkedText ranges))) st.hostElement
         when (length problems /= st.problemCount) $
@@ -3233,7 +3233,7 @@ component =
       for_ ((,,) <$> st.rows <*> text <*> taken) $ \(rows, whole, swallowed) -> do
         let headings = [fromMaybe (SlideRows.rowHeading r) (Map.lookup r.text st.rowHeadings) | r <- rows.rows]
             found = headsOf st problems whole rows swallowed headings
-        _ <- liftIO (evaluate (sum [T.length h.title | h <- found]))
+        _ <- H.async (liftIO (evaluate (sum [T.length h.title | h <- found])))
         modify $ \s ->
           if current s && s.rows == Just rows
             then s {rowHeads = found, rowHeadings = Map.fromList (zip (map (.text) rows.rows) headings)}
@@ -3417,7 +3417,7 @@ component =
           modify (\st -> st {uploading = st.uploading + 1})
           -- Reading the file waits for the browser, off the component's
           -- loop.
-          bytesRead <- liftIO (try (readPickedFile file))
+          bytesRead <- H.async (liftIO (try (readPickedFile file)))
           result <- case bytesRead of
             Left (e :: SomeException) -> pure (Left (Invalid ("The browser could not read " <> file.name <> ": " <> show e)))
             Right bytes -> uploadAttachment pid file.name file.mediaType bytes

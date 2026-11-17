@@ -188,7 +188,7 @@ component =
                   ( \host -> do
                       -- The cropper's module may have to be fetched first: the
                       -- wait is off the loop.
-                      liftIO (wait =<< js_crop host file.file)
+                      H.async (liftIO (wait =<< js_crop host file.file))
                       -- Closed while the cropper loaded: it is taken out again.
                       gets (\st -> st.cropping) >>= \case
                         True -> do
@@ -212,7 +212,7 @@ component =
         modify (\st -> st {cropping = False, ready = False, problem = if st.cropping then Nothing else st.problem})
       Remove -> do
         modify (\st -> st {busy = True, problem = Nothing})
-        lift removeAvatar >>= \case
+        H.async removeAvatar >>= \case
           Left e -> modify (\st -> st {busy = False, problem = Just e})
           Right u -> do
             modify (\st -> st {busy = False, url = Nothing, input = Input {user = Just u}})
@@ -239,11 +239,11 @@ component =
     uploadFrom :: Element -> H.HalogenM State Action Empty ViewOutput m ()
     uploadFrom host = do
       modify (\st -> st {busy = True, problem = Nothing})
-      bytes <- liftIO (wait =<< js_cropped host)
+      bytes <- H.async (liftIO (wait =<< js_cropped host))
       if BS.null bytes
         then modify (\st -> st {busy = False, problem = Just (Invalid "The picture could not be cropped: try choosing it again.")})
         else
-          lift (setAvatar "image/png" bytes) >>= \case
+          H.async (setAvatar "image/png" bytes) >>= \case
             Left e -> modify (\st -> st {busy = False, problem = Just e})
             Right u -> do
               modify (\st -> st {busy = False, input = Input {user = Just u}})
@@ -256,7 +256,7 @@ component =
     showAvatar = do
       user <- gets (\st -> st.input.user)
       url <- case user of
-        Just u | Just a <- u.avatar -> Just <$> lift (avatarUrl u.id a)
+        Just u | Just a <- u.avatar -> Just <$> H.async (avatarUrl u.id a)
         _ -> pure Nothing
       modify (\st -> st {url})
 

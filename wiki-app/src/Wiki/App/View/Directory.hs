@@ -186,7 +186,7 @@ component =
 
     load = do
       input <- gets (\st -> st.input)
-      counts <- if needsCounts input then rightToMaybe <$> lift (attempt pageCounts) else pure (Just mempty)
+      counts <- if needsCounts input then rightToMaybe <$> H.async (attempt pageCounts) else pure (Just mempty)
       modify (\st -> st {counts = counts <|> st.counts})
       H.raise Loaded
 

@@ -305,7 +305,7 @@ component =
         unless (T.null (T.strip q.text)) $ do
           -- On a worker thread, where the backend's failure to answer is
           -- caught.
-          found <- lift (attempt (searchPages q))
+          found <- H.async (attempt (searchPages q))
           -- Unless something else has been typed or chosen meanwhile, which
           -- will get its own search.
           current <- gets queryOf

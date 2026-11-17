@@ -304,20 +304,20 @@ component =
             Left why -> modify (\st -> st {refusal = Just (Invalid why)})
             Right change -> do
               modify (\st -> st {busy = True, refusal = Nothing})
-              lift (setBackupSettings change) >>= \case
+              H.async (setBackupSettings change) >>= \case
                 Left e -> modify (\st -> st {busy = False, refusal = Just e})
                 Right b -> do
                   modify (\st -> st {busy = False, loaded = Ready b, form = Nothing})
                   when b.running watch
       BackUpNow -> do
         modify (\st -> st {busy = True, refusal = Nothing})
-        lift backUpNow >>= \case
+        H.async backUpNow >>= \case
           Left e -> modify (\st -> st {busy = False, refusal = Just e})
           Right b -> do
             modify (\st -> st {busy = False, loaded = Ready b})
             when b.running watch
       Look -> do
-        result <- lift backups
+        result <- H.async backups
         modify (\st -> st {watching = False, loaded = either Failed Ready result})
         case result of
           Right b | b.running -> watch
@@ -354,7 +354,7 @@ component =
 
     load :: H.HalogenM State Action Empty Void m ()
     load = do
-      result <- lift backups
+      result <- H.async backups
       modify (\st -> st {loaded = either Failed Ready result, busy = False})
       case result of
         Right b | b.running -> watch

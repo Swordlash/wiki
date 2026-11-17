@@ -86,7 +86,7 @@ component =
       st <- get
       for_ st.input.accounts $ \a -> unless st.busy $ do
         modify (\s -> s {busy = True})
-        result <- lift (a.verifyEmail st.input.token)
+        result <- H.async (a.verifyEmail st.input.token)
         modify $ \s ->
           s
             { busy = False

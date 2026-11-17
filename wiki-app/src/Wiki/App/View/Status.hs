@@ -155,7 +155,7 @@ component =
       Refresh -> modify (\st -> st {busy = True}) >> load
       InstallGuide -> do
         modify (\st -> st {busy = True, refusal = Nothing})
-        lift installGuide >>= \case
+        H.async installGuide >>= \case
           Left e -> modify (\st -> st {busy = False, refusal = Just e})
           -- The shell reloads the spaces and goes to the guide; this
           -- section is then left behind.
@@ -167,7 +167,7 @@ component =
 
     load :: H.HalogenM State Action Empty ViewOutput m ()
     load = do
-      result <- lift serverStatus
+      result <- H.async serverStatus
       modify (\st -> st {loaded = either Failed Ready result, busy = False})
 
 -- | A time, in words for a person to read.

@@ -222,7 +222,7 @@ component =
       ImageChosen ev -> do
         picked <- H.liftEffect (chosenFiles ev >>= pickedFiles)
         for_ (head picked) $ \file -> do
-          bytes <- readPickedFile file
+          bytes <- H.async (readPickedFile file)
           sid <- gets (\st -> st.input.space.id)
           modify (\st -> st {busy = True, problem = Nothing, saved = False})
           uploadSpaceIcon sid file.mediaType bytes >>= \case

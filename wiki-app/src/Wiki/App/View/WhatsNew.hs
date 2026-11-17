@@ -137,7 +137,7 @@ component =
 
     load :: H.HalogenM State Action IslandSlots output m ()
     load = do
-      result <- lift whatsNew
+      result <- H.async whatsNew
       modify (\st -> st {loaded = either Failed Ready result})
 
 -- | The renderer's options: a page's islands, with the links an entry may

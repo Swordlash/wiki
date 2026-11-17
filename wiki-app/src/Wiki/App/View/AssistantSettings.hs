@@ -579,8 +579,8 @@ component =
                 refuse e = do
                   modify (\st -> st {checks = Map.insert p (Fails (errorText (serviceOf asked) (Just asked.key) e)) st.checks})
                   change (withReached p (e.kind /= Unreachable))
-            now <- liftIO getCurrentTime
-            listed <- lift (listModels asked)
+            now <- H.async (liftIO getCurrentTime)
+            listed <- H.async (listModels asked)
             whenM same $ case listed of
               Left e | e.kind == BadKey -> do
                 modify (\st -> st {listings = Map.delete p st.listings})
@@ -624,7 +624,7 @@ component =
         gets (\st -> st.settings) >>= \case
           Just (Right s) | Right r <- readyFor p s -> do
             modify (\st -> st {checks = Map.insert p Checking st.checks})
-            result <- lift (checkKey r)
+            result <- H.async (checkKey r)
             modify (\st -> st {checks = Map.insert p (maybe Works (Fails . errorText (serviceOf r) (Just r.key)) result) st.checks})
             -- Record whether the provider responded at all; and once the
             -- key is known to work, fetch its model list too.
@@ -643,7 +643,7 @@ component =
           >>= traverse_
             ( \user -> do
                 modify (\st -> st {sync = st.sync {working = Just "Removing the passkey…", trouble = Nothing}})
-                result <- lift (removePasskey user credential)
+                result <- H.async (removePasskey user credential)
                 modify $ \st -> case result of
                   Right left -> st {sync = st.sync {working = Nothing, passkeys = left}}
                   Left why -> st {sync = st.sync {working = Nothing, trouble = Just why}}
@@ -676,7 +676,7 @@ component =
       -> H.HalogenM State Action Empty output m ()
     tryModel p user typed asked same refuse relisted model = do
       let r = Ready {provider = asked.provider, model, key = asked.key, effort = asked.effort, baseUrl = asked.baseUrl}
-      result <- lift (checkKey r)
+      result <- H.async (checkKey r)
       whenM same $ case result of
         Just e -> refuse e
         Nothing -> do
@@ -695,8 +695,8 @@ component =
       gets (\st -> st.settings) >>= \case
         Just (Right s) | Right r <- readyFor p s -> do
           modify (\st -> st {listings = Map.insert p Listing st.listings})
-          now <- liftIO getCurrentTime
-          result <- lift (listModels r)
+          now <- H.async (liftIO getCurrentTime)
+          result <- H.async (listModels r)
           case result of
             Left e -> do
               change (withReached p (e.kind /= Unreachable))
@@ -711,10 +711,10 @@ component =
       gets (\st -> st.user)
         >>= traverse_
           ( \user -> do
-              keys <- lift (loadKeys user)
+              keys <- H.async (loadKeys user)
               offer <- offerHere
               passkeys <- case keys of
-                Right k | k.synced -> either (const []) identity <$> lift listPasskeys
+                Right k | k.synced -> either (const []) identity <$> H.async listPasskeys
                 _ -> pure []
               -- Only if the same user is still signed in.
               whenM (gets (\st -> st.user == Just user)) $
@@ -725,7 +725,7 @@ component =
     -- browser offers passkeys here.
     offerHere :: H.HalogenM State Action Empty output m Offer
     offerHere =
-      lift vaultSync >>= \case
+      H.async vaultSync >>= \case
         False -> pure NoServer
         True -> bool NotSecure Offered <$> H.liftEffect passkeysHere
 
@@ -752,10 +752,10 @@ component =
         >>= traverse_
           ( \user -> do
               modify (\st -> st {sync = st.sync {working = Just saying, trouble = Nothing}})
-              result <- lift (step user)
-              keys <- either (const (lift (readKeys user))) (pure . Right) result
+              result <- H.async (step user)
+              keys <- either (const (H.async (readKeys user))) (pure . Right) result
               passkeys <- case keys of
-                Right k | k.synced -> either (const []) identity <$> lift listPasskeys
+                Right k | k.synced -> either (const []) identity <$> H.async listPasskeys
                 _ -> pure []
               let trouble = either Just (const Nothing) result
               modify $ \st -> case keys of
@@ -772,7 +772,7 @@ component =
           -- The change itself, not the settings it gives: when another
           -- device changed the settings meanwhile, it is made again on
           -- theirs.
-          result <- lift (changeKeys user f)
+          result <- H.async (changeKeys user f)
           modify $ \st -> case result of
             Right k -> st {busy = False, settings = Just (Right k.settings), sync = syncOf result st.sync}
             Left why -> st {busy = False, problem = Just why}

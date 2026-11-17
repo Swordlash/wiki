@@ -109,7 +109,7 @@ component =
 
     load :: H.HalogenM State Action Empty ViewOutput m ()
     load = do
-      own <- lift personalSpace
+      own <- H.async personalSpace
       modify (\st -> st {space = Just own})
 
     -- Turn the space on or off. The answer is the space as it is now;
@@ -117,6 +117,6 @@ component =
     switch :: Bool -> H.HalogenM State Action Empty ViewOutput m ()
     switch enabled = do
       modify (\st -> st {busy = True})
-      result <- lift (setPersonalSpace enabled)
+      result <- H.async (setPersonalSpace enabled)
       modify (\st -> st {space = Just (Just <$> result), busy = False, confirming = False})
       when (isRight result) (H.raise (Changed Nothing))

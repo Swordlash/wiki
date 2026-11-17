@@ -118,7 +118,7 @@ component =
         picked <- H.liftEffect (chosenFiles ev >>= pickedFiles)
         home <- gets (\st -> homeSpaceOf st.input.context)
         for_ ((,) <$> head picked <*> home) $ \(file, h) -> do
-          bytes <- readPickedFile file
+          bytes <- H.async (readPickedFile file)
           modify (\st -> st {busy = True, problem = Nothing, saved = False})
           uploadSpaceIcon h.id file.mediaType bytes >>= \case
             Left e -> modify (\st -> st {busy = False, problem = Just e})

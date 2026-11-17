@@ -58,6 +58,8 @@
 -- * a numbered item whose next number would have ten digits, which
 --   CommonMark does not read as a number;
 -- * a text longer than 'textLimit';
+-- * a text holding a carriage return: CommonMark counts one alone as a
+--   line break, and the editor does not, so their lines differ;
 -- * an answer the parser does not read back as meant: 'enter' parses the
 --   text it would write, and keeps its answer only when the new line is in
 --   the containers the answer says, and every line below with anything on
@@ -113,6 +115,7 @@ enter :: Text -> Text -> Enter
 enter before after
   | not (T.null after || "\n" `T.isPrefixOf` after) = NewLine
   | T.length before + T.length after > textLimit = NewLine
+  | T.any (== '\r') (before <> after) = NewLine
   | otherwise = fromMaybe NewLine $ do
       let text = before <> after
           n = T.count "\n" before + 1
@@ -403,8 +406,11 @@ decide textLines n place = do
 
 -- | Whether an item's first line, after its mark, holds nothing (or its
 -- box alone, for a task).
+--
+-- A task's box is what the parser read as one, from its @[@ to the first
+-- @]@: one character or more between them (@[ ]@, @[x]@, @[  ]@).
 emptyItem :: ItemAt -> Text -> Bool
-emptyItem item rest = T.null (T.strip (if item.task then T.drop 3 (T.strip rest) else rest))
+emptyItem item rest = T.null (T.strip (if item.task then T.drop 1 (T.dropWhile (/= ']') (T.strip rest)) else rest))
 
 -- | The containers a line is in, without the items at its end that do not
 -- have their mark on it when the line has nothing after its marks: such a

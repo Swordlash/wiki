@@ -189,7 +189,10 @@ checkText pageKind source =
     , islands = islandsIn source located
     , folds = filter isSpoiler (foldsParsed source parsed)
     , slides = if pageKind == Presentation then Slides.slideSpansParsed source deck else []
-    , starts = blockStarts source shapes
+    , -- None in a text holding a carriage return: CommonMark counts one
+      -- alone as a line break, and the editor does not, so the parser's
+      -- lines are not the editor's.
+      starts = if T.any (== '\r') source then [] else blockStarts source shapes
     , openers = if pageKind == Presentation then Just (SlideRows.openerStartsParsed source deck) else Nothing
     }
   where

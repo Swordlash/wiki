@@ -184,6 +184,7 @@ import Wiki.Core.Markdown.Complete (Completion)
 import Wiki.Core.Markdown.Edit (Command (..), Selection (..), apply, cursor)
 import Wiki.Core.Markdown.Enter (Enter (..), enter)
 import Wiki.Core.Markdown.Folds (Fold (..))
+import Wiki.Core.Markdown.Starts (Kept (..), textRange)
 import Wiki.Core.SlideRows (Row (..), RowKey (..), Rows (..), rowStarts)
 import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.User (Login (..), User (..))
@@ -418,22 +419,43 @@ readPickedFile :: (MonadIO m) => PickedFile -> m ByteString
 readPickedFile picked = liftIO (evaluate =<< wait =<< picked.file.bytes)
 
 -- | 'EnterAsk' is what CodeMirror's Enter asks Haskell, as
--- @web/src/editor.js@ makes it: the text of the block the cursor is in,
--- before the cursor and after it; and what 'answerEnter' sets on it for
--- the keymap to read when the call returns: the text to write after a
--- line break, or the text the cursor's line becomes. Neither is set for a
--- plain line break.
+-- @web/src/editor.js@ makes it, in two calls. First @cut@, JSON: the
+-- starts the last check kept, as CodeMirror has mapped them through the
+-- changes since, each with where its line now starts and ends, the first
+-- change's offset, the start and the end of the cursor's line and the
+-- text's length ("Wiki.Core.Markdown.Starts"' 'Kept' and 'textRange');
+-- 'answerEnter' sets @range@, "from to", the part of the text to hand
+-- over, or nothing past the limit. Then @before@ and @after@, that part
+-- before the cursor and after it; 'answerEnter' sets @insert@, the text to
+-- write after a line break, or @line@, the text the cursor's line
+-- becomes, or neither for a plain line break.
 newtype EnterAsk = EnterAsk JSVal
   deriving newtype (Inert)
 
 $( jsFields
      ''EnterAsk
-     [ Fixed "before" [t|Text|]
+     [ Fixed "cut" [t|Maybe Text|]
+     , Fixed "before" [t|Text|]
      , Fixed "after" [t|Text|]
+     , Writable "range" [t|Maybe Text|]
      , Writable "insert" [t|Maybe Text|]
      , Writable "line" [t|Maybe Text|]
      ]
  )
+
+-- | 'EnterCut' is the first of an 'EnterAsk''s two questions, read from
+-- its JSON.
+data EnterCut = EnterCut [Kept] Int Int Int Int
+
+instance FromJSON EnterCut where
+  parseJSON = withObject "EnterCut" $ \o -> do
+    kept <- o .: "kept"
+    EnterCut [Kept {at, lineFrom, lineTo} | (at, lineFrom, lineTo) <- kept]
+      <$> o
+      .: "firstChange"
+      <*> o .: "lineStart"
+      <*> o .: "lineEnd"
+      <*> o .: "length"
 
 -- | The callback CodeMirror's Enter calls with an 'EnterAsk', in the
 -- master and in a presentation's rows ("Wiki.Core.Markdown.Enter"). It is
@@ -463,7 +485,19 @@ enterCallbackRef = unsafePerformIO (newIORef Nothing)
 -- an exception in it leaves the ask unanswered rather than reaching the
 -- keymap.
 answerEnter :: EnterAsk -> IO ()
-answerEnter asked = do
+answerEnter asked = case asked.cut of
+  Just json -> do
+    cut <- try @SomeException $ evaluate $ case decodeStrict (encodeUtf8 json) of
+      Just (EnterCut kept firstChange lineStart lineEnd len) -> (\(begins, ends) -> show begins <> " " <> show ends) <$> textRange kept firstChange lineStart lineEnd len
+      Nothing -> Nothing
+    case cut of
+      Right (Just range) -> evaluate (T.length range) >> asked.range_set (Just range)
+      _ -> pure ()
+  Nothing -> answerText asked
+
+-- | Answer the second question of an 'EnterAsk': what 'enter' writes.
+answerText :: EnterAsk -> IO ()
+answerText asked = do
   answered <- try @SomeException $ do
     answer <- evaluate (enter asked.before asked.after)
     case answer of

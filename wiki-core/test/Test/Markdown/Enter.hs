@@ -26,7 +26,9 @@ import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, conjoin, countere
 import Wiki.Core.Markdown.Ast (Block, Shape (..), ShapeKind (..), parseMarkdown, parseShapes, parseWithSpans)
 import Wiki.Core.Markdown.Ast qualified as A
 import Wiki.Core.Markdown.Enter
-import Wiki.Core.Markdown.Starts (blockStarts, endFor, startFor)
+import Wiki.Core.Markdown.Problems qualified as Problems
+import Wiki.Core.Markdown.Starts (Kept (..), blockStarts, textRange)
+import Wiki.Core.PageKind (PageKind (..))
 
 spec :: Spec
 spec = describe "Wiki.Core.Markdown.Enter" $ do
@@ -57,6 +59,8 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     "- [x] a\n  - [x] b\n  - [ ] ‸" `becomes` "- [x] a\n  - [x] b\n- [ ] ‸"
     "> - a\n> - ‸" `becomes` "> - a\n> ‸"
     "- [ ] ‸" `becomes` "‸"
+    "- [  ] ‸" `becomes` "‸"
+    "- [   ] ‸" `becomes` "‸"
     it "breaks the line alone with an item below that going up would take in" $
       press "- a\n  - ‸\n  - c" `shouldBe` "- a\n  - \n‸\n  - c"
 
@@ -105,7 +109,7 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     review "two spaces between a quotation's marks" (Doc [Chunk [] [Quote 0 (Spaces 2), Quote 0 (Spaces 1)] Text]) 1 (NewLineWith ">  > ")
     review "indented code in a quotation" (Doc [Chunk [] [Quote 0 (Spaces 1)] Indented]) 1 NewLine
     review "a tab after a number" (Doc [Chunk [] [Item 0 "1." Tab Nothing] Text]) 1 NewLine
-    review "a numbered item that looks like a task, which the parser reads as text" (Doc [Chunk [] [Item 0 "1." (Spaces 1) (Just 'x')] Text]) 1 (NewLineWith "2. ")
+    review "a numbered item that looks like a task, which the parser reads as text" (Doc [Chunk [] [Item 0 "1." (Spaces 1) (Just "x")] Text]) 1 (NewLineWith "2. ")
     review "an indented number of nine digits" (Doc [Chunk [] [Item 1 "123456789." (Spaces 1) Nothing] Text]) 1 (NewLineWith " 123456790. ")
     review "a numbered item with a child, which a new item would take" (Doc [Chunk [] [Item 0 "8." (Spaces 1) Nothing] Text, Chunk [] [Item 0 "9." (Spaces 1) Nothing] Text, Chunk [Item 0 "9." (Spaces 1) Nothing] [Item 0 "-" (Spaces 1) Nothing] Text]) 2 NewLine
     review "a loose list" (Doc [Chunk [] [Item 0 "-" (Spaces 1) Nothing] Text, Chunk [] [] Blank, Chunk [] [Item 0 "-" (Spaces 1) Nothing] Text]) 3 (NewLineWith "- ")
@@ -121,11 +125,21 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     let kept name marked' expected = it name $ do
           let (before, rest) = T.breakOn "‸" marked'
               after = T.drop 1 rest
-              (given, taken) = handedOver before after (Change 0 0 "")
-          (enter given taken, enter before after) `shouldBe` (expected, expected)
+          (editorAnswer before after unchanged, enter before after) `shouldBe` (expected, expected)
     kept "HTML that reads on over a heading and a list" "- a\n<a>\n# Heading\n- ‸" NewLine
     kept "an end marker after a start marker in a paragraph" "plain\n[[!notes]]\n\n- a\n[[/notes]]‸" NewLine
     kept "an item after a footnote's definition" "[^1]: text\n\n    more\n\n- a‸" (NewLineWith "- ")
+    -- Codex's round 6 on #292: the check read "- a\n\nx\n\n  b", and the
+    -- paragraph between was deleted since. Its start and the item's below
+    -- map onto one place, which counted twice cut "  b" off.
+    it "keeps two starts a deletion put in one place from cutting the item's line below off" $ do
+      let (before, after) = ("- a", "\n  b")
+      (maybe NewLine (uncurry enter) (handedOverAt before after 3 1 "\n\nx\n\n"), enter before after) `shouldBe` (NewLine, NewLine)
+    -- Codex's round 6: CommonMark counts a carriage return alone as a line
+    -- break, and the editor does not, so the lines differ.
+    it "keeps no starts, and breaks the line alone, in a text holding a carriage return" $ do
+      (Problems.checkText Document "p\rp\rp\n\n```\n\n- a\n- b\n```\n\nend").starts `shouldBe` []
+      enter "p\rp\n\n- a" "" `shouldBe` NewLine
 
   -- What Enter reads, and so what it costs, is bounded: by the text the
   -- editor hands over, the cursor's block and the one below it, and past
@@ -141,7 +155,7 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     -- items around the cursor's, not the whole list.
     it "goes on at the end and in the middle of a list of a thousand items, reading a few of them" $ do
       let ls = "# Items" : "" : ["- item " <> show i | i <- [1 .. 1000 :: Int]]
-          at n = handedOver (T.intercalate "\n" (take n ls)) (mconcat ["\n" <> l | l <- drop n ls]) (Change 0 0 "")
+          at n = fromMaybe ("", "") (handedOver (T.intercalate "\n" (take n ls)) (mconcat ["\n" <> l | l <- drop n ls]) unchanged)
       for_ [length ls, 502] $ \n -> do
         let (given, taken) = at n
         _ <- evaluate (T.length given + T.length taken)
@@ -155,7 +169,7 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
           n = 2 + 100 * 49 + 36
           before = T.intercalate "\n" (take n ls)
           after = mconcat ["\n" <> l | l <- drop n ls]
-          (given, taken) = handedOver before after (Change 0 0 "")
+          (given, taken) = fromMaybe ("", "") (handedOver before after unchanged)
       _ <- evaluate (T.length given + T.length taken)
       (answer, allocated) <- allocations (enter given taken)
       -- 407 characters and 6.6 MB measured natively on 2026-11-16,
@@ -208,11 +222,10 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     -- cursor's line and before the first change since, mapped through the
     -- change ('handedOver'), for a change anywhere (letters typed in the
     -- cursor's block, a block added below, one edited above).
-    prop "answers as for the whole text, for the text from the start the last check kept" $ \doc (Change at removed was) ->
-      atEveryLineEnd doc $ \before after answer ->
-        let (given, taken) = handedOver before after (Change at removed was)
-            expected = if T.length given + T.length taken > textLimit then NewLine else answer
-         in counterexample (show (given, taken)) (enter given taken === expected)
+    prop "answers as for the whole text, for the text from the start the last check kept" $ \doc change ->
+      atEveryLineEnd doc $ \before after answer -> case handedOver before after change of
+        Just (given, taken) -> counterexample (show (given, taken)) (enter given taken === answer)
+        Nothing -> property True
     -- Not only safe but useful: in containers written as CommonMark reads
     -- them without doubt, Enter at the end of an item's or a quotation's
     -- text goes on in it, as the containers say.
@@ -266,8 +279,9 @@ data Layer
   = -- | A quotation: the spaces before its mark, and what follows it.
     Quote Int Gap
   | -- | A list's item: the spaces before its mark, the mark, what follows
-    -- it, and a task's box (its letter, @' '@ or @x@).
-    Item Int Text Gap (Maybe Char)
+    -- it, and a task's box (what is between its brackets: one to three
+    -- spaces, or @x@).
+    Item Int Text Gap (Maybe Text)
   | -- | A footnote's definition, @[^7]: @, its later lines indented by
     -- four spaces: a container CodeMirror's Markdown does not know. Its
     -- label is drawn from a million, so that no two are the same: the
@@ -325,7 +339,7 @@ layer :: Gen Layer
 layer =
   frequency
     [ (2, Quote <$> frequency [(4, pure 0), (1, choose (1, 3))] <*> gap)
-    , (3, Item <$> frequency [(4, pure 0), (1, choose (1, 3))] <*> elements ["-", "-", "*", "+", "1.", "2)", "10.", "123456789.", "999999999."] <*> gap <*> frequency [(3, pure Nothing), (1, Just <$> elements [' ', 'x'])])
+    , (3, Item <$> frequency [(4, pure 0), (1, choose (1, 3))] <*> elements ["-", "-", "*", "+", "1.", "2)", "10.", "123456789.", "999999999."] <*> gap <*> frequency [(3, pure Nothing), (1, Just <$> elements [" ", "x", "  ", "   "])])
     ]
   where
     gap = frequency [(6, pure (Spaces 1)), (2, Spaces <$> choose (0, 5)), (1, pure Tab)]
@@ -376,7 +390,7 @@ bodyLines = \case
 firstForm :: Layer -> Text
 firstForm = \case
   Quote b g -> T.replicate b " " <> ">" <> gapText g
-  Item b m g t -> T.replicate b " " <> m <> gapText g <> maybe "" (\c -> "[" <> T.singleton c <> "] ") t
+  Item b m g t -> T.replicate b " " <> m <> gapText g <> maybe "" (\c -> "[" <> c <> "] ") t
   Note label -> "[^" <> show label <> "]: "
 
 -- | A container's marks on a later line: a quotation's again, an item's
@@ -576,30 +590,45 @@ inTextAt :: Text -> Int -> Bool
 inTextAt text n = either (const False) (\shapes -> any (\s -> s.kind == TextShape) (shapesAt shapes n)) (parseShapes text)
 
 -- | A change since the editor's last check: at this per mille of the
--- text now, so many characters of the text now stood in place of this
--- text then.
-data Change = Change Int Int Text
+-- text now (moved to the start of its line, or not), so many characters
+-- of the text now stood in place of this text then. A deletion of up to
+-- forty characters spans several starts; one at a line's start puts text
+-- in at a start; one across lines replaces lines.
+data Change = Change Int Bool Int Text
   deriving stock (Show)
 
 instance Arbitrary Change where
   arbitrary =
     Change
       <$> choose (0, 1000)
-      <*> frequency [(2, pure 0), (3, choose (1, 6))]
-      <*> elements ["", "x", "\n", "\n\n", "- ", "> ", "    ", "```\n", "<div>\n", "<!--\n", "[[!notes]]\n", "[[/notes]]\n", "[^9]: x\n"]
+      <*> elements [False, True]
+      <*> frequency [(2, pure 0), (3, choose (1, 6)), (2, choose (7, 40))]
+      <*> elements ["", "x", "\n", "\n\n", "- ", "> ", "    ", "```\n", "<div>\n", "<!--\n", "[[!notes]]\n", "[[/notes]]\n", "[^9]: x\n", "\n\nx\n\n"]
+
+-- | No change since the last check.
+unchanged :: Change
+unchanged = Change 0 False 0 ""
 
 -- | The text the editor hands to 'enter' for a cursor at the end of a line
--- of the text now (web/src/editor.js's enterRange), when the last check
--- was of the text before a change: the starts that check kept
--- ('blockStarts', as offsets), mapped through the change as CodeMirror
--- maps a position after what is put in, the first change where the change
--- is ('startFor', 'endFor').
-handedOver :: Text -> Text -> Change -> (Text, Text)
-handedOver before after (Change per removed was) =
-  (T.take (cursor - begins) (T.drop begins now), T.take (ends - cursor) (T.drop cursor now))
+-- of the text now, when the last check was of the text before a change:
+-- the starts that check kept ('blockStarts', as offsets), mapped through
+-- the change as CodeMirror maps a position after what is put in (several
+-- onto one place, into a line), each with its line now, cut by
+-- 'textRange'. Nothing past the limit.
+handedOver :: Text -> Text -> Change -> Maybe (Text, Text)
+handedOver before after (Change per toLine removed was) = handedOverAt before after at removed was
   where
     now = before <> after
-    at = T.length now * per `div` 1000
+    near = T.length now * per `div` 1000
+    at = if toLine then T.length (T.dropWhileEnd (/= '\n') (T.take near now)) else near
+
+-- | 'handedOver' for a change at an offset of the text now.
+handedOverAt :: Text -> Text -> Int -> Int -> Text -> Maybe (Text, Text)
+handedOverAt before after at removed was = do
+  (begins, ends) <- textRange kept firstChange lineStart lineEnd (T.length now)
+  pure (T.take (cursor - begins) (T.drop begins now), T.take (ends - cursor) (T.drop cursor now))
+  where
+    now = before <> after
     taken = min removed (T.length now - at)
     old = T.take at now <> was <> T.drop (at + taken) now
     changed = taken > 0 || not (T.null was)
@@ -609,14 +638,17 @@ handedOver before after (Change per removed was) =
       | not changed || s < at = s
       | s > at + T.length was = s + taken - T.length was
       | otherwise = at + taken
-    starts = sort (map mapped oldStarts)
+    kept = [Kept {at = m, lineFrom = lineOf m, lineTo = m + T.length (T.takeWhile (/= '\n') (T.drop m now))} | s <- oldStarts, let m = mapped s]
+    lineOf m = T.length (T.dropWhileEnd (/= '\n') (T.take m now))
     firstChange = if changed then at else T.length now
     cursor = T.length before
     lineStart = T.length (T.dropWhileEnd (/= '\n') before)
-    begins = startFor [(s, s + T.length (T.takeWhile (/= '\n') (T.drop s now))) | s <- starts] firstChange lineStart
-    ends = maybe (T.length now) (subtract 1) (endFor (filter atLineStart starts) cursor)
-    -- A start still at a line's start in the text now.
-    atLineStart s = s > 0 && T.takeEnd 1 (T.take s now) == "\n"
+    lineEnd = cursor + T.length (T.takeWhile (/= '\n') after)
+
+-- | What the editor's Enter answers: 'enter' over what it hands over, or
+-- a line break alone past the limit.
+editorAnswer :: Text -> Text -> Change -> Enter
+editorAnswer before after change = maybe NewLine (uncurry enter) (handedOver before after change)
 
 -- | An answer, forced, and the bytes allocated to make it.
 allocations :: Enter -> IO (Enter, Int64)
@@ -669,7 +701,7 @@ instance Arbitrary Plain where
       -- after a paragraph's line.
       plainLayers = do
         ls <- listOf1 plainLayer
-        box <- elements [Nothing, Just ' ', Just 'x']
+        box <- elements [Nothing, Just " ", Just "x"]
         pure [if i == length ls - 1 then withBox box l else l | (i, l) <- zip [0 :: Int ..] ls]
       plainLayer = oneof [pure (Quote 0 (Spaces 1)), Item 0 <$> elements ["-", "*", "1.", "1)"] <*> pure (Spaces 1) <*> pure Nothing]
       withBox box = \case
@@ -686,7 +718,7 @@ plainExpected (Doc chunks) = case lastMay chunks of
      in NewLineWith $ case lastMay stack of
           -- The parser reads no box after a number: a numbered item's
           -- next item has none.
-          Just (Item b m g t) -> foldMap laterForm (initSafe stack) <> firstForm (Item b (nextMark m) g (if isBullet m then ' ' <$ t else Nothing))
+          Just (Item b m g t) -> foldMap laterForm (initSafe stack) <> firstForm (Item b (nextMark m) g (if isBullet m then " " <$ t else Nothing))
           _ -> foldMap laterForm stack
   Nothing -> NewLine
   where

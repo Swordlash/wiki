@@ -1499,46 +1499,35 @@ const enterStarts = StateField.define({
   },
 });
 
-// The text Enter hands to Haskell at a position, as {from, to}: from the
-// last start before the position's line whose own line ends at or before
-// the first change since the check (Wiki.Core.Markdown.Starts' startFor), to just before the second start after the position's line,
-// the block below coming whole, or to the end of the text (its endFor).
-// Null for a text longer than Wiki.Core.Markdown.Enter's textLimit (2000
-// characters), where Enter is a line break alone: before the first check,
-// any text longer than that from its start.
-const enterRange = (state, pos) => {
-  const kept = state.field(enterStarts, false);
-  if (kept === undefined) return null;
-  const { doc } = state;
-  const line = doc.lineAt(pos);
-  let from = 0;
-  let below = 0;
-  let to = doc.length;
-  for (const start of kept.starts) {
-    if (start < line.from) {
-      if (doc.lineAt(start).to <= kept.firstChange) from = start;
-    } else if (start > line.to && doc.lineAt(start).from === start && ++below === 2) {
-      // Only a start still at a line's start: a change since the check
-      // across lines may have moved one into a line.
-      to = start - 1;
-      break;
-    }
-  }
-  return to - from > 2000 ? null : { from, to };
-};
-
 // What Enter writes at a position of a state, asked of Haskell through the
 // host's wikiEnter (Wiki.App.Editor.Browser's enterCallback): {insert}, the
 // text after a line break, or {line}, what the position's line becomes; null
 // for a line break alone. The callback answers before it returns, on the
-// object it is given.
+// object it is given, and is asked twice. First where the text it reads
+// starts and ends (Wiki.Core.Markdown.Starts' textRange): it is given the
+// starts the last check kept, as mapped through the changes since, each
+// with where its line now starts and ends, and answers "from to", or
+// nothing past the limit. Then what Enter writes, given that text before
+// the position and after it.
 const askEnter = (host, state, pos) => {
   const enter = host.wikiEnter;
-  if (typeof enter !== "function") return null;
-  const block = enterRange(state, pos);
-  if (block === null) return null;
-  const ask = { before: state.sliceDoc(block.from, pos), after: state.sliceDoc(pos, block.to), insert: null, line: null };
+  const kept = state.field(enterStarts, false);
+  if (typeof enter !== "function" || kept === undefined) return null;
+  const { doc } = state;
+  const line = doc.lineAt(pos);
+  const starts = kept.starts.map((start) => {
+    const at = doc.lineAt(start);
+    return [start, at.from, at.to];
+  });
+  const cut = { cut: JSON.stringify({ kept: starts, firstChange: kept.firstChange, lineStart: line.from, lineEnd: line.to, length: doc.length }), range: null };
+  const ask = { cut: null, before: "", after: "", insert: null, line: null };
   try {
+    enter(cut);
+    if (typeof cut.range !== "string") return null;
+    const [from, to] = cut.range.split(" ").map(Number);
+    if (!(Number.isInteger(from) && Number.isInteger(to) && from <= pos && pos <= to && to <= doc.length)) return null;
+    ask.before = state.sliceDoc(from, pos);
+    ask.after = state.sliceDoc(pos, to);
     enter(ask);
   } catch {
     return null;

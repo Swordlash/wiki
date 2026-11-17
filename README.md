@@ -592,7 +592,10 @@ It is [these nine slides](https://swordlash.github.io/wiki/s/docs/p/markdown-gui
   while you write to it. The key stays in
   your browser, sealed, and goes to its provider only; every request sends
   [docs/markdown.md](docs/markdown.md) first, cached by the provider, so the
-  model writes this wiki's Markdown. Over `wiki-server`, the keys follow you
+  model writes this wiki's Markdown. The first message of a conversation
+  carries the page (its first 200,000 characters), and each later one only
+  what changed in it since, so that the conversation, which goes whole with
+  each message, holds one copy and Anthropic's cache covers all of it. Over `wiki-server`, the keys follow you
   to your other devices, unlocked by a passkey ([below](#keys-across-devices)).
 - **Slides** made of any page, presented, printed and exported
   ([above](#presentations)).

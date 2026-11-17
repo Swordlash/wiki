@@ -429,7 +429,7 @@ spec m = do
   -- scripted provider counts from one again, and which is told nothing of
   -- the changes the earlier chat's model made.
   it "starts a new conversation with New, disabled while the model works, and keeps the draft" $ runPage $ do
-    script [[replace "## Why a wiki" "## Why", text "One."], [text "Two.", hold], [text "Three."]]
+    script [[replace "which is what makes this a blog" "which makes this a blog", text "One."], [text "Two.", hold], [text "Three."]]
     ui <- openAssistant m
     send ui "First."
     _ <- find ui ".assistant-message.from-model .assistant-took"
@@ -453,6 +453,25 @@ spec m = do
     asked <- requests
     map (at ["conversation"]) asked `shouldBe` map (Just . Aeson.Number) [1, 2, 1]
     fromMaybe "" (fieldText ["user"] =<< lastMay asked) `shouldNotSatisfy'` T.isInfixOf "Since your last message"
+    -- The page goes whole with a conversation's first message, and the
+    -- second, after the model's edit, carries only what changed.
+    let users = map (fromMaybe "" . fieldText ["user"]) asked
+    map (T.isInfixOf "<page>\n# Hello, world") users `shouldBe` [True, False, True]
+    map (T.isInfixOf "<changes>\n@@ ") users `shouldBe` [False, True, False]
+
+  -- A chat that could not be made (its script did not load) took no
+  -- message, so the next message, to a new chat, carries the page again.
+  it "sends the page whole again after a message whose chat could not be made" $ runPage $ do
+    unsafeIOToPageM $ do
+      js_forget
+      js_script (toJSText (decodeUtf8 (BSL.toStrict (encode (object ["turns" .= [[text "Hi."]], "makeFails" .= (1 :: Int)])))))
+    ui <- openAssistant m
+    send ui "First."
+    _ <- find ui ".assistant-error"
+    send ui "Second."
+    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Hi.")
+    users <- map (fromMaybe "" . fieldText ["user"]) <$> requests
+    map (T.isInfixOf "<page>\n# Hello, world") users `shouldBe` [True]
 
   it "shows a provider's error as it gave it, without anything like a key" $ runPage $ do
     script [[failing "permission" 403 "not for this key: sk-ant-api03-abcdefgh1234"]]

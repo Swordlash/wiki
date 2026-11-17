@@ -8,6 +8,8 @@ module Test.Complete (spec) where
 
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.IntMap.Strict qualified as IntMap
+import Data.IntSet qualified as IntSet
 import Data.List (lookup, nub)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
@@ -145,7 +147,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
               ls = T.splitOn "\n" whole
               atWhole = At {place = InText, above = l'.above, before = typedUpTo, after = request.after, below = drop request.line ls, cutBelow = False}
               expected = complete (sources onHandbook) (readLine l'.above) atWhole
-              inMode earlier' = counterexample (show (map (\(n, d) -> (n, d)) earlier'.definitions)) $ fst (answer (sources onHandbook) earlier' noReadings whole request) === expected
+              inMode earlier' = counterexample (show earlier'.definitions) $ fst (answer (sources onHandbook) earlier' noReadings whole request) === expected
            in counterexample (toS whole)
                 $ cover 25 (maybe False ((< length l'.above) . length) (linesFromStart (earlierOf whole) l'.above)) "read from a start"
                   . cover 10 (maybe False (elem "[a]: x") (linesFromStart (earlierOf whole) l'.above)) "with definitions"
@@ -208,7 +210,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
               request = Request {line = k + 1, before = typed, after = "", nodes = ["Paragraph", "Document"]}
           -- The check, made before, and the text, as the editor holds them.
           earlier <- evaluate (earlierOf page)
-          _ <- evaluate (length earlier.starts + length earlier.definitions + sum (map T.length earlier.lines) + T.length now)
+          _ <- evaluate (IntSet.size earlier.starts + IntMap.size earlier.definitions + sum (fmap T.length earlier.lines) + T.length now)
           allocated (let a = fst (answer (sources onLong) earlier noReadings now request) in a == a)
         onLong = (held Document []) {entries = slashEntries []}
     -- Measured natively, for /, [[! and [[: 1.3, 1.0 and 6.6 MB at the
@@ -666,7 +668,7 @@ definitionsAbove = ["[a]: /url", "", "[^n]: A note.", "    More of it.", "", "Se
 
 -- | What the editor keeps of a check of a text ("Wiki.Core.Markdown.Problems").
 earlierOf :: Text -> Earlier
-earlierOf old = let found = Problems.checkText Document old in Earlier {lines = T.splitOn "\n" old, starts = found.starts, definitions = found.definitions}
+earlierOf old = let found = Problems.checkText Document old in earlierFrom old found.starts found.definitions
 
 -- | A change since the check, as (a thousandth of the text, to its line's
 -- start or not, characters taken away, text put in their place).

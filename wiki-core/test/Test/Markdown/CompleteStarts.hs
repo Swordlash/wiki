@@ -28,7 +28,7 @@ import Wiki.Core.Markdown.Ast (parseShapes)
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.Markdown.Edit qualified as Edit
 import Wiki.Core.Markdown.Problems (Checked (..), checkText)
-import Wiki.Core.Markdown.Starts (Earlier (..), blockDefinitions, blockStarts, linesBelow, linesFromStart, noEarlier)
+import Wiki.Core.Markdown.Starts (Earlier (..), blockDefinitions, blockStarts, earlierFrom, linesBelow, linesFromStart, noEarlier)
 import Wiki.Core.PageKind (PageKind (..))
 
 spec :: Spec
@@ -45,10 +45,26 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
       let doc = ["[^n]: A note.", "", "Text.", "", "    code", "", "Last"]
           e = earlierOf (T.intercalate "\n" doc)
       linesFromStart e (take 5 doc) `shouldBe` Just ["[^n]: x", "", "Text.", "", "    code"]
+    it "reads no label holding an escape, which the parser reads and this does not (Codex, #298)" $
+      fmap (blockDefinitions "[^a\\]:b]: old\n\n[b\\]]: /u\n\n[c]: /v") (parseShapes "[^a\\]:b]: old\n\n[b\\]]: /u\n\n[c]: /v")
+        `shouldBe` Right [(1, Nothing), (3, Nothing), (5, Just "[c]: x")]
+    it "finds the start in a long text from the cursor up, and the end below within the bound (Codex, #298)" $ do
+      -- 16,000 short paragraphs under a definition: the start is the last
+      -- paragraph's, after the definition.
+      let paragraphs = ["[a]: /u", ""] <> concat [["Paragraph " <> show i <> " [a].", ""] | i <- [1 .. 16000 :: Int]]
+      linesFromStart (earlierOf (T.intercalate "\n" (paragraphs <> ["/t"]))) paragraphs
+        `shouldBe` Just ["[a]: x", "", "Paragraph 16000 [a].", ""]
+      -- The first item of a tight list of 16,000: no item follows a blank
+      -- line, and no start is taken below; after the list, two paragraphs.
+      let items = ["- item " <> show i | i <- [1 .. 16000 :: Int]]
+          listed = items <> ["", "After.", "", "Last."]
+      linesBelow afterBound (earlierOf (T.intercalate "\n" ("- first" : listed))) [] "- first /t" "" listed `shouldBe` Nothing
+      let short = take 3 items <> ["", "After.", "", "Last."]
+      linesBelow afterBound (earlierOf (T.intercalate "\n" ("- first" : short))) [] "- first /t" "" short `shouldBe` Just 6
     it "keeps what the editor's check finds" $ do
       let found = checkText Document text
-      (earlierOf text).starts `shouldBe` found.starts
-      (earlierOf text).definitions `shouldBe` found.definitions
+      startsOf text `shouldBe` found.starts
+      definitionsOf text `shouldBe` found.definitions
     it "reads the whole text above where nothing was checked, up to the limit" $ do
       linesFromStart noEarlier ["Some", "text"] `shouldBe` Just ["Some", "text"]
       linesFromStart noEarlier (replicate 100 (T.replicate 60 "x")) `shouldBe` Nothing
@@ -104,9 +120,15 @@ changedFrom now (Change per toLine removed was) = T.take at now <> was <> T.drop
 -- 'checkText', from the same parse; checked once against it here), made
 -- from the parse alone, which the properties ask for many texts.
 earlierOf :: Text -> Earlier
-earlierOf old = Earlier {lines = T.splitOn "\n" old, starts = either (const [1]) (blockStarts old) shapes, definitions = either (const []) (blockDefinitions old) shapes}
-  where
-    shapes = parseShapes old
+earlierOf old = earlierFrom old (startsOf old) (definitionsOf old)
+
+-- | The starts and the definitions a check of a text finds, from the
+-- parse alone.
+startsOf :: Text -> [Int]
+startsOf old = either (const [1]) (blockStarts old) (parseShapes old)
+
+definitionsOf :: Text -> [(Int, Maybe Text)]
+definitionsOf old = either (const []) (blockDefinitions old) (parseShapes old)
 
 -- | The earlier check of a mode, for the text now.
 earlierIn :: Text -> Mode -> Earlier

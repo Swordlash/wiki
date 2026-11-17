@@ -576,9 +576,10 @@ data State = State
   -- ^ The text that check read, which the problems' lines are lines of.
   , earlier :: Complete.Earlier
   -- ^ What the completion keeps of that check: the text's lines, where its
-  -- top-level blocks start and its definitions, so that the completion
-  -- reads the text above the cursor from a start ('Complete.answer'). The
-  -- lines are split once, by the first question after the check.
+  -- top-level blocks start and its definitions, indexed, so that the
+  -- completion reads the text around the cursor from a start
+  -- ('Complete.answer'). Made once, by the first question after the
+  -- check.
   , failedIslands :: Map IslandKey Text
   -- ^ The preview's islands whose libraries failed, by key, with their
   -- messages. A failure is kept while the text the preview has drawn
@@ -3153,7 +3154,7 @@ component =
         gets (\st -> st.loaded) >>= \case
           Ready w -> do
             found <- H.async (liftIO (evaluate (force (Problems.checkText w.page.kind w.body))))
-            modify $ \st -> measuredNow (keepDrawnFailures st {checkWait = Nothing, checked = found, checkedText = w.body, earlier = Complete.Earlier {lines = T.splitOn "\n" w.body, starts = found.starts, definitions = found.definitions}})
+            modify $ \st -> measuredNow (keepDrawnFailures st {checkWait = Nothing, checked = found, checkedText = w.body, earlier = Complete.earlierFrom w.body found.starts found.definitions})
             gets (\st -> st.hostElement) >>= traverse_ (\host -> H.liftEffect (offerFolds host w.body found.folds >> offerStarts host w.body found.starts))
             -- Cut first: the rows a block left open swallows are problems.
             -- One publication for the pause, after the re-cut.

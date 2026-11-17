@@ -22,6 +22,7 @@ module Wiki.App.Editor.Complete
   , Readings
   , noReadings
   , Earlier (..)
+  , earlierFrom
   , noEarlier
   , answer
   , completionJson
@@ -37,7 +38,7 @@ import Wiki.App.Route (pageLinkText)
 import Wiki.Core.Id (PageId)
 import Wiki.Core.Markdown.Box (BoxKind)
 import Wiki.Core.Markdown.Complete
-import Wiki.Core.Markdown.Starts (Earlier (..), linesBelow, linesFromStart, noEarlier)
+import Wiki.Core.Markdown.Starts (Earlier (..), earlierFrom, linesBelow, linesFromStart, noEarlier)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind)
 import Wiki.Core.Slug (Slug, slugText, slugify)

@@ -157,6 +157,7 @@ library
       Wiki.App.View.Avatar
       Wiki.App.View.Preview
       Wiki.App.View.LivePreview
+      Wiki.App.View.Reading
       Wiki.App.View.MacrosPanel
       Wiki.App.View.ProviderIcons
       Wiki.App.View.Reset
@@ -342,6 +343,7 @@ test-suite wiki-app-test
         Test.Backend.Persist
         Test.Blog
         Test.CommentsDom
+        Test.LivePreviewDom
         Test.DeckDom
         Test.Counting
         Test.Demo

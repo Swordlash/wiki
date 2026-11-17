@@ -143,7 +143,7 @@ import Halogen.HTML.Properties qualified as HP
 import Halogen.Router (Follow)
 import Halogen.Router qualified as Router
 import Halogen.Router.Duplex (encodeComponent)
-import Halogen.TH (hh, hhs)
+import Halogen.TH (hh)
 import Protolude hiding (State)
 import Web.Event.Event (EventType (..))
 import Wiki.Api.Events (PageEvent (..), Readers (..), noReaders)
@@ -168,13 +168,12 @@ import Wiki.App.View.DeckViewer qualified as DeckViewer
 import Wiki.App.View.Export qualified as ExportView
 import Wiki.App.View.Latest (Asks, noAsks, takesPage)
 import Wiki.App.View.Latest qualified as Latest
+import Wiki.App.View.Reading qualified as Reading
 import Wiki.App.View.Star qualified as StarView
 import Wiki.App.View.Ticking (Clearing (..), Staging (..), TickNote (..))
 import Wiki.App.View.Ticking qualified as Ticking
 import Wiki.App.View.Watch qualified as WatchView
 import Wiki.Core.Anchor (BlockText (..), Located (..), Marking (Marking), Range (..), highlight, locate, renderedBlocks, renderedText, textFragment)
-import Wiki.Core.Attachment (Attachment (..), FileName (..), MimeType (..))
-import Wiki.Core.Blog (Neighbours (..), neighbours)
 import Wiki.Core.Comment (Comment (..), Thread (..), isInline, mayComment)
 import Wiki.Core.Encrypted (ChainProblem, chainProblemText)
 import Wiki.Core.Id
@@ -185,12 +184,11 @@ import Wiki.Core.Id
 import Wiki.Core.Markdown qualified as Md
 import Wiki.Core.Notification (WatchTarget (..))
 import Wiki.Core.Offered qualified as Offered
-import Wiki.Core.Page (Page (attachments, body, createdAt, createdBy, id, kind, parent, slug, space, template, title, updatedAt, updatedBy), PageSummary (id, parent, slug, title), retitled)
+import Wiki.Core.Page (Page (attachments, body, createdAt, createdBy, id, kind, parent, slug, space, template, title, updatedAt, updatedBy), PageSummary (id, parent, title), retitled)
 import Wiki.Core.PageKind (PageKind (..), isPresentation)
 import Wiki.Core.Permission (mayMovePage)
 import Wiki.Core.Slug (Slug)
-import Wiki.Core.Space (Space (blog, encryption, homePage, id, name), rootPage)
-import Wiki.Core.Template (placeholderNames)
+import Wiki.Core.Space (Space (encryption, homePage, id, name), rootPage)
 import Wiki.Core.User (Avatar, User (id))
 import Wiki.Core.Version (Author (..), Version (..))
 
@@ -415,7 +413,7 @@ component =
       Failed e -> failureView e Retry
       Ready page addresses deck contents ->
         [hh|
-          <div class="page-view {{ widthClass input.context.pageWidth }}">
+          <div class="page-view {{ Reading.widthClass input.context.pageWidth }}">
             {{ parts }}
             <div class="link-copied" role="status">
               {% for c in maybeToList st.copied %}
@@ -432,18 +430,18 @@ component =
             -- It has its own class too: the bar stays under the header
             -- while the page scrolls (web/style.css), so that a long page
             -- can be edited without scrolling back up to it.
-            [hh|<div class="actions page-actions">{{ actions input (isJust st.chainProblem) page deck (commentsToggle st) }}{{ [HH.slot_ "watch" () WatchView.component WatchView.Input {context = input.context, target = WatchPage page.id} | notified input.context] }}{{ [HH.slot_ "star" () StarView.component StarView.Input {context = input.context, page = page.id} | notified input.context] }}{{ liveNote st }}{{ widthSwitch input.context.pageWidth }}</div>|]
+            [hh|<div class="actions page-actions">{{ actions input (isJust st.chainProblem) page deck (commentsToggle st) }}{{ [HH.slot_ "watch" () WatchView.component WatchView.Input {context = input.context, target = WatchPage page.id} | notified input.context] }}{{ [HH.slot_ "star" () StarView.component StarView.Input {context = input.context, page = page.id} | notified input.context] }}{{ liveNote st }}{{ Reading.widthSwitch ChooseWidth input.context.pageWidth }}</div>|]
               : toList (form input page mode)
                 <> [[hh|<p class="error encrypted-rollback" role="alert">{{ chainProblemText p }}</p>|] | Just p <- [st.chainProblem]]
                 <> toList (errorView <$> problem)
                 <> toList (versionNote input page)
-                <> toList (templateNote page)
+                <> toList (Reading.templateNote page.template)
                 <> titleRow
-                <> toList (postInfo input page)
+                <> toList (Reading.postInfo Followed input.context input.space input.pages page.id page.createdAt)
                 <> [viewerOf place page | deck]
                 <> [textAndPanel st place rendered text page contents]
                 <> [ticksBar st]
-                <> attachments page addresses
+                <> Reading.attachmentList page.attachments addresses
                 <> [commentsOf st place text page CommentsView.Below | commentsHere input]
           place = placeOf input page addresses st.people.found
           -- Rendered once: the article shows it with its quotes
@@ -459,7 +457,7 @@ component =
           titleRow
             | Body.startsWithHeading page.body = []
             | otherwise =
-                [ [hh|<div class="page-title-row">{{ Body.heading page.title page.body }}{{ readersStack st }}</div>|]
+                [ Reading.titleRow page.title page.body (readersStack st)
                 , byline st.avatars page
                 ]
 
@@ -555,38 +553,6 @@ component =
           </p>
         |]
 
-    -- A note on a template saying what it is, since it is not in the tree.
-    templateNote :: Page -> Maybe (H.ComponentHTML Action Slots m)
-    templateNote page =
-      guard page.template
-        $> HH.p
-          [HP.class_ "template-note", attr "role" "note"]
-          ( [HH.text "This page is a template: \"New page\" offers it, with "]
-              <> intercalate [HH.text ", "] [[HH.code_ [HH.text ("{{" <> name <> "}}")]] | name <- placeholderNames]
-              <> [HH.text " filled in."]
-          )
-
-    -- A post of a blog ("Wiki.Core.Blog"): when it was posted, and the
-    -- posts before and after it.
-    postInfo :: Input -> Page -> Maybe (H.ComponentHTML Action Slots m)
-    postInfo input page = do
-      guard input.space.blog
-      Neighbours {older, newer} <- neighbours input.space input.pages page.id
-      let spacePath = spacePathOf input.context.spaces input.space.id
-          linkTo p = Router.linkProps input.context.router Followed (Page spacePath [p.slug])
-      pure
-        [hh|
-          <div class="post-info">
-            <p class="post-date">Posted <time {{ [attr "datetime" (toS (iso8601Show page.createdAt))] }}>{{ dateOf page.createdAt }}</time></p>
-            {% if isJust older || isJust newer %}
-              <nav class="post-nav" aria-label="Posts">
-                {% for o in maybeToList older %}<a class="post-previous" rel="prev" {{ linkTo o }}><span class="post-nav-label">Previous</span><span class="post-nav-title">{{ o.title }}</span></a>{% end %}
-                {% for n in maybeToList newer %}<a class="post-next" rel="next" {{ linkTo n }}><span class="post-nav-label">Next</span><span class="post-nav-title">{{ n.title }}</span></a>{% end %}
-              </nav>
-            {% end %}
-          </div>
-        |]
-
     form :: Input -> Page -> Mode -> Maybe (H.ComponentHTML Action Slots m)
     form input page = \case
       Viewing -> Nothing
@@ -656,10 +622,11 @@ component =
       -> H.ComponentHTML Action Slots m
     textAndPanel st place rendered text page contents =
       [hh|
-        <div class="page-main{% if side %} with-side{% end %}{% if isJust contents %} with-contents{% end %}{% if st.panelOpen && commentsEnabled %} with-comments{% end %}" ref={{ st.text }}>
+        <div class={{ Reading.mainClasses (isJust contents) (st.panelOpen && commentsEnabled) }} ref={{ st.text }}>
           <div class="page-text" onMouseUp={{ const Selecting }} onKeyUp={{ const Selecting }} {{ quoteClicks }}>
             {% if titled %}{{ readersStack st }}{% end %}
             {{ Body.articleOf FollowLink place page.body withByline }}
+            {{ Reading.textEnd }}
           </div>
           {% for s in maybeToList st.selected %}
             <div class="selection-actions" style={{ position s }}>
@@ -672,10 +639,7 @@ component =
           {% if side %}
             <div class="page-side">
               {% for entries in maybeToList contents %}
-                <details class="page-contents" open>
-                  <summary class="page-contents-title">Contents</summary>
-                  <nav aria-label="Contents" {{ Body.followingLinks FollowLink place }}>{{ Md.contentsList entries }}</nav>
-                </details>
+                {{ Reading.contentsPanel FollowLink place entries }}
               {% end %}
               {% if st.panelOpen && commentsEnabled %}
                 {{ commentsOf st place text page CommentsView.Beside }}
@@ -799,24 +763,6 @@ component =
         label = case st.discussion.threads of
           ThreadsReady ts -> "Comments (" <> show (length [t | t <- ts, isInline t, not t.resolved]) <> ")" :: Text
           _ -> "Comments"
-
-    attachments :: Page -> Body.Addresses -> [H.ComponentHTML Action Slots m]
-    attachments page addresses =
-      [hhs|
-        {% if not (null page.attachments) %}
-          <section class="attachments">
-            <h2>Attachments</h2>
-            <ul>
-              {% for a in page.attachments %}
-                <li>
-                  <a href={{ Body.linkUrlOf addresses a.id }} download={{ a.name.text }}>{{ a.name.text }}</a>
-                  <span class="attachment-meta">{{ a.mediaType.text }}, {{ fileSize a.size }}</span>
-                </li>
-              {% end %}
-            </ul>
-          </section>
-        {% end %}
-      |]
 
     handleAction :: Action -> H.HalogenM State Action Slots ViewOutput m ()
     handleAction = \case
@@ -1516,32 +1462,6 @@ readersView urls r
     visitorsText = show r.visitors <> (if r.visitors == 1 then " visitor" else " visitors") <> " not signed in" :: Text
     readersText = show r.total <> (if r.total == 1 then " person" else " people") <> " reading this page" :: Text
     summary = T.intercalate ", " ([readersText | r.total > 0] <> [visitorsText | r.visitors > 0])
-
--- | The page view's class for how wide it lays the page out.
-widthClass :: PageWidth -> Text
-widthClass = \case
-  Compact -> "page-width-compact"
-  FullWidth -> "page-width-full"
-
--- | The switch between a compact page and a page as wide as the window, at
--- the end of the bar of actions (WP5.55 of docs/PLAN.md): two radio
--- buttons, each with a small picture of what it does. It changes the
--- layout on a wide screen only; on a narrower one both are the same, and
--- the stylesheet hides the switch.
-widthSwitch :: PageWidth -> HH.HTML w Action
-widthSwitch width =
-  [hh|
-    <div class="page-width-switch" role="radiogroup" aria-label="Page width">
-      <button type="button" role="radio" class="page-width-option page-width-option-compact" aria-checked={{ ariaBool (width == Compact) }} title="The text at a reading width, in the middle" onClick={{ const (ChooseWidth Compact) }}>
-        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2.5h13v11h-13z M5.5 4.5v7 M10.5 4.5v7"></path></svg>
-        <span>Compact</span>
-      </button>
-      <button type="button" role="radio" class="page-width-option page-width-option-full" aria-checked={{ ariaBool (width == FullWidth) }} title="The text as wide as the window" onClick={{ const (ChooseWidth FullWidth) }}>
-        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2.5h13v11h-13z M3.5 4.5h9 M3.5 8h9 M3.5 11.5h9"></path></svg>
-        <span>Full width</span>
-      </button>
-    </div>
-  |]
 
 -- | The most readers the stack shows a circle for.
 shownReaders :: Int

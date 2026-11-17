@@ -1738,7 +1738,7 @@ component =
           Just
             [hh|
               <div class="editor-preview" aria-label="Preview">
-                {{ HH.slot "preview" () Preview.component Preview.Input {place = placeOf st.input work, title = work.shownTitle, body = work.shownBody, slides = previewSlides st work} FromPreview }}
+                {{ HH.slot "preview" () Preview.component Preview.Input {place = placeOf st.input work, title = work.shownTitle, body = work.shownBody, titled = True, slides = previewSlides st work} FromPreview }}
               </div>
             |]
       | otherwise = Nothing

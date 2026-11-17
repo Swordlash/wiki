@@ -27,7 +27,7 @@ import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
 
 $( browserJS
-     ["jsbits/test-live.js", "jsbits/test-style.js", "jsbits/test-files.js"]
+     ["jsbits/test-live.js", "jsbits/test-style.js", "jsbits/test-files.js", "jsbits/test-layout.js"]
      [ ("js_live_start", "wiki_test_live_start", Safe, [t|IO ()|])
      , ("js_live_stop", "wiki_test_live_stop", Safe, [t|IO ()|])
      , ("js_live_hello", "wiki_test_live_hello", Safe, [t|IO JSText|])
@@ -40,8 +40,13 @@ $( browserJS
      , ("js_scrolled", "wiki_test_live_scrolled", Safe, [t|JSText -> IO Double|])
      , ("js_computed_style", "wiki_test_computed_style", Safe, [t|JSText -> JSText -> IO JSText|])
      , ("js_choose_filePromise", "wiki_test_choose_file", Safe, [t|JSText -> JSText -> JSText -> JSText -> IO (Promise ())|])
+     , ("js_scroll_toPromise", "wiki_test_scroll_to", Safe, [t|Int -> IO (Promise ())|])
+     , ("js_box", "wiki_test_box", Safe, [t|JSText -> IO JSText|])
      ]
  )
+
+js_scroll_to :: Int -> IO ()
+js_scroll_to a1 = if inBrowser then wait =<< js_scroll_toPromise a1 else pure inert
 
 js_choose_file :: JSText -> JSText -> JSText -> JSText -> IO ()
 js_choose_file a1 a2 a3 a4 = if inBrowser then wait =<< js_choose_filePromise a1 a2 a3 a4 else pure inert
@@ -258,6 +263,18 @@ spec m = do
     find ui ".live-preview .page-title" >>= (`shouldHaveText` "Retitled")
     unsafeIOToPageM (js_live_send (toJSText long) (toJSText "") 230)
     eventually $ scrolled "" >>= (`shouldSatisfy` (> 500))
+    -- The panel marks the section being read (jsbits/toc.js). Scrolled
+    -- from the top until the end of the text is just in the window, with
+    -- the page going on under it, the last section is the one read, though
+    -- its heading never reached the line a quarter of the way down the
+    -- window, nor the window the end of the page. The wait is for the
+    -- browser's IntersectionObserver, which is not the program's.
+    unsafeIOToPageM (js_scroll_to 0)
+    endTop <- boxTop ".page-text-end"
+    height <- windowHeight
+    unsafeIOToPageM (js_scroll_to (round (endTop - height + 10)))
+    boxTop ".page-text-end" >>= \t -> t `shouldSatisfy` (\x -> abs (x - (height - 10)) < 1)
+    eventually $ current ui `shouldReturn` [Just "#section-60"]
     unsafeIOToPageM js_live_close
     eventually $ find ui ".live-preview-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The editor was closed")
     length <$> findAll ui ".live-preview .page-body h2" `shouldReturn` 60
@@ -278,6 +295,19 @@ spec m = do
     -- A PNG of one pixel, as base64.
     dotPng :: Text
     dotPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    -- The links marked as the section being read in the "Contents" panel.
+    current ui = traverse (`getAttribute` "href") =<< findAll ui ".page-contents .toc-list a[data-current]"
+    -- Where the top of the first element a selector finds is in the
+    -- window, and the window's height.
+    box selector = mapMaybe (readMaybe . T.unpack) . T.words . fromJSText <$> unsafeIOToPageM (js_box (toJSText selector))
+    boxTop selector =
+      box selector >>= \case
+        [top, _, _] -> pure (top :: Double)
+        _ -> expectationFailure ("nothing at " <> toS selector) >> pure 0
+    windowHeight =
+      box ".page-text-end" >>= \case
+        [_, _, h] -> pure (h :: Double)
+        _ -> expectationFailure "no end of the text" >> pure 0
     scrolled :: Text -> PageM s Double
     scrolled selector = unsafeIOToPageM (js_scrolled (toJSText selector))
     -- What the application keeps in the browser's local storage, read as

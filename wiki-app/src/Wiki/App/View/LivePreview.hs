@@ -21,8 +21,25 @@
 -- the window fetches the page's attachments again. In the demo, whose wiki
 -- each tab keeps in memory from what was stored when it loaded, the window
 -- does not see a file uploaded after it opened until it is reloaded.
+--
+-- = Laid out as the page
+--
+-- The window is there for the writer to see the page as its readers will,
+-- so it lays the text out with the page view's own markup and classes
+-- ("Wiki.App.View.Reading"): the page's frame, at the width the reader
+-- chose, with the same switch, Compact and Full width, in the window's
+-- line at the top; the title's row; a template's note and a blog post's
+-- date and neighbours, from the page as saved; the "Contents" panel beside
+-- the text when the text shown has enough headings and places no
+-- @[[!toc]]@; and the attachments under it. The panel's entries are worked
+-- out from the text shown, each time that text changes, so they follow
+-- what is typed. The page's actions, its comments, who reads it and who
+-- wrote it are left out: they are about the page as saved, and need asks
+-- the window does not make.
 module Wiki.App.View.LivePreview
   ( Input (..)
+  , Listener (..)
+  , browserListener
   , component
   , liveKey
   )
@@ -32,31 +49,55 @@ import Control.Monad.UUID (MonadUUID)
 import Data.Aeson (FromJSON (..), eitherDecodeStrict, withObject, (.!=), (.:?))
 import Data.Row (type (.==))
 import Data.Text qualified as T
+import Data.Time (UTCTime)
 import Halogen qualified as H
 import Halogen.HTML qualified as HH
+import Halogen.Router (Follow)
+import Halogen.Router qualified as Router
 import Halogen.Subscription qualified as HS
 import Halogen.TH (hh)
 import Protolude hiding (State)
 import Wiki.App.Backend (MonadLoad (..), MonadWiki (..), UrlOwner, WikiError, noUrlOwner)
 import Wiki.App.Backend.Notifications (MonadNotifications)
-import Wiki.App.Editor.Browser (LiveFeed, followLine, listenLive, stopLive)
+import Wiki.App.Browser (ArticleLink, followArticleLink)
+import Wiki.App.Editor.Browser (followLine, listenLive, stopLive)
 import Wiki.App.Islands (MonadIslands)
+import Wiki.App.Route (Route)
 import Wiki.App.View.Body qualified as Body
 import Wiki.App.View.Common
 import Wiki.App.View.Preview qualified as Preview
+import Wiki.App.View.Reading qualified as Reading
 import Wiki.Core.Attachment (Attachment (..))
-import Wiki.Core.Id (SpaceId (..))
+import Wiki.Core.Id (PageId, SpaceId (..))
+import Wiki.Core.Markdown qualified as Md
 import Wiki.Core.Page (Page (..), PageSummary)
 import Wiki.Core.Slug (Slug, slugText)
 import Wiki.Core.Space (Space (encryption, id))
 
--- | The window's input: the page, where it is.
+-- | The window's input: the page, where it is, and how the window hears
+-- the page's editor.
 data Input = Input
   { context :: Context
   , space :: Space
   , pages :: [PageSummary]
   , path :: [Slug]
+  , listener :: Listener
   }
+
+-- | 'Listener' is how the window hears the editor of its page. 'listen'
+-- starts listening for the page a key names ('liveKey'), gives each
+-- message, as JSON, to the handler, and returns what stops it. It does not
+-- wait, so that it runs in the step that keeps what stops it. The shell
+-- gives 'browserListener'; a native test, which has no browser, gives one
+-- of its own and speaks through it as the editor would.
+newtype Listener = Listener
+  { listen :: Text -> (Text -> IO ()) -> IO (IO ())
+  }
+
+-- | The browser's channel between the wiki's windows, which the editor's
+-- CodeMirror speaks on ("Wiki.App.Editor.Browser"'s 'listenLive').
+browserListener :: Listener
+browserListener = Listener {listen = \key heard -> stopLive <$> listenLive key heard}
 
 -- | Where the text shown comes from.
 data Source
@@ -71,15 +112,37 @@ data Source
 data Shown
   = Loading
   | Failed WikiError
-  | Shows Source Text Text
+  | -- | A title and a text, with the entries of the "Contents" panel the
+    -- text shows, if it shows one: worked out when the text is taken
+    -- ('showing'), not at each render.
+    Shows Source Text Text (Maybe [Md.Entry])
   | -- | The editor of a page of an encrypted space has gone: nothing of
     -- the page is shown.
     Closed
 
+-- | A text to show, from where it came, with its "Contents" panel's
+-- entries ('Md.contentsPanel'), as the page view works them out for the
+-- page it loads.
+showing :: Source -> Text -> Text -> Shown
+showing source title body = Shows source title body (either (const Nothing) Md.contentsPanel (Md.parseMarkdown body))
+
+-- | 'Facts' is what the window shows of the page as saved besides its
+-- text: its id and when it was created (a blog post's date and its
+-- neighbours) and whether it is a template (the note above it). Read with
+-- the page; the editor sends none of them.
+data Facts = Facts
+  { page :: PageId
+  , createdAt :: UTCTime
+  , template :: Bool
+  }
+
 data State = State
   { input :: Input
   , shown :: Shown
-  , feed :: Maybe (LiveFeed, H.SubscriptionId)
+  , facts :: Maybe Facts
+  , feed :: Maybe (IO (), H.SubscriptionId)
+  -- ^ What stops the listening for the editor, and the subscription its
+  -- messages come through.
   , article :: H.RefLabel
   , attachments :: [Attachment]
   -- ^ The page's attachments, and their addresses: what its links to them
@@ -116,19 +179,26 @@ instance FromJSON Heard where
   parseJSON = withObject "message" $ \o ->
     Heard <$> o .:? "text" <*> o .:? "title" <*> o .:? "line" <*> o .:? "attachments" .!= False <*> o .:? "closed" .!= False
 
--- | The page as saved: what the window shows until the editor speaks, and
--- the attachments its links resolve to, with their addresses.
-data Fetched = Fetched Shown [Attachment] Body.Addresses
+-- | The page as saved: what the window shows until the editor speaks, its
+-- facts, and the attachments its links resolve to, with their addresses.
+data Fetched = Fetched Shown (Maybe Facts) [Attachment] Body.Addresses
 
 fetchSaved :: (MonadWiki m) => UrlOwner -> Input -> m Fetched
 fetchSaved owner input =
   getPage input.space.id input.path >>= \case
-    Left e -> pure (Fetched (Failed e) [] Body.noAddresses)
+    Left e -> pure (Fetched (Failed e) Nothing [] Body.noAddresses)
     Right page -> do
       addresses <- Body.attachmentAddresses owner page.attachments
-      pure (Fetched (Shows Saved page.title page.body) page.attachments addresses)
+      pure (Fetched (showing Saved page.title page.body) (Just Facts {page = page.id, createdAt = page.createdAt, template = page.template}) page.attachments addresses)
 
-data Action = Initialize | Finalize | Receive Input | Listened Text
+data Action
+  = Initialize
+  | Finalize
+  | Receive Input
+  | Listened Text
+  | ChooseWidth PageWidth
+  | FollowLink ArticleLink
+  | Followed (Follow Route)
 
 type Slots = ("preview" .== H.Slot (Const Void) Preview.Output ())
 
@@ -146,33 +216,60 @@ component =
           article <- H.newRefLabel "live-preview"
           found <- atOnce (fetchSaved noUrlOwner input)
           pure $ case found of
-            Just (Fetched shown attachments addresses) -> State {input, shown, feed = Nothing, article, attachments, addresses, owners = Body.ownersOf noUrlOwner, page = 0, refreshes = 0, fetched = True}
-            Nothing -> State {input, shown = Loading, feed = Nothing, article, attachments = [], addresses = Body.noAddresses, owners = Body.ownersOf noUrlOwner, page = 0, refreshes = 0, fetched = False}
+            Just (Fetched shown facts attachments addresses) -> State {input, shown, facts, feed = Nothing, article, attachments, addresses, owners = Body.ownersOf noUrlOwner, page = 0, refreshes = 0, fetched = True}
+            Nothing -> State {input, shown = Loading, facts = Nothing, feed = Nothing, article, attachments = [], addresses = Body.noAddresses, owners = Body.ownersOf noUrlOwner, page = 0, refreshes = 0, fetched = False}
       , render
       , eval = H.mkEval H.defaultEval {H.handleAction = handleAction, H.receive = Just . Receive, H.initialize = Just Initialize, H.finalize = Just Finalize}
       }
   where
+    -- The page view's frame, with the window's line in the place of the
+    -- page's bar of actions: what the window follows, and the width.
     render :: State -> H.ComponentHTML Action Slots m
     render st =
       [hh|
-        <div class="live-preview">
-          <p class="live-preview-state" role="status">{{ stateText st.shown }}</p>
-          <div class="live-preview-body" ref={{ st.article }}>{{ bodyOf st }}</div>
+        <div class="live-preview page-view {{ Reading.widthClass width }}">
+          <div class="actions page-actions live-preview-bar"><p class="live-preview-state" role="status">{{ stateText st.shown }}</p>{{ Reading.widthSwitch ChooseWidth width }}</div>
+          {{ bodyOf st }}
         </div>
       |]
+      where
+        width = st.input.context.pageWidth
 
-    bodyOf :: State -> H.ComponentHTML Action Slots m
+    -- What the page view shows of a page as it reads it, in its order,
+    -- each part the page view's own ("Wiki.App.View.Reading"); the text in
+    -- the editor's preview, which marks each block's line to follow. Every
+    -- part is the text's: none is left once the text is gone ('Closed').
+    -- The text's element is @live-preview-body@ in every state.
+    bodyOf :: State -> [H.ComponentHTML Action Slots m]
     bodyOf st = case st.shown of
-      Shows _ title text -> HH.slot_ "preview" () Preview.component Preview.Input {place = place st, title, body = text, slides = Nothing}
-      Failed e -> errorView e
-      Loading -> [hh|<p class="loading">Loading…</p>|]
-      Closed -> HH.text ""
+      Shows _ title text contents ->
+        toList (Reading.templateNote . (\f -> f.template) =<< st.facts)
+          <> [Reading.titleRow title text [] | not (Body.startsWithHeading text)]
+          <> toList (st.facts >>= \f -> Reading.postInfo Followed st.input.context st.input.space st.input.pages f.page f.createdAt)
+          <> [ [hh|
+                <div class={{ Reading.mainClasses (isJust contents) False }}>
+                  <div class="page-text live-preview-body" ref={{ st.article }}>{{ previewOf st title text }}{{ Reading.textEnd }}</div>
+                  {% for entries in maybeToList contents %}
+                    <div class="page-side">{{ Reading.contentsPanel FollowLink (place st) entries }}</div>
+                  {% end %}
+                </div>
+              |]
+             ]
+          <> Reading.attachmentList st.attachments st.addresses
+      Failed e -> [[hh|<div class="live-preview-body">{{ errorView e }}</div>|]]
+      Loading -> [[hh|<div class="live-preview-body"><p class="loading">Loading…</p></div>|]]
+      Closed -> [[hh|<div class="live-preview-body"></div>|]]
+
+    -- The text in the editor's preview, without its title: the title's
+    -- row is above the column of the text, as on the page.
+    previewOf :: State -> Text -> Text -> H.ComponentHTML Action Slots m
+    previewOf st title text = HH.slot_ "preview" () Preview.component Preview.Input {place = place st, title, body = text, titled = False, slides = Nothing}
 
     stateText :: Shown -> Text
     stateText = \case
-      Shows Saved _ _ -> "The page as saved. Once its editor is open in another window, this follows what is typed there."
-      Shows Editor _ _ -> "Following the editor."
-      Shows Gone _ _ -> "The editor was closed: this is the text as it was last typed."
+      Shows Saved _ _ _ -> "The page as saved. Once its editor is open in another window, this follows what is typed there."
+      Shows Editor _ _ _ -> "Following the editor."
+      Shows Gone _ _ _ -> "The editor was closed: this is the text as it was last typed."
       Closed -> "The editor was closed. This space is encrypted, so nothing of the page is kept here: open the page again to read it."
       _ -> ""
 
@@ -186,22 +283,23 @@ component =
         -- finalized between listening and keeping what stops it.
         channel <- H.liftEffect (liftIO HS.create)
         subscription <- H.subscribe (Listened <$> channel.emitter)
-        feed <- H.liftEffect (listenLive (liveKey input.space.id input.path) (HS.notify channel.listener))
-        modify (\st -> st {feed = Just (feed, subscription)})
+        stop <- H.liftEffect (liftIO (input.listener.listen (liveKey input.space.id input.path) (HS.notify channel.listener)))
+        modify (\st -> st {feed = Just (stop, subscription)})
         fetched <- gets (\st -> st.fetched)
         unless fetched $ do
           shownPage <- gets (\st -> st.page)
           owner <- Body.ensureOwned (\st -> st.owners) (\owners st -> st {owners})
-          Fetched saved attachments addresses <- H.async (fetchSaved owner input)
+          Fetched saved facts attachments addresses <- H.async (fetchSaved owner input)
           modifyFor shownPage $ \st ->
             st
               { attachments
               , addresses
+              , facts
               , fetched = True
               , shown = case (st.shown, saved) of
                   -- The editor spoke while the page was loading: its text,
                   -- under its title, or the page's if it sent none.
-                  (Shows source typed body, Shows _ title _) -> Shows source (if T.null typed then title else typed) body
+                  (Shows source typed body contents, Shows _ title _ _) -> Shows source (if T.null typed then title else typed) body contents
                   (Shows {}, _) -> st.shown
                   (Closed, _) -> Closed
                   _ -> saved
@@ -219,14 +317,14 @@ component =
           stopListening
           -- The new page's fetch registers its own owner.
           Body.releaseOwned (\st -> st.owners) (\owners st -> st {owners})
-          modify (\st -> st {shown = Loading, attachments = [], addresses = Body.noAddresses, page = st.page + 1, fetched = False})
+          modify (\st -> st {shown = Loading, facts = Nothing, attachments = [], addresses = Body.noAddresses, page = st.page + 1, fetched = False})
           handleAction Initialize
       Listened raw -> case eitherDecodeStrict @Heard (encodeUtf8 raw) of
         Left _ -> pass
         Right heard
           | heard.closed -> modify $ \st -> case st.shown of
               _ | isJust st.input.space.encryption -> st {shown = Closed}
-              Shows _ title body -> st {shown = Shows Gone title body}
+              Shows _ title body contents -> st {shown = Shows Gone title body contents}
               _ -> st
           | heard.uploaded -> do
               -- The page's attachments as the server has them now. The
@@ -238,19 +336,35 @@ component =
               owner <- Body.ensureOwned (\st -> st.owners) (\owners st -> st {owners})
               State {input, page = shownPage, refreshes = refresh} <- get
               H.async (fetchSaved owner input) >>= \case
-                Fetched (Shows {}) attachments addresses ->
+                Fetched (Shows {}) _ attachments addresses ->
                   modifyFor shownPage (\st -> if st.refreshes == refresh then st {attachments, addresses} else st)
                 -- Not fetched: the attachments as they were.
                 _ -> pass
           | otherwise -> do
               for_ heard.text $ \body -> modify $ \st ->
                 let kept = case st.shown of
-                      Shows _ t _ -> t
+                      Shows _ t _ _ -> t
                       _ -> ""
                     title = fromMaybe kept (mfilter (not . T.null) heard.title)
-                 in st {shown = Shows Editor title body}
+                 in st
+                      { shown = case st.shown of
+                          -- The same text under another title: its entries
+                          -- as they were.
+                          Shows _ _ same contents | same == body -> Shows Editor title body contents
+                          _ -> showing Editor title body
+                      }
               for_ heard.line $ \n ->
                 gets (\st -> st.article) >>= H.getRef >>= traverse_ (H.liftEffect . (`followLine` n))
+      -- The same choice as on a page: the shell keeps it, and gives it back
+      -- in the context.
+      ChooseWidth width -> H.raise (ChoseWidth width)
+      -- An entry of the "Contents" panel is followed as a link in the
+      -- text is: scrolled to, with the address's fragment changed in place,
+      -- so the route, and the editor followed, stay the same.
+      FollowLink target -> do
+        router <- gets (\st -> st.input.context.router)
+        H.liftEffect (followArticleLink router target)
+      Followed f -> gets (\st -> st.input.context.router) >>= (`Router.follow` f)
 
     -- Change the state with what was read for a page, if the window still
     -- shows that page.
@@ -263,10 +377,10 @@ component =
     stopListening =
       gets (\st -> st.feed)
         >>= traverse_
-          ( \(feed, subscription) -> do
+          ( \(stop, subscription) -> do
               modify (\st -> st {feed = Nothing})
               H.unsubscribe subscription
-              H.liftEffect (stopLive feed)
+              H.liftEffect (liftIO stop)
           )
 
     -- Links are resolved from where the page is, as in its editor.

@@ -517,6 +517,27 @@ promptSpec = describe "the page's context" $ do
   it "has a shortcut for each of the plan's actions" $ do
     map shortcutLabel shortcuts `shouldBe` ["Improve", "Fix grammar", "Shorten", "Expand", "Summarise", "Continue", "Translate"]
     shortcutText Translate `shouldSatisfy` T.isSuffixOf "into "
+
+  it "reads /new, /clear and /help as commands, in any case and with spaces around" $ do
+    command "/new" `shouldBe` Just (Right New)
+    command "/clear" `shouldBe` Just (Right New)
+    command "/help" `shouldBe` Just (Right Help)
+    command "  /New \n" `shouldBe` Just (Right New)
+    command "/CLEAR" `shouldBe` Just (Right New)
+    command "/Help" `shouldBe` Just (Right Help)
+
+  it "reads a slash and a word that is no command as an unknown command" $ do
+    command "/compact" `shouldBe` Just (Left "compact")
+    command " /Foo " `shouldBe` Just (Left "Foo")
+    unknownCommand "compact" `shouldBe` "There is no command /compact. Type /help for the commands."
+
+  it "reads any other message as text for the model, slash or not" $ do
+    for_ ["Fix it.", "/etc/hosts is the file of hosts", "/ 2", "/new please", "/new-page", "/2", "/", "a /new", ""] $ \m ->
+      (m, command m) `shouldBe` (m, Nothing)
+
+  it "lists the commands one a line, and not /compact" $ do
+    commandHelp `shouldBe` ["/new or /clear starts a new conversation, as \8220New\8221 does.", "/help lists these commands."]
+    T.unwords commandHelp `shouldNotSatisfy` T.isInfixOf "compact"
   where
     beforeOf = \case
       Selected {before} -> before

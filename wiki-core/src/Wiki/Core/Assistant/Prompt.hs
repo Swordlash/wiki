@@ -59,6 +59,12 @@ module Wiki.Core.Assistant.Prompt
   , shortcutLabel
   , shortcutText
 
+    -- * Commands
+  , Command (..)
+  , command
+  , commandHelp
+  , unknownCommand
+
     -- * The requests
   , instructions
   , anthropicRequest
@@ -356,6 +362,41 @@ shortcutText = \case
   Summarise -> "Summarise it in a short paragraph, inserted after it."
   ContinueWriting -> "Continue writing from where it ends, in the same style."
   Translate -> "Translate it into "
+
+-- | 'Command': what a message typed as a command asks the panel for,
+-- rather than the model. 'New' starts a new conversation, as the panel's
+-- "New" button does; 'Help' lists the commands.
+data Command = New | Help
+  deriving stock (Eq, Show, Enum, Bounded)
+
+-- | Whether a message is a command. A message is one when, without the
+-- spaces around it, it is a slash followed by letters only: @/new@,
+-- @/Clear@. Its word, in any case, is then 'Right' a command (@new@ and
+-- @clear@ are 'New', @help@ is 'Help') or 'Left' the word, which is no
+-- command. Any other message is 'Nothing', ordinary text for the model,
+-- even one that starts with a slash: @/etc/hosts is…@ and @/ 2@ have more
+-- than letters after the slash, and any message with a space in it is
+-- text.
+command :: Text -> Maybe (Either Text Command)
+command message = case T.uncons (T.strip message) of
+  Just ('/', word)
+    | not (T.null word) && T.all isAlpha word -> Just $ case T.toLower word of
+        "new" -> Right New
+        "clear" -> Right New
+        "help" -> Right Help
+        _ -> Left word
+  _ -> Nothing
+
+-- | What @/help@ shows: a line for each command.
+commandHelp :: [Text]
+commandHelp =
+  [ "/new or /clear starts a new conversation, as \8220New\8221 does."
+  , "/help lists these commands."
+  ]
+
+-- | What the panel says of a word after a slash that is no command.
+unknownCommand :: Text -> Text
+unknownCommand word = "There is no command /" <> word <> ". Type /help for the commands."
 
 -- | What the model is told after the reference: what it is, how it edits,
 -- and what it writes.

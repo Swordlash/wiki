@@ -761,14 +761,16 @@ component =
     -- arrive. The chat is closed and dropped in one step, so no action
     -- between finds a closed chat in the state. A turn under way is then
     -- marked as stopped. What the panel shows is the caller's to change.
-    -- 'nextChange', 'made' and 'absorbed' stay: the changes the model made
-    -- are the editor's, with ids that must stay unique, and their outcomes
-    -- are told with the next message, to the new chat.
+    -- The changes the model made stay the editor's, to accept or reject
+    -- there or with the panel's "Accept all" and "Reject all". The new chat
+    -- is told nothing of them: its model did not make them, so 'made' and
+    -- 'absorbed' are emptied. 'nextChange' stays, since a change's id must
+    -- stay unique in the editor.
     endConversation :: H.HalogenM State Action Empty Output m ()
     endConversation = do
       st <- get
       for_ st.talk (H.liftEffect . closeTalk)
-      modify (\s' -> s' {talk = Nothing, using = Nothing})
+      modify (\s' -> s' {talk = Nothing, using = Nothing, made = mempty, absorbed = []})
       when st.talking (finish Stopped)
 
     -- Change the user's settings (the model); the editor stores them.

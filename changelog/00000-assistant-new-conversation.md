@@ -15,7 +15,8 @@ title: The assistant starts a new conversation, and works with more gateways
 
   and the assistant reads only that request, not the conversation before
   it. The changes the assistant made in the page stay there, to accept or
-  reject, and what you were typing stays in the message box.
+  reject, and the new conversation is not told about them. What you were
+  typing stays in the message box.
 
 ## Bug fixes
 

@@ -424,9 +424,10 @@ spec m = do
     fieldText ["key"] toClaude `shouldBe` Just "sk-ant-test"
 
   -- "New" drops the chat: the next message opens another, which the
-  -- scripted provider counts from one again.
+  -- scripted provider counts from one again, and which is told nothing of
+  -- the changes the earlier chat's model made.
   it "starts a new conversation with New, disabled while the model works, and keeps the draft" $ runPage $ do
-    script [[text "One."], [text "Two.", hold], [text "Three."]]
+    script [[replace "## Why a wiki" "## Why", text "One."], [text "Two.", hold], [text "Three."]]
     ui <- openAssistant m
     send ui "First."
     _ <- find ui ".assistant-message.from-model .assistant-took"
@@ -436,6 +437,10 @@ spec m = do
     find ui ".assistant-stop" >>= click
     _ <- find ui ".assistant-stopped"
     eventually $ find ui ".assistant-head .assistant-new" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
+    -- The first chat's change, rejected now, would be told with its next
+    -- message; the new chat's first message tells nothing of it.
+    find ui ".assistant-reject-all" >>= click
+    eventually $ length <$> findAll ui ".cm-wiki-inserted" `shouldReturn` 0
     find ui ".assistant-input" >>= (`typeText` "Third.")
     find ui ".assistant-head .assistant-new" >>= click
     _ <- find ui ".assistant-empty"
@@ -443,7 +448,9 @@ spec m = do
     find ui ".assistant-input" >>= (`getProperty` "value") >>= (`shouldBe` "Third.")
     find ui ".assistant-send" >>= click
     eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Three.")
-    map (at ["conversation"]) <$> requests >>= (`shouldBe` map (Just . Aeson.Number) [1, 2, 1])
+    asked <- requests
+    map (at ["conversation"]) asked `shouldBe` map (Just . Aeson.Number) [1, 2, 1]
+    fromMaybe "" (fieldText ["user"] =<< lastMay asked) `shouldNotSatisfy'` T.isInfixOf "Since your last message"
 
   it "shows a provider's error as it gave it, without anything like a key" $ runPage $ do
     script [[failing "permission" 403 "not for this key: sk-ant-api03-abcdefgh1234"]]

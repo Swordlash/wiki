@@ -267,11 +267,16 @@ const openAiChat = (key, request, options) => {
             else if (event.type === "response.completed") response = event.response;
             else if (event.type === "response.incomplete") {
               // Cut short: a reasoning model can spend its whole budget on
-              // reasoning and write nothing, which is no answer.
+              // reasoning and write nothing, which is no answer. Its tokens
+              // were spent all the same: the response carries their usage,
+              // told before the error.
+              tellUsage(handlers, usageOfOpenAi(event.response?.usage));
               const reason = event.response?.incomplete_details?.reason;
               throw Object.assign(new Error(`The answer was cut short${reason ? ` (${reason})` : ""}.`), { wikiKind: "failed" });
             }
             else if (event.type === "response.failed") {
+              // A failed response may carry its usage too.
+              tellUsage(handlers, usageOfOpenAi(event.response?.usage));
               throw Object.assign(new Error(event.response?.error?.message ?? "The response failed."), { wikiKind: "failed" });
             } else if (event.type === "error") {
               throw Object.assign(new Error(event.message ?? "The response failed."), { wikiKind: "failed" });

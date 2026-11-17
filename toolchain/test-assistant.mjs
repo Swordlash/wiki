@@ -769,6 +769,36 @@ await test("OpenAI: a response without usage tells nothing, and one with the tok
   assert.deepEqual(told, [{ input: 900, cached: 0, written: 640, output: 3 }]);
 });
 
+// A response that ends incomplete or failed can still carry its usage
+// (ResponseIncompleteEvent and ResponseFailedEvent hold the whole
+// Response, whose usage is optional): its tokens were spent, and are told
+// before the error.
+const openAiEnded = (type, response) =>
+  sse([
+    ["response.created", { type: "response.created", sequence_number: 0, response: { id: "resp", output: [] } }],
+    [type, { type, sequence_number: 1, response: { id: "resp", output: [], ...response } }],
+  ]);
+
+await test("OpenAI: an answer cut short tells its usage, and is still the error it was", async () => {
+  const usage = { input_tokens: 2000, input_tokens_details: { cached_tokens: 1536 }, output_tokens: 4096, total_tokens: 6096 };
+  const { fetch } = fakeFetch([openAiEnded("response.incomplete", { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage })]);
+  const chat = startChat("openai", "k", openAiRequest, { fetch, maxRetries: 0 });
+  const { told, handlers } = usages();
+  const error = await chat.send("x", handlers, new AbortController().signal).then(() => null, (e) => e);
+  assert.deepEqual(describeError(error), { kind: "failed", status: null, message: "The answer was cut short (max_output_tokens)." });
+  assert.deepEqual(told, [{ input: 2000, cached: 1536, written: null, output: 4096 }]);
+});
+
+await test("OpenAI: a failed response tells its usage, and is still the error it was", async () => {
+  const usage = { input_tokens: 700, input_tokens_details: { cached_tokens: 0 }, output_tokens: 30, total_tokens: 730 };
+  const { fetch } = fakeFetch([openAiEnded("response.failed", { status: "failed", error: { code: "server_error", message: "The model crashed." }, usage })]);
+  const chat = startChat("openai", "k", openAiRequest, { fetch, maxRetries: 0 });
+  const { told, handlers } = usages();
+  const error = await chat.send("x", handlers, new AbortController().signal).then(() => null, (e) => e);
+  assert.deepEqual(describeError(error), { kind: "failed", status: null, message: "The model crashed." });
+  assert.deepEqual(told, [{ input: 700, cached: 0, written: null, output: 30 }]);
+});
+
 if (failures > 0) {
   console.error(`${failures} of the assistant's provider tests failed`);
   process.exit(1);

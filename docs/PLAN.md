@@ -2015,16 +2015,6 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   string, where `??=` is a trigraph; ignored today, so harmless):
   written without the operator, and a check that no jsbits file holds
   a trigraph's three characters.
-- **WP5.128 The detached preview shows the page as its readers see it
-  (the owner, 2026-11-17).** The window of "Detach preview"
-  (`Wiki.App.View.LivePreview`) renders the editor's preview alone:
-  no switch between Compact and Full width, the text not laid out at
-  the chosen width, and no "Contents" panel. To build: the page's
-  width classes and its switch (shared with `Page`, the same choice,
-  kept by the shell), and the panel worked out from the text shown,
-  following what is typed; `[[!toc]]` checked in both previews. Being
-  built, on its own branch off `main` (it shares no file with the
-  assistant's packages).
 - **WP5.131 The ceilings out, a linter's rule in (the owner,
   2026-11-17: "wywal, ewentualnie jakiś linter"; being built after
   WP5.130, stacked on it).** The ceilings on the browser suite (#291)
@@ -3225,6 +3215,23 @@ needs. Each was true when its package merged; check before relying on one.
   before any message is sent; it passed alone three times of three.
   A race on the settings' store, or a wait on a clock: to be read for
   its cause with the nightly's three findings, not re-run.
+- **The detached preview is the page's reading view (#305,
+  WP5.128).** The window of "Detach preview" is laid out by the page
+  view's own markup and CSS, with the typed text in place of the saved
+  one: the page's frame and width with the same switch (the same
+  choice, kept by the shell), the title row, a template's note, a blog
+  post's date and neighbours, the attachments, and the "Contents"
+  panel worked out from the text shown. Left out: the bar of actions,
+  the comments, the byline, who else is reading, a presentation's
+  viewer. What both views draw is `Wiki.App.View.Reading`. Found on the
+  way: `toc.js` waited for an element (`.page-meta`) that nothing
+  renders any more, so with short last sections the page too left an
+  earlier entry of "Contents" marked at the bottom; both views now end
+  their text with `Reading.textEnd`, which the script observes. Left:
+  each text the editor sends is parsed once more for the panel; the
+  attachments' refresh parses the saved text though it need not; the
+  wasm build's Template Haskell refuses a record pun inside an
+  `[hh| |]` hole that the native build accepts.
 - **The page sent once, then its changes (#304, WP5.126).** The
   conversation is append-only, because the newer Claude models refuse
   a request that sends a thinking block back after an earlier message

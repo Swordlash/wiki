@@ -1974,6 +1974,24 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   to what needs a browser, with the counts before and after. The
   about forty asks WP5.95 left are taken with the view each belongs
   to; the ones in views with a single ask keep `View.Latest`.
+- **WP5.132 to WP5.134 What the pin's bump opened, before plugins
+  (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
+  przed pluginami").** One builder, in this order, each its own pull
+  request. **WP5.132** The `H.async` that wrap something that cannot
+  wait become `H.sync` (#296 counted 25: the clock, `absoluteUrl`, a
+  download's start, a JavaScript call returning a Bool,
+  `passkeysHere`, `sealingHere`): each site with the reason it cannot
+  wait; a doubtful one stays `H.async` and is listed. It changes when
+  the rest of the handler runs (at once, with no chance for the view
+  to close in between), so each site's handler is read for what came
+  after the wait. **WP5.133** `Halogen.Machine` for the three
+  machines' shells (the bell, the comments, the deck viewer): the
+  compiler then refuses an effect carried out in place that waits,
+  and asks can be cancelled by key; each `perform` becomes its
+  `carry`. **WP5.134** `Halogen.Test.Native` in place of most of
+  `Test.Harness.MemDom` (a page for each view, so no lock; a reader's
+  whole click with default actions); the wiki keeps `viewContext`,
+  `TestFeed`, `driven`.
 - **WP5.130 The wasm suite of wiki-core, and which machine ran it
   (proposed to the owner, 2026-11-17; he noticed 20 minutes in the
   wasm job's tests).** Read from nine runs of that day: the suite takes
@@ -3382,8 +3400,8 @@ needs. Each was true when its package merged; check before relying on one.
   of the wiki's own `MonadIO` functions in 44 files. Two places are
   not quite as before: `absoluteUrl`, `zipFiles` and `unzipFiles`
   suspend once natively where they did not (in the browser nothing
-  changes). AGENTS.md's bullet says the rule. **Packages this opens,
-  none taken yet:** (1) 25 `H.async` sites wrap something certainly
+  changes). AGENTS.md's bullet says the rule. **Packages this opens
+  (taken as WP5.132 to WP5.134, 2026-11-17):** (1) 25 `H.async` sites wrap something certainly
   synchronous (the clock, `absoluteUrl`, a download's start, a
   JavaScript call returning a Bool; `passkeysHere`, `sealingHere`):
   turn them into `H.sync`, which changes when they run. (2)

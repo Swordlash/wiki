@@ -1987,10 +1987,22 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   the rest of the handler runs (at once, with no chance for the view
   to close in between), so each site's handler is read for what came
   after the wait. **WP5.133** `Halogen.Machine` for the three
-  machines' shells (the bell, the comments, the deck viewer): the
-  compiler then refuses an effect carried out in place that waits,
-  and asks can be cancelled by key; each `perform` becomes its
-  `carry`. **WP5.134** `Halogen.Test.Native` in place of most of
+  machines' shells: **the bell is done (#311)**; the comments' shell
+  (`threadsStep` in `Page.hs`) and the deck viewer's cannot be as the
+  library stands, and wait for the owner's answer (asked 2026-11-17).
+  The comments' effect `Changed` forks `resolvePeople`, which writes
+  `Page`'s state outside the model: a `Now` cannot fork and an `Ask`'s
+  work cannot touch state; the way on is to move the people looked up
+  into the threads' model (a change of `Event`, `Model` and the
+  properties' world), which is also what decision 82 asks. The deck
+  viewer's `Fetch` makes an owner of addresses in place, keeps it in
+  the state for `Finalize`, then forks the read that uses it: one
+  effect is one `Carry` in the library, and making the owner inside
+  the work would leak it when the view closes during the wait
+  (#275's fault); the way on is for the library to gain a `Carry`
+  that does something in place and then asks with what it made. No
+  keyed cancel is used anywhere: no shell does by hand what one would
+  replace. **WP5.134** `Halogen.Test.Native` in place of most of
   `Test.Harness.MemDom` (a page for each view, so no lock; a reader's
   whole click with default actions); the wiki keeps `viewContext`,
   `TestFeed`, `driven`.

@@ -1,7 +1,15 @@
 #!/bin/sh
-# Run HLint over the test suites and wiki-app/src, with the restrictions of
+# Run HLint over the repository's Haskell, with the restrictions of
 # .hlint.yaml and nothing else (every built-in hint is off there): today, no
 # threadDelay outside the modules that held one when the rule was made.
+#
+# What it reads is every source directory a .cabal file of the repository
+# names (hs-source-dirs, in every stanza), but those listed as exempt below:
+# the wiki-server's and the maker's own programs, where no rule forbids a
+# pause on the clock. A directory a .cabal file gains is linted without
+# anyone listing it: a test suite, a library the tests share (as
+# wiki-app/contract), a benchmark. An exempt directory no .cabal file names
+# any more is refused, so that the list cannot go stale.
 #
 #   sh toolchain/lint.sh [HLINT-ARGUMENTS...]     (npm run lint)
 #
@@ -46,7 +54,42 @@ else
 fi
 
 cd "$root"
-dirs="wiki-app/src wiki-app/test wiki-core/test wiki-core/test-html wiki-api/test wiki-api/test-server wiki-server/test wiki-server/test-memory wiki-smoke maker/test"
+
+# The source directories exempt from the rule, each with why.
+exempt="
+wiki-server/src
+wiki-server/app
+wiki-server/bench
+maker/src
+maker/app
+maker/tui
+"
+# wiki-server/src and wiki-server/app: the server, whose pauses (a closed
+#   socket's thread left idle, a rehearsal waiting for the next version to
+#   answer, a lock tried again until its deadline) are its work, not a
+#   test's wait.
+# wiki-server/bench: the executable wiki-server-bench, which drives a
+#   server with load at a pace of its own; not a test suite.
+# maker/src, maker/app and maker/tui: the build and deploy tool, which
+#   waits on a service it deploys.
+
+# Every hs-source-dirs of every .cabal file the repository tracks, as
+# paths from its root.
+named=$(
+  git ls-files -- '*.cabal' | while read -r cabal; do
+    package=$(dirname "$cabal")
+    sed -n 's/^[[:space:]]*hs-source-dirs:[[:space:]]*//p' "$cabal" | tr ', ' '\n\n' | sed '/^$/d' | while read -r dir; do
+      printf '%s/%s\n' "$package" "${dir%/}"
+    done
+  done | sort -u
+)
+for dir in $exempt; do
+  printf '%s\n' "$named" | grep -qxF "$dir" || {
+    echo "lint.sh: $dir is listed as exempt, but no .cabal file names it: take it off the list" >&2
+    exit 2
+  }
+done
+dirs=$(printf '%s\n' "$named" | grep -vxF "$(printf '%s\n' $exempt)")
 
 # HLint runs CPP over each module, with no macro defined unless it is
 # told, and lints what is left: code in a branch it skips is never seen.

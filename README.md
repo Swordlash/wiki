@@ -3442,7 +3442,7 @@ npm run smoke-waits             # that the Haskell smoke suites' waits hold on t
 npm run dev-test                # wiki-app-browser-test in browser GHCi, rerun on save (needs ghciwatch)
 npm run format                  # fourmolu over every package
 npm run format-check            # the same, failing on what it would change (as CI does)
-npm run lint                    # HLint with .hlint.yaml's restrictions only, over the test suites and wiki-app/src (as CI does)
+npm run lint                    # HLint with .hlint.yaml's restrictions only, over the packages' sources but the server's and the maker's programs (as CI does)
 npm run clean                   # remove dist-newstyle/wasm/public
 ```
 
@@ -3591,11 +3591,14 @@ property, and how a state shows is tested on the in-memory DOM (below).
 
 No test waits on the clock. `npm run lint` runs HLint (the release
 `toolchain/pins.env` pins, which `toolchain/lint.sh` fetches on first use)
-over the test suites and `wiki-app/src` with the restrictions of
-`.hlint.yaml` and none of HLint's own hints, and CI's `format` job runs it
-too. It reads each module twice, as the native build compiles it and, for
-the modules with CPP, as the wasm build does, so that a branch only one
-build compiles (the browser suite's) is read too. Its one rule today: no `threadDelay`, imported from wherever, outside
+over every source directory the `.cabal` files name, but the server's and
+the maker's own programs (the script lists those, with why), with the
+restrictions of `.hlint.yaml` and none of HLint's own hints, and CI's
+`format` job runs it too. A directory a `.cabal` file gains is linted
+without anyone listing it. It reads each module twice, as the native build
+compiles it and, for the modules with CPP, as the wasm build does, so that
+a branch only one build compiles (the browser suite's) is read too. Its one
+rule today: no `threadDelay`, imported from wherever, outside
 the modules `.hlint.yaml` lists, those that held one when the rule was made
 (fourteen modules of the tests, four of `wiki-app/src`). A test waits on
 the program's signal (`waitQuiet`, `settle`, an answer it holds) or on a

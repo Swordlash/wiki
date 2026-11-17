@@ -9,8 +9,9 @@
 - error: {name: Avoid restricted function}
 
 - functions:
-  # A pause on the clock, in the test suites (wiki-app/test, wiki-core/test,
-  # wiki-api's, wiki-server's, wiki-smoke, maker/test) and in wiki-app/src.
+  # A pause on the clock, in every source directory toolchain/lint.sh
+  # reads: all those the .cabal files name but the wiki-server's and the
+  # maker's own programs (the script lists them, with why).
   # A test waits on the program's signal or on a condition named for what
   # it waits for, never on a clock (AGENTS.md); a pause in a view is
   # H.delay, or H.delayCounted when a test waits for the work after it.

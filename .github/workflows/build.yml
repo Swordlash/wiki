@@ -1400,8 +1400,8 @@ jobs:
         key: ${{ runner.os }}-hlint-${{ hashFiles('toolchain/pins.env') }}
 
     # HLint with the restrictions of .hlint.yaml and nothing else: no
-    # threadDelay in a test suite's module or in wiki-app/src outside the
-    # modules that held one when the rule was made. About a minute.
+    # threadDelay anywhere but in the server's and the maker's programs and
+    # in the modules that held one when the rule was made. About a minute.
     - name: Lint
       if: ${{ !cancelled() }}
       run: sh toolchain/lint.sh

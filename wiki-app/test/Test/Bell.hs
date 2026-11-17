@@ -154,6 +154,11 @@ data Server = Server
 emptyServer :: Server
 emptyServer = Server {count = 0, notes = [], untold = [], limit = 3}
 
+-- | The notifications of the reader signed in after the one before
+-- ('SwitchUser'), numbered from 1001, so that no id is both readers'.
+otherServer :: Server
+otherServer = emptyServer {count = 1000}
+
 -- | The server after it made one more notification for the reader, to be
 -- told over the live channel.
 made :: Server -> Server
@@ -256,6 +261,11 @@ data Step
     Deliver Int
   | -- | The bell is given a new revision of the wiki.
     Revise
+  | -- | Another reader signs in, in another tab: the tab's cookie is the
+    -- other reader's from now on, the bell is given another session, and
+    -- the server answers what is sent now as that reader's. The two readers
+    -- take turns.
+    SwitchUser
   | -- | The bell goes away.
     Finish
   deriving stock (Eq, Show)
@@ -291,6 +301,7 @@ genStep more =
          , (6, pure Handle)
          , (6, Deliver <$> chooseInt (0, 3))
          , (1, pure Revise)
+         , (1, pure SwitchUser)
          , (1, pure Finish)
          ]
 
@@ -309,6 +320,10 @@ shrinkRun = shrinkList shrinkStep
 -- | An ask the bell made, and its answer once the server handled it.
 data Out = Out
   { ask :: Effect ()
+  , as :: Int
+  -- ^ The reader whose cookie the ask was sent with.
+  , inSession :: Int
+  -- ^ The session it was sent in.
   , answer :: Maybe Notifications
   , sent :: Maybe (Int, Stored)
   -- ^ Over the HTTP backend's cache, for a read sent to the server: the
@@ -358,6 +373,16 @@ data World = World
   , tab :: Maybe Tab
   -- ^ The HTTP backend's cache, when the bell is over it; 'Nothing' for a
   -- backend that asks the server every time.
+  , reader :: Int
+  -- ^ The reader signed in: 0 or 1.
+  , session :: Int
+  -- ^ The number of the session signed in, one more at each 'SwitchUser'.
+  , others :: Map Int Server
+  -- ^ The server's notifications of the reader not signed in.
+  , clicked :: Map Int Int
+  -- ^ How many marks each reader clicked.
+  , marksAs :: Map Int Int
+  -- ^ How many marks were sent with each reader's cookie.
   }
 
 -- | A run from its start: the bell mounted, over a backend that could not
@@ -370,7 +395,11 @@ startCached :: World
 startCached = startOver (Just Tab {stored = storedOf emptyCache})
 
 startOver :: Maybe Tab -> World
-startOver tab = afterEvent "mounted" Started World {bell = initial Nothing 0, server = emptyServer, outs = [], listening = 0, finished = False, revisions = 0, trace = [], faults = [], seenRead = mempty, leftNewest = mempty, tab}
+startOver tab = afterEvent "mounted" Started World {bell = initial Nothing 0 0, server = emptyServer, outs = [], listening = 0, finished = False, revisions = 0, trace = [], faults = [], seenRead = mempty, leftNewest = mempty, tab, reader = 0, session = 0, others = mempty, clicked = mempty, marksAs = mempty}
+
+-- | The world with one more mark clicked by the reader signed in.
+clicking :: World -> World
+clicking w = w {clicked = Map.insertWith (+) w.reader 1 w.clicked}
 
 -- | The tab's cache after a change.
 changing :: (Cache -> Cache) -> World -> World
@@ -384,13 +413,13 @@ play w = \case
     | w.bell.open -> afterEvent "presses outside" Dismissed w
     | otherwise -> w
   ClickMark i
-    | w.bell.open && not (busy w.bell), Just n <- atMay [n | n <- listed w.bell, not n.read] i -> afterEvent ("marks " <> idText n <> " read") (MarkClicked n.id) w
+    | w.bell.open && not (busy w.bell), Just n <- atMay [n | n <- listed w.bell, not n.read] i -> afterEvent ("marks " <> idText n <> " read") (MarkClicked n.id) (clicking w)
     | otherwise -> w
   ClickMarkAll
-    | w.bell.open && not (busy w.bell) && unreadCount w.bell > 0 -> afterEvent "marks all read" MarkAllClicked w
+    | w.bell.open && not (busy w.bell) && unreadCount w.bell > 0 -> afterEvent "marks all read" MarkAllClicked (clicking w)
     | otherwise -> w
   ClickLink i
-    | w.bell.open, Just n <- atMay (listed w.bell) i -> afterEvent ("follows " <> idText n) (Followed n.id ()) w
+    | w.bell.open, Just n <- atMay (listed w.bell) i -> afterEvent ("follows " <> idText n) (Followed n.id ()) (if n.read then w else clicking w)
     | otherwise -> w
   Make -> noted ("the server makes n" <> show (w.server.count + 1)) w {server = made w.server}
   MakeMany -> noted ("the server makes 51, from n" <> show (w.server.count + 1)) w {server = madeMany 51 w.server}
@@ -422,7 +451,18 @@ play w = \case
             MarkRead m _ -> afterEvent ("answer to " <> askText o.ask) (Marked m (Right a)) w' {tab = (\t -> t {stored = maybe identity (\(_, sentAt) -> markedAnswer sentAt (Right a)) o.sent t.stored}) <$> w'.tab}
             _ -> w
     Nothing -> w
-  Revise -> afterEvent ("revision " <> show (w.revisions + 1)) (Revised (w.revisions + 1) (Sealer identity)) w {revisions = w.revisions + 1}
+  Revise -> afterEvent ("revision " <> show (w.revisions + 1)) (Revised (w.revisions + 1) w.session (Sealer identity)) w {revisions = w.revisions + 1}
+  -- The other reader signs in. The bell is told of it with the same
+  -- revision of the wiki, the case where a shell gives it only the
+  -- session's number as new. What the channel had to tell the reader
+  -- before is not told to this tab any more, and the cache is forgotten.
+  SwitchUser
+    | w.finished -> w
+    | otherwise ->
+        let next = 1 - w.reader
+            stashed = Map.insert w.reader w.server {untold = []} w.others
+         in afterEvent ("reader " <> show next <> " signs in") (Revised w.revisions (w.session + 1) (Sealer identity)) $
+              changing forgetNotices w {reader = next, session = w.session + 1, server = Map.findWithDefault otherServer next stashed, others = Map.delete next stashed, seenRead = mempty, leftNewest = mempty}
   Finish -> afterEvent "goes away" Finished w {finished = True}
 
 -- | The world after the server handled the ask at this place among those
@@ -431,10 +471,12 @@ handleAt :: Int -> World -> World
 handleAt i w = case atMay [k | (k, o) <- zip [0 :: Int ..] w.outs, isNothing o.answer] i of
   Just k
     | Just o <- atMay w.outs k ->
-        let (server, answer) = case o.ask of
-              MarkRead _ r -> handleMark r w.server
-              _ -> (w.server, handleRead w.server)
-         in noted ("the server handles " <> askText o.ask <> ": " <> listText answer) w {server, outs = [if j == k then x {answer = Just answer} else x | (j, x) <- zip [0 ..] w.outs]}
+        let theirs = if o.as == w.reader then w.server else Map.findWithDefault otherServer o.as w.others
+            (server, answer) = case o.ask of
+              MarkRead _ r -> handleMark r theirs
+              _ -> (theirs, handleRead theirs)
+            placed = if o.as == w.reader then w {server} else w {others = Map.insert o.as server w.others}
+         in noted ("the server handles " <> askText o.ask <> " of reader " <> show o.as <> ": " <> listText answer) placed {outs = [if j == k then x {answer = Just answer} else x | (j, x) <- zip [0 ..] w.outs]}
   _ -> w
 
 -- | The world after the bell took an event, with its effects carried out
@@ -449,23 +491,30 @@ afterEvent what event w =
       , outs = w.outs <> [outOf e | e <- effects, isAsk e]
       , tab = counted <$> w.tab
       , listening = w.listening + length (filter (== Listen) effects) - length (filter (== Unlisten) effects)
+      , marksAs = marksAs'
       , faults =
           w.faults
+            <> [ (MarksOwn, what <> ": a mark sent with reader " <> show w.reader <> "'s cookie, who clicked " <> show (clickedBy w.reader) <> " and has " <> show sentBy <> " sent")
+               | let sentBy = Map.findWithDefault 0 w.reader marksAs'
+               , sentBy > clickedBy w.reader
+               ]
             <> [(QuietAfterClose, what <> ": " <> show effects <> " after the bell went away") | w.finished, not (null effects), what /= "goes away"]
             <> [(AsksNamed, what <> ": " <> show e <> " is not a new ask the state names") | e <- effects, Just t <- [ticketOf e], not (t `madeAfter` w.bell.asks) || t `madeAfter` bell.asks]
       }
   where
     (bell, effects) = step event w.bell
+    marksAs' = Map.insertWith (+) w.reader (length [() | MarkRead _ _ <- effects]) w.marksAs
+    clickedBy u = Map.findWithDefault 0 u w.clicked
     -- The tab with the reads it sends to the server counted.
     counted t = foldl' (\t' e -> case (e, t'.stored.cache.notices) of (Load _, Nothing) -> t' {stored = snd (askingNotices t'.stored)}; _ -> t') t effects
     -- An ask out. Over the cache, a read the cache can answer is answered
     -- at once, from it, and goes to no server.
     outOf e = case (e, w.tab) of
       (Load _, Just t) -> case t.stored.cache.notices of
-        Just (Right known) -> Out {ask = e, answer = Just known, sent = Nothing}
-        _ -> let (asked, sentAt) = askingNotices t.stored in Out {ask = e, answer = Nothing, sent = Just (asked, sentAt)}
-      (MarkRead _ _, Just t) -> Out {ask = e, answer = Nothing, sent = Just (0, t.stored)}
-      _ -> Out {ask = e, answer = Nothing, sent = Nothing}
+        Just (Right known) -> Out {ask = e, as = w.reader, inSession = w.session, answer = Just known, sent = Nothing}
+        _ -> let (asked, sentAt) = askingNotices t.stored in Out {ask = e, as = w.reader, inSession = w.session, answer = Nothing, sent = Just (asked, sentAt)}
+      (MarkRead _ _, Just t) -> Out {ask = e, as = w.reader, inSession = w.session, answer = Nothing, sent = Just (0, t.stored)}
+      _ -> Out {ask = e, as = w.reader, inSession = w.session, answer = Nothing, sent = Nothing}
     effectsText = if null effects then "" else " -> " <> T.intercalate ", " (map effectText effects)
     isAsk = isJust . ticketOf
     ticketOf = askTicket
@@ -501,7 +550,8 @@ checked :: World -> World
 checked w = w {faults = w.faults <> problems, seenRead = Map.unionWith (||) w.seenRead (Map.fromList [(n.id, n.read) | n <- shown])}
   where
     shown = listed w.bell
-    marksOut = not w.finished && any (\o -> case o.ask of MarkRead _ _ -> True; _ -> False) w.outs
+    -- A mark of an earlier session keeps no button of this one disabled.
+    marksOut = not w.finished && any (\o -> o.inSession == w.session && case o.ask of MarkRead _ _ -> True; _ -> False) w.outs
     problems =
       [(ReadStaysRead, idText n <> " was shown read, and is shown unread again") | n <- shown, not n.read, Map.lookup n.id w.seenRead == Just True]
         <> [(NothingLost, "listed before and gone: " <> T.intercalate ", " gone) | let shownIds = Set.fromList (map (\n -> n.id) shown); newest = Set.fromList (map (\n -> n.id) (take w.server.limit w.server.notes)); gone = [unId i | i <- Map.keys w.seenRead, i `Set.notMember` shownIds, i `Set.member` newest, i `Set.notMember` w.leftNewest], not (null gone), isJust (rightNotices w.bell)]
@@ -527,6 +577,7 @@ data Rule
   | AsksNamed
   | ShownWhenTold
   | OneAsk
+  | MarksOwn
   deriving stock (Eq, Show, Enum, Bounded)
 
 rightNotices :: Model -> Maybe Notifications
@@ -623,6 +674,13 @@ properties = do
     QC.property $
       forAllShrinkShow genRun shrinkRun show $ \run ->
         settles settled (foldl' play start (filter (/= Finish) run))
+
+  it "sends no mark clicked before another reader signed in, when the read out lands after" $
+    -- Codex on #314: "Mark all read" clicked while a read was out waited
+    -- its turn; another reader signed in, in another tab, and the bell was
+    -- given the new session alone; when the read landed, the mark went
+    -- out with the new reader's cookie and marked their notifications read.
+    [t | (MarksOwn, t) <- (foldl' play start [Make, Handle, Deliver 0, ClickBell, ClickMarkAll, SwitchUser, Make, Handle, Deliver 0, Handle, Deliver 0]).faults] `shouldBe` []
 
   it "shows the server's list once everything out has come back, when every change was the reader's or told" $
     QC.property $
@@ -736,3 +794,4 @@ ruleText = \case
   AsksNamed -> "makes every ask under a new ticket its state names, on any run"
   ShownWhenTold -> "lists a notification the live channel tells of at once, on any run"
   OneAsk -> "leaves no two reads or marks out whose answers it would take, on any run"
+  MarksOwn -> "sends no mark with the cookie of a reader other than the one who clicked it, on any run"

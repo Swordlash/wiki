@@ -110,14 +110,14 @@ spec :: Spec
 spec = describe "Wiki.App.View.Bell, mounted on the in-memory DOM" $ do
   it "keeps the rules, read from the DOM, on any run" $
     QC.property . withNumTests 300 $
-      forAllShrinkShow genRun shrinkRun show $ \run ->
+      forAllShrinkShow (filter (/= SwitchUser) <$> genRun) shrinkRun show $ \run ->
         ioProperty $ do
           outcome <- runOnDom RulesOnly run
           pure (counterexample (toS (fromMaybe "" outcome)) (outcome === Nothing))
 
   it "shows what its machine shows after every step of any run, and holds the same asks" $
     QC.property . withNumTests 300 $
-      forAllShrinkShow genRun shrinkRun show $ \run ->
+      forAllShrinkShow (filter (/= SwitchUser) <$> genRun) shrinkRun show $ \run ->
         ioProperty $ do
           outcome <- runOnDom BesideMachine run
           pure (counterexample (toS (fromMaybe "" outcome)) (outcome === Nothing))

@@ -65,6 +65,18 @@
 --
 -- The buttons that mark are disabled while any mark is out or waits its
 -- turn ('busy'), and enabled again only when the last one has come back.
+--
+-- = Who is signed in
+--
+-- The bell is the signed-in reader's, by the session's number
+-- ("Wiki.App.View.Common"'s @sessionNumber@): the same user signed out and
+-- in again is another session. A mark belongs to the session it was clicked
+-- in. When the session changes (an account switched in another tab), the
+-- marks waiting their turn are dropped, never sent, and the answer to an
+-- ask of the earlier session, a mark's included, changes nothing of the
+-- new one's bell: it is not taken, and what it says was read is not learnt
+-- ('session', 'sessionFrom'). The step that sends a mark that waited sends
+-- it only if it is of the session the bell is in.
 module Wiki.App.View.Bell.Machine
   ( Model (..)
   , Event (..)
@@ -78,6 +90,7 @@ module Wiki.App.View.Bell.Machine
   )
 where
 
+import Data.List (span)
 import Data.Set qualified as Set
 import Protolude hiding (State)
 import Text.Show (Show (showsPrec))
@@ -109,9 +122,15 @@ data Model = Model
   , wanted :: Bool
   -- ^ Whether a read was wanted while that ask was out: it is sent when
   -- that ask's answer comes, after the marks that wait.
-  , queued :: [ReadMark]
-  -- ^ The marks clicked while that ask was out, in the order clicked: each
-  -- is sent in its turn.
+  , queued :: [(Int, ReadMark)]
+  -- ^ The marks clicked while that ask was out, in the order clicked, each
+  -- with the session it was clicked in: each is sent in its turn, if its
+  -- session is still the bell's.
+  , session :: Int
+  -- ^ The number of the session the bell was last given.
+  , sessionFrom :: Asks
+  -- ^ The asks as they were when that session began: the answer to an ask
+  -- made before is another session's.
   , heard :: [(Notification, Asks)]
   -- ^ The notifications the live channel told of that no answer to an ask
   -- made after them has been taken for, each with the asks as they were
@@ -142,9 +161,9 @@ data Event a
     Started
   | -- | The bell goes away.
     Finished
-  | -- | The bell was given a revision of the wiki, with the sealer of its
-    -- titles under it.
-    Revised Int Sealer
+  | -- | The bell was given a revision of the wiki and the number of the
+    -- session signed in, with the sealer of its titles under them.
+    Revised Int Int Sealer
   | -- | The reader clicked the bell.
     Toggled
   | -- | The reader pressed outside the list, or Escape.
@@ -188,8 +207,8 @@ data Effect a
 
 -- | The bell before it is mounted, with the notifications read at once if
 -- the backend could ('Nothing' otherwise), under a revision of the wiki.
-initial :: Maybe (Either WikiError Notifications) -> Int -> Model
-initial notices revision = Model {notices, open = False, asks = noAsks, marking = 0, known = mempty, flight = Nothing, wanted = False, queued = [], heard = [], revision, closed = False}
+initial :: Maybe (Either WikiError Notifications) -> Int -> Int -> Model
+initial notices revision session = Model {notices, open = False, asks = noAsks, marking = 0, known = mempty, flight = Nothing, wanted = False, queued = [], session, sessionFrom = noAsks, heard = [], revision, closed = False}
 
 -- | The bell after an event, and what it asks to be done.
 step :: Event a -> Model -> (Model, [Effect a])
@@ -200,7 +219,13 @@ step event m
         | isNothing m.notices -> (Listen :) <$> reading m
         | otherwise -> (m, [Listen])
       Finished -> (m {closed = True}, [Unlisten])
-      Revised revision (Sealer seal)
+      -- Another session: nothing of the earlier one's is kept, its marks
+      -- waiting are dropped, and its asks out are put behind.
+      Revised revision session _
+        | session /= m.session ->
+            let behind = supersede m.asks
+             in reading m {revision, session, asks = behind, sessionFrom = behind, notices = Nothing, known = mempty, heard = [], queued = [], marking = 0, wanted = False}
+      Revised revision _ (Sealer seal)
         | revision /= m.revision ->
             reading m {revision, asks = supersede m.asks, notices = fmap (\ns -> ns {items = map seal ns.items}) <$> m.notices}
         | otherwise -> (m, [])
@@ -216,7 +241,9 @@ step event m
                 }
          in reading told'
       Reopened -> reading m
-      Loaded asked answer -> landed asked (taking asked answer (learning answer m))
+      Loaded asked answer
+        | ofSession asked m -> landed asked (taking asked answer (learning answer m))
+        | otherwise -> landed asked m
       MarkClicked i -> marking ReadMark {ids = [i], everything = False} m
       MarkAllClicked -> marking ReadMark {ids = [], everything = True} m
       -- A mark the server took, whose answer can no longer be taken (a
@@ -224,6 +251,8 @@ step event m
       -- the count beside a list is not a thing that only goes one way, as
       -- read marks are. The read is asked after the mark's answer came, so
       -- the server handles it after the mark.
+      Marked asked _
+        | not (ofSession asked m) -> landed asked m
       Marked asked answer ->
         let m1 = learning answer m {marking = max 0 (m.marking - 1)}
             (m2, fx1) = case answer of
@@ -262,11 +291,17 @@ taking asked answer m = case takes asked m.asks of
 landed :: Ask -> Model -> (Model, [Effect a])
 landed asked m
   | m.flight /= Just asked = (m, [])
-  | otherwise = case m.queued of
-      r : rest -> sendMark r m {flight = Nothing, queued = rest}
-      []
-        | m.wanted -> sendRead m {flight = Nothing, wanted = False}
-        | otherwise -> (m {flight = Nothing}, [])
+  | otherwise = case span (\(s, _) -> s /= m.session) m.queued of
+      -- A mark of another session is dropped here too, in the step that
+      -- would send it, and stops counting as waiting.
+      (others, (_, r) : rest) -> sendMark r m {flight = Nothing, queued = rest, marking = max 0 (m.marking - length others)}
+      (others, [])
+        | m.wanted -> sendRead m {flight = Nothing, wanted = False, queued = [], marking = max 0 (m.marking - length others)}
+        | otherwise -> (m {flight = Nothing, queued = [], marking = max 0 (m.marking - length others)}, [])
+
+-- | Whether an ask was made in the session the bell is in.
+ofSession :: Ask -> Model -> Bool
+ofSession asked m = asked `madeAfter` m.sessionFrom
 
 -- | Whether an ask is out whose answer can still be taken: no other is
 -- sent until it comes.
@@ -314,7 +349,7 @@ reading m
 -- out.
 marking :: ReadMark -> Model -> (Model, [Effect a])
 marking r m
-  | inFlight m = (m {marking = m.marking + 1, queued = m.queued <> [r]}, [])
+  | inFlight m = (m {marking = m.marking + 1, queued = m.queued <> [(m.session, r)]}, [])
   | otherwise = sendMark r m {marking = m.marking + 1}
 
 -- | A read sent, under a new ticket: the ask out.

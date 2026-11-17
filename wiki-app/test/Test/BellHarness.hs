@@ -211,6 +211,9 @@ drive rig ui ref gone s = do
       modifyIORef' ref (\server -> server {untold = []})
       rig.tellFeed Reopened
     HandleOut _ -> pass
+    -- The mounted bell's runs have no change of reader: its spec leaves
+    -- them out ("Test.BellDom"); the machine's runs have them.
+    SwitchUser -> pass
     Handle -> do
       server <- readIORef ref
       waiting <- Harness.held rig.gate

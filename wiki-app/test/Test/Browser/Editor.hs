@@ -14,6 +14,7 @@ module Test.Browser.Editor (spec) where
 import Control.Monad.UUID (MonadUUID)
 import Data.IORef (IORef, modifyIORef', readIORef)
 import Data.Text qualified as T
+import Halogen.Activity.Control (advance, withTestClock)
 import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
@@ -29,6 +30,7 @@ import Wiki.App.Backend.Mem (runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..), insertUser)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
+import Wiki.App.View.Editor (previewDelay)
 import Wiki.Core.Attachment (Attachment (name), FileName (..))
 import Wiki.Core.Draft (Draft (..))
 import Wiki.Core.Id (UserId (..))
@@ -362,42 +364,43 @@ spec m = do
     saved <- readPage wiki ["blog"] ["hello-world"]
     saved.body `shouldBe` "# Hello, world\n\nMy words. And theirs: someone else's words."
 
-  it "loses no keystroke while the preview catches up with a long page" $ runPage $ do
-    (ui, wiki) <- startWith m (Just "user-admin") (EditPage (slugs ["docs"]) (slugs ["markdown-guide"]))
-    find ui ".editor-heading" >>= (`shouldHaveText` "Editing Markdown guide")
+  -- The preview's turn re-renders the editor around its text: when the
+  -- editor's text was a value Halogen held, a render that came between a
+  -- key and the handling of its input put the text back as before the key
+  -- (e9055578). The turns are put where they matter by the test's clock,
+  -- which the preview's pause ('previewDelay', 'H.delayCounted') sleeps
+  -- on: a turn after each key of the first words, so that a render comes
+  -- between every two keys, then a run of keys with no turn between, and
+  -- a turn after it. No sleep and no deadline: before, the keys came with
+  -- real pauses about the preview's delay, so that the turns fell between
+  -- them by chance, into the Markdown guide, whose preview took more than
+  -- the driver's five seconds on a slow machine.
+  it "loses no keystroke while the preview follows the typing, its turns between the keys" $ withTestClock $ \clock -> runPage $ do
+    (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
     original <- markdown ui
     focus text
     press "Control+End"
-    -- Words typed with pauses about as long as the preview's delay, so that
-    -- the preview's turn to follow the draft (which re-renders the editor
-    -- around the textarea) comes as the next key is typed; then a long run
-    -- typed without pauses, while the preview of the long page is drawn.
-    let pauses = cycle [150, 180, 190, 195, 200, 205, 210, 220, 250]
-        pieces = [" w" <> show i | i <- [1 .. 24 :: Int]]
-        sentence = " the quick brown fox jumps over the lazy dog"
-        long = T.replicate 3 sentence
-    -- Each key a few milliseconds after the one before, still far faster
-    -- than anyone types: keys sent back to back, as fast as Playwright can,
-    -- set off a race in CodeMirror itself (its scroller's scroll handler
-    -- reading the browser's selection a key ahead of its state, "Selection
-    -- points outside of document"; docs/PLAN.md, "Known gaps and notes").
-    let typeKeys = traverse_ (\c -> press (T.singleton c) >> unsafeIOToPageM (threadDelay 12000)) . T.unpack
-    for_ (zip pieces pauses) $ \(word, pause) -> do
-      typeKeys word
-      unsafeIOToPageM (threadDelay (pause * 1000))
-    -- The run is typed without pauses between words, so the preview of the
-    -- long page is drawn as it goes.
-    for_ (T.words long) $ \word ->
-      typeKeys (" " <> word)
-    let expected = original <> mconcat pieces <> long
-    eventually $ markdown ui `shouldReturn` expected
-    eventually $ find ui ".editor-preview .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "w24 the quick")
+    let turn = unsafeIOToPageM (advance clock previewDelay)
+        pieces = [" w" <> show i | i <- [1 .. 12 :: Int]]
+        long = T.replicate 3 " the quick brown fox jumps over the lazy dog"
+    -- The clock holds the preview: a key, and the preview shows the text
+    -- without it until the preview's turn.
+    let previewText = find ui ".editor-preview .page-body" >>= textContent
+    press "Z"
+    previewText >>= (`shouldSatisfy` (not . T.isInfixOf "Z"))
+    turn
+    eventually $ previewText >>= (`shouldSatisfy` T.isInfixOf "Z")
+    for_ pieces $ \word -> for_ (T.unpack word) $ \c -> press (T.singleton c) >> turn
+    traverse_ (press . T.singleton) (T.unpack long)
+    turn
+    let expected = original <> "Z" <> mconcat pieces <> long
     markdown ui `shouldReturn` expected
+    eventually $ previewText >>= (`shouldSatisfy` T.isInfixOf "w12 the quick")
     find ui ".editor-save-close" >>= click
-    find ui ".page-view .page-body h1" >>= (`shouldHaveText` "Markdown guide")
-    saved <- readPage wiki ["docs"] ["markdown-guide"]
+    find ui ".page-view .page-body h1" >>= (`shouldHaveText` "Hello, world")
+    saved <- readPage wiki ["blog"] ["hello-world"]
     saved.body `shouldBe` expected
 
   it "attaches a dropped image and embeds it at the cursor" $ runPage $ do

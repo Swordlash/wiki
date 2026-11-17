@@ -1157,7 +1157,7 @@ const writeText = (view, completion, from, to, text, start, end) => {
     changes: { from: from + change.from, to: from + change.to, insert: change.insert },
     selection: EditorSelection.single(from + start, from + end),
     scrollIntoView: true,
-    annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete")],
+    annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete"), isolateHistory.of("full")],
   });
 };
 
@@ -1169,6 +1169,15 @@ const unchangedSince = (host, view, asked, from, to) => {
   const { state, pos } = wholeAt(host, { state: view.state, pos: from, view });
   const end = pos + Math.max(to, view.state.selection.main.head) - from;
   return state.doc.sliceString(0, pos) === asked.text.sliceString(0, asked.from) && state.doc.sliceString(end) === asked.text.sliceString(asked.to);
+};
+
+// The effect that keeps the "/" before the cursor's letters from opening
+// its menu again, or null where no "/" is there.
+const dismissAt = (state) => {
+  const head = state.selection.main.head;
+  let at = head;
+  while (at > 0 && /[A-Za-z]/.test(state.sliceDoc(at - 1, at))) at--;
+  return state.sliceDoc(at - 1, at) === "/" ? dismissSlash.of(at - 1) : null;
 };
 
 // What an option of the wiki's own Markdown writes when it is chosen, in
@@ -1196,6 +1205,9 @@ const writeOption = (host, option, asked) => (view, completion, from, to) => {
     writeText(view, completion, from, to, option.insert, option.insert.length, option.insert.length);
   } else if (option.line === undefined) {
     snippet(option.template)(view, completion, from, to);
+    // As the toolbar's writes, a step of the undo of its own: what is typed
+    // next (over a place to fill) is not joined to it.
+    view.dispatch({ annotations: isolateHistory.of("after") });
   } else {
     const line = view.state.doc.lineAt(from);
     if (line.text !== option.line) return;
@@ -1225,7 +1237,7 @@ const writeOption = (host, option, asked) => (view, completion, from, to) => {
       changes,
       selection: EditorSelection.single(line.from + start, line.from + end),
       scrollIntoView: true,
-      annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete")],
+      annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete"), isolateHistory.of("full")],
     });
   }
   if (option.action !== undefined) host.dispatchEvent(new CustomEvent("wiki-complete-action", { detail: option.action }));
@@ -1275,7 +1287,10 @@ const markupSource = (host, markup, whole) => async (context) => {
       apply: writeOption(host, option, asked),
       enter: found.enter,
       typed: (s, head) => ({ from, letters: s.sliceDoc(from, head) }),
-      dismiss: found.escape === "dismisses" ? () => dismissSlash.of(from) : undefined,
+      // The "/" as the text is when Escape is pressed: the letters before
+      // the cursor and the "/" before them, wherever a change before it
+      // has moved it since the answer.
+      dismiss: found.escape === "dismisses" ? dismissAt : undefined,
     })),
   };
 };
@@ -1381,7 +1396,8 @@ const completions = (host) => {
     if (written !== null) {
       view.dispatch({ changes: written, annotations: isolateHistory.of("full"), userEvent: "input.escape" });
     }
-    if (option.dismiss !== undefined) view.dispatch({ effects: option.dismiss() });
+    const dismissal = option.dismiss?.(view.state) ?? null;
+    if (dismissal !== null) view.dispatch({ effects: dismissal });
     return true;
   };
   // The list's keys: the library's, Enter and Escape as above, and Tab,

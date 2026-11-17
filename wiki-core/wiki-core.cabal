@@ -179,6 +179,7 @@ test-suite wiki-core-test
       Test.Markdown.Comments
       Test.Markdown.Edit
       Test.Markdown.Complete
+      Test.Markdown.CompleteMath
       Test.Markdown.CompleteOracle
       Test.Markdown.CompleteStarts
       Test.Markdown.Enter

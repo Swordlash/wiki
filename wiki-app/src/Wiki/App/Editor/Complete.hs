@@ -18,6 +18,7 @@ module Wiki.App.Editor.Complete
   , linkables
   , linkablesFrom
   , sources
+  , MathCommand (..)
   , pageSource
   , Readings
   , noReadings
@@ -60,14 +61,17 @@ data Request = Request
 -- kind, which says the markers it reads; the kinds of box the
 -- administration defined; the page being edited, by its id; the pages
 -- of its space a link may name, as the editor keeps them ('linkables');
--- and the entries of the @/@ menu, what the toolbar writes
--- ("Wiki.App.Editor.Tools"' 'Wiki.App.Editor.Tools.slashEntries').
+-- the entries of the @/@ menu, what the toolbar writes
+-- ("Wiki.App.Editor.Tools"' 'Wiki.App.Editor.Tools.slashEntries'); and
+-- the macros math may use, the nearest first (the page's, each space's up
+-- its chain, the wiki's), each with where it comes from.
 data Held = Held
   { kind :: PageKind
   , boxes :: [BoxKind]
   , editing :: PageId
   , pages :: [Linkable]
   , entries :: [SlashEntry]
+  , mathMacros :: [MathCommand]
   }
 
 -- | 'Linkable' is a page of the space a link may name, with what the list
@@ -151,10 +155,11 @@ baseOrder :: Linkable -> (Int, Int, Text, [Text])
 baseOrder p = (p.nearness, T.length p.address + maybe 0 (\l -> 1 + T.length l) p.label, p.lowerTitle, p.segments)
 
 -- | The sources of the editor's list, in the order their candidates are
--- listed: the wiki's own markers and kinds of box, the space's pages, and
--- what the toolbar writes. A plugin's source (#186) goes after them.
+-- listed: the wiki's own markers and kinds of box, the space's pages, what
+-- the toolbar writes, and the commands of math. A plugin's source (#186)
+-- goes after them.
 sources :: Held -> [Source]
-sources held = [wikiSource held.kind held.boxes, pageSource held, slashSource held.entries]
+sources held = [wikiSource held.kind held.boxes, pageSource held, slashSource held.entries, mathSource (mathCommands held.mathMacros)]
 
 -- | The pages of the space, after @[[@: every one but the page being
 -- edited, at most 'shownPages', each shown by its title with its path in
@@ -289,7 +294,8 @@ answer found earlier memo text request = case T.splitOn "\n" text of
 --
 -- What an option writes ('Writes') is its snippet (@template@,
 -- 'snippetTemplate') in place of the answer's range, or there the text
--- @insert@ as it is, the cursor after it; or, with @line@, the text
+-- @insert@ as it is, the cursor after it, or with @select@ selected in it;
+-- or, with @line@, the text
 -- @insert@ written as it is in place of the cursor's whole line, which
 -- must still read as @line@ (the editor writes nothing otherwise),
 -- @select@ selected in it (from and to, in characters), the @/@ and its
@@ -319,6 +325,10 @@ completionJson c =
     written candidate = case candidate.writing of
       AsSnippet -> ["template" .= snippetTemplate candidate.skeleton]
       AsText -> ["insert" .= fst (skeletonText candidate.skeleton)]
+      AsTextSelected ->
+        let (text, places) = skeletonText candidate.skeleton
+            (selectFrom, selectTo) = maybe (T.length text, T.length text) snd (head places)
+         in ["insert" .= text, "select" .= [selectFrom, selectTo]]
       LineAsText line (queryFrom, queryTo) ->
         let (text, places) = skeletonText candidate.skeleton
             (selectFrom, selectTo) = maybe (T.length text, T.length text) snd (head places)

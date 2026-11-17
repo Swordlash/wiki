@@ -436,6 +436,7 @@ import Wiki.Core.Markdown.Edit
 import Wiki.Core.Markdown.Emoji (emojiMatches)
 import Wiki.Core.Markdown.Problems qualified as Problems
 import Wiki.Core.Markdown.Render (IslandKey)
+import Wiki.Core.Math (definedMacroArities)
 import Wiki.Core.Page (Page, PageSummary, titleLine, withTitleLine)
 -- Qualified, so that its fields (read with a dot) are not confused with
 -- the work's fields of the same names.
@@ -446,7 +447,7 @@ import Wiki.Core.SlideRows (RowKey (..), Rows)
 import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.Slides qualified as Slides
 import Wiki.Core.Slug (Slug)
-import Wiki.Core.Space (Space (encryption, id))
+import Wiki.Core.Space (Space (encryption, id, mathMacros, name))
 import Wiki.Core.User (Login (..), User (displayName, id, login))
 import Wiki.Core.Version (Author (..), Version (author))
 
@@ -634,6 +635,10 @@ data State = State
   , linkables :: [Complete.Linkable]
   -- ^ The pages a link may name, with their paths and links, worked out
   -- when the input's pages or the page's path change ('linkablesOf').
+  , shippedMacros :: Text
+  -- ^ The built-in macros the wiki ships with, read once the editor
+  -- starts ('builtinMacros'): the wiki's macros the completion in math
+  -- offers, where the server's settings keep no copy of their own.
   , host :: H.RefLabel
   -- ^ The element where CodeMirror goes, in the textarea's place; the
   -- text is reached through it ("Wiki.App.Editor.Browser").
@@ -1183,6 +1188,7 @@ component =
               , emojiQuery = ""
               , readings = Complete.noReadings
               , linkables = linkablesOf input
+              , shippedMacros = ""
               , host
               , fileInput
               , backButton
@@ -2124,6 +2130,8 @@ component =
       -- After the first render, so that render is the same whatever the
       -- browser has stored.
       Initialize -> do
+        shipped <- H.liftEffect Islands.builtinMacros
+        modify (\st -> st {shippedMacros = shipped})
         H.liftEffect (Storage.getItem LocalStorage rawSlidesKey) >>= \case
           Just (Right True) -> modify (\st -> st {slidesMode = False})
           _ -> pass
@@ -3699,7 +3707,13 @@ heldFor st work =
     , editing = work.page.id
     , pages = st.linkables
     , entries = slashEntries (boxChoices st.input.context.session.boxes)
+    , mathMacros =
+        macrosFrom "this page" work.body
+          <> concat [macrosFrom s.name s.mathMacros | s <- reverse (chainOf st.input.context st.input.space.id)]
+          <> macrosFrom "the wiki" (fromMaybe st.shippedMacros st.input.context.session.mathMacros)
     }
+  where
+    macrosFrom origin tex = [Complete.MathCommand {name, arguments, origin} | (name, arguments) <- definedMacroArities tex]
 
 -- | The action an entry of the @/@ menu asks for once it is written
 -- ('completeAction'): the toolbar's own, as its button runs it.

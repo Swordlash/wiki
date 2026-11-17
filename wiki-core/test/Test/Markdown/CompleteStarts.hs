@@ -104,7 +104,7 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
   -- and with the lines below cut (about 80, 30 and 15 in a hundred); a
   -- check of the coverage would run the cases on to many more.
   modifyMaxSuccess (* 2) $ do
-    prop "opens the list the whole text opens, for markers, kinds of box, end markers and the / menu" $
+    prop "opens the list the whole text opens, for markers, kinds of box, end markers, the / menu and the commands of math" $
       forAll genCase $
         \c -> alikeEverywhere (sourcesOf c) c
   where
@@ -204,6 +204,7 @@ sourcesOf :: Case -> [Source]
 sourcesOf c = case c.kind of
   Markers -> [wikiSource Presentation []]
   Slash -> [slashSource entries]
+  Commands -> [mathSource (mathCommands [])]
   where
     entries = [SlashEntry {label = show command, keywords = [], sample = "", does = WritesCommand command} | command <- [Edit.Bold, Edit.Table, Edit.Quote, Edit.CodeBlock, Edit.SpoilerBlock, Edit.Box "NOTE"]]
 
@@ -269,25 +270,27 @@ genCase :: Gen Case
 genCase = do
   above' <- concat <$> (choose (0, 14) >>= \k -> replicateM k piece)
   at' <- choose (0, length above')
-  typed <- elements [["```"], ["```math"], ["[[!div]]"], ["[[/div]]"], ["<div>"], ["<!--"], ["- item"], ["> quoted"], ["[^z]: note"], ["    code"], ["$$"], [""], ["Text"]]
+  typed <- elements [["```"], ["```math"], ["$$"], ["$$", "x"], ["[[!div]]"], ["[[/div]]"], ["<div>"], ["<!--"], ["- item"], ["> quoted"], ["[^z]: note"], ["    code"], ["$$"], [""], ["Text"]]
   let above = take at' above' <> typed <> drop at' above'
-  kind <- elements [Markers, Slash]
+  kind <- elements [Markers, Slash, Commands]
   lead <- elements ["", "", "> ", "- ", "1. ", "  ", "    ", "[^n]: ", "> - ", "[^m]: ", "[^n]: > "]
   words' <- case kind of
     Markers -> pure ""
     Slash -> elements ["", "Some text ", "See [a] and [^n] ", "Text [b][^m] ", "[See "]
+    Commands -> elements ["", "$", "Text $a + ", "See [a] $", "Costs $5 and ", "*so $", "$$ "]
   trigger <- case kind of
     Markers -> elements ["[[!", "[!", "[[/", "[[!d"]
     Slash -> elements ["/", "/ta", "/b"]
-  after <- elements ["", "", " more", "]]", "][r]"]
+    Commands -> elements ["\\fr", "\\alp", "\\beg", "\\sqrt{\\x"]
+  after <- elements ["", "", " more", "]]", "][r]", "$", "}{} b$"]
   below <- concat <$> (choose (0, 6) >>= \k -> replicateM k piece)
   farther <- elements [[], [], [], ["", T.intercalate "\n\n" (replicate 70 "Words of a long text.")]]
   change <- arbitrary
   pure Case {above, before = lead <> words' <> trigger, after, below = below <> farther, change, kind, trigger, typedAbove = (at', typed)}
 
--- | Which completion a case asks: the wiki's markers and kinds of box, or
--- the @/@ menu.
-data Kind = Markers | Slash
+-- | Which completion a case asks: the wiki's markers and kinds of box,
+-- the @/@ menu, or the commands of math.
+data Kind = Markers | Slash | Commands
   deriving stock (Show)
 
 -- | Some lines of a page: paragraphs, blank lines, definitions of links

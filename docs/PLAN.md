@@ -1989,22 +1989,7 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   CodeMirror owns the popup, the keys and the snippet's fields. One
   source more in the same `autocompletion`, not a second one. Five
   pull requests, in a row (all touch `web/src/editor.js`):
-  (a) **Enter in lists and boxes** (#292, being reworked since
-  2026-11-16). The first build bound lang-markdown's continuation
-  command with lines of the wiki's own in JavaScript; four rounds of
-  review found new edge cases each time (spacing between quotation
-  marks, indented code, a row's own syntax tree, tabs, numbered tasks,
-  an exception in the library, then holes in a check of the library's
-  answer), because logic in JavaScript is exercised by a reviewer only.
-  Now: a narrower contract (an empty selection only; only the cursor's
-  line and the new line change; later items are not renumbered, which
-  renders the same) and the decision as a pure function in wiki-core
-  over the enclosing block, with the wiki's parser as the oracle of
-  its properties; CodeMirror's keymap calls it synchronously
-  (`mkSyncCallback`, as the live preview does) and applies the answer;
-  anything outside the contract, and any failure, is the plain new
-  line. Shift+Enter stays a plain new line; Backspace is left as it
-  is.
+  (a) **Enter in lists and boxes**: merged (#292).
   (b) **The framework, with `[[!`, `[[/` and `[!`**: merged (#293).
   (c) **`[[` for a page**: merged (#294).
   (d) **The `/` menu**: merged (#295).
@@ -3168,6 +3153,36 @@ needs. Each was true when its package merged; check before relying on one.
   after 5,000 ms. Both passed once the load ended. By decision 81 a
   cost is asserted as a count, not a time: to be turned into bounds on
   allocation or on steps, with the slides editor's group (WP5.116).
+- **Enter in lists and boxes, and where a text is cut for a parse
+  (#292, WP5.124 (a)).** Nine rounds of review: the first four on a
+  library's command bound in JavaScript with lines of the wiki's own,
+  which did not converge (logic there is exercised by a reviewer
+  only); then reworked. As it stands: `Wiki.Core.Markdown.Enter.enter`
+  decides purely, from the text before and after the cursor, what
+  Enter writes; the contract is narrow (an empty selection, the end of
+  a line, only the cursor's line and the new one change; later items
+  are not renumbered; a numbered item with a box continues without
+  one, since the wiki's parser reads no tasks in numbered lists);
+  CodeMirror's keymap calls it synchronously (`mkSyncCallback`).
+  **`Wiki.Core.Markdown.Starts`** gives, from the editor's own check
+  of the whole text, the lines where a top-level block starts with
+  nothing open above it and the items of a page-level list; CodeMirror
+  keeps them mapped through every change; a parse of part of the text
+  starts at such a line and nowhere else, because a cut chosen from
+  CodeMirror's tree is unsound in at least three ways (a footnote
+  definition is a container the wiki's parser knows and Lezer does
+  not; raw HTML that reads on; a marker inside what Lezer calls a
+  paragraph). The completion is to use the same starts (being built).
+  Known and left: past 2,000 characters handed over (one very long
+  paragraph, quotation or item) Enter is a plain line break; where the
+  text holds a bare `\r` there are no starts and Enter is plain (the
+  parser counts `\r` as a line break, the editor does not); inside a
+  footnote definition Enter is plain; a footnote label defined twice
+  is read otherwise by a cut (the parser drops the second definition);
+  untested: input-method composition, touch keyboards, several
+  cursors. The check of the whole text grew by about 4% on wasm (6 ms
+  on the guide, 90 ms on the 318,000-character deck, whose check
+  already took 2.5 s).
 - **The nightly's first run (2026-11-17, started by hand: the
   scheduled run of 01:43 UTC had not appeared two hours later, though
   the workflow is registered and active; watch whether the schedule

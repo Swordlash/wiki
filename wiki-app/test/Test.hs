@@ -32,6 +32,7 @@ import Test.LivePreviewDom qualified as LivePreviewDom
 import Test.Manifest qualified as Manifest
 import Test.Passwords qualified as Passwords
 import Test.Policy qualified as Policy
+import Test.Preview qualified as Preview
 import Test.Problems qualified as Problems
 import Test.Readme qualified as Readme
 import Test.Rect qualified as Rect
@@ -85,6 +86,7 @@ main = do
       Import.spec
       Manifest.spec
       Policy.spec
+      Preview.spec
       Problems.spec
       Complete.spec
       Licence.spec

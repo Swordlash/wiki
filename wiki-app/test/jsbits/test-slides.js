@@ -65,23 +65,28 @@ function wiki_test_mermaid(how) {
   }
 }
 
-// The longest time, in milliseconds, the page's thread was held without a
-// break since the measure started: a timer due every 10 ms that comes late
-// by that much.
-function wiki_test_stall_start() {
-  clearInterval(globalThis.wikiTestStallTimer);
-  let last = performance.now();
-  globalThis.wikiTestStall = 0;
-  globalThis.wikiTestStallTimer = setInterval(() => {
-    const now = performance.now();
-    globalThis.wikiTestStall = Math.max(globalThis.wikiTestStall, now - last);
-    last = now;
-  }, 10);
+// How many times the editor published its problems to CodeMirror since the
+// count started: calls of wiki_editor_problems (wiki-app/jsbits/editor.js),
+// whichever host they were for. The program calls its JavaScript through
+// the namespace its splice keeps on globalThis under a Symbol, so the
+// function is wrapped there once, with a counter.
+function wiki_test_publications_start() {
+  for (const key of Object.getOwnPropertySymbols(globalThis)) {
+    const api = globalThis[key];
+    if (api && typeof api.wiki_editor_problems === "function" && !api.wikiTestCounted) {
+      const publish = api.wiki_editor_problems;
+      api.wiki_editor_problems = (...args) => {
+        globalThis.wikiTestPublications = (globalThis.wikiTestPublications ?? 0) + 1;
+        return publish(...args);
+      };
+      api.wikiTestCounted = true;
+    }
+  }
+  globalThis.wikiTestPublications = 0;
 }
 
-function wiki_test_stall() {
-  clearInterval(globalThis.wikiTestStallTimer);
-  return Math.round(globalThis.wikiTestStall ?? 0);
+function wiki_test_publications() {
+  return globalThis.wikiTestPublications ?? 0;
 }
 
 // Whether the cursor of the row at an index can be seen: inside the window

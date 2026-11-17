@@ -28,6 +28,11 @@ module Wiki.App.View.Preview
   , Slides (..)
   , Output (..)
   , component
+
+    -- * The draft parsed
+  , Parsed (..)
+  , parse
+  , reparsed
   )
 where
 
@@ -115,6 +120,13 @@ parse body =
   let doc = parseMarkdown body
    in Parsed {text = body, deck = either (const (deckOf [])) deckOf doc, mentioned = either (const mempty) mentions doc}
 
+-- | The draft parsed for the text the preview is given now: the parse kept
+-- when the text is the one it was made for, as when only another slide is
+-- shown, and a new parse otherwise. Its cost is tested natively, counted
+-- in bytes allocated ("Test.Preview").
+reparsed :: Text -> Parsed -> Parsed
+reparsed body kept = if body == kept.text then kept else parse body
+
 -- | What the preview tells its parent: an island's output, with the
 -- island's key in the draft; and whether each slide of a presentation
 -- fits, measured for a text, by its place in the deck.
@@ -187,7 +199,7 @@ component =
       Receive new -> do
         old <- gets (\st -> st.input)
         unless (same old new) $ do
-          modify (\st -> st {input = new, parsed = if new.body == st.parsed.text then st.parsed else parse new.body})
+          modify (\st -> st {input = new, parsed = reparsed new.body st.parsed})
           startWatch
           unless (sameDraft old new) $ do
             resolvePeople

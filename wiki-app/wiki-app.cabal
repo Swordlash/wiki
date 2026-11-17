@@ -364,6 +364,7 @@ test-suite wiki-app-test
         Test.Manifest
         Test.Passwords
         Test.Policy
+        Test.Preview
         Test.Problems
         Test.Complete
         Test.Readme

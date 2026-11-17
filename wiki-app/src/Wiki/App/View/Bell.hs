@@ -39,13 +39,17 @@ import Data.Text qualified as T
 import Data.Time (UTCTime, defaultTimeLocale, formatTime)
 import Halogen qualified as H
 import Halogen.HTML.Properties qualified as HP
+import Halogen.Machine qualified as Machine
 import Halogen.Router (Follow)
 import Halogen.Router qualified as Router
+import Halogen.Sync qualified as Sync
 import Halogen.TH (hh, hhs)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (State)
+import Web.Event.Event (preventDefault)
+import Web.UIEvent.MouseEvent (toEvent)
 import Wiki.Api.Notifications (Notifications (..))
-import Wiki.App.Backend (MonadLoad (..))
+import Wiki.App.Backend (MonadLoad (..), WikiError (..))
 import Wiki.App.Backend.Notifications (MonadNotifications (..))
 import Wiki.App.Live (Feed (..))
 import Wiki.App.Live qualified as Live
@@ -67,9 +71,9 @@ data Input = Input
 
 data State = State
   { input :: Input
-  , model :: Model
-  -- ^ What the bell knows ("Wiki.App.View.Bell.Machine"): every change to
-  -- it is a 'step'.
+  , machine :: Machine.Machine () (Event (Follow Route)) Model
+  -- ^ What the bell knows ("Wiki.App.View.Bell.Machine"), run by
+  -- "Halogen.Machine": every change to it is a 'step'.
   , holder :: H.RefLabel
   -- ^ The element that holds the bell and the list: a press outside it
   -- closes the list.
@@ -87,8 +91,6 @@ data Action
   | MarkRead NotificationId
   | MarkAllRead
   | Follow NotificationId (Follow Route)
-  | -- | An answer of the backend, or anything else the machine takes.
-    Happened (Event (Follow Route))
 
 component :: forall query output m. (MonadLoad m, MonadNotifications m, MonadUUID m, MonadBrowserDOM m, MonadUnliftIO m) => H.Component query Input output m
 component =
@@ -97,7 +99,7 @@ component =
       { initialState = \input -> do
           notices <- atOnce notifications
           holder <- H.newRefLabel "notifications"
-          pure State {input, model = initial notices input.context.revision, holder, listWatch = Nothing}
+          pure State {input, machine = Machine.new (initial notices input.context.revision), holder, listWatch = Nothing}
       , render
       , eval =
           H.mkEval
@@ -110,7 +112,7 @@ component =
       }
   where
     render :: State -> H.ComponentHTML Action Empty m
-    render State {model = st, input, holder} =
+    render State {machine, input, holder} =
       [hh|
         <div class="notifications" {{ HP.ref holder }}>
           <button
@@ -136,6 +138,7 @@ component =
         </div>
       |]
       where
+        st = Machine.current machine
         unread = unreadCount st
         label :: Text
         label = case unread of
@@ -190,7 +193,7 @@ component =
     handleAction :: Action -> H.HalogenM State Action Empty output m ()
     handleAction = \case
       Initialize -> happen Started
-      Finalize -> happen Finished
+      Finalize -> Machine.finish machineSpec Finished
       -- Another reload of the wiki (a write, someone signed in): fetch
       -- again, as what is shown may have changed. The titles of pages of
       -- encrypted spaces go at once, as the server names them, before the
@@ -208,37 +211,51 @@ component =
       MarkRead i -> happen (MarkClicked i)
       MarkAllRead -> happen MarkAllClicked
       Follow i f -> happen (Followed i f)
-      Happened event -> happen event
 
-    -- One step of the machine, in one step of the program, and then its
-    -- effects. An ask is forked and comes back as an event, so that
-    -- nothing after it in this program waits for it.
     happen :: Event (Follow Route) -> H.HalogenM State Action Empty output m ()
-    happen event = do
-      effects <- state (\st -> let (model, fx) = step event st.model in (fx, st {model}))
-      traverse_ perform effects
+    happen = Machine.happen machineSpec
 
-    perform :: Effect (Follow Route) -> H.HalogenM State Action Empty output m ()
-    perform = \case
+    -- The bell's machine, run by "Halogen.Machine": one step in one step
+    -- of the program, then its effects, with no other event of the bell
+    -- in between. An effect is done in place ('Machine.Now', which cannot
+    -- wait) or is an ask ('Machine.Ask'), whose work is forked and whose
+    -- answer is a later step.
+    machineSpec :: Machine.Spec () State Action Empty output m (Event (Follow Route)) (Effect (Follow Route)) Model
+    machineSpec = Machine.Spec {Machine.step = step, Machine.carry = carry, Machine.get = \st -> st.machine, Machine.set = \machine st -> st {machine}}
+
+    carry :: Effect (Follow Route) -> Machine.Carry () State Action Empty output m (Event (Follow Route))
+    carry = \case
       Listen ->
-        gets (\st -> st.input.feed)
-          >>= traverse_
-            ( \f -> do
-                H.liftEffect (liftIO f.listen)
-                void (H.subscribe (Heard <$> f.heard))
-            )
-      Unlisten -> gets (\st -> st.input.feed) >>= traverse_ (\f -> H.liftEffect (liftIO f.unlisten))
-      Watch -> do
+        Machine.Now $
+          gets (\st -> st.input.feed)
+            >>= traverse_
+              ( \f -> do
+                  Sync.sync (liftIO f.listen)
+                  void (Sync.subscribe (Heard <$> f.heard))
+              )
+      Unlisten -> Machine.Now $ gets (\st -> st.input.feed) >>= traverse_ (\f -> Sync.sync (liftIO f.unlisten))
+      Watch -> Machine.Now $ do
         watch <- gets (\st -> st.holder) >>= (`watchPopup` Close)
         modify (\st -> st {listWatch = watch})
-      Unwatch -> do
-        gets (\st -> st.listWatch) >>= traverse_ H.unsubscribe
+      Unwatch -> Machine.Now $ do
+        gets (\st -> st.listWatch) >>= traverse_ Sync.unsubscribe
         modify (\st -> st {listWatch = Nothing})
-      Load asked -> void . H.fork $ H.async notifications >>= handleAction . Happened . M.Loaded asked
-      M.MarkRead asked r -> void . H.fork $ H.async (markRead r) >>= handleAction . Happened . Marked asked
-      M.Follow f -> do
+      Load asked -> Machine.Ask (Machine.run notifications) (M.Loaded asked . answer)
+      M.MarkRead asked r -> Machine.Ask (Machine.run (markRead r)) (Marked asked . answer)
+      -- 'Router.follow', in place: it only prevents the click's default
+      -- and goes to the route.
+      M.Follow (Router.Follow route click) -> Machine.Now $ do
         router <- gets (\st -> st.input.context.router)
-        Router.follow router f
+        Sync.sync (liftIO (preventDefault (toEvent click) >> Router.navigate router route))
+
+-- | The answer to a read or a mark, as the machine takes it. The backend
+-- gives what went wrong as a 'Left' and does not throw for it
+-- ("Wiki.App.Backend"'s "Errors"); what it throws all the same is taken
+-- as the failure it is, or as 'Unreachable'.
+answer :: Either SomeException (Either WikiError a) -> Either WikiError a
+answer = either (Left . failure) identity
+  where
+    failure e = fromMaybe (Unreachable (toS (displayException e))) (fromException e)
 
 -- | A notification's kind, as a class the stylesheet and the tests use.
 kindClass :: Notification -> Text

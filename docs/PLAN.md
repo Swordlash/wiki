@@ -1938,8 +1938,10 @@ races (being built), and smaller decks in the examples where the
 deck's size is not what is tested (WP5.116). The other views become
 machines when a feature touches them, not ahead of it (decision 83).
 Then the features, in his order: **#187, autocompletion, first** ("bo
-pluginy to refactor"; WP5.124, its scope being written), and #186,
-plugins, after it. He added to #186 on 2026-11-15 a hook that rewrites
+pluginy to refactor"; built and closed 2026-11-17, WP5.124; what it
+left out is #301), then the assistant's packages he asked for on
+2026-11-17 (WP5.125 to WP5.127 below), and #186, plugins, after
+them. He added to #186 on 2026-11-15 a hook that rewrites
 the tree before it is rendered (a list with a `sorted` attribute
 sorted; perhaps every extension beyond CommonMark as a plugin on the
 server's side): a page is rendered in the browser, in the server's
@@ -1971,51 +1973,47 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   to what needs a browser, with the counts before and after. The
   about forty asks WP5.95 left are taken with the view each belongs
   to; the ones in views with a single ask keep `View.Latest`.
-- **WP5.124 Autocompletion in the editor (#187; the first feature
-  after the tests, the owner, 2026-11-16).** Scope read from the code
-  on 2026-11-16. The editor's CodeMirror already has one
-  `autocompletion` with two sources (mentions, emoji) whose candidates
-  the component gives; every toolbar command is the pure
-  `Wiki.Core.Markdown.Edit.apply`, which returns the text and one
-  selected place to fill. The shape, by decisions 82 and 83:
-  JavaScript keeps what only CodeMirror knows (a loose gate on the
-  characters before the cursor, where the cursor is in the syntax
-  tree, the enclosing block's text); pure Haskell decides the rest
-  (`Wiki.Core.Markdown.Complete`: which trigger applies, the
-  candidates and their order, the skeleton with its places to fill,
-  written as a CodeMirror snippet) and is tested natively in the
-  `«‸»` notation of `Test/Markdown/Edit.hs`; the component answers
-  from its state in one step (no ask of the backend, so no machine);
-  CodeMirror owns the popup, the keys and the snippet's fields. One
-  source more in the same `autocompletion`, not a second one. Five
-  pull requests, in a row (all touch `web/src/editor.js`):
-  (a) **Enter in lists and boxes**: merged (#292).
-  (b) **The framework, with `[[!`, `[[/` and `[!`**: merged (#293).
-  (c) **`[[` for a page**: merged (#294).
-  (d) **The `/` menu**: merged (#295).
-  (e) **`\` in math**: merged (#299), made narrower in review (the
-  owner, 2026-11-16: narrow contracts): KaTeX's commands (it exports
-  no list: a script at bundle time reads its tables and fails the
-  build if they move), the wiki's, the space chain's and the page's
-  block of macros; a command is written as its name alone, no braces,
-  no environments; "in math" for a formula not closed yet is decided
-  in Haskell from the block's text, with the wiki's parser as the
-  oracle of a property.
-  (f) **The first answer after a trigger reads from a start of a
-  block, not the whole text above**: merged (#298).
-  Left out: completion after `{` (decision 65 named it; the issue does
-  not); the textarea before CodeMirror loads and the comments' boxes
-  get none of this.
-  **For the plugins after it (the owner, 2026-11-16).** A plugin may
-  give or extend completion: its candidates are shown in the same
-  list, each with where it comes from in grey ("xxx", then "from
-  plugin yyy"). So the framework of (b) is built for it from the
-  start, at no cost now: a candidate carries an optional origin, shown
-  as CodeMirror's `detail`, and the candidates are gathered from a
-  list of sources (the wiki's own today), so that a plugin's
-  `completion` contribution (#186's table: a trigger and the letters
-  typed give candidates) is one more source and not a change of the
-  editor.
+- **WP5.125 What a turn of the assistant cost, shown in the panel
+  (the owner, 2026-11-17; first of three, the instrument for the next
+  one).** After a response the panel shows the tokens of the turn: the
+  input, how much of it was read from the provider's cache, the
+  output; summed over the rounds of a turn's tool loop. One normalised
+  triple from both APIs (Anthropic's `input_tokens` leaves the cached
+  tokens out, OpenAI's holds them). A service that reports no usage
+  shows nothing. With it the owner sees whether his gateway passes
+  prompt caching, which nothing else shows: a gateway that drops
+  `cache_control` answers as before, at the full price.
+- **WP5.126 One copy of the page in a request, the cache on the
+  conversation, a higher cap (the owner, 2026-11-17).** Today each of
+  the user's messages carries the page as it is then (its first
+  `bodyCap`, 24,000 characters), and the copies stay in the
+  conversation, which is sent whole each time: the tenth message
+  sends ten copies. So the cap cannot simply be raised. To build: the
+  conversation keeps a message without its page once a later message
+  is sent (both forms computed in `Wiki.Core.Assistant.Prompt`,
+  tested natively; the JavaScript swaps them when the turn ends);
+  Anthropic's cache is asked for on the conversation too, not only on
+  the reference and the instructions (today), so that the rounds of a
+  tool loop and the next message read the earlier part at a tenth of
+  the price; then the cap is raised, to a number taken from the
+  reference's measured size and from up to 24 rounds a turn each
+  sending the page. To settle before the brief, from Anthropic's
+  documentation: whether changing an earlier user message invalidates
+  the thinking blocks kept after it (if so the swap is not possible at
+  Anthropic's own address as designed); how many cache breakpoints
+  and on which blocks; whether a selection is bounded (select-all
+  must not go round the cap). No real provider can be asked from the
+  tests: WP5.125's numbers, read by the owner, are the check.
+- **WP5.127 Commands in the assistant's message box (the owner,
+  2026-11-17).** A message that is exactly `/new` or `/clear` starts a
+  new conversation, as "New" does (#302); `/help` lists the commands;
+  parsed in Haskell, nothing sent to the model. **`/compact` is not in
+  it** (proposed to the owner, 2026-11-17, not yet answered): it is a
+  second ask of the model that races Stop, New and Close in a view
+  that is not a machine (decision 82: it would make the panel one,
+  WP5.121's fourth), and once WP5.126 keeps no copies of the page in
+  the conversation it saves much less; to decide when WP5.125's
+  numbers show conversations that grow.
 - **WP5.122 Checks in place of conventions (decision 82): what is
   left.** The ceilings and the nightly are merged (#291, with
   WP5.114). Left: the machines in a package, or a part of one, that
@@ -2226,6 +2224,15 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   built-in plugins of the first step, the calendar of #204 (WP5.92,
   WP5.93) is the third, and tells what a contribution of a kind of page
   needs.
+  **Completion from plugins (the owner, 2026-11-16).** A plugin may
+  give or extend the editor's completion: its candidates are shown in
+  the same list, each with where it comes from in grey ("xxx", then
+  "from plugin yyy"). The framework of #293 is built for it: a
+  candidate carries an optional origin, shown as CodeMirror's
+  `detail`, and the candidates are gathered from a list of sources
+  (the wiki's own today), so a plugin's `completion` contribution
+  (#186's table: a trigger and the letters typed give candidates) is
+  one more source and not a change of the editor.
 - **WP5.74 End-to-end encrypted private spaces** (the owner, 2026-11-06,
   rewritten the same day). Two packages, a then b, built so that a single page
   can later be shared with another user.
@@ -3186,6 +3193,25 @@ needs. Each was true when its package merged; check before relying on one.
   cursors. The check of the whole text grew by about 4% on wasm (6 ms
   on the guide, 90 ms on the 318,000-character deck, whose check
   already took 2.5 s).
+- **The assistant at a gateway (#302; the owner's report,
+  2026-11-17).** At his work the assistant is asked through LiteLLM in
+  front of Databricks, serving a Claude model. Set to OpenAI's API,
+  every second message failed: the gateway writes the model's
+  reasoning as an output item (`reasoning`, its content an
+  `output_text`, no `encrypted_content`) and refuses that item when it
+  comes back. Since #302 a service elsewhere that speaks OpenAI's API
+  gets the conversation in the plain form (the assistant's text, tool
+  calls as `call_id`, `name`, `arguments`; no reasoning, no ids).
+  **Set to Anthropic's API the same gateway works unchanged** (it
+  reads thinking blocks back), which is what he uses now; a first
+  build that took thinking out there too, on a guess, was taken out
+  again. Not known: whether the plain form passes his gateway (no
+  such server at hand; he no longer uses that setting), and whether
+  Agent mode's tool calls without the reasoning before them pass a
+  gateway that translates to Claude with thinking on. "New" in the
+  panel starts a new conversation; a new chat is told nothing of the
+  earlier chat's changes (before, a chat after a change of provider
+  was told the outcomes of edits it never made).
 - **Commands completed in math (#299, WP5.124 (e)); #187 is built
   and closed, and what its parts left out is issue #301 (the owner,
   2026-11-17).**

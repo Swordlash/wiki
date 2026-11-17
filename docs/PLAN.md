@@ -1993,8 +1993,8 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   (b) **The framework, with `[[!`, `[[/` and `[!`**: merged (#293).
   (c) **`[[` for a page**: merged (#294).
   (d) **The `/` menu**: merged (#295).
-  (e) **`\` in math**: open (#299), made narrower in review (the
-  owner, 2026-11-17: narrow contracts): KaTeX's commands (it exports
+  (e) **`\` in math**: merged (#299), made narrower in review (the
+  owner, 2026-11-16: narrow contracts): KaTeX's commands (it exports
   no list: a script at bundle time reads its tables and fails the
   build if they move), the wiki's, the space chain's and the page's
   block of macros; a command is written as its name alone, no braces,
@@ -3186,6 +3186,20 @@ needs. Each was true when its package merged; check before relying on one.
   cursors. The check of the whole text grew by about 4% on wasm (6 ms
   on the guide, 90 ms on the 318,000-character deck, whose check
   already took 2.5 s).
+- **Commands completed in math (#299, WP5.124 (e)); #187 is built.**
+  Six rounds. The first build wrote braces for arguments and whole
+  environments, which the issue did not ask for and five of the first
+  round's six findings came from; narrowed to the name alone. Known
+  and left, each a list that does not open, none a wrong write: a
+  macro defined in a later formula of the page is not offered (only
+  the page's block of macros is; the renderer finds the others by
+  reading every formula in order); math between literal brackets,
+  `[$\fr$]`, which CodeMirror's tree calls a link; a formula being
+  typed that holds math inside `\text{…}` (the opener is taken to be
+  the last dollar); no list with a letter right after the cursor; no
+  braces, no environments. The oracle of "in math" shares with the
+  code that a formula being typed closes at the line's end and the
+  test for an escaped dollar, so the property sees no fault in either.
 - **The completion's text is cut at a start of a block (#298,
   WP5.124 (f)).** The editor keeps, from its check of the whole text,
   the lines, the starts and the definitions (link references,

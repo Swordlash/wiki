@@ -835,10 +835,10 @@ component =
       -- where it is. Its listener has kept the browser from following it.
       FollowLink (CopyAnchor fragment) -> do
         H.liftEffect (markFragment fragment)
-        here <- gets pageAddress >>= H.async . absoluteUrl
+        here <- gets pageAddress >>= H.sync . absoluteUrl
         copyAddress False (here <> "#" <> encodeComponent fragment)
       -- The permanent address of the version shown ('permanentAddress').
-      CopyPermanentLink -> withPage $ \page -> gets (`permanentAddress` page) >>= H.async . absoluteUrl >>= copyAddress True
+      CopyPermanentLink -> withPage $ \page -> gets (`permanentAddress` page) >>= H.sync . absoluteUrl >>= copyAddress True
       FollowLink target -> do
         router <- gets (\st -> st.input.context.router)
         H.liftEffect (followArticleLink router target)
@@ -850,7 +850,7 @@ component =
           >>= traverse_
             ( \s -> do
                 modify (\st -> st {selected = Nothing})
-                here <- gets pageAddress >>= H.async . absoluteUrl
+                here <- gets pageAddress >>= H.sync . absoluteUrl
                 copyAddress False (here <> "#" <> textFragment blocks s.anchor)
             )
       -- A form of the page (Rename, Delete) opens only without unsaved

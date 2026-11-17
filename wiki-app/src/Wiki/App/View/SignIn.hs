@@ -865,7 +865,7 @@ component =
           else st {open = True, step = AtPassword, registering = False, notice, problem = Nothing, typedLogin = "", typedPassword = "", typedCode = ""}
       gets (\st -> st.loginField) >>= H.getRef >>= traverse_ (H.liftEffect . focusElement)
       unless opened $ do
-        passkeys <- H.async passkeysHere
+        passkeys <- H.sync passkeysHere
         modify (\st -> st {passkeys})
         offer
 

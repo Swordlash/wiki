@@ -626,7 +626,7 @@ component =
                 refuse e = do
                   modify (\st -> st {checks = Map.insert p (Fails (errorText (serviceOf asked) (Just asked.key) e)) st.checks})
                   change (withReached p (e.kind /= Unreachable))
-            now <- H.async (liftIO getCurrentTime)
+            now <- H.sync (liftIO getCurrentTime)
             listed <- H.async (listModels asked)
             whenM same $ case listed of
               Left e | e.kind == BadKey -> do
@@ -749,7 +749,7 @@ component =
       gets (\st -> st.settings) >>= \case
         Just (Right s) | Right r <- readyFor p s -> do
           modify (\st -> st {listings = Map.insert p Listing st.listings})
-          now <- H.async (liftIO getCurrentTime)
+          now <- H.sync (liftIO getCurrentTime)
           result <- H.async (listModels r)
           case result of
             Left e -> do

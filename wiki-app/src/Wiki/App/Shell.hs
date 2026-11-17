@@ -1552,7 +1552,7 @@ component =
       Export -> withDemo $ \demo -> do
         archive <- H.async demo.exportDemo
         let name = "wiki-" <> toS (formatTime defaultTimeLocale "%Y-%m-%d" archive.createdAt) <> ".zip"
-        H.async . download name "application/zip" =<< H.async (zipFiles (writeArchive archive))
+        H.sync . download name "application/zip" =<< H.async (zipFiles (writeArchive archive))
         report False ("Exported the wiki as " <> name <> ".")
       -- The file is read and checked in full before anything is asked:
       -- what cannot be imported is refused here, with the reason.

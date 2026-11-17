@@ -424,7 +424,7 @@ component =
         case result of
           Left e -> modify (\st -> st {exporting = False, problem = Just e})
           Right made -> do
-            H.async (download made.fileName "application/zip" made.bytes)
+            H.sync (download made.fileName "application/zip" made.bytes)
             let pages = length made.archive.pages
                 spaces = length made.archive.spaces
                 said =

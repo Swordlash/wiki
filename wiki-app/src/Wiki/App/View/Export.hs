@@ -123,11 +123,11 @@ component =
             Left e -> say True (errorMessage e)
             Right document
               | opensInline format -> do
-                  opened <- H.async (liftIO (openInTab document.mediaType document.bytes))
+                  opened <- H.sync (liftIO (openInTab document.mediaType document.bytes))
                   unless opened $ do
-                    H.async (download document.fileName document.mediaType document.bytes)
+                    H.sync (download document.fileName document.mediaType document.bytes)
                     say False ("The browser opened no tab for the PDF, so it was saved as " <> document.fileName <> ".")
-              | otherwise -> H.async (download document.fileName document.mediaType document.bytes)
+              | otherwise -> H.sync (download document.fileName document.mediaType document.bytes)
 
     -- Show a notice, and remove it after a while: a refusal after
     -- 'refusalTime', anything else after 'noticeTime'.

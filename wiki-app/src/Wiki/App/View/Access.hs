@@ -251,7 +251,7 @@ component =
           Left e -> modify (\st -> st {busy = False, problem = Just e})
           Right invited -> do
             router <- gets (\st -> st.input.context.router)
-            url <- for invited.token $ \t -> H.async (absoluteUrl (Router.href router (Route.Invite t)))
+            url <- for invited.token $ \t -> H.sync (absoluteUrl (Router.href router (Route.Invite t)))
             modify (\st -> st {typedEmail = "", made = Just Made {email = invited.invitation.email, link = url, mailError = invited.mailError}})
             H.raise (Changed Nothing)
       Revoke i -> change (revokeInvitation i)

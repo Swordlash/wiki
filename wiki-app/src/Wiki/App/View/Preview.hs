@@ -180,7 +180,7 @@ component =
     handleAction :: Action -> H.HalogenM State Action IslandSlots Output m ()
     handleAction = \case
       Initialize -> resolvePeople >> startWatch
-      Finalize -> gets (\st -> st.watch) >>= traverse_ (H.async . stopFits)
+      Finalize -> gets (\st -> st.watch) >>= traverse_ (H.sync . stopFits)
       -- Another slide shown is only another card in sight: the deck is
       -- not parsed again, and the cards, laid out the same, are not
       -- measured again.
@@ -193,7 +193,7 @@ component =
             resolvePeople
             -- Each text shown is measured, also when its cards are laid
             -- out as the last ones were.
-            gets (\st -> st.watch) >>= traverse_ (H.async . measureAgain)
+            gets (\st -> st.watch) >>= traverse_ (H.sync . measureAgain)
       -- A link in the preview is followed as in the page: the shell asks
       -- before it leaves unsaved changes behind.
       FollowLink target -> do

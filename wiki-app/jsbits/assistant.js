@@ -36,7 +36,9 @@
 // error, {hold: true} waits until the turn is stopped, and {wait}
 // (milliseconds, after any step) paces it; a step of {wait} alone is a
 // pause, before the first text for instance. It
-// keeps what it was sent in script.requests and its tools' answers in
+// keeps what it was sent in script.requests, each with the number of
+// messages its chat has been sent, this one included (conversation), and
+// its tools' answers in
 // script.answers, for the tests to read. A provider's list of models is
 // script.lists[provider], [{id, label, created}, ...], or {error: {kind,
 // status, message}} to fail (kind "connection": no way to the provider);
@@ -125,10 +127,14 @@ function wikiAssistantScriptError(error) {
 // The scripted provider, for the tests (see above).
 function wikiAssistantScripted(config) {
   const script = globalThis.wikiAssistantScript;
+  // How many messages this chat has been sent: a new conversation is a new
+  // chat, which starts again at one.
+  let conversation = 0;
   return {
     async send(user, handlers, signal, request) {
       if (!Array.isArray(script.requests)) script.requests = [];
-      script.requests.push({ provider: config.provider, model: config.model, key: config.key, baseUrl: config.baseUrl ?? null, request, user });
+      conversation++;
+      script.requests.push({ provider: config.provider, model: config.model, key: config.key, baseUrl: config.baseUrl ?? null, request, user, conversation });
       const steps = script.turns?.shift() ?? [{ text: "The script has nothing more to say." }];
       for (const step of steps) {
         if (signal.aborted) return;

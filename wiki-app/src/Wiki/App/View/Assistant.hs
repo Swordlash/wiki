@@ -11,9 +11,10 @@
 -- shorten, expand, summarise, continue, translate), then the message box,
 -- and Send, or Stop while the model is working. Enter sends,
 -- Shift+Enter starts a new line, and Escape closes the panel, as does
--- "Close" in its header. The editor's buttons open the panel with a
+-- "Close" in its header. "New" in the header starts a new conversation
+-- ('NewConversation'). The editor's buttons open the panel with a
 -- provider ('UseProvider'); a provider other than the conversation's
--- starts a new conversation.
+-- starts a new conversation too.
 --
 -- The mode (WP5.43, issue #120): in Agent mode the model edits the page,
 -- as described below; in Ask mode it only answers. Its tools are then
@@ -46,8 +47,9 @@
 -- detach it, and the model receives it with a paragraph around it.
 -- Otherwise the model receives the page, its first 'bodyCap' characters,
 -- and the panel says so when a page is longer
--- ("Wiki.Core.Assistant.Prompt"). The conversation lasts as long as the
--- editor (it is not stored anywhere), and is sent whole with each message.
+-- ("Wiki.Core.Assistant.Prompt"). The conversation lasts until "New"
+-- starts another, or the editor closes (it is not stored anywhere), and is
+-- sent whole with each message.
 --
 -- The model edits the page itself, through its tools, and the author
 -- decides. Each edit is made in the editor immediately as a tracked change
@@ -336,6 +338,7 @@ data Action
   | TypedModel Text
   | ChooseEffort Text
   | TryAgain Provider
+  | NewConversation
   | Tick
 
 component :: forall m. (MonadAssistant m, MonadUUID m, MonadIO m) => H.Component Query Input Output m
@@ -385,6 +388,7 @@ component =
             <h2>Assistant</h2>
             <span class="assistant-using">{{ usingLine st }}</span>
             <a class="assistant-settings-link" {{ Router.linkProps st.input.context.router Followed AssistantSettings }}>Settings</a>
+            <button type="button" class="assistant-new" title="Start a new conversation" disabled={{ st.talking }} onClick={{ const NewConversation }}>New</button>
             <button type="button" class="assistant-close" title="Close the assistant (Escape)" onClick={{ const Close }}>Close</button>
           </header>
           {% for service in maybeToList (leavesFor st) %}
@@ -723,6 +727,16 @@ component =
       TypedModel m -> unless (T.null (T.strip m)) $ changeSettings (\s -> withModel s.provider m s)
       ChooseEffort e -> modify (\st -> st {effortChoice = Just e})
       TryAgain p -> H.raise (Retry p)
+      NewConversation -> do
+        -- "New" is disabled while the model works; the check here is the
+        -- one that holds, read in the same step as the chat is closed.
+        busy <- gets (\st -> st.talking)
+        unless busy $ do
+          endConversation
+          -- The messages go, errors among them. The message box keeps its
+          -- draft and its selection, the pickers what they show, and the
+          -- changes still to decide stay the editor's.
+          modify (\st -> st {entries = []})
       Tick -> do
         t <- H.async (liftIO getCurrentTime)
         modify (\st -> st {now = Just t})
@@ -737,11 +751,25 @@ component =
       when (((\s -> s.provider) <$> (rightToMaybe =<< st.input.settings)) /= Just p) $
         modify (\s' -> s' {effortChoice = Nothing})
       for_ st.using $ \r -> when (r.provider /= p) $ do
-        -- Closing the chat stops its turn, and no more events arrive.
-        for_ st.talk (H.liftEffect . closeTalk)
-        when st.talking (finish Stopped)
-        modify (\s' -> s' {talk = Nothing, using = Nothing, otherModel = False})
+        endConversation
+        modify (\s' -> s' {otherModel = False})
         addEntry (Notice ("The conversation with " <> providerLabel r.provider <> " ended. The next message starts a new one with " <> providerLabel p <> "."))
+
+    -- End the conversation: the chat is closed and dropped, so that the
+    -- next message opens a new one ('send'), as the editor's first message
+    -- does. Closing the chat stops its turn, and no more of its events
+    -- arrive. The chat is closed and dropped in one step, so no action
+    -- between finds a closed chat in the state. A turn under way is then
+    -- marked as stopped. What the panel shows is the caller's to change.
+    -- 'nextChange', 'made' and 'absorbed' stay: the changes the model made
+    -- are the editor's, with ids that must stay unique, and their outcomes
+    -- are told with the next message, to the new chat.
+    endConversation :: H.HalogenM State Action Empty Output m ()
+    endConversation = do
+      st <- get
+      for_ st.talk (H.liftEffect . closeTalk)
+      modify (\s' -> s' {talk = Nothing, using = Nothing})
+      when st.talking (finish Stopped)
 
     -- Change the user's settings (the model); the editor stores them.
     changeSettings :: (Settings -> Settings) -> H.HalogenM State Action Empty Output m ()

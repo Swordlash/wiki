@@ -2008,7 +2008,13 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   texts (194, 135, 71, 58 and 46 s of the 1,160 s run). To build: those
   keep their cases natively and run a small share on wasm
   (`Test.Cases`); the job's summary names the machine's processor, so
-  a slow run is seen for what it is.
+  a slow run is seen for what it is. With it (the owner, 2026-11-17, who saw
+  the lines in the wasm job): the C compiler's "trigraph ignored"
+  warnings, which come from three `??=` in
+  `wiki-app/test/jsbits/test-encrypted.js` (jsbits are embedded in a C
+  string, where `??=` is a trigraph; ignored today, so harmless):
+  written without the operator, and a check that no jsbits file holds
+  a trigraph's three characters.
 - **WP5.128 The detached preview shows the page as its readers see it
   (the owner, 2026-11-17).** The window of "Detach preview"
   (`Wiki.App.View.LivePreview`) renders the editor's preview alone:

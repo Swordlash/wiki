@@ -18,6 +18,7 @@ import Test.Markdown.Box qualified as Box
 import Test.Markdown.Comments qualified as Comments
 import Test.Markdown.Complete qualified as Complete
 import Test.Markdown.CompleteOracle qualified as CompleteOracle
+import Test.Markdown.CompleteStarts qualified as CompleteStarts
 import Test.Markdown.Edit qualified as Edit
 import Test.Markdown.Emoji qualified as Emoji
 import Test.Markdown.Enter qualified as Enter
@@ -58,6 +59,7 @@ main = hspec . parallel . wasmCases $ do
   SlideRows.spec
   Complete.spec
   CompleteOracle.spec
+  CompleteStarts.spec
   Edit.spec
   Enter.spec
   Tikz.spec

@@ -60,7 +60,7 @@ import Wiki.Core.Markdown.Ast qualified as A
 import Wiki.Core.Markdown.Box (readAlertKind)
 import Wiki.Core.Markdown.Folds (Fold, foldsParsed, isSpoiler)
 import Wiki.Core.Markdown.Render (IslandKey (..), Options (..), defaultOptions, renderSections)
-import Wiki.Core.Markdown.Starts (blockStarts)
+import Wiki.Core.Markdown.Starts (blockDefinitions, blockStarts)
 import Wiki.Core.PageKind (PageKind (..))
 import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.Slides qualified as Slides
@@ -151,7 +151,13 @@ data Checked = Checked
   , starts :: [Int]
   -- ^ The lines at which a top-level block starts with nothing open
   -- above it ("Wiki.Core.Markdown.Starts"' 'blockStarts'), from the same
-  -- parse: where the editor's Enter may cut the text it reads.
+  -- parse: where the editor's Enter may cut the text it reads, and where
+  -- its completion may start reading the text above the cursor.
+  , definitions :: [(Int, Maybe Text)]
+  -- ^ The definitions of links' references and footnotes, by line, each
+  -- as a definition of its label in one line ("Wiki.Core.Markdown.Starts"'
+  -- 'blockDefinitions'), from the same parse: the completion, which reads
+  -- the text from a start, is handed those above it.
   , openers :: Maybe [Int]
   -- ^ The character each of a presentation's openers starts at
   -- ('Wiki.Core.SlideRows.openerStarts'), from the same parse, which the
@@ -170,6 +176,7 @@ instance NFData Checked where
       `seq` rnf c.folds
       `seq` rnf c.slides
       `seq` rnf c.starts
+      `seq` rnf c.definitions
       `seq` rnf c.openers
 
 instance NFData ProblemKind where
@@ -193,6 +200,7 @@ checkText pageKind source =
       -- alone as a line break, and the editor does not, so the parser's
       -- lines are not the editor's.
       starts = if T.any (== '\r') source then [] else blockStarts source shapes
+    , definitions = if T.any (== '\r') source then [] else blockDefinitions source shapes
     , openers = if pageKind == Presentation then Just (SlideRows.openerStartsParsed source deck) else Nothing
     }
   where

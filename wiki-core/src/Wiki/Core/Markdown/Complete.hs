@@ -52,6 +52,9 @@ module Wiki.Core.Markdown.Complete
   , LineReader
   , readLine
   , firstProbes
+  , readsWholeAbove
+  , afterBound
+  , pastBound
   , probesOf
 
     -- * Candidates
@@ -163,6 +166,13 @@ data At = At
   , before :: Text
   , after :: Text
   , below :: [Text]
+  , cutBelow :: Bool
+  -- ^ Where the lines below were cut short of the text's end, at a start
+  -- of a block ("Wiki.Core.Markdown.Starts"' 'linesBelow'), whether the
+  -- whole text after the cursor goes past 'afterBound' ('pastBound'): the
+  -- probes then ask what they ask of a text cut at the bound (a block
+  -- after the cursor's), so that the answer is the whole text's. The text
+  -- after a start of a block reads nothing before it otherwise.
   }
   deriving stock (Eq, Show)
 
@@ -327,16 +337,22 @@ linkWord = "Zqxjvlink"
 afterBound :: Int
 afterBound = 2000
 
+-- | Whether a text after the cursor, the rest of the cursor's line and
+-- the lines below, goes past 'afterBound'.
+pastBound :: Text -> [Text] -> Bool
+pastBound after below = any (> afterBound) (scanl (\n l -> n + 1 + T.length l) (T.length after) below)
+
 -- | The text after the cursor that 'linkAt' reads: the rest of the
 -- cursor's line and the lines below, at most 'afterBound' characters,
--- and whether the text goes on after that.
+-- and whether the text goes on after that (past the bound; where the
+-- lines below were cut, whether the whole text did, 'cutBelow').
 stretchOf :: At -> (Text, Bool)
 stretchOf at = go (T.length at.after) [at.after] at.below
   where
     go n taken rest
       | n > afterBound = (T.take afterBound (T.intercalate "\n" (reverse taken)), True)
       | otherwise = case rest of
-          [] -> (T.intercalate "\n" (reverse taken), False)
+          [] -> (T.intercalate "\n" (reverse taken), at.cutBelow)
           l : ls -> go (n + 1 + T.length l) (l : taken) ls
 
 -- | What of the link at the cursor the reader had written after the
@@ -580,7 +596,8 @@ data Probe = Probe
 -- column) pairs, the probe's first line counted as line 0 ('WikiLinkTo');
 -- every inline it reads ('allInlines'); and the first line of the
 -- top-level block that holds the first (counted in the lines above, from
--- 1), from which on the lines read alike whatever comes before.
+-- 1), from which on the lines read alike whatever comes before, or the
+-- first line read where no block starts at or above it.
 data LineReading = LineReading
   { roles :: [[MarkerRole]]
   , boxed :: Bool
@@ -625,7 +642,11 @@ readLine above probe = case parseWithStartsAndMarkers (T.intercalate "\n" (kept 
       , linkSpans = [((l - n, c), (l' - n, c')) | MarkerLine l c (WikiLinkTo l' c') <- lines']
       , inlinesRead = inlines'
       , blocksRead = map snd blocks
-      , enclosing = inAbove (fromMaybe n (lastMay [l | (Just l, _) <- blocks, l <= n]))
+      , -- The probe's own first line where no block starts on a line
+        -- at or above the probe's (all above are footnotes' or links'
+        -- definitions, which the parser places elsewhere or drops):
+        -- reading from there reads what reading from the top reads.
+        enclosing = inAbove (fromMaybe 1 (lastMay [l | (Just l, _) <- blocks, l <= n]))
       }
     where
       inlines' = allInlines (map snd blocks)
@@ -671,6 +692,15 @@ firstProbes at = case shapeAt at of
   Just shape -> case shape.trigger of
     EndMarker -> [Probe 1 [shape.prefix <> closingMarker name] | name <- startedAbove at.above]
     trigger -> [Probe 1 [shape.prefix <> probeOf trigger]]
+
+-- | Whether the trigger at the cursor may have the whole text above read
+-- when no start of a block serves ("Wiki.Core.Markdown.Starts"'
+-- 'Wiki.Core.Markdown.Starts.linesFromStart'): a marker (@[[!@, @[!@,
+-- @[[/@) and a link to a page (@[[@), which the reader types on purpose
+-- and rarely. A @/@ does not: it is typed in any prose ("km / h"), and
+-- gets no list then rather than a reading of the whole text.
+readsWholeAbove :: At -> Bool
+readsWholeAbove at = isJust (shapeAt at) || isJust (pageLinkShape at)
 
 -- | A skeleton as written at the cursor, as a probe from a line: its first
 -- line in place of the trigger and the letters, and each further line

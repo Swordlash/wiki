@@ -24,11 +24,18 @@ module Wiki.Core.Markdown.Starts
   ( blockStarts
   , Kept (..)
   , textRange
+  , blockDefinitions
+  , Earlier (..)
+  , noEarlier
+  , linesFromStart
+  , aboveLimit
+  , linesBelow
   )
 where
 
 import Data.IntSet qualified as IntSet
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Protolude
 import Wiki.Core.Markdown.Ast (Shape (..), ShapeKind (..), shapeLines)
@@ -117,3 +124,163 @@ textRange kept firstChange lineStart lineEnd len = do
         _ -> len
   guard (ends - begins <= textLimit)
   pure (begins, ends)
+
+----------------------------------------------------------------------
+-- The completion's text around the cursor
+
+-- | The definitions of a text, by line: for each definition of a link's
+-- reference (@[label]: \/url@) and of a footnote (@[^label]: …@), the line
+-- it starts on and a definition of the same label in one line
+-- (@[label]: x@, @[^label]: x@), or 'Nothing' where its label could not be
+-- read on that line (a label over two lines), or where its line is not
+-- known (a footnote's definition with nothing in it, put at line 1). The shapes are the parse's
+-- ('Wiki.Core.Markdown.Ast.parseShapes'): a link's definition is a shape
+-- with no block of its own ('OtherShape', nothing inside), whose text
+-- starts with its label in brackets and a colon; a footnote's definition
+-- is a 'NoteShape', whose first line holds its label.
+--
+-- A definition counts wherever it is in the page: a reference elsewhere
+-- reads as a link, or a footnote's number, only because of it. So the
+-- completion, which reads the text from a start rather than from the top
+-- ('linesFromStart'), is handed those above the start, in one line each.
+blockDefinitions :: Text -> [Shape] -> [(Int, Maybe Text)]
+blockDefinitions source shapes = sortOn fst (concatMap definitionsIn shapes)
+  where
+    sourceLines = T.splitOn "\n" source
+    lineText l = fromMaybe "" (atMay sourceLines (l - 1))
+    definitionsIn s = case s.kind of
+      OtherShape
+        | null s.inner
+        , ((l, c), _) : _ <- s.parts
+        , Just rest <- T.stripPrefix "[" (T.drop (c - 1) (lineText l))
+        , not ("[" `T.isPrefixOf` rest) ->
+            [(l, (\label -> "[" <> label <> "]: x") <$> labelIn rest)]
+      NoteShape ->
+        let l = fst (shapeLines s)
+            (_, at) = T.breakOn "[^" (lineText l)
+         in -- A footnote's definition with nothing in it has no line in the
+            -- shapes: its label is not read, and it may be anywhere.
+            if l > 0
+              then (l, (\label -> "[^" <> label <> "]: x") <$> labelIn (T.drop 2 at)) : concatMap definitionsIn s.inner
+              else [(1, Nothing)]
+      _ -> concatMap definitionsIn s.inner
+    -- The label before "]:", if the line holds it.
+    labelIn rest = case T.breakOn "]:" rest of
+      (label, end) | not (T.null end), not (T.null (T.strip label)) -> Just label
+      _ -> Nothing
+
+-- | 'Earlier' is what the editor keeps of its last check of the text
+-- ("Wiki.Core.Markdown.Problems"' 'Wiki.Core.Markdown.Problems.Checked'),
+-- for the completion: the lines of the text checked, the lines at which a
+-- top-level block starts with nothing open above it ('blockStarts'), and
+-- the text's definitions ('blockDefinitions').
+data Earlier = Earlier
+  { lines :: [Text]
+  , starts :: [Int]
+  , definitions :: [(Int, Maybe Text)]
+  }
+
+-- | Nothing checked yet: no start but the text's first line.
+noEarlier :: Earlier
+noEarlier = Earlier {lines = [], starts = [], definitions = []}
+
+-- | The lines the completion's parser reads above the cursor's line: the
+-- lines above it from the last start ('blockStarts') above the cursor's
+-- line that the text has kept as the check read it, that line and all
+-- above it; after the definitions above that start, one line each, and a
+-- blank line ('blockDefinitions'). The text above the start is not read:
+-- every block of it ended before the start, so the parser reads the lines
+-- from the start as the whole text reads them, but for the definitions,
+-- which count wherever they are. 'Nothing' where those lines are longer
+-- than 'aboveLimit' (no start serves, or the block above the cursor is
+-- one long block): the caller reads the whole text above, or opens no
+-- list.
+--
+-- A start is not used below a definition whose label could not be read,
+-- and not where definitions go before it and its line starts with white
+-- space: a footnote's definition would take an indented line in.
+linesFromStart :: Earlier -> [Text] -> Maybe [Text]
+linesFromStart earlier above = do
+  guard (sum (map ((+ 1) . T.length) handed) <= aboveLimit)
+  pure handed
+  where
+    -- The lines above the cursor's that the text has kept as the check
+    -- read them, from the first: a start among them is one still, its own
+    -- line included.
+    same = length (takeWhile identity (zipWith (==) earlier.lines above))
+    unread = minimumMay [l | (l, Nothing) <- earlier.definitions]
+    usable s =
+      s > 1
+        && s <= same
+        && maybe True (s <=) unread
+        && (null (definitionsAbove s) || not (indented (lineAt s)))
+    indented = T.any isSpace . T.take 1
+    lineAt s = fromMaybe "" (atMay above (s - 1))
+    definitionsAbove s = firstOfEach Set.empty [d | (l, Just d) <- earlier.definitions, l < s]
+    firstOfEach _ [] = []
+    firstOfEach seen (d : ds)
+      | key d `Set.member` seen = firstOfEach seen ds
+      | otherwise = d : firstOfEach (Set.insert (key d) seen) ds
+    key d = T.toCaseFold (T.unwords (T.words (fst (T.breakOn "]:" d))))
+    handed = case lastMay (filter usable earlier.starts) of
+      Nothing -> above
+      Just s -> case definitionsAbove s of
+        [] -> drop (s - 1) above
+        ds -> ds <> [""] <> drop (s - 1) above
+
+-- | 'aboveLimit' is the most text, in characters, the completion's parser
+-- reads above the cursor's line ('linesFromStart').
+aboveLimit :: Int
+aboveLimit = 4000
+
+-- | How many of the lines below the cursor's the completion's parser
+-- reads, given how far after the cursor it reads at most (the
+-- completion's @afterBound@, in characters), the lines above the
+-- cursor's, the cursor's line before the cursor and after it, and the
+-- lines below,
+-- where it need not read them that far: up to the second start of a
+-- block after a blank line below the cursor's line, that start's line
+-- not read. The block after the cursor's comes whole, so the parser
+-- reads whether the cursor's block ends before it, as it reads it from
+-- the longer text: the cursor's block, and every block after it up to
+-- that start, read the same whatever follows a blank line and a block
+-- with nothing open above it.
+--
+-- Only where the cursor's line is the one line the text has changed
+-- since the check (the lines above it and below it are the lines the
+-- check read, as typing on the line leaves them; the line may be new, a
+-- blank line beside it too), since a block typed elsewhere could take in
+-- what follows. A start after a blank line, not an item's after another
+-- (which a cut would make a tight list of a loose one), and not a
+-- definition's (which makes no block). And not where a definition comes
+-- after that start within the bound: it counts above it too. 'Nothing'
+-- otherwise: the parser reads the lines below to the bound.
+linesBelow :: Int -> Earlier -> [Text] -> Text -> Text -> [Text] -> Maybe Int
+linesBelow bound earlier above before after below = do
+  -- A carriage return on the cursor's line is a line break to the parser
+  -- and not to the editor, whose lines the check's are compared with.
+  guard (not (T.any (== '\r') (before <> after)))
+  let k = length above
+      total = length earlier.lines
+      -- The text checked was this text with the cursor's line as it was
+      -- (-1), or without it (0), or without it and a blank line beside it
+      -- (1: a paragraph begun on a blank line takes a blank line after
+      -- it): the lines above and below it overlap on that many lines of
+      -- the text checked.
+      overlap = k + length below - total
+      -- How far a line below has moved since the check.
+      moved = overlap + 1
+  guard (overlap >= -1 && overlap <= 1)
+  guard (and (zipWith (==) earlier.lines above) && drop (total - length below) earlier.lines == below)
+  guard (all (T.null . T.strip) (take overlap (drop (k - overlap) earlier.lines)))
+  let definitionLines = Set.fromList (map fst earlier.definitions)
+      -- Whether the line above a line of the text now is a blank line
+      -- below the cursor's.
+      blankAbove l = l - 1 > k + 1 && maybe False (T.null . T.strip) (atMay below (l - k - 3))
+      -- Starts below the cursor's line, as lines of the text now.
+      after' = [l | s <- earlier.starts, s > total - length below, let l = s + moved, blankAbove l, not (s `Set.member` definitionLines)]
+  end <- atMay after' 1
+  let reach = length (takeWhile (<= bound) (scanl (\n l -> n + 1 + T.length l) (T.length after) below))
+      lastRead = k + 1 + reach
+  guard (not (any (\l -> l + moved >= end && l + moved <= lastRead) (Set.toList definitionLines)))
+  pure (end - k - 2)

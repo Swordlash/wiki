@@ -211,6 +211,7 @@ atIn nodes marked =
     , before = fromMaybe "" (lastMay ls)
     , after = T.takeWhile (/= '\n') (T.drop 1 rest)
     , below = drop 1 (T.splitOn "\n" (T.drop 1 rest))
+    , cutBelow = False
     }
   where
     (upTo, rest) = T.breakOn "‸" marked

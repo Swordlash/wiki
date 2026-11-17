@@ -742,7 +742,7 @@ component =
     handleAction = \case
       Initialize -> do
         H.liftEffect prepareAssistant
-        channel <- H.async (liftIO HS.create)
+        channel <- H.sync (liftIO HS.create)
         void (H.subscribe (FromTalk <$> channel.emitter))
         modify (\st -> st {listener = Just channel.listener})
       Finalize -> do
@@ -786,7 +786,7 @@ component =
           -- changes still to decide stay the editor's.
           modify (\st -> st {entries = []})
       Tick -> do
-        t <- H.async (liftIO getCurrentTime)
+        t <- H.sync (liftIO getCurrentTime)
         modify (\st -> st {now = Just t})
 
     -- The provider the editor's button asked for (which the editor makes
@@ -911,7 +911,7 @@ component =
       HeardCall call name input -> do
         (edited, told, ok) <- edit name input
         -- The model goes on once it has the answer: a new wait.
-        t <- H.async (liftIO getCurrentTime)
+        t <- H.sync (liftIO getCurrentTime)
         modifyReply (\r -> (settle r) {notes = r.notes <> [edited], stage = Waiting, quietSince = t})
         modify (\st -> st {now = Just t})
         gets (\st -> st.talk) >>= traverse_ (\talk -> H.liftEffect (answerCall talk call told ok))
@@ -995,7 +995,7 @@ component =
     -- the ticker stopped.
     finish :: Stage -> H.HalogenM State Action Empty Output m ()
     finish stage = do
-      t <- H.async (liftIO getCurrentTime)
+      t <- H.sync (liftIO getCurrentTime)
       modifyReply (\r -> (settle r) {stage, took = Just (diffUTCTime t r.began)})
       gets (\st -> st.ticker) >>= traverse_ H.kill
       modify (\st -> st {talking = False, ticker = Nothing, now = Nothing})

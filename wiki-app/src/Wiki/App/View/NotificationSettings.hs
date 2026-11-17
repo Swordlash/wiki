@@ -173,7 +173,7 @@ component =
     showFeed = \case
       Left e -> modify (\st -> st {feed = Just (Left e)})
       Right (FeedAddress address) -> do
-        url <- traverse (H.async . absoluteUrl) address
+        url <- traverse (H.sync . absoluteUrl) address
         modify (\st -> st {feed = Just (Right (Feed url))})
 
     changing :: (NotificationSettings -> NotificationSettingsChange) -> H.HalogenM State Action Empty output m ()

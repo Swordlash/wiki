@@ -2425,7 +2425,7 @@ component =
             unless (current == Just p) $ changeAssistant (chooseProvider p)
             -- A model list more than a day old, or a provider that could
             -- not be reached, is asked again.
-            now <- H.async (liftIO getCurrentTime)
+            now <- H.sync (liftIO getCurrentTime)
             gets (\st' -> st'.assistantSettings) >>= \case
               Just (Right s) | listStale now (settingsOf p s) || (settingsOf p s).unreachable -> checkProvider p
               _ -> pass
@@ -2787,7 +2787,7 @@ component =
           , not (Set.member p st.checking) -> do
               modify (\st' -> st' {checking = Set.insert p st'.checking})
               void . H.fork $ do
-                now <- H.async (liftIO getCurrentTime)
+                now <- H.sync (liftIO getCurrentTime)
                 result <- H.async (listModels r)
                 modify (\st' -> st' {checking = Set.delete p st'.checking})
                 changeAssistant $ \s' ->

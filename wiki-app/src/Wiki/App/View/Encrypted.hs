@@ -186,7 +186,7 @@ component =
           gets (\st -> st.input.context.session.user)
             >>= traverse_
               ( \u -> do
-                  here <- H.async passkeysHere
+                  here <- H.sync passkeysHere
                   H.async (loadUserKeys u.id) >>= \case
                     Left why -> modify (\st -> st {told = Just why})
                     Right keys -> do

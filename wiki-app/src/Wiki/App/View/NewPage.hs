@@ -185,8 +185,8 @@ component =
 -- placeholders filled in. A space template is fetched from the backend
 -- here, because the list of the space's pages has no bodies. A template
 -- that cannot be fetched any more (deleted since the form was shown) gives
--- a blank page. It runs in the view's program: the fetch and the clock
--- each wait in 'H.async', and a blank page waits for nothing.
+-- a blank page. It runs in the view's program: only the fetch waits (in
+-- 'H.async'); the clock is read in place ('H.sync').
 startingBody :: (MonadWiki m, MonadIO m) => State -> H.HalogenM st act slots output m Text
 startingBody st = case st.start of
   Blank -> pure ""
@@ -197,7 +197,7 @@ startingBody st = case st.start of
   BuiltIn key -> filled (maybe "" (\t -> t.body) (find (\t -> t.key == key) builtinTemplates))
   where
     filled body = do
-      today <- utctDay <$> H.async (liftIO getCurrentTime)
+      today <- utctDay <$> H.sync (liftIO getCurrentTime)
       let author = maybe "" (\u -> u.displayName) st.input.context.session.user
       pure (fillTemplate Placeholders {Template.title = T.strip st.title, Template.date = today, Template.author = author} body)
 

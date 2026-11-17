@@ -628,12 +628,12 @@ component =
         mailbox <- H.async ownEmail
         modify (\st -> st {mailbox = Just mailbox})
         keysKept <- H.async vaultSync
-        keysHere <- H.async passkeysHere
+        keysHere <- H.sync passkeysHere
         modify (\st -> st {keysKept, keysHere})
         when (keysKept && keysHere) $ do
           keys <- H.async listPasskeys
           modify (\st -> st {keys = Just keys})
-        sealable <- H.async sealingHere
+        sealable <- H.sync sealingHere
         modify (\st -> st {sealable})
         owner <- gets (\st -> st.owner)
         for_ owner $ \u ->

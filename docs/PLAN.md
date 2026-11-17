@@ -1992,24 +1992,6 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   `Test.Harness.MemDom` (a page for each view, so no lock; a reader's
   whole click with default actions); the wiki keeps `viewContext`,
   `TestFeed`, `driven`.
-- **WP5.130 The wasm suite of wiki-core, and which machine ran it
-  (proposed to the owner, 2026-11-17; he noticed 20 minutes in the
-  wasm job's tests).** Read from nine runs of that day: the suite takes
-  320 to 410 s on five runs and 690 to 810 s on four (1,160 s once),
-  the same code within minutes of each other, and the smallest suite
-  (139 examples) takes about twice as long on the slow runs too: the
-  hosted runners differ, the code did not regress. What is the wiki's:
-  the five slowest examples are #187's completion properties over long
-  texts (194, 135, 71, 58 and 46 s of the 1,160 s run). To build: those
-  keep their cases natively and run a small share on wasm
-  (`Test.Cases`); the job's summary names the machine's processor, so
-  a slow run is seen for what it is. With it (the owner, 2026-11-17, who saw
-  the lines in the wasm job): the C compiler's "trigraph ignored"
-  warnings, which come from three `??=` in
-  `wiki-app/test/jsbits/test-encrypted.js` (jsbits are embedded in a C
-  string, where `??=` is a trigraph; ignored today, so harmless):
-  written without the operator, and a check that no jsbits file holds
-  a trigraph's three characters.
 - **WP5.131 The ceilings out, a linter's rule in (the owner,
   2026-11-17: "wywal, ewentualnie jakiś linter"; being built after
   WP5.130, stacked on it).** The ceilings on the browser suite (#291)
@@ -3210,6 +3192,19 @@ needs. Each was true when its package merged; check before relying on one.
   before any message is sent; it passed alone three times of three.
   A race on the settings' store, or a wait on a clock: to be read for
   its cause with the nightly's three findings, not re-run.
+- **wiki-core's suite on wasm, and which machine ran it (#308,
+  WP5.130).** Read from nine runs of 2026-11-17: the suite takes 320
+  to 410 s on some runs and 690 to 1,160 s on others, the same code
+  minutes apart, and the smallest suite is twice as slow on the slow
+  runs too: GitHub's hosted runners differ, the code did not regress.
+  The wasm job's summary and the over-budget warning now name the
+  processor. The five slowest examples (#187's completion properties
+  over long texts) run a tenth of their cases on wasm
+  (`Test.Cases.longTexts`, `longText`), natively as before: 530 s to
+  352 s on a quiet i7-1270P. The C compiler's "trigraph ignored"
+  warnings came from `??=` in a test's jsbits (jsbits are embedded in
+  a C string); `toolchain/check-trigraphs.sh` now refuses C's nine
+  trigraphs in any jsbits file.
 - **The page's cap as a setting, and a conversation's tokens (#307,
   WP5.129).** `Settings.pageCap` (the user's, not a provider's; 1,000
   to 2,000,000 characters, 200,000 when not set; absent in settings

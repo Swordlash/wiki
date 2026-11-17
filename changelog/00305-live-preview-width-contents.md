@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 305
 title: The detached preview shows the page as its readers will
 ---
 

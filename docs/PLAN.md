@@ -1983,27 +1983,42 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   shows nothing. With it the owner sees whether his gateway passes
   prompt caching, which nothing else shows: a gateway that drops
   `cache_control` answers as before, at the full price.
-- **WP5.126 One copy of the page in a request, the cache on the
-  conversation, a higher cap (the owner, 2026-11-17).** Today each of
+- **WP5.126 The page sent once, then its changes; the cache on the
+  conversation; a higher cap (the owner, 2026-11-17).** Today each of
   the user's messages carries the page as it is then (its first
   `bodyCap`, 24,000 characters), and the copies stay in the
   conversation, which is sent whole each time: the tenth message
-  sends ten copies. So the cap cannot simply be raised. To build: the
-  conversation keeps a message without its page once a later message
-  is sent (both forms computed in `Wiki.Core.Assistant.Prompt`,
-  tested natively; the JavaScript swaps them when the turn ends);
-  Anthropic's cache is asked for on the conversation too, not only on
-  the reference and the instructions (today), so that the rounds of a
-  tool loop and the next message read the earlier part at a tenth of
-  the price; then the cap is raised, to a number taken from the
-  reference's measured size and from up to 24 rounds a turn each
-  sending the page. To settle before the brief, from Anthropic's
-  documentation: whether changing an earlier user message invalidates
-  the thinking blocks kept after it (if so the swap is not possible at
-  Anthropic's own address as designed); how many cache breakpoints
-  and on which blocks; whether a selection is bounded (select-all
-  must not go round the cap). No real provider can be asked from the
-  tests: WP5.125's numbers, read by the owner, are the check.
+  sends ten copies. So the cap cannot simply be raised. **Settled from
+  Anthropic's documentation (2026-11-17): the conversation must stay
+  append-only.** The newer Claude models bind each thinking block to
+  everything sent before it (the system prompt, the tools, every
+  earlier message) and refuse a request that sends a block back after
+  an earlier message changed (a 400; for every account on Fable 5.2,
+  for accounts made since 2026-08-31 on Opus 5.5, Sonnet 5.5 and
+  Haiku 5.5). So an older copy of the page cannot be replaced by a
+  note, which was the first idea. The shape instead: the first message
+  carries the page; a later message carries what changed since the
+  last copy sent (a diff of lines, the model's own edits included, so
+  the picture corrects itself), or one line saying nothing changed,
+  and the whole page again only where the diff would be about as long
+  as the page. The component keeps the last copy sent; the diff and
+  the wording are pure, in `Wiki.Core.Assistant.Prompt`, tested
+  natively. With the conversation append-only, Anthropic's cache is
+  asked for on the conversation too: a marker on the last block of
+  the last message of each request (block-level `cache_control`, as
+  the reference and the instructions have today; at most four markers
+  a request; a message's string content becomes a block to carry it;
+  the top-level automatic field is the alternative, which a gateway
+  may refuse), so each round of a tool loop and each next message
+  read the earlier part at a tenth of the price or less. Then the cap
+  is raised, to a number taken from the reference's measured size and
+  the smallest context window in use. Also to read first: whether a
+  selection is bounded (select-all must not go round the cap). No real
+  provider can be asked from the tests: WP5.125's numbers, read by
+  the owner, are the check. The same rule bounds `/compact`
+  (WP5.127): the only client-side form that passes is the simple one,
+  a summary that replaces the whole conversation, no earlier thinking
+  sent back.
 - **WP5.127 Commands in the assistant's message box (the owner,
   2026-11-17).** A message that is exactly `/new` or `/clear` starts a
   new conversation, as "New" does (#302); `/help` lists the commands;

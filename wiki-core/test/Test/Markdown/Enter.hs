@@ -146,8 +146,8 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
         let (given, taken) = at n
         _ <- evaluate (T.length given + T.length taken)
         (answer, allocated) <- allocations (enter given taken)
-        -- 31 to 34 characters and 0.4 MB measured natively on
-        -- 2026-11-17, unoptimised.
+        -- At the end: 22 characters and 0.77 MB measured natively on
+        -- 2026-11-17, unoptimised; the middle reads three items.
         (answer, T.length given + T.length taken < 100, allocated < 5_000_000) `shouldBe` (NewLineWith "- ", True, True)
     it "reads only the cursor's block and the one below it in a far slide of a long deck" $ do
       let ls = T.splitOn "\n" longDeck

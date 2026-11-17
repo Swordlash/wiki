@@ -48,6 +48,32 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
     it "reads no line where two definitions start, or one inside a quotation, an item or a footnote (Codex, #298's second round)" $ do
       let doc = "[^n]: > [^m]: note\n\n[^o]: [a]: /u\n\n> [b]: /q\n\n[c]: /v"
       fmap (blockDefinitions doc) (parseShapes doc) `shouldBe` Right [(1, Nothing), (3, Nothing), (5, Nothing), (7, Just "[c]: x")]
+    it "reads no line holding ]: that no shape reports, as a definition in a footnote defined twice, or one in a listing (Codex, #298's third round)" $ do
+      let doc = "[^n]: first\n\n[^n]: [r]: /url\n\nParagraph.\n\n```\n[s]: /listed\n```\n\n[c]: /v"
+      fmap (blockDefinitions doc) (parseShapes doc) `shouldBe` Right [(1, Just "[^n]: x"), (3, Nothing), (8, Nothing), (11, Just "[c]: x")]
+    it "suspects a line holding ]: only in a run of lines one of which starts with [ after its container marks (#298's third round)" $ do
+      let doc =
+            T.intercalate
+              "\n"
+              [ "Prose with `[x]: ` in inline code."
+              , ""
+              , "[foo"
+              , "bar]: /u"
+              , ""
+              , "> [q]: /quoted"
+              , ""
+              , "- [i]: /item"
+              , ""
+              , "1. a"
+              , "   2) [j]: /nested"
+              , ""
+              , "```ts"
+              , "[key: string]: number"
+              , "```"
+              , ""
+              , "[c]: /v"
+              ]
+      fmap (blockDefinitions doc) (parseShapes doc) `shouldBe` Right [(4, Nothing), (6, Nothing), (8, Nothing), (11, Nothing), (14, Nothing), (17, Just "[c]: x")]
     it "reads no label holding an escape, which the parser reads and this does not (Codex, #298)" $
       fmap (blockDefinitions "[^a\\]:b]: old\n\n[b\\]]: /u\n\n[c]: /v") (parseShapes "[^a\\]:b]: old\n\n[b\\]]: /u\n\n[c]: /v")
         `shouldBe` Right [(1, Nothing), (3, Nothing), (5, Just "[c]: x")]
@@ -249,11 +275,11 @@ genCase = do
   lead <- elements ["", "", "> ", "- ", "1. ", "  ", "    ", "[^n]: ", "> - ", "[^m]: ", "[^n]: > "]
   words' <- case kind of
     Markers -> pure ""
-    Slash -> elements ["", "Some text ", "See [a] and [^n] ", "Text [b][^m] "]
+    Slash -> elements ["", "Some text ", "See [a] and [^n] ", "Text [b][^m] ", "[See "]
   trigger <- case kind of
     Markers -> elements ["[[!", "[!", "[[/", "[[!d"]
     Slash -> elements ["/", "/ta", "/b"]
-  after <- elements ["", "", " more", "]]"]
+  after <- elements ["", "", " more", "]]", "][r]"]
   below <- concat <$> (choose (0, 6) >>= \k -> replicateM k piece)
   farther <- elements [[], [], [], ["", T.intercalate "\n\n" (replicate 70 "Words of a long text.")]]
   change <- arbitrary
@@ -280,6 +306,10 @@ piece =
       -- without a quotation's mark), one in a quotation or an item, a
       -- label defined twice.
       (2, elements [["[^n]: [a]: /u", ""], ["[^n]: [^m]: note", ""], ["[^n]: > [^m]: note", ""], ["> [^m]: quoted note", ""], ["- [^m]: listed note", ""], ["[^n]: Again.", ""], ["[a]: /again", ""], ["[^n]: [a]: /u", "[^n]: [^m]: note", ""]])
+    , -- A link to a reference, its label defined or not (the cursor may be
+      -- in its text, on the line above), and a definition in the body of
+      -- a footnote defined twice, which the parser drops and still reads.
+      (2, elements [["[r]: /ref", ""], ["next][r]", ""], ["[^n]: first", "", "[^n]: [r]: /url", ""], ["[^n]: first", "", "[^n]: [r]: /url", "", "Paragraph."]])
     , (2, elements [["See [a], [b] and [^n].", ""], ["[a][^m]", ""]])
     , (2, elements [["- one", "- two", ""], ["- one", "", "- two", "", "- three", ""], ["1. one", "2. two", ""], ["- one", "", "  more of one", "- two"], ["- one", "", "- two"], ["1. one", "", "2. two", "3. three"], ["- one", "- two"]])
     , (2, elements [["> quoted", "> more", ""], ["> [!NOTE]", "> A box.", ""], ["> quoted", "lazy", ""]])

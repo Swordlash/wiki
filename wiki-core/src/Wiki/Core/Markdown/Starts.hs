@@ -36,6 +36,7 @@ where
 
 import Data.IntMap.Strict qualified as IntMap
 import Data.IntSet qualified as IntSet
+import Data.List (zip3)
 import Data.Map.Strict qualified as Map
 import Data.Sequence qualified as Seq
 import Data.Set qualified as Set
@@ -131,35 +132,59 @@ textRange kept firstChange lineStart lineEnd len = do
 ----------------------------------------------------------------------
 -- The completion's text around the cursor
 
--- | The definitions of a text, by line: for each line a definition of a
--- link's reference (@[label]: \/url@) or of a footnote (@[^label]: …@)
--- starts on, a definition of the same label in one line (@[label]: x@,
--- @[^label]: x@), or 'Nothing' where it is not read here. The shapes are
--- the parse's ('Wiki.Core.Markdown.Ast.parseShapes'): a link's definition
--- is a shape with no block of its own ('OtherShape', nothing inside),
--- whose text starts with its label in brackets; a footnote's definition
--- is a 'NoteShape', whose first line holds its label.
+-- | The definitions of a text, by line: for each line that may hold a
+-- definition of a link's reference (@[label]: \/url@) or of a footnote
+-- (@[^label]: …@), a definition of the same label in one line
+-- (@[label]: x@, @[^label]: x@), or 'Nothing' where it is not read here.
 --
--- The labels are read from the lines' text, which the parser reads by
--- rules this does not follow (escapes, containers, a definition inside
--- another's body). So a line is read only where nothing can differ: one
--- definition starts on it, at the top level (in no quotation, item,
--- footnote or other block), its label in brackets from the line's first
--- character after at most three spaces, a label of plain text (no
--- backslash, no bracket). Any other line that holds a definition is not
--- read ('Nothing'), and no start below it is used: the completion reads
--- more of the text there, as the whole text reads it. So is a footnote's
--- definition with nothing in it, whose line the shapes do not give (put
--- at line 1).
+-- A line may hold one where it holds @]:@ and its run of lines (since the
+-- last blank line, or the text's start) has a line that starts with @[@
+-- after its container marks. CommonMark's link reference definition is a
+-- label in brackets and a colon right after the closing bracket, and
+-- commonmark-extensions' footnote definition is @[^label]@ on one line
+-- and a colon right after it. The label opens with @[@ as the first
+-- character of a paragraph or block, after the container marks of its
+-- line (spaces, tabs, @>@, a list's @-@, @+@, @*@, a number and its @.@ or
+-- @)@; a task's box and a footnote's or a box's line start with @[@
+-- themselves); it may run over lines but not over a blank line; @]:@ is
+-- on its last line. So a @]:@ in a run of lines none of which starts with
+-- @[@ after its marks closes no label. The marks are stripped by
+-- characters, wide, so that the check errs towards suspecting a line.
+-- Every suspect line is a candidate: the parser
+-- may read a definition there that no shape reports (a reference
+-- definition in the body of a footnote defined twice, whose blocks it
+-- drops and whose definitions it keeps; a footnote's definition in the
+-- body of another on the same line). So a line holding @]:@ is read
+-- only where nothing can differ: it holds @]:@ once, one definition
+-- starts on it in the shapes ('Wiki.Core.Markdown.Ast.parseShapes': a link's definition is a
+-- shape with no block of its own, a footnote's a 'NoteShape'), at the top
+-- level (in no quotation, item, footnote or other block), its label in
+-- brackets from the line's first character after at most three spaces, a
+-- label of plain text (no backslash, no bracket). Any other line holding
+-- @]:@ is not read ('Nothing'), and no start below it is used: the
+-- completion reads more of the text there, as the whole text reads it. A
+-- line that starts with @[@ and holds @]:@ in a code listing (a
+-- TypeScript index signature, @[key: string]: number@) or in prose is
+-- such a line too, and costs the text below it that shortcut: known, and
+-- left.
 --
 -- A definition counts wherever it is in the page: a reference elsewhere
 -- reads as a link, or a footnote's number, only because of it. So the
 -- completion, which reads the text from a start rather than from the top
 -- ('linesFromStart'), is handed those above the start, in one line each.
 blockDefinitions :: Text -> [Shape] -> [(Int, Maybe Text)]
-blockDefinitions source shapes = [(l, readOn l ds) | (l, ds) <- Map.toAscList byLine]
+blockDefinitions source shapes = [(l, readOn l (Map.findWithDefault [] l byLine)) | (l, line, opened) <- zip3 [1 ..] lines' (drop 1 (scanl runOpened False lines')), opened, "]:" `T.isInfixOf` line]
   where
-    sourceLines = Seq.fromList (T.splitOn "\n" source)
+    lines' = T.splitOn "\n" source
+    sourceLines = Seq.fromList lines'
+    -- Whether a line's run of lines (since the last blank line) has a line
+    -- that starts with a bracket after its container marks, stripped by
+    -- characters, wide: every way a container (a quotation, an item, a
+    -- numbered item, a task's box, a footnote's or a box's line) puts a
+    -- paragraph's first character later on its line is among them.
+    runOpened opened line
+      | T.null (T.strip line) = False
+      | otherwise = opened || "[" `T.isPrefixOf` T.dropWhile (\c -> isDigit c || c `elem` (" \t>-+*.)" :: [Char])) line
     lineText l = fromMaybe "" (Seq.lookup (l - 1) sourceLines)
     byLine = Map.fromListWith (flip (<>)) [(l, [(top, footnote)]) | (l, top, footnote) <- concatMap (definitionsIn True) shapes]
     -- Each definition's line, whether it is at the top level, and whether
@@ -173,14 +198,14 @@ blockDefinitions source shapes = [(l, readOn l ds) | (l, ds) <- Map.toAscList by
             [(l, top, False)]
       NoteShape ->
         let l = fst (shapeLines s)
-         in (if l > 0 then (l, top, True) else (1, False, True)) : concatMap (definitionsIn False) s.inner
+         in [(l, top, True) | l > 0] <> concatMap (definitionsIn False) s.inner
       _ -> concatMap (definitionsIn False) s.inner
     readOn l = \case
       [(True, footnote)] -> do
         let line = lineText l
             indent = T.takeWhile (== ' ') line
             opening = if footnote then "[^" else "["
-        guard (T.length indent <= 3)
+        guard (T.length indent <= 3 && T.count "]:" line == 1)
         rest <- T.stripPrefix opening (T.drop (T.length indent) line)
         label <- labelIn rest
         pure (opening <> label <> "]: x")

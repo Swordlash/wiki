@@ -24,11 +24,22 @@ module Wiki.Core.Markdown.Starts
   ( blockStarts
   , Kept (..)
   , textRange
+  , blockDefinitions
+  , Earlier (..)
+  , earlierFrom
+  , noEarlier
+  , linesFromStart
+  , aboveLimit
+  , linesBelow
   )
 where
 
+import Data.IntMap.Strict qualified as IntMap
 import Data.IntSet qualified as IntSet
+import Data.List (zip3)
 import Data.Map.Strict qualified as Map
+import Data.Sequence qualified as Seq
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Protolude
 import Wiki.Core.Markdown.Ast (Shape (..), ShapeKind (..), shapeLines)
@@ -117,3 +128,240 @@ textRange kept firstChange lineStart lineEnd len = do
         _ -> len
   guard (ends - begins <= textLimit)
   pure (begins, ends)
+
+----------------------------------------------------------------------
+-- The completion's text around the cursor
+
+-- | The definitions of a text, by line: for each line that may hold a
+-- definition of a link's reference (@[label]: \/url@) or of a footnote
+-- (@[^label]: …@), a definition of the same label in one line
+-- (@[label]: x@, @[^label]: x@), or 'Nothing' where it is not read here.
+--
+-- A line may hold one where it holds @]:@ and its run of lines (since the
+-- last blank line, or the text's start) has a line that starts with @[@
+-- after its container marks. CommonMark's link reference definition is a
+-- label in brackets and a colon right after the closing bracket, and
+-- commonmark-extensions' footnote definition is @[^label]@ on one line
+-- and a colon right after it. The label opens with @[@ as the first
+-- character of a paragraph or block, after the container marks of its
+-- line (spaces, tabs, @>@, a list's @-@, @+@, @*@, a number and its @.@ or
+-- @)@; a task's box and a footnote's or a box's line start with @[@
+-- themselves); it may run over lines but not over a blank line; @]:@ is
+-- on its last line. So a @]:@ in a run of lines none of which starts with
+-- @[@ after its marks closes no label. The marks are stripped by
+-- characters, wide, so that the check errs towards suspecting a line.
+-- Every suspect line is a candidate: the parser
+-- may read a definition there that no shape reports (a reference
+-- definition in the body of a footnote defined twice, whose blocks it
+-- drops and whose definitions it keeps; a footnote's definition in the
+-- body of another on the same line). So a line holding @]:@ is read
+-- only where nothing can differ: it holds @]:@ once, one definition
+-- starts on it in the shapes ('Wiki.Core.Markdown.Ast.parseShapes': a link's definition is a
+-- shape with no block of its own, a footnote's a 'NoteShape'), at the top
+-- level (in no quotation, item, footnote or other block), its label in
+-- brackets from the line's first character after at most three spaces, a
+-- label of plain text (no backslash, no bracket). Any other line holding
+-- @]:@ is not read ('Nothing'), and no start below it is used: the
+-- completion reads more of the text there, as the whole text reads it. A
+-- line that starts with @[@ and holds @]:@ in a code listing (a
+-- TypeScript index signature, @[key: string]: number@) or in prose is
+-- such a line too, and costs the text below it that shortcut: known, and
+-- left.
+--
+-- A definition counts wherever it is in the page: a reference elsewhere
+-- reads as a link, or a footnote's number, only because of it. So the
+-- completion, which reads the text from a start rather than from the top
+-- ('linesFromStart'), is handed those above the start, in one line each.
+blockDefinitions :: Text -> [Shape] -> [(Int, Maybe Text)]
+blockDefinitions source shapes = [(l, readOn l (Map.findWithDefault [] l byLine)) | (l, line, opened) <- zip3 [1 ..] lines' (drop 1 (scanl runOpened False lines')), opened, "]:" `T.isInfixOf` line]
+  where
+    lines' = T.splitOn "\n" source
+    sourceLines = Seq.fromList lines'
+    -- Whether a line's run of lines (since the last blank line) has a line
+    -- that starts with a bracket after its container marks, stripped by
+    -- characters, wide: every way a container (a quotation, an item, a
+    -- numbered item, a task's box, a footnote's or a box's line) puts a
+    -- paragraph's first character later on its line is among them.
+    runOpened opened line
+      | T.null (T.strip line) = False
+      | otherwise = opened || "[" `T.isPrefixOf` T.dropWhile (\c -> isDigit c || c `elem` (" \t>-+*.)" :: [Char])) line
+    lineText l = fromMaybe "" (Seq.lookup (l - 1) sourceLines)
+    byLine = Map.fromListWith (flip (<>)) [(l, [(top, footnote)]) | (l, top, footnote) <- concatMap (definitionsIn True) shapes]
+    -- Each definition's line, whether it is at the top level, and whether
+    -- it is a footnote's.
+    definitionsIn top s = case s.kind of
+      OtherShape
+        | null s.inner
+        , ((l, c), _) : _ <- s.parts
+        , Just rest <- T.stripPrefix "[" (T.drop (c - 1) (lineText l))
+        , not ("[" `T.isPrefixOf` rest) ->
+            [(l, top, False)]
+      NoteShape ->
+        let l = fst (shapeLines s)
+         in [(l, top, True) | l > 0] <> concatMap (definitionsIn False) s.inner
+      _ -> concatMap (definitionsIn False) s.inner
+    readOn l = \case
+      [(True, footnote)] -> do
+        let line = lineText l
+            indent = T.takeWhile (== ' ') line
+            opening = if footnote then "[^" else "["
+        guard (T.length indent <= 3 && T.count "]:" line == 1)
+        rest <- T.stripPrefix opening (T.drop (T.length indent) line)
+        label <- labelIn rest
+        pure (opening <> label <> "]: x")
+      _ -> Nothing
+    -- The label before "]:", if the line holds it and nothing in it is
+    -- escaped or bracketed.
+    labelIn rest = case T.breakOn "]:" rest of
+      (label, end)
+        | not (T.null end)
+        , not (T.null (T.strip label))
+        , not (T.any (`elem` ['\\', '[', ']', '^']) label) ->
+            Just label
+      _ -> Nothing
+
+-- | 'Earlier' is what the editor keeps of its last check of the text
+-- ("Wiki.Core.Markdown.Problems"' 'Wiki.Core.Markdown.Problems.Checked'),
+-- for the completion, made once when the check's result is kept
+-- ('earlierFrom'): the lines of the text checked, indexed; the lines at
+-- which a top-level block starts with nothing open above it
+-- ('blockStarts'); the text's definitions by line ('blockDefinitions'),
+-- and the first of them whose label is not read.
+data Earlier = Earlier
+  { lines :: Seq Text
+  , starts :: IntSet
+  , definitions :: IntMap (Maybe Text)
+  , unread :: Maybe Int
+  }
+
+-- | What the editor keeps of a check: of the text checked, its starts and
+-- its definitions.
+earlierFrom :: Text -> [Int] -> [(Int, Maybe Text)] -> Earlier
+earlierFrom text starts' definitions' =
+  Earlier
+    { lines = Seq.fromList (T.splitOn "\n" text)
+    , starts = IntSet.fromList starts'
+    , definitions = IntMap.fromListWith (\_ first' -> first') definitions'
+    , unread = head [l | (l, Nothing) <- sortOn fst definitions']
+    }
+
+-- | Nothing checked yet: no start but the text's first line.
+noEarlier :: Earlier
+noEarlier = Earlier {lines = Seq.empty, starts = IntSet.empty, definitions = IntMap.empty, unread = Nothing}
+
+-- | How many lines above the cursor's the text has kept as the check read
+-- them, from the first: a start among them is one still, its own line
+-- included. A walk of the lines above, once a request.
+keptAbove :: Earlier -> [Text] -> Int
+keptAbove earlier above = length (takeWhile identity (zipWith (==) (toList earlier.lines) above))
+
+-- | The lines the completion's parser reads above the cursor's line: the
+-- lines above it from the last start ('blockStarts') above the cursor's
+-- line that the text has kept as the check read it, that line and all
+-- above it; after the definitions above that start, one line each, and a
+-- blank line ('blockDefinitions'). The text above the start is not read:
+-- every block of it ended before the start, so the parser reads the lines
+-- from the start as the whole text reads them, but for the definitions,
+-- which count wherever they are. 'Nothing' where those lines are longer
+-- than 'aboveLimit' (no start serves, or the block above the cursor is
+-- one long block): the caller reads the whole text above, or opens no
+-- list.
+--
+-- A start is not used below a definition whose label is not read, and not
+-- where definitions go before it and its line starts with white space: a
+-- footnote's definition would take an indented line in.
+--
+-- The starts are searched from the cursor's line up, and the first that
+-- serves is taken; each is looked at in constant time (the lines and the
+-- definitions are indexed, 'Earlier'). On 16,000 short paragraphs with a
+-- definition at the top, it takes 1.2 ms natively, most of it the one
+-- comparison of the lines above with the check's ('keptAbove'), where a
+-- walk of the lines for each start took 0.47 s (Codex, #298).
+linesFromStart :: Earlier -> [Text] -> Maybe [Text]
+linesFromStart earlier above = do
+  guard (sum (map ((+ 1) . T.length) handed) <= aboveLimit)
+  pure handed
+  where
+    highest = min (keptAbove earlier above) (maybe maxBound identity earlier.unread)
+    candidates = takeWhile (> 1) (IntSet.toDescList (fst (IntSet.split (highest + 1) earlier.starts)))
+    firstDefinition = fst <$> IntMap.lookupMin earlier.definitions
+    usable s = maybe True (>= s) firstDefinition || not (indented (lineAt s))
+    indented = T.any isSpace . T.take 1
+    lineAt s = fromMaybe "" (Seq.lookup (s - 1) earlier.lines)
+    definitionsAbove s = firstOfEach Set.empty (catMaybes (IntMap.elems (fst (IntMap.split s earlier.definitions))))
+    firstOfEach _ [] = []
+    firstOfEach seen (d : ds)
+      | key d `Set.member` seen = firstOfEach seen ds
+      | otherwise = d : firstOfEach (Set.insert (key d) seen) ds
+    key d = T.toCaseFold (T.unwords (T.words (fst (T.breakOn "]:" d))))
+    handed = case find usable candidates of
+      Nothing -> above
+      Just s -> case definitionsAbove s of
+        [] -> drop (s - 1) above
+        ds -> ds <> [""] <> drop (s - 1) above
+
+-- | 'aboveLimit' is the most text, in characters, the completion's parser
+-- reads above the cursor's line ('linesFromStart').
+aboveLimit :: Int
+aboveLimit = 4000
+
+-- | How many of the lines below the cursor's the completion's parser
+-- reads, given how far after the cursor it reads at most (the
+-- completion's @afterBound@, in characters), the lines above the
+-- cursor's, the cursor's line before the cursor and after it, and the
+-- lines below, where it need not read them that far: up to the second
+-- start of a block after a blank line below the cursor's line, that
+-- start's line not read. The block after the cursor's comes whole, so the
+-- parser reads whether the cursor's block ends before it, as it reads it
+-- from the longer text: the cursor's block, and every block after it up
+-- to that start, read the same whatever follows a blank line and a block
+-- with nothing open above it.
+--
+-- Only where the cursor's line is the one line the text has changed
+-- since the check, as far as the parser reads (the lines above it, and
+-- below it to the bound, are the lines the check read, as typing on the
+-- line leaves them; the line may be new, a blank line beside it too),
+-- since a block typed elsewhere could take in what follows. A start after
+-- a blank line, not an item's after another (which a cut would make a
+-- tight list of a loose one), and not a definition's (which makes no
+-- block). And not where a definition comes after that start within the
+-- bound: it counts above it too. 'Nothing' otherwise: the parser reads
+-- the lines below to the bound.
+--
+-- Nothing below the bound is looked at: the lines compared, the starts
+-- and the definitions are those within it, the starts and definitions
+-- found by their index. On a tight list of 16,000 items with the cursor
+-- in the first, it takes 0.08 ms natively, where a walk of the lines
+-- below for each item took 0.43 s (Codex, #298); the lines above are
+-- compared with the check's once ('keptAbove').
+linesBelow :: Int -> Earlier -> [Text] -> Text -> Text -> [Text] -> Maybe Int
+linesBelow bound earlier above before after below = do
+  -- A carriage return on the cursor's line is a line break to the parser
+  -- and not to the editor, whose lines the check's are compared with.
+  guard (not (T.any (== '\r') (before <> after)))
+  let k = length above
+      -- The lines below within the bound, as the parser reads them.
+      reach = length (takeWhile (<= bound) (scanl (\n l -> n + 1 + T.length l) (T.length after) below))
+      within = Seq.fromList (take reach below)
+      checkedAt l = Seq.lookup (l - 1) earlier.lines
+      -- How far a line below has moved since the check: the text checked
+      -- was this text with the cursor's line as it was (0), or without it
+      -- (1), or without it and a blank line beside it (2: a paragraph begun
+      -- on a blank line takes a blank line after it), a line of the text
+      -- now (from 1) being the line that many lines above it then.
+      matches moved =
+        (moved < 2 || maybe False (T.null . T.strip) (checkedAt k))
+          && and [checkedAt (k + 2 + j - moved) == Just l | (j, l) <- zip [0 ..] (toList within)]
+  guard (keptAbove earlier above >= k)
+  moved <- find matches [0, 1, 2]
+  let -- Whether the line above a line of the text now is a blank line
+      -- below the cursor's.
+      blankAbove l = l - 1 > k + 1 && maybe False (T.null . T.strip) (Seq.lookup (l - k - 3) within)
+      lastRead = k + 1 + reach
+      -- Starts below the cursor's line within the bound, as lines of the
+      -- text now.
+      startsWithin = IntSet.toAscList (fst (IntSet.split (lastRead - moved + 1) (snd (IntSet.split (k + 1 - moved) earlier.starts))))
+      after' = [l | s <- startsWithin, let l = s + moved, blankAbove l, not (s `IntMap.member` earlier.definitions)]
+  end <- atMay after' 1
+  guard (maybe True ((> lastRead - moved) . fst) (IntMap.lookupGE (end - moved) earlier.definitions))
+  pure (end - k - 2)

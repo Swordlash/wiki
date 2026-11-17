@@ -179,6 +179,7 @@ test-suite wiki-core-test
       Test.Markdown.Edit
       Test.Markdown.Complete
       Test.Markdown.CompleteOracle
+      Test.Markdown.CompleteStarts
       Test.Markdown.Enter
       Test.Markdown.Emoji
       Test.Markdown.Folds

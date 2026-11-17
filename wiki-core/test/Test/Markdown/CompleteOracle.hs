@@ -22,6 +22,7 @@ import Data.Text qualified as T
 import Protolude
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
+import Test.Markdown.CompleteStarts (alikeEverywhere, caseAt)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, checkCoverage, choose, conjoin, counterexample, cover, elements, forAll, frequency, property, (===))
 import Wiki.Core.Markdown.Ast (Block (..), BoxMarker (..), MarkerLine (..), MarkerName (..), MarkerRole (..), closingMarker, holdsBlocks, markerNameText, parseWithAllMarkers)
 import Wiki.Core.Markdown.Complete
@@ -63,6 +64,20 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
         readAsWritten doc cursor === []
     prop "writes each entry of the / menu as the toolbar's command writes it on the whole text, selection included" $
       checkCoverage (forAll genSlashCase slashWritesAsApply)
+
+  -- WP5.124 (f): the places generated above, read from the starts of a
+  -- check ("Test.Markdown.CompleteStarts"' modes): the answer is the
+  -- whole text's. Fifty cases each natively, a quarter on wasm, where the
+  -- long texts of the / menu's places take seconds a case.
+  describe "from a start of a block" . modifyMaxSuccess (`div` 2) $ do
+    prop "offers the markers, kinds of box and end markers the whole text offers" $ \(Doc doc) (Line cursor) change ->
+      conjoin [alikeEverywhere [wikiSource Presentation []] (caseAt (T.intercalate "\n" (doc <> [cursor <> trigger <> "‸"])) trigger change) | trigger <- ["[[!", "[!", "[[/"]]
+    prop "opens the / menu the whole text opens, on the places its writing is checked at" $
+      forAll ((,) <$> genSlashCase <*> arbitrary) $ \((above, typedBefore, after', below), change) ->
+        alikeEverywhere [slashSource slashEntries'] (caseAt (T.intercalate "\n" (above <> [typedBefore <> "/‸" <> after'] <> below)) "/" change)
+    prop "opens the / menu the whole text opens, on the places it opens at or not" $
+      forAll ((,) <$> genSlashPlace <*> arbitrary) $ \((marked, _), change) ->
+        alikeEverywhere [slashSource slashEntries'] (caseAt marked (T.takeWhileEnd (/= ' ') (fst (T.breakOn "‸" marked))) change)
 
   describe "the / menu" $ do
     it "opens at the end of a line of a paragraph, a list's item, a quotation, a box's text or a spoiler's body, and on an empty line" $
@@ -115,7 +130,7 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
 
 -- | The list at a cursor typed after the document's lines.
 listAt :: [Text] -> Text -> Maybe Completion
-listAt doc cursor = complete [wikiSource Presentation []] (readLine doc) At {place = InText, above = doc, before = cursor, after = "", below = []}
+listAt doc cursor = complete [wikiSource Presentation []] (readLine doc) At {place = InText, above = doc, before = cursor, after = "", below = [], cutBelow = False}
 
 -- | Whether the list after a line's prefix and @[[!@ offers markers.
 marker :: [Text] -> Text -> Bool
@@ -232,7 +247,7 @@ slashEntries' = [SlashEntry {label = show command, keywords = [], sample = "", d
 -- before the mark and after it, and the lines below.
 slashAt :: Text -> At
 slashAt marked =
-  At {place = InText, above = initDef [] ls, before = fromMaybe "" (lastMay ls), after = T.takeWhile (/= '\n') (T.drop 1 rest), below = drop 1 (T.splitOn "\n" (T.drop 1 rest))}
+  At {place = InText, above = initDef [] ls, before = fromMaybe "" (lastMay ls), after = T.takeWhile (/= '\n') (T.drop 1 rest), below = drop 1 (T.splitOn "\n" (T.drop 1 rest)), cutBelow = False}
   where
     (upTo, rest) = T.breakOn "‸" marked
     ls = T.splitOn "\n" upTo
@@ -296,7 +311,7 @@ slashWritesAsApply (above, typedBefore, after', below) = cover 50 (isJust opened
           ]
   where
     opened = complete [slashSource slashEntries'] (readLine above) at
-    at = At {place = InText, above, before = typedBefore <> "/", after = after', below}
+    at = At {place = InText, above, before = typedBefore <> "/", after = after', below, cutBelow = False}
     lineStart = sum (map ((+ 1) . T.length) above)
     at' = lineStart + T.length typedBefore
     whole = T.intercalate "\n" (above <> [typedBefore <> after'] <> below)

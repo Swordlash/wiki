@@ -2,12 +2,12 @@
 -- answer of a kind is taken only if no newer answer of that kind was
 -- taken already.
 --
--- A view asks the backend for something and takes the answer whenever it
--- comes. Two asks of the same kind can be out at once: a reload asked for
--- while the first load is still out, a change of route and back, the live
--- channel saying "changed" twice. Their answers can come in the other
--- order. Without the rule, the older answer, taken last, stays on the
--- screen until something asks again.
+-- The rule's tickets are haskell-halogen's "Halogen.Latest", which this
+-- module re-exports. Its documentation says how a ticket is taken and
+-- compared, each in one step of the view's program, why a failure is an
+-- answer like any other, and how 'madeAfter' and 'stillAnswerable' keep
+-- what a view learnt another way (the live channel) against a snapshot of
+-- the asks. This module adds what is the wiki's own.
 --
 -- What "newer" means depends on the answer:
 --
@@ -17,20 +17,8 @@
 --   of the asks.
 -- * An answer with no order of its own (a page's threads, the pages that
 --   link to a page, a space's pages, who is signed in and the spaces) is
---   ordered by its ask ('Asks'): the answer to a later ask is newer than
---   the answer to an earlier one.
---
--- An answer is taken as soon as it comes if nothing newer was taken. So the
--- answer to an earlier ask is shown until the answer to the later one
--- comes, and never after it. A failure is an answer like any other: the
--- latest ask's failure replaces an earlier ask's success, as a reload that
--- fails would, and an earlier success that comes after the failure is
--- dropped.
---
--- The ticket of an ask is taken in the step that starts the ask
--- ('asking'), and compared in the step that takes the answer
--- ('answered'): each is one step of the view's program, with no wait
--- between reading 'Asks' and writing it.
+--   ordered by its ask, with a ticket of "Halogen.Latest": the answer to a
+--   later ask is newer than the answer to an earlier one.
 module Wiki.App.View.Latest
   ( Asks
   , Ask
@@ -47,76 +35,9 @@ module Wiki.App.View.Latest
   )
 where
 
+import Halogen.Latest (Ask, Asks, answered, asking, madeAfter, newAsk, noAsks, stillAnswerable, supersede, takes)
 import Protolude
 import Wiki.Core.Page (Page (id, updatedAt))
-
--- | 'Asks' is what a view knows of the asks of one kind it made: how many
--- it made, and which of them gave the newest answer taken. A view keeps
--- one for each kind of answer it takes in its state.
-data Asks = Asks
-  { asked :: Int
-  -- ^ How many asks of the kind were made: the number of the latest.
-  , taken :: Int
-  -- ^ The number of the ask whose answer is shown, or of the latest ask
-  -- when something newer than every answer was put in their place
-  -- ('supersede').
-  }
-  deriving stock (Eq, Show)
-
--- | 'Ask' is the ticket of one ask: its number among the asks of its kind.
-newtype Ask = Ask Int
-  deriving stock (Eq, Show)
-
--- | No ask made yet.
-noAsks :: Asks
-noAsks = Asks {asked = 0, taken = 0}
-
--- | A new ask of the kind: its ticket, and the asks with it.
-newAsk :: Asks -> (Ask, Asks)
-newAsk a = (Ask (a.asked + 1), a {asked = a.asked + 1})
-
--- | The asks after the answer to this ask is taken, or 'Nothing' when it
--- is not taken: the answer to a later ask, or something newer, was taken
--- already.
-takes :: Ask -> Asks -> Maybe Asks
-takes (Ask n) a
-  | n > a.taken = Just a {taken = n}
-  | otherwise = Nothing
-
--- | Whether an ask was made after the asks were as given: what the view
--- learnt another way while the asks were so (a message of the live
--- channel) is older than the answer to an ask made after it, and may be
--- newer than the answer to an ask made before.
-madeAfter :: Ask -> Asks -> Bool
-madeAfter (Ask n) a = n > a.asked
-
--- | Whether the answer to an ask made by the time the asks were as first
--- given can still be taken, the asks being now as second given: what the
--- view learnt another way then is kept while it may be newer than an
--- answer still to come.
-stillAnswerable :: Asks -> Asks -> Bool
-stillAnswerable then' now = then'.asked > now.taken
-
--- | The asks after something newer than the answer to every ask out was
--- put in their place: a whole answer that came another way (the live
--- channel's), or the view gone to show something else. None of the
--- answers to those asks is taken after this.
-supersede :: Asks -> Asks
-supersede a = a {taken = a.asked}
-
--- | Begin an ask of a kind, in one step: its ticket, kept with the asks
--- in the state.
-asking :: (MonadState st m) => (st -> Asks) -> (Asks -> st -> st) -> m Ask
-asking get' set' = state (\st -> let (a, after) = newAsk (get' st) in (a, set' after st))
-
--- | The answer to an ask, in one step: if nothing newer of its kind was
--- taken, the state with the answer's change made and the ask marked as
--- taken. Whether the answer was taken.
-answered :: (MonadState st m) => (st -> Asks) -> (Asks -> st -> st) -> Ask -> (st -> st) -> m Bool
-answered get' set' a change =
-  state $ \st -> case takes a (get' st) of
-    Just after -> (True, change (set' after st))
-    Nothing -> (False, st)
 
 -- | The state with something newer than every answer of the kind put in
 -- its place, as 'supersede' says, and the change that puts it there, in

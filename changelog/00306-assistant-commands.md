@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 306
 title: Commands in the assistant's message box
 ---
 

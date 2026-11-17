@@ -2002,10 +2002,14 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   (#275's fault); the way on is for the library to gain a `Carry`
   that does something in place and then asks with what it made. No
   keyed cancel is used anywhere: no shell does by hand what one would
-  replace. **WP5.134** `Halogen.Test.Native` in place of most of
-  `Test.Harness.MemDom` (a page for each view, so no lock; a reader's
-  whole click with default actions); the wiki keeps `viewContext`,
-  `TestFeed`, `driven`.
+  replace. **WP5.134, merged (#313):** `Test.Harness.MemDom` went
+  from 400 lines to 133: it re-exports `Halogen.Test.Native` (a page
+  for each view, so the lock is gone; a reader's whole click with its
+  default action; `click`, `typeInto` and `textOf` throw where they
+  returned a Bool or a Maybe) and keeps `viewContext`, `TestFeed`,
+  `settle` with the wiki's ten-second deadline, and `settleWaiting`.
+  What the library lacks, kept by hand: a view's own activity to read
+  and wait on, key events with modifiers, a deadline on `settle`.
 - **WP5.135 One read of a thing in flight (the comments' and the
   bell's machines; being built, stacked on #312).** A run of 500,000
   cases of the comments' property "shows no comment's text older than

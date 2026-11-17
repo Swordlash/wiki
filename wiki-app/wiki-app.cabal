@@ -345,6 +345,7 @@ test-suite wiki-app-test
         Test.CommentsDom
         Test.LivePreviewDom
         Test.DeckDom
+        Test.EditorDom
         Test.Counting
         Test.Demo
         Test.Entries
@@ -364,6 +365,7 @@ test-suite wiki-app-test
         Test.Manifest
         Test.Passwords
         Test.Policy
+        Test.Preview
         Test.Problems
         Test.Complete
         Test.Readme

@@ -14,6 +14,7 @@ import Test.Deck qualified as Deck
 import Test.DeckDom qualified as DeckDom
 import Test.DecryptedExport qualified as DecryptedExport
 import Test.Demo qualified as Demo
+import Test.EditorDom qualified as EditorDom
 import Test.Entries qualified as Entries
 import Test.Export qualified as Export
 import Test.Favicon qualified as Favicon
@@ -32,6 +33,7 @@ import Test.LivePreviewDom qualified as LivePreviewDom
 import Test.Manifest qualified as Manifest
 import Test.Passwords qualified as Passwords
 import Test.Policy qualified as Policy
+import Test.Preview qualified as Preview
 import Test.Problems qualified as Problems
 import Test.Readme qualified as Readme
 import Test.Rect qualified as Rect
@@ -73,6 +75,7 @@ main = do
       BellDom.spec
       CommentsDom.spec
       DeckDom.spec
+      EditorDom.spec
       LivePreviewDom.spec
       Users.spec
       Deck.spec
@@ -85,6 +88,7 @@ main = do
       Import.spec
       Manifest.spec
       Policy.spec
+      Preview.spec
       Problems.spec
       Complete.spec
       Licence.spec

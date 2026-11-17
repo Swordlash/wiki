@@ -49,14 +49,14 @@ $( browserJS
      [ ("js_slide_fits", "wiki_test_slide_fits", Safe, [t|IO JSText|])
      , ("js_slide_focus", "wiki_test_slide_focus", Safe, [t|IO JSText|])
      , ("js_mermaid", "wiki_test_mermaid", Safe, [t|JSText -> IO ()|])
-     , ("js_stall_start", "wiki_test_stall_start", Safe, [t|IO ()|])
+     , ("js_publications_start", "wiki_test_publications_start", Safe, [t|IO ()|])
      , ("js_slide_invariants", "wiki_test_slide_invariants", Safe, [t|IO JSText|])
      , ("js_slide_drag", "wiki_test_slide_drag", Safe, [t|Int -> Int -> Int -> Int -> Int -> Bool -> IO Int|])
      , ("js_open_rows", "wiki_test_open_rows", Safe, [t|IO JSText|])
      , ("js_row_count", "wiki_test_row_count", Safe, [t|IO Int|])
      , ("js_master_layout", "wiki_test_master_layout", Safe, [t|IO JSText|])
      , ("js_master_problems", "wiki_test_master_problems", Safe, [t|IO ()|])
-     , ("js_stall", "wiki_test_stall", Safe, [t|IO Int|])
+     , ("js_publications", "wiki_test_publications", Safe, [t|IO Int|])
      , ("js_row_cursor_seen", "wiki_test_slide_row_cursor_seen", Safe, [t|Int -> IO Bool|])
      , ("js_drop_filePromise", "wiki_test_drop_file", Safe, [t|JSText -> JSText -> JSText -> JSText -> IO (Promise ())|])
      , ("js_pastePromise", "wiki_test_paste", Safe, [t|JSText -> JSText -> JSText -> JSText -> JSText -> IO (Promise Bool)|])
@@ -952,86 +952,75 @@ spec m = do
     -- "After".
     let (before, _) = T.breakOnEnd "\n```" shown
     rowSelect 1 (T.length before - 3) (T.length before)
-    -- The page's thread is held for about half a second after the pause
-    -- (the check, the preview of a long code block, the measures); the
-    -- line of the block left open, found by parsing the row again for
-    -- each of its lines, held it for twenty seconds. The bound leaves room
-    -- for a slow machine.
-    unsafeIOToPageM js_stall_start
+    -- The line of the block left open was found by parsing the row again
+    -- for each of its lines, which held the page for twenty seconds. That
+    -- cost is held natively, in bytes allocated in proportion to the row
+    -- ("Test.SlideRows": a fence left open with thousands of lines after
+    -- it); here, that the page takes the key and the next one, and says
+    -- what is wrong, each action waited for by the driver, as any other.
     press "Backspace"
     eventually $ (findAll ui ".editor-slides .slide-row-problems" >>= traverse textContent) `shouldReturn` ["1 problem"]
-    unsafeIOToPageM (threadDelay 1_000_000)
-    stalled <- unsafeIOToPageM js_stall
-    stalled `shouldSatisfy` (< 5000)
     -- A keystroke in the open fence, and the pause after it.
-    unsafeIOToPageM js_stall_start
     openRowContent ui >>= (`typeText` "y")
-    unsafeIOToPageM (threadDelay 1_000_000)
-    typed <- unsafeIOToPageM js_stall
-    typed `shouldSatisfy` (< 5000)
+    waitQuiet
+    rowText 1 >>= (`shouldSatisfy` T.isInfixOf "x = 500\ny")
 
-  -- One example for both, since each opens the same long deck, which costs
-  -- CI about half a minute of a browser page and loads the page beside it.
-  it "moves the cursor to a far slide of sixty slides of a hundred lines, and checks them again after a keystroke, without holding the page" $ runPage $ do
-    -- A line of slide 30 that becomes a marker of an unknown block when
+  -- What a move to another slide and a keystroke cost on a long deck is
+  -- held natively, in bytes allocated: the preview parses a draft once for
+  -- each text ("Test.Preview"), the rows and the slides' measures grow with
+  -- the text and no faster ("Test.SlideRows", "Test.Slides"). This example
+  -- held it in milliseconds on sixty slides of a hundred lines, and failed
+  -- on a slow machine. What is left here needs the page, and is counted:
+  -- the cards measured and the problems published to CodeMirror.
+  it "moves the cursor to far slides without measuring a card again, and publishes a keystroke's problems once for its check and once for its measures" $ runPage $ do
+    -- A line of slide 10 that becomes a marker of an unknown block when
     -- its first character goes: a problem the check finds in the new text.
-    let typing = T.intercalate "\n" [if n == longSlideLine 30 + 2 then "x[[!nothing]]" else l | (n, l) <- zip [1 :: Int ..] (T.splitOn "\n" longDeck)]
-    -- CodeMirror takes the deck's 300,000 characters in seconds on a
-    -- loaded machine: more than 'openDeck' waits.
+    let typing = T.intercalate "\n" [if n == shortSlideLine 10 + 2 then "x[[!nothing]]" else l | (n, l) <- zip [1 :: Int ..] (T.splitOn "\n" shortDeck)]
     (ui, _) <- openDeckWith False typing
-    _ <- eventuallyWithin 60_000 (editorText ui)
-    let problemsOf30 = findAll ui ".editor-slides .slide-row" >>= \rows -> maybe (pure "") (\r -> findAllIn r ".slide-row-problems" >>= fmap T.concat . traverse textContent) (atMay rows 30)
-    -- Settled: the rows cut, every slide measured, and every slide cut
-    -- when presented (one problem on each row).
-    eventuallyWithin 120_000 $ length <$> rowTitles ui `shouldReturn` 61
-    eventuallyWithin 120_000 $ (fromJSText <$> unsafeIOToPageM js_slide_fits) >>= (`shouldSatisfy` (not . T.isInfixOf "unmeasured"))
-    eventuallyWithin 120_000 $ problemsOf30 `shouldReturn` "1 problem"
-    settle
+    _ <- editorText ui
+    let problemsOf10 = findAll ui ".editor-slides .slide-row" >>= \rows -> maybe (pure "") (\r -> findAllIn r ".slide-row-problems" >>= fmap T.concat . traverse textContent) (atMay rows 10)
+    -- Settled: the rows cut and every slide measured.
+    eventually $ length <$> rowTitles ui `shouldReturn` 13
+    eventually $ (fromJSText <$> unsafeIOToPageM js_slide_fits) >>= (`shouldSatisfy` (not . T.isInfixOf "unmeasured"))
+    waitQuiet
     -- The master's selection set in a slide, as a search's step or the
     -- next problem sets it: the slide's row opens and the preview shows
-    -- its card. The longest hold of the page's thread from the selection
-    -- until the card is shown and the program has settled.
+    -- its card.
     let jumpTo n = do
-          unsafeIOToPageM js_stall_start
-          let at = lineStart typing (longSlideLine n + 2)
+          let at = lineStart typing (shortSlideLine n + 2)
           selectText ui at at
-          eventuallyWithin 60_000 $ cardTitles ui `shouldReturn` ["Slide " <> show n]
-          eventuallyWithin 60_000 $ openTitles ui >>= (`shouldSatisfy` elem ("Slide " <> show n))
-          settle
-          unsafeIOToPageM js_stall
-    -- Each change of the slide shown parsed the whole deck twice in the
-    -- preview: each jump held the page for 2.8 seconds here. The deck is
-    -- parsed once for each text now: 85 to 200 milliseconds in most runs,
-    -- 750 once while another build loaded the machine. The bound, one
-    -- second, leaves room for a slow machine and still fails the old code.
-    toLast <- jumpTo 60
-    -- Another far slide, the first one's row left open: no slower. A
-    -- second jump that costs much more than the first would be work that
-    -- grows with each jump; the 300 ms added is room for the noise of a
-    -- shared machine.
-    toTwentieth <- jumpTo 20
-    (toLast, toTwentieth) `shouldSatisfy` (\(a, b) -> a < 1000 && b < 1000 && b <= 2 * a + 300)
-    -- Slide 30 open, the caret after the "x" in the row's own text ("##
-    -- Slide 30", a blank line, then the line).
-    rowHeader ui "Slide 30" >>= click
-    rowSelect 30 14 14
-    eventuallyWithin 60_000 $ cardTitles ui `shouldReturn` ["Slide 30"]
-    settle
-    -- One keystroke, and the pause after it: the text checked, the slides
-    -- measured, the rows' headers and the problems published for the new
-    -- text (the slide's fit and the new marker's problem both counted on
-    -- its row).
-    unsafeIOToPageM js_stall_start
+          eventually $ cardTitles ui `shouldReturn` ["Slide " <> show n]
+          eventually $ openTitles ui >>= (`shouldSatisfy` elem ("Slide " <> show n))
+          waitQuiet
+    -- Another slide shown is only another card in sight: the cards, laid
+    -- out the same, are not measured again (c6f0ae82 measured them, and
+    -- parsed the deck, at each move).
+    unsafeIOToPageM js_fit_log_start
+    jumpTo 12
+    jumpTo 2
+    fitTimes `shouldReturn` []
+    -- Slide 10 open, the caret after the "x" in the row's own text ("##
+    -- Slide 10", a blank line, then the line).
+    rowHeader ui "Slide 10" >>= click
+    rowSelect 10 14 14
+    eventually $ cardTitles ui `shouldReturn` ["Slide 10"]
+    waitQuiet
+    -- One keystroke, and the pause after it: the text checked, and the
+    -- rows' headers and the problems published for the new text once, by
+    -- the check after its re-cut; then once more when the new text's
+    -- measures come, which are held back until then so that the two come
+    -- in this order. The pause published three times before 55e65db9
+    -- (after the measures, after the re-cut, after the check), each time
+    -- parsing the whole text again.
+    unsafeIOToPageM (js_fit_hold True >> js_publications_start)
     press "Backspace"
-    eventuallyWithin 120_000 $ problemsOf30 `shouldReturn` "2 problems"
-    settle
-    -- The pause parsed the whole deck a dozen times and held the page 7
-    -- seconds at once here (7006 ms). The text is parsed once by the check
-    -- and once by the preview now: 477 to 705 ms, 1178 once with the
-    -- machine loaded. The bound leaves room for a slow machine and still
-    -- fails the old code.
-    held <- unsafeIOToPageM js_stall
-    held `shouldSatisfy` (< 3000)
+    eventually $ problemsOf10 `shouldReturn` "1 problem"
+    waitQuiet
+    unsafeIOToPageM js_publications `shouldReturn` 1
+    unsafeIOToPageM (js_fit_hold False)
+    eventually $ unsafeIOToPageM js_publications `shouldReturn` 2
+    waitQuiet
+    unsafeIOToPageM js_publications `shouldReturn` 2
 
   it "takes the emoji or the mention chosen with the arrows in a row, though the hidden editor changes before Enter, with another row open" $ runPage $ do
     (ui, _) <- openDeck deck
@@ -1586,35 +1575,28 @@ spec m = do
   it "measures a deck of fifty slides, and a slide again after a keystroke" $ runPage $ do
     let fifty = T.intercalate "\n\n" ("# Fifty" : concat [["## Slide " <> show n, "A first paragraph.", "A second one.", "$x^" <> show n <> "$"] | n <- [1 .. 49 :: Int]])
     unsafeIOToPageM js_fit_log_start
-    start <- unsafeIOToPageM getCurrentTime
     (ui, _) <- openDeck fifty
     eventually $ do
       found <- editorFits
       length found `shouldBe` 50
       found `shouldSatisfy` notElem "unmeasured"
-    measured <- unsafeIOToPageM getCurrentTime
     -- A keystroke on the second slide: its card shows it, measured again.
     selectText ui (lineStart fifty 5) (lineStart fifty 5)
-    typed <- unsafeIOToPageM getCurrentTime
     openRowContent ui >>= (`typeText` "x")
     eventually $ do
       findAll ui ".editor-preview .slide-frame[data-slide='2'].slide-fit-fits .slide-body" >>= traverse textContent >>= (`shouldSatisfy` any (T.isInfixOf "xA first paragraph."))
       editorFits >>= (`shouldSatisfy` notElem "unmeasured")
-    again <- unsafeIOToPageM getCurrentTime
+    -- How long the measures took, said for whoever reads the log: a slow
+    -- machine makes them slower, which is no fault.
     times <- fitTimes
     unsafeIOToPageM . putStrLn @Text $
-      "Measuring fifty slides: first marks after "
-        <> show (diffUTCTime measured start)
-        <> " from the editor's mount, marks again "
-        <> show (diffUTCTime again typed)
-        <> " after a keystroke's change; "
+      "Measuring fifty slides: "
         <> show (length times)
         <> " measures of every card, the longest "
         <> show (maximum (0 : times))
         <> " ms, on average "
         <> show (sum times / fromIntegral (max 1 (length times)))
         <> " ms."
-    diffUTCTime again typed `shouldSatisfy` (< 5)
 
   it "starts with the slide the cursor starts on open and in the preview, when the first slide follows the title line" $ runPage $ do
     let early = T.intercalate "\n" ["# Deck", "", "## One", "", "First.", "", "## Two", "", "Second."]
@@ -1922,30 +1904,16 @@ spec m = do
 deck :: Text
 deck = T.intercalate "\n" ["# Deck", "", "By me.", "", "## One", "", "First.", "", "## Two", "", "Second.", "", "## Three", "", "Third."]
 
--- | A presentation as long as a long talk: a title line and sixty slides
--- of a hundred lines each, about 300,000 characters, each slide with
--- paragraphs, a list, a code block and a formula.
-longDeck :: Text
-longDeck = T.intercalate "\n" (["# Long", ""] <> concatMap slide [1 .. 60 :: Int])
+-- | A presentation of twelve short slides of eight lines, each its
+-- heading, a paragraph of five lines and a blank line: each fits.
+shortDeck :: Text
+shortDeck = T.intercalate "\n" (["# Short", ""] <> concatMap slide [1 .. 12 :: Int])
   where
-    slide n =
-      (<> [""]) . take 99 $
-        ["## Slide " <> show n, ""]
-          <> para n 0 12
-          <> para n 12 12
-          <> map ("- " <>) (sentences n 24 10)
-          <> ["", "```haskell"]
-          <> ["step" <> show i <> " x = x * " <> show n <> " + " <> show i | i <- [0 .. 9 :: Int]]
-          <> ["```", ""]
-          <> ["$$\\int_0^{" <> show n <> "} x^2 \\, dx = \\frac{" <> show n <> "^3}{3}$$", ""]
-          <> concat [para n k 12 | k <- [34, 46 .. 94]]
-    -- A paragraph of lines, a blank line after it.
-    para n start count = sentences n start count <> [""]
-    sentences n start count = ["Line " <> show k <> " of slide " <> show n <> ": the quick brown fox jumps over the lazy dog." | k <- [start .. start + count - 1 :: Int]]
+    slide n = ["## Slide " <> show n, ""] <> ["Line " <> show k <> " of slide " <> show n <> "." | k <- [1 .. 5 :: Int]] <> [""]
 
--- | The line a slide of 'longDeck' starts on, its heading.
-longSlideLine :: Int -> Int
-longSlideLine n = 3 + 100 * (n - 1)
+-- | The line a slide of 'shortDeck' starts on, its heading.
+shortSlideLine :: Int -> Int
+shortSlideLine n = 3 + 8 * (n - 1)
 
 -- | The deck the random walk starts from: a title slide, three slides, and
 -- a formula KaTeX cannot read in the second, for "next problem".

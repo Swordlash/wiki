@@ -2000,7 +2000,17 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   effect is one `Carry` in the library, and making the owner inside
   the work would leak it when the view closes during the wait
   (#275's fault); the way on is for the library to gain a `Carry`
-  that does something in place and then asks with what it made. No
+  that does something in place and then asks with what it made
+  (asked by the owner on 2026-11-17 and on the library's master the
+  next day, `M.AskWith`, at ef044ca). The comments' shell is #316.
+  **Next, one builder: WP5.136, the pin at ef044ca** (with it the
+  harness's own deadlines and a view's own activity, so
+  `Test.Harness.MemDom` loses its copies), **then the deck viewer's
+  shell with `M.AskWith`.** The library's notes are in the session's
+  scratchpad (`wp5118/halogen-answer-2026-11-17.md`); it asks which
+  of the machine's awkward corners hurt in the three views (a
+  debounce as two effects and a key; the name `Ask` twice; every
+  answer an `Either`): the builder's report is to say. No
   keyed cancel is used anywhere: no shell does by hand what one would
   replace. **WP5.134, merged (#313):** `Test.Harness.MemDom` went
   from 400 lines to 133: it re-exports `Halogen.Test.Native` (a page

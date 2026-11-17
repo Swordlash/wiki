@@ -26,6 +26,12 @@
 # WIKI_SUITE_BUDGET, in seconds, takes the place of the table's budget,
 # and WIKI_SUITE_BUDGETS_FAIL the place of budgets_fail, for this script's
 # own test (toolchain/test-ci-suite-time.sh).
+#
+# The warning (or error) names the runner's processor, from /proc/cpuinfo
+# (WIKI_SUITE_CPUINFO names another file, for the test): the hosted
+# runners differ, and the same suite took 320 s on some and 690 to 1,160 s
+# on others on 2026-11-17 (WP5.130 of docs/PLAN.md), so a slow run says
+# which machine it ran on.
 set -eu
 
 # Whether a suite over its budget on a hosted runner fails its job (true)
@@ -73,6 +79,11 @@ budget_of() {
     *) echo "" ;;
   esac
 }
+
+# The processor's model name, or "an unnamed processor" where the file is
+# missing or has none.
+cpu=$(sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' "${WIKI_SUITE_CPUINFO:-/proc/cpuinfo}" 2>/dev/null | head -n 1) || true
+cpu=${cpu:-an unnamed processor}
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
@@ -142,8 +153,8 @@ fi
 if [ "$over" = true ] && [ "$hosted" = true ]; then
   list=$(printf '%s\n' "$slowest" | awk 'NF { printf "%s%s", sep, $0; sep = "; " }')
   if [ "$budgets_fail" = true ]; then
-    echo "::error title=$suite over its budget::$suite took $seconds s, over its budget of $budget s (toolchain/ci-suite-time.sh). The slowest examples: ${list:-none listed}"
+    echo "::error title=$suite over its budget::$suite took $seconds s, over its budget of $budget s, on $cpu (toolchain/ci-suite-time.sh). The slowest examples: ${list:-none listed}"
     exit 1
   fi
-  echo "::warning title=$suite over its budget::$suite took $seconds s, over its budget of $budget s (toolchain/ci-suite-time.sh; budgets warn only, for now). The slowest examples: ${list:-none listed}"
+  echo "::warning title=$suite over its budget::$suite took $seconds s, over its budget of $budget s, on $cpu (toolchain/ci-suite-time.sh; budgets warn only, for now). The slowest examples: ${list:-none listed}"
 fi

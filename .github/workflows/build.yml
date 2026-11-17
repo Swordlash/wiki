@@ -576,6 +576,12 @@ jobs:
       if: matrix.group == 'unit'
       run: sh toolchain/test-check-changelog.sh
 
+    # The format job's check of the jsbits for C's trigraphs, on files of
+    # its own and on the repository's: a second.
+    - name: Test check-trigraphs.sh
+      if: matrix.group == 'unit'
+      run: sh toolchain/test-check-trigraphs.sh
+
     # The changelog job's check of the browser suite's ceilings, on a
     # suite of its own in a repository of its own: a second.
     - name: Test check-test-ceilings.sh
@@ -1139,7 +1145,8 @@ jobs:
         HSPEC_HALOGEN_JOBS: '2'
         WIKI_SUITE_TIMES: '1'
       run: |
-        echo "### The wasm test suites on $(nproc) cores: wall time, budget, slowest examples" >> "$GITHUB_STEP_SUMMARY"
+        cpu=$(sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo 2>/dev/null | head -n 1) || true
+        echo "### The wasm test suites on $(nproc) cores of ${cpu:-an unnamed processor}: wall time, budget, slowest examples" >> "$GITHUB_STEP_SUMMARY"
         npm run test-wasm
 
     # The demo's smoke test with every page's processor four times slower,
@@ -1396,6 +1403,12 @@ jobs:
       run: |
         fourmolu --version
         sh run_fourmolu.sh --mode check
+
+    # No C trigraph (??= and the eight others) in the JavaScript the wasm
+    # build embeds in C strings (toolchain/check-trigraphs.sh): a second.
+    - name: Check the jsbits for trigraphs
+      if: ${{ !cancelled() }}
+      run: sh toolchain/check-trigraphs.sh
 
   # The demo on GitHub Pages: the page the wasm job built for the Pages base
   # path, from this run, or on a push the plan job found already tested,

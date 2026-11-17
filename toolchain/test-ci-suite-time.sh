@@ -105,9 +105,11 @@ grep -q 'over its budget$' "$work/summary" || fail "the summary does not say ove
 
 # 3b. Over its budget on a hosted runner while the budgets warn only (the
 # script's own setting): passes, with a warning naming the slowest.
-run RUNNER_ENVIRONMENT=github-hosted FAKE_TIMES="100 105" WIKI_SUITE_BUDGET=1 sh "$script" fake-suite "$work/suite"
+printf 'processor\t: 0\nmodel name\t: Fake CPU @ 2.00GHz\n' >"$work/cpuinfo"
+run RUNNER_ENVIRONMENT=github-hosted WIKI_SUITE_CPUINFO="$work/cpuinfo" FAKE_TIMES="100 105" WIKI_SUITE_BUDGET=1 sh "$script" fake-suite "$work/suite"
 [ "$status" -eq 0 ] || fail "a suite over its budget, budgets warning only, exited $status"
 grep -q '^::warning title=fake-suite over its budget::.*9.0 s /A/the slowest/' "$work/out" || fail "no warning naming the slowest examples: $(cat "$work/out")"
+grep -q '^::warning .*over its budget of 1 s, on Fake CPU @ 2.00GHz (' "$work/out" || fail "the warning does not name the processor: $(cat "$work/out")"
 if grep -q '::error' "$work/out"; then fail "an error while the budgets warn only"; fi
 grep -q 'warns only until the budgets bind$' "$work/summary" || fail "the summary does not say the budget warns only: $(cat "$work/summary")"
 

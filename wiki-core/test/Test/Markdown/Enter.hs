@@ -19,7 +19,7 @@ module Test.Markdown.Enter (spec) where
 import Data.Text qualified as T
 import GHC.Conc (getAllocationCounter)
 import Protolude
-import Test.Cases (coverage)
+import Test.Cases (coverage, longTexts)
 import Test.Hspec hiding (after, before)
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, conjoin, counterexample, cover, elements, frequency, listOf1, oneof, property, (.&&.), (===))
@@ -255,7 +255,9 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     -- cursor's line and before the first change since, mapped through the
     -- change ('handedOver'), for a change anywhere (letters typed in the
     -- cursor's block, a block added below, one edited above).
-    prop "answers as for the whole text, for the text from the start the last check kept" $ \doc change ->
+    -- A tenth of the cases on wasm, where each document's long text is
+    -- checked at every line's end ("Test.Cases").
+    longTexts . prop "answers as for the whole text, for the text from the start the last check kept" $ \doc change ->
       atEveryLineEnd doc $ \before after answer -> case handedOver before after change of
         Just (given, taken) -> counterexample (show (given, taken)) (enter given taken === answer)
         Nothing -> property True

@@ -19,7 +19,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (clickButton, slugs, startChanged, startWith)
-import Test.Browser.Text (clearBody, completing, editorSelection, editorText, markdown, mathIn, setMarkdown, utf16Length)
+import Test.Browser.Text (clearBody, completing, editorSelection, editorText, markdown, mathIn, problemsMarked, selectText, setMarkdown, utf16Length)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (..))
 import Wiki.App.Assistant (MonadAssistant)
@@ -99,7 +99,9 @@ spec m = do
     notice `shouldHaveText` ""
     clearBody ui
     typeText text "- a list"
-    press "Enter"
+    -- A line break and nothing more: Enter would start the list's next
+    -- item.
+    press "Shift+Enter"
     press "Tab"
     typeText text "- nested"
     markdown ui `shouldReturn` "# Hello, world\n\n- a list\n  - nested"
@@ -114,7 +116,11 @@ spec m = do
     saved.body `shouldBe` "# Hello, world\n\n- a list\n  - nested"
     -- Still the same text, with the cursor where it was.
     editorText ui >>= (`shouldBeSameElement` text)
-    typeText text "\n- more"
+    -- Enter on the nested item starts another one, and Enter again on
+    -- that empty item goes up to the outer list.
+    press "Enter"
+    press "Enter"
+    typeText text "more"
     -- The notice goes by itself.
     eventuallyWithin 6000 (notice `shouldHaveText` "")
     -- A second save is made against the first: no conflict.
@@ -494,6 +500,52 @@ spec m = do
     markdown ui `shouldReturn` "# Hello, world\n\n- one\n- two\n- three"
     find ui ".editor-toolbar button[aria-label='Bulleted list']" >>= click
     markdown ui `shouldReturn` "# Hello, world\n\none\ntwo\nthree"
+
+  -- Each case of 'enterCases' on the same page: its text under the title
+  -- line, its selection made, its keys pressed, and the text and the
+  -- cursor after them. What Enter writes is Wiki.Core.Markdown.Enter's,
+  -- tested natively; these show the keymap asking it and making its
+  -- answer, in the master.
+  it "continues a list or a box on Enter, goes up a level and out on an empty line, and breaks the line alone on Shift+Enter" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    _ <- editorText ui
+    for_ enterCases $ \(name, before, keys, after) -> do
+      let (text, start, end) = unmarked before
+          offset = utf16Length titleLines
+      setMarkdown ui (titleLines <> text)
+      selectText ui (offset + utf16Length (T.take start text)) (offset + utf16Length (T.take end text))
+      traverse_ press keys
+      now <- T.drop (T.length titleLines) <$> markdown ui
+      (cursorAt, _) <- editorSelection ui
+      (name, marked now (cursorAt - offset)) `shouldBe` (name, after)
+
+  -- Enter reads the text from where the last check of the whole text
+  -- found a block starting with nothing open above it (Wiki.Core.Markdown.Starts),
+  -- no more than Wiki.Core.Markdown.Enter's limit. A paragraph longer than
+  -- the limit above a list: Enter there continues the list only from the
+  -- list's start, which the check gives (its problem, a marker line of no
+  -- block, is its signal). Then HTML that reads on over a heading and a
+  -- list (Codex's case on #292): the list's line is HTML, and Enter a
+  -- line break alone. Then a list of two hundred items, longer than the
+  -- limit: each item starts a text Enter may read, so it goes on.
+  it "reads the text from where the last check found a block starting, past a long paragraph, over HTML that reads on, and in a long list" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    _ <- editorText ui
+    let long = T.intercalate " " (replicate 500 "word")
+        listed = titleLines <> long <> "\n\n[[!nothing]]\n\n- one"
+        html = titleLines <> long <> "\n\n[[!nothing]]\n\n[[!nothing]]\n\n- a\n<a>\n# Heading\n- "
+        enterAtEnd text count = do
+          setMarkdown ui text
+          eventually $ length <$> problemsMarked ui `shouldReturn` count
+          selectText ui (utf16Length text) (utf16Length text)
+          press "Enter"
+    enterAtEnd listed 1
+    markdown ui `shouldReturn` listed <> "\n- "
+    enterAtEnd html 2
+    markdown ui `shouldReturn` html <> "\n"
+    let items = titleLines <> "[[!nothing]]\n\n" <> T.intercalate "\n" ["- item " <> show i | i <- [1 .. 200 :: Int]]
+    enterAtEnd items 1
+    markdown ui `shouldReturn` items <> "\n- "
 
   it "leaves Ctrl+B's placeholder selected, for the typing to replace" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
@@ -1087,6 +1139,52 @@ chooseFile selector name mediaType base64 = evaluate =<< js_choose_file (toJSTex
 -- | A PNG of one pixel, as base64.
 dotPng :: Text
 dotPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+-- | Enter in a list and in a box (WP5.124 (a) of docs/PLAN.md, #187), one
+-- case a line: its name, the text with the cursor at @‸@ or a selection
+-- between @«@ and @»@, the keys pressed, and the text with the cursor
+-- after them. The text goes under the page's title line ('titleLines').
+-- Each case is one way the keymap goes: an answer that writes a new line's
+-- start, one that replaces the cursor's line, none (code), Shift+Enter, a
+-- selection, which is never asked about, and a character of two UTF-16
+-- units before the cursor, with text after it, which the ask must split
+-- where the cursor is: the text before the cursor and after it are given
+-- apart, so that no offset in UTF-16 units reaches Haskell's characters.
+enterCases :: [(Text, Text, [Text], Text)]
+enterCases =
+  [ ("an item", "- one‸", ["Enter"], "- one\n- ‸")
+  , ("a nested item, then up a level and out", "- one\n  - two‸", ["Enter", "Enter", "Enter"], "- one\n  - two\n‸")
+  , ("a box, left on its empty line", "> [!NOTE]\n> text‸", ["Enter", "Enter"], "> [!NOTE]\n> text\n‸")
+  , ("a numbered item with a box, which the parser reads as text", "1. [x] done‸", ["Enter"], "1. [x] done\n2. ‸")
+  , ("Shift+Enter in a list", "- one‸", ["Shift+Enter"], "- one\n‸")
+  , ("a selection, replaced by a line break", "- «one»", ["Enter"], "- \n‸")
+  , ("code", "```\n- a‸\n```", ["Enter"], "```\n- a\n‸\n```")
+  , ("an emoji before the cursor, a line after it", "> 🎉 one‸\n> two", ["Enter"], "> 🎉 one\n> ‸\n> two")
+  ]
+
+-- | What 'enterCases' write under: the page's title line, which the editor
+-- keeps, and a blank line.
+titleLines :: Text
+titleLines = "# Hello, world\n\n"
+
+-- | A text with its selection's marks taken out (@«@ and @»@, or @‸@ for a
+-- cursor), and where the selection starts and ends, in characters.
+unmarked :: Text -> (Text, Int, Int)
+unmarked t = case T.breakOn "‸" t of
+  (before, after)
+    | not (T.null after) -> (before <> T.drop 1 after, T.length before, T.length before)
+    | otherwise ->
+        let (start, rest) = T.breakOn "«" t
+            (inside, end) = T.breakOn "»" (T.drop 1 rest)
+         in (start <> inside <> T.drop 1 end, T.length start, T.length start + T.length inside)
+
+-- | A text with the cursor's mark, @‸@, put in at a position in UTF-16
+-- units.
+marked :: Text -> Int -> Text
+marked t at =
+  -- The characters that end at or before the position.
+  let n = length (takeWhile (<= at) (drop 1 (scanl (+) 0 (map (utf16Length . T.singleton) (toS t :: [Char])))))
+   in T.take n t <> "‸" <> T.drop n t
 
 -- | A length in CSS pixels, as computed styles give it ("14.4px").
 readPx :: Text -> Double

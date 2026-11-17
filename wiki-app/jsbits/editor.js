@@ -30,8 +30,11 @@ function wikiTextarea(host) {
 // Put CodeMirror in the host in place of the textarea, once its module has
 // loaded; `original` is the Markdown the textarea was made with, which the
 // browser has made the textarea's line endings "\n" in. Without the page's
-// islands.js the textarea stays.
-function wiki_editor_attach(host, original) {
+// islands.js the textarea stays. `enter` is the Haskell callback
+// CodeMirror's Enter asks (Wiki.App.Editor.Browser's enterCallback), kept
+// on the host as `wikiEnter` for the master and its rows.
+function wiki_editor_attach(host, original, enter) {
+  host.wikiEnter = enter;
   const textarea = wikiTextarea(host);
   if (textarea) globalThis.wikiIslands?.attachEditor?.(textarea, host, original);
 }
@@ -446,4 +449,14 @@ function wiki_editor_next_problem(host) {
 function wiki_editor_offer_folds(host, text, folds) {
   host.wikiFolds = { text, folds: JSON.parse(folds) };
   host.wikiEditor?.foldable(text, host.wikiFolds.folds);
+}
+
+// The lines at which a top-level block of `text` starts with nothing open
+// above it, as JSON [n], lines from 1 (Wiki.Core.Markdown.Starts): where
+// Enter may cut the text it hands to Haskell. Kept on the host with the
+// text, as the folds are, for a CodeMirror that loads later, and given to
+// the CodeMirror there is, which takes them only for the text it holds.
+function wiki_editor_enter_starts(host, text, starts) {
+  host.wikiStarts = { text, starts: JSON.parse(starts) };
+  host.wikiEditor?.startable(text, host.wikiStarts.starts);
 }

@@ -81,6 +81,7 @@ module Wiki.App.Editor.Browser
 
     -- * Folds
   , offerFolds
+  , offerStarts
   , foldLines
   , unfoldLines
   , foldedLines
@@ -146,6 +147,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..), decodeStrict, eitherDecodeStrict,
 import Data.ByteString.Lazy qualified as BSL
 import Data.Coerce (coerce)
 import Data.Foreign (foreignToInt)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (lookup)
 import Data.Text qualified as T
 import Halogen.JSBits (Callback, Inert (..), JSText, JSVal, Safety (..), browserJS, freeCallback, fromJSText, inBrowser, isNull, jsValText, mkSyncCallback, toJSText)
@@ -157,6 +159,7 @@ import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Numeric.Natural (Natural)
 import Protolude hiding (wait)
+import System.IO.Unsafe (unsafePerformIO)
 import Web.Clipboard.ClipboardEvent (ClipboardEvent (..))
 import Web.DOM.Element qualified as Element
 -- With their constructors: the FFI passes the value inside each newtype.
@@ -179,7 +182,9 @@ import Wiki.Core.Assistant.Edit (Change (..), Decision (..), Edit, Refusal, Repl
 import Wiki.Core.Assistant.Prompt (Span (..))
 import Wiki.Core.Markdown.Complete (Completion)
 import Wiki.Core.Markdown.Edit (Command (..), Selection (..), apply, cursor)
+import Wiki.Core.Markdown.Enter (Enter (..), enter)
 import Wiki.Core.Markdown.Folds (Fold (..))
+import Wiki.Core.Markdown.Starts (Kept (..), textRange)
 import Wiki.Core.SlideRows (Row (..), RowKey (..), Rows (..), rowStarts)
 import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.User (Login (..), User (..))
@@ -189,7 +194,7 @@ import Wiki.Core.User (Login (..), User (..))
 -- of its own, which stays JavaScript.
 $( browserJS
      ["jsbits/editor.js"]
-     [ ("js_attach", "wiki_editor_attach", Safe, [t|Element -> JSText -> IO ()|])
+     [ ("js_attach", "wiki_editor_attach", Safe, [t|Element -> JSText -> Callback -> IO ()|])
      , ("js_attach_row", "wiki_editor_attach_row", Safe, [t|Element -> Element -> Int -> Bool -> IO ()|])
      , ("js_detach_row", "wiki_editor_detach_row", Safe, [t|Element -> IO ()|])
      , ("js_available", "wiki_editor_available", Safe, [t|IO Bool|])
@@ -218,6 +223,7 @@ $( browserJS
      , ("js_problems", "wiki_editor_problems", Safe, [t|Element -> JSText -> JSText -> IO Bool|])
      , ("js_next_problem", "wiki_editor_next_problem", Safe, [t|Element -> IO ()|])
      , ("js_offer_folds", "wiki_editor_offer_folds", Safe, [t|Element -> JSText -> JSText -> IO ()|])
+     , ("js_enter_starts", "wiki_editor_enter_starts", Safe, [t|Element -> JSText -> JSText -> IO ()|])
      , ("js_search", "wiki_editor_search", Safe, [t|Element -> JSText -> IO ()|])
      , ("js_search_step", "wiki_editor_search_step", Safe, [t|Element -> Bool -> IO Int|])
      , ("js_search_replace", "wiki_editor_search_replace", Safe, [t|Element -> IO Int|])
@@ -412,6 +418,97 @@ pickedFiles (Files files) =
 readPickedFile :: (MonadIO m) => PickedFile -> m ByteString
 readPickedFile picked = liftIO (evaluate =<< wait =<< picked.file.bytes)
 
+-- | 'EnterAsk' is what CodeMirror's Enter asks Haskell, as
+-- @web/src/editor.js@ makes it, in two calls. First @cut@, JSON: the
+-- starts the last check kept, as CodeMirror has mapped them through the
+-- changes since, each with where its line now starts and ends, the first
+-- change's offset, the start and the end of the cursor's line and the
+-- text's length ("Wiki.Core.Markdown.Starts"' 'Kept' and 'textRange');
+-- 'answerEnter' sets @range@, "from to", the part of the text to hand
+-- over, or nothing past the limit. Then @before@ and @after@, that part
+-- before the cursor and after it; 'answerEnter' sets @insert@, the text to
+-- write after a line break, or @line@, the text the cursor's line
+-- becomes, or neither for a plain line break.
+newtype EnterAsk = EnterAsk JSVal
+  deriving newtype (Inert)
+
+$( jsFields
+     ''EnterAsk
+     [ Fixed "cut" [t|Maybe Text|]
+     , Fixed "before" [t|Text|]
+     , Fixed "after" [t|Text|]
+     , Writable "range" [t|Maybe Text|]
+     , Writable "insert" [t|Maybe Text|]
+     , Writable "line" [t|Maybe Text|]
+     ]
+ )
+
+-- | 'EnterCut' is the first of an 'EnterAsk''s two questions, read from
+-- its JSON.
+data EnterCut = EnterCut [Kept] Int Int Int Int
+
+instance FromJSON EnterCut where
+  parseJSON = withObject "EnterCut" $ \o -> do
+    kept <- o .: "kept"
+    EnterCut [Kept {at, lineFrom, lineTo} | (at, lineFrom, lineTo) <- kept]
+      <$> o
+      .: "firstChange"
+      <*> o .: "lineStart"
+      <*> o .: "lineEnd"
+      <*> o .: "length"
+
+-- | The callback CodeMirror's Enter calls with an 'EnterAsk', in the
+-- master and in a presentation's rows ("Wiki.Core.Markdown.Enter"). It is
+-- a sync callback ('mkSyncCallback'), so the answer is set before the
+-- call returns to the keymap: 'enter' is pure and never waits, and the
+-- callback reads and writes nothing but the ask, so it may run in the
+-- middle of anything the component is doing. An exception in 'enter'
+-- leaves the ask unanswered, which the keymap takes for a plain line
+-- break. One callback serves every editor of the page, made the first
+-- time an editor is attached and kept for the page's life: it holds
+-- nothing of any editor, so there is nothing to free when one goes.
+enterCallback :: IO Callback
+enterCallback = do
+  made <- readIORef enterCallbackRef
+  case made of
+    Just callback -> pure callback
+    Nothing -> do
+      callback <- mkSyncCallback (answerEnter . EnterAsk)
+      writeIORef enterCallbackRef (Just callback)
+      pure callback
+
+{-# NOINLINE enterCallbackRef #-}
+enterCallbackRef :: IORef (Maybe Callback)
+enterCallbackRef = unsafePerformIO (newIORef Nothing)
+
+-- | Answer an 'EnterAsk' with what 'enter' writes, forced first, so that
+-- an exception in it leaves the ask unanswered rather than reaching the
+-- keymap.
+answerEnter :: EnterAsk -> IO ()
+answerEnter asked = case asked.cut of
+  Just json -> do
+    cut <- try @SomeException $ evaluate $ case decodeStrict (encodeUtf8 json) of
+      Just (EnterCut kept firstChange lineStart lineEnd len) -> (\(begins, ends) -> show begins <> " " <> show ends) <$> textRange kept firstChange lineStart lineEnd len
+      Nothing -> Nothing
+    case cut of
+      Right (Just range) -> evaluate (T.length range) >> asked.range_set (Just range)
+      _ -> pure ()
+  Nothing -> answerText asked
+
+-- | Answer the second question of an 'EnterAsk': what 'enter' writes.
+answerText :: EnterAsk -> IO ()
+answerText asked = do
+  answered <- try @SomeException $ do
+    answer <- evaluate (enter asked.before asked.after)
+    case answer of
+      NewLine -> pure answer
+      NewLineWith t -> answer <$ evaluate (T.length t)
+      LineBecomes t -> answer <$ evaluate (T.length t)
+  case answered of
+    Right (NewLineWith t) -> asked.insert_set (Just t)
+    Right (LineBecomes t) -> asked.line_set (Just t)
+    _ -> pure ()
+
 -- | Put CodeMirror in the host element (an empty element the editor
 -- renders just before its textarea) in place of the textarea, once the
 -- page has loaded CodeMirror. It starts with the Markdown the textarea was
@@ -423,8 +520,12 @@ readPickedFile picked = liftIO (evaluate =<< wait =<< picked.file.bytes)
 --
 -- The functions here that edit the text take the host, and act on
 -- CodeMirror if it is there and on the textarea if not.
+--
+-- The host is given 'enterCallback' too, which CodeMirror's Enter calls.
 attachEditor :: (MonadIO m) => Element -> Text -> m ()
-attachEditor host original = liftIO (js_attach host (toJSText original))
+attachEditor host original = liftIO $ do
+  callback <- enterCallback
+  js_attach host (toJSText original) callback
 
 -- | Remove the host's CodeMirror, if it has one.
 detachEditor :: (MonadIO m) => Element -> m ()
@@ -590,6 +691,15 @@ nextProblem = liftIO . js_next_problem
 offerFolds :: (MonadIO m) => Element -> Text -> [Fold] -> m ()
 offerFolds host text found =
   liftIO (js_offer_folds host (toJSText text) (jsonText [object ["from" .= f.from, "to" .= f.to] | f <- found]))
+
+-- | Give CodeMirror the lines at which a top-level block of a text starts
+-- with nothing open above it ("Wiki.Core.Markdown.Starts"), found by the
+-- check of that text: where its Enter may cut the text it hands to
+-- 'enterCallback'. CodeMirror takes them only while it holds that text,
+-- and maps them through the changes after. Before CodeMirror has loaded,
+-- they are kept on the host, as the folds are.
+offerStarts :: (MonadIO m) => Element -> Text -> [Int] -> m ()
+offerStarts host text found = liftIO (js_enter_starts host (toJSText text) (jsonText found))
 
 -- | Fold ranges of the editor's lines, each its first and last line (from
 -- 1, both included, as "Wiki.Core.Markdown.Folds" counts them), in any

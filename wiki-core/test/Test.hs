@@ -20,6 +20,7 @@ import Test.Markdown.Complete qualified as Complete
 import Test.Markdown.CompleteOracle qualified as CompleteOracle
 import Test.Markdown.Edit qualified as Edit
 import Test.Markdown.Emoji qualified as Emoji
+import Test.Markdown.Enter qualified as Enter
 import Test.Markdown.Folds qualified as Folds
 import Test.Markdown.Frame qualified as Frame
 import Test.Markdown.HtmlCost qualified as HtmlCost
@@ -58,6 +59,7 @@ main = hspec . parallel . wasmCases $ do
   Complete.spec
   CompleteOracle.spec
   Edit.spec
+  Enter.spec
   Tikz.spec
   Math.spec
   Allowlist.spec

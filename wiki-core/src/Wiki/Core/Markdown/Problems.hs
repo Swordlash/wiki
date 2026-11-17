@@ -60,6 +60,7 @@ import Wiki.Core.Markdown.Ast qualified as A
 import Wiki.Core.Markdown.Box (readAlertKind)
 import Wiki.Core.Markdown.Folds (Fold, foldsParsed, isSpoiler)
 import Wiki.Core.Markdown.Render (IslandKey (..), Options (..), defaultOptions, renderSections)
+import Wiki.Core.Markdown.Starts (blockStarts)
 import Wiki.Core.PageKind (PageKind (..))
 import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.Slides qualified as Slides
@@ -147,6 +148,10 @@ data Checked = Checked
   , slides :: [Slides.SlideSpan]
   -- ^ A presentation's slides, as its editor lists them
   -- ('Slides.slideSpans'); none for a document.
+  , starts :: [Int]
+  -- ^ The lines at which a top-level block starts with nothing open
+  -- above it ("Wiki.Core.Markdown.Starts"' 'blockStarts'), from the same
+  -- parse: where the editor's Enter may cut the text it reads.
   , openers :: Maybe [Int]
   -- ^ The character each of a presentation's openers starts at
   -- ('Wiki.Core.SlideRows.openerStarts'), from the same parse, which the
@@ -164,6 +169,7 @@ instance NFData Checked where
       `seq` rnf [(k.source, k.occurrence, p.from, p.to, p.kind) | (k, p) <- Map.toList c.islands]
       `seq` rnf c.folds
       `seq` rnf c.slides
+      `seq` rnf c.starts
       `seq` rnf c.openers
 
 instance NFData ProblemKind where
@@ -183,10 +189,14 @@ checkText pageKind source =
     , islands = islandsIn source located
     , folds = filter isSpoiler (foldsParsed source parsed)
     , slides = if pageKind == Presentation then Slides.slideSpansParsed source deck else []
+    , -- None in a text holding a carriage return: CommonMark counts one
+      -- alone as a line break, and the editor does not, so the parser's
+      -- lines are not the editor's.
+      starts = if T.any (== '\r') source then [] else blockStarts source shapes
     , openers = if pageKind == Presentation then Just (SlideRows.openerStartsParsed source deck) else Nothing
     }
   where
-    (located, markers, deck) = either (const ([], [], [])) identity (A.parseWithLinesMarkersAndDeck source)
+    (located, markers, deck, shapes) = either (const ([], [], [], [])) identity (A.parseWithLinesMarkersAndDeck source)
     parsed = (located, markers)
 
 -- | The problems the parser finds in a text, in the order of their lines:
@@ -247,7 +257,7 @@ problemsParsed (located, markers) = sort (markerLines <> spoilerHeads <> boxes <
 --   the top level, which is not read; and each @[[!style]]@ after the
 --   first, which is not read either.
 kindProblems :: PageKind -> Text -> [Problem]
-kindProblems pageKind source = kindProblemsParsed pageKind (either (const ([], [])) (\(_, ms, deck) -> (deck, ms)) (A.parseWithLinesMarkersAndDeck source))
+kindProblems pageKind source = kindProblemsParsed pageKind (either (const ([], [])) (\(_, ms, deck, _) -> (deck, ms)) (A.parseWithLinesMarkersAndDeck source))
 
 -- | 'kindProblems' of a text parsed already: the page's blocks as a
 -- presentation reads them, each with the line it starts on

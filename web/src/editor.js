@@ -6,7 +6,8 @@
 // mentions, emoji and the wiki's own markers, with the places of a
 // snippet to fill, and the marks of the page's problems: no line numbers,
 // no keys of its own but moving, selecting, deleting, undoing, choosing a
-// completion and moving between its places.
+// completion, moving between its places, and Enter continuing a list or a
+// quotation (markupEnter).
 //
 // web/bundle.sh bundles this into islands/editor.js, which islands.js
 // imports the first time the editor asks for it (wikiIslands.attachEditor),
@@ -136,7 +137,8 @@ import {
 } from "@codemirror/language";
 // The language alone, not markdown(): that brings HTML's, CSS's and
 // JavaScript's parsers for HTML in a page, list continuation on Enter and
-// tag completion, none of which the editor wants.
+// tag completion, none of which the editor wants: Enter in a list is the
+// wiki's own (markupEnter below).
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { tagHighlighter, tags } from "@lezer/highlight";
 import { forEachDiagnostic, lintGutter, nextDiagnostic, setDiagnostics, setDiagnosticsEffect } from "@codemirror/lint";
@@ -1372,8 +1374,8 @@ const completions = (host) => {
     if (!active) shownAt.delete(update.view);
     else if (!shownAt.has(update.view)) shownAt.set(update.view, Date.now());
   });
-  // Enter chooses as the list says; when it chooses nothing, it is a new
-  // line.
+  // Enter chooses as the list says; when it chooses nothing, it is the
+  // editor's Enter (markupEnter): a new line, or the next item of a list.
   const enter = (view) => {
     const option = shown(view.state);
     if (option?.enter?.after === undefined) return acceptCompletion(view);
@@ -1462,6 +1464,104 @@ const completions = (host) => {
 // first (completions, above).
 const toolbarKeys = new Set(["Ctrl-b", "Ctrl-e", "Ctrl-k"]);
 const textKeys = standardKeymap.filter((binding) => !toolbarKeys.has(binding.mac) && binding.key !== "Escape");
+
+// Enter in a list or a quotation (WP5.124 (a) of docs/PLAN.md, #187). What
+// Enter writes is decided in Haskell (Wiki.Core.Markdown.Enter's enter,
+// with the wiki's own parser): a line break alone, a line break and the
+// start of the next item or quoted line, or the cursor's line replaced,
+// an empty item or quoted line gone up a level. This asks it and makes
+// the answer one transaction, one step of the undo. A selection, several
+// cursors, a host without the callback, an ask that throws or comes back
+// unanswered are a line break and nothing more: Enter never does
+// nothing.
+
+// Where the wiki's parser starts a top-level block with nothing open
+// above it, in the text the component last checked
+// (Wiki.Core.Markdown.Starts, given by Wiki.App.Editor.Browser's
+// offerStarts): {starts, firstChange}, the starts as offsets mapped through
+// the changes since, and where the first of those changes is. The text
+// before firstChange is the text checked, so a start whose line ends at
+// or before it is still one. Until the first check, only the start of the
+// text, which is always one. CodeMirror's own tree cannot say
+// where such a start is: it knows no footnote's definition, none of the
+// wiki's own blocks, and reads HTML in a page otherwise.
+const setEnterStarts = StateEffect.define();
+const enterStarts = StateField.define({
+  create: () => ({ starts: [0], firstChange: 0 }),
+  update: (value, tr) => {
+    for (const effect of tr.effects) if (effect.is(setEnterStarts)) return effect.value;
+    if (!tr.docChanged) return value;
+    let { firstChange } = value;
+    tr.changes.iterChangedRanges((fromA) => {
+      firstChange = Math.min(firstChange, fromA);
+    });
+    return { starts: value.starts.map((start) => tr.changes.mapPos(start, 1)), firstChange };
+  },
+});
+
+// What Enter writes at a position of a state, asked of Haskell through the
+// host's wikiEnter (Wiki.App.Editor.Browser's enterCallback): {insert}, the
+// text after a line break, or {line}, what the position's line becomes; null
+// for a line break alone. The callback answers before it returns, on the
+// object it is given, and is asked twice. First where the text it reads
+// starts and ends (Wiki.Core.Markdown.Starts' textRange): it is given the
+// starts the last check kept, as mapped through the changes since, each
+// with where its line now starts and ends, and answers "from to", or
+// nothing past the limit. Then what Enter writes, given that text before
+// the position and after it.
+const askEnter = (host, state, pos) => {
+  const enter = host.wikiEnter;
+  const kept = state.field(enterStarts, false);
+  if (typeof enter !== "function" || kept === undefined) return null;
+  const { doc } = state;
+  const line = doc.lineAt(pos);
+  const starts = kept.starts.map((start) => {
+    const at = doc.lineAt(start);
+    return [start, at.from, at.to];
+  });
+  const cut = { cut: JSON.stringify({ kept: starts, firstChange: kept.firstChange, lineStart: line.from, lineEnd: line.to, length: doc.length }), range: null };
+  const ask = { cut: null, before: "", after: "", insert: null, line: null };
+  try {
+    enter(cut);
+    if (typeof cut.range !== "string") return null;
+    const [from, to] = cut.range.split(" ").map(Number);
+    if (!(Number.isInteger(from) && Number.isInteger(to) && from <= pos && pos <= to && to <= doc.length)) return null;
+    ask.before = state.sliceDoc(from, pos);
+    ask.after = state.sliceDoc(pos, to);
+    enter(ask);
+  } catch {
+    return null;
+  }
+  if (typeof ask.insert === "string") return { insert: ask.insert };
+  if (typeof ask.line === "string") return { line: ask.line };
+  return null;
+};
+
+// The transaction of an answer of askEnter at a cursor, in a state whose
+// cursor's line is the line asked about.
+const enterAnswered = (state, head, answer) => {
+  const line = state.doc.lineAt(head);
+  const change = answer.line === undefined ? { from: head, insert: `\n${answer.insert}` } : { from: line.from, to: line.to, insert: answer.line };
+  return { changes: change, selection: EditorSelection.cursor(change.from + change.insert.length), scrollIntoView: true, userEvent: "input" };
+};
+
+// The editor's Enter in the master: askEnter's answer, or a line break.
+// Shift+Enter is always a line break and nothing more. Both come after the
+// completion's keys, so that Enter chooses from an open list first. A row
+// of the slide mode has an Enter of its own (attachRow), which asks about
+// the master's text.
+const markupEnter = (host) => ({
+  key: "Enter",
+  run: (view) => {
+    const { state } = view;
+    const { main } = state.selection;
+    const answer = state.selection.ranges.length === 1 && main.empty ? askEnter(host, state, main.head) : null;
+    if (answer === null) return insertNewline(view);
+    view.dispatch(enterAnswered(state, main.head, answer));
+    return true;
+  },
+  shift: insertNewline,
+});
 
 // The editors attached, so that one whose host has left the page (the
 // editor closed without its finalizer reaching it) is let go of: a view
@@ -2323,6 +2423,34 @@ export function attachRow(masterHost, rowHost, key, focus) {
     });
     return true;
   };
+  // Enter in the row (markupEnter in the master): Haskell is asked about
+  // the master's text at the row's cursor, and the answer is made in the
+  // row, which sends it on to the master as it sends its typing. A row's
+  // own text does not hold what the rows above left open (a fence, which
+  // makes the row's lines code); the master's text, cut where the master's
+  // starts say (enterStarts), does. A row the
+  // master does not hold as it is (a moment between the two), or a
+  // cursor's line that starts before the row, is a plain line break.
+  const rowEnter = {
+    key: "Enter",
+    run: (rowView) => {
+      const now = rangeOf(masterView.state, key);
+      const { state } = rowView;
+      const { main } = state.selection;
+      const master = masterView.state;
+      const usable =
+        now !== null &&
+        state.selection.ranges.length === 1 &&
+        main.empty &&
+        master.sliceDoc(now.from, now.to) === state.doc.toString() &&
+        master.doc.lineAt(now.from + main.head).from === now.from + state.doc.lineAt(main.head).from;
+      const answer = usable ? askEnter(masterHost, master, now.from + main.head) : null;
+      if (answer === null) return insertNewline(rowView);
+      rowView.dispatch(enterAnswered(state, main.head, answer));
+      return true;
+    },
+    shift: insertNewline,
+  };
   const { anchor, head } = masterView.state.selection.main;
   const inside = (at) => at >= range.from && at <= range.to;
   const titled = masterHost.dataset.titleLine !== "false";
@@ -2343,7 +2471,7 @@ export function attachRow(masterHost, rowHost, key, focus) {
         rowMatches,
         keptInRow(masterView, key),
         keymap.of([
-          { key: "Enter", run: insertNewline, shift: insertNewline },
+          rowEnter,
           ...keys,
           { key: "Backspace", run: acrossEdge(false) },
           { key: "Delete", run: acrossEdge(true) },
@@ -2823,11 +2951,13 @@ export function attach(textarea, host, original, codeTokens) {
       titled ? titleLine : [],
       changes.extensions,
       masterCompletion.of(completion.extension),
-      // Enter is a line break and nothing more, as in the textarea, except
-      // while the completion's list is open, when it may choose (the
-      // completion's keys come first); Tab and the toolbar's shortcuts are
-      // the component's (the form's keydown).
-      keymap.of([{ key: "Enter", run: insertNewline, shift: insertNewline }, ...historyKeymap, ...textKeys, ...foldKeys]),
+      // Enter continues a list or a quotation (markupEnter), except while
+      // the completion's list is open, when it may choose (the
+      // completion's keys come first); Shift+Enter is a line break, as
+      // Enter is in the textarea before CodeMirror has loaded. Tab and the
+      // toolbar's shortcuts are the component's (the form's keydown).
+      keymap.of([markupEnter(host), ...historyKeymap, ...textKeys, ...foldKeys]),
+      enterStarts,
       EditorView.lineWrapping,
       new LanguageSupport(wikiMarkdown),
       syntaxHighlighting(highlighter),
@@ -3111,6 +3241,15 @@ export function attach(textarea, host, original, codeTokens) {
       const ranges = (Array.isArray(list) ? list : []).map((fold) => linesRange(doc, fold.from, fold.to)).filter((range) => range !== null);
       view.dispatch({ effects: offerFolds.of(ranges) });
     },
+    // Where Enter may cut the text it hands to Haskell (enterStarts): the
+    // lines, from 1, at which a top-level block of `text` starts with
+    // nothing open above it, taken only while the editor holds that text.
+    startable: (text, lines) => {
+      if (text !== view.state.doc.toString()) return;
+      const { doc } = view.state;
+      const starts = (Array.isArray(lines) ? lines : []).filter((n) => Number.isInteger(n) && n > 1 && n <= doc.lines).map((n) => doc.line(n).from);
+      view.dispatch({ effects: setEnterStarts.of({ starts: [0, ...starts], firstChange: doc.length }) });
+    },
     // Fold each range of `ranges`, JSON [[first, last]], lines from 1, in
     // any order, `first` staying in sight: any range, offered or not. A
     // range the text does not have, or of one line, folds nothing. The
@@ -3357,10 +3496,11 @@ export function attach(textarea, host, original, codeTokens) {
     },
   };
   host.wikiEditor = editor;
-  // The problems found before CodeMirror had loaded, and the folds, if
-  // they were found in the text it was given.
+  // The problems found before CodeMirror had loaded, and the folds and
+  // Enter's starts, if they were found in the text it was given.
   if (host.wikiProblems) editor.problems(host.wikiProblems);
   if (host.wikiFolds) editor.foldable(host.wikiFolds.text, host.wikiFolds.folds);
+  if (host.wikiStarts) editor.startable(host.wikiStarts.text, host.wikiStarts.starts);
   // For the browser tests, which find the text by what one types into.
   view.contentDOM.wikiEditor = editor;
   editors.add(editor);

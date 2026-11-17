@@ -82,6 +82,7 @@ library
       Wiki.Core.Markdown.Box
       Wiki.Core.Markdown.Complete
       Wiki.Core.Markdown.Edit
+      Wiki.Core.Markdown.Enter
       Wiki.Core.Markdown.Emoji
       Wiki.Core.Markdown.Folds
       Wiki.Core.Markdown.Frame
@@ -91,6 +92,7 @@ library
       Wiki.Core.Markdown.Mention
       Wiki.Core.Markdown.Problems
       Wiki.Core.Markdown.Render
+      Wiki.Core.Markdown.Starts
       Wiki.Core.Markdown.Tasks
       Wiki.Core.Markdown.TexMath
       Wiki.Core.Markdown.Tikz
@@ -177,6 +179,7 @@ test-suite wiki-core-test
       Test.Markdown.Edit
       Test.Markdown.Complete
       Test.Markdown.CompleteOracle
+      Test.Markdown.Enter
       Test.Markdown.Emoji
       Test.Markdown.Folds
       Test.Markdown.Frame

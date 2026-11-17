@@ -1977,8 +1977,10 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
   przed pluginami").** One builder, in this order, each its own pull
-  request. **WP5.132** The `H.async` that wrap something that cannot
-  wait become `H.sync` (#296 counted 25: the clock, `absoluteUrl`, a
+  request. **WP5.132, merged (#310): 25 sites, no guard removed, no
+  test changed; 155 `H.async` remain in handlers, each waiting or on a
+  worker on purpose (the pull request lists them).** The `H.async`
+  that wrap something that cannot wait become `H.sync` (#296 counted 25: the clock, `absoluteUrl`, a
   download's start, a JavaScript call returning a Bool,
   `passkeysHere`, `sealingHere`): each site with the reason it cannot
   wait; a doubtful one stays `H.async` and is listed. It changes when

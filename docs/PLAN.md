@@ -1993,13 +1993,16 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   (b) **The framework, with `[[!`, `[[/` and `[!`**: merged (#293).
   (c) **`[[` for a page**: merged (#294).
   (d) **The `/` menu**: merged (#295).
-  (e) **`\` in math**: KaTeX's commands (it exports no list: a script
-  at bundle time reads its tables into a small JSON and fails the
+  (e) **`\` in math**: open (#299), made narrower in review (the
+  owner, 2026-11-17: narrow contracts): KaTeX's commands (it exports
+  no list: a script at bundle time reads its tables and fails the
   build if they move), the wiki's, the space chain's and the page's
-  macros with their numbers of arguments, `\begin{env}` written with
-  its `\end`; "in math" for a formula not closed yet is decided in
-  Haskell from the block's text, with the wiki's parser as the oracle
-  of a property.
+  block of macros; a command is written as its name alone, no braces,
+  no environments; "in math" for a formula not closed yet is decided
+  in Haskell from the block's text, with the wiki's parser as the
+  oracle of a property.
+  (f) **The first answer after a trigger reads from a start of a
+  block, not the whole text above**: merged (#298).
   Left out: completion after `{` (decision 65 named it; the issue does
   not); the textarea before CodeMirror loads and the comments' boxes
   get none of this.
@@ -3183,6 +3186,30 @@ needs. Each was true when its package merged; check before relying on one.
   cursors. The check of the whole text grew by about 4% on wasm (6 ms
   on the guide, 90 ms on the 318,000-character deck, whose check
   already took 2.5 s).
+- **The completion's text is cut at a start of a block (#298,
+  WP5.124 (f)).** The editor keeps, from its check of the whole text,
+  the lines, the starts and the definitions (link references,
+  footnotes); a probe reads from the last start above the cursor whose
+  lines are unchanged since the check, with the definitions above that
+  start put before it, up to 4,000 characters, and to the second start
+  below. In the middle of the guide the first answer went from 0.6 to
+  1.7 s to 10 to 55 ms on wasm; in the long deck from about 8 s to at
+  most 250 ms; pinned by allocation. **What four rounds taught:** which
+  definitions a text holds cannot be taken from the parser's shapes
+  alone, because the parser drops shapes it still acts on (a duplicate
+  footnote's body, whose reference definitions stay registered; two
+  labels on one line reported as one shape). The default comes from
+  the raw text: a line holding `]:` is a suspect when some line of its
+  run of non-blank lines starts with `[` after its container marks; a
+  suspect is read only when it holds `]:` once and one top-level
+  definition with a plain label starts on it; below any other suspect
+  no start is used. Known and left: such a line in a code listing (a
+  TypeScript index signature, `[key: string]: number`) or in prose
+  costs the page the shortcut below it (`[[`, `[[!`, `[!` read the
+  whole text above, as before; `/` opens no list past 4,000
+  characters); exempting lines the parser reports as a listing would
+  be sound and was not done. Where no start serves (before the first
+  check, the text changed up to the top) the same fallback applies.
 - **A line indented after a line of attributes (#300).** CI found it
   through Enter's property (seed 2030959543, on #298's first head): a
   line indented by one to three spaces right after a line of

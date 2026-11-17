@@ -83,6 +83,7 @@ module Wiki.Core.Assistant
   , Usage (..)
   , turnUsage
   , usageText
+  , thousands
   )
 where
 

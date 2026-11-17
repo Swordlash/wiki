@@ -7904,7 +7904,7 @@ a.mention {
 .assistant-thinking,
 .assistant-status,
 .assistant-stopped,
-.assistant-cut {
+.assistant-sent {
   margin: 0.2rem 0 0;
   font-size: 0.8rem;
   color: var(--muted);

@@ -49,9 +49,13 @@
 -- What is sent with a message: when the editor has a selection, the
 -- selection is attached, shown as a chip ("lines 12–20") with a button to
 -- detach it, and the model receives it with a paragraph around it.
--- Otherwise the model receives the page, its first 'bodyCap' characters,
--- and the panel says so when a page is longer
--- ("Wiki.Core.Assistant.Prompt"). The conversation lasts until "New"
+-- Otherwise the model receives the page, its first 'bodyCap' characters:
+-- whole with the first message of a conversation, and with each later one
+-- only what changed since the copy last sent, so that the conversation is
+-- never changed and holds about one copy of the page ('sentCopy',
+-- "Wiki.Core.Assistant.Prompt"). The panel says under the message box what
+-- goes with the next message, and under each message of the user's what
+-- went with it. The conversation lasts until "New"
 -- starts another, or the editor closes (it is not stored anywhere), and is
 -- sent whole with each message.
 --
@@ -149,11 +153,13 @@ import Wiki.Core.Assistant.Prompt
   , Shortcut (..)
   , Span (..)
   , anthropicRequest
-  , bodyCap
   , chipLabel
+  , copyAfter
   , lineSpan
   , openAiRequest
   , pageContext
+  , scopeText
+  , sentNote
   , shortcutLabel
   , shortcutText
   , shortcuts
@@ -223,12 +229,12 @@ data Entry
     Notice Text
 
 -- | A message of the user's: the message, the lines of the selection
--- attached, if one was, the page's length when it was cut to send it, and
+-- attached, if one was, what of the page went with it ('sentNote'), and
 -- the time it was sent, as the chat shows it ('clockTime').
 data Said = Said
   { asked :: Text
   , chip :: Maybe Text
-  , cut :: Maybe Int
+  , sent :: Maybe Text
   , askedAt :: Text
   }
 
@@ -308,6 +314,12 @@ data State = State
   -- by id, with their descriptions.
   , absorbed :: [Int]
   -- ^ Changes absorbed by a later change of the model, which need no mention.
+  , sentCopy :: Maybe Text
+  -- ^ The copy of the page last sent in this conversation, cut to
+  -- 'Wiki.Core.Assistant.Prompt.bodyCap'. The next message without a
+  -- selection carries what changed since it. It is set in the step that
+  -- sends a message, and kept when the turn is stopped or fails, since the
+  -- chat keeps the message; a new conversation starts without one.
   , listener :: Maybe (HS.Listener IO Heard)
   , otherModel :: Bool
   -- ^ Whether "Other…" is chosen for the model, which shows its text field.
@@ -369,6 +381,7 @@ component =
               , detached = Nothing
               , nextChange = 1
               , made = mempty
+              , sentCopy = Nothing
               , absorbed = []
               , listener = Nothing
               , otherModel = False
@@ -594,9 +607,7 @@ component =
             <button type="button" class="assistant-detach" title="Send without the selection" aria-label="Send without the selection" onClick={{ const Detach }}>×</button>
           </span>
         |]
-      Nothing
-        | T.length st.input.body > bodyCap -> [hh|<span class="assistant-whole">Nothing selected: the first {{ show bodyCap :: Text }} characters of the page go with your message.</span>|]
-        | otherwise -> [hh|<span class="assistant-whole">Nothing selected: the page goes with your message.</span>|]
+      Nothing -> [hh|<span class="assistant-whole">{{ scopeText (T.length st.input.body) (isJust st.sentCopy) }}</span>|]
 
     entryView :: State -> Entry -> H.ComponentHTML Action Empty m
     entryView st = \case
@@ -607,8 +618,8 @@ component =
             {% for c in maybeToList m.chip %}
               <span class="assistant-chip">{{ c }}</span>
             {% end %}
-            {% for n in maybeToList m.cut %}
-              <p class="assistant-cut">Only the first {{ show bodyCap :: Text }} of the page's {{ show n :: Text }} characters were sent.</p>
+            {% for n in maybeToList m.sent %}
+              <p class="assistant-sent">{{ n }}</p>
             {% end %}
             <p class="assistant-meta"><span class="assistant-time">{{ m.askedAt }}</span></p>
           </div>
@@ -781,12 +792,13 @@ component =
     -- there or with the panel's "Accept all" and "Reject all". The new chat
     -- is told nothing of them: its model did not make them, so 'made' and
     -- 'absorbed' are emptied. 'nextChange' stays, since a change's id must
-    -- stay unique in the editor.
+    -- stay unique in the editor. The copy of the page last sent goes too,
+    -- so that the new chat's first message carries the whole page.
     endConversation :: H.HalogenM State Action Empty Output m ()
     endConversation = do
       st <- get
       for_ st.talk (H.liftEffect . closeTalk)
-      modify (\s' -> s' {talk = Nothing, using = Nothing, made = mempty, absorbed = []})
+      modify (\s' -> s' {talk = Nothing, using = Nothing, made = mempty, absorbed = [], sentCopy = Nothing})
       when st.talking (finish Stopped)
 
     -- Change the user's settings (the model); the editor stores them.
@@ -819,20 +831,21 @@ component =
             -- message again in a conversation of its own.
             sentAt <- H.liftEffect (liftIO getCurrentTime)
             shown <- H.liftEffect (clockTime sentAt)
-            let context = pageContext st.input.title body (attached st)
-                (chip, cut) = case context of
-                  Selected {lineRange} -> (Just (chipLabel lineRange), Nothing)
-                  Whole {cutFrom} -> (Nothing, cutFrom)
+            let context = pageContext st.input.title body st.sentCopy (attached st)
+                chip = case context of
+                  Selected {lineRange} -> Just (chipLabel lineRange)
+                  _ -> Nothing
                 reply = Reply {said = "", notes = [], stage = Waiting, thinking = "", thought = "", clock = shown, began = sentAt, quietSince = sentAt, took = Nothing, used = []}
             talk <- maybe (open md r) pure st.talk
             modify $ \s' ->
               s'
-                { entries = s'.entries <> [FromUser Said {asked = text, chip, cut, askedAt = shown}, FromModel reply]
+                { entries = s'.entries <> [FromUser Said {asked = text, chip, sent = sentNote context, askedAt = shown}, FromModel reply]
                 , message = ""
                 , talking = True
                 , talk = Just talk
                 , using = Just r
                 , detached = Nothing
+                , sentCopy = copyAfter body context st.sentCopy
                 , now = Just sentAt
                 , turnMode = md
                 }

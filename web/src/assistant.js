@@ -137,6 +137,17 @@ const usageOfOpenAi = (usage) => {
   return { input, cached: count(usage.input_tokens_details?.cached_tokens), written: count(usage.input_tokens_details?.cache_write_tokens), output };
 };
 
+// The messages of a request to Anthropic's API: the conversation, with a
+// cache marker on the last block of the last message (the user's text, or
+// the last tool result of a round). A copy: the conversation kept carries
+// no marker.
+const withMarker = (messages) => {
+  const last = messages.at(-1);
+  if (!last || !Array.isArray(last.content) || last.content.length === 0) return messages;
+  const content = [...last.content.slice(0, -1), { ...last.content.at(-1), cache_control: { type: "ephemeral" } }];
+  return [...messages.slice(0, -1), { ...last, content }];
+};
+
 const tellUsage = (handlers, usage) => {
   if (usage !== null) handlers.usage?.(usage);
 };
@@ -147,6 +158,19 @@ const tellUsage = (handlers, usage) => {
 // included, as the API requires of a conversation that goes on. That holds
 // at a gateway too: LiteLLM in front of Databricks reads the thinking
 // blocks back (2026-11-17).
+//
+// The conversation is append-only: nothing sent is ever changed, which
+// the thinking check of the newer models requires, and which lets
+// Anthropic's cache cover all of it. Each request marks the last block of
+// its last message for caching (`withMarker`), on top of the reference's
+// and the instructions' markers: three of the four a request may carry.
+// So each round of a tool loop and each next message read what came
+// before from the cache. The marker is put on the copy sent, not on the
+// conversation kept, so the next request carries it on its own last block
+// only; markers added, moved or taken away change neither the cache's
+// prefix nor what the thinking check compares. A user's message is kept
+// as a list of blocks from the start, as the marker needs, rather than a
+// string in one request and blocks in the next.
 //
 // The request asks for adaptive thinking with its summary shown, at the
 // effort chosen (output_config.effort, Wiki.Core.Assistant.Prompt). Older
@@ -168,10 +192,10 @@ const anthropicChat = (key, request, options) => {
   const asked = (now) => Object.fromEntries(Object.entries(now).filter(([part]) => !dropped.has(part)));
   return {
     async send(user, handlers, signal, now = request) {
-      const turn = [...messages, { role: "user", content: user }];
+      const turn = [...messages, { role: "user", content: [{ type: "text", text: user }] }];
       try {
         for (let round = 0; round < maxRounds; round++) {
-          const stream = client.messages.stream({ ...asked(now), messages: turn }, { signal });
+          const stream = client.messages.stream({ ...asked(now), messages: withMarker(turn) }, { signal });
           stream.on("text", (delta) => handlers.text(delta));
           stream.on("thinking", (delta) => handlers.thinking?.(delta));
           stream.on("streamEvent", (event) => {

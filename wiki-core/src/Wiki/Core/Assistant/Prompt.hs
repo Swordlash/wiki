@@ -18,8 +18,10 @@
 --    by the page's context at that moment ('userTurn'): the page's title,
 --    the user's decisions on the model's changes since the user's last
 --    message ('Outcome'), and the selection with a paragraph on each side,
---    or the page's Markdown cut to 'bodyCap'. In 'Ask' mode it also says
---    that the user wants an answer and no edit.
+--    or the page ('pageContext'). The page goes whole, cut to 'bodyCap',
+--    with the first message; a later message carries what changed since
+--    the copy last sent, as a diff of lines, or a line saying nothing did.
+--    In 'Ask' mode it also says that the user wants an answer and no edit.
 --
 -- The mode ('Mode') changes neither the system prompt nor the tools, so
 -- that the cached prefix stays, and a conversation can switch between
@@ -31,8 +33,9 @@
 -- prompt, which stays unchanged. A model that thinks binds its thinking to
 -- the system prompt and every earlier message, and Anthropic refuses a
 -- conversation whose earlier part has changed (its "preserved thinking"
--- check). Also, the caches match on an unchanged prefix. Attachments and
--- other pages are never sent.
+-- check). Also, the caches match on an unchanged prefix. For the same
+-- reason an earlier message is never changed: a page sent once stays in
+-- the conversation, and the next messages add only what changed.
 -- Attachments and other pages are never sent.
 module Wiki.Core.Assistant.Prompt
   ( -- * The page's context
@@ -41,6 +44,10 @@ module Wiki.Core.Assistant.Prompt
   , chipLabel
   , PageContext (..)
   , pageContext
+  , copyAfter
+  , pageChanges
+  , sentNote
+  , scopeText
   , bodyCap
   , contextCap
   , Outcome (..)
@@ -66,8 +73,9 @@ import Data.Aeson (ToJSON (toJSON), Value, object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Text qualified as T
 import Protolude
-import Wiki.Core.Assistant (Mode (..), ModelName (..))
+import Wiki.Core.Assistant (Mode (..), ModelName (..), thousands)
 import Wiki.Core.Assistant.Reference (markdownReference)
+import Wiki.Core.Diff (Diff (..), Hunk (..), Line (..), LineKind (..), diffText, hunks, lineText, unchanged)
 
 -- | 'Span': characters of the page, from @from@ up to @to@ (not included).
 data Span = Span {from :: Int, to :: Int}
@@ -90,44 +98,127 @@ chipLabel (a, b)
 -- | 'PageContext': what a message tells the model about the page.
 data PageContext
   = -- | The page's title, the selected lines, the selected text, and the
-    -- text around it.
-    Selected {title :: Text, lineRange :: (Int, Int), before :: Text, selected :: Text, after :: Text}
+    -- text around it; and the selection's length when only its first
+    -- 'bodyCap' characters are sent.
+    Selected {title :: Text, lineRange :: (Int, Int), before :: Text, selected :: Text, after :: Text, selectedFrom :: Maybe Int}
   | -- | The page's title and its Markdown, and the page's length when only
     -- the first 'bodyCap' characters are sent.
     Whole {title :: Text, body :: Text, cutFrom :: Maybe Int}
+  | -- | The page's title; the page is the copy last sent.
+    Same {title :: Text}
+  | -- | The page's title and what changed since the copy last sent, as
+    -- 'pageChanges' writes it, and the page's length when only its first
+    -- 'bodyCap' characters are compared.
+    Changed {title :: Text, changes :: Text, cutFrom :: Maybe Int}
   deriving stock (Eq, Show)
 
--- | The number of characters of a page sent with a message when nothing is
--- selected: about seven thousand tokens, enough for most pages and small
--- next to the reference. The panel says so when a page is longer.
+-- | The number of characters of a page, or of a selection, sent with a
+-- message: a long page's worth. The first message of a conversation
+-- carries the page cut to it, and the later ones only what changed, so
+-- the conversation holds about one copy. Two copies (the first, and one
+-- sent again after a large change) and the reference (67 thousand
+-- characters) are about 470 thousand characters: 155 thousand tokens at
+-- three characters a token, which with a response's 'maxTokens' fits the
+-- smallest context window of the models offered (200 thousand tokens).
+-- The panel says so when a page is longer.
 bodyCap :: Int
-bodyCap = 24_000
+bodyCap = 200_000
 
 -- | The maximum number of characters sent on each side of a selection.
 contextCap :: Int
 contextCap = 2_000
 
--- | The page's context for a message. If a non-empty selection is
--- attached: the selection, the rest of its paragraph and the paragraph
--- before it, and the rest of its paragraph and the paragraph after it.
--- Otherwise: the page.
-pageContext :: Text -> Text -> Maybe Span -> PageContext
-pageContext title page = \case
+-- | The page's context for a message, given the page's title, its
+-- Markdown, and the copy of the page last sent in this conversation
+-- ('copyAfter'), if one was.
+--
+-- If a non-empty selection is attached: the selection, cut to 'bodyCap',
+-- the rest of its paragraph and the paragraph before it, and the rest of
+-- its paragraph and the paragraph after it. Otherwise the page, cut to
+-- 'bodyCap': whole if no copy was sent yet; 'Same' if it is the copy last
+-- sent; or what changed since that copy ('pageChanges'). Where the
+-- changes would be longer than half of the page, or too many to work out,
+-- the page goes whole again.
+pageContext :: Text -> Text -> Maybe Text -> Maybe Span -> PageContext
+pageContext title page lastSent = \case
   Just s
     | s.to > s.from ->
-        Selected
-          { title
-          , lineRange = lineSpan page s
-          , before = T.takeEnd contextCap (paragraphBefore (T.take s.from page))
-          , selected = T.take (s.to - s.from) (T.drop s.from page)
-          , after = T.take contextCap (paragraphAfter (T.drop s.to page))
-          }
-  _ ->
-    Whole
-      { title
-      , body = T.take bodyCap page
-      , cutFrom = if T.length page > bodyCap then Just (T.length page) else Nothing
-      }
+        let selection = T.take (s.to - s.from) (T.drop s.from page)
+         in Selected
+              { title
+              , lineRange = lineSpan page s
+              , before = T.takeEnd contextCap (paragraphBefore (T.take s.from page))
+              , selected = T.take bodyCap selection
+              , after = T.take contextCap (paragraphAfter (T.drop s.to page))
+              , selectedFrom = if T.length selection > bodyCap then Just (T.length selection) else Nothing
+              }
+  _ -> case lastSent of
+    Nothing -> whole
+    Just copy -> case pageChanges copy body of
+      Nothing -> whole
+      Just "" -> Same {title}
+      Just changes
+        | 2 * T.length changes > T.length body -> whole
+        | otherwise -> Changed {title, changes, cutFrom}
+  where
+    body = T.take bodyCap page
+    cutFrom = if T.length page > bodyCap then Just (T.length page) else Nothing
+    whole = Whole {title, body, cutFrom}
+
+-- | The copy of the page the model has once a message with this context
+-- is sent, given the page's Markdown and the copy it had before: the page
+-- cut to 'bodyCap', unless the message carried a selection, which leaves
+-- the copy as it was.
+copyAfter :: Text -> PageContext -> Maybe Text -> Maybe Text
+copyAfter page context lastSent = case context of
+  Selected {} -> lastSent
+  _ -> Just (T.take bodyCap page)
+
+-- | What changed from one copy of the page to the next, as a unified diff
+-- of lines: each change with two unchanged lines around it, under a
+-- line "@@ -a,b +c,d @@" (the lines that follow are b lines from line a
+-- of the old copy, and d lines from line c of the new one), each line
+-- marked "-" removed, "+" added, or " " unchanged. Empty when the two
+-- differ in nothing but a final line break; 'Nothing' when they differ in
+-- too many lines to work out ("Wiki.Core.Diff").
+pageChanges :: Text -> Text -> Maybe Text
+pageChanges old new
+  | old == new = Just ""
+  | d.gaveUp = Nothing
+  | unchanged d = Just ""
+  | otherwise = Just (T.intercalate "\n" (concat [hunk ls | Shown ls <- hunks 2 d.rows]))
+  where
+    d = diffText old new
+    hunk ls =
+      ("@@ -" <> range (mapMaybe (\l -> l.old) ls) <> " +" <> range (mapMaybe (\l -> l.new) ls) <> " @@")
+        : map line ls
+    range ns = show (fromMaybe 0 (headMay ns)) <> "," <> show (length ns)
+    line l = mark l.kind <> lineText l
+    mark = \case
+      Unchanged -> " "
+      Removed -> "-"
+      Added -> "+"
+
+-- | What the panel says went with a user's message, under the message:
+-- the page, part of it, its changes, or a note that it did not change.
+-- Nothing for a selection sent whole, which the message's chip shows.
+sentNote :: PageContext -> Maybe Text
+sentNote = \case
+  Selected {selectedFrom} -> (\n -> "Sent with the first " <> thousands bodyCap <> " of the selection's " <> thousands n <> " characters.") <$> selectedFrom
+  Whole {cutFrom = Nothing} -> Just "Sent with the page."
+  Whole {cutFrom = Just n} -> Just ("Sent with the first " <> thousands bodyCap <> " of the page's " <> thousands n <> " characters.")
+  Same {} -> Just "Sent with a note that the page has not changed."
+  Changed {cutFrom} -> Just ("Sent with the page's changes since it was last sent" <> maybe "" (const (", in its first " <> thousands bodyCap <> " characters")) cutFrom <> ".")
+
+-- | What the panel says goes with the next message when nothing is
+-- selected, given the page's length and whether a copy of it was sent in
+-- this conversation. It does not work out the changes, which the panel
+-- would do at every key typed.
+scopeText :: Int -> Bool -> Text
+scopeText len sent
+  | sent = "Nothing selected: the page's changes since it was last sent go with your message."
+  | len > bodyCap = "Nothing selected: the first " <> thousands bodyCap <> " characters of the page go with your message."
+  | otherwise = "Nothing selected: the page goes with your message."
 
 -- | The end of a text, starting at the second-to-last paragraph: the
 -- paragraph a selection starts in, up to the selection, and the paragraph
@@ -192,7 +283,7 @@ userTurn mode decided context message =
     decisions
       | any ((/= Accepted) . snd) decided =
           [ T.intercalate "\n" $
-              "Since your last message, the user decided on your changes; the page below is as they left it, so do not put back what they rejected unless they ask:"
+              "Since your last message, the user decided on your changes; the page is as they left it, so do not put back what they rejected unless they ask:"
                 : ["- " <> outcomeWord o <> ": " <> what | (what, o) <- decided]
           ]
       | otherwise = []
@@ -201,19 +292,31 @@ userTurn mode decided context message =
       Rejected -> "Rejected (what it replaced is back)"
       Undone -> "Undone by the user"
     page = case context of
-      Selected {lineRange, before, selected, after} ->
+      Selected {lineRange, before, selected, after, selectedFrom} ->
         [ "The user has selected " <> chipLabel lineRange <> " of the page, and means this text unless they say otherwise:"
         , tagged "selection" selected
-        , "The text just before the selection:"
-        , tagged "before" before
-        , "The text just after it:"
-        , tagged "after" after
         ]
-      Whole {body, cutFrom} ->
-        ["The page's Markdown, as it is now:", tagged "page" body]
-          <> [ "Only the first " <> show bodyCap <> " of its " <> show n <> " characters are shown: do not quote what is not shown."
-             | Just n <- [cutFrom]
+          <> [ "Only the first " <> show bodyCap <> " of the selection's " <> show n <> " characters are shown: do not quote what is not shown."
+             | Just n <- [selectedFrom]
              ]
+          <> [ "The text just before the selection:"
+             , tagged "before" before
+             , "The text just after it:"
+             , tagged "after" after
+             ]
+      Whole {body, cutFrom} ->
+        ["The page's Markdown, as it is now:", tagged "page" body] <> cut cutFrom
+      Same {} ->
+        ["The page has not changed since you last saw it: it is the last whole copy you were sent, with every change sent since applied, your own edits included."]
+      Changed {changes, cutFrom} ->
+        [ "The page has changed since you last saw it. Its changes since then, your own edits made since included, as a diff of lines: \"@@ -a,b +c,d @@\" means the lines below it are b lines from line a of the page as you last saw it and d lines from line c of the page now, and each line starts with \"-\" if removed, \"+\" if added, or a space if unchanged. The page as you last saw it is the last whole copy you were sent with every change sent since applied; the page now is that with these changes applied too, and it is what you quote from:"
+        , tagged "changes" changes
+        ]
+          <> cut cutFrom
+    cut cutFrom =
+      [ "Only the first " <> show bodyCap <> " of its " <> show n <> " characters are shown: do not quote what is not shown."
+      | Just n <- [cutFrom]
+      ]
     tagged name text = "<" <> name <> ">\n" <> text <> "\n</" <> name <> ">"
 
 -- | 'Shortcut': the ready-made requests above the panel's input, which
@@ -253,8 +356,8 @@ instructions =
   T.intercalate
     "\n\n"
     [ "You are the writing assistant of a wiki. The text above is the wiki's reference for its Markdown: CommonMark with GitHub's extensions, $...$ and $$...$$ math, mermaid, tikz and math fences, alerts, the wiki's own blocks ([[!toc]], [[!spoiler]], [[!notes]] and the others), links between pages and the rest it describes. Every page is written in it."
-    , "You help the user edit one page. Each of their messages comes with the page's title and either the text they selected, with a little of the text around it, or the page's Markdown. Change the page only with the tools: replace swaps text the page has for new text, and insert adds text before or after text the page has, or at its start or end. Each change is shown to the user, who accepts or rejects it, so make the changes and do not ask for permission first. Prefer several small replacements to rewriting large parts that do not change."
-    , "The text you quote in old_text or anchor must be copied exactly from the page as it is now, Markdown included, and must occur in it exactly once; quote a whole sentence or line rather than a word. The page may have changed since earlier messages, by the user or by your own edits. If a tool answers that the text was not found or was found more than once, quote it again, exactly, with more of the text around it."
+    , "You help the user edit one page. Each of their messages comes with the page's title and either the text they selected, with a little of the text around it, or the page: its whole Markdown with the first message, and with each later one what changed in it since you last saw it, as a diff of lines, or a line saying that nothing did. Keep the page as it is now in mind: the last whole copy you were sent, with every change sent since applied. Change the page only with the tools: replace swaps text the page has for new text, and insert adds text before or after text the page has, or at its start or end. Each change is shown to the user, who accepts or rejects it, so make the changes and do not ask for permission first. Prefer several small replacements to rewriting large parts that do not change."
+    , "The text you quote in old_text or anchor must be copied exactly from the page as it is now, Markdown included (not from an older copy, and without a diff's marks), and must occur in it exactly once; quote a whole sentence or line rather than a word. The page may have changed since earlier messages, by the user or by your own edits. If a tool answers that the text was not found or was found more than once, quote it again, exactly, with more of the text around it."
     , "Write in the wiki's Markdown, in the page's language and style unless asked otherwise, and put nothing around the text you write: no code fences around a whole answer, no commentary inside it. Text you insert goes in exactly as given, so include the line breaks that separate it from its neighbours (a blank line between paragraphs). Every line break inside a paragraph is a line break on the page, so write each paragraph on one line, however long, and never wrap the text you write."
     , "In the conversation, say briefly what you changed, or answer the user's question; when they only ask something, answer without editing."
     ]
@@ -319,7 +422,7 @@ maxTokens = 32_000
 -- | A request to Anthropic's Messages API, without its messages, which the
 -- browser-side code adds. It holds the model, the tools, the system
 -- prompt, with the reference first and both blocks marked for caching
--- (the reference alone is about seven thousand tokens, above every
+-- (the reference alone is 67 thousand characters, far above every
 -- model's minimum), the effort chosen for the conversation, and adaptive
 -- thinking with its summary shown.
 --

@@ -107,6 +107,15 @@ const collect = () => {
   };
 };
 
+// A user's text as Anthropic's chat sends it: one text block, marked for
+// caching when it is the request's last block.
+const said = (text) => ({ role: "user", content: [{ type: "text", text }] });
+const marked = (message) => ({ ...message, content: [...message.content.slice(0, -1), { ...message.content.at(-1), cache_control: { type: "ephemeral" } }] });
+
+// A request's messages without their cache markers.
+const unmarked = (messages) =>
+  messages.map((m) => (Array.isArray(m.content) ? { ...m, content: m.content.map(({ cache_control, ...block }) => block) } : m));
+
 await test("Anthropic: streams the text, runs the tool loop, and keeps the conversation", async () => {
   const { fetch, requests } = fakeFetch([
     anthropicMessage(["I will ", "fix it."], [["tu_1", "replace", { old_text: "a", new_text: "b" }]], "tool_use"),
@@ -126,19 +135,19 @@ await test("Anthropic: streams the text, runs the tool loop, and keeps the conve
   assert.equal(first.headers.get("anthropic-dangerous-direct-browser-access"), "true");
   assert.equal(first.body.stream, true);
   assert.deepEqual(first.body.system, anthropicRequest.system);
-  assert.deepEqual(first.body.messages, [{ role: "user", content: "Fix it." }]);
+  assert.deepEqual(first.body.messages, [marked(said("Fix it."))]);
   // The tool's result goes back after the model's call, which goes back whole.
   assert.equal(second.body.messages.length, 3);
   assert.equal(second.body.messages[1].role, "assistant");
   assert.deepEqual(second.body.messages[1].content.at(-1), { type: "tool_use", id: "tu_1", name: "replace", input: { old_text: "a", new_text: "b" } });
-  assert.deepEqual(second.body.messages[2], { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_1", content: "Applied." }] });
+  assert.deepEqual(second.body.messages[2], marked({ role: "user", content: [{ type: "tool_result", tool_use_id: "tu_1", content: "Applied." }] }));
   // The next message is sent after the whole conversation, unchanged, with
   // the request as it is now: another effort chosen since.
   await chat.send("More.", collect().handlers, new AbortController().signal, { ...anthropicRequest, output_config: { effort: "high" } });
   const third = requests[2];
-  assert.deepEqual(third.body.messages.slice(0, 3), second.body.messages);
+  assert.deepEqual(unmarked(third.body.messages.slice(0, 3)), unmarked(second.body.messages));
   assert.equal(third.body.messages[3].role, "assistant");
-  assert.deepEqual(third.body.messages[4], { role: "user", content: "More." });
+  assert.deepEqual(third.body.messages[4], marked(said("More.")));
   assert.deepEqual(third.body.output_config, { effort: "high" });
   assert.deepEqual(third.body.system, anthropicRequest.system);
   assert.deepEqual(third.body.thinking, { type: "adaptive", display: "summarized" });
@@ -221,7 +230,7 @@ await test("Anthropic: a model that refuses adaptive thinking is asked again wit
   assert.deepEqual(requests[0].body.thinking, { type: "adaptive", display: "summarized" });
   assert.equal(requests[1].body.thinking, undefined);
   assert.equal(requests[2].body.thinking, undefined);
-  assert.deepEqual(requests[1].body.messages, [{ role: "user", content: "x" }]);
+  assert.deepEqual(requests[1].body.messages, [marked(said("x"))]);
 });
 
 // Claude Haiku 4.5's answer to a request with an effort, as it was on
@@ -243,7 +252,7 @@ await test("Anthropic: a model that refuses the effort is asked again without it
   // Only the effort is left out: the thinking is still asked for.
   assert.deepEqual(requests[1].body.thinking, { type: "adaptive", display: "summarized" });
   assert.deepEqual(requests[2].body.thinking, { type: "adaptive", display: "summarized" });
-  assert.deepEqual(requests[1].body.messages, [{ role: "user", content: "x" }]);
+  assert.deepEqual(requests[1].body.messages, [marked(said("x"))]);
 });
 
 // Claude Haiku 4.5 refuses adaptive thinking first, and the effort in the
@@ -284,7 +293,7 @@ await test("Anthropic: a refused tool's answer is marked as an error", async () 
   ]);
   const chat = startChat("anthropic", "k", anthropicRequest, { fetch, maxRetries: 0 });
   await chat.send("Go.", { text: () => {}, tool: async () => ({ text: "Not applied: not found.", ok: false }) }, new AbortController().signal);
-  assert.deepEqual(requests[1].body.messages[2].content[0], { type: "tool_result", tool_use_id: "tu_1", content: "Not applied: not found.", is_error: true });
+  assert.deepEqual(requests[1].body.messages[2].content[0], { type: "tool_result", tool_use_id: "tu_1", content: "Not applied: not found.", is_error: true, cache_control: { type: "ephemeral" } });
 });
 
 await test("Anthropic: the SDK's typed errors are the application's kinds", async () => {
@@ -682,7 +691,7 @@ await test("Anthropic, at its own address and at a gateway alike: the next messa
         ...anthropicRequest,
         stream: true,
         messages: [
-          { role: "user", content: "Hello" },
+          said("Hello"),
           {
             role: "assistant",
             content: [
@@ -690,11 +699,79 @@ await test("Anthropic, at its own address and at a gateway alike: the next messa
               { type: "text", text: "Hi." },
             ],
           },
-          { role: "user", content: "Again" },
+          marked(said("Again")),
         ],
       },
       baseURL ?? "the provider's own address",
     );
+  }
+});
+
+// The conversation is append-only (WP5.126): the newer models refuse a
+// thinking block sent back after an earlier message changed, and the
+// provider's cache matches on an unchanged prefix. A conversation of three
+// messages, the first with a tool loop of two rounds.
+const conversation = async (chat) => {
+  const { handlers } = collect();
+  for (const m of ["Fix it.", "More.", "And again."]) await chat.send(m, handlers, new AbortController().signal);
+};
+
+await test("Anthropic: each request marks for caching the last block of its last message, and nothing else of the messages", async () => {
+  const { fetch, requests } = fakeFetch([
+    anthropicThinking(["Weighing."], ["I will fix it."], [["tu_1", "replace", { old_text: "a", new_text: "b" }]], "tool_use"),
+    anthropicThinking(["Checking."], ["Done."], [], "end_turn"),
+    anthropicMessage(["More."], [], "end_turn"),
+    anthropicMessage(["Again."], [], "end_turn"),
+  ]);
+  await conversation(startChat("anthropic", "k", anthropicRequest, { fetch, maxRetries: 0 }));
+  assert.equal(requests.length, 4);
+  for (const [i, r] of requests.entries()) {
+    const markedAt = r.body.messages.flatMap((m, mi) => (Array.isArray(m.content) ? m.content.flatMap((b, bi) => (b.cache_control ? [[mi, bi]] : [])) : []));
+    const last = r.body.messages.length - 1;
+    assert.deepEqual(markedAt, [[last, r.body.messages[last].content.length - 1]], `request ${i + 1}`);
+    assert.deepEqual(r.body.messages[last].content.at(-1).cache_control, { type: "ephemeral" });
+    // The system prompt keeps its own markers, as the application gave them.
+    assert.deepEqual(r.body.system, anthropicRequest.system);
+    // Each user's text is a block, never a string.
+    for (const m of r.body.messages) assert.ok(Array.isArray(m.content), `request ${i + 1}: content of a ${m.role} message`);
+  }
+  // The rounds of the tool loop end in the tool's result, the messages in
+  // the user's text.
+  assert.equal(requests[1].body.messages.at(-1).content.at(-1).type, "tool_result");
+  assert.deepEqual(requests[2].body.messages.at(-1), marked(said("More.")));
+});
+
+await test("Both APIs: each request's conversation starts with the one before it, unchanged", async () => {
+  const anthropic = fakeFetch([
+    anthropicThinking(["Weighing."], ["I will fix it."], [["tu_1", "replace", { old_text: "a", new_text: "b" }]], "tool_use"),
+    anthropicThinking(["Checking."], ["Done."], [], "end_turn"),
+    anthropicMessage(["More."], [], "end_turn"),
+    anthropicMessage(["Again."], [], "end_turn"),
+  ]);
+  await conversation(startChat("anthropic", "k", anthropicRequest, { fetch: anthropic.fetch, maxRetries: 0 }));
+  const reasoning = { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "opaque" };
+  const call = { type: "function_call", id: "fc_1", call_id: "call_1", name: "replace", arguments: '{"old_text":"a","new_text":"b"}', status: "completed" };
+  const message = (id, text) => ({ type: "message", id, role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] });
+  const openAiAnswers = () => [
+    openAiResponse([], [reasoning, call]),
+    openAiResponse(["Done."], [reasoning, message("msg_1", "Done.")]),
+    openAiResponse(["More."], [message("msg_2", "More.")]),
+    openAiResponse(["Again."], [message("msg_3", "Again.")]),
+  ];
+  const own = fakeFetch(openAiAnswers());
+  await conversation(startChat("openai", "k", openAiRequest, { fetch: own.fetch, maxRetries: 0 }));
+  const elsewhere = fakeFetch(openAiAnswers());
+  await conversation(startChat("openai", "k", openAiRequest, { fetch: elsewhere.fetch, maxRetries: 0, baseURL: "https://gateway.example.com/v1" }));
+  for (const [name, list] of [
+    ["Anthropic", anthropic.requests.map((r) => unmarked(r.body.messages))],
+    ["OpenAI", own.requests.map((r) => r.body.input)],
+    ["OpenAI elsewhere", elsewhere.requests.map((r) => r.body.input)],
+  ]) {
+    assert.equal(list.length, 4, name);
+    for (let i = 1; i < list.length; i++) {
+      assert.ok(list[i].length > list[i - 1].length, `${name}, request ${i + 1} adds to the conversation`);
+      assert.deepEqual(list[i].slice(0, list[i - 1].length), list[i - 1], `${name}, request ${i + 1}`);
+    }
   }
 });
 

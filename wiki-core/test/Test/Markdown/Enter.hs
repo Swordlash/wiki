@@ -17,6 +17,7 @@
 module Test.Markdown.Enter (spec) where
 
 import Data.Text qualified as T
+import GHC.Clock (getMonotonicTimeNSec)
 import GHC.Conc (getAllocationCounter)
 import Protolude
 import Test.Cases (coverage)
@@ -50,6 +51,11 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     it "leaves the numbers below as they are" $ press "1. a‸\n2. b" `shouldBe` "1. a\n2. ‸\n2. b"
     it "goes on after an item's second paragraph" $ press "- one\n\n  more‸" `shouldBe` "- one\n\n  more\n- ‸"
     it "goes on after a lazy line of an item" $ press "- one\nlazy‸" `shouldBe` "- one\nlazy\n- ‸"
+    -- Codex's round 8 on #292: a tab in the item's text is no tab among
+    -- its marks.
+    it "goes on after an item with a tab in its text" $ press "- a\tb‸" `shouldBe` "- a\tb\n- ‸"
+    it "breaks the line alone with a tab between a bullet and its text" $ press "- \ta‸" `shouldBe` "- \ta\n‸"
+    it "goes on after a task with a tab in its text" $ press "- [ ] a\tb‸" `shouldBe` "- [ ] a\tb\n- [ ] ‸"
 
   describe "an empty item" $ do
     "- one\n- ‸" `becomes` "- one\n‸"
@@ -152,6 +158,25 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
   -- editor hands over, the cursor's block and the one below it, and past
   -- 'textLimit' by nothing at all.
   describe "what Enter costs" $ do
+    -- The check finds the starts after every pause in the typing: once
+    -- over the lines, not once for each block (Codex's round 8 on #292).
+    -- The bound is of time, not of allocation: a walk down the list of
+    -- lines allocates nothing. 'blockStarts' allocated 47 MB with a walk
+    -- for each block and 54 MB with the lookup (natively, 2026-11-17).
+    -- The time is the shortest of three runs, so that a collection of
+    -- the suite's garbage in one of them does not count.
+    it "finds the starts of sixteen thousand paragraphs in one pass over the lines" $ do
+      let text = T.intercalate "\n\n" ["Paragraph " <> show i <> "." | i <- [1 .. 16000 :: Int]]
+          shapes = fromRight [] (parseShapes text)
+      _ <- evaluate (T.length text + length shapes)
+      runs <- for [1 .. 3 :: Int] $ \k -> do
+        start <- getMonotonicTimeNSec
+        found <- evaluate (length (blockStarts text shapes) + k - k)
+        end <- getMonotonicTimeNSec
+        pure (found, end - start)
+      -- 28 to 32 ms measured natively on 2026-11-17, unoptimised; 1.12
+      -- to 1.15 s with a walk for each block.
+      (map fst runs, minimum (map snd runs) < 250_000_000) `shouldBe` ([16000, 16000, 16000], True)
     it "breaks the line alone past its limit, reading nothing" $ do
       let items = T.intercalate "\n" ["- item " <> show i | i <- [1 .. 1000 :: Int]]
       _ <- evaluate (T.length items)
@@ -310,7 +335,7 @@ data Gap = Spaces Int | Tab
   deriving stock (Eq, Show)
 
 -- | What a chunk's lines hold after their containers' marks.
-data Body = Attrs | Text | TextLazy | Heading | Box | Blank | Empty | Indented | Fenced | OpenFence | Html | Table | Opener | Closer | TextOpener | RawHtml Int
+data Body = Attrs | Text | TabText | TextLazy | Heading | Box | Blank | Empty | Indented | Fenced | OpenFence | Html | Table | Opener | Closer | TextOpener | RawHtml Int
   deriving stock (Eq, Show)
 
 -- | Some lines: the containers kept from the chunk before, written as on
@@ -345,7 +370,7 @@ chunk stack = do
     -- one (the parser reads one in an item too, and lists it at the end).
     footnote <- if k == 0 then frequency [(5, pure []), (1, (: []) . Note <$> choose (1, 1000000))] else pure []
     pure (footnote <> first' <> rest)
-  body <- frequency [(2, pure Attrs), (6, pure Text), (2, pure TextLazy), (1, pure Heading), (1, pure Box), (2, pure Blank), (2, pure Empty), (1, pure Indented), (1, pure Fenced), (1, pure OpenFence), (1, pure Html), (1, pure Table), (1, pure Opener), (1, pure Closer), (1, pure TextOpener), (2, RawHtml <$> choose (1, 7))]
+  body <- frequency [(2, pure Attrs), (6, pure Text), (1, pure TabText), (2, pure TextLazy), (1, pure Heading), (1, pure Box), (2, pure Blank), (2, pure Empty), (1, pure Indented), (1, pure Fenced), (1, pure OpenFence), (1, pure Html), (1, pure Table), (1, pure Opener), (1, pure Closer), (1, pure TextOpener), (2, RawHtml <$> choose (1, 7))]
   pure (Chunk kept fresh body)
 
 -- | A new container.
@@ -381,6 +406,8 @@ bodyLines = \case
   -- A line of attributes alone, which the block after it takes.
   Attrs -> [(False, "{#a .b}")]
   Text -> [(False, "Some text.")]
+  -- A tab in the text, after its first character.
+  TabText -> [(False, "a\tb")]
   TextLazy -> [(False, "Some text."), (True, "lazy text")]
   Heading -> [(False, "# A heading")]
   -- A box's marker, where its line is a quotation's first.

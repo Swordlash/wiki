@@ -27,6 +27,8 @@ module Wiki.Core.Markdown.Starts
   )
 where
 
+import Data.IntSet qualified as IntSet
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Protolude
 import Wiki.Core.Markdown.Ast (Shape (..), ShapeKind (..), shapeLines)
@@ -49,14 +51,19 @@ import Wiki.Core.Markdown.Enter (textLimit)
 -- after a paragraph's line only if it has text, and is no task then.
 blockStarts :: Text -> [Shape] -> [Int]
 blockStarts source shapes =
-  ordNub (1 : sort ([a | s <- shapes, s.kind /= NoteShape, let { a = fst (shapeLines s) }, a > 1, afterBlank a, not (any (holds a) notes)] <> items))
+  ordNub (1 : sort ([a | s <- shapes, s.kind /= NoteShape, let { a = fst (shapeLines s) }, a > 1, afterBlank a, not (inNote a)] <> items))
   where
     -- The items after the first of a list at the page's own level.
-    items = [fst (shapeLines i) | s <- shapes, s.kind == ListShape, i <- drop 1 s.inner, not (any (holds (fst (shapeLines i))) notes)]
-    notes = [shapeLines s | s <- shapes, s.kind == NoteShape]
-    holds l (a, b) = a <= l && l <= b
-    sourceLines = T.splitOn "\n" source
-    afterBlank l = maybe False (T.null . T.strip) (atMay sourceLines (l - 2))
+    items = [fst (shapeLines i) | s <- shapes, s.kind == ListShape, i <- drop 1 s.inner, not (inNote (fst (shapeLines i)))]
+    -- The footnotes' definitions, each by its first line, with its last:
+    -- they do not overlap, so the one that may hold a line is the last
+    -- that starts at or before it.
+    notes = Map.fromList [shapeLines s | s <- shapes, s.kind == NoteShape]
+    inNote l = maybe False (\(_, b) -> l <= b) (Map.lookupLE l notes)
+    -- The blank lines, found in one pass over the text, so that each
+    -- block's start is a lookup.
+    blanks = IntSet.fromList [l | (l, line) <- zip [1 ..] (T.splitOn "\n" source), T.null (T.strip line)]
+    afterBlank l = IntSet.member (l - 1) blanks
 
 -- | 'Kept' is a start the last parse found, as the editor holds it after
 -- the changes since: mapped through them, where it is now, and where the

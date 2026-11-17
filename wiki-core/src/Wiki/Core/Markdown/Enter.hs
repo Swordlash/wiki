@@ -296,7 +296,14 @@ layouts textLines = fmap (map snd) . foldM next []
         let markText = markWritten item.mark (T.drop before rest)
             afterMark = T.drop (before + T.length markText) rest
             spaces = T.length (T.takeWhile (== ' ') afterMark)
-        guard (not (T.null markText) && T.all (/= '\t') (T.take 5 afterMark))
+        -- The marks end where the item's text starts: after the blanks
+        -- after the mark, and for a task after its box and the blanks
+        -- after that. A tab among them is a tab among the marks, whose
+        -- width depends on its column; a tab in the text is none.
+        let blanks = T.takeWhile (\ch -> ch == ' ' || ch == '\t')
+            gapRun = blanks afterMark
+            boxRun = if item.task then blanks (T.drop 1 (T.dropWhile (/= ']') (T.drop (T.length gapRun) afterMark))) else ""
+        guard (not (T.null markText) && T.all (/= '\t') (gapRun <> boxRun))
         -- CommonMark's rule for the spaces an item's indentation counts:
         -- one to four before its text, or one when there are more (its
         -- text is then indented code) or none at all.

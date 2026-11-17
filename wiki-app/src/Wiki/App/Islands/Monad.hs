@@ -82,7 +82,7 @@ data MathMode = Inline | Display
 -- @wiki-island-drawn@ event ('drawnProblem'), which says whether the
 -- library failed; a drawing dropped for a newer one, or finished after the
 -- element left the page, sends none. When they did (a safe import, forced, from a
--- component's 'lift'), following a link in the built page while a page's
+-- component's 'H.async'), following a link in the built page while a page's
 -- diagram or picture was still being drawn left the page unchanged, for
 -- as long as anyone watched. The cause is not known yet (the browser
 -- tests' harness does not reproduce it); not waiting avoids it.

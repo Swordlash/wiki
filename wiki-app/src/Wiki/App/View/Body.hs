@@ -167,7 +167,7 @@ attachmentAddresses owner attachments = do
 -- The backend registers an owner ('newUrlOwner') and lets one go
 -- ('releaseUrls') in the same step of the view's program that writes the
 -- change here: through 'H.liftEffect', on the component's loop, without a
--- wait. Through 'lift', the backend's part would run on a worker thread,
+-- wait. Through 'H.async', the backend's part would run on a worker thread,
 -- and the write to the state in a later step. A view closed between the
 -- two never takes that later step (the close cancels its program), and the
 -- backend would hold an owner the state does not name, which nothing then

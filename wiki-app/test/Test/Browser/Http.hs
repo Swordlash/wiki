@@ -184,7 +184,7 @@ listening within = eventuallyWithin within (unsafeIOToPageM js_server_open_socke
 -- | Wait until the server has answered every request it was given and the
 -- program has taken the answers: no request pending, and then the program
 -- quiet (hspec-halogen's 'waitQuietWithin': no tree has work running or
--- queued, and no fiber waits in a @liftIO@, the reading of an answer and
+-- queued, and no fiber waits in an @H.async@, the reading of an answer and
 -- what follows it included). The server's answer alone is not that: the
 -- program decodes it and acts on it later, and a check made in between
 -- finds the state from before the answer, whatever the answer then does.

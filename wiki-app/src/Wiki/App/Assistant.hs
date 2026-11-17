@@ -394,7 +394,7 @@ clockTime t
 -- | The writing assistant, in the monad a component runs in.
 --
 -- The settings' methods and 'checkKey' wait (on IndexedDB, on the
--- provider), so a component calls them with @lift@. The others return
+-- provider), so a component calls them in @H.async@. The others return
 -- immediately, and are called with 'Halogen.liftEffect'.
 --
 -- A monad transformer over a monad with an instance gets the methods

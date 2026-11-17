@@ -13,7 +13,7 @@
 -- After a navigation, 'visit' waits until the program has started. After
 -- an action that reads or writes the demo's IndexedDB, or starts a debounce
 -- before such work, 'waitQuiet' waits until the program has no fiber left
--- waiting in a @liftIO@; the notices' timers are @H.delay@ and are not
+-- waiting in an @H.async@; the notices' timers are @H.delay@ and are not
 -- waited for ("Wiki.App.View.Common" states the rule). What the islands'
 -- libraries draw (KaTeX, Mermaid, highlight.js, CodeMirror), the fonts and
 -- the images are not the program's: a suite waits for those as explicit

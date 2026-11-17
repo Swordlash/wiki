@@ -88,8 +88,8 @@ spec site =
     click (locator page "#app .assistant-send")
     -- While the model works: "Thinking" with its summary, then the status
     -- of the edit it is writing, each when the provider's script gets to
-    -- it. Send reads the clock (in a liftIO) before it shows "Thinking",
-    -- and the driver's settle does not wait for a liftIO; waitQuiet would,
+    -- it. Send reads the clock (in an H.async) before it shows "Thinking",
+    -- and the driver's settle does not wait for an H.async; waitQuiet would,
     -- but it waits for the whole turn too, which is counted as the
     -- program's work. So the line itself is waited for.
     let fromModel = locator page "#app .assistant-message.from-model"

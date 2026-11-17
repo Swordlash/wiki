@@ -501,7 +501,7 @@ historyBack = when inBrowser . liftIO $ Window.window >>= \w -> w.history.back
 -- @\<input>@'s text is its value, not text inside the element, so an
 -- input is selected with its own @select@; any other element is selected
 -- whole with a range. This waits for the browser, so a component calls it
--- off its loop ('liftIO' in 'Halogen.HalogenM', not 'Halogen.liftEffect').
+-- off its loop ('Halogen.async', not 'Halogen.liftEffect').
 -- Natively nothing is copied.
 copyText :: (MonadIO m) => Element -> Text -> m Bool
 copyText element text = liftIO $ do

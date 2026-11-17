@@ -417,7 +417,7 @@ component =
 
     -- Show a slide at a step, and put them in the address, replacing the
     -- ones there. The address is written on the loop, without a wait, in
-    -- the step that decided it ('H.liftEffect'). Written through 'liftIO',
+    -- the step that decided it ('H.liftEffect'). Written through 'H.async',
     -- on a thread of its own, it came after whatever ran meanwhile: a
     -- reader who had left the slides (Back, a link) was taken back to
     -- them, as the router takes a write to the address for a route to go

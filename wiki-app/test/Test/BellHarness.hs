@@ -211,6 +211,9 @@ drive rig ui ref gone s = do
       modifyIORef' ref (\server -> server {untold = []})
       rig.tellFeed Reopened
     HandleOut _ -> pass
+    -- The mounted bell's runs have no change of reader: its spec leaves
+    -- them out ("Test.BellDom"); the machine's runs have them.
+    SwitchUser -> pass
     Handle -> do
       server <- readIORef ref
       waiting <- Harness.held rig.gate
@@ -272,7 +275,10 @@ runSteps how rig ui run = do
                     <> ["listed before and gone: " <> show gone | page.open, let gone = [k | k <- Map.keys seen, k `notElem` map fst page.rows, k `elem` newest], not (null gone)]
                     <> ["the count says " <> show page.count <> ", and " <> show (length (filter snd page.rows)) <> " are listed unread" | page.open, page.count < length (filter snd page.rows)]
                     <> ["Mark read is enabled while a mark is held" | page.open, any snd page.rows, marksHeld > 0, not page.busy]
-                    <> ["Mark read is disabled with no mark held" | page.open, page.busy, marksHeld == 0]
+                    -- A mark clicked while another ask is out waits its turn
+                    -- ("Wiki.App.View.Bell.Machine"'s one ask at a time),
+                    -- as the machine's run of the same steps has it.
+                    <> ["Mark read is disabled with no mark held or waiting" | page.open, page.busy, marksHeld == 0, null w'.bell.queued]
                     <> ["the feed is listened to " <> show listening <> " times" | listening /= 1]
             problems = rules <> (if how == BesideMachine then beside else [])
         if null problems

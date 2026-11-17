@@ -99,7 +99,7 @@ component =
       { initialState = \input -> do
           notices <- atOnce notifications
           holder <- H.newRefLabel "notifications"
-          pure State {input, machine = Machine.new (initial notices input.context.revision), holder, listWatch = Nothing}
+          pure State {input, machine = Machine.new (initial notices input.context.revision input.context.sessionNumber), holder, listWatch = Nothing}
       , render
       , eval =
           H.mkEval
@@ -201,7 +201,7 @@ component =
       -- each time it is opened.
       Receive input -> do
         modify (\st -> st {input})
-        happen (Revised input.context.revision (Sealer (sealedAgain input.context)))
+        happen (Revised input.context.revision input.context.sessionNumber (Sealer (sealedAgain input.context)))
       Toggle -> happen Toggled
       Close -> happen Dismissed
       Heard heard -> case heard of

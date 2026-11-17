@@ -46,8 +46,8 @@ main :: IO ()
 main = do
   -- Most components use detached documents and independent backends. The
   -- page-size and assistant examples need the process's native stores alone.
-  -- The views mounted in the process's document ("Test.Harness.MemDom")
-  -- take it one at a time, beside everything else.
+  -- The views mounted on the in-memory DOM ("Test.Harness.MemDom") each
+  -- have a page of their own, and run beside everything else.
   permits <- newQSemN maxBound
   let holding n = bracket_ (waitQSemN permits n) (signalQSemN permits n)
   hspecWith defaultConfig {configConcurrentJobs = Just 4} . parallel $ do

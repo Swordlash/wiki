@@ -43,7 +43,8 @@ import Halogen.Router qualified as Router
 import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
 import Protolude hiding (State)
 import Test.Bell (Server (..), Step (..), World (..), emptyServer, forgotten, handleMark, handleRead, made, madeEarly, madeMany, play, start)
-import Test.Harness.MemDom (Gate, Held (..), TestFeed (..), answer, heldNow, hold, newGate, newTestFeed, viewContext)
+import Test.Harness.MemDom (Gate, Held (..), TestFeed (..), answer, hold, newGate, newTestFeed, viewContext)
+import Test.Harness.MemDom qualified as Harness
 import Wiki.Api.Notifications (Notifications (..), ReadMark (..))
 import Wiki.App.Backend (MonadLoad (..), MonadWiki, WikiError)
 import Wiki.App.Backend.Mem (MemWiki, runMemWiki)
@@ -212,18 +213,21 @@ drive rig ui ref gone s = do
     HandleOut _ -> pass
     Handle -> do
       server <- readIORef ref
-      waiting <- heldNow rig.gate
+      waiting <- Harness.held rig.gate
       done <- readIORef rig.handled
       for_ (head [h | h <- waiting, not (Map.member h.number done)]) $ \h -> do
         let (server', a) = maybe (server, handleRead server) (`handleMark` server) h.asked
         writeIORef ref server'
         modifyIORef' rig.handled (Map.insert h.number a)
     Deliver i -> do
-      waiting <- heldNow rig.gate
+      waiting <- Harness.held rig.gate
       done <- readIORef rig.handled
       for_ (atMay [(h, a) | h <- waiting, Just a <- [Map.lookup h.number done]] i) $ \(h, a) -> do
         modifyIORef' rig.handled (Map.delete h.number)
-        answer rig.gate h (Right a)
+        -- Once the bell has gone away, its asks leave the gate as their
+        -- fibers are killed, maybe after they were read here: an answer
+        -- to one then reaches nobody, as an answer to a closed bell does.
+        void (try @Harness.Failure (answer rig.gate h (Right a)))
     Revise -> do
       r <- atomicModifyIORef' rig.revision (\r -> (r + 1, r + 1))
       rig.revise r
@@ -247,7 +251,7 @@ runSteps how rig ui run = do
         let w' = play w s
         page <- if w'.finished then pure (shownBy w') else ui.shown
         server <- readIORef ref
-        waiting <- heldNow rig.gate
+        waiting <- Harness.held rig.gate
         listening <- readIORef rig.listening
         let expected = shownBy w'
             holding = length waiting
@@ -275,8 +279,11 @@ runSteps how rig ui run = do
           then go (done <> [s]) w' seen' rest
           else pure (Just (T.unlines (("after " <> show (done <> [s])) : problems)), w'.finished)
   (outcome, gone) <- go [] start mempty run
-  -- The asks still held are let go, so that no worker waits for ever.
-  heldNow rig.gate >>= traverse_ (\h -> answer rig.gate h (Right Notifications {unread = 0, items = []}))
+  -- The asks still held are let go, so that no worker waits for ever. An
+  -- ask whose fiber the bell's going away killed leaves the gate by
+  -- itself, maybe between the reading and the answer: answering it then
+  -- fails, and is nothing to let go.
+  Harness.held rig.gate >>= traverse_ (\h -> void (try @Harness.Failure (answer rig.gate h (Right Notifications {unread = 0, items = []}))))
   -- A run that stopped at a fault before its Finish leaves the bell
   -- mounted: disposed of here, or its tree would count in the next run's
   -- activity.

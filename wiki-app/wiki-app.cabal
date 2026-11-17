@@ -396,7 +396,6 @@ test-suite wiki-app-test
         servant,
         servant-client-core,
         servant-multipart-api,
-        stm,
         text,
         time,
         transformers,

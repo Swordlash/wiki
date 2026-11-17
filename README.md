@@ -3608,31 +3608,44 @@ a notice. `threadDelay` and `eventuallyWithin` are not raised.
 A view whose logic is a machine (`View/<Name>/Machine.hs`) is tested
 natively in `wiki-app-test`, with no browser: the machine over generated
 runs, and the real component mounted on haskell-halogen's in-memory DOM to
-show it matches the machine. `Test.Harness.MemDom` mounts it and drives it;
-the bell's spec, `Test.BellDom`, is the example to copy.
+show it matches the machine. The harness is haskell-halogen's
+`Halogen.Test.Native`, which `Test.Harness.MemDom` re-exports with what is
+the wiki's own; the bell's spec, `Test.BellDom`, is the example to copy.
+The library's documentation says what each name does.
 
 - `withView run component input $ \view -> …` mounts the component in a
-  container of the in-memory document, with `run` running its monad (the
-  in-memory backend over `MemDOM`), and disposes of it after the body.
-- Act as the reader does: `click view selector`, `typeInto view selector
-  text`, `keyDown "Escape" [] node`, `pressOutside view`. Each event
-  bubbles to the document and the window as in a page, and a disabled
-  button gets no click.
+  page of its own, under a parent that gives it its input, with `run`
+  turning its monad into `MemDOM` (the in-memory backend over it), and
+  disposes of it after the body. `setInput view i` gives it a new input,
+  as the shell does; `outputs view` is what it told its parent. A view
+  whose test disposes of it itself is mounted with `mountIn` on
+  `N.newPage` and ended with `dispose`.
+- Act as the reader does: `click view selector` (the whole click, pointer
+  and mouse events, then what the browser does by default, a form's
+  submit among them), `typeInto view selector text`, `pressNode node
+  "Escape"`, `clickOutside view`; `clickNode` for a node found already.
+  Each event bubbles to the page's document as in a page, and a disabled
+  button gets no click. A selector that matches nothing fails the test,
+  with the view's HTML.
 - Read with CSS selectors: `find`, `findAll`, `textOf`, and
   `N.attribute`, `N.textContent` on what they find.
 - Wait for the program, never on a clock: `settle view` once it is quiet;
-  `settleHolding view (heldCount gate)` once it waits only for the asks
-  the test holds.
+  `settleHolding view (holds gate)` once it waits only for the asks the
+  test holds; `settleWaiting view n` once it is idle with `n` fibers
+  waiting (a counted pause is one). The wiki's three fail after ten
+  seconds, with the view's HTML.
 - Hold the backend's asks one of two ways. A `Gate`, for answers that are
   the test's own values (the bell's come from a model of the server, which
-  handles an ask at one step and answers it at another). Or the library's
-  `withHeldWaits`, for the real backend's answer at a moment the test
-  chooses (`pending`, then `release` in any order).
-- The in-memory document is one for the process: a press on it reaches
-  every mounted view's listeners. So `withView` mounts one view at a time;
-  the rest of the suite runs beside it. The address is the process's one
-  too, and the prerender's router (`Wiki.App.Static`) writes it beside
-  them: read where a view went from its router's `Router.changes`.
+  handles an ask at one step and answers it at another): `hold` in the
+  test's backend, `held`, then `answer`. An ask whose fiber is killed
+  leaves the gate. Or the library's `withHeldWaits`, for the real
+  backend's answer at a moment the test chooses (`pending`, then
+  `release` in any order).
+- Each view has a page of its own: a press in one view's page reaches no
+  other view's listeners, so the specs run beside the rest of the suite.
+  The address is still the process's one, and the prerender's router
+  (`Wiki.App.Static`) writes it beside them: read where a view went from
+  its router's `Router.changes`.
 
 A pause a test waits for is `H.delayCounted`, in seconds: a debounce, an
 autosave, a look again later. It counts as the program waiting, so a wait

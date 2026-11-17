@@ -1,129 +1,58 @@
-{-# LANGUAGE MultiWayIf #-}
-
--- | A view mounted on haskell-halogen's in-memory DOM for a native test
--- ("Halogen.VDom.DOM.Monad.Native"): the harness every view's native spec
--- uses. The view is the real component, run as a page runs it: mounted in
--- a container of the process's one document, clicked and typed into by
--- events that bubble as in a page, read with CSS selectors, and waited for
--- through what its program is doing ("Halogen.Activity"), never by a
--- clock.
+-- | The harness every view's native spec uses: haskell-halogen's
+-- "Halogen.Test.Native", re-exported, with what is the wiki's own. A view
+-- is the real component, mounted on the in-memory DOM in a page of its
+-- own, clicked and typed into as a reader does, read with CSS selectors,
+-- and waited for through what its program is doing, never by a clock.
 --
 -- > withView run component input $ \view -> do
 -- >   click view ".notifications-toggle"
 -- >   settle view
--- >   rows <- N.querySelectorAll ".notification" view.container
+-- >   rows <- findAll view ".notification"
 --
--- = What the program waits for
+-- "Halogen.Test.Native"'s documentation says what each of its names does:
+-- 'withView' (with the parent that gives the input, 'setInput', and keeps
+-- the outputs, 'outputs'), 'click' (a reader's whole click, with what the
+-- browser does by default), 'typeInto', 'press', 'clickOutside', 'find',
+-- 'textOf', the 'Gate' a test's backend holds its asks in, and the
+-- library's held waits and test clock ("Halogen.Activity.Control").
 --
--- A view's asks of its backend are held for the test in one of two ways.
+-- What this module adds:
 --
--- * The library's held waits ("Halogen.Activity.Control", re-exported
---   here): inside 'withHeldWaits', every wait of the view's program is
---   held before its action starts; 'pending' gives them once the program
---   has done all it can, and 'release' runs the real action. For a test
---   whose backend's own answer is the one wanted, at the moment the test
---   chooses: a read let go after a write, an echo of the live channel
---   before or after the answer to the write.
--- * A 'Gate': the test's backend puts each ask in it and waits for an
---   answer the test gives, a value of the test's own ('answer'). For a
---   test whose answers come from a model of the server, as the bell's
---   generated runs do ("Test.BellHarness"). 'settleHolding' waits until
---   the program has done all it can but wait for the gate.
+-- * 'settle' and 'settleHolding' fail after ten seconds, saying what they
+--   waited for: the library's wait for as long as it takes.
+-- * 'settleWaiting', for a spec that checks how many of the view's fibers
+--   wait (a counted pause). The library does not give a view's activity.
+-- * What a view of the wiki is given: 'viewContext', and a live channel the
+--   test tells through ('TestFeed').
 --
--- = The document is one for the process
---
--- Every container is in the same document, and a component's listeners
--- on the document and the window hear every event that reaches them,
--- from any view, as in one page: a popup open in one view closes on a
--- press in another view's container. So 'withView' takes the document for
--- its body ('inTurn'): views mounted with it run one after another. The
--- rest of the native suite runs beside them. What it mounts (the
--- prerender's shell, "Wiki.App.Static") is on elements in no document,
--- whose popups never act; but its routers write the address, which is
--- the process's one @location@ too. So a spec reads where its view went
--- from its own router's 'Halogen.Router.changes', not from the address.
+-- Each view has a page of its own, with its own document: an event in one
+-- view's page never reaches another's listeners, so views run side by side.
+-- The address is still the process's one, and the prerender's router
+-- ("Wiki.App.Static") writes it beside them: a spec reads where its view
+-- went from its own router's 'Halogen.Router.changes', not from the address.
 module Test.Harness.MemDom
-  ( -- * A view mounted
-    View (..)
-  , withView
-  , mount
-  , query
-  , inTurn
+  ( -- * The library's harness
+    module Halogen.Test.Native
 
-    -- * A view under a parent that changes its input
-  , Drive (..)
-  , driven
-  , drivenHearing
-  , setInput
+    -- * Waiting for the program, with a deadline
+  , settle
+  , settleHolding
+  , settleWaiting
 
     -- * What the shell gives a view
   , viewContext
   , viewContextAs
   , TestFeed (..)
   , newTestFeed
-
-    -- * Acting as the reader
-  , click
-  , clickAt
-  , typeInto
-  , keyDown
-  , pressOutside
-
-    -- * Reading
-  , find
-  , findAll
-  , textOf
-
-    -- * Waiting for the program
-  , settle
-  , settleHolding
-  , within
-
-    -- * Asks the test answers with values of its own
-  , Gate
-  , Held (..)
-  , newGate
-  , hold
-  , heldNow
-  , heldCount
-  , answer
-
-    -- * Asks held by the library
-  , HeldWaits
-  , HeldWait (..)
-  , withHeldWaits
-  , pending
-  , release
-  , releaseAll
-
-    -- * Pauses on the test's clock
-  , TestClock
-  , withTestClock
-  , advance
   )
 where
 
-import Control.Concurrent.STM (TVar, modifyTVar', newTVarIO, readTVar, readTVarIO, writeTVar)
-import Control.Monad.IO.Unlift (MonadUnliftIO)
-import Data.Aeson (Value, object, (.=))
-import Data.Aeson.Key qualified as Key
-import Data.Coerce (coerce)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
-import Data.Row (type (.==))
-import Halogen qualified as H
-import Halogen.Activity (Activity (..), idle, quiet)
-import Halogen.Activity.Control (HeldWait (..), HeldWaits, TestClock, advance, pending, release, releaseAll, withHeldWaits, withTestClock)
-import Halogen.HTML qualified as HH
 import Halogen.Router (Router)
 import Halogen.Subscription qualified as HS
-import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
-import Halogen.VDom.DOM.Monad.Native qualified as N
-import Halogen.VDom.Driver (runUI)
+import Halogen.Test.Native hiding (settle, settleHolding)
+import Halogen.Test.Native qualified as T
 import Protolude hiding (find)
-import System.IO.Unsafe (unsafePerformIO)
-import System.Timeout (timeout)
-import Web.DOM.Internal.Types (Element (..))
-import Web.HTML.HTMLInputElement (HTMLInputElement (..))
 import Wiki.App.Backend (Session, anonymousIn)
 import Wiki.App.Live (Feed (..), Heard)
 import Wiki.App.Route (Route)
@@ -132,93 +61,30 @@ import Wiki.Core.Access (Access (..))
 import Wiki.Core.Id (PageId)
 import Wiki.Core.Space (Space)
 
--- | A view mounted in a container of the process's document: the
--- container, what the program is doing, and how to ask the view and to
--- take it away.
-data View q = View
-  { container :: N.NativeNode
-  , queries :: Queries q
-  , activity :: IO Activity
-  -- ^ What this view's tree alone is doing.
-  , waitActivity :: (Activity -> Bool) -> IO ()
-  -- ^ Return once 'activity' satisfies the predicate, woken by each
-  -- change of it, never by a clock.
-  , dispose :: IO ()
-  -- ^ Finalize the view and take its container out of the document.
-  -- Twice does nothing more.
-  }
+-- | Wait until the view's program is quiet: nothing running or queued, and
+-- no fiber waiting in an @H.async@. A wait that has not ended after ten
+-- seconds has hung, and the test fails with the view's HTML.
+settle :: View q i o -> IO ()
+settle view = within (("the view to be quiet. Its HTML:\n" <>) <$> html view) (T.settle view)
 
--- | A view's queries, run to the end.
-newtype Queries q = Queries (forall a. q a -> IO (Maybe a))
+-- | Wait until the view's program has done all it can while the gates hold
+-- their asks ('holds'), with the same ten seconds as 'settle'.
+settleHolding :: View q i o -> Holds -> IO ()
+settleHolding view gates = within (("the view to wait only for the asks held. Its HTML:\n" <>) <$> html view) (T.settleHolding view gates)
 
--- | Ask the view, as its parent would, and wait for the answer.
-query :: View q -> q a -> IO (Maybe a)
-query view = let Queries send = view.queries in send
-
--- | Mount a component in a new container of the process's document, with
--- the function that runs its monad. The caller disposes of it; 'withView'
--- does both and takes the document for the time between.
-mount :: (MonadBrowserDOM m, MonadUnliftIO m) => (forall a. m a -> IO a) -> H.Component q i o m -> i -> IO (View q)
-mount run component input = do
-  container <- N.newContainer
-  H.HalogenSocket {H.query = send, H.dispose = disposeTree, H.activity = reading, H.waitActivity = waiting} <- run (runUI component input (N.fromNative container))
-  pure
-    View
-      { container
-      , queries = Queries (run . send)
-      , activity = run reading
-      , waitActivity = run . waiting
-      , dispose = run disposeTree >> (N.fromNative container :: Element).remove
-      }
-
--- | Mount a view, run the body on it, and dispose of it, with the
--- process's document taken for the time between ('inTurn'). Mount it on
--- the thread that opened 'withHeldWaits' or 'withTestClock', as here, for
--- them to hold its waits and move its pauses.
-withView :: (MonadBrowserDOM m, MonadUnliftIO m) => (forall a. m a -> IO a) -> H.Component q i o m -> i -> (View q -> IO b) -> IO b
-withView run component input body = inTurn (bracket (mount run component input) (\v -> v.dispose) body)
-
--- | 'Drive' is what a test asks of the parent 'driven' puts a view under:
--- give the view a new input, as the shell does when the route or the
--- wiki changes.
-data Drive i a = SetInput i a
-
-type DrivenSlots q o = ("view" .== H.Slot q o ())
-
--- | A component under a parent that gives it its input, the one given
--- first and then each 'setInput'. The view's own output and queries stay
--- inside: a spec reads and acts on the page.
-driven :: forall q i o m. (Typeable i, Monad m) => H.Component q i o m -> i -> H.Component (Drive i) () Void m
-driven component given =
-  H.mkComponent
-    H.ComponentSpec
-      { initialState = \_ -> pure given
-      , render
-      , eval = H.mkEval H.defaultEval {H.handleQuery = \(SetInput i a) -> put i $> Just a}
-      }
-  where
-    render :: i -> H.ComponentHTML () (DrivenSlots q o) m
-    render i = HH.div_ [HH.slot_ "view" () component i]
-
--- | 'driven', with each output of the view given to @heard@ as it is
--- raised, as the shell hears it: for a spec that checks what the view tells
--- its parent.
-drivenHearing :: forall q i o m. (Typeable i, MonadIO m) => (o -> IO ()) -> H.Component q i o m -> i -> H.Component (Drive i) () Void m
-drivenHearing heard component given =
-  H.mkComponent
-    H.ComponentSpec
-      { initialState = \_ -> pure given
-      , render
-      , eval = H.mkEval H.defaultEval {H.handleAction = H.liftEffect . liftIO . heard, H.handleQuery = \(SetInput i a) -> put i $> Just a}
-      }
-  where
-    render :: i -> H.ComponentHTML o (DrivenSlots q o) m
-    render i = HH.div_ [HH.slot "view" () component i identity]
-
--- | Give a 'driven' view a new input, and wait for the parent to have
--- taken it.
-setInput :: View (Drive i) -> i -> IO ()
-setInput view i = void (query view (SetInput i ()))
+-- | Wait until the view's program is idle with exactly this many fibers
+-- waiting: a counted pause ('H.delayCounted') is one. The library reads
+-- what a view does only through a gate's asks ('settleHolding'), so the
+-- count is given as a gate holding that many placeholder asks, which no
+-- fiber of the view makes; they are let go when the wait ends. It waits
+-- at most ten seconds, as 'settle' does: a view with another number of
+-- fibers waiting fails the test then.
+settleWaiting :: View q i o -> Int -> IO ()
+settleWaiting view n = do
+  gate <- newGate :: IO (Gate () ())
+  placeholders <- replicateM n (forkIO (hold gate ()))
+  waitHeld gate (\hs -> length hs == n) $> ()
+  settleHolding view (holds gate) `finally` traverse_ killThread placeholders
 
 -- | What the shell gives a view ('Context'), as a native spec gives it:
 -- this router, nobody signed in on an open wiki, no spaces, at a
@@ -265,136 +131,3 @@ newTestFeed = do
   pure TestFeed {feed, tell = HS.notify channel.listener, listening, watching}
   where
     deleteFirst p ps = let (before, after) = break (== p) ps in before <> drop 1 after
-
--- | The process's document, for one view at a time.
-theDocument :: MVar ()
-theDocument = unsafePerformIO (newMVar ())
-{-# NOINLINE theDocument #-}
-
--- | Run with the process's document taken: another body that takes it
--- waits. Not to be nested.
-inTurn :: IO a -> IO a
-inTurn = withMVar theDocument . const
-
--- | Click the first element a selector finds in the view, with the main
--- button, as a reader does: the event bubbles from it to the document and
--- the window, and a disabled control gets none. False when nothing is
--- found.
-click :: View q -> Text -> IO Bool
-click view selector = find view selector >>= maybe (pure False) (\e -> clickAt e $> True)
-
--- | Click an element found already.
-clickAt :: N.NativeNode -> IO ()
-clickAt = N.dispatch "click" (object ["button" .= (0 :: Int)])
-
--- | Type into a field as a reader does: its value set, then @input@
--- dispatched at it. False when nothing is found.
-typeInto :: View q -> Text -> Text -> IO Bool
-typeInto view selector text =
-  find view selector >>= \case
-    Nothing -> pure False
-    Just field -> do
-      (HTMLInputElement (coerce (N.fromNative field :: Element))).value_set text
-      N.dispatch "input" (object []) field
-      pure True
-
--- | A key pressed at an element, as @keydown@ with the key's name
--- (@"Escape"@); with the extra fields given (@"ctrlKey" .= True@).
-keyDown :: Text -> [(Text, Value)] -> N.NativeNode -> IO ()
-keyDown key extra = N.dispatch "keydown" (object (("key" .= key) : [Key.fromText k .= v | (k, v) <- extra]))
-
--- | A press of the pointer on the view's container, outside everything the
--- view rendered in it: @pointerdown@, which bubbles to the document.
-pressOutside :: View q -> IO ()
-pressOutside view = N.dispatch "pointerdown" (object ["button" .= (0 :: Int)]) view.container
-
--- | The first element a selector finds in the view.
-find :: View q -> Text -> IO (Maybe N.NativeNode)
-find view selector = N.querySelector selector view.container
-
--- | Every element a selector finds in the view, in document order.
-findAll :: View q -> Text -> IO [N.NativeNode]
-findAll view selector = N.querySelectorAll selector view.container
-
--- | The text of the first element a selector finds, if it finds one.
-textOf :: View q -> Text -> IO (Maybe Text)
-textOf view selector = find view selector >>= traverse N.textContent
-
--- | Wait until the view's program is quiet: no work running or queued,
--- and nothing it waits for in an @H.async@ still out.
-settle :: View q -> IO ()
-settle view = within (("the view to be quiet; it is at " <>) . show <$> view.activity) (view.waitActivity quiet)
-
--- | Wait until the view's program has done all it can but wait for the
--- asks a gate holds: no work running or queued, and as many fibers waiting
--- as the gate holds asks. The two disagree for a moment at each end of an
--- ask: its fiber starts to wait before the ask reaches the gate, and an
--- ask answered leaves the gate before its fiber stops waiting; a wait of
--- the program's own, not an ask, ends without the gate changing. Neither
--- a change of the gate nor the end of a wait is sure to change the
--- activity the test last read, so until the two agree, the wait is on
--- whichever changes first, the gate or the activity. Once the view is
--- disposed of, no tree is left and its asks' fibers are cancelled.
-settleHolding :: View q -> STM Int -> IO ()
-settleHolding view holding = within stateNow go
-  where
-    go = do
-      view.waitActivity (\a -> idle a || a.trees == 0)
-      a <- view.activity
-      n <- atomically holding
-      if
-        | a.trees == 0 || (idle a && a.waiting == n) -> pass
-        | otherwise -> void (race (atomically (holding >>= \m -> check (m /= n))) (view.waitActivity (/= a))) >> go
-    stateNow = do
-      a <- view.activity
-      n <- atomically holding
-      pure ("the view to wait only for the " <> show n <> " asks held; it is at " <> show a)
-
--- | A wait that has not ended after ten seconds has hung: the test fails,
--- saying what it waited for and where things stand. A guard against a
--- hang, not a pause.
-within :: IO Text -> IO a -> IO a
-within what action = timeout 10_000_000 action >>= maybe (what >>= \w -> panic ("waited ten seconds for " <> w)) pure
-
--- | Asks of a test's backend held until the test answers each, in the
--- order they were made, and the number the next one takes.
-data Gate q r = Gate
-  { held :: TVar [Held q r]
-  , next :: TVar Int
-  }
-
--- | One ask held: its number in the order of the asks, what it asks, and
--- where its answer goes.
-data Held q r = Held
-  { number :: Int
-  , asked :: q
-  , reply :: MVar r
-  }
-
-newGate :: IO (Gate q r)
-newGate = Gate <$> newTVarIO [] <*> newTVarIO 1
-
--- | Put an ask in the gate and wait for its answer: for the test's
--- backend's methods.
-hold :: Gate q r -> q -> IO r
-hold gate asked = do
-  reply <- newEmptyMVar
-  atomically $ do
-    number <- readTVar gate.next
-    writeTVar gate.next (number + 1)
-    modifyTVar' gate.held (<> [Held {number, asked, reply}])
-  takeMVar reply
-
--- | The asks held now, oldest first.
-heldNow :: Gate q r -> IO [Held q r]
-heldNow gate = readTVarIO gate.held
-
--- | How many asks the gate holds, for 'settleHolding'.
-heldCount :: Gate q r -> STM Int
-heldCount gate = length <$> readTVar gate.held
-
--- | Answer an ask held: it leaves the gate, and its fiber goes on.
-answer :: Gate q r -> Held q r -> r -> IO ()
-answer gate h value = do
-  atomically (modifyTVar' gate.held (filter (\x -> x.number /= h.number)))
-  void (tryPutMVar h.reply value)

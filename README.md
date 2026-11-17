@@ -1119,6 +1119,13 @@ chosen.
   server's `--assistant-hosts` allows more origins, for the policy only:
   they are not offered to users. A service that cannot be reached at all is
   said to be unreachable, with CORS named as a likely cause.
+- **OpenAI's reasoning is not sent back.** Each message goes with the
+  conversation before it. To a service that speaks OpenAI's API, the
+  conversation goes in its plain form: the messages, the model's text and
+  its tool calls, without the model's reasoning, which a gateway in front
+  of another backend may not read back. To a service that speaks
+  Anthropic's API, it goes whole, the model's thinking included, as
+  Anthropic asks.
 - **An expired key is pasted again.** Nothing renews a key or a token. When
   the service refuses one (a 401), the chat and the settings say that it
   has probably expired or been revoked, and the chat links to the settings

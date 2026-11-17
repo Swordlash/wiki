@@ -11,7 +11,10 @@
 // application's kinds, the providers' lists of models,
 // every page of them, in the one shape the application reads, and either
 // provider's API at another address (a server on this machine, a
-// gateway), with the key as a bearer token or without one. The browser tests use the scripted
+// gateway), with the key as a bearer token or without one, and the
+// conversation kept there in the plain form for OpenAI's API, without the
+// model's reasoning, and whole for Anthropic's.
+// The browser tests use the scripted
 // provider instead (wiki-app/jsbits/assistant.js); a real provider cannot
 // be reached from here.
 //
@@ -567,6 +570,131 @@ await test("Anthropic's API elsewhere: a gateway's base URL reaches the client, 
   assert.deepEqual(await listModels("anthropic", "", { fetch: bare.fetch, maxRetries: 0, baseURL: gateway }), []);
   assert.equal(bare.requests[0].headers.has("authorization"), false);
   assert.equal(bare.requests[0].headers.has("x-api-key"), false);
+});
+
+// What the chat keeps of a finished exchange, at the provider's own
+// address and at a service elsewhere (a base URL). At the provider's own
+// address the conversation goes back as the provider gave it. At a service
+// elsewhere speaking OpenAI's API it goes back in the plain form every
+// compatible server reads, without the model's reasoning: LiteLLM in front
+// of Databricks (the owner's case of 2026-11-17) could not read back the
+// reasoning item it wrote. Speaking Anthropic's API, the same gateway read
+// the thinking blocks back, so Anthropic's conversation goes back whole at
+// every address.
+const openAiMessage = (id, content) => ({ type: "message", id, role: "assistant", status: "completed", content });
+const outputText = (text) => ({ type: "output_text", text, annotations: [] });
+
+await test("OpenAI at its own address: the next message goes after the output as it was given, reasoning included", async () => {
+  const reasoning = { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "opaque" };
+  const message = openAiMessage("msg_1", [outputText("Hi!")]);
+  const { fetch, requests } = fakeFetch([openAiResponse(["Hi!"], [reasoning, message]), openAiResponse(["Again."], [openAiMessage("msg_2", [outputText("Again.")])])]);
+  const chat = startChat("openai", "k", openAiRequest, { fetch, maxRetries: 0 });
+  await chat.send("hi", collect().handlers, new AbortController().signal);
+  await chat.send("And now?", collect().handlers, new AbortController().signal);
+  assert.deepEqual(requests[1].body, {
+    ...openAiRequest,
+    stream: true,
+    input: [{ role: "user", content: "hi" }, reasoning, message, { role: "user", content: "And now?" }],
+  });
+});
+
+await test("OpenAI elsewhere: the reasoning is not sent back, and the answer goes as plain text (a gateway that cannot read its own reasoning item)", async () => {
+  // The owner's gateway, a LiteLLM proxy in front of Databricks, gave the
+  // reasoning as an item of its own whose content is output_text, and
+  // refused that item when it came back with the second message.
+  const reasoning = {
+    type: "reasoning",
+    id: "rs_1",
+    role: "assistant",
+    status: "completed",
+    content: [outputText('The user is just saying "hi" - a simple greeting. I should respond friendly and briefly.')],
+  };
+  const { fetch, requests } = fakeFetch([openAiResponse(["Hi!"], [reasoning, openAiMessage("msg_1", [outputText("Hi!")])]), openAiResponse(["Fine."], [openAiMessage("msg_2", [outputText("Fine.")])])]);
+  const chat = startChat("openai", "gw-token", openAiRequest, { fetch, maxRetries: 0, baseURL: "https://litellm.example.com/v1" });
+  await chat.send("hi", collect().handlers, new AbortController().signal);
+  await chat.send("And now?", collect().handlers, new AbortController().signal);
+  assert.equal(requests[1].url, "https://litellm.example.com/v1/responses");
+  assert.deepEqual(requests[1].body, {
+    ...openAiRequest,
+    stream: true,
+    input: [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "Hi!" },
+      { role: "user", content: "And now?" },
+    ],
+  });
+  assert.equal(JSON.stringify(requests[1].body.input).includes("output_text"), false);
+});
+
+await test("OpenAI elsewhere: a tool loop sends the call and its output plain, in the loop and with the next message", async () => {
+  const reasoning = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Weighing." }], encrypted_content: "opaque" };
+  const call = { type: "function_call", id: "fc_1", call_id: "call_1", name: "replace", arguments: '{"old_text":"a","new_text":"b"}', status: "completed" };
+  const done = openAiMessage("msg_1", [outputText("Done."), outputText(" All of it.")]);
+  const { fetch, requests } = fakeFetch([
+    openAiResponse([], [reasoning, call]),
+    openAiResponse(["Done. All of it."], [{ ...reasoning, id: "rs_2" }, done]),
+    openAiResponse(["Fine."], [openAiMessage("msg_2", [outputText("Fine.")])]),
+  ]);
+  const chat = startChat("openai", "k", openAiRequest, { fetch, maxRetries: 0, baseURL: "https://gateway.example.com/v1" });
+  const { calls, handlers } = collect();
+  await chat.send("Fix it.", handlers, new AbortController().signal);
+  assert.deepEqual(calls, [["replace", { old_text: "a", new_text: "b" }]]);
+  const plainCall = { type: "function_call", call_id: "call_1", name: "replace", arguments: '{"old_text":"a","new_text":"b"}' };
+  const output = { type: "function_call_output", call_id: "call_1", output: "Applied." };
+  assert.deepEqual(requests[1].body, { ...openAiRequest, stream: true, input: [{ role: "user", content: "Fix it." }, plainCall, output] });
+  await chat.send("More.", collect().handlers, new AbortController().signal);
+  assert.deepEqual(requests[2].body, {
+    ...openAiRequest,
+    stream: true,
+    input: [{ role: "user", content: "Fix it." }, plainCall, output, { role: "assistant", content: "Done. All of it." }, { role: "user", content: "More." }],
+  });
+});
+
+await test("OpenAI elsewhere: a refusal goes back as the assistant's text, and a message without text is left out", async () => {
+  const { fetch, requests } = fakeFetch([
+    openAiResponse([], [openAiMessage("msg_1", [{ type: "refusal", refusal: "I cannot help with that." }]), openAiMessage("msg_2", [])]),
+    openAiResponse(["Fine."], [openAiMessage("msg_3", [outputText("Fine.")])]),
+  ]);
+  const chat = startChat("openai", "", openAiRequest, { fetch, maxRetries: 0, baseURL: "http://localhost:11434/v1" });
+  await chat.send("x", collect().handlers, new AbortController().signal);
+  await chat.send("y", collect().handlers, new AbortController().signal);
+  assert.deepEqual(requests[1].body.input, [
+    { role: "user", content: "x" },
+    { role: "assistant", content: "I cannot help with that." },
+    { role: "user", content: "y" },
+  ]);
+});
+
+await test("Anthropic, at its own address and at a gateway alike: the next message goes after the content as it was given, thinking included", async () => {
+  // A gateway in front of another backend reads the thinking blocks back:
+  // LiteLLM in front of Databricks did (2026-11-17), where it could not
+  // read back OpenAI's reasoning items.
+  for (const baseURL of [undefined, "https://claude-gateway.example.com"]) {
+    const { fetch, requests } = fakeFetch([anthropicThinking(["Weighing."], ["Hi."], [], "end_turn"), anthropicMessage(["Again."], [], "end_turn")]);
+    const chat = startChat("anthropic", "k", anthropicRequest, { fetch, maxRetries: 0, ...(baseURL ? { baseURL } : {}) });
+    await chat.send("Hello", collect().handlers, new AbortController().signal);
+    await chat.send("Again", collect().handlers, new AbortController().signal);
+    assert.equal(requests[1].url, `${baseURL ?? "https://api.anthropic.com"}/v1/messages`);
+    assert.deepEqual(
+      requests[1].body,
+      {
+        ...anthropicRequest,
+        stream: true,
+        messages: [
+          { role: "user", content: "Hello" },
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "Weighing.", signature: "sig" },
+              { type: "text", text: "Hi." },
+            ],
+          },
+          { role: "user", content: "Again" },
+        ],
+      },
+      baseURL ?? "the provider's own address",
+    );
+  }
 });
 
 if (failures > 0) {

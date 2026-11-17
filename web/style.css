@@ -7823,7 +7823,8 @@ a.mention {
   font-size: 0.85rem;
 }
 
-/* Close, in words: a plain small button at the header's end. */
+/* New and Close, in words: plain small buttons at the header's end. */
+.assistant-new,
 .assistant-close {
   padding: 0.1rem 0.6rem;
   font-size: 0.85rem;

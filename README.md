@@ -3593,7 +3593,9 @@ No test waits on the clock. `npm run lint` runs HLint (the release
 `toolchain/pins.env` pins, which `toolchain/lint.sh` fetches on first use)
 over the test suites and `wiki-app/src` with the restrictions of
 `.hlint.yaml` and none of HLint's own hints, and CI's `format` job runs it
-too. Its one rule today: no `threadDelay`, imported from wherever, outside
+too. It reads each module twice, as the native build compiles it and, for
+the modules with CPP, as the wasm build does, so that a branch only one
+build compiles (the browser suite's) is read too. Its one rule today: no `threadDelay`, imported from wherever, outside
 the modules `.hlint.yaml` lists, those that held one when the rule was made
 (fourteen modules of the tests, four of `wiki-app/src`). A test waits on
 the program's signal (`waitQuiet`, `settle`, an answer it holds) or on a

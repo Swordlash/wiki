@@ -1940,8 +1940,8 @@ machines when a feature touches them, not ahead of it (decision 83).
 Then the features, in his order: **#187, autocompletion, first** ("bo
 pluginy to refactor"; built and closed 2026-11-17, WP5.124; what it
 left out is #301), then the assistant's packages he asked for on
-2026-11-17 (WP5.129 below; WP5.125 to WP5.127 merged, #303, #304
-and #306), and #186, plugins, after
+2026-11-17 (all merged: WP5.125 to WP5.127 and WP5.129; #303, #304,
+#306, #307), and #186, plugins, after
 them. He added to #186 on 2026-11-15 a hook that rewrites
 the tree before it is rendered (a list with a `sorted` attribute
 sorted; perhaps every extension beyond CommonMark as a plugin on the
@@ -1974,19 +1974,6 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   to what needs a browser, with the counts before and after. The
   about forty asks WP5.95 left are taken with the view each belongs
   to; the ones in views with a single ask keep `View.Latest`.
-- **WP5.129 The page's cap as a setting, and a conversation's tokens
-  (the owner, 2026-11-17).** (1) The number of
-  characters of a page a message carries (`bodyCap`, 200,000 since
-  #304) becomes a setting of the user's in the assistant's settings,
-  kept as the model and the effort are, 200,000 when not set. Beside
-  the field, about how many tokens that is, as an estimate from the
-  characters and said to be one (text dense in tokens, CJK or emoji,
-  takes several times more; only the provider counts exactly). (2) The
-  panel shows the tokens of the conversation so far: the input, the
-  part read from the cache, the output, summed from what each answer
-  reported (#303), emptied by "New". No money: the APIs give no
-  prices, and a gateway's price is its own (the owner: "olejmy cenę,
-  niech będzie tylko suma in/out").
 - **WP5.130 The wasm suite of wiki-core, and which machine ran it
   (proposed to the owner, 2026-11-17; he noticed 20 minutes in the
   wasm job's tests).** Read from nine runs of that day: the suite takes
@@ -3205,6 +3192,21 @@ needs. Each was true when its package merged; check before relying on one.
   before any message is sent; it passed alone three times of three.
   A race on the settings' store, or a wait on a clock: to be read for
   its cause with the nightly's three findings, not re-run.
+- **The page's cap as a setting, and a conversation's tokens (#307,
+  WP5.129).** `Settings.pageCap` (the user's, not a provider's; 1,000
+  to 2,000,000 characters, 200,000 when not set; absent in settings
+  stored before, which read as they did; sealed and synced with the
+  mode). The prompt's functions take the cap, and a cut text carries
+  how much was kept of how much. Beside the field an estimate of the
+  tokens, characters divided by 3.5 to two figures, said to be one
+  (`aboutTokens`); the settings page states the Markdown reference's
+  size the same way, from the embedded text (about 19,000, where it
+  said seven thousand). Under the panel's header, the conversation's
+  tokens summed from what each answer reported, emptied by "New" and a
+  change of provider. No money (the owner: the APIs give no prices).
+  The input is summed over requests, each of which sends the
+  conversation again, so it is what was billed, not how full the
+  model's window is; the window's fill is not shown.
 - **Commands in the assistant's message box (#306, WP5.127).** A
   message that, trimmed, is a slash and letters only is a command
   (`Wiki.Core.Assistant.Prompt.command`, read without regard to case):
@@ -3219,8 +3221,8 @@ needs. Each was true when its package merged; check before relying on one.
   conversation holds one copy of the page, so it would save much
   less; and by Anthropic's rule for edited history the only form that
   passes is the simple one, a summary that replaces the whole
-  conversation. To decide when the conversation's tokens (WP5.129)
-  show conversations that grow.
+  conversation. To decide when the conversation's tokens (#307) show
+  conversations that grow.
 - **The detached preview is the page's reading view (#305,
   WP5.128).** The window of "Detach preview" is laid out by the page
   view's own markup and CSS, with the typed text in place of the saved

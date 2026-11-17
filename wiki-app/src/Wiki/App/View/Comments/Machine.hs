@@ -17,7 +17,7 @@
 -- program ("Halogen.Machine"), and carries out the effects; a read, a
 -- write or a lookup of people is forked and its answer comes back as one
 -- more event. The rest of the page view (its fetch, the ticks, the
--- chain's check, the avatars) is as it was. The comments view holds what
+-- chain's check) is as it was. The comments view holds what
 -- is being written, asks for a write ('Write'), and is told its answer by
 -- the page view.
 --
@@ -35,14 +35,28 @@
 -- and dropped. A login whose lookup failed is asked for again at the next
 -- change of the threads or of the page, not at once.
 --
--- The avatars of the threads' authors are looked up at the same steps
--- ('Avatars'), under a ticket ("Wiki.App.View.Latest"): the answer of the
--- latest lookup taken stays ('avatars'), with the authors it was asked
--- for ('avatarsFor'). For those the answer is the truth: one it lacks has
--- no avatar (an author who removed theirs is asked for with none). The
--- page view looks up the avatars of the page's writers and readers
--- itself, and its answer counts only for the people the machine's does
--- not cover ('avatarsShown').
+-- = The avatars shown
+--
+-- The addresses of the avatars the page view shows (the page's writers,
+-- the comments' authors, the readers) are one map, the model's
+-- ('avatars'), and every answer about avatars is an event of the
+-- machine: the lookup it asks for its comments' authors at the steps
+-- that change the threads ('Avatars', answered by 'Avatared'), and the
+-- page view's own lookup of everyone it shows, when it takes a page or
+-- hears who reads it ('Seen'). An answer sets the address of each person
+-- it was asked for and found with one, and removes that of each person it
+-- was asked for and found without one: someone asked for with no avatar
+-- has none ('seenIn'). The last event about a person wins, in the order
+-- the events are stepped. Each lookup has its tickets
+-- ("Wiki.App.View.Latest"), so that its own late answer does not undo a
+-- later one; between the two lookups the order is that of their answers'
+-- arrival. Two lookups out at once whose snapshots of one person differ
+-- (a comment's author as a read of the threads named them, and the same
+-- person as a reader just now) can land in the wrong order, and the next
+-- change of either puts it right. Nothing in either answer says which
+-- snapshot is newer, and no order of the server's lies between them, as
+-- none lay between two reads of the threads out at once before one read
+-- was kept in flight.
 --
 -- = What an answer says
 --
@@ -99,7 +113,6 @@ module Wiki.App.View.Comments.Machine
   , initial
   , step
   , lacking
-  , avatarsShown
   , readyThreads
   )
 where
@@ -187,13 +200,11 @@ data Model = Model
   -- ^ Which lookups count: the number 'PeopleAgain' raises. An answer to
   -- a lookup made under another number is dropped.
   , avatars :: Map UserId Text
-  -- ^ The addresses of the avatars of the threads' authors, as the latest
-  -- lookup taken answered.
+  -- ^ The addresses of the avatars the page view shows, by person, as the
+  -- events about them last set them (see "The avatars shown").
   , avatarAsks :: Asks
-  -- ^ The lookups of the avatars made, and which one's answer is shown.
-  , avatarsFor :: Set UserId
-  -- ^ The authors the answer shown was asked for, those with no avatar
-  -- among them. It changes with 'avatars', when an answer is taken.
+  -- ^ The machine's lookups of its authors' avatars, and which one's
+  -- answer was taken last.
   }
   deriving stock (Eq, Show)
 
@@ -287,6 +298,9 @@ data Event a
   | -- | The answer to the lookup of the avatars of these authors made
     -- under this ticket, or 'Nothing' when it failed.
     Avatared Ask [UserId] (Maybe (Map UserId Text))
+  | -- | The page view's own lookup of avatars answered, and taken under
+    -- its ticket: the people it was asked for, and the addresses found.
+    Seen [UserId] (Map UserId Text)
   deriving stock (Eq, Show)
 
 -- | 'Effect' is what a step asks the page view to do.
@@ -339,7 +353,6 @@ initial page comments space text read' =
     , lookups = 0
     , avatars = mempty
     , avatarAsks = noAsks
-    , avatarsFor = mempty
     }
 
 -- | The threads after an event, and what the page view is asked to do.
@@ -370,11 +383,12 @@ step event m
              in case answer of
                   Right found -> (m {people = found <> m.people, lookedUp = m.lookedUp <> asked, lookingUp = m.lookingUp `Set.difference` asked}, [])
                   Left _ -> (m {lookingUp = m.lookingUp `Set.difference` asked}, [])
-      -- An answer under an older ticket than the one shown, or a failed
-      -- one, changes nothing: the answer shown and whom it covers stay.
+      -- An answer under an older ticket than the one taken last, or a
+      -- failed one, changes nothing.
       Avatared asked authors answer -> case (answer, takes asked m.avatarAsks) of
-        (Just found, Just after) -> (m {avatars = found, avatarsFor = Set.fromList authors, avatarAsks = after}, [])
+        (Just found, Just after) -> (m {avatars = seenIn authors found m.avatars, avatarAsks = after}, [])
         _ -> (m, [])
+      Seen asked found -> (m {avatars = seenIn asked found m.avatars}, [])
       -- The ticket is taken whichever page the answer is for; its threads
       -- only for the page shown.
       Loaded asked page answer -> case takes asked m.asks of
@@ -609,11 +623,11 @@ lacking m
   where
     mentions = m.mentioned <> foldMap mentionedIn [c.body | t <- readyThreads m, c <- t.comments]
 
--- | The avatars to show, given those the page view looked up itself: the
--- machine's answer for every author it was asked for (one it lacks has
--- none), and the page view's for everyone else.
-avatarsShown :: Model -> Map UserId Text -> Map UserId Text
-avatarsShown m others = m.avatars <> Map.withoutKeys others m.avatarsFor
+-- | The addresses of avatars after an answer about them: each person
+-- asked for gets the address found, or none when none was found; everyone
+-- else's stays.
+seenIn :: [UserId] -> Map UserId Text -> Map UserId Text -> Map UserId Text
+seenIn asked found avatars = foldr (\u -> Map.alter (const (Map.lookup u found)) u) avatars asked
 
 -- | The threads shown, if they are read.
 readyThreads :: Model -> [Thread]

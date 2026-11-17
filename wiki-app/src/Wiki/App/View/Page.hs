@@ -237,7 +237,7 @@ data State = State
   , problem :: Maybe WikiError
   , discussion :: Machine.Machine () (Threads.Event (CommentsView.Placement, CommentsView.Mount)) Threads.Model
   -- ^ The page's threads, with their reads, the people the page and its
-  -- comments mention, and the avatars of the comments' authors
+  -- comments mention, and the one map of the avatars the view shows
   -- ("Wiki.App.View.Comments.Machine"), run by "Halogen.Machine": every
   -- change to them is a 'Threads.step' ('threadsStep'). Read the model
   -- with 'threadsOf'.
@@ -253,12 +253,6 @@ data State = State
   -- ^ Who has the page's editor open, as the live channel last said.
   , readers :: Readers
   -- ^ Who else reads the page, as the live channel last said.
-  , avatars :: Map UserId Text
-  -- ^ The URLs of the avatars of the people the view shows: who wrote the
-  -- page, the comments' authors, the readers ('avatarUrls'), as the view
-  -- looked them up when it took a page or heard of its readers. The
-  -- threads' machine looks up the authors' again as the threads change
-  -- ('avatarsOf').
   , changed :: Bool
   -- ^ Whether the page has been saved since it was loaded, while the
   -- reader was busy with it: the bar then offers the new version.
@@ -368,8 +362,12 @@ component =
           found <- if null logins then pure Nothing else atOnce (Body.askPeople input.space logins)
           -- The people found at once are the machine's answer to their
           -- lookup, as if it had asked.
-          let discussion = Machine.new (maybe unread (\f -> fst (Threads.step (Threads.Found unread.lookups logins (Right f)) unread)) found)
-          avatars <- fromMaybe mempty <$> atOnce (avatarUrls (peopleOf loaded threads noReaders))
+          -- The avatars found at once are the machine's first event about
+          -- them ('Threads.Seen').
+          let faces = peopleOf loaded threads noReaders
+          avatars <- atOnce (avatarUrls faces)
+          let people = maybe unread (\f -> fst (Threads.step (Threads.Found unread.lookups logins (Right f)) unread)) found
+              discussion = Machine.new (maybe people (\a -> fst (Threads.step (Threads.Seen (map fst faces) a) people)) avatars)
           text <- H.newRefLabel "page-text"
           copiedText <- H.newRefLabel "page-copied-address"
           pure
@@ -385,7 +383,6 @@ component =
               , subscription = Nothing
               , editors = []
               , readers = noReaders
-              , avatars
               , changed = False
               , text
               , copied = Nothing
@@ -1106,19 +1103,21 @@ component =
       Threads.LookUp space n logins -> Machine.Ask (Machine.run (attempt (Body.askPeople space logins))) (Threads.Found n logins . asAnswer)
       Threads.Avatars ticket authors -> Machine.Ask (Machine.run (avatarUrls authors)) (Threads.Avatared ticket (map fst authors) . rightToMaybe)
 
-    -- The URLs of the avatars of the people shown: who wrote the page,
-    -- the comments' authors and the readers, when the view takes a page
-    -- and when it hears who reads it; the threads' machine looks up the
-    -- authors' again as the threads change. Lookups can run beside each
-    -- other (the readers heard while one is out), so the answer of one is
-    -- taken only if no later one's was ("Wiki.App.View.Latest").
+    -- Look up the URLs of the avatars of the people shown: who wrote the
+    -- page, the comments' authors and the readers, when the view takes a
+    -- page and when it hears who reads it. The answer is an event of the
+    -- threads' machine, which holds the one map of avatars
+    -- ('Threads.Seen'). These lookups can run beside each other (the
+    -- readers heard while one is out), so the answer of one is handed to
+    -- the machine only if no later one's was ("Wiki.App.View.Latest").
     resolveAvatars :: H.HalogenM State Action Slots ViewOutput m ()
     resolveAvatars = do
       (ticket, people) <- state $ \st ->
         let (t, asks') = Latest.newAsk st.avatarAsks
          in ((t, peopleOf st.loaded (threadsOf st).threads st.readers), st {avatarAsks = asks'})
       avatars <- H.async (avatarUrls people)
-      void (Latest.answered (\st -> st.avatarAsks) (\a st -> st {avatarAsks = a}) ticket (\s -> s {avatars}))
+      took <- Latest.answered (\st -> st.avatarAsks) (\a st -> st {avatarAsks = a}) ticket identity
+      when took $ threadsStep (Threads.Seen (map fst people) avatars)
 
     -- Watch the page shown, and nothing else.
     watch :: H.HalogenM State Action Slots ViewOutput m ()
@@ -1478,11 +1477,10 @@ pageOf = \case
 threadsOf :: State -> Threads.Model
 threadsOf st = Machine.current st.discussion
 
--- | The URLs of the avatars the view shows: for each comment's author the
--- threads' machine last looked up, its answer (none when it has none);
--- for everyone else (the writers, the readers), the view's own.
+-- | The URLs of the avatars the view shows: the threads' machine's one
+-- map, which every lookup's answer sets.
 avatarsOf :: State -> Map UserId Text
-avatarsOf st = Threads.avatarsShown (threadsOf st) st.avatars
+avatarsOf st = (threadsOf st).avatars
 
 -- | A read's, a write's or a lookup's answer, as the threads' machine
 -- takes it. The backend gives what went wrong as a 'Left' and does not

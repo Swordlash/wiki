@@ -21,6 +21,8 @@ module Wiki.App.Editor.Complete
   , pageSource
   , Readings
   , noReadings
+  , Earlier (..)
+  , noEarlier
   , answer
   , completionJson
   )
@@ -35,6 +37,7 @@ import Wiki.App.Route (pageLinkText)
 import Wiki.Core.Id (PageId)
 import Wiki.Core.Markdown.Box (BoxKind)
 import Wiki.Core.Markdown.Complete
+import Wiki.Core.Markdown.Starts (Earlier (..), linesBelow, linesFromStart, noEarlier)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind)
 import Wiki.Core.Slug (Slug, slugText, slugify)
@@ -243,14 +246,27 @@ noReadings = Readings {above = [], byLine = Map.empty}
 -- text is not the request's (the text has changed since CodeMirror asked,
 -- and CodeMirror asks again as more is typed); and the memo of the
 -- parser's readings, to answer the next request with.
-answer :: [Source] -> Readings -> Text -> Request -> (Maybe Completion, Readings)
-answer found memo text request = case T.splitOn "\n" text of
+--
+-- The parser reads the text above the cursor's line from the last start
+-- of a block the editor's last check found there that the text has kept
+-- ('Earlier', "Wiki.Core.Markdown.Starts"' 'linesFromStart'), not from
+-- the top: the first trigger in the middle of a long page read the whole
+-- text above, seconds on WebAssembly. The answer is the same. Where no
+-- start serves within the limit, a marker or a link to a page reads the
+-- whole text above, and anything else opens no list
+-- ('readsWholeAbove').
+answer :: [Source] -> Earlier -> Readings -> Text -> Request -> (Maybe Completion, Readings)
+answer found earlier memo text request = case T.splitOn "\n" text of
   ls
     | request.line >= 1
     , Just current <- ls `atMay` (request.line - 1)
-    , current == request.before <> request.after ->
-        let above = take (request.line - 1) ls
-            at = At {place = placeOf request.nodes, above, before = request.before, after = request.after, below = drop request.line ls}
+    , current == request.before <> request.after
+    , let whole = take (request.line - 1) ls
+          allBelow = drop request.line ls
+          keptBelow = linesBelow afterBound earlier whole request.before request.after allBelow
+          placed above = At {place = placeOf request.nodes, above, before = request.before, after = request.after, below = maybe allBelow (`take` allBelow) keptBelow, cutBelow = isJust keptBelow && pastBound request.after allBelow}
+    , Just above <- linesFromStart earlier whole <|> (whole <$ guard (readsWholeAbove (placed whole))) ->
+        let at = placed above
             kept = if memo.above == above then memo.byLine else Map.empty
             -- Each probe the list may ask about, read only when it is
             -- asked: the first ones, then those written from the block

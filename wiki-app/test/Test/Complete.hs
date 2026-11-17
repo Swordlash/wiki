@@ -22,6 +22,7 @@ import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Editor.Complete
 import Wiki.App.Editor.Tools (Control (..), controlName, htmlTags, notOffered, slashEntries, toolbarGroups)
 import Wiki.App.Route (PageLink (..), pageLinkText, pageRoute, resolvePageLink)
+import Wiki.Core.Assistant.Reference (markdownReference)
 import Wiki.Core.Id (PageId (..))
 import Wiki.Core.Markdown (Destination (..), classifyDestination)
 import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), Footnote (..), Inline (..), ListItem (..), allInlines, parseMarkdown, plainText)
@@ -29,6 +30,8 @@ import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..), boxChoices)
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.Markdown.Edit (htmlTagLabel)
+import Wiki.Core.Markdown.Problems qualified as Problems
+import Wiki.Core.Markdown.Starts (linesFromStart)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind (..))
 import Wiki.Core.Slug (Slug, mkSlug, slugText, slugify)
@@ -37,7 +40,7 @@ import Wiki.Core.Space qualified as S
 
 -- | The answer, from no memo of the parser's readings.
 answered :: [Source] -> Text -> Request -> Maybe Completion
-answered found text request = fst (answer found noReadings text request)
+answered found text request = fst (answer found noEarlier noReadings text request)
 
 spec :: Spec
 spec = describe "Wiki.App.Editor.Complete" $ do
@@ -59,9 +62,9 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       answered document text Request {line = 5, before = "[[/", after = "", nodes = ["CodeText", "FencedCode", "Document"]} `shouldBe` Nothing
 
     it "answers from the memo of the parser's readings as from none, and forgets it when the lines above change" $ do
-      let (first', memo) = answer document noReadings text atEnd
-          (again, _) = answer document memo text atEnd
-          (other, _) = answer document memo "# Title\n\n[[!notes]]\n\n[[/" atEnd
+      let (first', memo) = answer document noEarlier noReadings text atEnd
+          (again, _) = answer document noEarlier memo text atEnd
+          (other, _) = answer document noEarlier memo "# Title\n\n[[!notes]]\n\n[[/" atEnd
       (map (.label) . (.candidates) <$> first') `shouldBe` Just ["[[/div]]"]
       again `shouldBe` first'
       (map (.label) . (.candidates) <$> other) `shouldBe` Just ["[[/notes]]"]
@@ -126,6 +129,28 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       answered (sources onHandbook) "See [[Guide|a\rb]] now" (lineRequest "See [[Gu" "ide|a\rb]] now") `shouldBe` Nothing
     modifyMaxSuccess (* 5) . prop "leaves one wiki link to the page chosen at the cursor, with the label read there, and every other inline as before, or offers nothing" $
       checkCoverage (forAll genLinkLine (choosesPage onHandbook))
+    -- WP5.124 (f): the answer reads the text above from a start the last
+    -- check kept ("Wiki.Core.Markdown.Starts"' 'linesFromStart'), with
+    -- the starts of a check of the same text, of the text before a change,
+    -- or none; it is the answer from the whole text above.
+    modifyMaxSuccess (* 3) . prop "answers as from the whole text above, with the starts of the same text, of a text one change away, or none" $
+      checkCoverage $
+        forAll ((,,) <$> genLinkLine <*> elements [[], definitionsAbove] <*> genChange) $ \(l, defs, change) ->
+          let l' = case l of LinkLine a p w t r lb c af le fa -> LinkLine (defs <> a) p w t r lb c af le fa
+              upToLine = T.concat [a <> "\n" | a <- l'.above]
+              typedUpTo = l'.pre <> fst l'.wrap <> "[[" <> l'.typed
+              afterCursor = l'.rest <> l'.label <> (if l'.closed then "]]" else "") <> snd l'.wrap <> l'.lineEnd <> l'.after <> l'.farther
+              whole = upToLine <> typedUpTo <> afterCursor
+              request = Request {line = length l'.above + 1, before = typedUpTo, after = T.takeWhile (/= '\n') afterCursor, nodes = ["Paragraph", "Document"]}
+              ls = T.splitOn "\n" whole
+              atWhole = At {place = InText, above = l'.above, before = typedUpTo, after = request.after, below = drop request.line ls, cutBelow = False}
+              expected = complete (sources onHandbook) (readLine l'.above) atWhole
+              inMode earlier' = counterexample (show (map (\(n, d) -> (n, d)) earlier'.definitions)) $ fst (answer (sources onHandbook) earlier' noReadings whole request) === expected
+           in counterexample (toS whole)
+                $ cover 25 (maybe False ((< length l'.above) . length) (linesFromStart (earlierOf whole) l'.above)) "read from a start"
+                  . cover 10 (maybe False (elem "[a]: x") (linesFromStart (earlierOf whole) l'.above)) "with definitions"
+                  . cover 30 (isJust expected) "a page offered"
+                $ conjoin [inMode (earlierOf whole), inMode (earlierOf (changedFrom whole change)), inMode noEarlier]
 
   describe "the / menu, made from the toolbar" $ do
     let menuHeld = (held Document [BoxKind {name = "exercise", label = "Exercise", colour = Teal, icon = Pencil}]) {entries = slashEntries (boxChoices [BoxKind {name = "exercise", label = "Exercise", colour = Teal, icon = Pencil}])}
@@ -171,6 +196,47 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       optionOf "Link to a page" "/li" `shouldBe` Just (object ["label" .= ("Link to a page" :: Text), "template" .= ("${0}" :: Text), "detail" .= ("[Title](page)" :: Text), "action" .= ("link-page" :: Text)])
       optionOf "Mermaid diagram" "/me" `shouldBe` Just (object ["label" .= ("Mermaid diagram" :: Text), "insert" .= ("```mermaid\ngraph LR\n  A --> B\n```" :: Text), "select" .= [11 :: Int, 29], "line" .= ("/me" :: Text), "query" .= [0 :: Int, 3], "detail" .= ("```mermaid" :: Text)])
       (answerOf "/ta" >>= \case Object o -> KeyMap.lookup "escape" o; _ -> Nothing) `shouldBe` Just (String "dismisses")
+
+  -- WP5.124 (f): the first trigger on a long page reads the text above
+  -- from a start the last check kept, not from the top. The check read the
+  -- page before the trigger's line was typed, as in the editor, where it
+  -- runs once the typing pauses.
+  describe "the first trigger on a long page" $ do
+    let firstAnswer page (k, typed) = do
+          let ls = T.splitOn "\n" page
+              now = T.intercalate "\n" (take k ls <> [typed, ""] <> drop k ls)
+              request = Request {line = k + 1, before = typed, after = "", nodes = ["Paragraph", "Document"]}
+          -- The check, made before, and the text, as the editor holds them.
+          earlier <- evaluate (earlierOf page)
+          _ <- evaluate (length earlier.starts + length earlier.definitions + sum (map T.length earlier.lines) + T.length now)
+          allocated (let a = fst (answer (sources onLong) earlier noReadings now request) in a == a)
+        onLong = (held Document []) {entries = slashEntries []}
+    -- Measured natively, for /, [[! and [[: 1.3, 1.0 and 6.6 MB at the
+    -- guide's middle, 5.8, 3.6 and 22 MB near its end, 13, 8.6 and 45 MB
+    -- in the deck (the deck's 300,000 characters split into lines and
+    -- compared with the check's take most of the last). Read from the
+    -- top, as before, each was 140 MB to 1.6 GB.
+    it "reads the text from a start in the middle and near the end of the Markdown guide, and in the fiftieth slide of a long deck" $
+      for_ [("the guide's middle", markdownReference, 50, 15_000_000), ("near the guide's end", markdownReference, 90, 50_000_000), ("the fiftieth slide", longDeck, 82, 100_000_000)] $ \(name, page, percent, bound) -> do
+        let k = paragraphAt page percent
+        costs <- for ["/t", "[[!", "[[Gu"] (\typed -> (typed,) <$> firstAnswer page (k, typed))
+        (name :: Text, [(t, c) | (t, c) <- costs, c > bound]) `shouldBe` (name, [])
+    it "where no start serves, reads the whole text above for a marker or a link, and opens nothing for a / without reading it" $ do
+      -- Before the first check (none kept) and more than the limit above:
+      -- a marker and a link to a page are answered as from the whole
+      -- text; a / is not answered, and costs no parse (0.4 MB natively,
+      -- the text split into lines; a parse of the guide above is 150 MB).
+      let k = paragraphAt markdownReference 50
+          ls = T.splitOn "\n" markdownReference
+          asked typed = Request {line = k + 1, before = typed, after = "", nodes = ["Paragraph", "Document"]}
+          now typed = T.intercalate "\n" (take k ls <> [typed, ""] <> drop k ls)
+          whole' typed = complete (sources onLong) (readLine (take k ls)) At {place = InText, above = take k ls, before = typed, after = "", below = "" : drop k ls, cutBelow = False}
+          unchecked typed = fst (answer (sources onLong) noEarlier noReadings (now typed) (asked typed))
+      map unchecked ["[[!", "[[Gu"] `shouldBe` map whole' ["[[!", "[[Gu"]
+      isJust (whole' "/t") `shouldBe` True
+      text' <- evaluate (now "/t")
+      cost <- allocated (isNothing (fst (answer (sources onLong) noEarlier noReadings text' (asked "/t"))))
+      (unchecked "/t", cost < 2_000_000) `shouldBe` (Nothing, True)
 
   describe "the pages offered in a space of 10,000 pages" $
     it "are matched and ranked within a bound of allocation, their paths and links worked out before, and again no more" $ do
@@ -591,3 +657,53 @@ linksResolve pages =
     labelOf = T.replace "]" "&#93;" . T.replace "&" "&amp;"
     -- 'pageLinkText''s rule for a title as the last segment.
     titleAllowed t = T.all (\c -> isAlphaNum c || c == ' ' || c == '-') t && T.strip t == t && not (T.null t)
+
+-- | Definitions of links' references and of a footnote, and a paragraph
+-- that uses them, above a place: the completion, reading from a start
+-- below them, is handed them.
+definitionsAbove :: [Text]
+definitionsAbove = ["[a]: /url", "", "[^n]: A note.", "    More of it.", "", "See [a] and [^n].", ""]
+
+-- | What the editor keeps of a check of a text ("Wiki.Core.Markdown.Problems").
+earlierOf :: Text -> Earlier
+earlierOf old = let found = Problems.checkText Document old in Earlier {lines = T.splitOn "\n" old, starts = found.starts, definitions = found.definitions}
+
+-- | A change since the check, as (a thousandth of the text, to its line's
+-- start or not, characters taken away, text put in their place).
+genChange :: Gen (Int, Bool, Int, Text)
+genChange = (,,,) <$> choose (0, 1000) <*> elements [False, True] <*> elements [0, 1, 3, 10, 40] <*> elements ["", "x", "\n", "\n\n", "- ", "> ", "```\n", "[[!notes]]\n", "[^9]: x\n", "[a]: /z\n"]
+
+-- | The text a check read, given the text now and a change since.
+changedFrom :: Text -> (Int, Bool, Int, Text) -> Text
+changedFrom now (per, toLine, removed, was) = T.take at now <> was <> T.drop (at + min removed (T.length now - at)) now
+  where
+    near = T.length now * per `div` 1000
+    at = if toLine then T.length (T.dropWhileEnd (/= '\n') (T.take near now)) else near
+
+-- | The first line of the first paragraph at or after a share of a text,
+-- in percent, from 0: where a trigger is typed on a line of its own.
+paragraphAt :: Text -> Int -> Int
+paragraphAt text percent = fromMaybe (length ls) (find starts [length ls * percent `div` 100 ..])
+  where
+    ls = T.splitOn "\n" text
+    starts i = maybe False T.null (atMay ls (i - 1)) && maybe False (not . T.null) (atMay ls i)
+
+-- | A presentation of sixty slides of a hundred lines each, as the
+-- browser suite's long deck: paragraphs, a list of ten items, a fence, a
+-- formula.
+longDeck :: Text
+longDeck = T.intercalate "\n" (["# Long", ""] <> concatMap slide [1 .. 60 :: Int])
+  where
+    slide n =
+      (<> [""]) . take 99 $
+        ["## Slide " <> show n, ""]
+          <> para n 0 12
+          <> para n 12 12
+          <> map ("- " <>) (sentences n 24 10)
+          <> ["", "```haskell"]
+          <> ["step" <> show i <> " x = x * " <> show n <> " + " <> show i | i <- [0 .. 9 :: Int]]
+          <> ["```", ""]
+          <> ["$$\\int_0^{" <> show n <> "} x^2 \\, dx = \\frac{" <> show n <> "^3}{3}$$", ""]
+          <> concat [para n k 12 | k <- [34, 46 .. 94]]
+    para n start count = sentences n start count <> [""]
+    sentences n start count = ["Line " <> show k <> " of slide " <> show n <> ": the quick brown fox jumps over the lazy dog." | k <- [start .. start + count - 1 :: Int]]

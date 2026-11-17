@@ -194,7 +194,11 @@ Those of haskell-halogen's `AGENTS.md` apply unchanged, in short:
   (`Test.Harness.MemDom`; the README's "A view's native tests"). A machine infers nothing
   about what an answer covers from a property of its items (how many there are, their
   times, their numbers): what was heard since an ask is applied again by id, and where
-  that cannot be exact, a read asked afterwards follows. "The same one" is a number or a
+  that cannot be exact, a read asked afterwards follows. One ask of a thing is out at
+  a time: a read wanted while one is out is asked when that one answers, failed or not,
+  so the server handles reads in the order they were asked and a later answer is never
+  older; a write that waits its turn belongs to the session it was made in, and is
+  dropped when another reader signs in. "The same one" is a number or a
   ticket, never an equal value: two visits of a page, a view mounted again, the same text
   quoted twice are told apart by identity. State that the machine's effects write lives
   in the model, and the component's runner never waits between the effects of one step:

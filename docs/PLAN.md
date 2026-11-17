@@ -2010,29 +2010,6 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   `settle` with the wiki's ten-second deadline, and `settleWaiting`.
   What the library lacks, kept by hand: a view's own activity to read
   and wait on, key events with modifiers, a deadline on `settle`.
-- **WP5.135 One read of a thing in flight (the comments' and the
-  bell's machines; being built, stacked on #312).** A run of 500,000
-  cases of the comments' property "shows no comment's text older than
-  one it showed" found, beside the fault #312 fixes, a text going back
-  with no push involved: two reads of the page are out, the server
-  handles the later-asked one before someone's edit and the
-  earlier-asked one after it, and the machine takes the later-asked
-  answer last. "The answer of the read asked later is the newer" does
-  not hold when the server handles reads out of order; the bell has
-  the same limit as an expected failure in its suite. The server has
-  no order a read can carry today (a bare `[Thread]`; `seq` columns
-  are positions given again after a delete; times are no order, by
-  #282's notes). Taken: the machine never has two takable reads of a
-  page out (a read wanted meanwhile sets a flag, and one read goes
-  when the first is answered; a failed answer frees the flight); for
-  the bell, reads and marks in one flight. No change of the server.
-  **Kept for the owner as a decision of its own:** a revision of the
-  page's threads kept by the server (a column raised by triggers in
-  each write's transaction, as migration 0002 does for permissions; on
-  the list, on each write's answer, on `Subscribed` and on each
-  event): a total order, exact replays, and most of the inexact rules
-  gone, for a migration and a change of the HTTP and WebSocket
-  answers, 600 to 1,000 lines.
 - **WP5.122 Checks in place of conventions (decision 82): what is
   left.** The nightly is merged (#291, with WP5.114); the ceilings
   merged with it were taken out again (#309). Left: the machines in a package, or a part of one, that
@@ -3220,6 +3197,32 @@ needs. Each was true when its package merged; check before relying on one.
   before any message is sent; it passed alone three times of three.
   A race on the settings' store, or a wait on a clock: to be read for
   its cause with the nightly's three findings, not re-run.
+- **One read of a thing in flight (#314, WP5.135).** A run of 500,000
+  cases found a text going back in the comments with no push
+  involved: two reads of the page out, the server handling the
+  later-asked one before someone's edit and the earlier-asked one
+  after it. "The answer of the read asked later is the newer" does
+  not hold when the server handles reads out of order, and the server
+  has no order a read can carry (a bare `[Thread]`; `seq` columns are
+  positions given again after a delete; times are no order). Now the
+  comments' machine has one takable read of a page out at a time (a
+  read wanted meanwhile sets a flag and goes when the first is
+  answered, failed or not), and the bell's reads and marks share one
+  flight, the marks queued in the order of the clicks. The bell's two
+  expected failures became ordinary assertions. A waiting mark belongs
+  to the session it was clicked in (`Context.sessionNumber` in the
+  bell's model): on a change of who is signed in, waiting marks are
+  dropped, asks out are put behind, the old reader's list is forgotten
+  and read again (Codex's finding: a queued "Mark all read" went out
+  with the next reader's cookie; a new revision alone did not cover a
+  change of session). Cost: while a read hangs, the wanted one waits
+  for the request's timeout, 30 s. **Kept for the owner as a decision
+  of its own:** a revision of the page's threads kept by the server (a
+  column raised by triggers in each write's transaction, as migration
+  0002 does for permissions; on the list, each write's answer,
+  `Subscribed` and each event): a total order, exact replays, most of
+  the inexact rules gone, for a migration and a change of the HTTP and
+  WebSocket answers, 600 to 1,000 lines.
 - **The ceilings out, HLint's rule in (#309, WP5.131; the owner,
   2026-11-17: "wywal, ewentualnie jakiś linter").** The browser
   suite's ceilings (#291) are gone: the file of numbers, the check,

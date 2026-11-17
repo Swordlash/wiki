@@ -3225,11 +3225,10 @@ needs. Each was true when its package merged; check before relying on one.
   `Halogen.Test.Native` in place of most of `Test.Harness.MemDom` (a
   page for each view, so no lock; a reader's whole click with default
   actions); the wiki keeps `viewContext`, `TestFeed`, `driven`. (3)
-  `Halogen.Latest` in place of `Wiki.App.View.Latest` but for
-  `takesPage`: not possible as it stands, since it exports `Asks`
-  without its fields and the wiki's `madeAfter`, `stillAnswerable` and
-  `superseded` (the bell's and the comments') cannot be written over
-  it: said to the owner, who writes to the library's agent himself.
+  `Halogen.Latest` in place of `Wiki.App.View.Latest`: done (#297,
+  the pin at 70bd31f: the library gained `madeAfter` and
+  `stillAnswerable` at the owner's asking; the wiki's module re-exports
+  the library's names and keeps `superseded` and `takesPage`).
   (4) `Halogen.Machine` for the three machines' shells: the compiler
   then checks that an effect carried out in place cannot wait, and
   asks can be cancelled by key; each `perform` is rewritten as its

@@ -19,7 +19,9 @@
 //   output}, the tokens of each request that finished with a usage (cached
 //   and written null where the service did not say); and at the end
 //   {type: "done"}, {type:
-//   "stopped"} or {type: "error", kind, status, message};
+//   "stopped"} or {type: "error", kind, status, message}, the last two
+//   after {type: "unsent"} when the provider's chat could not be made, so
+//   that no conversation took the message;
 // - a stop aborts the turn (the SDK's request with it) and answers any call
 //   still waiting, so that nothing hangs.
 //
@@ -50,7 +52,8 @@
 // others none. script.check, an error, refuses "Test the key"; each check
 // is kept in script.checks ({provider, model, key, baseUrl}), for the tests
 // to read which key was checked, and answered after script.checkWait
-// milliseconds if that is set.
+// milliseconds if that is set. script.makeFails, a number, makes that many
+// of its chats fail to be made, as when a provider's script does not load.
 //
 // The key is handed to the island, which hands it to the SDK; nothing here
 // logs it or keeps it beyond the chat.
@@ -164,6 +167,18 @@ function wikiAssistantScripted(config) {
   };
 }
 
+// The scripted provider's chat, made at once, unless the script says that
+// so many makes fail first (script.makeFails), as a page whose provider's
+// script does not load.
+function wikiAssistantScriptedMade(config) {
+  const script = globalThis.wikiAssistantScript;
+  if (typeof script?.makeFails === "number" && script.makeFails > 0) {
+    script.makeFails--;
+    return Promise.reject(Object.assign(new Error("The assistant's script could not be loaded."), { wikiKind: "failed" }));
+  }
+  return Promise.resolve(wikiAssistantScripted(config));
+}
+
 function wikiAssistantIsland() {
   const load = globalThis.wikiIslands?.assistant;
   if (typeof load !== "function") {
@@ -223,15 +238,28 @@ function wiki_assistant_send(id, user, request) {
     const { provider, model, key, baseUrl, request } = chat.config;
     chat.made =
       provider === "scripted" || wikiAssistantScriptedPage()
-        ? Promise.resolve(wikiAssistantScripted({ provider, model, key, baseUrl, request }))
+        ? wikiAssistantScriptedMade({ provider, model, key, baseUrl, request })
         : wikiAssistantIsland().then((island) => island.startChat(provider, key, request, wikiAssistantOptions(baseUrl)));
     chat.made.catch(() => {
       chat.made = null;
     });
   }
   (async () => {
+    let made;
     try {
-      const made = await chat.made;
+      made = await chat.made;
+    } catch (error) {
+      // No conversation took the message: the provider's chat could not be
+      // made (its script did not load), and the next message makes a new
+      // one, which starts empty. "unsent" tells the application so, before
+      // the error, so that the next message carries the whole page again.
+      chat.controller = null;
+      wikiAssistantEmit(chat, { type: "unsent" });
+      if (controller.signal.aborted) wikiAssistantEmit(chat, { type: "stopped" });
+      else wikiAssistantEmit(chat, { type: "error", ...(await wikiAssistantDescribe(error)) });
+      return;
+    }
+    try {
       await made.send(String(user), wikiAssistantHandlers(chat), controller.signal, now);
       chat.controller = null;
       wikiAssistantEmit(chat, controller.signal.aborted ? { type: "stopped" } : { type: "done" });

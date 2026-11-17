@@ -319,7 +319,8 @@ data State = State
   -- 'Wiki.Core.Assistant.Prompt.bodyCap'. The next message without a
   -- selection carries what changed since it. It is set in the step that
   -- sends a message, and kept when the turn is stopped or fails, since the
-  -- chat keeps the message; a new conversation starts without one.
+  -- chat keeps the message. It is taken back when no chat took the message
+  -- ('HeardUnsent'); a new conversation starts without one.
   , listener :: Maybe (HS.Listener IO Heard)
   , otherModel :: Bool
   -- ^ Whether "Other…" is chosen for the model, which shows its text field.
@@ -878,6 +879,11 @@ component =
       HeardDone -> do
         finish Ended
         reached True
+      -- The chat that would have taken the message could not be made, and
+      -- the next message goes to a new one, which has no copy of the page.
+      -- The event comes before the turn's end, while no message can be
+      -- sent, so no message between reads the copy now taken back.
+      HeardUnsent -> modify (\st -> st {sentCopy = Nothing})
       HeardStopped -> finish Stopped
       HeardFailed e -> do
         finish Ended

@@ -348,6 +348,10 @@ data Heard
   | -- | The tokens of one request of the turn, once it finished: one per
     -- round of its tool loop, when the service reports them.
     HeardUsage Usage
+  | -- | No conversation took the message: the provider's chat could not be
+    -- made (its script did not load), and the next message starts a new
+    -- one, empty. 'HeardFailed' or 'HeardStopped' follows.
+    HeardUnsent
   | -- | The turn ended.
     HeardDone
   | -- | The turn was stopped.
@@ -364,6 +368,7 @@ instance FromJSON Heard where
       "tool-start" -> HeardToolStart <$> o .: "name"
       "tool" -> HeardCall <$> o .: "call" <*> o .: "name" <*> o .: "input"
       "usage" -> HeardUsage <$> parseJSON (Object o)
+      "unsent" -> pure HeardUnsent
       "done" -> pure HeardDone
       "stopped" -> pure HeardStopped
       "error" -> HeardFailed <$> parseJSON (Object o)

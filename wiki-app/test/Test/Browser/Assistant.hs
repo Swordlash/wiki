@@ -459,6 +459,20 @@ spec m = do
     map (T.isInfixOf "<page>\n# Hello, world") users `shouldBe` [True, False, True]
     map (T.isInfixOf "<changes>\n@@ ") users `shouldBe` [False, True, False]
 
+  -- A chat that could not be made (its script did not load) took no
+  -- message, so the next message, to a new chat, carries the page again.
+  it "sends the page whole again after a message whose chat could not be made" $ runPage $ do
+    unsafeIOToPageM $ do
+      js_forget
+      js_script (toJSText (decodeUtf8 (BSL.toStrict (encode (object ["turns" .= [[text "Hi."]], "makeFails" .= (1 :: Int)])))))
+    ui <- openAssistant m
+    send ui "First."
+    _ <- find ui ".assistant-error"
+    send ui "Second."
+    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Hi.")
+    users <- map (fromMaybe "" . fieldText ["user"]) <$> requests
+    map (T.isInfixOf "<page>\n# Hello, world") users `shouldBe` [True]
+
   it "shows a provider's error as it gave it, without anything like a key" $ runPage $ do
     script [[failing "permission" 403 "not for this key: sk-ant-api03-abcdefgh1234"]]
     ui <- openAssistant m

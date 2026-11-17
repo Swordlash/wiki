@@ -63,10 +63,10 @@ slugs :: [Text] -> [Slug]
 slugs = mapMaybe (rightToMaybe . mkSlug)
 
 data Rig = Rig
-  { view :: View (Drive LivePreview.Input)
+  { view :: View (Const Void) LivePreview.Input ViewOutput
   , editor :: Editor
-  , heard :: IORef [ViewOutput]
-  -- ^ What the window told the shell, the latest first.
+  , heard :: IO [ViewOutput]
+  -- ^ What the window told the shell, the oldest first.
   , widthIs :: PageWidth -> IO ()
   -- ^ The window given the width the shell keeps.
   }
@@ -78,11 +78,11 @@ data Rig = Rig
 withWindow :: Bool -> Maybe [Text] -> (Rig -> IO a) -> IO a
 withWindow encrypted saved body = do
   wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-admin")})
-  let run :: MemWiki MemDOM a -> IO a
-      run p = runMemDOM (runMemWiki wiki p)
+  let run :: MemWiki MemDOM a -> MemDOM a
+      run = runMemWiki wiki
       orPanic = either (panic . show) identity
-  router <- run (Router.newRouter "/" Unknown route)
-  (me, spaces, blog, ps) <- run $ do
+  router <- runMemDOM (run (Router.newRouter "/" Unknown route))
+  (me, spaces, blog, ps) <- runMemDOM . run $ do
     me <- session
     spaces <- listSpaces
     blog <- orPanic <$> getSpace (slugs ["blog"])
@@ -92,27 +92,25 @@ withWindow encrypted saved body = do
       void (orPanic <$> savePage post.id post.updatedAt post.title (T.unlines ls))
     pure (me, spaces, blog, ps)
   editor <- Editor <$> newIORef Nothing
-  heard <- newIORef []
   let space = if encrypted then blog {encryption = Just (KeyId "key-1")} else blog
       inputAt width = LivePreview.Input {context = (viewContextAs router me spaces 0) {pageWidth = width}, space, pages = ps, path = slugs ["hello-world"], listener = listenerOf editor}
-      told o = atomicModifyIORef' heard (\os -> (o : os, ()))
-  outcome <- withView run (drivenHearing told LivePreview.component (inputAt Compact)) () $ \view -> do
+  outcome <- withView run LivePreview.component (inputAt Compact) $ \view -> do
     settle view
-    body Rig {view, editor, heard, widthIs = \w -> setInput view (inputAt w) >> settle view}
+    body Rig {view, editor, heard = outputs view, widthIs = \w -> setInput view (inputAt w) >> settle view}
   Router.stop router
   pure outcome
 
 -- | Whether the view has an element the selector finds.
-present :: View q -> Text -> IO Bool
+present :: View q i o -> Text -> IO Bool
 present view selector = isJust <$> find view selector
 
 -- | The texts of the entries of the "Contents" panel, in order.
-panelEntries :: View q -> IO [Text]
+panelEntries :: View q i o -> IO [Text]
 panelEntries view = findAll view ".page-side > details.page-contents nav .toc-list a" >>= traverse N.textContent
 
 -- | Whether every entry of the lists of headings given links to an element
 -- of the text, by its id.
-linksResolve :: View q -> Text -> IO Bool
+linksResolve :: View q i o -> Text -> IO Bool
 linksResolve view selector = do
   hrefs <- findAll view selector >>= traverse (N.attribute "href")
   ids <- findAll view ".page-body [id]" >>= traverse (N.attribute "id")
@@ -124,30 +122,30 @@ spec = describe "Wiki.App.View.LivePreview, mounted on the in-memory DOM" $ do
     withWindow False Nothing $ \rig -> do
       present rig.view ".live-preview.page-view.page-width-compact" `shouldReturn` True
       present rig.view ".page-view.page-width-full" `shouldReturn` False
-      textOf rig.view ".live-preview-bar .page-width-switch [aria-checked=true]" >>= (`shouldSatisfy` maybe False (T.isInfixOf "Compact"))
+      textOf rig.view ".live-preview-bar .page-width-switch [aria-checked=true]" >>= (`shouldSatisfy` (T.isInfixOf "Compact"))
       -- The text sits in the page's column; the post as saved starts with
       -- its own title, so there is no row of the title.
-      textOf rig.view ".page-view > .page-main > .page-text.live-preview-body .page-body h1" `shouldReturn` Just "Hello, world"
+      textOf rig.view ".page-view > .page-main > .page-text.live-preview-body .page-body h1" `shouldReturn` "Hello, world"
       present rig.view ".page-title-row" `shouldReturn` False
-      click rig.view ".page-width-option-full" `shouldReturn` True
+      click rig.view ".page-width-option-full"
       settle rig.view
-      readIORef rig.heard >>= \os -> [w | ChoseWidth w <- os] `shouldBe` [FullWidth]
+      rig.heard >>= \os -> [w | ChoseWidth w <- os] `shouldBe` [FullWidth]
       -- The shell keeps the choice and gives it back.
       rig.widthIs FullWidth
       present rig.view ".live-preview.page-view.page-width-full" `shouldReturn` True
-      textOf rig.view ".live-preview-bar .page-width-switch [aria-checked=true]" >>= (`shouldSatisfy` maybe False (T.isInfixOf "Full width"))
+      textOf rig.view ".live-preview-bar .page-width-switch [aria-checked=true]" >>= (`shouldSatisfy` (T.isInfixOf "Full width"))
       -- A text with no title of its own: the title the editor sends, in
       -- the page's row above the text, once.
       typed rig.editor ["Some text."]
       settle rig.view
-      textOf rig.view ".page-view > .page-title-row > .page-title" `shouldReturn` Just "Hello, world"
+      textOf rig.view ".page-view > .page-title-row > .page-title" `shouldReturn` "Hello, world"
       length <$> findAll rig.view ".page-title" `shouldReturn` 1
 
   it "shows the Contents panel for the text the editor sends, unless it has too few headings or places its own" $
     withWindow False Nothing $ \rig -> do
       typed rig.editor ["## Setup", "", "One.", "", "## Use", "", "### Setup", "", "Two.", "", "## Setup", "", "Three."]
       settle rig.view
-      textOf rig.view ".live-preview-state" `shouldReturn` Just "Following the editor."
+      textOf rig.view ".live-preview-state" `shouldReturn` "Following the editor."
       panelEntries rig.view `shouldReturn` ["Setup", "Use", "Setup", "Setup"]
       present rig.view ".page-view > .page-main.with-side.with-contents" `shouldReturn` True
       -- The panel's links, worked out from the text, lead to the headings
@@ -179,11 +177,11 @@ spec = describe "Wiki.App.View.LivePreview, mounted on the in-memory DOM" $ do
       settle rig.view
       panelEntries rig.view `shouldReturn` []
       present rig.view ".page-title" `shouldReturn` False
-      textOf rig.view ".live-preview-body" `shouldReturn` Just ""
-      textOf rig.view ".live-preview-state" >>= (`shouldSatisfy` maybe False (T.isInfixOf "nothing of the page is kept here"))
+      textOf rig.view ".live-preview-body" `shouldReturn` ""
+      textOf rig.view ".live-preview-state" >>= (`shouldSatisfy` (T.isInfixOf "nothing of the page is kept here"))
 
   it "shows the Contents panel of the page as saved, before the editor speaks" $
     withWindow False (Just ["## One", "", "Text.", "", "## Two", "", "## Three"]) $ \rig -> do
-      textOf rig.view ".live-preview-state" >>= (`shouldSatisfy` maybe False (T.isInfixOf "The page as saved"))
+      textOf rig.view ".live-preview-state" >>= (`shouldSatisfy` (T.isInfixOf "The page as saved"))
       panelEntries rig.view `shouldReturn` ["One", "Two", "Three"]
       linksResolve rig.view ".page-contents .toc-list a" `shouldReturn` True

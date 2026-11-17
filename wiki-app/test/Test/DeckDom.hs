@@ -1,7 +1,7 @@
 -- | The viewer of a presentation in a page ("Wiki.App.View.DeckViewer"),
 -- the real component, on the in-memory DOM ("Test.Harness.MemDom"), over
 -- the demo's wiki, its asks held ('withHeldWaits'), its input changed as
--- the shell changes it ('driven'). Its link comes near the window when the
+-- the shell changes it ('setInput'). Its link comes near the window when the
 -- test says so: the viewer is given a 'Watcher' of the test's, which keeps
 -- the watches it runs and tells them on 'nearNow', in place of the
 -- browser's @IntersectionObserver@.
@@ -22,8 +22,9 @@ import Data.Map.Strict qualified as Map
 import Halogen.Router qualified as Router
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
+import Halogen.VDom.DOM.Monad.Native qualified as N
 import Protolude hiding (find)
-import Test.Harness.MemDom
+import Test.Harness.MemDom hiding (held, tell)
 import Test.Hspec hiding (pending)
 import Wiki.App.Backend (MonadLoad (..), MonadWiki (..), Session, UrlOwner, anonymousIn)
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki)
@@ -116,7 +117,7 @@ slugs = mapMaybe (rightToMaybe . mkSlug)
 data Reading = Reading {session :: Session, number :: Int, revision :: Int}
 
 data Rig = Rig
-  { view :: View (Drive DeckViewer.Input)
+  { view :: View (Const Void) DeckViewer.Input Void
   , control :: Control
   , watches :: Watches
   , readAs :: Reading -> IO ()
@@ -132,11 +133,11 @@ withDeck body = do
   wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-admin")})
   control <- Control <$> newIORef [] <*> newIORef []
   watches <- newWatches
-  let run :: Decking (MemWiki MemDOM) a -> IO a
-      run (Decking p) = runMemDOM (runMemWiki wiki (runReaderT p control))
+  let run :: Decking (MemWiki MemDOM) a -> MemDOM a
+      run (Decking p) = runMemWiki wiki (runReaderT p control)
       orPanic = either (panic . show) identity
-  router <- run (Router.newRouter "/" Unknown route)
-  (me, spaces, docs, ps) <- run $ do
+  router <- runMemDOM (run (Router.newRouter "/" Unknown route))
+  (me, spaces, docs, ps) <- runMemDOM . run $ do
     me <- session
     spaces <- listSpaces
     docs <- orPanic <$> getSpace (slugs ["docs"])
@@ -152,7 +153,8 @@ withDeck body = do
           , watcher = watcherOf watches
           }
       opening = Reading {session = me, number = 0, revision = 0}
-  view <- inTurn (mount run (driven DeckViewer.component (inputOf opening)) ())
+  page <- N.newPage
+  view <- mountIn page run DeckViewer.component (inputOf opening)
   outcome <- body Rig {view, control, watches, readAs = setInput view . inputOf, admin = me, visitor = anonymousIn Open}
   Router.stop router
   pure outcome
@@ -162,8 +164,8 @@ drain :: HeldWaits -> IO ()
 drain waits = pending waits >>= \held -> unless (null held) (traverse_ release held >> drain waits)
 
 -- | The slide shown, out of the deck's, or nothing for the link.
-position :: View q -> IO (Maybe Text)
-position view = textOf view ".deck-embed-position"
+position :: View q i o -> IO (Maybe Text)
+position view = find view ".deck-embed-position" >>= traverse N.textContent
 
 made, released :: Rig -> IO [UrlOwner]
 made rig = readIORef rig.control.made
@@ -177,7 +179,7 @@ spec = describe "Wiki.App.View.DeckViewer, mounted on the in-memory DOM" $ do
     withHeldWaits $ \waits -> withDeck $ \rig -> do
       held <- pending waits
       traverse_ release held
-      rig.view.dispose
+      dispose rig.view
       drain waits
       watching rig.watches `shouldReturn` 0
 
@@ -195,7 +197,7 @@ spec = describe "Wiki.App.View.DeckViewer, mounted on the in-memory DOM" $ do
       position rig.view `shouldReturn` Just "1 / 9"
       length <$> made rig `shouldReturn` 1
       watching rig.watches `shouldReturn` 0
-      rig.view.dispose
+      dispose rig.view
 
   it "hears the watch kept when the reader changes as it starts" $
     -- #275's fault (the channel made in a wait, a change of reader in it)
@@ -209,7 +211,7 @@ spec = describe "Wiki.App.View.DeckViewer, mounted on the in-memory DOM" $ do
       nearNow rig.watches
       drain waits
       position rig.view `shouldReturn` Just "1 / 9"
-      rig.view.dispose
+      dispose rig.view
 
   it "reads again for the same user signed out and in, given in one input" $
     withHeldWaits $ \waits -> withDeck $ \rig -> do
@@ -226,7 +228,7 @@ spec = describe "Wiki.App.View.DeckViewer, mounted on the in-memory DOM" $ do
       drain waits
       position rig.view `shouldReturn` Just "1 / 9"
       length <$> made rig `shouldReturn` 2
-      rig.view.dispose
+      dispose rig.view
 
   it "shows no answer read for an earlier reading" $
     -- Each read's addresses are let go of once: the shell's map of owners
@@ -244,7 +246,7 @@ spec = describe "Wiki.App.View.DeckViewer, mounted on the in-memory DOM" $ do
       nearNow rig.watches
       drain waits
       position rig.view `shouldReturn` Just "1 / 9"
-      rig.view.dispose
+      dispose rig.view
       drain waits
       ms <- made rig
       rs <- released rig

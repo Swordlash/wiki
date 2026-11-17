@@ -23,7 +23,7 @@ import Halogen.VDom.DOM.Monad.Native qualified as N
 import Protolude hiding (State, find)
 import Test.Bell (Step (..), genRun, shrinkRun)
 import Test.BellHarness (Check (..), Gated, Query (..), Rig (..), Shown (..), Ui (..), newRig, parent, runGated, runSteps)
-import Test.Harness.MemDom (View (..), answer, click, clickAt, find, findAll, heldCount, heldNow, keyDown, pending, pressOutside, query, release, settle, settleHolding, textOf, viewContext, withHeldWaits, withView)
+import Test.Harness.MemDom (View (..), answer, click, clickNode, clickOutside, dispose, find, findAll, held, holds, pending, pressNode, query, release, settle, settleHolding, textOf, viewContext, withHeldWaits, withView)
 import Test.Hspec hiding (pending)
 import Test.QuickCheck (counterexample, forAllShrinkShow, ioProperty, withNumTests, (===))
 import Test.QuickCheck qualified as QC
@@ -40,27 +40,27 @@ import Wiki.Core.Version (Author (..))
 
 -- | The bell mounted for the body, under the gated in-memory backend, with
 -- its page; disposed of after it.
-withBell :: (Rig -> Ui -> View Query -> IO a) -> IO a
+withBell :: (Rig -> Ui -> View Query () Void -> IO a) -> IO a
 withBell body = do
   wiki <- newMemWiki (demoState demoNow)
   (feed, rigWith) <- newRig
   let gate = (rigWith (\_ -> pass) pass).gate
-      run :: Gated (MemWiki MemDOM) a -> IO a
-      run = runMemDOM . runGated gate wiki
-  router <- run (Router.newRouter "/" Unknown route)
+      run :: Gated (MemWiki MemDOM) a -> MemDOM a
+      run = runGated gate wiki
+  router <- runMemDOM (run (Router.newRouter "/" Unknown route))
   withView run (parent feed router) () $ \view -> do
-    let rig = rigWith (\r -> void (query view (SetRevision r ()))) (view.dispose >> Router.stop router)
+    let rig = rigWith (\r -> void (query view (SetRevision r ()))) (dispose view >> Router.stop router)
         ui =
           Ui
-            { clickBell = void (click view ".notifications-toggle")
+            { clickBell = find view ".notifications-toggle" >>= traverse_ clickNode
             , clickMark = \i -> do
                 unread <- findAll view ".notification.unread"
-                for_ (atMay unread i) (N.querySelector ".notification-read" >=> traverse_ clickAt)
-            , clickMarkAll = void (click view ".notifications-read-all")
-            , clickLink = \i -> findAll view ".notification-link" >>= traverse_ clickAt . (`atMay` i)
-            , pressOutside = pressOutside view
+                for_ (atMay unread i) (N.querySelector ".notification-read" >=> traverse_ clickNode)
+            , clickMarkAll = find view ".notifications-read-all" >>= traverse_ clickNode
+            , clickLink = \i -> findAll view ".notification-link" >>= traverse_ clickNode . (`atMay` i)
+            , pressOutside = clickOutside view
             , shown = shownIn view
-            , settle = settleHolding view (heldCount gate)
+            , settle = settleHolding view (holds gate)
             }
     ui.settle
     body rig ui view
@@ -68,9 +68,9 @@ withBell body = do
 -- | What the bell shows, read from the DOM. With no row unread there is no
 -- "Mark read" to read the busy flag from, and "Mark all read" is disabled
 -- for nothing unread as well, so the flag reads as not busy.
-shownIn :: View q -> IO Shown
+shownIn :: View q i o -> IO Shown
 shownIn view = do
-  count <- maybe 0 (fromMaybe 0 . readMaybe) <$> textOf view ".notifications-count"
+  count <- maybe 0 (fromMaybe 0 . readMaybe) <$> (find view ".notifications-count" >>= traverse N.textContent)
   open <- isJust <$> find view ".notifications-panel"
   rows <- findAll view ".notification" >>= traverse row
   marking <- findAll view ".notification-read" >>= fmap (any isJust) . traverse (N.attribute "disabled")
@@ -89,12 +89,12 @@ runOnDom :: Check -> [Step] -> IO (Maybe Text)
 runOnDom how run = withBell (\rig ui _ -> runSteps how rig ui run)
 
 -- | Whether the bell's list is open.
-isOpen :: View q -> IO Bool
+isOpen :: View q i o -> IO Bool
 isOpen view = isJust <$> find view ".notifications-panel"
 
 -- | The bell opened with its list read: the first read answered with
 -- nothing, the list opened, and the read that opening asks answered too.
-opened :: Rig -> Ui -> View q -> IO ()
+opened :: Rig -> Ui -> View q i o -> IO ()
 opened rig ui view = do
   answerAll
   ui.clickBell
@@ -103,7 +103,7 @@ opened rig ui view = do
   isOpen view `shouldReturn` True
   where
     answerAll = do
-      heldNow rig.gate >>= traverse_ (\h -> answer rig.gate h (Right Notifications {unread = 0, items = []}))
+      held rig.gate >>= traverse_ (\h -> answer rig.gate h (Right Notifications {unread = 0, items = []}))
       ui.settle
 
 spec :: Spec
@@ -143,7 +143,7 @@ spec = describe "Wiki.App.View.Bell, mounted on the in-memory DOM" $ do
       find view ".notifications-panel h2" >>= traverse_ (N.dispatch "pointerdown" (object []))
       ui.settle
       isOpen view `shouldReturn` True
-      pressOutside view
+      clickOutside view
       ui.settle
       isOpen view `shouldReturn` False
 
@@ -153,18 +153,18 @@ spec = describe "Wiki.App.View.Bell, mounted on the in-memory DOM" $ do
   it "closes its list on its own button once, without opening it again" $
     withBell $ \rig ui view -> do
       opened rig ui view
-      find view ".notifications-toggle" >>= traverse_ (\b -> N.dispatch "pointerdown" (object []) b >> clickAt b)
+      click view ".notifications-toggle"
       ui.settle
       isOpen view `shouldReturn` False
-      textOf view ".notifications-toggle[aria-expanded=false] .notifications-bell" `shouldReturn` Just "🔔"
+      textOf view ".notifications-toggle[aria-expanded=false] .notifications-bell" `shouldReturn` "🔔"
 
   it "closes its list on Escape pressed anywhere in the page, and not on another key" $
     withBell $ \rig ui view -> do
       opened rig ui view
-      keyDown "Enter" [] view.container
+      pressNode view.container "Enter"
       ui.settle
       isOpen view `shouldReturn` True
-      keyDown "Escape" [] view.container
+      pressNode view.container "Escape"
       ui.settle
       isOpen view `shouldReturn` False
 
@@ -190,24 +190,24 @@ spec = describe "Wiki.App.View.Bell, mounted on the in-memory DOM" $ do
               , location = Nothing
               }
       wiki <- newMemWiki demo {current = Just rita, notices = Map.singleton rita [told]}
-      let run :: MemWiki MemDOM a -> IO a
-          run = runMemDOM . runMemWiki wiki
-      router <- run (Router.newRouter "/" Unknown route)
+      let run :: MemWiki MemDOM a -> MemDOM a
+          run = runMemWiki wiki
+      router <- runMemDOM (run (Router.newRouter "/" Unknown route))
       let ctx = viewContext router 0
       withView run Bell.component Bell.Input {context = ctx, feed = Nothing} $ \view -> do
         -- The in-memory backend answered the first read at once.
         (length <$> pending waits) `shouldReturn` 0
-        textOf view ".notifications-count" `shouldReturn` Just "1"
+        textOf view ".notifications-count" `shouldReturn` "1"
         -- Opening the list reads it again.
-        void (click view ".notifications-toggle")
+        click view ".notifications-toggle"
         pending waits >>= traverse_ release
         settle view
-        void (click view ".notification-read")
+        click view ".notification-read"
         [mark] <- pending waits
         find view ".notification-read" >>= fmap join . traverse (N.attribute "disabled") >>= (`shouldBe` Just "")
         find view ".notifications-read-all" >>= fmap join . traverse (N.attribute "disabled") >>= (`shouldBe` Just "")
         release mark
         settle view
-        textOf view ".notifications-count" `shouldReturn` Nothing
+        isNothing <$> find view ".notifications-count" `shouldReturn` True
         findAll view ".notification.unread" >>= (`shouldBe` 0) . length
       Router.stop router

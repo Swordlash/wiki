@@ -1225,7 +1225,9 @@ data Markers = Markers [BoxMarker] [MarkerLine] [TaskBox] [Shape]
 
 -- | 'Shape' is where a block is in a page's source, as the parser read
 -- it: what kind of block it is, the parts of the source the parser gave
--- it, and the shapes of the blocks inside it, in order. The editor's
+-- it, the shapes of the blocks inside it, in order, and the attributes
+-- the block took (its own braces, and those of a line of attributes alone
+-- before it). The editor's
 -- Enter reads it ("Wiki.Core.Markdown.Enter"): which quotations and
 -- lists' items a line is in, and where their marks are.
 --
@@ -1244,6 +1246,7 @@ data Shape = Shape
   { kind :: ShapeKind
   , parts :: [((Int, Int), (Int, Int))]
   , inner :: [Shape]
+  , attributes :: Attributes
   }
   deriving stock (Eq, Show)
 
@@ -1371,7 +1374,7 @@ instance CM.Rangeable Blocks where
           lastLine = foldl' max firstLine [if CM.sourceColumn e == 1 then CM.sourceLine e - 1 else CM.sourceLine e | (_, e) <- ranges]
           parts = [((CM.sourceLine s, CM.sourceColumn s), (CM.sourceLine e, CM.sourceColumn e)) | (s, e) <- ranges]
           kind = maybe OtherShape shapeKind (head [b | (Nothing, b) <- toList xs])
-       in Blocks (first (<|> Just (firstLine, lastLine)) <$> xs) (Markers bs ss ts [Shape {kind, parts, inner = hs}]) (Just (CM.sourceLine start, CM.sourceColumn start))
+       in Blocks (first (<|> Just (firstLine, lastLine)) <$> xs) (Markers bs ss ts [Shape {kind, parts, inner = hs, attributes = []}]) (Just (CM.sourceLine start, CM.sourceColumn start))
     [] -> Blocks xs (Markers bs ss ts hs) at
 
 -- | The kind of a block's 'Shape'.
@@ -1395,7 +1398,7 @@ shapeKind = \case
 -- | The shapes of a list's items made 'ItemShape's of the list's kind:
 -- each item's shape is the outermost of its blocks' ('CM.Rangeable').
 itemShapes :: CM.ListType -> Bool -> Markers -> Markers
-itemShapes kind task (Markers bs ss ts hs) = Markers bs ss ts [Shape {kind = ItemShape mark task, parts = h.parts, inner = h.inner} | h <- hs]
+itemShapes kind task (Markers bs ss ts hs) = Markers bs ss ts [Shape {kind = ItemShape mark task, parts = h.parts, inner = h.inner, attributes = h.attributes} | h <- hs]
   where
     mark = case kind of
       CM.BulletList c -> Bullet c
@@ -1412,8 +1415,15 @@ instance CM.HasAttributes Inlines where
         other -> other
 
 instance CM.HasAttributes Blocks where
-  addAttributes new (Blocks xs ms at) = Blocks (fmap add <$> xs) (ms <> taken) at
+  addAttributes new (Blocks xs ms at) = Blocks (fmap add <$> xs) (owned ms <> taken) at
     where
+      -- A block placed keeps the attributes in its shape too, whatever
+      -- the block does with them (a paragraph drops them). The editor's
+      -- Enter compares them, so that its answer does not move a line of
+      -- attributes onto another block ("Wiki.Core.Markdown.Enter").
+      owned (Markers bs ss ts hs) = Markers bs ss ts $ case (at, hs) of
+        (Just _, [s]) -> [Shape {kind = s.kind, parts = s.parts, inner = s.inner, attributes = s.attributes <> new}]
+        _ -> hs
       -- Blocks the parser has placed ('startOf') take the attributes of a
       -- line before them; a fence's own, after its info word, come before
       -- it is placed. A fence that takes those of a line says so, at its
@@ -1530,7 +1540,7 @@ instance CME.HasTaskList Inlines Blocks where
 instance CME.HasFootnote Inlines Blocks where
   footnote number label inside =
     let Blocks xs (Markers bs ss ts hs) at = around (Footnotes . pure . Footnote number label) inside
-     in Blocks xs (Markers bs ss ts [Shape {kind = NoteShape, parts = [], inner = hs}]) at
+     in Blocks xs (Markers bs ss ts [Shape {kind = NoteShape, parts = [], inner = hs, attributes = []}]) at
   footnoteList notes =
     let all' = mconcat notes
      in Blocks (Seq.singleton . (Nothing,) $ (Footnotes (concat [ns | Footnotes ns <- blocks all']))) (markersOf all') Nothing

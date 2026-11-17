@@ -63,11 +63,13 @@
 -- * an answer the parser does not read back as meant: 'enter' parses the
 --   text it would write, and keeps its answer only when the new line is in
 --   the containers the answer says, and every line below with anything on
---   it is read as before ('readsAsMeant'): an empty item's text is
+--   it is read as before, and every block that took attributes takes the
+--   same ones ('readsAsMeant'): an empty item's text is
 --   indented by its mark and one space, so a line below indented that far
 --   would go into it; a quoted line in the middle of a paragraph can make
 --   the lines below code; a line gone up can join two lists, or take an
---   item nested below into the new one.
+--   item nested below into the new one; an empty item gone from under a
+--   line of attributes alone hands the attributes to the block below.
 --
 -- So an empty item or quoted line in the middle of a list or a quotation
 -- goes up only when the lines after it keep their reading; otherwise
@@ -230,6 +232,13 @@ readings = foldl' (go []) Map.empty
           kept l = maybe 0 (\(_, _, c) -> c) (Map.lookup l acc)
           marked = foldl' (\m l -> Map.insert l (here, s.kind, if column l > 0 then column l else kept l) m) acc [a .. b]
        in foldl' (go here) marked s.inner
+
+-- | The blocks that took attributes, at any depth: the line each starts
+-- on, and the attributes.
+attached :: [Shape] -> [(Int, [(Text, Text)])]
+attached = sort . concatMap go
+  where
+    go s = [(fst (extent s), s.attributes) | not (null s.attributes)] <> concatMap go s.inner
 
 -- | The first and the last line of a shape ('shapeLines').
 extent :: Shape -> (Int, Int)
@@ -461,6 +470,12 @@ readsAsMeant before after oldShapes answer expected = fromMaybe False $ do
       new = readings shapes
       unshifted (containers, kind, column) = (map (second renumber) containers, kind, column)
   guard (all (\m -> Map.lookup m old == fmap unshifted (Map.lookup (m + moved) new)) below)
+  -- Every block that took attributes takes the same ones, by the line it
+  -- starts on. A line of attributes alone goes to the block after it,
+  -- over blank lines: an empty item emptied away would hand its list's
+  -- attributes to the list below (@{#a}@ over @- [ ] @ and @- b@, two
+  -- lists), and @{.incremental}@ changes how a list is shown.
+  guard (attached oldShapes == sort [(renumber l, a) | (l, a) <- attached shapes])
   line <- atMay textLines (n - 1)
   -- The line's containers, what it holds of each, and the rest of it.
   let marks = do

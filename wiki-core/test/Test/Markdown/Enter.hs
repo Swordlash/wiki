@@ -114,6 +114,13 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     review "a numbered item with a child, which a new item would take" (Doc [Chunk [] [Item 0 "8." (Spaces 1) Nothing] Text, Chunk [] [Item 0 "9." (Spaces 1) Nothing] Text, Chunk [Item 0 "9." (Spaces 1) Nothing] [Item 0 "-" (Spaces 1) Nothing] Text]) 2 NewLine
     review "a loose list" (Doc [Chunk [] [Item 0 "-" (Spaces 1) Nothing] Text, Chunk [] [] Blank, Chunk [] [Item 0 "-" (Spaces 1) Nothing] Text]) 3 (NewLineWith "- ")
     review "a lazy line of a quotation" (Doc [Chunk [] [Quote 0 (Spaces 1)] TextLazy]) 2 (NewLineWith "> ")
+    -- Codex's round 7 on #292: emptying the task away handed the line of
+    -- attributes to the list below (a task's list and a list of plain
+    -- items are two lists).
+    let task = Item 0 "-" (Spaces 1) (Just " ")
+        plainItem = Item 0 "-" (Spaces 1) Nothing
+    review "an empty task under a line of attributes, a list below" (Doc [Chunk [] [] Attrs, Chunk [] [task] Empty, Chunk [] [plainItem] Text]) 2 NewLine
+    review "the same in a quotation" (Doc [Chunk [] [Quote 0 (Spaces 1)] Attrs, Chunk [Quote 0 (Spaces 1)] [task] Empty, Chunk [Quote 0 (Spaces 1)] [plainItem] Text]) 2 NewLine
 
   -- Texts CodeMirror's tree cut where the wiki's parser reads on (Codex's
   -- review of #292's 0dd1018b): from the start the check keeps, the text
@@ -213,6 +220,13 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
         _ -> blocksAroundKept before after answer
     -- A line replaced is one container less deep (an item of the list
     -- around counts as deep as its sibling), with nothing after its marks.
+    -- Each block that took attributes, from its own braces or from a line
+    -- of attributes alone above it, takes the same ones: a list's are
+    -- shown, a paragraph's and a quotation's are dropped.
+    prop "leaves every line of attributes to the block it went to" $ \doc ->
+      atEveryLineEnd doc $ \before after answer -> case answer of
+        NewLine -> property True
+        _ -> attributesKept before after answer
     prop "takes an empty item or quoted line up one level" $ \doc ->
       atEveryLineEnd doc $ \before after answer -> case answer of
         LineBecomes _ -> wentUp before after answer
@@ -296,7 +310,7 @@ data Gap = Spaces Int | Tab
   deriving stock (Eq, Show)
 
 -- | What a chunk's lines hold after their containers' marks.
-data Body = Text | TextLazy | Heading | Box | Blank | Empty | Indented | Fenced | OpenFence | Html | Table | Opener | Closer | TextOpener | RawHtml Int
+data Body = Attrs | Text | TextLazy | Heading | Box | Blank | Empty | Indented | Fenced | OpenFence | Html | Table | Opener | Closer | TextOpener | RawHtml Int
   deriving stock (Eq, Show)
 
 -- | Some lines: the containers kept from the chunk before, written as on
@@ -331,7 +345,7 @@ chunk stack = do
     -- one (the parser reads one in an item too, and lists it at the end).
     footnote <- if k == 0 then frequency [(5, pure []), (1, (: []) . Note <$> choose (1, 1000000))] else pure []
     pure (footnote <> first' <> rest)
-  body <- frequency [(6, pure Text), (2, pure TextLazy), (1, pure Heading), (1, pure Box), (2, pure Blank), (2, pure Empty), (1, pure Indented), (1, pure Fenced), (1, pure OpenFence), (1, pure Html), (1, pure Table), (1, pure Opener), (1, pure Closer), (1, pure TextOpener), (2, RawHtml <$> choose (1, 7))]
+  body <- frequency [(2, pure Attrs), (6, pure Text), (2, pure TextLazy), (1, pure Heading), (1, pure Box), (2, pure Blank), (2, pure Empty), (1, pure Indented), (1, pure Fenced), (1, pure OpenFence), (1, pure Html), (1, pure Table), (1, pure Opener), (1, pure Closer), (1, pure TextOpener), (2, RawHtml <$> choose (1, 7))]
   pure (Chunk kept fresh body)
 
 -- | A new container.
@@ -364,6 +378,8 @@ renderChunk (Chunk kept fresh body) =
 -- | A body's lines, each with whether it is lazy (written with no marks).
 bodyLines :: Body -> [(Bool, Text)]
 bodyLines = \case
+  -- A line of attributes alone, which the block after it takes.
+  Attrs -> [(False, "{#a .b}")]
   Text -> [(False, "Some text.")]
   TextLazy -> [(False, "Some text."), (True, "lazy text")]
   Heading -> [(False, "# A heading")]
@@ -584,6 +600,22 @@ blocksAroundKept before after answer = case (placed (before <> after), placed (t
     isFootnotes = \case
       A.Footnotes _ -> True
       _ -> False
+
+-- | The blocks that took attributes are the same after the answer, each
+-- by the line it starts on (a new line counted out).
+attributesKept :: Text -> Text -> Enter -> Property
+attributesKept before after answer = case (parseShapes (before <> after), parseShapes (textAfter before after answer)) of
+  (Right old, Right new) ->
+    let n = T.count "\n" before + 2
+        back l = case answer of
+          NewLineWith _ | l == n -> 0
+          NewLineWith _ | l > n -> l - 1
+          _ -> l
+     in sort [(back l, a) | (l, a) <- took new] === took old
+  _ -> counterexample "no parse" False
+  where
+    took = sort . concatMap go
+    go s = [(fst (linesOf s), s.attributes) | not (null s.attributes)] <> concatMap go s.inner
 
 -- | Whether a line is in a paragraph, an item's text or a heading.
 inTextAt :: Text -> Int -> Bool

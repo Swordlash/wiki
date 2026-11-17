@@ -3168,6 +3168,27 @@ needs. Each was true when its package merged; check before relying on one.
   after 5,000 ms. Both passed once the load ended. By decision 81 a
   cost is asserted as a count, not a time: to be turned into bounds on
   allocation or on steps, with the slides editor's group (WP5.116).
+- **The nightly's first run (2026-11-17, started by hand: the
+  scheduled run of 01:43 UTC had not appeared two hours later, though
+  the workflow is registered and active; watch whether the schedule
+  fires the next night).** It works. The machines' properties at
+  500,000 cases: 81 examples, no failure, 380 s (10 minutes for the
+  job), so a million fits. The browser suite four times with eight
+  pages on four cores: about 3.3 minutes a run, 17 minutes for the
+  job, so eight runs fit. **Three findings, each to be read for its
+  cause (a package of its own, not a re-run):** (1) "The writing
+  assistant: keeps the text's selection in sight while the message
+  box has the focus" failed in four runs of four, at a `find` of
+  `.editor-provider[data-provider='scripted']` (the scripted provider
+  is not in the list within the `find`'s two seconds under this
+  load). (2) "Wiki.App.Shell: goes to a page by clicking, and draws
+  its formulas" failed once: the program still busy five seconds
+  after the click (the page's and a deck viewer's work). (3) "A
+  presentation's slides as rows over one editor: builds a master in a
+  host hidden from the start…" failed once. The seeds are in the run
+  (`gh run view 44011937916`): 3816487686, 3029562232, 638313353,
+  1158437550. The HTTP group, which failed under a busy loop locally,
+  did not fail here.
 - **The pin at 66c1f48: a component waits in `H.async` (#296, the
   owner's word of 2026-11-16 to bump when `Halogen.Machine` landed).**
   The library names what `lift` and `liftIO` meant in a component's

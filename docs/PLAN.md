@@ -2025,9 +2025,22 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   following what is typed; `[[!toc]]` checked in both previews. Being
   built, on its own branch off `main` (it shares no file with the
   assistant's packages).
+- **WP5.131 The ceilings out, a linter's rule in (the owner,
+  2026-11-17: "wywal, ewentualnie jakiś linter"; being built after
+  WP5.130, stacked on it).** The ceilings on the browser suite (#291)
+  go: the file of numbers, the check, the texts that tell a writer to
+  raise a number. They cost more than they found: two pull requests
+  that raise the same count merge without a conflict to a wrong
+  number (#304 and #305 on 2026-11-17), `find` counts plain reads,
+  and the rule they stood for is already in AGENTS.md and in the
+  session's review of each branch. In their place HLint with
+  restrictions only, every built-in hint off: `threadDelay` forbidden
+  in the test suites, and in `wiki-app/src` if that is as cheap,
+  today's uses allowed by module. If no released HLint parses the
+  code base, a script of a few lines for the same rule.
 - **WP5.122 Checks in place of conventions (decision 82): what is
-  left.** The ceilings and the nightly are merged (#291, with
-  WP5.114). Left: the machines in a package, or a part of one, that
+  left.** The nightly is merged (#291, with WP5.114); the ceilings
+  merged with it are being taken out again (WP5.131). Left: the machines in a package, or a part of one, that
   does not depend on haskell-halogen-core, so that the compiler
   refuses a step that waits; and the first nights of the nightly read
   (below, in the known gaps).

@@ -26,6 +26,7 @@ spec = describe "Wiki.Core.Assistant" $ do
   errorSpec
   promptSpec
   pageOnceSpec
+  capSpec
   requestSpec
   editSpec
   changeSpec
@@ -416,7 +417,7 @@ errorSpec = describe "an error" $ do
     let e = AssistantError {kind = TooLong, status = Just 400, message = "prompt is too long: 215000 tokens > 200000 maximum"}
     decode "{\"kind\":\"too_long\",\"status\":400,\"message\":\"prompt is too long: 215000 tokens > 200000 maximum\"}" `shouldBe` Just e
     errorText "Anthropic" Nothing e
-      `shouldBe` "The conversation, with the page, is too long for this model. Start a new one with \8220New\8221; for a long page, select the part you mean, or choose a model with a larger context window. The provider said: prompt is too long: 215000 tokens > 200000 maximum (400)"
+      `shouldBe` "The conversation, with the page, is too long for this model. Start a new one with \8220New\8221; for a long page, select the part you mean, lower the page's cap in the assistant's settings, or choose a model with a larger context window. The provider said: prompt is too long: 215000 tokens > 200000 maximum (400)"
 
   it "never shows the key, nor anything that looks like one" $ do
     let key = "sk-proj-abcdefghijklmnop1234"
@@ -449,7 +450,7 @@ promptSpec = describe "the page's context" $ do
     chipLabel (3, 3) `shouldBe` "line 3"
 
   it "sends a selection with its paragraph and one more on each side" $
-    pageContext "Title" page Nothing (Just (spanOf "two lines"))
+    pageContext bodyCap "Title" page Nothing (Just (spanOf "two lines"))
       `shouldBe` Selected
         { title = "Title"
         , lineRange = (6, 6)
@@ -460,35 +461,35 @@ promptSpec = describe "the page's context" $ do
         }
 
   it "sends the page's start and end when the selection is near them" $ do
-    beforeOf (pageContext "Title" page Nothing (Just (spanOf "Title"))) `shouldBe` "# "
-    afterOf (pageContext "Title" page Nothing (Just (spanOf "Fourth"))) `shouldBe` "."
+    beforeOf (pageContext bodyCap "Title" page Nothing (Just (spanOf "Title"))) `shouldBe` "# "
+    afterOf (pageContext bodyCap "Title" page Nothing (Just (spanOf "Fourth"))) `shouldBe` "."
 
   it "cuts the text around a selection" $ do
     let long = T.replicate 5000 "x" <> "SELECTED" <> T.replicate 5000 "y"
-        context = pageContext "T" long Nothing (Just (Span 5000 5008))
+        context = pageContext bodyCap "T" long Nothing (Just (Span 5000 5008))
     T.length (beforeOf context) `shouldBe` contextCap
     T.length (afterOf context) `shouldBe` contextCap
 
   it "sends the page without a selection, or with an empty one" $ do
-    pageContext "Title" page Nothing Nothing `shouldBe` Whole "Title" page Nothing
-    pageContext "Title" page Nothing (Just (Span 4 4)) `shouldBe` Whole "Title" page Nothing
+    pageContext bodyCap "Title" page Nothing Nothing `shouldBe` Whole "Title" page Nothing
+    pageContext bodyCap "Title" page Nothing (Just (Span 4 4)) `shouldBe` Whole "Title" page Nothing
 
   it "cuts a long page and says so" $ do
     let long = T.replicate (bodyCap + 10) "a"
-        context = pageContext "Long" long Nothing Nothing
-    context `shouldBe` Whole "Long" (T.take bodyCap long) (Just (bodyCap + 10))
+        context = pageContext bodyCap "Long" long Nothing Nothing
+    context `shouldBe` Whole "Long" (T.take bodyCap long) (Just (Cut bodyCap (bodyCap + 10)))
     userTurn Agent [] context "Shorten it." `shouldSatisfy` T.isInfixOf ("Only the first " <> show bodyCap <> " of its " <> show (bodyCap + 10) <> " characters")
 
   it "puts the title, the page's text and the request in a message" $ do
-    let turn = userTurn Agent [] (pageContext "Hello" page Nothing (Just (spanOf "Third."))) "Fix it."
+    let turn = userTurn Agent [] (pageContext bodyCap "Hello" page Nothing (Just (spanOf "Third."))) "Fix it."
     turn `shouldSatisfy` T.isPrefixOf "The page is titled \"Hello\"."
     turn `shouldSatisfy` T.isInfixOf "<selection>\nThird.\n</selection>"
     turn `shouldSatisfy` T.isInfixOf "line 8"
     turn `shouldSatisfy` T.isSuffixOf "<request>\nFix it.\n</request>"
-    userTurn Agent [] (pageContext "Hello" page Nothing Nothing) "Hi" `shouldSatisfy` T.isInfixOf ("<page>\n" <> page <> "\n</page>")
+    userTurn Agent [] (pageContext bodyCap "Hello" page Nothing Nothing) "Hi" `shouldSatisfy` T.isInfixOf ("<page>\n" <> page <> "\n</page>")
 
   it "says which of the model's changes the user rejected or undid since its last message" $ do
-    let context = pageContext "Hello" page Nothing Nothing
+    let context = pageContext bodyCap "Hello" page Nothing Nothing
         thanks = "Inserted \8220## Thanks\8221 at the end"
         turn = userTurn Agent [(thanks, Rejected), ("Replaced \8220a\8221 with \8220b\8221", Accepted), ("Removed \8220c\8221", Undone)] context "And now?"
     turn `shouldSatisfy` T.isInfixOf ("Since your last message, the user decided on your changes")
@@ -500,7 +501,7 @@ promptSpec = describe "the page's context" $ do
     snd (T.breakOn "Since your last message" turn) `shouldSatisfy` T.isInfixOf "<page>"
 
   it "tells the model, in Ask mode, that the user wants an answer and no edit" $ do
-    let context = pageContext "Hello" page Nothing Nothing
+    let context = pageContext bodyCap "Hello" page Nothing Nothing
         asked = userTurn Ask [] context "What does it say?"
     asked `shouldSatisfy` T.isInfixOf "Ask mode"
     asked `shouldSatisfy` T.isInfixOf "do not edit"
@@ -509,7 +510,7 @@ promptSpec = describe "the page's context" $ do
     userTurn Agent [] context "Hi" `shouldNotSatisfy` T.isInfixOf "Ask mode"
 
   it "says nothing of decisions when there were none, or only acceptances" $ do
-    let context = pageContext "Hello" page Nothing Nothing
+    let context = pageContext bodyCap "Hello" page Nothing Nothing
     userTurn Agent [] context "Hi" `shouldNotSatisfy` T.isInfixOf "Since your last message"
     userTurn Agent [("Replaced \8220a\8221 with \8220b\8221", Accepted)] context "Hi" `shouldNotSatisfy` T.isInfixOf "Since your last message"
     userTurn Agent [] context "Hi" `shouldBe` userTurn Agent [("x", Accepted)] context "Hi"
@@ -556,14 +557,14 @@ pageOnceSpec = describe "the page sent once, then its changes" $ do
       edited = T.replace "Line 15." "Line fifteen." page
 
   it "sends the page whole with the first message, and keeps it as the copy sent" $ do
-    let context = pageContext "T" page Nothing Nothing
+    let context = pageContext bodyCap "T" page Nothing Nothing
     context `shouldBe` Whole "T" page Nothing
-    copyAfter page context Nothing `shouldBe` Just page
+    copyAfter bodyCap page context Nothing `shouldBe` Just page
     sentNote context `shouldBe` Just "Sent with the page."
 
   it "says that the page did not change, a final line break aside" $ do
-    pageContext "T" page (Just page) Nothing `shouldBe` Same "T"
-    pageContext "T" (page <> "\n") (Just page) Nothing `shouldBe` Same "T"
+    pageContext bodyCap "T" page (Just page) Nothing `shouldBe` Same "T"
+    pageContext bodyCap "T" (page <> "\n") (Just page) Nothing `shouldBe` Same "T"
     let turn = userTurn Agent [] (Same "T") "Hi"
     turn `shouldSatisfy` T.isInfixOf "The page has not changed since you last saw it"
     turn `shouldNotSatisfy` T.isInfixOf "<page>"
@@ -572,13 +573,13 @@ pageOnceSpec = describe "the page sent once, then its changes" $ do
   it "sends a small change as a diff of lines, with two lines around it" $ do
     pageChanges page edited
       `shouldBe` Just "@@ -13,5 +13,5 @@\n Line 13.\n Line 14.\n-Line 15.\n+Line fifteen.\n Line 16.\n Line 17."
-    let context = pageContext "T" edited (Just page) Nothing
+    let context = pageContext bodyCap "T" edited (Just page) Nothing
     context `shouldBe` Changed "T" (fromMaybe "" (pageChanges page edited)) Nothing
     let turn = userTurn Agent [] context "Hi"
     turn `shouldSatisfy` T.isInfixOf "<changes>\n@@ -13,5 +13,5 @@\n"
     turn `shouldSatisfy` T.isInfixOf "your own edits made since included"
     turn `shouldNotSatisfy` T.isInfixOf "<page>"
-    copyAfter edited context (Just page) `shouldBe` Just edited
+    copyAfter bodyCap edited context (Just page) `shouldBe` Just edited
     sentNote context `shouldBe` Just "Sent with the page's changes since it was last sent."
 
   it "sends the page whole again where the changes are longer than half of it, at the threshold on both sides" $ do
@@ -592,42 +593,42 @@ pageOnceSpec = describe "the page sent once, then its changes" $ do
     k `shouldSatisfy` (> 1)
     (T.length <$> pageChanges (old k) (new k)) `shouldBe` Just size
     T.length (new k) `shouldBe` 2 * size
-    pageContext "T" (new k) (Just (old k)) Nothing `shouldBe` Changed "T" (fromMaybe "" (pageChanges (old k) (new k))) Nothing
-    pageContext "T" (new (k - 1)) (Just (old (k - 1))) Nothing `shouldBe` Whole "T" (new (k - 1)) Nothing
+    pageContext bodyCap "T" (new k) (Just (old k)) Nothing `shouldBe` Changed "T" (fromMaybe "" (pageChanges (old k) (new k))) Nothing
+    pageContext bodyCap "T" (new (k - 1)) (Just (old (k - 1))) Nothing `shouldBe` Whole "T" (new (k - 1)) Nothing
 
   it "sends a page changed throughout whole again" $ do
     let other = T.intercalate "\n" ["Other " <> show i | i <- [1 .. 30 :: Int]]
-    pageContext "T" other (Just page) Nothing `shouldBe` Whole "T" other Nothing
+    pageContext bodyCap "T" other (Just page) Nothing `shouldBe` Whole "T" other Nothing
 
   it "compares the page cut to the cap, and says it is cut" $ do
     let long = T.replicate (bodyCap + 10) "a"
-        context = pageContext "T" (long <> "b") (Just (T.take bodyCap long)) Nothing
+        context = pageContext bodyCap "T" (long <> "b") (Just (T.take bodyCap long)) Nothing
     context `shouldBe` Same "T"
-    sentNote (Whole "T" (T.take bodyCap long) (Just (bodyCap + 10)))
+    sentNote (Whole "T" (T.take bodyCap long) (Just (Cut bodyCap (bodyCap + 10))))
       `shouldBe` Just ("Sent with the first 200,000 of the page's 200,010 characters.")
-    sentNote (Changed "T" "@@" (Just (bodyCap + 10))) `shouldBe` Just "Sent with the page's changes since it was last sent, in its first 200,000 characters."
+    sentNote (Changed "T" "@@" (Just (Cut bodyCap (bodyCap + 10)))) `shouldBe` Just "Sent with the page's changes since it was last sent, in its first 200,000 characters."
 
   it "cuts a selection to the cap, and says so" $ do
     let long = T.replicate (bodyCap + 5) "a"
-        context = pageContext "T" long Nothing (Just (Span 0 (bodyCap + 5)))
+        context = pageContext bodyCap "T" long Nothing (Just (Span 0 (bodyCap + 5)))
     case context of
       Selected {selected, selectedFrom} -> do
         T.length selected `shouldBe` bodyCap
-        selectedFrom `shouldBe` Just (bodyCap + 5)
+        selectedFrom `shouldBe` Just (Cut bodyCap (bodyCap + 5))
       other -> expectationFailure ("not a selection: " <> show other)
     userTurn Agent [] context "Shorten it." `shouldSatisfy` T.isInfixOf ("Only the first " <> show bodyCap <> " of the selection's " <> show (bodyCap + 5) <> " characters")
     sentNote context `shouldBe` Just "Sent with the first 200,000 of the selection's 200,005 characters."
-    sentNote (pageContext "T" page Nothing (Just (Span 0 4))) `shouldBe` Nothing
+    sentNote (pageContext bodyCap "T" page Nothing (Just (Span 0 4))) `shouldBe` Nothing
 
   it "leaves the copy sent as it was after a message with a selection" $ do
-    let context = pageContext "T" edited (Just page) (Just (Span 0 4))
-    copyAfter edited context (Just page) `shouldBe` Just page
-    copyAfter edited context Nothing `shouldBe` Nothing
+    let context = pageContext bodyCap "T" edited (Just page) (Just (Span 0 4))
+    copyAfter bodyCap edited context (Just page) `shouldBe` Just page
+    copyAfter bodyCap edited context Nothing `shouldBe` Nothing
 
   it "says under the box what goes with the next message" $ do
-    scopeText 10 False `shouldBe` "Nothing selected: the page goes with your message."
-    scopeText (bodyCap + 1) False `shouldBe` "Nothing selected: the first 200,000 characters of the page go with your message."
-    scopeText 10 True `shouldBe` "Nothing selected: the page's changes since it was last sent go with your message."
+    scopeText bodyCap 10 False `shouldBe` "Nothing selected: the page goes with your message."
+    scopeText bodyCap (bodyCap + 1) False `shouldBe` "Nothing selected: the first 200,000 characters of the page go with your message."
+    scopeText bodyCap 10 True `shouldBe` "Nothing selected: the page's changes since it was last sent go with your message."
 
   it "gives the page now when its changes are applied to the copy sent" $
     property $
@@ -644,6 +645,85 @@ pageOnceSpec = describe "the page sent once, then its changes" $ do
 -- | A diff of 'pageChanges' applied to the old copy's lines: the lines up
 -- to each change's start copied, its lines kept, dropped or added by
 -- their marks, and the lines after the last change copied.
+-- | The page's cap when the user set none.
+bodyCap :: Int
+bodyCap = defaultBodyCap
+
+-- | The page's cap as a setting, and a conversation's tokens (WP5.129).
+capSpec :: Spec
+capSpec = describe "the page's cap and a conversation's tokens" $ do
+  it "reads settings stored before the cap existed, with the default" $ do
+    -- As today's code stored them, before WP5.129.
+    let stored = "{\"provider\":\"openai\",\"mode\":\"ask\",\"openai\":{\"key\":\"sk-test\",\"model\":\"gpt-6.1-sol\",\"defaultEffort\":\"high\"}}"
+    case decode stored of
+      Nothing -> expectationFailure "the stored settings did not read"
+      Just s -> do
+        s.pageCap `shouldBe` Nothing
+        pageCapOf s `shouldBe` 200_000
+        s.chatMode `shouldBe` Ask
+
+  it "keeps a cap the user set, both ways, and the default as none set" $ do
+    let s = withPageCap 50_000 defaultSettings
+    pageCapOf s `shouldBe` 50_000
+    case toJSON s of
+      Object o -> KM.lookup "pageCap" o `shouldBe` Just (Number 50_000)
+      other -> expectationFailure ("not an object: " <> show other)
+    decode (encode s) `shouldBe` Just s
+    withPageCap defaultBodyCap s `shouldBe` defaultSettings
+    blankSettings (withPageCap defaultBodyCap s) `shouldBe` True
+    blankSettings s `shouldBe` False
+    -- Choosing a provider keeps it.
+    pageCapOf (chooseProvider OpenAI s) `shouldBe` 50_000
+
+  it "reads a typed cap within its bounds, grouped or not, and says why another is not kept" $ do
+    pageCapFrom "50000" `shouldBe` Right 50_000
+    pageCapFrom " 1,000 " `shouldBe` Right 1_000
+    pageCapFrom "2 000 000" `shouldBe` Right 2_000_000
+    pageCapFrom "999" `shouldBe` Left "At least 1,000 characters."
+    pageCapFrom "2000001" `shouldBe` Left "At most 2,000,000 characters."
+    pageCapFrom "a lot" `shouldBe` Left "Type a number of characters, such as 200,000."
+    pageCapFrom "" `shouldBe` Left "Type a number of characters, such as 200,000."
+    pageCapFrom "-5000" `shouldBe` Left "Type a number of characters, such as 200,000."
+    pageCapFrom "99999999999999999999999" `shouldBe` Left "At most 2,000,000 characters."
+
+  it "estimates the tokens of so many characters, at two figures, and says it is an estimate" $ do
+    tokenEstimate 200_000 `shouldBe` "About 57,000 tokens of English or Polish text. Text dense in tokens, such as Chinese, Japanese or emoji, takes several times more; only the provider counts exactly."
+    tokenEstimate 1_000 `shouldSatisfy` T.isPrefixOf "About 290 tokens "
+    tokenEstimate 2_000_000 `shouldSatisfy` T.isPrefixOf "About 570,000 tokens "
+    tokenEstimate 150 `shouldSatisfy` T.isPrefixOf "About 43 tokens "
+
+  it "cuts the page and a selection at the cap it is given, and says so with that number" $ do
+    let page = T.replicate 5_000 "a"
+        whole = pageContext 1_000 "T" page Nothing Nothing
+    whole `shouldBe` Whole "T" (T.take 1_000 page) (Just (Cut 1_000 5_000))
+    copyAfter 1_000 page whole Nothing `shouldBe` Just (T.take 1_000 page)
+    userTurn Agent [] whole "Hi" `shouldSatisfy` T.isInfixOf "Only the first 1000 of its 5000 characters are shown"
+    sentNote whole `shouldBe` Just "Sent with the first 1,000 of the page's 5,000 characters."
+    scopeText 1_000 5_000 False `shouldBe` "Nothing selected: the first 1,000 characters of the page go with your message."
+    scopeText 10_000 5_000 False `shouldBe` "Nothing selected: the page goes with your message."
+    case pageContext 1_000 "T" page Nothing (Just (Span 0 3_000)) of
+      Selected {selected, selectedFrom} -> (T.length selected, selectedFrom) `shouldBe` (1_000, Just (Cut 1_000 3_000))
+      other -> expectationFailure ("not a selection: " <> show other)
+
+  it "compares the copy sent with the page cut to a cap changed since" $ do
+    let page = T.intercalate "\n" ["Line " <> show i <> "." | i <- [1 .. 40 :: Int]]
+        copy = T.take 200 page
+        older = T.take 100 page
+    -- A larger cap: the end the copy lacked goes as a change, or the page
+    -- whole again where that change is too long.
+    pageContext 220 "T" page (Just copy) Nothing `shouldSatisfy` \case
+      Changed {} -> True
+      _ -> False
+    pageContext 400 "T" page (Just older) Nothing `shouldBe` Whole "T" page Nothing
+
+  it "sums the conversation's answers, each the sum of its requests, under its own label" $ do
+    let answer1 = [Usage 1240 (Just 0) (Just 1200) 75, Usage 1290 (Just 1200) (Just 0) 12]
+        answer2 = [Usage 1400 (Just 1290) (Just 0) 30]
+    conversationText [] `shouldBe` Nothing
+    conversationText (answer1 <> answer2)
+      `shouldBe` Just "This conversation: 3,930 tokens in (2,490 from cache, 1,200 written to cache), 117 out"
+    turnUsage (answer1 <> answer2) `shouldBe` turnUsage (catMaybes [turnUsage answer1, turnUsage answer2])
+
 applyChanges :: [Text] -> Text -> [Text]
 applyChanges olds changes = go 1 olds (T.splitOn "\n" changes)
   where

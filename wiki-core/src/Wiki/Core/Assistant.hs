@@ -51,6 +51,13 @@ module Wiki.Core.Assistant
   , Mode (..)
   , modeLabel
   , withMode
+  , defaultBodyCap
+  , pageCapOf
+  , withPageCap
+  , pageCapFrom
+  , minPageCap
+  , maxPageCap
+  , tokenEstimate
   , defaultSettings
   , blankSettings
   , settingsOf
@@ -83,6 +90,7 @@ module Wiki.Core.Assistant
   , Usage (..)
   , turnUsage
   , usageText
+  , conversationText
   , thousands
   )
 where
@@ -400,6 +408,10 @@ data Settings = Settings
   , byProvider :: Map Provider ProviderSettings
   , chatMode :: Mode
   -- ^ Whether the assistant edits the page or only talks.
+  , pageCap :: Maybe Int
+  -- ^ The number of characters of a page, or of a selection, a message
+  -- carries, if the user set one ('pageCapOf'). It is the user's, for
+  -- every provider.
   }
   deriving stock (Eq, Show)
 
@@ -422,10 +434,70 @@ modeLabel = \case
 withMode :: Mode -> Settings -> Settings
 withMode m s = s {chatMode = m}
 
+-- | The number of characters of a page, or of a selection, a message
+-- carries when the user has set none: a long page's worth. It bounds what
+-- one message carries, and so what a conversation costs
+-- ("Wiki.Core.Assistant.Prompt" sends a page once, then its changes).
+--
+-- Whether a page fits is the model's context window's to decide, in
+-- tokens, which cannot be counted here. For Latin text, for example, two
+-- copies (the first, and one sent again after a large change) and the
+-- reference (67 thousand characters) are about 470 thousand characters:
+-- 155 thousand tokens at three characters a token, which with a
+-- response's 32 thousand fits a window of 200 thousand tokens. Text dense
+-- in tokens (Chinese, Japanese, emoji) can take more than one token a
+-- character, and can outgrow a window that size with its first message.
+-- The provider then refuses the request, and the panel says what to do
+-- ('TooLong').
+defaultBodyCap :: Int
+defaultBodyCap = 200_000
+
+-- | The bounds of the page's cap a user may set: a short page's worth, and
+-- ten times the default.
+minPageCap, maxPageCap :: Int
+minPageCap = 1_000
+maxPageCap = 2_000_000
+
+-- | The page's cap in force: the user's, or 'defaultBodyCap'.
+pageCapOf :: Settings -> Int
+pageCapOf s = fromMaybe defaultBodyCap s.pageCap
+
+-- | The settings with the page's cap set. The default itself is stored as
+-- none set, so that settings holding only defaults stay blank.
+withPageCap :: Int -> Settings -> Settings
+withPageCap n s = s {pageCap = if n == defaultBodyCap then Nothing else Just n}
+
+-- | A page's cap as the settings' field reads it: digits, with commas,
+-- spaces or underscores between them if the user groups them, within
+-- 'minPageCap' and 'maxPageCap'; or why not.
+pageCapFrom :: Text -> Either Text Int
+pageCapFrom typed = case readMaybe (T.unpack digits) :: Maybe Integer of
+  Just n
+    | not (T.null digits) && T.all isDigit digits && n < toInteger minPageCap -> Left ("At least " <> thousands minPageCap <> " characters.")
+    | not (T.null digits) && T.all isDigit digits && n > toInteger maxPageCap -> Left ("At most " <> thousands maxPageCap <> " characters.")
+    | not (T.null digits) && T.all isDigit digits -> Right (fromInteger n)
+  _ -> Left ("Type a number of characters, such as " <> thousands defaultBodyCap <> ".")
+  where
+    digits = T.filter (`notElem` (", _" :: [Char])) (T.strip typed)
+
+-- | About how many tokens so many characters are, as the settings say
+-- beside the page's cap: the characters divided by 3.5, rounded to two
+-- figures, said to be an estimate.
+tokenEstimate :: Int -> Text
+tokenEstimate chars =
+  "About "
+    <> thousands (twoFigures (round (fromIntegral chars / 3.5 :: Double)))
+    <> " tokens of English or Polish text. Text dense in tokens, such as Chinese, Japanese or emoji, takes several times more; only the provider counts exactly."
+  where
+    twoFigures :: Int -> Int
+    twoFigures n
+      | n < 100 = n
+      | otherwise = let unit = 10 ^ (length (show n :: [Char]) - 2) in ((n + unit `div` 2) `div` unit) * unit
+
 -- | The settings before anything is set: Anthropic, with no key and no
 -- model chosen, in 'Agent' mode.
 defaultSettings :: Settings
-defaultSettings = Settings {provider = Anthropic, byProvider = mempty, chatMode = Agent}
+defaultSettings = Settings {provider = Anthropic, byProvider = mempty, chatMode = Agent, pageCap = Nothing}
 
 -- | The settings of a provider before anything is set.
 noSettings :: ProviderSettings
@@ -436,7 +508,7 @@ noSettings = ProviderSettings {key = Nothing, model = Nothing, effort = Nothing,
 -- service, and nothing learnt about a provider. Such settings need not be
 -- stored.
 blankSettings :: Settings -> Bool
-blankSettings s = s.provider == Anthropic && s.chatMode == Agent && all (== noSettings) (Map.elems s.byProvider)
+blankSettings s = s.provider == Anthropic && s.chatMode == Agent && isNothing s.pageCap && all (== noSettings) (Map.elems s.byProvider)
 
 -- | A provider's settings, with its defaults where nothing was set.
 settingsOf :: Provider -> Settings -> ProviderSettings
@@ -491,7 +563,7 @@ trimmed :: Maybe Text -> Maybe Text
 trimmed = mfilter (not . T.null) . fmap T.strip
 
 chooseProvider :: Provider -> Settings -> Settings
-chooseProvider p s = Settings {provider = p, byProvider = s.byProvider, chatMode = s.chatMode}
+chooseProvider p s = Settings {provider = p, byProvider = s.byProvider, chatMode = s.chatMode, pageCap = s.pageCap}
 
 -- | The base URL of another service that implements the provider's API,
 -- if one is set. For OpenAI's API that is Azure OpenAI, GitHub Models,
@@ -597,6 +669,7 @@ instance ToJSON Settings where
     object $
       ("provider" .= providerKey s.provider)
         : ["mode" .= ("ask" :: Text) | s.chatMode == Ask]
+          <> ["pageCap" .= n | Just n <- [s.pageCap]]
           <> [ Key.fromText (providerKey p) .= object (["key" .= ps.key, "model" .= ps.model] <> learnt ps)
              | (p, ps) <- Map.toList s.byProvider
              ]
@@ -616,7 +689,9 @@ instance FromJSON Settings where
     -- Settings stored before the modes existed are in Agent mode, as the
     -- assistant was.
     chatMode <- (\m -> if m == Just ("ask" :: Text) then Ask else Agent) <$> o .:? "mode"
-    pure Settings {provider, byProvider, chatMode}
+    -- Settings stored before the page's cap existed have the default.
+    pageCap <- o .:? "pageCap"
+    pure Settings {provider, byProvider, chatMode, pageCap}
     where
       providerFrom :: Text -> Parser Provider
       providerFrom k = maybe (fail ("no such provider: " <> toS k)) pure (providerFromKey k)
@@ -714,7 +789,7 @@ errorMeaning service e = case e.kind of
   Unreachable -> "The provider could not be reached."
   Declined -> "The model declined to answer."
   BadRequest -> "The provider refused the request."
-  TooLong -> "The conversation, with the page, is too long for this model. Start a new one with \8220New\8221; for a long page, select the part you mean, or choose a model with a larger context window."
+  TooLong -> "The conversation, with the page, is too long for this model. Start a new one with \8220New\8221; for a long page, select the part you mean, lower the page's cap in the assistant's settings, or choose a model with a larger context window."
   Blocked -> "This wiki's pages do not let the assistant reach that address, so the browser sent nothing."
   Failed -> "The request failed."
 
@@ -802,6 +877,13 @@ usageText u =
     toCache n
       | n > 0 = Just (thousands n <> " written to cache")
       | otherwise = Nothing
+
+-- | The tokens of a conversation so far, as the panel shows them: the sum
+-- of what every request of every answer reported ('turnUsage'), under a
+-- label that says it is the conversation's. 'Nothing' until some answer
+-- reported its usage.
+conversationText :: [Usage] -> Maybe Text
+conversationText used = ("This conversation: " <>) . usageText <$> turnUsage used
 
 -- | A count with its thousands set apart by commas: "12,340".
 thousands :: Int -> Text

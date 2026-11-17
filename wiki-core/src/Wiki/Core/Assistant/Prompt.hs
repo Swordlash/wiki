@@ -18,7 +18,7 @@
 --    by the page's context at that moment ('userTurn'): the page's title,
 --    the user's decisions on the model's changes since the user's last
 --    message ('Outcome'), and the selection with a paragraph on each side,
---    or the page ('pageContext'). The page goes whole, cut to 'bodyCap',
+--    or the page ('pageContext'). The page goes whole, cut to the user's cap,
 --    with the first message; a later message carries what changed since
 --    the copy last sent, as a diff of lines, or a line saying nothing did.
 --    In 'Ask' mode it also says that the user wants an answer and no edit.
@@ -48,7 +48,7 @@ module Wiki.Core.Assistant.Prompt
   , pageChanges
   , sentNote
   , scopeText
-  , bodyCap
+  , Cut (..)
   , contextCap
   , Outcome (..)
   , userTurn
@@ -104,57 +104,44 @@ chipLabel (a, b)
 -- | 'PageContext': what a message tells the model about the page.
 data PageContext
   = -- | The page's title, the selected lines, the selected text, and the
-    -- text around it; and the selection's length when only its first
-    -- 'bodyCap' characters are sent.
-    Selected {title :: Text, lineRange :: (Int, Int), before :: Text, selected :: Text, after :: Text, selectedFrom :: Maybe Int}
-  | -- | The page's title and its Markdown, and the page's length when only
-    -- the first 'bodyCap' characters are sent.
-    Whole {title :: Text, body :: Text, cutFrom :: Maybe Int}
+    -- text around it; and how the selection was cut, if it was.
+    Selected {title :: Text, lineRange :: (Int, Int), before :: Text, selected :: Text, after :: Text, selectedFrom :: Maybe Cut}
+  | -- | The page's title and its Markdown, and how the page was cut, if it
+    -- was.
+    Whole {title :: Text, body :: Text, cutFrom :: Maybe Cut}
   | -- | The page's title; the page is the copy last sent.
     Same {title :: Text}
   | -- | The page's title and what changed since the copy last sent, as
-    -- 'pageChanges' writes it, and the page's length when only its first
-    -- 'bodyCap' characters are compared.
-    Changed {title :: Text, changes :: Text, cutFrom :: Maybe Int}
+    -- 'pageChanges' writes it, and how the page was cut, if it was.
+    Changed {title :: Text, changes :: Text, cutFrom :: Maybe Cut}
   deriving stock (Eq, Show)
 
--- | The number of characters of a page, or of a selection, sent with a
--- message: a long page's worth. It bounds what one message carries, and
--- so what a conversation costs. The first message of a conversation
--- carries the page cut to it, and the later ones only what changed, so
--- the conversation holds about one copy. The panel says so when a page is
--- longer.
---
--- Whether a page fits is the model's context window's to decide, in
--- tokens, which cannot be counted here. For Latin text, for example, two
--- copies (the first, and one sent again after a large change) and the
--- reference (67 thousand characters) are about 470 thousand characters:
--- 155 thousand tokens at three characters a token, which with a
--- response's 'maxTokens' fits a window of 200 thousand tokens. Text dense
--- in tokens (Chinese, Japanese, emoji) can take more than one token a
--- character, and can outgrow a window that size with its first message.
--- The provider then refuses the request, and the panel says what to do
--- ('Wiki.Core.Assistant.TooLong').
-bodyCap :: Int
-bodyCap = 200_000
+-- | 'Cut': a text cut to the cap: the cap, which is how many of its
+-- characters were sent, and its whole length.
+data Cut = Cut {kept :: Int, total :: Int}
+  deriving stock (Eq, Show)
 
 -- | The maximum number of characters sent on each side of a selection.
 contextCap :: Int
 contextCap = 2_000
 
--- | The page's context for a message, given the page's title, its
--- Markdown, and the copy of the page last sent in this conversation
--- ('copyAfter'), if one was.
+-- | The page's context for a message, given the page's cap (the number
+-- of characters of a page, or of a selection, a message carries:
+-- 'Wiki.Core.Assistant.pageCapOf'), the page's title, its Markdown, and
+-- the copy of the page last sent in this conversation ('copyAfter'), if
+-- one was.
 --
--- If a non-empty selection is attached: the selection, cut to 'bodyCap',
+-- If a non-empty selection is attached: the selection, cut to the cap,
 -- the rest of its paragraph and the paragraph before it, and the rest of
--- its paragraph and the paragraph after it. Otherwise the page, cut to
--- 'bodyCap': whole if no copy was sent yet; 'Same' if it is the copy last
--- sent; or what changed since that copy ('pageChanges'). Where the
--- changes would be longer than half of the page, or too many to work out,
--- the page goes whole again.
-pageContext :: Text -> Text -> Maybe Text -> Maybe Span -> PageContext
-pageContext title page lastSent = \case
+-- its paragraph and the paragraph after it. Otherwise the page, cut to the
+-- cap: whole if no copy was sent yet; 'Same' if it is the copy last sent;
+-- or what changed since that copy ('pageChanges'). Where the changes would
+-- be longer than half of the page, or too many to work out, the page goes
+-- whole again. A cap changed since the copy was sent compares the copy
+-- with the page cut to the new cap: the end gained or lost goes as a
+-- change, or the page goes whole again.
+pageContext :: Int -> Text -> Text -> Maybe Text -> Maybe Span -> PageContext
+pageContext cap title page lastSent = \case
   Just s
     | s.to > s.from ->
         let selection = T.take (s.to - s.from) (T.drop s.from page)
@@ -162,9 +149,9 @@ pageContext title page lastSent = \case
               { title
               , lineRange = lineSpan page s
               , before = T.takeEnd contextCap (paragraphBefore (T.take s.from page))
-              , selected = T.take bodyCap selection
+              , selected = T.take cap selection
               , after = T.take contextCap (paragraphAfter (T.drop s.to page))
-              , selectedFrom = if T.length selection > bodyCap then Just (T.length selection) else Nothing
+              , selectedFrom = cutOf selection
               }
   _ -> case lastSent of
     Nothing -> whole
@@ -175,18 +162,19 @@ pageContext title page lastSent = \case
         | 2 * T.length changes > T.length body -> whole
         | otherwise -> Changed {title, changes, cutFrom}
   where
-    body = T.take bodyCap page
-    cutFrom = if T.length page > bodyCap then Just (T.length page) else Nothing
+    body = T.take cap page
+    cutFrom = cutOf page
     whole = Whole {title, body, cutFrom}
+    cutOf text = if T.length text > cap then Just Cut {kept = cap, total = T.length text} else Nothing
 
 -- | The copy of the page the model has once a message with this context
--- is sent, given the page's Markdown and the copy it had before: the page
--- cut to 'bodyCap', unless the message carried a selection, which leaves
--- the copy as it was.
-copyAfter :: Text -> PageContext -> Maybe Text -> Maybe Text
-copyAfter page context lastSent = case context of
+-- is sent, given the page's cap, its Markdown and the copy it had before:
+-- the page cut to the cap, unless the message carried a selection, which
+-- leaves the copy as it was.
+copyAfter :: Int -> Text -> PageContext -> Maybe Text -> Maybe Text
+copyAfter cap page context lastSent = case context of
   Selected {} -> lastSent
-  _ -> Just (T.take bodyCap page)
+  _ -> Just (T.take cap page)
 
 -- | What changed from one copy of the page to the next, as a unified diff
 -- of lines: each change with two unchanged lines around it, under a
@@ -218,20 +206,20 @@ pageChanges old new
 -- Nothing for a selection sent whole, which the message's chip shows.
 sentNote :: PageContext -> Maybe Text
 sentNote = \case
-  Selected {selectedFrom} -> (\n -> "Sent with the first " <> thousands bodyCap <> " of the selection's " <> thousands n <> " characters.") <$> selectedFrom
+  Selected {selectedFrom} -> (\c -> "Sent with the first " <> thousands c.kept <> " of the selection's " <> thousands c.total <> " characters.") <$> selectedFrom
   Whole {cutFrom = Nothing} -> Just "Sent with the page."
-  Whole {cutFrom = Just n} -> Just ("Sent with the first " <> thousands bodyCap <> " of the page's " <> thousands n <> " characters.")
+  Whole {cutFrom = Just c} -> Just ("Sent with the first " <> thousands c.kept <> " of the page's " <> thousands c.total <> " characters.")
   Same {} -> Just "Sent with a note that the page has not changed."
-  Changed {cutFrom} -> Just ("Sent with the page's changes since it was last sent" <> maybe "" (const (", in its first " <> thousands bodyCap <> " characters")) cutFrom <> ".")
+  Changed {cutFrom} -> Just ("Sent with the page's changes since it was last sent" <> maybe "" (\c -> ", in its first " <> thousands c.kept <> " characters") cutFrom <> ".")
 
 -- | What the panel says goes with the next message when nothing is
--- selected, given the page's length and whether a copy of it was sent in
--- this conversation. It does not work out the changes, which the panel
--- would do at every key typed.
-scopeText :: Int -> Bool -> Text
-scopeText len sent
+-- selected, given the page's cap, its length and whether a copy of it was
+-- sent in this conversation. It does not work out the changes, which the
+-- panel would do at every key typed.
+scopeText :: Int -> Int -> Bool -> Text
+scopeText cap len sent
   | sent = "Nothing selected: the page's changes since it was last sent go with your message."
-  | len > bodyCap = "Nothing selected: the first " <> thousands bodyCap <> " characters of the page go with your message."
+  | len > cap = "Nothing selected: the first " <> thousands cap <> " characters of the page go with your message."
   | otherwise = "Nothing selected: the page goes with your message."
 
 -- | The end of a text, starting at the second-to-last paragraph: the
@@ -310,8 +298,8 @@ userTurn mode decided context message =
         [ "The user has selected " <> chipLabel lineRange <> " of the page, and means this text unless they say otherwise:"
         , tagged "selection" selected
         ]
-          <> [ "Only the first " <> show bodyCap <> " of the selection's " <> show n <> " characters are shown: do not quote what is not shown."
-             | Just n <- [selectedFrom]
+          <> [ "Only the first " <> show c.kept <> " of the selection's " <> show c.total <> " characters are shown: do not quote what is not shown."
+             | Just c <- [selectedFrom]
              ]
           <> [ "The text just before the selection:"
              , tagged "before" before
@@ -328,8 +316,8 @@ userTurn mode decided context message =
         ]
           <> cut cutFrom
     cut cutFrom =
-      [ "Only the first " <> show bodyCap <> " of its " <> show n <> " characters are shown: do not quote what is not shown."
-      | Just n <- [cutFrom]
+      [ "Only the first " <> show c.kept <> " of its " <> show c.total <> " characters are shown: do not quote what is not shown."
+      | Just c <- [cutFrom]
       ]
     tagged name text = "<" <> name <> ">\n" <> text <> "\n</" <> name <> ">"
 

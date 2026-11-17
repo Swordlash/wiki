@@ -2019,6 +2019,19 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   WP5.121's fourth), and once WP5.126 keeps no copies of the page in
   the conversation it saves much less; to decide when WP5.125's
   numbers show conversations that grow.
+- **WP5.129 The page's cap as a setting, and a conversation's tokens
+  (the owner, 2026-11-17, after WP5.127).** (1) The number of
+  characters of a page a message carries (`bodyCap`, 200,000 since
+  #304) becomes a setting of the user's in the assistant's settings,
+  kept as the model and the effort are, 200,000 when not set. Beside
+  the field, about how many tokens that is, as an estimate from the
+  characters and said to be one (text dense in tokens, CJK or emoji,
+  takes several times more; only the provider counts exactly). (2) The
+  panel shows the tokens of the conversation so far: the input, the
+  part read from the cache, the output, summed from what each answer
+  reported (#303), emptied by "New". No money: the APIs give no
+  prices, and a gateway's price is its own (the owner: "olejmy cenę,
+  niech będzie tylko suma in/out").
 - **WP5.128 The detached preview shows the page as its readers see it
   (the owner, 2026-11-17).** The window of "Detach preview"
   (`Wiki.App.View.LivePreview`) renders the editor's preview alone:

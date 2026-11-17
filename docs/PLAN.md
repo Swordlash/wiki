@@ -3229,6 +3229,22 @@ needs. Each was true when its package merged; check before relying on one.
   before any message is sent; it passed alone three times of three.
   A race on the settings' store, or a wait on a clock: to be read for
   its cause with the nightly's three findings, not re-run.
+- **A push that changed nothing, applied again later (#312; found by
+  the comments' property in CI, seed 1937263785).** The comments'
+  machine remembered each event of the channel as it was told, not as
+  the threads shown took it. A `ThreadOpened` or `CommentAdded` told
+  for an id already shown (the reader's own thread, after the reader's
+  edit) changed nothing when it came, was still remembered with its
+  first text, and was applied again onto a later read's answer that
+  lacked the thread (deleted by someone else, the deletion's push lost
+  with the channel): a deleted thread shown again with an old text.
+  Now `remembered` keeps such an event as the threads show it, by id.
+  The lesson for a machine that applies again what it heard: remember
+  what was shown, not what was told. The race needs about ten steps
+  in one order and took ten thousand cases to meet; a unit example
+  holds the run, and half of the generated runs use weights that make
+  the rare steps likelier. The bell cannot have it (a read follows
+  every told notification); the deck viewer has no channel.
 - **wiki-core's suite on wasm, and which machine ran it (#308,
   WP5.130).** Read from nine runs of 2026-11-17: the suite takes 320
   to 410 s on some runs and 690 to 1,160 s on others, the same code

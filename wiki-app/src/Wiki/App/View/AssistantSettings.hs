@@ -23,8 +23,9 @@
 -- user and is billed by its provider. It stays in this browser, stored
 -- under the user's id ("Wiki.App.Assistant"), and the browser sends it
 -- only to its provider, never to the wiki's server. The page says so, and
--- also that every request sends the wiki's Markdown reference, which the
--- providers cache where they can. A typed key is kept only once it works
+-- also that every request sends the wiki's Markdown reference, about how
+-- many tokens it is ('Wiki.Core.Assistant.aboutTokens' of its length), and
+-- that the providers cache it where they can. A typed key is kept only once it works
 -- (WP5.59): "Test and keep the key" (or Enter in the key's field) fetches
 -- the model list with the typed key, then makes the smallest possible
 -- request with it (looking up the model, which is free), and keeps the
@@ -98,6 +99,7 @@ import Wiki.Core.Assistant
   , ProviderSettings (..)
   , Ready (..)
   , Settings (..)
+  , aboutTokens
   , baseUrlOf
   , chooseProvider
   , chosenModel
@@ -130,6 +132,7 @@ import Wiki.Core.Assistant
   , withPageCap
   , withReached
   )
+import Wiki.Core.Assistant.Reference (markdownReference)
 import Wiki.Core.Assistant.Vault (CredentialId)
 import Wiki.Core.Id (UserId)
 import Wiki.Core.Url (Url (..))
@@ -279,7 +282,7 @@ component =
             The assistant in the editor edits a page with you, through Anthropic's Claude or OpenAI's models, with an API key of your own.
             Each key is billed by its provider, to your account there, for every request the assistant makes.
             It stays in this browser, kept for you alone and sealed with a key the browser keeps, and goes from here to its provider only, never to this wiki's server in the clear: with syncing on, the server keeps your keys sealed, and cannot open them.
-            Each request also sends the wiki's Markdown reference, about seven thousand tokens, which the provider caches where it can, so that a request soon after another costs less.
+            Each request also sends the wiki's Markdown reference, about {{ aboutTokens (T.length markdownReference) }} of English text, which the provider caches where it can, so that a request soon after another costs less.
           </p>
           {% if not st.secure %}
             <p class="warning assistant-insecure" role="alert">

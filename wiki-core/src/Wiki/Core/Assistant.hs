@@ -58,6 +58,7 @@ module Wiki.Core.Assistant
   , minPageCap
   , maxPageCap
   , tokenEstimate
+  , aboutTokens
   , defaultSettings
   , blankSettings
   , settingsOf
@@ -486,8 +487,14 @@ pageCapFrom typed = case readMaybe (T.unpack digits) :: Maybe Integer of
 tokenEstimate :: Int -> Text
 tokenEstimate chars =
   "About "
-    <> thousands (twoFigures (round (fromIntegral chars / 3.5 :: Double)))
-    <> " tokens of English or Polish text. Text dense in tokens, such as Chinese, Japanese or emoji, takes several times more; only the provider counts exactly."
+    <> aboutTokens chars
+    <> " of English or Polish text. Text dense in tokens, such as Chinese, Japanese or emoji, takes several times more; only the provider counts exactly."
+
+-- | So many characters as a number of tokens, estimated as 'tokenEstimate'
+-- does, without saying it is one: "19,000 tokens". For a text the wiki
+-- sends whatever the user writes, such as the Markdown reference.
+aboutTokens :: Int -> Text
+aboutTokens chars = thousands (twoFigures (round (fromIntegral chars / 3.5 :: Double))) <> " tokens"
   where
     twoFigures :: Int -> Int
     twoFigures n

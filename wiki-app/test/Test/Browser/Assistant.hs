@@ -67,7 +67,8 @@ import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
 import Wiki.App.Shell qualified as Shell
-import Wiki.Core.Assistant (ApiKey (..), Mode (..), ModelName (..), Provider (..), ProviderSettings (..), Settings (..), chooseProvider, defaultSettings, settingsOf, withBaseUrl, withEffort, withKey, withMode, withModel)
+import Wiki.Core.Assistant (ApiKey (..), Mode (..), ModelName (..), Provider (..), ProviderSettings (..), Settings (..), aboutTokens, chooseProvider, defaultSettings, settingsOf, withBaseUrl, withEffort, withKey, withMode, withModel)
+import Wiki.Core.Assistant.Reference (markdownReference)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Page (Page (id, updatedAt))
 import Wiki.Core.PageKind qualified as Kind
@@ -608,7 +609,7 @@ spec m = do
     (ui, _) <- startWith m (Just "user-editor") AssistantSettings
     find ui ".assistant-settings h1" >>= (`shouldHaveText` "Writing assistant")
     find ui ".assistant-intro" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "billed by its provider")
-    find ui ".assistant-intro" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Markdown reference")
+    find ui ".assistant-intro" >>= textContent >>= (`shouldSatisfy` T.isInfixOf ("Markdown reference, about " <> aboutTokens (T.length markdownReference) <> " of English text"))
     -- The test page is the machine's own: a secure context.
     length <$> findAll ui ".assistant-insecure" `shouldReturn` 0
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"

@@ -691,6 +691,9 @@ capSpec = describe "the page's cap and a conversation's tokens" $ do
     tokenEstimate 1_000 `shouldSatisfy` T.isPrefixOf "About 290 tokens "
     tokenEstimate 2_000_000 `shouldSatisfy` T.isPrefixOf "About 570,000 tokens "
     tokenEstimate 150 `shouldSatisfy` T.isPrefixOf "About 43 tokens "
+    -- The reference the settings page sizes, by its real length.
+    aboutTokens 66_659 `shouldBe` "19,000 tokens"
+    aboutTokens (T.length markdownReference) `shouldSatisfy` T.isSuffixOf ",000 tokens"
 
   it "cuts the page and a selection at the cap it is given, and says so with that number" $ do
     let page = T.replicate 5_000 "a"

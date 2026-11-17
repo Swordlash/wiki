@@ -2029,6 +2029,16 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   WP5.121's fourth), and once WP5.126 keeps no copies of the page in
   the conversation it saves much less; to decide when WP5.125's
   numbers show conversations that grow.
+- **WP5.128 The detached preview shows the page as its readers see it
+  (the owner, 2026-11-17).** The window of "Detach preview"
+  (`Wiki.App.View.LivePreview`) renders the editor's preview alone:
+  no switch between Compact and Full width, the text not laid out at
+  the chosen width, and no "Contents" panel. To build: the page's
+  width classes and its switch (shared with `Page`, the same choice,
+  kept by the shell), and the panel worked out from the text shown,
+  following what is typed; `[[!toc]]` checked in both previews. Being
+  built, on its own branch off `main` (it shares no file with the
+  assistant's packages).
 - **WP5.122 Checks in place of conventions (decision 82): what is
   left.** The ceilings and the nightly are merged (#291, with
   WP5.114). Left: the machines in a package, or a part of one, that

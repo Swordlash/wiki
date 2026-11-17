@@ -11,14 +11,21 @@
 -- ('Wiki.Core.Assistant.modelChoices'). Until there is a key, the list is
 -- the wiki's short list. The effort ("Effort") is medium unless the user
 -- chooses another ('Wiki.Core.Assistant.defaultEffort'). The chat's own
--- picker changes the effort for one conversation only.
+-- picker changes the effort for one conversation only. One setting is the
+-- user's for every provider: the page's cap, the number of characters of
+-- a page, or of a selection, a message carries
+-- ('Wiki.Core.Assistant.pageCapOf'), with about how many tokens that is
+-- beside it ('Wiki.Core.Assistant.tokenEstimate'), following the field as
+-- it is typed. A value that is no number, or outside the bounds, is not
+-- kept, and the field says why.
 --
 -- The assistant is bring-your-own-key (decision 21). A key belongs to the
 -- user and is billed by its provider. It stays in this browser, stored
 -- under the user's id ("Wiki.App.Assistant"), and the browser sends it
 -- only to its provider, never to the wiki's server. The page says so, and
--- also that every request sends the wiki's Markdown reference, which the
--- providers cache where they can. A typed key is kept only once it works
+-- also that every request sends the wiki's Markdown reference, about how
+-- many tokens it is ('Wiki.Core.Assistant.aboutTokens' of its length), and
+-- that the providers cache it where they can. A typed key is kept only once it works
 -- (WP5.59): "Test and keep the key" (or Enter in the key's field) fetches
 -- the model list with the typed key, then makes the smallest possible
 -- request with it (looking up the model, which is free), and keeps the
@@ -92,9 +99,11 @@ import Wiki.Core.Assistant
   , ProviderSettings (..)
   , Ready (..)
   , Settings (..)
+  , aboutTokens
   , baseUrlOf
   , chooseProvider
   , chosenModel
+  , defaultBodyCap
   , defaultEffort
   , effortOf
   , efforts
@@ -102,6 +111,8 @@ import Wiki.Core.Assistant
   , insecureUrl
   , keyPage
   , modelChoices
+  , pageCapFrom
+  , pageCapOf
   , providerKey
   , providerLabel
   , providers
@@ -110,14 +121,18 @@ import Wiki.Core.Assistant
   , serviceName
   , serviceOf
   , settingsOf
+  , thousands
+  , tokenEstimate
   , usable
   , withBaseUrl
   , withEffort
   , withKey
   , withModel
   , withModels
+  , withPageCap
   , withReached
   )
+import Wiki.Core.Assistant.Reference (markdownReference)
 import Wiki.Core.Assistant.Vault (CredentialId)
 import Wiki.Core.Id (UserId)
 import Wiki.Core.Url (Url (..))
@@ -171,6 +186,9 @@ data State = State
   , listings :: Map Provider Listing
   , otherModels :: Set Provider
   -- ^ The providers for which "Other…" is chosen, which shows its text field.
+  , typedCap :: Maybe Text
+  -- ^ The page's cap as typed in its field, until it is kept: the estimate
+  -- beside the field follows it.
   , problem :: Maybe Text
   , busy :: Bool
   , sync :: Sync
@@ -200,6 +218,8 @@ data Action
   | RemovePasskey CredentialId
   | TurnOff
   | AskEachTime Bool
+  | TypedCap Text
+  | KeepCap Text
 
 component :: forall query output m. (MonadAssistant m, MonadVault m, MonadUUID m, MonadIO m) => H.Component query Input output m
 component =
@@ -221,6 +241,7 @@ component =
               , checks = mempty
               , listings = mempty
               , otherModels = mempty
+              , typedCap = Nothing
               , problem = Nothing
               , busy = False
               , sync = noSync
@@ -261,7 +282,7 @@ component =
             The assistant in the editor edits a page with you, through Anthropic's Claude or OpenAI's models, with an API key of your own.
             Each key is billed by its provider, to your account there, for every request the assistant makes.
             It stays in this browser, kept for you alone and sealed with a key the browser keeps, and goes from here to its provider only, never to this wiki's server in the clear: with syncing on, the server keeps your keys sealed, and cannot open them.
-            Each request also sends the wiki's Markdown reference, about seven thousand tokens, which the provider caches where it can, so that a request soon after another costs less.
+            Each request also sends the wiki's Markdown reference, about {{ aboutTokens (T.length markdownReference) }} of English text, which the provider caches where it can, so that a request soon after another costs less.
           </p>
           {% if not st.secure %}
             <p class="warning assistant-insecure" role="alert">
@@ -286,11 +307,37 @@ component =
           {% for p in providers st.scripted %}
             {{ providerView st s p }}
           {% end %}
+          {{ capView st s }}
           {% for why in maybeToList st.problem %}
             <p class="error" role="alert">{{ why }}</p>
           {% end %}
         </div>
       |]
+
+    -- The page's cap: a number field, with the estimate of its tokens
+    -- beside it as typed, or why what is typed cannot be kept.
+    capView :: State -> Settings -> H.ComponentHTML Action Empty m
+    capView st s =
+      [hh|
+        <section class="assistant-page-cap-section" aria-label="The page's cap">
+          <h2>The page</h2>
+          <label class="field assistant-page-cap-field">
+            <span>Characters of a page a message carries</span>
+            <input type="text" inputmode="numeric" class="assistant-page-cap" disabled={{ st.busy }} value={{ shown }} onValueInput={{ TypedCap }} onValueChange={{ KeepCap }}>
+          </label>
+          {% for n in rightToMaybe estimate %}
+            <p class="account-note assistant-page-cap-estimate">{{ tokenEstimate n }}</p>
+          {% end %}
+          {% for why in leftToMaybe estimate %}
+            <p class="error assistant-page-cap-error" role="alert">{{ why }}</p>
+          {% end %}
+          <p class="account-note assistant-page-cap-hint">The first message of a conversation carries the page up to this many characters, and later ones only what changed; a selection is cut at the same length. A longer page costs more, and a model's context window may not hold it. {{ thousands defaultBodyCap }} unless you choose another.</p>
+        </section>
+      |]
+      where
+        kept = pageCapOf s
+        shown = fromMaybe (show kept) st.typedCap
+        estimate = maybe (Right kept) pageCapFrom st.typedCap
 
     -- Sync across devices (WP5.21 of docs/PLAN.md, "Wiki.App.Assistant.Keys").
     syncView :: H.RefLabel -> Sync -> H.ComponentHTML Action Empty m
@@ -649,6 +696,13 @@ component =
                   Left why -> st {sync = st.sync {working = Nothing, trouble = Just why}}
             )
       ChooseEffort p e -> change (withEffort p e)
+      TypedCap t -> modify (\st -> st {typedCap = Just t})
+      -- A value that cannot be kept stays in the field, which says why.
+      KeepCap t -> case pageCapFrom t of
+        Right n -> do
+          modify (\st -> st {typedCap = Nothing})
+          change (withPageCap n)
+        Left _ -> modify (\st -> st {typedCap = Just t})
       ChooseService p url -> do
         change (withBaseUrl p url)
         modify (\st -> st {checks = Map.delete p st.checks, listings = Map.delete p st.listings})

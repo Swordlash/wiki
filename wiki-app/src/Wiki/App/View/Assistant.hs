@@ -132,6 +132,8 @@ import Wiki.Core.Assistant
   , Usage
   , baseUrlOf
   , chosenModel
+  , conversationText
+  , defaultBodyCap
   , effortOf
   , efforts
   , errorDetail
@@ -140,6 +142,7 @@ import Wiki.Core.Assistant
   , modeLabel
   , modelChoices
   , modelLabel
+  , pageCapOf
   , providerLabel
   , ready
   , serviceName
@@ -323,6 +326,10 @@ data State = State
   -- by id, with their descriptions.
   , absorbed :: [Int]
   -- ^ Changes absorbed by a later change of the model, which need no mention.
+  , spent :: [Usage]
+  -- ^ The tokens of each request of this conversation that the service
+  -- reported, summed under the header ('conversationText'). It is emptied
+  -- with the conversation ('endConversation').
   , sentCopy :: Maybe Text
   -- ^ The copy of the page last sent in this conversation, cut to
   -- 'Wiki.Core.Assistant.Prompt.bodyCap'. The next message without a
@@ -392,6 +399,7 @@ component =
               , nextChange = 1
               , made = mempty
               , sentCopy = Nothing
+              , spent = []
               , absorbed = []
               , listener = Nothing
               , otherModel = False
@@ -425,6 +433,9 @@ component =
             <button type="button" class="assistant-new" title="Start a new conversation" disabled={{ st.talking }} onClick={{ const NewConversation }}>New</button>
             <button type="button" class="assistant-close" title="Close the assistant (Escape)" onClick={{ const Close }}>Close</button>
           </header>
+          {% for spentLine in maybeToList (conversationText st.spent) %}
+            <p class="assistant-spent" title="The tokens of this conversation's answers so far, as the service reported them">{{ spentLine }}</p>
+          {% end %}
           {% for service in maybeToList (leavesFor st) %}
             <p class="assistant-leaves" role="note">This page is encrypted. What you ask the assistant about leaves this browser decrypted, to {{ service }}.</p>
           {% end %}
@@ -617,7 +628,7 @@ component =
             <button type="button" class="assistant-detach" title="Send without the selection" aria-label="Send without the selection" onClick={{ const Detach }}>×</button>
           </span>
         |]
-      Nothing -> [hh|<span class="assistant-whole">{{ scopeText (T.length st.input.body) (isJust st.sentCopy) }}</span>|]
+      Nothing -> [hh|<span class="assistant-whole">{{ scopeText (capNow st) (T.length st.input.body) (isJust st.sentCopy) }}</span>|]
 
     entryView :: State -> Entry -> H.ComponentHTML Action Empty m
     entryView st = \case
@@ -808,7 +819,7 @@ component =
     endConversation = do
       st <- get
       for_ st.talk (H.liftEffect . closeTalk)
-      modify (\s' -> s' {talk = Nothing, using = Nothing, made = mempty, absorbed = [], sentCopy = Nothing})
+      modify (\s' -> s' {talk = Nothing, using = Nothing, made = mempty, absorbed = [], sentCopy = Nothing, spent = []})
       when st.talking (finish Stopped)
 
     -- Change the user's settings (the model); the editor stores them.
@@ -857,7 +868,8 @@ component =
           -- message again in a conversation of its own.
           sentAt <- H.liftEffect (liftIO getCurrentTime)
           shown <- H.liftEffect (clockTime sentAt)
-          let context = pageContext st.input.title body st.sentCopy (attached st)
+          let cap = pageCapOf s
+              context = pageContext cap st.input.title body st.sentCopy (attached st)
               chip = case context of
                 Selected {lineRange} -> Just (chipLabel lineRange)
                 _ -> Nothing
@@ -871,7 +883,7 @@ component =
               , talk = Just talk
               , using = Just r
               , detached = Nothing
-              , sentCopy = copyAfter body context st.sentCopy
+              , sentCopy = copyAfter cap body context st.sentCopy
               , now = Just sentAt
               , turnMode = md
               }
@@ -893,7 +905,9 @@ component =
       HeardText t -> modifyReply (\r -> (settle r) {said = r.said <> t, stage = Writing})
       HeardThinking t -> modifyReply (\r -> r {thinking = r.thinking <> t})
       HeardToolStart _ -> modifyReply (\r -> (settle r) {stage = Editing})
-      HeardUsage u -> modifyReply (\r -> r {used = r.used <> [u]})
+      HeardUsage u -> do
+        modifyReply (\r -> r {used = r.used <> [u]})
+        modify (\st -> st {spent = st.spent <> [u]})
       HeardCall call name input -> do
         (edited, told, ok) <- edit name input
         -- The model goes on once it has the answer: a new wait.
@@ -1067,6 +1081,11 @@ requestFor md r = case r.provider of
   OpenAI -> openAiRequest md r.model r.effort
   Anthropic -> anthropicRequest md r.model r.effort
   Scripted -> anthropicRequest md r.model r.effort
+
+-- | The page's cap in force: the user's setting, once the settings are
+-- read.
+capNow :: State -> Int
+capNow st = maybe defaultBodyCap pageCapOf (rightToMaybe =<< st.input.settings)
 
 -- | The mode the next message is sent in: the settings', once they are
 -- read.

@@ -7819,6 +7819,14 @@ a.mention {
   color: var(--muted);
 }
 
+/* The conversation's tokens so far, under the header, where it stays put
+   as messages arrive. */
+.assistant-spent {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
 .assistant-settings-link {
   font-size: 0.85rem;
 }

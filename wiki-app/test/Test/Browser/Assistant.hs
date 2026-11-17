@@ -11,7 +11,8 @@
 -- the panel shows while the model
 -- works: "Thinking" with its dots, the seconds waited and the thinking's
 -- summary, a status line while a tool call is written, a cursor at the
--- end of streaming text, and the time, duration and tokens of each message;
+-- end of streaming text, the time, duration and tokens of each message,
+-- and the conversation's tokens;
 -- Close and Escape; the effort, from the settings' default and changed
 -- for one conversation; an error shown without anything like a key in
 -- it; the models offered, the provider's own list grouped; a bubble per
@@ -20,8 +21,9 @@
 -- without a key; Anthropic's API at a gateway, whose refusal of the key
 -- says to paste a new one and links to the settings; and the settings
 -- page: keys kept per user, forgotten, and tested, the list of models
--- fetched with a key, the default effort per provider, and Anthropic's
--- base URL, kept, with what a refused key and no connection say there;
+-- fetched with a key, the default effort per provider, the page's cap,
+-- and Anthropic's base URL, kept, with what a refused key and no
+-- connection say there;
 -- a typed key tested before it is kept, kept only when the provider
 -- accepts it, and the connection to another address tested without a
 -- key; the two modes, Ask, whose request has the tools
@@ -65,7 +67,8 @@ import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
 import Wiki.App.Shell qualified as Shell
-import Wiki.Core.Assistant (ApiKey (..), Mode (..), ModelName (..), Provider (..), ProviderSettings (..), Settings (..), chooseProvider, defaultSettings, settingsOf, withBaseUrl, withEffort, withKey, withMode, withModel)
+import Wiki.Core.Assistant (ApiKey (..), Mode (..), ModelName (..), Provider (..), ProviderSettings (..), Settings (..), aboutTokens, chooseProvider, defaultSettings, settingsOf, withBaseUrl, withEffort, withKey, withMode, withModel)
+import Wiki.Core.Assistant.Reference (markdownReference)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Page (Page (id, updatedAt))
 import Wiki.Core.PageKind qualified as Kind
@@ -351,8 +354,8 @@ spec m = do
     length <$> findAll ui ".assistant-status" `shouldReturn` 0
     eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Retitled.")
 
-  it "shows the time of each message, and how long a finished answer took and its tokens" $ runPage $ do
-    script [[usage 1240 (Just 0) (Just 1200) 75, usage 1290 (Just 1200) (Just 0) 12, quiet 1200, text "Done."]]
+  it "shows the time of each message, and how long a finished answer took and its tokens, and the conversation's" $ runPage $ do
+    script [[usage 1240 (Just 0) (Just 1200) 75, usage 1290 (Just 1200) (Just 0) 12, quiet 1200, text "Done."], [usage 1400 (Just 1290) (Just 0) 30, text "Again."]]
     ui <- openAssistant m
     send ui "Hello?"
     eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Done.")
@@ -362,6 +365,11 @@ spec m = do
     eventually $ find ui ".assistant-message.from-model .assistant-took" >>= textContent >>= (`shouldSatisfy` (`elem` ["1 s", "2 s", "3 s"]))
     -- The tokens of the answer's two requests, summed.
     find ui ".assistant-message.from-model .assistant-tokens" >>= (`shouldHaveText` "2,530 tokens in (1,200 from cache, 1,200 written to cache), 87 out")
+    -- The conversation's, under the header: both answers summed, until "New".
+    send ui "Once more?"
+    eventually $ find ui ".assistant-spent" >>= (`shouldHaveText` "This conversation: 3,930 tokens in (2,490 from cache, 1,200 written to cache), 117 out")
+    find ui ".assistant-head .assistant-new" >>= click
+    eventually $ length <$> findAll ui ".assistant-spent" `shouldReturn` 0
 
   it "closes with Close in its header, and with Escape in the message box" $ runPage $ do
     script []
@@ -601,7 +609,7 @@ spec m = do
     (ui, _) <- startWith m (Just "user-editor") AssistantSettings
     find ui ".assistant-settings h1" >>= (`shouldHaveText` "Writing assistant")
     find ui ".assistant-intro" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "billed by its provider")
-    find ui ".assistant-intro" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Markdown reference")
+    find ui ".assistant-intro" >>= textContent >>= (`shouldSatisfy` T.isInfixOf ("Markdown reference, about " <> aboutTokens (T.length markdownReference) <> " of English text"))
     -- The test page is the machine's own: a secure context.
     length <$> findAll ui ".assistant-insecure" `shouldReturn` 0
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
@@ -632,6 +640,26 @@ spec m = do
     scripted <- find ui ".assistant-provider-settings[data-provider='scripted']"
     findIn scripted ".assistant-test" >>= click
     eventually $ findIn scripted ".assistant-check-works" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The key works")
+
+  it "keeps the page's cap typed on the settings page, with about how many tokens it is, and refuses one out of bounds" $ runPage $ do
+    keep m (UserId "user-editor") (withKey Anthropic (Just "sk-ant-test") defaultSettings)
+    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    field <- find ui ".assistant-page-cap"
+    getProperty field "value" >>= (`shouldBe` "200000")
+    find ui ".assistant-page-cap-estimate" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "About 57,000 tokens of English or Polish text.")
+    -- Out of bounds: said as it is typed, and not kept.
+    clear field
+    typeText field "500"
+    find ui ".assistant-page-cap-error" >>= (`shouldHaveText` "At least 1,000 characters.")
+    press "Tab"
+    settle
+    (\s -> s.pageCap) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
+    -- Within them: the estimate follows the field, and the cap is kept.
+    clear field
+    typeText field "50000"
+    find ui ".assistant-page-cap-estimate" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "About 14,000 tokens")
+    press "Tab"
+    eventually $ (\s -> s.pageCap) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just 50000)
 
   it "chooses each provider's default effort on the settings page, medium unless one is chosen" $ runPage $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])

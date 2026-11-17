@@ -18,3 +18,7 @@ title: The detached preview shows the page as its readers will
   a narrow one, as on the page, and the panel follows what is typed. A
   click on an entry scrolls to its heading. A text that places its own
   list with `[[!toc]]` shows that list, as before, and no panel.
+- In the **Contents** panel, of a page and of the detached preview, the
+  last section is now marked once the end of the text comes into view.
+  With short last sections, scrolling to the bottom left an earlier entry
+  marked.

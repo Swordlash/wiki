@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 312
 title: A deleted thread no longer comes back with its first text
 ---
 

@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 304
 title: The assistant reads long pages, and sends a page once
 ---
 
@@ -17,6 +17,7 @@ title: The assistant reads long pages, and sends a page once
 
   that message carries the heading's change, not the page again. Under
   each of your messages the panel says what went with it, such as "Sent
-  with the page's changes since it was last sent." A conversation holds
-  one copy of the page, so long conversations about long pages cost far
-  less, and Anthropic's cache now covers the whole conversation.
+  with the page's changes since it was last sent." A conversation no
+  longer holds a copy of the page for each message, so long conversations
+  about long pages cost far less, and Anthropic's cache now covers the
+  whole conversation.

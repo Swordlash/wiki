@@ -63,6 +63,10 @@ trap 'rm -rf "$meta"' EXIT
 # KaTeX's built-in macros (web/src/katex-macros.tex) go in as text, once
 # KaTeX has been seen to read every one of them.
 node web/check-macros.mjs
+# The commands KaTeX reads, which the editor's completion offers after a
+# backslash in math (Wiki.Core.Math.KatexCommands): a KaTeX whose tables
+# moved fails the build here, until the module is written again.
+node web/katex-commands.mjs --check
 npx esbuild web/src/islands.js \
   --bundle --minify --format=iife --target=es2022 --log-level=warning \
   --loader:.tex=text \

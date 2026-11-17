@@ -37,8 +37,12 @@
 --
 -- The avatars of the threads' authors are looked up at the same steps
 -- ('Avatars'), under a ticket ("Wiki.App.View.Latest"): the answer of the
--- latest lookup taken stays ('avatars'). The page view looks up the
--- avatars of the page's writers and readers itself.
+-- latest lookup taken stays ('avatars'), with the authors it was asked
+-- for ('avatarsFor'). For those the answer is the truth: one it lacks has
+-- no avatar (an author who removed theirs is asked for with none). The
+-- page view looks up the avatars of the page's writers and readers
+-- itself, and its answer counts only for the people the machine's does
+-- not cover ('avatarsShown').
 --
 -- = What an answer says
 --
@@ -95,6 +99,7 @@ module Wiki.App.View.Comments.Machine
   , initial
   , step
   , lacking
+  , avatarsShown
   , readyThreads
   )
 where
@@ -186,6 +191,9 @@ data Model = Model
   -- lookup taken answered.
   , avatarAsks :: Asks
   -- ^ The lookups of the avatars made, and which one's answer is shown.
+  , avatarsFor :: Set UserId
+  -- ^ The authors the answer shown was asked for, those with no avatar
+  -- among them. It changes with 'avatars', when an answer is taken.
   }
   deriving stock (Eq, Show)
 
@@ -276,9 +284,9 @@ data Event a
   | -- | The answer to the lookup of these logins made under this number:
     -- the users found among them.
     Found Int [Text] (Either WikiError (Map Text Author))
-  | -- | The answer to the lookup of the authors' avatars made under this
-    -- ticket, or 'Nothing' when it failed.
-    Avatared Ask (Maybe (Map UserId Text))
+  | -- | The answer to the lookup of the avatars of these authors made
+    -- under this ticket, or 'Nothing' when it failed.
+    Avatared Ask [UserId] (Maybe (Map UserId Text))
   deriving stock (Eq, Show)
 
 -- | 'Effect' is what a step asks the page view to do.
@@ -331,6 +339,7 @@ initial page comments space text read' =
     , lookups = 0
     , avatars = mempty
     , avatarAsks = noAsks
+    , avatarsFor = mempty
     }
 
 -- | The threads after an event, and what the page view is asked to do.
@@ -361,8 +370,10 @@ step event m
              in case answer of
                   Right found -> (m {people = found <> m.people, lookedUp = m.lookedUp <> asked, lookingUp = m.lookingUp `Set.difference` asked}, [])
                   Left _ -> (m {lookingUp = m.lookingUp `Set.difference` asked}, [])
-      Avatared asked answer -> case (answer, takes asked m.avatarAsks) of
-        (Just found, Just after) -> (m {avatars = found, avatarAsks = after}, [])
+      -- An answer under an older ticket than the one shown, or a failed
+      -- one, changes nothing: the answer shown and whom it covers stay.
+      Avatared asked authors answer -> case (answer, takes asked m.avatarAsks) of
+        (Just found, Just after) -> (m {avatars = found, avatarsFor = Set.fromList authors, avatarAsks = after}, [])
         _ -> (m, [])
       -- The ticket is taken whichever page the answer is for; its threads
       -- only for the page shown.
@@ -597,6 +608,12 @@ lacking m
   | otherwise = Set.toList (mentions `Set.difference` (m.lookedUp <> m.lookingUp))
   where
     mentions = m.mentioned <> foldMap mentionedIn [c.body | t <- readyThreads m, c <- t.comments]
+
+-- | The avatars to show, given those the page view looked up itself: the
+-- machine's answer for every author it was asked for (one it lacks has
+-- none), and the page view's for everyone else.
+avatarsShown :: Model -> Map UserId Text -> Map UserId Text
+avatarsShown m others = m.avatars <> Map.withoutKeys others m.avatarsFor
 
 -- | The threads shown, if they are read.
 readyThreads :: Model -> [Thread]

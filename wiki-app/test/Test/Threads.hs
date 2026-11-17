@@ -132,9 +132,11 @@ import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.View.Comments.Machine
 import Wiki.App.View.Latest (Ask, takes)
 import Wiki.Core.Anchor (Anchor (..))
+import Wiki.Core.Attachment (MimeType (..))
 import Wiki.Core.Comment (Comment (..), Thread (..))
-import Wiki.Core.Id (CommentId (..), CommentThreadId (..), PageId (..), UserId (..))
+import Wiki.Core.Id (BlobId (..), CommentId (..), CommentThreadId (..), PageId (..), UserId (..))
 import Wiki.Core.Space (Space (..))
+import Wiki.Core.User (Avatar (..))
 import Wiki.Core.Version (Author (..))
 
 -- | The two pages a run goes between.
@@ -956,3 +958,28 @@ spec = describe "Wiki.App.View.Comments.Machine" $ modifyMaxSuccess (max cases) 
     it ("asks again for a person whose lookup failed, at the next change of the threads" <> how) $
       let w = foldl' play w0 [Tell, OtherOpens False, Tell, PeopleFound, PeopleFail, OtherReplies 0, Tell]
        in map (\l -> l.logins) w.lookupsOut `shouldBe` [["ann", "zed"]]
+
+  -- Codex on #316: an author with an avatar when the page was read removes
+  -- it and edits a comment. The lookup after the edit is asked for them
+  -- with no avatar, and its answer lacks them: they have none, and the
+  -- page view's older address for them, which the server now refuses, is
+  -- not shown. An answer under an older ticket, coming late, changes
+  -- nothing. The model of the server keeps every author as they were (see
+  -- the module's Haddock), so this is an example, not a property.
+  it "shows no avatar for an author the latest lookup was asked for and does not answer" $ do
+    let ann = UserId "user-ann"
+        withAvatar = Author {id = ann, name = "ann", avatar = Just Avatar {blob = BlobId "b1", mediaType = MimeType "image/png"}}
+        c = (commentOf 1 (CommentThreadId "t1") "ann") {author = withAvatar}
+        t = Thread {id = CommentThreadId "t1", page = pageA, anchor = Nothing, resolved = False, createdAt = at 1, comments = [c]}
+        tickets fx = [k | Avatars k _ <- fx]
+        (m1, fx1) = step (Replaced pageA [t]) (fst (step (Fetched pageA True theSpace "") (initial (Just pageA) True theSpace "" Nothing)))
+        (m2, _) = step (Avatared (fromMaybe (panic "no lookup") (head (tickets fx1))) [ann] (Just (Map.singleton ann "/avatar/b1"))) m1
+        (m3, fx3) = step (Heard pageA (CommentEdited c {body = "Edited.", author = withAvatar {avatar = Nothing}})) m2
+        latest = fromMaybe (panic "no lookup") (head (tickets fx3))
+        (m4, _) = step (Avatared latest [ann] (Just mempty)) m3
+        (m5, _) = step (Avatared (fromMaybe (panic "no lookup") (head (tickets fx1))) [ann] (Just (Map.singleton ann "/avatar/b1"))) m4
+        pageViews = Map.singleton ann "/avatar/b1"
+    [as | Avatars _ as <- fx3] `shouldBe` [[(ann, Nothing)]]
+    Map.lookup ann (avatarsShown m2 pageViews) `shouldBe` Just "/avatar/b1"
+    Map.lookup ann (avatarsShown m4 pageViews) `shouldBe` Nothing
+    Map.lookup ann (avatarsShown m5 pageViews) `shouldBe` Nothing

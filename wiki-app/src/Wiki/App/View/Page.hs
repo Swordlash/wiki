@@ -1104,7 +1104,7 @@ component =
       Threads.Send placement n page request -> Machine.Ask (Machine.run (sendWrite page request)) (Threads.Wrote placement n request . asAnswer)
       Threads.Answered (placement, asker) request failure -> Machine.Now (Sync.send "comments" placement (CommentsView.Answered asker request failure))
       Threads.LookUp space n logins -> Machine.Ask (Machine.run (attempt (Body.askPeople space logins))) (Threads.Found n logins . asAnswer)
-      Threads.Avatars ticket authors -> Machine.Ask (Machine.run (avatarUrls authors)) (Threads.Avatared ticket . rightToMaybe)
+      Threads.Avatars ticket authors -> Machine.Ask (Machine.run (avatarUrls authors)) (Threads.Avatared ticket (map fst authors) . rightToMaybe)
 
     -- The URLs of the avatars of the people shown: who wrote the page,
     -- the comments' authors and the readers, when the view takes a page
@@ -1478,11 +1478,11 @@ pageOf = \case
 threadsOf :: State -> Threads.Model
 threadsOf st = Machine.current st.discussion
 
--- | The URLs of the avatars the view shows: those the threads' machine
--- looked up for the comments' authors as the threads changed, then those
--- the view looked up for the writers, the authors and the readers.
+-- | The URLs of the avatars the view shows: for each comment's author the
+-- threads' machine last looked up, its answer (none when it has none);
+-- for everyone else (the writers, the readers), the view's own.
 avatarsOf :: State -> Map UserId Text
-avatarsOf st = (threadsOf st).avatars <> st.avatars
+avatarsOf st = Threads.avatarsShown (threadsOf st) st.avatars
 
 -- | A read's, a write's or a lookup's answer, as the threads' machine
 -- takes it. The backend gives what went wrong as a 'Left' and does not

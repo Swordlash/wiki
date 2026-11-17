@@ -2033,22 +2033,9 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   event): a total order, exact replays, and most of the inexact rules
   gone, for a migration and a change of the HTTP and WebSocket
   answers, 600 to 1,000 lines.
-- **WP5.131 The ceilings out, a linter's rule in (the owner,
-  2026-11-17: "wywal, ewentualnie jakiś linter"; being built after
-  WP5.130, stacked on it).** The ceilings on the browser suite (#291)
-  go: the file of numbers, the check, the texts that tell a writer to
-  raise a number. They cost more than they found: two pull requests
-  that raise the same count merge without a conflict to a wrong
-  number (#304 and #305 on 2026-11-17), `find` counts plain reads,
-  and the rule they stood for is already in AGENTS.md and in the
-  session's review of each branch. In their place HLint with
-  restrictions only, every built-in hint off: `threadDelay` forbidden
-  in the test suites, and in `wiki-app/src` if that is as cheap,
-  today's uses allowed by module. If no released HLint parses the
-  code base, a script of a few lines for the same rule.
 - **WP5.122 Checks in place of conventions (decision 82): what is
   left.** The nightly is merged (#291, with WP5.114); the ceilings
-  merged with it are being taken out again (WP5.131). Left: the machines in a package, or a part of one, that
+  merged with it were taken out again (#309). Left: the machines in a package, or a part of one, that
   does not depend on haskell-halogen-core, so that the compiler
   refuses a step that waits; and the first nights of the nightly read
   (below, in the known gaps).
@@ -3233,6 +3220,24 @@ needs. Each was true when its package merged; check before relying on one.
   before any message is sent; it passed alone three times of three.
   A race on the settings' store, or a wait on a clock: to be read for
   its cause with the nightly's three findings, not re-run.
+- **The ceilings out, HLint's rule in (#309, WP5.131; the owner,
+  2026-11-17: "wywal, ewentualnie jakiś linter").** The browser
+  suite's ceilings (#291) are gone: the file of numbers, the check,
+  the texts. They cost more than they found: two pull requests that
+  raise the same count merge without a conflict to a wrong number,
+  `find` counted plain reads, and the rule they stood for is in
+  AGENTS.md and in the session's review. In their place HLint 3.10
+  with restrictions only (`.hlint.yaml`; `npm run lint`, in CI's
+  `format` job, under a minute): `threadDelay` is an error in every
+  source directory the `.cabal` files name except the server's and the
+  maker's own code; today's 48 uses in 18 modules are allowed by
+  module (by module, not by count: a listed module can gain a use
+  unseen). The lint reads each module as the native build compiles it
+  and the eleven that use CPP as the wasm build does. HLint is fetched
+  by `toolchain/lint.sh` on first use (pinned with its checksum), not
+  installed by the maker. No style hints are on. Merged with the
+  `wasm` job red on the owner's word: an editor example held to a
+  clock failed on a slow runner (below).
 - **A push that changed nothing, applied again later (#312; found by
   the comments' property in CI, seed 1937263785).** The comments'
   machine remembered each event of the channel as it was told, not as

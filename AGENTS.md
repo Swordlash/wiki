@@ -107,6 +107,9 @@ was run locally first):
 - `npm run build-wasm` passes, and `npm run test-wasm` once there are browser tests.
 - `npm run smoke-test` passes: wiki-smoke's suites, which CI runs.
 - fourmolu reports nothing (`npm run format` changes nothing).
+- HLint reports nothing (`npm run lint`). It holds one kind of rule: `threadDelay` is an
+  error in the tests and in the application's code, outside the modules listed in
+  `.hlint.yaml` (the owner, 2026-11-17, in place of the browser suite's ceilings).
 - No warnings on either backend. `-Wall -Wextra` live in each `.cabal` file and `-Werror` in
   `cabal.project` only, as in haskell-halogen; CPP gives each backend different code, so a
   warning in one does not show in the other.

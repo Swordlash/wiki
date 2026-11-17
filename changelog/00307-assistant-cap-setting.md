@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 307
 title: The page's length the assistant reads, and a conversation's tokens
 ---
 

@@ -56,6 +56,7 @@ module Wiki.Core.Markdown.Complete
   , readsWholeAbove
   , afterBound
   , pastBound
+  , afterDelimiters
   , probesOf
 
     -- * Candidates
@@ -1300,13 +1301,9 @@ mathProbes at prefix =
     -- before the cursor, to the line's end.
     openGroups delimiter before = openBraces (afterOpener delimiter before <> lineAfter)
     -- The text after a formula's opening delimiter: its last occurrence
-    -- not escaped (not after an odd number of backslashes, as @\\$@ is a
-    -- dollar written in the formula), or the whole text where there is
+    -- not escaped ('afterDelimiters'), or the whole text where there is
     -- none.
-    afterOpener delimiter before =
-      case [T.drop (T.length delimiter) rest | (upTo, rest) <- T.breakOnAll delimiter before, even (T.length (T.takeWhileEnd (== '\\') upTo))] of
-        [] -> before
-        openers -> fromMaybe before (lastMay openers)
+    afterOpener delimiter before = fromMaybe before (lastMay (afterDelimiters delimiter before))
     -- The lines above the cursor's in its paragraph, where display math
     -- opened on an earlier line is (a blank line ends it).
     paragraphAbove = reverse (takeWhile (not . T.null . T.strip) (reverse at.above))
@@ -1314,6 +1311,13 @@ mathProbes at prefix =
     -- it goes on further, 'mathAt' declines before these are read.
     lineAfter = T.take afterBound at.after
     probe rest = Probe 1 (T.splitOn "\n" (prefix <> "\\" <> mathWord <> rest))
+
+-- | The text after each occurrence of a delimiter of math (@$@, @$$@) in a
+-- text that is not escaped: not after an odd number of backslashes, as
+-- @\\$@ is a dollar written in the formula. Every search of the math
+-- completion for a dollar goes through it.
+afterDelimiters :: Text -> Text -> [Text]
+afterDelimiters delimiter t = [T.drop (T.length delimiter) rest | (upTo, rest) <- T.breakOnAll delimiter t, even (T.length (T.takeWhileEnd (== '\\') upTo))]
 
 -- | How many braces a formula's text leaves open (from its opening @$@
 -- or @$$@ to the line's end, earlier lines of display math included: a
@@ -1375,7 +1379,7 @@ mathAt readAt at = do
   place <- case readings of
     asIs : closedHere : closedBelow : _ ->
       mathPlace asIs.blocksRead
-        <|> (guard (T.any (== '$') prefix && not (T.any (== '$') at.after)) *> (mathPlace closedHere.blocksRead >>= \p -> p <$ guard (p == InFormula)))
+        <|> (guard (not (null (afterDelimiters "$" prefix)) && null (afterDelimiters "$" at.after)) *> (mathPlace closedHere.blocksRead >>= \p -> p <$ guard (p == InFormula)))
         <|> (mathPlace closedBelow.blocksRead >>= \p -> p <$ guard (p == InDisplay))
     _ -> Nothing
   Just

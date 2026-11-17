@@ -2199,6 +2199,12 @@ attributeLineBlockSpec =
                 Parsec.putState st {CM.nodeStack = top {rootLabel = (rootLabel top) {CM.blockSpec = attributeLineBlockSpec}} : rest}
                 pure started
           _ -> mzero
+    , -- commonmark's continuation reads the spaces before more attributes
+      -- and does not give them back when none follow, which fails the
+      -- whole page's parse on a line indented by one to three spaces
+      -- after a line of attributes (commonmark 0.3.1). Tried, such a line
+      -- ends the attributes and starts the next block.
+      CM.blockContinue = try . CM.blockContinue CM.attributeSpec
     , CM.blockConstructor = \node ->
         pure (Blocks Seq.empty (Markers [] [MarkerLine (Parsec.sourceLine p) (Parsec.sourceColumn p) SetsAttributes | p <- CM.blockStartPos (rootLabel node)] [] []) Nothing)
     }

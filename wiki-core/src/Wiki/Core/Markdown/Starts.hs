@@ -131,51 +131,67 @@ textRange kept firstChange lineStart lineEnd len = do
 ----------------------------------------------------------------------
 -- The completion's text around the cursor
 
--- | The definitions of a text, by line: for each definition of a link's
--- reference (@[label]: \/url@) and of a footnote (@[^label]: …@), the line
--- it starts on and a definition of the same label in one line
--- (@[label]: x@, @[^label]: x@), or 'Nothing' where its label is not read
--- here: over two lines, holding a backslash or a bracket (an escape, which
--- the parser reads and this does not), or on a line not known (a
--- footnote's definition with nothing in it, put at line 1). The shapes
--- are the parse's ('Wiki.Core.Markdown.Ast.parseShapes'): a link's
--- definition is a shape with no block of its own ('OtherShape', nothing
--- inside), whose text starts with its label in brackets and a colon; a
--- footnote's definition is a 'NoteShape', whose first line holds its
--- label.
+-- | The definitions of a text, by line: for each line a definition of a
+-- link's reference (@[label]: \/url@) or of a footnote (@[^label]: …@)
+-- starts on, a definition of the same label in one line (@[label]: x@,
+-- @[^label]: x@), or 'Nothing' where it is not read here. The shapes are
+-- the parse's ('Wiki.Core.Markdown.Ast.parseShapes'): a link's definition
+-- is a shape with no block of its own ('OtherShape', nothing inside),
+-- whose text starts with its label in brackets; a footnote's definition
+-- is a 'NoteShape', whose first line holds its label.
+--
+-- The labels are read from the lines' text, which the parser reads by
+-- rules this does not follow (escapes, containers, a definition inside
+-- another's body). So a line is read only where nothing can differ: one
+-- definition starts on it, at the top level (in no quotation, item,
+-- footnote or other block), its label in brackets from the line's first
+-- character after at most three spaces, a label of plain text (no
+-- backslash, no bracket). Any other line that holds a definition is not
+-- read ('Nothing'), and no start below it is used: the completion reads
+-- more of the text there, as the whole text reads it. So is a footnote's
+-- definition with nothing in it, whose line the shapes do not give (put
+-- at line 1).
 --
 -- A definition counts wherever it is in the page: a reference elsewhere
 -- reads as a link, or a footnote's number, only because of it. So the
 -- completion, which reads the text from a start rather than from the top
 -- ('linesFromStart'), is handed those above the start, in one line each.
 blockDefinitions :: Text -> [Shape] -> [(Int, Maybe Text)]
-blockDefinitions source shapes = sortOn fst (concatMap definitionsIn shapes)
+blockDefinitions source shapes = [(l, readOn l ds) | (l, ds) <- Map.toAscList byLine]
   where
     sourceLines = Seq.fromList (T.splitOn "\n" source)
     lineText l = fromMaybe "" (Seq.lookup (l - 1) sourceLines)
-    definitionsIn s = case s.kind of
+    byLine = Map.fromListWith (flip (<>)) [(l, [(top, footnote)]) | (l, top, footnote) <- concatMap (definitionsIn True) shapes]
+    -- Each definition's line, whether it is at the top level, and whether
+    -- it is a footnote's.
+    definitionsIn top s = case s.kind of
       OtherShape
         | null s.inner
         , ((l, c), _) : _ <- s.parts
         , Just rest <- T.stripPrefix "[" (T.drop (c - 1) (lineText l))
         , not ("[" `T.isPrefixOf` rest) ->
-            [(l, (\label -> "[" <> label <> "]: x") <$> labelIn rest)]
+            [(l, top, False)]
       NoteShape ->
         let l = fst (shapeLines s)
-            (_, at) = T.breakOn "[^" (lineText l)
-         in -- A footnote's definition with nothing in it has no line in the
-            -- shapes: its label is not read, and it may be anywhere.
-            if l > 0
-              then (l, (\label -> "[^" <> label <> "]: x") <$> labelIn (T.drop 2 at)) : concatMap definitionsIn s.inner
-              else [(1, Nothing)]
-      _ -> concatMap definitionsIn s.inner
+         in (if l > 0 then (l, top, True) else (1, False, True)) : concatMap (definitionsIn False) s.inner
+      _ -> concatMap (definitionsIn False) s.inner
+    readOn l = \case
+      [(True, footnote)] -> do
+        let line = lineText l
+            indent = T.takeWhile (== ' ') line
+            opening = if footnote then "[^" else "["
+        guard (T.length indent <= 3)
+        rest <- T.stripPrefix opening (T.drop (T.length indent) line)
+        label <- labelIn rest
+        pure (opening <> label <> "]: x")
+      _ -> Nothing
     -- The label before "]:", if the line holds it and nothing in it is
     -- escaped or bracketed.
     labelIn rest = case T.breakOn "]:" rest of
       (label, end)
         | not (T.null end)
         , not (T.null (T.strip label))
-        , not (T.any (`elem` ['\\', '[', ']']) label) ->
+        , not (T.any (`elem` ['\\', '[', ']', '^']) label) ->
             Just label
       _ -> Nothing
 

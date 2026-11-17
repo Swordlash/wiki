@@ -134,6 +134,7 @@ module Wiki.App.Editor.Browser
     -- * The completion of the wiki's own Markdown
   , completeAsked
   , answerCompletion
+  , completeAction
 
     -- * Leaving the page
   , guardUnload
@@ -858,6 +859,13 @@ completeAsked event = do
   detail <- CompletionDetail <$> detailOf event
   guard (detail.id > 0)
   Just (detail.id, Complete.Request {line = detail.line, before = detail.before, after = detail.after, nodes = T.words detail.nodes})
+
+-- | What a @wiki-complete-action@ event asks the editor to do, once an
+-- entry of the list is written: @link-page@ (open the dialog of a link to
+-- a page) or @attach@ (choose a file to upload), the entry's action
+-- ("Wiki.Core.Markdown.Complete"'s 'Complete.Candidate').
+completeAction :: Event -> Maybe Text
+completeAction event = jsValText <$> detailOf event
 
 -- | Answer the question with this number: the list, or 'Nothing' for none
 -- ("Wiki.App.Editor.Complete"'s 'Complete.completionJson'). CodeMirror

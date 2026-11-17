@@ -1,7 +1,7 @@
 -- | 'Complete' is the editor's completion of the wiki's own Markdown
--- (WP5.124 (b) and (c) of docs/PLAN.md, #187): what a list opens after
--- @[[!@, @[[/@, @[!@ and @[[@, what it offers, and what choosing an entry
--- writes.
+-- (WP5.124 (b), (c) and (d) of docs/PLAN.md, #187): what a list opens
+-- after @[[!@, @[[/@, @[!@, @[[@ and @/@, what it offers, and what
+-- choosing an entry writes.
 --
 -- The editor's CodeMirror (@web/src/editor.js@) shows the list, moves in
 -- it and writes the entry chosen. It decides nothing of this: it says
@@ -13,7 +13,9 @@
 --   the wiki's parser ("Wiki.Core.Markdown.Ast") would read a marker on
 --   the cursor's line; @[!@ (a kind of box) where it would read a box's
 --   marker; @[[/@ (an end marker) where an end marker would end a block;
---   @[[@ (a link to a page) anywhere a wiki link is read. Never in code,
+--   @[[@ (a link to a page) anywhere a wiki link is read; @/@ (what the
+--   toolbar writes) where the word it starts is read as text, a @/@ in a
+--   link's address being the address's. Never in code,
 --   HTML, a comment, math or a link's address ('placeOf'). Which line is
 --   in which quotation, list's item or code block is CommonMark's to say,
 --   and the parser says it: the line is asked about with what would be
@@ -22,12 +24,14 @@
 -- * __What it offers__: candidates, from a list of 'Source's. The wiki's
 --   own is 'wikiSource': the markers the page's kind reads, the blocks
 --   an end marker at the cursor would end, the kinds of box; the pages
---   are the editor's own source.
+--   are the editor's own source, and so are the toolbar's entries
+--   ('slashSource').
 --   A plugin will give a source of its own (#186), whose candidates say
 --   where they come from ('Origin'), shown grey beside each one.
 -- * __What choosing writes__: a 'Skeleton', literal text and numbered
 --   places to fill, written as a CodeMirror snippet ('snippetTemplate'):
---   the cursor goes to the first place, and Tab to the next.
+--   the cursor goes to the first place, and Tab to the next ('Writes'
+--   says in place of what, and when the text is written as it is).
 -- * __What Enter and Escape do__ in the list ('EnterPolicy',
 --   'EscapePolicy'), carried by the answer.
 module Wiki.Core.Markdown.Complete
@@ -61,6 +65,11 @@ module Wiki.Core.Markdown.Complete
   , wikiSource
   , markersRead
 
+    -- * The / menu
+  , SlashEntry (..)
+  , SlashDoes (..)
+  , slashSource
+
     -- * The answer
   , EnterPolicy (..)
   , EscapePolicy (..)
@@ -81,6 +90,7 @@ import Protolude
 import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), BoxMarker (markerLine), Footnote (..), Inline (..), ListItem (..), MarkerLine (..), MarkerName (..), MarkerRole (..), allInlines, closingMarker, holdsBlocks, markerNameText, openingMarker, parseWithStartsAndMarkers, plainText)
 import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxKind, boxChoices)
+import Wiki.Core.Markdown.Edit (Command, Selection (..), apply, cursor)
 import Wiki.Core.Markdown.Problems (everyBlock)
 import Wiki.Core.PageKind (PageKind (..))
 
@@ -88,18 +98,44 @@ import Wiki.Core.PageKind (PageKind (..))
 -- Where a list opens
 
 -- | 'Place' is what the syntax tree says of the cursor's place: in text,
--- where the wiki's markup counts, or in something whose text is its own
--- (code, HTML, a comment, math, a link's address), where no list opens.
-data Place = InText | InOwnText
+-- where the wiki's markup counts; in text inside brackets the tree reads
+-- as a link, which may be one (the wiki's parser reads a reference whose
+-- definition may be anywhere, past what the completion reads), where the
+-- @/@ menu opens nothing and the wiki's markup counts; or in something
+-- whose text is its own (code, HTML, a comment, math, a link's address),
+-- where no list opens.
+data Place = InText | InLinkText | InOwnText
   deriving stock (Eq, Show)
 
 -- | The place the cursor is in, from the names of the syntax tree's nodes
 -- around it, innermost first, as CodeMirror's Markdown parser names them
 -- (and the editor's @TeXMath@, in @web/src/editor.js@). A link's text is
--- text: CodeMirror reads @[[!notes]]@ as brackets around a link, which
--- the wiki's parser does not.
+-- text for the wiki's markup: CodeMirror reads @[[!notes]]@ as brackets
+-- around a link, which the wiki's parser does not.
+--
+-- The inline nodes CodeMirror's parser names (GFM's, with the editor's
+-- math), and what each does to the @/@ menu, which opens only in a
+-- paragraph's own text:
+--
+-- * its own text, no list: @InlineCode@, @HTMLTag@, @Comment@,
+--   @ProcessingInstruction@, @Autolink@, @URL@, @TeXMath@ (and the blocks
+--   @FencedCode@, @CodeBlock@, @HTMLBlock@, @CommentBlock@,
+--   @ProcessingInstructionBlock@, @LinkReference@);
+-- * a link's or an image's text, no menu ('InLinkText'): @Link@, @Image@,
+--   and @LinkLabel@ and @LinkTitle@ inside them;
+-- * text the wiki's parser reads inside an inline, which its probe
+--   refuses ("plainWords"): @Emphasis@, @StrongEmphasis@,
+--   @Strikethrough@;
+-- * nothing to be inside of at a line's end: @Escape@, @Entity@,
+--   @HardBreak@, @Emoji@, and the marks (@EmphasisMark@, @CodeMark@,
+--   @LinkMark@, @StrikethroughMark@, @SubscriptMark@, @SuperscriptMark@);
+--   @Subscript@ and @Superscript@ are text to the wiki's parser, which
+--   has neither, and the menu opens there as in any text.
 placeOf :: [Text] -> Place
-placeOf nodes = if any (`elem` ownText) nodes then InOwnText else InText
+placeOf nodes
+  | any (`elem` ownText) nodes = InOwnText
+  | any (`elem` ["Link", "Image"]) nodes = InLinkText
+  | otherwise = InText
   where
     ownText =
       [ "FencedCode"
@@ -141,6 +177,9 @@ data Trigger
   | -- | @[[@ anywhere a wiki link is read, not followed by @!@ or @/@: a
     -- link to a page.
     LinkToPage
+  | -- | @/@ at a line's start or after a space, where the parser reads the
+    -- word it starts as text: what the toolbar writes.
+    SlashMenu
   deriving stock (Eq, Show)
 
 -- | 'Typed' is what was typed: the trigger, the letters after it, where
@@ -184,9 +223,10 @@ data LabelForm = PlainLabel | EscapedLabel | NoLabel
 -- candidates are the blocks an end marker there ends ('complete').
 triggerAt :: LineReader -> At -> Maybe Typed
 triggerAt readAt at = do
-  guard (at.place == InText)
+  guard (at.place /= InOwnText)
   case shapeAt at of
     Just shape -> do
+      guard (not (heldReturn at))
       case shape.trigger of
         StartMarker -> guard (PlacesContents `elem` firstRoles (readAt (Probe 1 [shape.prefix <> "[[!toc]]"])))
         BoxMarker -> guard (readAt (Probe 1 [shape.prefix <> "[!NOTE]"])).boxed
@@ -201,7 +241,16 @@ triggerAt readAt at = do
           , kept = ""
           , labels = PlainLabel
           }
-    Nothing -> pageLink readAt at
+    Nothing -> pageLink readAt at <|> slash readAt at
+
+-- | Whether the text the parser is asked about for a marker, a box or a
+-- link to a page holds a carriage return: the parser reads it as a line
+-- break, and the editor, which breaks lines at line feeds alone, does
+-- not, so the lines the readings name are not the editor's. No list opens
+-- there for those triggers. (The @/@ menu asks the parser nothing by its
+-- lines, and opens.)
+heldReturn :: At -> Bool
+heldReturn at = any (T.any (== '\r')) (at.before : fst (stretchOf at) : at.above)
 
 -- | 'Shape' is a trigger the cursor's line ends with, before the parser is
 -- asked about it: the trigger, the letters typed after it, and what of the
@@ -241,6 +290,7 @@ shapeAt at =
 -- cannot say, no list opens.
 pageLink :: LineReader -> At -> Maybe Typed
 pageLink readAt at = do
+  guard (not (heldReturn at))
   (start, letters) <- pageLinkShape at
   let first' = readAt (pageLinkProbe at start)
       pre = T.take start at.before
@@ -323,8 +373,8 @@ stretchOf at = go (T.length at.after) [at.after] at.below
 -- leads to the same page. Otherwise 'Nothing', and no list: an entry never
 -- leaves a text the parser reads otherwise. Nor when the text after the
 -- cursor was cut at 'afterBound' and the block that holds the cursor is
--- still open there (the parser reads no block starting after the
--- cursor's line): what follows could change how it is read. A block
+-- still open there (the parser reads no block after it, at any depth):
+-- what follows could change how it is read. A block
 -- that ends before the cut is read as the whole text reads it, however
 -- long the text. The parser reads the block two times,
 -- then at most 8 times for a label kept, or 3 for an end of the entry's
@@ -342,10 +392,12 @@ linkAt readAt at start from'
   where
     pre = T.take start at.before
     (stretch, cut) = stretchOf at
-    -- Whether the block that holds the cursor's line ends before the cut:
-    -- the parser reads a block starting on a later line, and what follows
-    -- the cut cannot change how the cursor's block is read.
-    settled = any (> 0) (readAt opened).blockStarts
+    -- Whether the block that holds the link ends before the cut: the
+    -- parser reads a block after it, at any depth ('followed'), and what
+    -- follows the cut cannot change how it is read. (A block of a long
+    -- list or quotation is followed by the next, inside the same
+    -- top-level block.)
+    settled = followed holdsLink (readAt opened).blocksRead
     probeOn t = Probe from' (T.splitOn "\n" (pre <> t))
     opened = probeOn ("[[" <> linkWord <> stretch)
     unopened = probeOn (linkWord <> stretch)
@@ -526,7 +578,6 @@ data Probe = Probe
 -- inside the boxes it reads; the wiki links it reads, each by its
 -- address and its text, and where each starts and ends, as (line,
 -- column) pairs, the probe's first line counted as line 0 ('WikiLinkTo');
--- the lines the top-level blocks start on, counted so;
 -- every inline it reads ('allInlines'); and the first line of the
 -- top-level block that holds the first (counted in the lines above, from
 -- 1), from which on the lines read alike whatever comes before.
@@ -536,7 +587,6 @@ data LineReading = LineReading
   , inBoxes :: [Text]
   , wikiLinks :: [(Text, Text)]
   , linkSpans :: [((Int, Int), (Int, Int))]
-  , blockStarts :: [Int]
   , inlinesRead :: [Inline]
   , blocksRead :: [Block]
   , enclosing :: Int
@@ -546,7 +596,7 @@ data LineReading = LineReading
 -- | A reading of nothing, the block that holds the line starting at this
 -- line.
 noReading :: Int -> LineReading
-noReading enclosing = LineReading {roles = [], boxed = False, inBoxes = [], wikiLinks = [], linkSpans = [], blockStarts = [], inlinesRead = [], blocksRead = [], enclosing}
+noReading enclosing = LineReading {roles = [], boxed = False, inBoxes = [], wikiLinks = [], linkSpans = [], inlinesRead = [], blocksRead = [], enclosing}
 
 -- | The roles read on a probe's first line.
 firstRoles :: LineReading -> [MarkerRole]
@@ -573,7 +623,6 @@ readLine above probe = case parseWithStartsAndMarkers (T.intercalate "\n" (kept 
       , inBoxes = [plainText inlines | Alert _ _ bs <- concatMap (everyBlock . snd) blocks, b <- concatMap everyBlock bs, Just inlines <- [paragraphOf b]]
       , wikiLinks = [(address, plainText text) | Link attributes address _ text <- inlines', ("class", "wikilink") `elem` attributes]
       , linkSpans = [((l - n, c), (l' - n, c')) | MarkerLine l c (WikiLinkTo l' c') <- lines']
-      , blockStarts = [l - n | (Just l, _) <- blocks]
       , inlinesRead = inlines'
       , blocksRead = map snd blocks
       , enclosing = inAbove (fromMaybe n (lastMay [l | (Just l, _) <- blocks, l <= n]))
@@ -618,7 +667,7 @@ probesOf readAt at = firstProbes at <> written
 -- the lines above hold, each after all the lines above.
 firstProbes :: At -> [Probe]
 firstProbes at = case shapeAt at of
-  Nothing -> [pageLinkProbe at start | Just (start, _) <- [pageLinkShape at]]
+  Nothing -> [pageLinkProbe at start | Just (start, _) <- [pageLinkShape at]] <> [slashProbe at prefix | Just (prefix, _) <- [slashShape at]]
   Just shape -> case shape.trigger of
     EndMarker -> [Probe 1 [shape.prefix <> closingMarker name] | name <- startedAbove at.above]
     trigger -> [Probe 1 [shape.prefix <> probeOf trigger]]
@@ -649,8 +698,9 @@ probeOf = \case
   StartMarker -> "[[!toc]]"
   BoxMarker -> "[!NOTE]"
   EndMarker -> "[[/div]]"
-  -- A shape is never a link to a page ('pageLink').
+  -- A shape is never a link to a page ('pageLink') nor a @/@ ('slash').
   LinkToPage -> ""
+  SlashMenu -> ""
 
 -- | The kinds of block whose start marker the lines above hold somewhere:
 -- the only ones an end marker may end.
@@ -670,44 +720,59 @@ newtype Origin = FromPlugin Text
 originText :: Origin -> Text
 originText (FromPlugin name) = "from plugin " <> name
 
--- | What the list shows in grey beside a candidate's label: where what it
--- names is, and where it comes from, as many as it has, parted by a
--- middle dot (@team\/on-call · from plugin calendar@).
+-- | What the list shows in grey beside a candidate's label: its note
+-- (where what it names is, or what it writes), and where it comes from,
+-- as many as it has, parted by a middle dot (@team\/on-call · from
+-- plugin calendar@).
 candidateDetail :: Candidate -> Maybe Text
-candidateDetail c = case catMaybes [c.place, originText <$> c.origin] of
+candidateDetail c = case catMaybes [c.note, originText <$> c.origin] of
   [] -> Nothing
   parts -> Just (T.intercalate " · " parts)
 
--- | 'Candidate' is an entry of the list: what it shows, what choosing it
--- writes in place of what was typed, where what it names is, if that
--- tells two entries of one label apart (a page's path), and where it
+-- | 'Candidate' is an entry of the list: what it shows; what choosing it
+-- writes, and in place of what ('Writes'); what the editor does then, if
+-- anything ('action': @link-page@ opens the dialog of a link to a page,
+-- @attach@ the choice of a file to upload); a note, which says where what
+-- it names is, if that tells two entries of one label apart (a page's
+-- path), or what it writes, in a few characters (@**bold**@); and where it
 -- comes from ('Nothing' for the wiki's own). The list shows the last two
--- in grey beside the label, the place first ('candidateDetail').
+-- in grey beside the label, the note first ('candidateDetail').
 data Candidate = Candidate
   { label :: Text
   , skeleton :: Skeleton
-  , place :: Maybe Text
   , writing :: Writes
+  , action :: Maybe Text
+  , note :: Maybe Text
   , origin :: Maybe Origin
   }
   deriving stock (Eq, Show)
 
--- | 'Writes' is how a candidate's skeleton is written in place of what was
--- typed ('Completion''s range): as CodeMirror's snippet, the cursor at its
--- first place; or as it is, the cursor after it, for one with no place to
--- fill whose further lines must not get the cursor line's indentation,
--- which a snippet puts before them (a link to a page whose label, kept,
--- runs over lines).
-data Writes = AsSnippet | AsText
+-- | 'Writes' is how a candidate's skeleton is written: as CodeMirror's
+-- snippet in place of what was typed ('Completion''s range), the cursor at
+-- its first place, where the snippet writes it as the skeleton says
+-- ('snippetWrites'); or as it is there, the cursor after it (a link to a
+-- page whose label, kept, runs over lines; a skeleton a snippet would
+-- write otherwise, its further lines after the cursor line's
+-- indentation); or as it is in place of the cursor's whole line, which
+-- read as the text given when the list was made, its first place selected
+-- (an entry of the @/@ menu, whose command may change the line's start
+-- and write lines after it), with where in that line the @/@ and its
+-- letters were, in characters: they go as a change of their own, and the
+-- command's edit as the smallest change between the line without them and
+-- the text written, so that no text the two leave alone between them is
+-- written again.
+data Writes = AsSnippet | AsText | LineAsText Text (Int, Int)
   deriving stock (Eq, Show)
 
--- | 'Wanted' is what a source is asked for: what was typed; the kinds of
--- block an end marker at the cursor would end, for the parser (the
--- innermost block open there, if one is: an end marker of another name
--- ends nothing); and what the parser reads of a skeleton written at the
--- cursor, so that a source offers what is read as it says.
+-- | 'Wanted' is what a source is asked for: where (the cursor's place and
+-- lines); what was typed; the kinds of block an end marker at the cursor
+-- would end, for the parser (the innermost block open there, if one is:
+-- an end marker of another name ends nothing); and what the parser reads
+-- of a skeleton written at the cursor, so that a source offers what is
+-- read as it says.
 data Wanted = Wanted
-  { typed :: Typed
+  { at :: At
+  , typed :: Typed
   , closable :: [MarkerName]
   , writes :: Skeleton -> LineReading
   }
@@ -731,8 +796,10 @@ wikiSource kind defined wanted = case t.trigger of
   StartMarker -> [checkedStart name | name <- markersRead kind, matches (markerNameText name)]
   EndMarker -> [endMarker name | name <- wanted.closable, matches (markerNameText name)]
   BoxMarker -> [if bodyRead then box t.lineStart marker else boxAlone marker | (marker, _) <- boxChoices defined, matches marker]
-  -- The pages are the editor's to know ("Wiki.App.Editor.Complete").
+  -- The pages are the editor's to know ("Wiki.App.Editor.Complete"), and
+  -- what the toolbar writes is its own ('slashSource').
   LinkToPage -> []
+  SlashMenu -> []
   where
     t = wanted.typed
     matches name = T.toLower t.letters `T.isPrefixOf` T.toLower name
@@ -776,7 +843,7 @@ markersRead = \case
 -- A spoiler's name and description are places to fill first; a
 -- presentation's look has its theme to fill.
 startMarker :: Text -> MarkerName -> Candidate
-startMarker lineStart name = Candidate {label = openingMarker name, skeleton, place = Nothing, writing = AsSnippet, origin = Nothing}
+startMarker lineStart name = Candidate {label = openingMarker name, skeleton, note = Nothing, writing = AsSnippet, action = Nothing, origin = Nothing}
   where
     skeleton = case name of
       SpoilerName ->
@@ -791,7 +858,7 @@ startMarker lineStart name = Candidate {label = openingMarker name, skeleton, pl
 -- | A start marker's candidate written alone on its line, with no end
 -- marker: a spoiler with its name and description to fill.
 startAlone :: MarkerName -> Candidate
-startAlone name = Candidate {label = openingMarker name, skeleton, place = Nothing, writing = AsSnippet, origin = Nothing}
+startAlone name = Candidate {label = openingMarker name, skeleton, note = Nothing, writing = AsSnippet, action = Nothing, origin = Nothing}
   where
     skeleton = case name of
       SpoilerName -> [Literal (openingMarker name <> "{"), Field 1 "name", Literal "}(", Field 2 "Description", Literal ")", Field 0 ""]
@@ -799,19 +866,19 @@ startAlone name = Candidate {label = openingMarker name, skeleton, place = Nothi
 
 -- | A kind of box's candidate written alone, its marker only.
 boxAlone :: Text -> Candidate
-boxAlone marker = Candidate {label = written, skeleton = [Literal written, Field 0 ""], place = Nothing, writing = AsSnippet, origin = Nothing}
+boxAlone marker = Candidate {label = written, skeleton = [Literal written, Field 0 ""], note = Nothing, writing = AsSnippet, action = Nothing, origin = Nothing}
   where
     written = "[!" <> marker <> "]"
 
 -- | An end marker's candidate.
 endMarker :: MarkerName -> Candidate
-endMarker name = Candidate {label = closingMarker name, skeleton = [Literal (closingMarker name), Field 0 ""], place = Nothing, writing = AsSnippet, origin = Nothing}
+endMarker name = Candidate {label = closingMarker name, skeleton = [Literal (closingMarker name), Field 0 ""], note = Nothing, writing = AsSnippet, action = Nothing, origin = Nothing}
 
 -- | A kind of box's candidate: its marker (the kind's name in capitals,
 -- as 'boxChoices' gives it), and the box's first line of text under it,
 -- the cursor there.
 box :: Text -> Text -> Candidate
-box lineStart marker = Candidate {label = written, skeleton = [Literal (written <> "\n" <> lineStart), Field 1 ""], place = Nothing, writing = AsSnippet, origin = Nothing}
+box lineStart marker = Candidate {label = written, skeleton = [Literal (written <> "\n" <> lineStart), Field 1 ""], note = Nothing, writing = AsSnippet, action = Nothing, origin = Nothing}
   where
     written = "[!" <> marker <> "]"
 
@@ -823,14 +890,18 @@ box lineStart marker = Candidate {label = written, skeleton = [Literal (written 
 -- trigger and what was typed after it) is so many characters long, or the
 -- reader moved in the list; before that, Enter is the editor's own, a new
 -- line. The emoji's list waits so, for two letters after its colon
--- (@web/src/editor.js@); the wiki's own Markdown chooses at once.
+-- (@web/src/editor.js@), and the @/@ menu for one letter after its @/@,
+-- so that a @/@ at the end of a line of prose and Enter stay a new line;
+-- the wiki's other lists choose at once.
 data EnterPolicy = EnterChooses | EnterChoosesAfter Int
   deriving stock (Eq, Show)
 
 -- | 'EscapePolicy' is what Escape does while the list is shown: it closes
--- the list, and leaves the text as it is. (The emoji's list also writes a
--- backslash before its colon, in @web/src/editor.js@.)
-data EscapePolicy = EscapeCloses
+-- the list, and leaves the text as it is; and the list of a @/@ also
+-- leaves that @/@ alone, so that the letters typed after it do not open
+-- it again (as the emoji's list writes a backslash before its colon, in
+-- @web/src/editor.js@), until the @/@ is typed anew.
+data EscapePolicy = EscapeCloses | EscapeDismisses
   deriving stock (Eq, Show)
 
 -- | 'Completion' is the answer: where the text the entry chosen replaces
@@ -859,14 +930,264 @@ complete sources readAt at = do
       writes skeleton = case shapeAt at of
         Just shape -> readAt (writtenProbe at shape (readAt (Probe 1 [shape.prefix <> probeOf shape.trigger])).enclosing skeleton)
         Nothing -> noReading 1
-      wanted = Wanted {typed, closable, writes}
+      wanted = Wanted {at, typed, closable, writes}
       found = concatMap ($ wanted) sources
   guard (not (null found))
-  Just Completion {from = typed.from, through = typed.through, candidates = found, enter = EnterChooses, escape = EscapeCloses}
+  Just Completion {from = typed.from, through = typed.through, candidates = map (asWrittenAt at typed) found, enter = if typed.trigger == SlashMenu then EnterChoosesAfter 2 else EnterChooses, escape = if typed.trigger == SlashMenu then EscapeDismisses else EscapeCloses}
   where
     isEnd = \case
       Ends _ -> True
       _ -> False
+
+----------------------------------------------------------------------
+-- The / menu
+
+-- | The @/@ before the cursor and the letters typed after it, where the
+-- @/@ starts a line or follows a space or a tab and nothing but spaces
+-- follows the cursor on the line, as the line's text before the @/@ and
+-- the letters. Whether it opens a list there is the parser's to say
+-- ('slash').
+slashShape :: At -> Maybe (Text, Text)
+slashShape at = do
+  let (upTo, letters) = T.breakOnEnd "/" at.before
+  prefix <- T.stripSuffix "/" upTo
+  guard (T.all (\c -> isAsciiLower c || isAsciiUpper c) letters)
+  guard (maybe True (isBlank . snd) (T.unsnoc prefix))
+  guard (T.all isBlank at.after)
+  Just (prefix, letters)
+
+-- | The @/@ menu opens only in the plain place where text is written: a
+-- word of its own at the end of a line of a paragraph, the paragraph at
+-- the top of the page, in a list's item, a quotation, a box's text, or a
+-- block of the wiki's own (a @div@, a spoiler's body); an empty line is
+-- such a paragraph. The parser says so: a word written in place of the
+-- @/@ and the letters is read as text of such a paragraph, and of no
+-- inline in it ('plainWords').
+--
+-- No list, then, anywhere else, without exception:
+--
+-- * with anything but spaces after the cursor on its line;
+-- * inside a word (@and\/or@) or an address (@https:\/\/…@);
+-- * in code (inline or a block, fenced or indented), math or HTML;
+-- * in a link's text or its address, an image's, emphasis, strong or
+--   struck text, an inline spoiler, or any other inline; nor in brackets
+--   the syntax tree reads as a link ('InLinkText'), which a reference
+--   defined anywhere may make one;
+-- * in a heading, a table's cell, a box's title, a spoiler's description,
+--   a marker line or a footnote's definition;
+-- * where the block that holds the cursor is still open where the text
+--   read after the cursor is cut ('afterBound'), since what follows could
+--   make the line something else.
+slash :: LineReader -> At -> Maybe Typed
+slash readAt at = do
+  guard (at.place == InText)
+  (prefix, letters) <- slashShape at
+  let reading = readAt (slashProbe at prefix)
+  guard (slashWord `elem` plainWords reading.blocksRead)
+  guard (not (snd (stretchOf at)) || followed holdsSlash reading.blocksRead)
+  Just Typed {trigger = SlashMenu, letters, from = T.length prefix, lineStart = "", through = 0, kept = "", labels = PlainLabel}
+
+-- | The cursor's line with 'slashWord' in place of the @/@ and the letters,
+-- and the lines after it that 'linkAt' reads, after the lines above.
+slashProbe :: At -> Text -> Probe
+slashProbe at prefix = Probe 1 (T.splitOn "\n" (prefix <> slashWord <> fst (stretchOf at)))
+
+-- | The word 'slashProbe' writes.
+slashWord :: Text
+slashWord = "Zqxjvslash"
+
+-- | Whether the parser reads a block after the block that holds a word
+-- (its own text, not a block inside it), at any depth, in the order of
+-- the text (the footnotes, which it reads last, aside): that block then
+-- ends within the text read, and what follows the cut cannot change it.
+-- The word is 'slashWord' in a paragraph ('slash'), or 'linkWord' as a
+-- wiki link's address in a paragraph, a heading, a table, a box's title
+-- or a spoiler's description ('linkAt').
+followed :: (Block -> Bool) -> [Block] -> Bool
+followed holdsWord blocks = case break holdsWord (concatMap inOrder [b | b <- blocks, not (isFootnotes b)]) of
+  (_, _ : _ : _) -> True
+  _ -> False
+  where
+    inOrder b =
+      b : case b of
+        BlockQuote bs -> concatMap inOrder bs
+        List _ items -> concat [concatMap inOrder bs | ListItem _ bs <- items]
+        Alert _ _ bs -> concatMap inOrder bs
+        Div _ bs -> concatMap inOrder bs
+        Spoiler _ bs -> concatMap inOrder bs
+        _ -> []
+    isFootnotes = \case
+      Footnotes _ -> True
+      _ -> False
+
+-- | Whether a paragraph's own text holds 'slashWord'.
+holdsSlash :: Block -> Bool
+holdsSlash = \case
+  Para xs -> slashWord `elem` concat [T.words t | Str t <- xs]
+  Plain xs -> slashWord `elem` concat [T.words t | Str t <- xs]
+  _ -> False
+
+-- | Whether a block's own text holds the wiki link to 'linkWord', or the
+-- word as text (a link with no end yet): a paragraph's, a heading's, a
+-- table's, a box's title, a spoiler's description.
+holdsLink :: Block -> Bool
+holdsLink = \case
+  Alert _ boxHead _ -> ours (fromMaybe [] boxHead.title)
+  Spoiler spoilerHead _ -> ours spoilerHead.description
+  BlockQuote _ -> False
+  List _ _ -> False
+  Div _ _ -> False
+  Footnotes _ -> False
+  b -> any isOurs (allInlines [b])
+  where
+    ours xs = any isOurs (allInlines [Plain xs])
+    isOurs = \case
+      Link attributes address _ _ -> ("class", "wikilink") `elem` attributes && linkWord `T.isPrefixOf` address
+      -- A link with no end yet is text.
+      Str t -> linkWord `T.isInfixOf` t
+      _ -> False
+
+-- | The words of the paragraphs where the @/@ menu opens ('slash'), each
+-- paragraph's own text, not that of an inline in it: those at the top of
+-- the page, in a list's item, a quotation, a box's text, a @div@ or a
+-- spoiler's body, however nested.
+plainWords :: [Block] -> [Text]
+plainWords = concatMap $ \case
+  Para xs -> own xs
+  Plain xs -> own xs
+  BlockQuote bs -> plainWords bs
+  List _ items -> concat [plainWords bs | ListItem _ bs <- items]
+  Alert _ _ bs -> plainWords bs
+  Div _ bs -> plainWords bs
+  Spoiler _ bs -> plainWords bs
+  _ -> []
+  where
+    own xs = concat [T.words t | Str t <- xs]
+
+-- | 'SlashEntry' is an entry of the @/@ menu: its label, as the toolbar
+-- names it; words it is found by too; what it writes, in a few
+-- characters, shown grey beside it; and what choosing it does.
+data SlashEntry = SlashEntry
+  { label :: Text
+  , keywords :: [Text]
+  , sample :: Text
+  , does :: SlashDoes
+  }
+  deriving stock (Eq, Show)
+
+-- | 'SlashDoes' is what an entry of the @/@ menu does: write what the
+-- toolbar's command writes at the cursor, or open one of the toolbar's
+-- dialogs (@link-page@, @attach@; 'Candidate''s 'action').
+data SlashDoes = WritesCommand Command | OpensDialog Text
+  deriving stock (Eq, Show)
+
+-- | The @/@ menu: the entries whose label, or a word of it, or a keyword,
+-- starts with the letters typed after the @/@, whatever their case. With
+-- no letters, every entry, in the toolbar's order. With letters, those
+-- whose label starts with them first, then those with a later word that
+-- does, then those with a keyword that does; and within each group the
+-- shorter label first (the letters are more of it: @/ta@ is the table
+-- before the task list), then the toolbar's order.
+--
+-- Choosing an entry that writes takes the @/@ and the letters away and
+-- writes what the toolbar's command writes at that place, selection and
+-- all ('slashWritten'), as text with that selection ('lineCandidate'). An
+-- entry that opens a dialog takes the @/@ and the letters away, and the
+-- editor opens it.
+slashSource :: [SlashEntry] -> Source
+slashSource entries wanted
+  | wanted.typed.trigger /= SlashMenu = []
+  | otherwise = mapMaybe candidate (map snd (sortOn fst [(key, e) | (i, e) <- zip [0 :: Int ..] entries, Just rank <- [rankOf e], let key = (rank, if T.null query then 0 else T.length e.label, i)]))
+  where
+    query = T.toLower wanted.typed.letters
+    prefix = T.take wanted.typed.from wanted.at.before
+    window = windowOf wanted.at prefix
+    rankOf e
+      | T.null query || query `T.isPrefixOf` T.toLower e.label = Just (1 :: Int)
+      | any (query `T.isPrefixOf`) (drop 1 (T.words (T.toLower (T.map (\c -> if isAlphaNum c then c else ' ') e.label)))) = Just 2
+      | any ((query `T.isPrefixOf`) . T.toLower) e.keywords = Just 3
+      | otherwise = Nothing
+    candidate e = case e.does of
+      OpensDialog action -> Just Candidate {label = e.label, skeleton = [Field 0 ""], writing = AsSnippet, action = Just action, note = Just e.sample, origin = Nothing}
+      WritesCommand command -> do
+        written <- slashWritten window command
+        Just (lineCandidate wanted.at wanted.typed written) {label = e.label, note = Just e.sample}
+
+-- | 'Window' is the text a command of the @/@ menu is applied to: the
+-- lines above the cursor's line from the nearest one with text in it (or
+-- the text's first), the cursor's line without the @/@ and the letters (up
+-- to the cursor, and after it), and the lines below it up to the first
+-- with text in it (or the text's last). The toolbar's commands read no
+-- more of the text around an empty selection ("Wiki.Core.Markdown.Edit"'s
+-- 'apply'): an inline command writes at the cursor, a command of lines
+-- changes the cursor's line, and a block goes after the cursor's line
+-- with a blank line on either side but where one is there already, or
+-- the text ends, or has nothing but white space up to there. A block of
+-- the page around the cursor is not read at all. The properties check
+-- that 'apply' on the window writes what it writes on the whole text.
+data Window = Window {above :: [Text], prefix :: Text, after :: Text, below :: [Text]}
+
+-- | The window around the cursor's line, given the line's text before the
+-- @/@.
+windowOf :: At -> Text -> Window
+windowOf at prefix = Window {above = reverse (upToText (reverse at.above)), prefix, after = at.after, below = upToText at.below}
+  where
+    upToText ls = let (blank, rest) = break (not . T.all isSpace) ls in blank <> take 1 rest
+
+-- | What the toolbar's command writes in place of the cursor's line, with
+-- the cursor where the @/@ was: the line's new text (with the lines the
+-- command writes after it), and what is selected in it afterwards, as
+-- (start, end) in characters. 'Nothing' when the command changes the
+-- text elsewhere, which none does.
+slashWritten :: Window -> Command -> Maybe (Text, (Int, Int))
+slashWritten window command = do
+  let before' = T.concat [l <> "\n" | l <- window.above]
+      after' = T.concat ["\n" <> l | l <- window.below]
+      (new, Selection s e) = apply command (before' <> window.prefix <> window.after <> after') (cursor (T.length before' + T.length window.prefix))
+  written <- T.stripPrefix before' new >>= T.stripSuffix after'
+  let start = s - T.length before'
+      end = e - T.length before'
+  guard (0 <= start && start <= end && end <= T.length written)
+  Just (written, (start, end))
+
+-- | An entry of the @/@ menu that writes, as a candidate: the cursor's
+-- line replaced by what the command writes there ('slashWritten'), as it
+-- is, with the command's selection, and where the @/@ and the letters were
+-- ('LineAsText'). Never a snippet, whose
+-- rules (the indentation it puts before further lines, the line breaks it
+-- reads in its template) would write something else than the command.
+lineCandidate :: At -> Typed -> (Text, (Int, Int)) -> Candidate
+lineCandidate at typed (written, (start, end)) =
+  Candidate {label = "", skeleton, writing = LineAsText (at.before <> at.after) (typed.from, T.length at.before), action = Nothing, note = Nothing, origin = Nothing}
+  where
+    slice a b = T.take (b - a) (T.drop a written)
+    skeleton = [Literal (slice 0 start) | start > 0] <> [Field 1 (slice start end)] <> [Literal (T.drop end written) | end < T.length written]
+
+-- | Whether CodeMirror's snippet writes a skeleton in place of what was
+-- typed as the skeleton says, its further lines after the indentation of
+-- the cursor's line as the wiki's parser reads it (spaces and tabs, as
+-- 'writtenProbe' and the skeletons write them). The snippet takes as the
+-- line's indentation what JavaScript's @\s@ matches at its start, which
+-- holds other white space too (a no-break space), and reads a carriage
+-- return in its text as a line break: so the line's leading white space
+-- must be spaces and tabs, and nothing written or replaced may hold a
+-- carriage return.
+snippetWrites :: Text -> Text -> Typed -> Skeleton -> Bool
+snippetWrites before after typed skeleton =
+  T.all isBlank (T.takeWhile jsSpace (before <> after))
+    && not (T.any (== '\r') (fst (skeletonText skeleton)))
+    && not (T.any (== '\r') (T.drop typed.from before <> T.take typed.through after))
+  where
+    jsSpace c = isSpace c || c `elem` ['\xfeff', '\x2028', '\x2029']
+
+-- | A candidate as the editor is to write it: a snippet where it writes
+-- what the candidate says ('snippetWrites'), and otherwise its text as it
+-- is, each further line after the cursor line's indentation, the cursor
+-- after it.
+asWrittenAt :: At -> Typed -> Candidate -> Candidate
+asWrittenAt at typed c
+  | c.writing /= AsSnippet || snippetWrites at.before at.after typed c.skeleton = c
+  | otherwise = c {skeleton = [Literal (T.intercalate ("\n" <> T.takeWhile isBlank at.before) (T.splitOn "\n" (fst (skeletonText c.skeleton))))], writing = AsText}
 
 ----------------------------------------------------------------------
 -- Skeletons

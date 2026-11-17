@@ -18,7 +18,7 @@ import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
 import Test.Browser.Mount (slugs, startChanged, startWith)
-import Test.Browser.Text (completing, editorSelection, editorText, listReady, markdown, selectText, setMarkdown)
+import Test.Browser.Text (completing, editorSelection, editorText, listReady, markdown, proposeText, selectText, setMarkdown)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (boxes))
 import Wiki.App.Assistant (MonadAssistant)
@@ -26,6 +26,7 @@ import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..), pageLinkText)
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
+import Wiki.Core.Markdown.Edit qualified as Edit
 
 -- The last key that reached the window: test/jsbits/test-keys.js.
 $( browserJS
@@ -138,6 +139,110 @@ spec m = do
     -- Tab, which the form takes to indent.
     reached "Escape" `shouldReturn` "Escape"
     reached "Tab" `shouldReturn` "Tab"
+  -- The "/" menu (WP5.124 (d)): what each entry writes, and where it
+  -- opens, are tested natively ("Test.Markdown.CompleteOracle"); here,
+  -- that CodeMirror writes it as one step of the undo, with Tab going to
+  -- its places, that Escape keeps the "/" from opening it again, and that
+  -- an entry opens the toolbar's dialog.
+  it "writes the table after /ta in the middle of the long Markdown guide, its first cell selected, a word typed over it undone apart from the table" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-admin") (EditPage (slugs ["docs"]) (slugs ["markdown-guide"]))
+    text <- editorText ui
+    guide <- eventually $ markdown ui >>= \t -> t <$ (t `shouldSatisfy` ((> 10_000) . T.length))
+    -- An empty line between two paragraphs in the middle: thousands of
+    -- characters before it and after it. The editor counts UTF-16 units.
+    let (upTo, _) = T.breakOn "\n\n" (T.drop (T.length guide `div` 2) guide)
+        at = T.length guide `div` 2 + T.length upTo + 1
+        units = at + T.length (T.filter ((> 0xFFFF) . ord) (T.take at guide))
+        typed = T.take at guide <> "/ta" <> T.drop at guide
+        -- What the toolbar's command writes there, the / and its letters
+        -- gone.
+        (table, Edit.Selection _ selected) = Edit.apply Edit.Table guide (Edit.cursor at)
+    selectText ui units units
+    typeText text "/ta"
+    eventually $ (take 2 <$> labels ui) `shouldReturn` ["Table", "Task list"]
+    listReady ui
+    press "Enter"
+    markdown ui `shouldReturn` table
+    -- "Column 1" is selected, as the toolbar selects it.
+    (snd <$> editorSelection ui) `shouldReturn` selected + (units - at)
+    -- A word typed over "Column 1" is a step of the undo of its own; the
+    -- next undo takes the table back, leaving "/ta" as typed.
+    typeText text "Name"
+    press "Control+z"
+    eventually $ markdown ui `shouldReturn` table
+    press "Control+z"
+    eventually $ markdown ui `shouldReturn` typed
+
+  it "takes Enter after a / alone as a new line, closes the / menu on Escape, and the same / does not open it again as letters are typed" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    text <- editorText ui
+    setMarkdown ui titleLines
+    selectText ui (T.length titleLines) (T.length titleLines)
+    -- A / at the end of a line of prose, the list shown: Enter is still a
+    -- new line, and writes nothing of the list's.
+    typeText text "Either /"
+    listReady ui
+    press "Enter"
+    markdown ui `shouldReturn` titleLines <> "Either /\n"
+    typeText text "Some /ta"
+    listReady ui
+    press "Escape"
+    eventually $ length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    typeText text "b"
+    eventually (completing ui `shouldReturn` "")
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    -- With no list, Enter is a new line; a / typed anew opens it.
+    press "Enter"
+    typeText text "/ta"
+    eventually $ (take 1 <$> labels ui) `shouldReturn` ["Table"]
+    markdown ui `shouldReturn` titleLines <> "Either /\nSome /tab\n/ta"
+    -- An assistant's undecided change on the line stays its own once an
+    -- entry is written, which changes only what differs: rejecting it puts
+    -- back what it replaced.
+    setMarkdown ui (titleLines <> "Some text")
+    proposeText ui (T.length titleLines + 5) (T.length titleLines + 9) "words"
+    selectText ui (T.length titleLines + 10) (T.length titleLines + 10)
+    typeText text " /b"
+    eventually $ (take 1 <$> labels ui) `shouldReturn` ["Bold"]
+    listReady ui
+    press "Enter"
+    find ui ".cm-wiki-change-reject" >>= click
+    eventually $ markdown ui `shouldReturn` titleLines <> "Some text **bold text**"
+    -- And where the command changes the line's start too: the change
+    -- between, untouched, stays.
+    setMarkdown ui (titleLines <> "Some text")
+    proposeText ui (T.length titleLines + 5) (T.length titleLines + 9) "words"
+    selectText ui (T.length titleLines + 10) (T.length titleLines + 10)
+    typeText text " /he"
+    eventually $ (take 1 <$> labels ui) `shouldReturn` ["Heading"]
+    listReady ui
+    press "Enter"
+    find ui ".cm-wiki-change-reject" >>= click
+    eventually $ markdown ui `shouldReturn` titleLines <> "# Some text "
+    -- A change below the line while the list is open: the answer was made
+    -- from the text before it, and Enter writes nothing and closes the
+    -- list.
+    setMarkdown ui (titleLines <> "\n\nEnd.")
+    selectText ui (T.length titleLines) (T.length titleLines)
+    typeText text "/ta"
+    listReady ui
+    proposeText ui (T.length titleLines + 4) (T.length titleLines + 4) "New prose"
+    press "Enter"
+    markdown ui `shouldReturn` titleLines <> "/ta\nNew prose\nEnd."
+    completing ui `shouldReturn` ""
+
+  it "opens the dialog of a link to a page from the / menu, the / and its letters gone" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    text <- editorText ui
+    setMarkdown ui titleLines
+    selectText ui (T.length titleLines) (T.length titleLines)
+    typeText text "See /li"
+    eventually $ (take 2 <$> labels ui) `shouldReturn` ["Link", "Link to a page"]
+    listReady ui
+    press "ArrowDown"
+    press "Enter"
+    eventually $ length <$> findAll ui ".link-dialog" `shouldReturn` 1
+    markdown ui `shouldReturn` titleLines <> "See "
   where
     helloEditor = EditPage (slugs ["blog"]) (slugs ["hello-world"])
     exercise = BoxKind {name = "exercise", label = "Exercise", colour = Teal, icon = Pencil}

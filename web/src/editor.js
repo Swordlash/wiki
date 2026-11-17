@@ -1105,7 +1105,143 @@ const emojiSource = (names, whole) => {
 // never less: after [[, anything but a "]" (which ends a wiki link's text
 // for the parser) or a "|" (after which the cursor is in a label, where
 // no list opens). A "[" may stand in a link's address.
-const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$/;
+//
+// A "/" at the line's start or after a space or a tab, and letters after
+// it, asks too: the "/" menu of what the toolbar writes (WP5.124 (d)).
+const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$|(^|[ \t])\/[A-Za-z]*$/;
+
+// The "/" whose menu Escape closed, by position in each state, kept
+// where the text around them moves: the letters typed after such a "/"
+// do not open its menu again (as the emoji's Escape escapes its colon),
+// until the "/" is typed anew. A "/" deleted is forgotten.
+const dismissSlash = StateEffect.define();
+const dismissedSlashes = StateField.define({
+  create: () => [],
+  update: (positions, tr) => {
+    const kept = [];
+    for (const at of positions) {
+      const from = tr.changes.mapPos(at, 1);
+      const to = tr.changes.mapPos(at + 1, -1);
+      if (to - from === 1 && tr.newDoc.sliceString(from, to) === "/") kept.push(from);
+    }
+    for (const effect of tr.effects) if (effect.is(dismissSlash)) kept.push(effect.value);
+    return kept;
+  },
+});
+
+// The smallest change that turns a text into another, as {from, to,
+// insert} (UTF-16 units of the old text): the two texts' common start
+// and end are left alone, never between the halves of a surrogate pair.
+// The toolbar's commands write through it (the editor's write, which
+// wiki-app/jsbits/editor.js's wiki_editor_write calls), and so does the
+// completion, so that text that does not change keeps what is on it: an
+// assistant's undecided change, a fold, a problem's mark.
+export const smallestChange = (old, text) => {
+  let prefix = 0;
+  const shorter = Math.min(old.length, text.length);
+  while (prefix < shorter && old.charCodeAt(prefix) === text.charCodeAt(prefix)) prefix++;
+  let suffix = 0;
+  while (suffix < shorter - prefix && old.charCodeAt(old.length - 1 - suffix) === text.charCodeAt(text.length - 1 - suffix)) suffix++;
+  const low = (string, at) => at > 0 && at < string.length && (string.charCodeAt(at) & 0xfc00) === 0xdc00;
+  if (low(old, prefix) || low(text, prefix)) prefix--;
+  if (low(old, old.length - suffix) || low(text, text.length - suffix)) suffix--;
+  return { from: prefix, to: old.length - suffix, insert: text.slice(prefix, text.length - suffix) };
+};
+
+// An option's text written in place of from..to of a view's text, as the
+// smallest change ('smallestChange'), selecting start..end (UTF-16 units
+// of the text written, from `from`), one step of the undo.
+const writeText = (view, completion, from, to, text, start, end) => {
+  const change = smallestChange(view.state.sliceDoc(from, to), text);
+  view.dispatch({
+    changes: { from: from + change.from, to: from + change.to, insert: change.insert },
+    selection: EditorSelection.single(from + start, from + end),
+    scrollIntoView: true,
+    annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete"), isolateHistory.of("full")],
+  });
+};
+
+// Whether a view's text is still, outside the range an entry replaces
+// (from..to, and on to the cursor), the text an answer was made from
+// outside its range (asked: {text, from, to}, in the master's text for a
+// row of the slide mode).
+const unchangedSince = (host, view, asked, from, to) => {
+  const { state, pos } = wholeAt(host, { state: view.state, pos: from, view });
+  const end = pos + Math.max(to, view.state.selection.main.head) - from;
+  return state.doc.sliceString(0, pos) === asked.text.sliceString(0, asked.from) && state.doc.sliceString(end) === asked.text.sliceString(asked.to);
+};
+
+// The effect that keeps the "/" before the cursor's letters from opening
+// its menu again, or null where no "/" is there.
+const dismissAt = (state) => {
+  const head = state.selection.main.head;
+  let at = head;
+  while (at > 0 && /[A-Za-z]/.test(state.sliceDoc(at - 1, at))) at--;
+  return state.sliceDoc(at - 1, at) === "/" ? dismissSlash.of(at - 1) : null;
+};
+
+// What an option of the wiki's own Markdown writes when it is chosen, in
+// a view: its snippet, or its text as it is (insert), in place of the
+// range the list was for; or, for one given the cursor's whole line (an
+// entry of the "/" menu), its text in place of that line, with its
+// selection, if the line still reads as the one the answer was made for
+// (a list kept from before the last key writes nothing); then, for an
+// entry that opens a dialog, a "wiki-complete-action" event on the host,
+// which the component answers.
+const writeOption = (host, option, asked) => (view, completion, from, to) => {
+  // Decided in the step that writes: the answer was made from the text it
+  // read (for a row of the slide mode, the master's: wholeAt), all of it,
+  // not the cursor's line alone (an assistant's change below the line,
+  // made while the list was open, changes what a block needs around it).
+  // Where the text outside what the entry replaces (and the letters typed
+  // since, up to the cursor) is not that text any more, nothing is written
+  // and the list closes; the next letter is answered afresh.
+  if (!unchangedSince(host, view, asked, from, to)) {
+    closeCompletion(view);
+    return;
+  }
+  if (option.line === undefined && option.insert !== undefined) {
+    // No place to fill: the text as it is, the cursor after it.
+    writeText(view, completion, from, to, option.insert, option.insert.length, option.insert.length);
+  } else if (option.line === undefined) {
+    snippet(option.template)(view, completion, from, to);
+    // As the toolbar's writes, a step of the undo of its own: what is typed
+    // next (over a place to fill) is not joined to it.
+    view.dispatch({ annotations: isolateHistory.of("after") });
+  } else {
+    const line = view.state.doc.lineAt(from);
+    if (line.text !== option.line) return;
+    const [start, end] = option.select.map((n) => unitsOf(option.insert, n));
+    // Two changes in one transaction: the / and its letters taken away,
+    // and the command's edit, the smallest change between the line
+    // without them and the text written, its ends moved past them. So
+    // the text the two leave alone between them is not written again (an
+    // assistant's undecided change on it stays). An edit that would run
+    // across them (none of the toolbar's, at an empty selection) is one
+    // change.
+    const [queryFrom, queryTo] = option.query.map((n) => unitsOf(option.line, n));
+    const size = queryTo - queryFrom;
+    const edit = smallestChange(option.line.slice(0, queryFrom) + option.line.slice(queryTo), option.insert);
+    const changes =
+      edit.from < queryFrom && edit.to > queryFrom
+        ? [{ from: line.from + edit.from, to: line.from + edit.to + size, insert: edit.insert }]
+        : [
+            { from: line.from + queryFrom, to: line.from + queryTo, insert: "" },
+            {
+              from: line.from + (edit.from < queryFrom || (edit.from === queryFrom && edit.to === queryFrom) ? edit.from : edit.from + size),
+              to: line.from + (edit.to <= queryFrom ? edit.to : edit.to + size),
+              insert: edit.insert,
+            },
+          ];
+    view.dispatch({
+      changes,
+      selection: EditorSelection.single(line.from + start, line.from + end),
+      scrollIntoView: true,
+      annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete"), isolateHistory.of("full")],
+    });
+  }
+  if (option.action !== undefined) host.dispatchEvent(new CustomEvent("wiki-complete-action", { detail: option.action }));
+};
 
 // The answer is {from, through, options, enter, escape}: where the text
 // an entry replaces starts in the line, and how many characters after the
@@ -1115,8 +1251,10 @@ const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$/;
 // the text it writes as it is (insert), and
 // what is shown grey beside it as the option's detail (where a page is,
 // and where a plugin's entry comes from); and what Enter and Escape do,
-// for every option of the list.
-const markupSource = (markup, whole) => async (context) => {
+// for every option of the list. An option may also say what it writes in
+// place of the cursor's whole line, and what the editor does then
+// (writeOption).
+const markupSource = (host, markup, whole) => async (context) => {
   const { state, pos, tree } = whole(context);
   const line = state.doc.lineAt(pos);
   const before = state.sliceDoc(line.from, pos);
@@ -1130,10 +1268,14 @@ const markupSource = (markup, whole) => async (context) => {
   // The line's text before the cursor is the same in a row and in the
   // master, so the replaced text's length in units is read from it.
   const from = context.pos - (before.length - unitsOf(before, found.from));
+  if (found.escape === "dismisses" && context.state.field(dismissedSlashes, false)?.includes(from)) return null;
   // What the entry replaces after the cursor may run over lines below (a
   // link that ends there): its length in units is read from the text
   // after the cursor, two units at most for each character.
   const following = state.sliceDoc(pos, Math.min(state.doc.length, pos + 2 * found.through));
+  // The text the answer was made from, and the range an entry replaces in
+  // it, for the check that it is still that text when an entry is chosen.
+  const asked = { text: state.doc, from: pos - (context.pos - from), to: pos + unitsOf(following, found.through) };
   return {
     from,
     to: context.pos + unitsOf(following, found.through),
@@ -1142,11 +1284,13 @@ const markupSource = (markup, whole) => async (context) => {
     options: found.options.map((option) => ({
       label: option.label,
       detail: option.detail,
-      // An option written as it is (insert) has no place to fill: the
-      // cursor goes after it.
-      apply: option.insert === undefined ? snippet(option.template) : option.insert,
+      apply: writeOption(host, option, asked),
       enter: found.enter,
       typed: (s, head) => ({ from, letters: s.sliceDoc(from, head) }),
+      // The "/" as the text is when Escape is pressed: the letters before
+      // the cursor and the "/" before them, wherever a change before it
+      // has moved it since the answer.
+      dismiss: found.escape === "dismisses" ? dismissAt : undefined,
     })),
   };
 };
@@ -1193,9 +1337,11 @@ const completions = (host) => {
   // only once n letters are typed (`typed`, the letters as they are now,
   // {from, letters}, given the state, the cursor and the view, whose
   // whole text wholeAt reads) or the reader moved in the list; `escape` is nothing,
-  // to close the list, or what to write as it closes. A mention's list
-  // chooses at once and closes; the emoji's chooses after two letters and
-  // escapes its colon; the wiki's own Markdown says in its answer.
+  // to close the list, or what to write as it closes; `dismiss` is
+  // nothing, or the effect that keeps the list's "/" from opening it again
+  // (dismissedSlashes). A mention's list chooses at once and closes; the
+  // emoji's chooses after two letters and escapes its colon; the wiki's
+  // own Markdown says in its answer, its "/" menu dismissing its "/".
   const shown = (state) => (completionStatus(state) === "active" ? (currentCompletions(state)[0] ?? null) : null);
   // Whether the reader moved in a list that waits for letters with the keys (an arrow,
   // Page Up or Page Down) since it was shown for the letters typed: what
@@ -1250,6 +1396,8 @@ const completions = (host) => {
     if (written !== null) {
       view.dispatch({ changes: written, annotations: isolateHistory.of("full"), userEvent: "input.escape" });
     }
+    const dismissal = option.dismiss?.(view.state) ?? null;
+    if (dismissal !== null) view.dispatch({ effects: dismissal });
     return true;
   };
   // The list's keys: the library's, Enter and Escape as above, and Tab,
@@ -1280,7 +1428,8 @@ const completions = (host) => {
   ]);
   return {
     extension: [
-      autocompletion({ ...config, override: [mentionSource(people, whole), emojiSource(names, whole), markupSource(markup, whole)] }),
+      autocompletion({ ...config, override: [mentionSource(people, whole), emojiSource(names, whole), markupSource(host, markup, whole)] }),
+      dismissedSlashes,
       forgetMoves,
       ownKeys,
       snippetKeys,
@@ -1288,7 +1437,7 @@ const completions = (host) => {
     // The same, asking nothing and never starting on typing: the master's
     // slide by slide (masterCompletion). The library's state stays, so that
     // a query or a timer of its from before goes on finding it.
-    quiet: [autocompletion({ ...config, override: [], activateOnTyping: false }), forgetMoves, ownKeys, snippetKeys],
+    quiet: [autocompletion({ ...config, override: [], activateOnTyping: false }), dismissedSlashes, forgetMoves, ownKeys, snippetKeys],
     mentioned: people.answer,
     emojied: names.answer,
     completed: markup.answer,
@@ -2888,6 +3037,13 @@ export function attach(textarea, host, original, codeTokens) {
         scrollIntoView: true,
       });
       focusText();
+    },
+    // Make the text this, as the smallest change ('smallestChange'), and
+    // select start..end (UTF-16 units of the new text), as 'replace' does:
+    // a toolbar's command, which writes the whole text.
+    write: (text, start, end) => {
+      const change = smallestChange(view.state.doc.toString(), text);
+      editor.replace(change.from, change.to, change.insert, start, end);
     },
     focus: () => focusText(),
     // The caret at the end of the first line, the page's title line (after

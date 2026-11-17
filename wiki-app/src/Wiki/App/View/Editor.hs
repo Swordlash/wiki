@@ -314,6 +314,7 @@ import Wiki.App.Editor.Browser
   , changesLeft
   , chosenFiles
   , clickElement
+  , completeAction
   , completeAsked
   , currentText
   , cursorLine
@@ -372,6 +373,7 @@ import Wiki.App.Editor.Browser
   )
 import Wiki.App.Editor.Complete qualified as Complete
 import Wiki.App.Editor.Problems (problemRanges)
+import Wiki.App.Editor.Tools
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Islands qualified as Islands
 import Wiki.App.Live (Feed (..))
@@ -421,7 +423,6 @@ import Wiki.Core.Markdown (attachmentReference)
 import Wiki.Core.Markdown.Box (BoxKind (name), boxChoices)
 import Wiki.Core.Markdown.Edit
   ( Command (..)
-  , HtmlTag (..)
   , colourLabel
   , highlightClass
   , highlightColours
@@ -1734,10 +1735,9 @@ component =
     toolbarOf holder bar =
       [hh|
         <div class="editor-toolbar" role="toolbar" aria-label="Formatting">
-          <div class="toolbar-group">{{ map (toolButton bar) textTools }}{{ colourMenu holder bar }}{{ emojiMenu holder bar }}</div>
-          <div class="toolbar-group">{{ map (toolButton bar) listTools }}</div>
-          <div class="toolbar-group">{{ map (toolButton bar) codeTools }}{{ linkPageButton bar }}{{ imageButton bar }}{{ toolButton bar tableTool }}</div>
-          <div class="toolbar-group">{{ map (toolButton bar) blockTools }}{{ boxMenu holder bar }}{{ macrosButton bar }}{{ htmlMenu holder bar }}</div>
+          {% for controls in toolbarGroups %}
+            <div class="toolbar-group">{{ map (control holder bar) controls }}</div>
+          {% end %}
           <div class="toolbar-end">
             {% for d in maybeToList bar.deck %}
               <span class="editor-slides-mode" role="group" aria-label="How the presentation is edited">
@@ -1766,11 +1766,24 @@ component =
         </div>
       |]
 
+    -- A control of the toolbar ('toolbarGroups'): a command's button, or
+    -- one of the buttons and menus below.
+    control :: H.RefLabel -> Bar -> Control -> H.ComponentHTML Action Slots m
+    control holder bar = \case
+      ToolControl tool -> toolButton bar tool
+      ColourControl -> colourMenu holder bar
+      EmojiControl -> emojiMenu holder bar
+      LinkPageControl -> linkPageButton bar
+      ImageControl -> imageButton bar
+      BoxControl -> boxMenu holder bar
+      MacrosControl -> macrosButton bar
+      HtmlControl -> htmlMenu holder bar
+
     -- A command's button, disabled while no text is shown to run it on
     -- (slide by slide, with no row open).
     toolButton :: Bar -> Tool -> H.ComponentHTML Action Slots m
     toolButton bar tool =
-      [hh|<button type="button" class="tool" title={{ writingTitle bar (toolTitle tool) }} aria-label={{ tool.label }} disabled={{ bar.textless }} onClick={{ const (Run tool.command) }}>{{ icon tool.icon }}</button>|]
+      [hh|<button type="button" class="tool" title={{ writingTitle bar (toolTitle tool) }} aria-label={{ toolName tool }} disabled={{ bar.textless }} onClick={{ const (Run tool.command) }}>{{ icon tool.icon }}</button>|]
 
     -- A writing control's title, which says why it is disabled when there
     -- is no text to write into ('writesAtCursor').
@@ -1954,6 +1967,7 @@ component =
                 {{ HE.handler' (EventType "wiki-mention") (\ev -> uncurry MentionAsked <$> mentionAsked ev) }}
                 {{ HE.handler' (EventType "wiki-emoji") (\ev -> uncurry EmojiAsked <$> emojiAsked ev) }}
                 {{ HE.handler' (EventType "wiki-complete") (\ev -> uncurry CompleteAsked <$> completeAsked ev) }}
+                {{ HE.handler' (EventType "wiki-complete-action") (completeAction >=> dialogOf) }}
                 {{ HE.handler' (EventType "wiki-cursor-line") (fmap CursorAt . cursorLineOf) }}
                 {{ HE.handler' (EventType "wiki-ready") (\ev -> Just $! EditorReady (readyFocused ev)) }}
                 {{ HE.handler' (EventType "wiki-editor-failed") (const (Just EditorFailed)) }}
@@ -3676,7 +3690,16 @@ heldFor st work =
     , boxes = st.input.context.session.boxes
     , editing = work.page.id
     , pages = st.linkables
+    , entries = slashEntries (boxChoices st.input.context.session.boxes)
     }
+
+-- | The action an entry of the @/@ menu asks for once it is written
+-- ('completeAction'): the toolbar's own, as its button runs it.
+dialogOf :: Text -> Maybe Action
+dialogOf = \case
+  "link-page" -> Just LinkPage
+  "attach" -> Just AttachOrImage
+  _ -> Nothing
 
 -- | The pages of the input's space a link from the page edited may name,
 -- with their paths and links ('Complete.linkables'), worked out in full
@@ -3689,50 +3712,6 @@ linkablesOf input = let found = Complete.linkables input.space input.pages input
 -- the wiki, who writes the server's settings.
 mayDefineKinds :: Context -> Bool
 mayDefineKinds ctx = hasGlobalPermission (principalOf ctx) (grantsOf ctx) Administer
-
--- | A toolbar button: the command it runs, its name, the shortcut that
--- also runs it, and its icon (an SVG path in a 16 by 16 box, drawn as a
--- line in the text's colour by the stylesheet).
-data Tool = Tool {command :: Command, label :: Text, shortcut :: Maybe Text, icon :: Text}
-
--- | A button's title: its name, and its shortcut.
-toolTitle :: Tool -> Text
-toolTitle tool = tool.label <> maybe "" (\k -> " (" <> k <> ")") tool.shortcut
-
-textTools, listTools, codeTools, blockTools :: [Tool]
-textTools =
-  [ Tool Bold "Bold" (Just "Ctrl+B") "M4.5 2.5h4a2.75 2.75 0 0 1 0 5.5h-4zM4.5 8h4.75a2.75 2.75 0 0 1 0 5.5H4.5z"
-  , Tool Italic "Italic" (Just "Ctrl+I") "M7 2.5h5M4 13.5h5M10 2.5l-4 11"
-  , Tool Strikethrough "Strikethrough" Nothing "M2 8h12M11.5 4.5c-.5-1.3-1.8-2-3.5-2-2 0-3.5 1-3.5 2.5 0 1.2 1 2 2.5 2.5M5 11c.4 1.5 1.7 2.5 3.3 2.5 2 0 3.3-1 3.3-2.5"
-  , -- An eye struck through: text hidden until it is clicked.
-    Tool Spoiler "Inline spoiler" Nothing "M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5zM8 6.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 1 0 0-3zM2 2l12 12"
-  , Tool Heading "Heading (again for a smaller one, then none)" Nothing "M3 2.5v11M10 2.5v11M3 8h7M12.5 7.5l1.5-1v7"
-  ]
-listTools =
-  [ Tool BulletList "Bulleted list" (Just "Ctrl+Shift+8") "M6 4h8M6 8h8M6 12h8M2.5 4h.01M2.5 8h.01M2.5 12h.01"
-  , Tool NumberedList "Numbered list" (Just "Ctrl+Shift+7") "M6 4h8M6 8h8M6 12h8M2 2.5l1-.5v3.5M2 9.5c.3-.6 1.7-.7 1.7.2 0 .7-1.7 1.3-1.7 2.3h1.8"
-  , Tool TaskList "Task list" Nothing "M2 2.5h3.5V6H2zM2 10.5l1.2 1.2 2.3-2.7M8 4.25h6M8 11h6"
-  , Tool Quote "Quote" Nothing "M2.5 3v10M6 4.5h7.5M6 8h7.5M6 11.5h5"
-  ]
-codeTools =
-  [ Tool InlineCode "Inline code" (Just "Ctrl+E") "M5.5 4 1.5 8l4 4M10.5 4l4 4-4 4"
-  , Tool CodeBlock "Code block" Nothing "M1.5 2.5h13v11h-13zM6 6 4 8l2 2M10 6l2 2-2 2"
-  , Tool Link "Link" (Just "Ctrl+K") "M6.8 9.2a2.8 2.8 0 0 0 4 0l2.2-2.2a2.8 2.8 0 0 0-4-4l-.9.9M9.2 6.8a2.8 2.8 0 0 0-4 0L3 9a2.8 2.8 0 0 0 4 4l.9-.9"
-  ]
-blockTools =
-  [ Tool InlineMath "Inline math" Nothing "M12.5 3h-8l4.5 5-4.5 5h8"
-  , Tool DisplayMath "Display math" Nothing "M1.5 2.5h13v11h-13zM11 5H5.5L8.5 8l-3 3H11"
-  , Tool Mermaid "Mermaid diagram" Nothing "M1.5 2.5h5v4h-5zM9.5 9.5h5v4h-5zM4 6.5v5h5.5"
-  , Tool Tikz "TikZ picture" Nothing "M2.5 1.5v12h12M4.5 11c2-1 3-7 6-7 1.5 0 2.5 1 3.5 2"
-  , -- A frame around angle brackets: HTML in a frame of its own.
-    Tool HtmlBlock "HTML block" Nothing "M1.5 2.5h13v11h-13zM5.5 6 3.5 8l2 2M10.5 6l2 2-2 2M9 5.5 7 10.5"
-  , Tool HorizontalRule "Horizontal rule" Nothing "M1.5 8h13M4 4.5h8M4 11.5h8"
-  , -- A box with a disclosure triangle, as a closed spoiler shows.
-    Tool SpoilerBlock "Block spoiler" Nothing "M1.5 2.5h13v11h-13zM4 5l2.5 1.5L4 8zM8.5 6.5h4M4 10.5h8.5"
-  ]
-
-tableTool :: Tool
-tableTool = Tool Table "Table" Nothing "M1.5 2.5h13v11h-13zM1.5 6h13M6 2.5v11M10.5 2.5v11"
 
 -- | What the line beside Save says about the assistant's undecided
 -- changes.
@@ -3761,10 +3740,6 @@ boxIcon = "M2.5 2.5h11v11h-11zM2.5 2.5v11M5 5.5h6M5 8.5h6M5 11h4"
 emojiIcon = "M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 1 0 0-13zM5.2 9.6c.6 1.1 1.6 1.7 2.8 1.7s2.2-.6 2.8-1.7M6 6.3h.01M10 6.3h.01"
 -- A backslash and braces, as a macro's definition is written.
 macrosIcon = "M2 3l4 10M9.5 3c-1.5 0-1.5 1-1.5 2.5S7 8 6.5 8c.5 0 1.5.5 1.5 2.5S8 13 9.5 13M12 3c1.5 0 1.5 1 1.5 2.5S14.5 8 15 8c-.5 0-1.5.5-1.5 2.5S13.5 13 12 13"
-
--- | The HTML elements the toolbar's menu offers.
-htmlTags :: [HtmlTag]
-htmlTags = [minBound .. maxBound]
 
 -- | A provider's logo: one SVG path in a 24 by 24 box, in its colour, or in
 -- the text's colour.

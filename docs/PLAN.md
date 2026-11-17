@@ -1940,7 +1940,8 @@ machines when a feature touches them, not ahead of it (decision 83).
 Then the features, in his order: **#187, autocompletion, first** ("bo
 pluginy to refactor"; built and closed 2026-11-17, WP5.124; what it
 left out is #301), then the assistant's packages he asked for on
-2026-11-17 (WP5.126 and WP5.127 below; WP5.125 merged, #303), and #186, plugins, after
+2026-11-17 (WP5.127 and WP5.129 below; WP5.125 and WP5.126 merged,
+#303 and #304), and #186, plugins, after
 them. He added to #186 on 2026-11-15 a hook that rewrites
 the tree before it is rendered (a list with a `sorted` attribute
 sorted; perhaps every extension beyond CommonMark as a plugin on the
@@ -1973,42 +1974,6 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   to what needs a browser, with the counts before and after. The
   about forty asks WP5.95 left are taken with the view each belongs
   to; the ones in views with a single ask keep `View.Latest`.
-- **WP5.126 The page sent once, then its changes; the cache on the
-  conversation; a higher cap (the owner, 2026-11-17).** Today each of
-  the user's messages carries the page as it is then (its first
-  `bodyCap`, 24,000 characters), and the copies stay in the
-  conversation, which is sent whole each time: the tenth message
-  sends ten copies. So the cap cannot simply be raised. **Settled from
-  Anthropic's documentation (2026-11-17): the conversation must stay
-  append-only.** The newer Claude models bind each thinking block to
-  everything sent before it (the system prompt, the tools, every
-  earlier message) and refuse a request that sends a block back after
-  an earlier message changed (a 400; for every account on Fable 5.2,
-  for accounts made since 2026-08-31 on Opus 5.5, Sonnet 5.5 and
-  Haiku 5.5). So an older copy of the page cannot be replaced by a
-  note, which was the first idea. The shape instead: the first message
-  carries the page; a later message carries what changed since the
-  last copy sent (a diff of lines, the model's own edits included, so
-  the picture corrects itself), or one line saying nothing changed,
-  and the whole page again only where the diff would be about as long
-  as the page. The component keeps the last copy sent; the diff and
-  the wording are pure, in `Wiki.Core.Assistant.Prompt`, tested
-  natively. With the conversation append-only, Anthropic's cache is
-  asked for on the conversation too: a marker on the last block of
-  the last message of each request (block-level `cache_control`, as
-  the reference and the instructions have today; at most four markers
-  a request; a message's string content becomes a block to carry it;
-  the top-level automatic field is the alternative, which a gateway
-  may refuse), so each round of a tool loop and each next message
-  read the earlier part at a tenth of the price or less. Then the cap
-  is raised, to a number taken from the reference's measured size and
-  the smallest context window in use. Also to read first: whether a
-  selection is bounded (select-all must not go round the cap). No real
-  provider can be asked from the tests: WP5.125's numbers, read by
-  the owner, are the check. The same rule bounds `/compact`
-  (WP5.127): the only client-side form that passes is the simple one,
-  a summary that replaces the whole conversation, no earlier thinking
-  sent back.
 - **WP5.127 Commands in the assistant's message box (the owner,
   2026-11-17).** A message that is exactly `/new` or `/clear` starts a
   new conversation, as "New" does (#302); `/help` lists the commands;
@@ -2032,6 +1997,18 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   reported (#303), emptied by "New". No money: the APIs give no
   prices, and a gateway's price is its own (the owner: "olejmy cenę,
   niech będzie tylko suma in/out").
+- **WP5.130 The wasm suite of wiki-core, and which machine ran it
+  (proposed to the owner, 2026-11-17; he noticed 20 minutes in the
+  wasm job's tests).** Read from nine runs of that day: the suite takes
+  320 to 410 s on five runs and 690 to 810 s on four (1,160 s once),
+  the same code within minutes of each other, and the smallest suite
+  (139 examples) takes about twice as long on the slow runs too: the
+  hosted runners differ, the code did not regress. What is the wiki's:
+  the five slowest examples are #187's completion properties over long
+  texts (194, 135, 71, 58 and 46 s of the 1,160 s run). To build: those
+  keep their cases natively and run a small share on wasm
+  (`Test.Cases`); the job's summary names the machine's processor, so
+  a slow run is seen for what it is.
 - **WP5.128 The detached preview shows the page as its readers see it
   (the owner, 2026-11-17).** The window of "Detach preview"
   (`Wiki.App.View.LivePreview`) renders the editor's preview alone:
@@ -3229,6 +3206,32 @@ needs. Each was true when its package merged; check before relying on one.
   before any message is sent; it passed alone three times of three.
   A race on the settings' store, or a wait on a clock: to be read for
   its cause with the nightly's three findings, not re-run.
+- **The page sent once, then its changes (#304, WP5.126).** The
+  conversation is append-only, because the newer Claude models refuse
+  a request that sends a thinking block back after an earlier message
+  changed (Anthropic's preserved thinking; every account on Fable 5.2,
+  accounts made since 2026-08-31 on Opus 5.5, Sonnet 5.5, Haiku 5.5).
+  So: the first message carries the page (up to `bodyCap`, now 200,000
+  characters; a selection is cut at it too); a later one carries one
+  sentence when the page is the same, the changes as a diff of lines
+  with two lines of context when it changed, the page again when the
+  diff would be longer than half of it. The panel keeps the last copy
+  sent (`sentCopy`; emptied by "New", by a change of provider, and
+  when the browser-side code says no chat took the message, `unsent`)
+  and says under each message what went with it. Anthropic's cache is
+  asked for on the conversation: a marker on the last block of the
+  last message of each request, put on at request time; user messages
+  are arrays of blocks from the start. `toolchain/test-assistant.mjs`
+  guards the append-only property for both APIs. A request too long
+  for the model has a kind of its own (`TooLong`) that says to press
+  "New", select a part, or choose a model with a larger window.
+  **Rests on documentation alone, no provider asked:** where a marker
+  may sit and that it may move; that an edited earlier message is
+  refused; that the cache is read (the owner's token line, #303, is
+  the check). Known and left: the cap is characters, so a page dense
+  in tokens, or a page near the cap sent whole three times, can exceed
+  a window of 200,000 tokens; the model's own edits come back to it in
+  the next diff, on purpose.
 - **The tokens of an answer, in the assistant's panel (#303,
   WP5.125).** Under each answer, beside its time: the input, the part
   read from the provider's cache, the part written to it, the output,

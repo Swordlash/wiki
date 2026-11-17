@@ -1298,7 +1298,15 @@ mathProbes at prefix =
     -- The groups a formula opened before the cursor and leaves open on
     -- the cursor's line: counted from its opening delimiter, the last
     -- before the cursor, to the line's end.
-    openGroups delimiter before = openBraces (snd (T.breakOnEnd delimiter before) <> lineAfter)
+    openGroups delimiter before = openBraces (afterOpener delimiter before <> lineAfter)
+    -- The text after a formula's opening delimiter: its last occurrence
+    -- not escaped (not after an odd number of backslashes, as @\\$@ is a
+    -- dollar written in the formula), or the whole text where there is
+    -- none.
+    afterOpener delimiter before =
+      case [T.drop (T.length delimiter) rest | (upTo, rest) <- T.breakOnAll delimiter before, even (T.length (T.takeWhileEnd (== '\\') upTo))] of
+        [] -> before
+        openers -> fromMaybe before (lastMay openers)
     -- The lines above the cursor's in its paragraph, where display math
     -- opened on an earlier line is (a blank line ends it).
     paragraphAbove = reverse (takeWhile (not . T.null . T.strip) (reverse at.above))

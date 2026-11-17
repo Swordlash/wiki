@@ -19,10 +19,13 @@
 //     call, and each whole tool call to handlers.tool(name, input), whose
 //     promise is the tool's answer ({text, ok}); the model then goes on,
 //     until it answers without a tool call. handlers.thinking and
-//     handlers.toolStart may be left out. The conversation, as the
-//     provider gave it (the model's
-//     thinking and tool calls included, unchanged, as both providers ask),
-//     is kept by the chat for the next message.
+//     handlers.toolStart may be left out. The conversation is kept by the
+//     chat for the next message. At the provider's own address it is kept
+//     as the provider gave it (the model's thinking and tool calls
+//     included, unchanged, as both providers ask). At a service elsewhere
+//     (options.baseURL) a finished exchange is kept in the plain form every
+//     compatible server reads, without the model's thinking
+//     (`keptOfOpenAi`, `keptOfAnthropic`).
 //   checkKey(provider, key, model): the smallest request there is, which
 //     costs nothing: the model, looked up with the key.
 //   listModels(provider, key): the provider's models (GET /v1/models, every
@@ -75,10 +78,50 @@ const clientOptions = (key, options) => ({
   ...options,
 });
 
+// Whether the chat is asked at a service other than the provider's own: a
+// gateway, a proxy, a server on this machine. Such a service speaks the
+// provider's API, but may not read back everything it wrote. LiteLLM in
+// front of Databricks, for one, writes the model's reasoning as an item of
+// its own and refuses that item when it comes back with the next message.
+const elsewhere = (options) => typeof options.baseURL === "string" && options.baseURL !== "";
+
+// What the chat keeps of a response of OpenAI's Responses API at a service
+// elsewhere: each message as the assistant's plain text, each tool call
+// with only the fields every compatible server reads, and nothing else (no
+// reasoning, no ids, no item of another type). A message without text is
+// left out. A refusal's text is kept as the assistant's text.
+const keptOfOpenAi = (output) =>
+  output.flatMap((item) => {
+    if (item.type === "message") {
+      const text = (item.content ?? []).map((part) => (part.type === "output_text" ? part.text : part.type === "refusal" ? part.refusal : "")).join("");
+      return text === "" ? [] : [{ role: "assistant", content: text }];
+    }
+    if (item.type === "function_call") return [{ type: "function_call", call_id: item.call_id, name: item.name, arguments: item.arguments }];
+    return [];
+  });
+
+// What the chat keeps of a finished turn of Anthropic's Messages API at a
+// service elsewhere: the messages without their thinking blocks, and
+// without an assistant message left with no block. Anthropic's API allows
+// leaving out the thinking of earlier turns, but not inside a tool loop,
+// so this applies only once a turn has ended. Every thinking block is taken
+// out, never some of them: the API refuses a block left out between two
+// that are kept.
+const keptOfAnthropic = (messages) =>
+  messages.flatMap((message) => {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) return [message];
+    const content = message.content.filter((block) => block.type !== "thinking" && block.type !== "redacted_thinking");
+    return content.length === 0 ? [] : [{ ...message, content }];
+  });
+
 // Anthropic's Messages API: the conversation is its messages; a turn is
 // the model's answer and, while it calls tools, the tools' results and its
-// next answer. The model's content goes back whole, thinking blocks
-// included, as the API requires of a conversation that goes on.
+// next answer. Inside a turn the model's content goes back whole, thinking
+// blocks included, as the API requires while a tool is used. At the
+// provider's own address the conversation is kept that way for the next
+// message too. At a service elsewhere, the thinking of a finished turn is
+// taken out ('keptOfAnthropic'), stopped or failed turns included: a
+// gateway that translates to another backend may not read it back.
 //
 // The request asks for adaptive thinking with its summary shown, at the
 // effort chosen (output_config.effort, Wiki.Core.Assistant.Prompt). Older
@@ -142,15 +185,18 @@ const anthropicChat = (key, request, options) => {
           turn.push({ role: "assistant", content: message.content }, { role: "user", content: results });
         }
       } finally {
-        messages.splice(0, messages.length, ...turn);
+        messages.splice(0, messages.length, ...(elsewhere(options) ? keptOfAnthropic(turn) : turn));
       }
     },
   };
 };
 
 // OpenAI's Responses API: the conversation is the input, sent whole each
-// time (nothing is kept at OpenAI: the request says store: false), with the
-// model's output items as it gave them, its reasoning encrypted.
+// time (nothing is kept at OpenAI: the request says store: false). At
+// OpenAI's own address the input holds the model's output items as it gave
+// them, its reasoning encrypted. At a service elsewhere it holds them in
+// the plain form ('keptOfOpenAi'), in a turn's tool loop too: the
+// assistant's text, its tool calls, and no reasoning.
 //
 // The request asks for a summary of the reasoning (reasoning.summary,
 // Wiki.Core.Assistant.Prompt), which streams in parts before the answer;
@@ -163,6 +209,7 @@ const anthropicChat = (key, request, options) => {
 const openAiChat = (key, request, options) => {
   const client = new OpenAI(clientOptions(key, options));
   const input = [];
+  const kept = (output) => (elsewhere(options) ? keptOfOpenAi(output) : output);
   let dropped = false;
   const asked = (now) => {
     if (!dropped || now.reasoning === undefined) return now;
@@ -207,7 +254,7 @@ const openAiChat = (key, request, options) => {
           if (response === null) return;
           const calls = response.output.filter((item) => item.type === "function_call");
           if (calls.length === 0) {
-            turn.push(...response.output);
+            turn.push(...kept(response.output));
             return;
           }
           const outputs = [];
@@ -221,7 +268,7 @@ const openAiChat = (key, request, options) => {
             const { text } = await handlers.tool(call.name, args);
             outputs.push({ type: "function_call_output", call_id: call.call_id, output: text });
           }
-          turn.push(...response.output, ...outputs);
+          turn.push(...kept(response.output), ...outputs);
         }
       } finally {
         input.splice(0, input.length, ...turn);

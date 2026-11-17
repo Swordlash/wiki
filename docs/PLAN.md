@@ -1940,8 +1940,8 @@ machines when a feature touches them, not ahead of it (decision 83).
 Then the features, in his order: **#187, autocompletion, first** ("bo
 pluginy to refactor"; built and closed 2026-11-17, WP5.124; what it
 left out is #301), then the assistant's packages he asked for on
-2026-11-17 (WP5.127 and WP5.129 below; WP5.125 and WP5.126 merged,
-#303 and #304), and #186, plugins, after
+2026-11-17 (WP5.129 below; WP5.125 to WP5.127 merged, #303, #304
+and #306), and #186, plugins, after
 them. He added to #186 on 2026-11-15 a hook that rewrites
 the tree before it is rendered (a list with a `sorted` attribute
 sorted; perhaps every extension beyond CommonMark as a plugin on the
@@ -1974,18 +1974,8 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   to what needs a browser, with the counts before and after. The
   about forty asks WP5.95 left are taken with the view each belongs
   to; the ones in views with a single ask keep `View.Latest`.
-- **WP5.127 Commands in the assistant's message box (the owner,
-  2026-11-17).** A message that is exactly `/new` or `/clear` starts a
-  new conversation, as "New" does (#302); `/help` lists the commands;
-  parsed in Haskell, nothing sent to the model. **`/compact` is not in
-  it** (proposed to the owner, 2026-11-17, not yet answered): it is a
-  second ask of the model that races Stop, New and Close in a view
-  that is not a machine (decision 82: it would make the panel one,
-  WP5.121's fourth), and once WP5.126 keeps no copies of the page in
-  the conversation it saves much less; to decide when WP5.125's
-  numbers show conversations that grow.
 - **WP5.129 The page's cap as a setting, and a conversation's tokens
-  (the owner, 2026-11-17, after WP5.127).** (1) The number of
+  (the owner, 2026-11-17).** (1) The number of
   characters of a page a message carries (`bodyCap`, 200,000 since
   #304) becomes a setting of the user's in the assistant's settings,
   kept as the model and the effort are, 200,000 when not set. Beside
@@ -3215,6 +3205,22 @@ needs. Each was true when its package merged; check before relying on one.
   before any message is sent; it passed alone three times of three.
   A race on the settings' store, or a wait on a clock: to be read for
   its cause with the nightly's three findings, not re-run.
+- **Commands in the assistant's message box (#306, WP5.127).** A
+  message that, trimmed, is a slash and letters only is a command
+  (`Wiki.Core.Assistant.Prompt.command`, read without regard to case):
+  `/new` and `/clear` take the "New" button's path, `/help` lists the
+  commands as notices, any other word gets a notice that there is no
+  such command and stays in the box. Nothing of a command reaches the
+  model, and any other message that starts with a slash is ordinary
+  text. **`/compact` is not built** (proposed to the owner as later,
+  2026-11-17, not answered): it is a second ask of the model that
+  races Stop, New and Close in a view that is not a machine (decision
+  82: it would make the panel one, WP5.121's fourth); since #304 a
+  conversation holds one copy of the page, so it would save much
+  less; and by Anthropic's rule for edited history the only form that
+  passes is the simple one, a summary that replaces the whole
+  conversation. To decide when the conversation's tokens (WP5.129)
+  show conversations that grow.
 - **The detached preview is the page's reading view (#305,
   WP5.128).** The window of "Detach preview" is laid out by the page
   view's own markup and CSS, with the typed text in place of the saved

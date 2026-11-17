@@ -3186,7 +3186,9 @@ needs. Each was true when its package merged; check before relying on one.
   cursors. The check of the whole text grew by about 4% on wasm (6 ms
   on the guide, 90 ms on the 318,000-character deck, whose check
   already took 2.5 s).
-- **Commands completed in math (#299, WP5.124 (e)); #187 is built.**
+- **Commands completed in math (#299, WP5.124 (e)); #187 is built
+  and closed, and what its parts left out is issue #301 (the owner,
+  2026-11-17).**
   Six rounds. The first build wrote braces for arguments and whole
   environments, which the issue did not ask for and five of the first
   round's six findings came from; narrowed to the name alone. Known

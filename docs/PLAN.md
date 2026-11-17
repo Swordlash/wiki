@@ -1994,6 +1994,29 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   `Test.Harness.MemDom` (a page for each view, so no lock; a reader's
   whole click with default actions); the wiki keeps `viewContext`,
   `TestFeed`, `driven`.
+- **WP5.135 One read of a thing in flight (the comments' and the
+  bell's machines; being built, stacked on #312).** A run of 500,000
+  cases of the comments' property "shows no comment's text older than
+  one it showed" found, beside the fault #312 fixes, a text going back
+  with no push involved: two reads of the page are out, the server
+  handles the later-asked one before someone's edit and the
+  earlier-asked one after it, and the machine takes the later-asked
+  answer last. "The answer of the read asked later is the newer" does
+  not hold when the server handles reads out of order; the bell has
+  the same limit as an expected failure in its suite. The server has
+  no order a read can carry today (a bare `[Thread]`; `seq` columns
+  are positions given again after a delete; times are no order, by
+  #282's notes). Taken: the machine never has two takable reads of a
+  page out (a read wanted meanwhile sets a flag, and one read goes
+  when the first is answered; a failed answer frees the flight); for
+  the bell, reads and marks in one flight. No change of the server.
+  **Kept for the owner as a decision of its own:** a revision of the
+  page's threads kept by the server (a column raised by triggers in
+  each write's transaction, as migration 0002 does for permissions; on
+  the list, on each write's answer, on `Subscribed` and on each
+  event): a total order, exact replays, and most of the inexact rules
+  gone, for a migration and a change of the HTTP and WebSocket
+  answers, 600 to 1,000 lines.
 - **WP5.131 The ceilings out, a linter's rule in (the owner,
   2026-11-17: "wywal, ewentualnie jakiś linter"; being built after
   WP5.130, stacked on it).** The ceilings on the browser suite (#291)

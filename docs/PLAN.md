@@ -3208,6 +3208,14 @@ needs. Each was true when its package merged; check before relying on one.
   cursors. The check of the whole text grew by about 4% on wasm (6 ms
   on the guide, 90 ms on the 318,000-character deck, whose check
   already took 2.5 s).
+- **An example of the assistant's settings failed once by chance
+  (2026-11-17, a builder's run of the assistant's browser group).**
+  "dims a provider that cannot be reached…"
+  (`Test/Browser/Assistant.hs`, about line 536) waits up to two
+  seconds for the stored settings to say the provider is unreachable,
+  before any message is sent; it passed alone three times of three.
+  A race on the settings' store, or a wait on a clock: to be read for
+  its cause with the nightly's three findings, not re-run.
 - **The tokens of an answer, in the assistant's panel (#303,
   WP5.125).** Under each answer, beside its time: the input, the part
   read from the provider's cache, the part written to it, the output,

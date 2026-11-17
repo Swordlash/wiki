@@ -1940,7 +1940,7 @@ machines when a feature touches them, not ahead of it (decision 83).
 Then the features, in his order: **#187, autocompletion, first** ("bo
 pluginy to refactor"; built and closed 2026-11-17, WP5.124; what it
 left out is #301), then the assistant's packages he asked for on
-2026-11-17 (WP5.125 to WP5.127 below), and #186, plugins, after
+2026-11-17 (WP5.126 and WP5.127 below; WP5.125 merged, #303), and #186, plugins, after
 them. He added to #186 on 2026-11-15 a hook that rewrites
 the tree before it is rendered (a list with a `sorted` attribute
 sorted; perhaps every extension beyond CommonMark as a plugin on the
@@ -1973,16 +1973,6 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   to what needs a browser, with the counts before and after. The
   about forty asks WP5.95 left are taken with the view each belongs
   to; the ones in views with a single ask keep `View.Latest`.
-- **WP5.125 What a turn of the assistant cost, shown in the panel
-  (the owner, 2026-11-17; first of three, the instrument for the next
-  one).** After a response the panel shows the tokens of the turn: the
-  input, how much of it was read from the provider's cache, the
-  output; summed over the rounds of a turn's tool loop. One normalised
-  triple from both APIs (Anthropic's `input_tokens` leaves the cached
-  tokens out, OpenAI's holds them). A service that reports no usage
-  shows nothing. With it the owner sees whether his gateway passes
-  prompt caching, which nothing else shows: a gateway that drops
-  `cache_control` answers as before, at the full price.
 - **WP5.126 The page sent once, then its changes; the cache on the
   conversation; a higher cap (the owner, 2026-11-17).** Today each of
   the user's messages carries the page as it is then (its first
@@ -3218,6 +3208,17 @@ needs. Each was true when its package merged; check before relying on one.
   cursors. The check of the whole text grew by about 4% on wasm (6 ms
   on the guide, 90 ms on the 318,000-character deck, whose check
   already took 2.5 s).
+- **The tokens of an answer, in the assistant's panel (#303,
+  WP5.125).** Under each answer, beside its time: the input, the part
+  read from the provider's cache, the part written to it, the output,
+  summed over the requests of the turn; "none from cache" where the
+  service reported zero, no parenthesis where it did not say, nothing
+  where it reported no usage. One shape from both APIs
+  (`usageOfAnthropic`, `usageOfOpenAi`; Anthropic's `input_tokens`
+  leaves the cached tokens out, OpenAI's holds them). It is how the
+  owner sees whether his gateway passes prompt caching, and the check
+  for WP5.126. Not shown: a stream that errors, or a Stop, has no
+  final usage to read at Anthropic. No total for a conversation.
 - **The assistant at a gateway (#302; the owner's report,
   2026-11-17).** At his work the assistant is asked through LiteLLM in
   front of Databricks, serving a Claude model. Set to OpenAI's API,

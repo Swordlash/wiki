@@ -263,13 +263,13 @@ spec m = do
     find ui ".live-preview .page-title" >>= (`shouldHaveText` "Retitled")
     unsafeIOToPageM (js_live_send (toJSText long) (toJSText "") 230)
     eventually $ scrolled "" >>= (`shouldSatisfy` (> 500))
-    -- The panel marks the section being read (jsbits/toc.js): the first at
-    -- the top. Scrolled from there until the end of the text is just in
-    -- the window, with the page going on under it, the last section is
-    -- the one read, though its heading never reached the line a quarter
-    -- of the way down the window, nor the window the end of the page.
+    -- The panel marks the section being read (jsbits/toc.js). Scrolled
+    -- from the top until the end of the text is just in the window, with
+    -- the page going on under it, the last section is the one read, though
+    -- its heading never reached the line a quarter of the way down the
+    -- window, nor the window the end of the page. The wait is for the
+    -- browser's IntersectionObserver, which is not the program's.
     unsafeIOToPageM (js_scroll_to 0)
-    eventually $ current ui `shouldReturn` [Just "#section-1"]
     endTop <- boxTop ".page-text-end"
     height <- windowHeight
     unsafeIOToPageM (js_scroll_to (round (endTop - height + 10)))

@@ -364,18 +364,16 @@ spec m = do
     saved <- readPage wiki ["blog"] ["hello-world"]
     saved.body `shouldBe` "# Hello, world\n\nMy words. And theirs: someone else's words."
 
-  -- The preview's turn re-renders the editor around its text: when the
-  -- editor's text was a value Halogen held, a render that came between a
-  -- key and the handling of its input put the text back as before the key
-  -- (e9055578). The turns are put where they matter by the test's clock,
-  -- which the preview's pause ('previewDelay', 'H.delayCounted') sleeps
-  -- on: a turn after each key of the first words, so that a render comes
-  -- between every two keys, then a run of keys with no turn between, and
-  -- a turn after it. No sleep and no deadline: before, the keys came with
-  -- real pauses about the preview's delay, so that the turns fell between
-  -- them by chance, into the Markdown guide, whose preview took more than
-  -- the driver's five seconds on a slow machine.
-  it "loses no keystroke while the preview follows the typing, its turns between the keys" $ withTestClock $ \clock -> runPage $ do
+  -- Typing in CodeMirror with the preview's turns between the keys ends in
+  -- the text typed, in the editor, the preview and the page saved. The
+  -- turns are put between the keys by the test's clock, which the
+  -- preview's pause ('previewDelay', 'H.delayCounted') sleeps on: a turn
+  -- after each key of the first words, then a run of keys with no turn
+  -- between, and a turn after it. Each key's input is handled before its
+  -- turn (the driver waits for it), so a render that comes between a key
+  -- and its input, the fault of e9055578, is not this example's: the
+  -- editor on the in-memory DOM puts it in that order ("Test.EditorDom").
+  it "ends in the text typed when the preview's turns come between the keys" $ withTestClock $ \clock -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui

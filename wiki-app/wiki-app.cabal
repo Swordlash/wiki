@@ -345,6 +345,7 @@ test-suite wiki-app-test
         Test.CommentsDom
         Test.LivePreviewDom
         Test.DeckDom
+        Test.EditorDom
         Test.Counting
         Test.Demo
         Test.Entries

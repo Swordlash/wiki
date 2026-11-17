@@ -14,6 +14,7 @@ import Test.Deck qualified as Deck
 import Test.DeckDom qualified as DeckDom
 import Test.DecryptedExport qualified as DecryptedExport
 import Test.Demo qualified as Demo
+import Test.EditorDom qualified as EditorDom
 import Test.Entries qualified as Entries
 import Test.Export qualified as Export
 import Test.Favicon qualified as Favicon
@@ -74,6 +75,7 @@ main = do
       BellDom.spec
       CommentsDom.spec
       DeckDom.spec
+      EditorDom.spec
       LivePreviewDom.spec
       Users.spec
       Deck.spec

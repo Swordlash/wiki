@@ -80,14 +80,16 @@ blockStarts source shapes =
     afterBlank l = IntSet.member (l - 1) blanks
 
 -- | 'Kept' is a start the last parse found, as the editor holds it after
--- the changes since: mapped through them, where it is now, and where the
--- line it is on now starts and ends (offsets in the text now). A change
--- can map a start into the middle of a line, or several starts onto one
--- place (a deletion across them).
+-- the changes since: mapped through them, where it is now, where the line
+-- it is on now starts and ends (offsets in the text now), and whether that
+-- line is flush: it holds text from its first column, not a blank or a
+-- tab. A change can map a start into the middle of a line, onto a blank
+-- line, or several starts onto one place (a deletion across them).
 data Kept = Kept
   { at :: Int
   , lineFrom :: Int
   , lineTo :: Int
+  , flush :: Bool
   }
   deriving stock (Eq, Ord, Show)
 
@@ -121,9 +123,9 @@ data Kept = Kept
 textRange :: [Kept] -> Int -> Int -> Int -> Int -> Maybe (Int, Int)
 textRange kept firstChange lineStart lineEnd len = do
   let starts = ordNub (sort [k | k <- kept, k.at == k.lineFrom])
-      positions = ordNub (map (.at) starts)
       begins = fromMaybe 0 (lastMay [k.at | k <- starts, k.at < lineStart, k.lineTo <= firstChange])
-      ends = case dropWhile (<= lineEnd) positions of
+      below = ordNub (map (.at) starts)
+      ends = case dropWhile (<= lineEnd) below of
         _ : end : _ -> end - 1
         _ -> len
   guard (ends - begins <= textLimit)

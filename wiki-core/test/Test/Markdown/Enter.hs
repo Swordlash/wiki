@@ -152,6 +152,14 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     it "keeps two starts a deletion put in one place from cutting the item's line below off" $ do
       let (before, after) = ("- a", "\n  b")
       (maybe NewLine (uncurry enter) (handedOverAt before after 3 1 "\n\nx\n\n"), enter before after) `shouldBe` (NewLine, NewLine)
+    -- CI's seed 1649390415 on main, shrunk: the check read
+    -- "1. a\n\n\nx\n\n\n   more", and "\n\nx\n\n" was deleted since. The
+    -- paragraph's start lands on the blank line, and the indented line's
+    -- start, a top-level block then, is the item's second paragraph now:
+    -- the two cut the text before it, and Enter went on in the list.
+    it "ends the text below the first change only at a flush line" $ do
+      let (before, after) = ("1. a", "\n\n   more")
+      (maybe NewLine (uncurry enter) (handedOverAt before after 5 0 "\n\nx\n\n"), enter before after) `shouldBe` (NewLine, NewLine)
     -- Codex's round 6: CommonMark counts a carriage return alone as a line
     -- break, and the editor does not, so the lines differ.
     it "keeps no starts, and breaks the line alone, in a text holding a carriage return" $ do
@@ -261,6 +269,17 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
       atEveryLineEnd doc $ \before after answer -> case handedOver before after change of
         Just (given, taken) -> counterexample (show (given, taken)) (enter given taken === answer)
         Nothing -> property True
+    -- The same for every block deleted below the cursor since the check,
+    -- at each blank line below it: the deleted block's start lands there,
+    -- and the starts below it follow, where the deletion may have put
+    -- them in a block above (seed 1649390415 met one in a random change).
+    prop "answers as for the whole text, after a block below the cursor deleted since the check" $ \doc ->
+      atEveryLineEnd doc $ \before after answer ->
+        conjoin
+          [ counterexample (show (at, given, taken)) (enter given taken === answer)
+          | at <- blankLinesBelow before after
+          , Just (given, taken) <- [handedOverAt before after at 0 "\n\nx\n\n"]
+          ]
     -- Not only safe but useful: in containers written as CommonMark reads
     -- them without doubt, Enter at the end of an item's or a quotation's
     -- text goes on in it, as the containers say.
@@ -701,12 +720,25 @@ handedOverAt before after at removed was = do
       | not changed || s < at = s
       | s > at + T.length was = s + taken - T.length was
       | otherwise = at + taken
-    kept = [Kept {at = m, lineFrom = lineOf m, lineTo = m + T.length (T.takeWhile (/= '\n') (T.drop m now))} | s <- oldStarts, let m = mapped s]
+    kept = [Kept {at = m, lineFrom = lineOf m, lineTo = m + T.length (lineAt m), flush = flushAt m} | s <- oldStarts, let m = mapped s]
     lineOf m = T.length (T.dropWhileEnd (/= '\n') (T.take m now))
+    lineAt m = T.takeWhile (/= '\n') (T.drop (lineOf m) now)
+    -- As the editor says it: text from the line's first column.
+    flushAt m = maybe False (\(c, _) -> c /= ' ' && c /= '\t') (T.uncons (lineAt m))
     firstChange = if changed then at else T.length now
     cursor = T.length before
     lineStart = T.length (T.dropWhileEnd (/= '\n') before)
     lineEnd = cursor + T.length (T.takeWhile (/= '\n') after)
+
+-- | The offsets of the blank lines below the cursor's line.
+blankLinesBelow :: Text -> Text -> [Int]
+blankLinesBelow before after =
+  [ T.length before + 1 + sum (map ((+ 1) . T.length) (take i ls))
+  | (i, l) <- zip [0 ..] ls
+  , T.all (\c -> c == ' ' || c == '\t') l
+  ]
+  where
+    ls = drop 1 (T.splitOn "\n" after)
 
 -- | What the editor's Enter answers: 'enter' over what it hands over, or
 -- a line break alone past the limit.

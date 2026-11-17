@@ -53,6 +53,7 @@ module Test.Harness.MemDom
     -- * A view under a parent that changes its input
   , Drive (..)
   , driven
+  , drivenHearing
   , setInput
 
     -- * What the shell gives a view
@@ -198,6 +199,21 @@ driven component given =
   where
     render :: i -> H.ComponentHTML () (DrivenSlots q o) m
     render i = HH.div_ [HH.slot_ "view" () component i]
+
+-- | 'driven', with each output of the view given to @heard@ as it is
+-- raised, as the shell hears it: for a spec that checks what the view tells
+-- its parent.
+drivenHearing :: forall q i o m. (Typeable i, MonadIO m) => (o -> IO ()) -> H.Component q i o m -> i -> H.Component (Drive i) () Void m
+drivenHearing heard component given =
+  H.mkComponent
+    H.ComponentSpec
+      { initialState = \_ -> pure given
+      , render
+      , eval = H.mkEval H.defaultEval {H.handleAction = H.liftEffect . liftIO . heard, H.handleQuery = \(SetInput i a) -> put i $> Just a}
+      }
+  where
+    render :: i -> H.ComponentHTML o (DrivenSlots q o) m
+    render i = HH.div_ [HH.slot "view" () component i identity]
 
 -- | Give a 'driven' view a new input, and wait for the parent to have
 -- taken it.

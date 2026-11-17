@@ -1297,7 +1297,7 @@ component =
                 Posts _ _ | isJust (homeOf space pages) -> pageView space pages homePath
                 Page _ path -> pageView space pages (here' path)
                 PageSource _ path -> HH.slot "view" SourceSlot SourceView.component SourceView.Input {context = context st, space, path = here' path} FromView
-                LivePreview _ path -> HH.slot "view" LivePreviewSlot LivePreviewView.component LivePreviewView.Input {context = context st, space, pages, path = here' path} FromView
+                LivePreview _ path -> HH.slot "view" LivePreviewSlot LivePreviewView.component LivePreviewView.Input {context = context st, space, pages, path = here' path, listener = LivePreviewView.browserListener} FromView
                 PageHistory _ path version against ->
                   HH.slot "view" HistorySlot HistoryView.component HistoryView.Input {context = context st, space, path = here' path, version, against} FromView
                 PageAtVersion _ path version -> pageViewOf space pages (here' path) (Just version)

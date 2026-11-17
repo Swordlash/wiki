@@ -60,6 +60,10 @@ data Input = Input
   { place :: Place
   , title :: Text
   , body :: Text
+  , titled :: Bool
+  -- ^ Whether a document's title is shown above its text. The editor's
+  -- preview shows it; the window of its own puts it where the page view
+  -- does, above the column of the text ("Wiki.App.View.Reading").
   , slides :: Maybe Slides
   -- ^ 'Nothing' for a document, shown as its page.
   }
@@ -143,10 +147,10 @@ component =
       }
   where
     render :: State -> H.ComponentHTML Action IslandSlots m
-    render st@State {input = Input {place, title, body, slides}, known} = case slides of
+    render st@State {input = Input {place, title, body, titled, slides}, known} = case slides of
       Nothing ->
         [hh|
-          <div class="preview">{{ Body.heading title body }}{{ Body.articleLines FollowLink FromIsland (Body.withPeople known.found place) body }}</div>
+          <div class="preview">{% if titled %}{{ Body.heading title body }}{% end %}{{ Body.articleLines FollowLink FromIsland (Body.withPeople known.found place) body }}</div>
         |]
       -- Every slide is rendered, as one document cut into slides, as the
       -- slides view renders them, so that what a slide takes from those
@@ -247,6 +251,7 @@ sameDraft :: Input -> Input -> Bool
 sameDraft a b =
   a.title == b.title
     && a.body == b.body
+    && a.titled == b.titled
     && a.place.context.revision == b.place.context.revision
     && a.place.context.session == b.place.context.session
     && a.place.context.spaces == b.place.context.spaces

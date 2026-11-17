@@ -8578,16 +8578,19 @@ a.mention {
   overflow: hidden;
 }
 
-/* In the preview's own window the page scrolls, under the sticky header: a
-   block followed there stops below the header. */
+/* In the preview's own window the page scrolls, under the sticky header and
+   the window's line: a block followed there stops below both. */
 .live-preview .source-line {
-  scroll-margin-top: calc(var(--header-height) + 0.75rem);
+  scroll-margin-top: calc(var(--header-height) + var(--page-actions-height) + 0.75rem);
 }
 
-/* The preview in a window of its own: the page alone, under a line that says
-   whom it follows. */
+/* The preview in a window of its own is laid out as the page view (its
+   classes are the page's); in the place of the page's bar of actions, a
+   line that says whom it follows, with the switch of the page's width at
+   its end. */
 .live-preview-state {
-  margin: 0 0 1rem;
+  margin: 0;
+  align-self: center;
   font-size: 0.85rem;
   color: var(--muted);
 }

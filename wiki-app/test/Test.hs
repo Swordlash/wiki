@@ -28,6 +28,7 @@ import Test.Latest qualified as Latest
 import Test.Licence qualified as Licence
 import Test.Link qualified as Link
 import Test.Live qualified as Live
+import Test.LivePreviewDom qualified as LivePreviewDom
 import Test.Manifest qualified as Manifest
 import Test.Passwords qualified as Passwords
 import Test.Policy qualified as Policy
@@ -72,6 +73,7 @@ main = do
       BellDom.spec
       CommentsDom.spec
       DeckDom.spec
+      LivePreviewDom.spec
       Users.spec
       Deck.spec
       Latest.spec

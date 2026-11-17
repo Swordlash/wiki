@@ -248,7 +248,7 @@ component =
           <> toList (st.facts >>= \f -> Reading.postInfo Followed st.input.context st.input.space st.input.pages f.page f.createdAt)
           <> [ [hh|
                 <div class={{ Reading.mainClasses (isJust contents) False }}>
-                  <div class="page-text live-preview-body" ref={{ st.article }}>{{ previewOf st title text }}</div>
+                  <div class="page-text live-preview-body" ref={{ st.article }}>{{ previewOf st title text }}{{ Reading.textEnd }}</div>
                   {% for entries in maybeToList contents %}
                     <div class="page-side">{{ Reading.contentsPanel FollowLink (place st) entries }}</div>
                   {% end %}

@@ -9,11 +9,15 @@
 // then is the current section worked out again, as the last heading above
 // that line (the first heading, while none is: what comes before it is
 // the start of the page). The last sections of a page may never reach the
-// line, since the page ends first: once the window is scrolled to the end
-// of the page, which a second observer hears as the page's footer comes
-// fully into view, the last heading in the window is the one read. Nothing of it reaches Halogen, which renders the lists the
-// same whatever is read; the attribute is the script's alone, and the
-// smoke tests do not count it as a repair of the page (as data-stuck).
+// line, since the page ends first: once the window has scrolled and the end
+// of the page's text is in it, the last heading in the window is the one
+// read. The end of the text is an empty element after it,
+// .page-text > .page-text-end, which the page view and the preview in a
+// window of its own both render (Wiki.App.View.Reading's textEnd); a
+// second observer hears it come into the window and leave it. Nothing of
+// it reaches Halogen, which renders the lists the same whatever is read;
+// the attribute is the script's alone, and the smoke tests do not count it
+// as a repair of the page (as data-stuck).
 
 // Keep the marks and the panel's state from now on: once is enough, as it
 // follows the document as the program changes it.
@@ -52,9 +56,9 @@ function wiki_keep_contents() {
   const line = () => window.innerHeight / 4;
   let headings = [];
   let panels = [];
-  let footer = null;
+  let textEnd = null;
   const atTheEnd = () =>
-    window.scrollY > 0 && window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 4;
+    window.scrollY > 0 && textEnd !== null && textEnd.getBoundingClientRect().top <= window.innerHeight;
   const mark = () => {
     let current = headings.length > 0 ? headings[0].id : null;
     const end = atTheEnd();
@@ -82,11 +86,11 @@ function wiki_keep_contents() {
       headings = now;
       mark();
     }
-    const last = document.querySelector(".page-view .page-meta");
-    if (last !== footer) {
+    const marker = document.querySelector(".page-text > .page-text-end");
+    if (marker !== textEnd) {
       ending.disconnect();
-      if (last !== null) ending.observe(last);
-      footer = last;
+      if (marker !== null) ending.observe(marker);
+      textEnd = marker;
     }
     // A panel shown afresh is folded if this browser folded the last one.
     const shown = [...document.querySelectorAll("details.page-contents")];

@@ -626,6 +626,7 @@ component =
           <div class="page-text" onMouseUp={{ const Selecting }} onKeyUp={{ const Selecting }} {{ quoteClicks }}>
             {% if titled %}{{ readersStack st }}{% end %}
             {{ Body.articleOf FollowLink place page.body withByline }}
+            {{ Reading.textEnd }}
           </div>
           {% for s in maybeToList st.selected %}
             <div class="selection-actions" style={{ position s }}>

@@ -22,6 +22,7 @@ module Wiki.App.View.Reading
   , postInfo
   , mainClasses
   , contentsPanel
+  , textEnd
   , attachmentList
   )
 where
@@ -139,6 +140,15 @@ contentsPanel onLink place entries =
       <nav aria-label="Contents" {{ Body.followingLinks onLink place }}>{{ Md.contentsList entries }}</nav>
     </details>
   |]
+
+-- | The end of the page's text: an empty element, the last in the column
+-- of the text (@page-text@), after the article. @jsbits/toc.js@ watches it
+-- come into the window: once it is there, the page has been read to its
+-- end, and the last heading in the window is the section being read,
+-- though the last sections, too short, never reached the line a quarter of
+-- the way down the window.
+textEnd :: HH.HTML w i
+textEnd = [hh|<div class="page-text-end" aria-hidden="true"></div>|]
 
 -- | The page's attachments, under its text, each a link that downloads
 -- it, from the addresses the view fetched for them. Nothing for a page

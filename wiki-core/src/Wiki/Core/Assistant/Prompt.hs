@@ -113,14 +113,22 @@ data PageContext
   deriving stock (Eq, Show)
 
 -- | The number of characters of a page, or of a selection, sent with a
--- message: a long page's worth. The first message of a conversation
+-- message: a long page's worth. It bounds what one message carries, and
+-- so what a conversation costs. The first message of a conversation
 -- carries the page cut to it, and the later ones only what changed, so
--- the conversation holds about one copy. Two copies (the first, and one
--- sent again after a large change) and the reference (67 thousand
--- characters) are about 470 thousand characters: 155 thousand tokens at
--- three characters a token, which with a response's 'maxTokens' fits the
--- smallest context window of the models offered (200 thousand tokens).
--- The panel says so when a page is longer.
+-- the conversation holds about one copy. The panel says so when a page is
+-- longer.
+--
+-- Whether a page fits is the model's context window's to decide, in
+-- tokens, which cannot be counted here. For Latin text, for example, two
+-- copies (the first, and one sent again after a large change) and the
+-- reference (67 thousand characters) are about 470 thousand characters:
+-- 155 thousand tokens at three characters a token, which with a
+-- response's 'maxTokens' fits a window of 200 thousand tokens. Text dense
+-- in tokens (Chinese, Japanese, emoji) can take more than one token a
+-- character, and can outgrow a window that size with its first message.
+-- The provider then refuses the request, and the panel says what to do
+-- ('Wiki.Core.Assistant.TooLong').
 bodyCap :: Int
 bodyCap = 200_000
 

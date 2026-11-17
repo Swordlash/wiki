@@ -651,6 +651,11 @@ data ErrorKind
     Declined
   | -- | The request was refused as malformed (400, 422).
     BadRequest
+  | -- | The request is too long for the model's context window: the
+    -- conversation, with the page, has outgrown it. Since the conversation
+    -- is never changed, every later message fails the same way until a new
+    -- conversation starts.
+    TooLong
   | -- | The page's Content Security Policy does not let the browser reach
     -- the address (WP5.21 of docs/PLAN.md): another service's base URL
     -- that the wiki's administrator has not allowed. No request was sent.
@@ -683,6 +688,7 @@ instance FromJSON AssistantError where
         "connection" -> pure Unreachable
         "refusal" -> pure Declined
         "bad_request" -> pure BadRequest
+        "too_long" -> pure TooLong
         "blocked" -> pure Blocked
         _ -> pure Failed
 
@@ -708,6 +714,7 @@ errorMeaning service e = case e.kind of
   Unreachable -> "The provider could not be reached."
   Declined -> "The model declined to answer."
   BadRequest -> "The provider refused the request."
+  TooLong -> "The conversation, with the page, is too long for this model. Start a new one with \8220New\8221; for a long page, select the part you mean, or choose a model with a larger context window."
   Blocked -> "This wiki's pages do not let the assistant reach that address, so the browser sent nothing."
   Failed -> "The request failed."
 

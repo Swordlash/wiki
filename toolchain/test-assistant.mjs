@@ -846,6 +846,43 @@ await test("OpenAI: a response without usage tells nothing, and one with the tok
   assert.deepEqual(told, [{ input: 900, cached: 0, written: 640, output: 3 }]);
 });
 
+// A request too long for the model's context window is a kind of its own
+// ("too_long"), which says to start a new conversation: the conversation
+// is never changed, so every later message would fail the same way.
+// Anthropic answers a 400 invalid_request_error "prompt is too long"
+// (its Context windows page), OpenAI a 400 whose error code is
+// context_length_exceeded, and a LiteLLM proxy names its
+// ContextWindowExceededError, a 400 (its Exception mapping page).
+const kindOf = async (provider, request, answer, options = {}) => {
+  const { fetch } = fakeFetch([answer]);
+  const chat = startChat(provider, "k", request, { fetch, maxRetries: 0, ...options });
+  const error = await chat.send("x", collect().handlers, new AbortController().signal).then(() => null, (e) => e);
+  return describeError(error);
+};
+
+await test("Anthropic: a prompt too long for the model's window is its own kind, and another 400 is not", async () => {
+  const tooLong = "prompt is too long: 215000 tokens > 200000 maximum";
+  assert.deepEqual(await kindOf("anthropic", anthropicRequest, json(400, { type: "error", error: { type: "invalid_request_error", message: tooLong } })), {
+    kind: "too_long",
+    status: 400,
+    message: tooLong,
+  });
+  assert.equal((await kindOf("anthropic", anthropicRequest, json(400, { type: "error", error: { type: "invalid_request_error", message: "messages.1: the long text is not valid" } }))).kind, "bad_request");
+});
+
+await test("OpenAI: a request too long for the model's window is its own kind, by its code, and another 400 is not", async () => {
+  const tooLong = { error: { message: "Your input exceeds the context window of this model. Please adjust your input and try again.", type: "invalid_request_error", param: "input", code: "context_length_exceeded" } };
+  assert.deepEqual(await kindOf("openai", openAiRequest, json(400, tooLong)), { kind: "too_long", status: 400, message: tooLong.error.message });
+  assert.equal((await kindOf("openai", openAiRequest, json(400, { error: { message: "The input is too long a list.", type: "invalid_request_error", param: "input", code: "invalid_value" } }))).kind, "bad_request");
+});
+
+await test("A gateway's error for a context window outgrown is the same kind", async () => {
+  const said = 'litellm.ContextWindowExceededError: litellm.BadRequestError: AnthropicException - {"type":"error","error":{"type":"invalid_request_error","message":"input length and max_tokens exceed context limit"}}';
+  const answer = json(400, { error: { message: said, type: null, param: null, code: "400" } });
+  assert.equal((await kindOf("openai", openAiRequest, answer, { baseURL: "https://litellm.example.com/v1" })).kind, "too_long");
+  assert.equal((await kindOf("openai", openAiRequest, json(400, { error: { message: "litellm.BadRequestError: OpenAIException - Invalid Schema", type: null, param: null, code: "400" } }), { baseURL: "https://litellm.example.com/v1" })).kind, "bad_request");
+});
+
 // A response that ends incomplete or failed can still carry its usage
 // (ResponseIncompleteEvent and ResponseFailedEvent hold the whole
 // Response, whose usage is optional): its tokens were spent, and are told

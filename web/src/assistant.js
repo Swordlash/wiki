@@ -385,6 +385,19 @@ const kinds = [
   ["overloaded", "InternalServerError"],
 ];
 
+// Whether an error is the provider refusing a request too long for the
+// model's context window. The conversation is never changed, so every
+// later message would fail the same way, and the application says to start
+// a new one (Wiki.Core.Assistant.TooLong). Most specific first: OpenAI's
+// 400 with the error code context_length_exceeded; then, as `refusesPart`
+// does, a 400 whose message says so: Anthropic's "prompt is too long" (its
+// Context windows page: a 400 invalid_request_error), or the
+// ContextWindowExceededError a LiteLLM proxy names (a 400, its Exception
+// mapping page).
+const tooLong = (error) =>
+  (error instanceof OpenAI.BadRequestError && error.code === "context_length_exceeded") ||
+  ((error instanceof Anthropic.BadRequestError || error instanceof OpenAI.BadRequestError) && /\bprompt is too long\b|\bContextWindowExceededError\b/i.test(messageOf(error)));
+
 export function describeError(error) {
   if (error instanceof Anthropic.APIUserAbortError || error instanceof OpenAI.APIUserAbortError || error?.name === "AbortError") {
     return { kind: "aborted", status: null, message: "" };
@@ -394,6 +407,7 @@ export function describeError(error) {
     return { kind: "connection", status: null, message: messageOf(error) };
   }
   const status = typeof error?.status === "number" ? error.status : null;
+  if (tooLong(error)) return { kind: "too_long", status, message: messageOf(error) };
   for (const [kind, name] of kinds) {
     if (error instanceof Anthropic[name] || error instanceof OpenAI[name]) return { kind, status, message: messageOf(error) };
   }

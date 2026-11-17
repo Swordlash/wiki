@@ -412,6 +412,12 @@ errorSpec = describe "an error" $ do
     errorDetail Nothing e {message = "", status = Nothing} `shouldBe` ""
     errorText "Anthropic" Nothing e {message = "", status = Nothing} `shouldBe` "Anthropic refused the key: it has probably expired or been revoked. Paste a new one in the assistant's settings."
 
+  it "says what to do when the conversation is too long for the model, with the provider's words after" $ do
+    let e = AssistantError {kind = TooLong, status = Just 400, message = "prompt is too long: 215000 tokens > 200000 maximum"}
+    decode "{\"kind\":\"too_long\",\"status\":400,\"message\":\"prompt is too long: 215000 tokens > 200000 maximum\"}" `shouldBe` Just e
+    errorText "Anthropic" Nothing e
+      `shouldBe` "The conversation, with the page, is too long for this model. Start a new one with \8220New\8221; for a long page, select the part you mean, or choose a model with a larger context window. The provider said: prompt is too long: 215000 tokens > 200000 maximum (400)"
+
   it "never shows the key, nor anything that looks like one" $ do
     let key = "sk-proj-abcdefghijklmnop1234"
         e = AssistantError {kind = BadKey, status = Just 401, message = "Incorrect API key provided: " <> key <> ". Also sk-proj-****1234 was seen."}

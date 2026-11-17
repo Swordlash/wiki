@@ -12,7 +12,8 @@
 // every page of them, in the one shape the application reads, and either
 // provider's API at another address (a server on this machine, a
 // gateway), with the key as a bearer token or without one, and the
-// conversation kept there in the plain form, without the model's thinking.
+// conversation kept there in the plain form for OpenAI's API, without the
+// model's reasoning, and whole for Anthropic's.
 // The browser tests use the scripted
 // provider instead (wiki-app/jsbits/assistant.js); a real provider cannot
 // be reached from here.
@@ -573,11 +574,13 @@ await test("Anthropic's API elsewhere: a gateway's base URL reaches the client, 
 
 // What the chat keeps of a finished exchange, at the provider's own
 // address and at a service elsewhere (a base URL). At the provider's own
-// address the conversation goes back as the provider gave it. Elsewhere it
-// goes back in the plain form every compatible server reads, without the
-// model's thinking: a gateway in front of another backend (LiteLLM in
-// front of Databricks, in the owner's case of 2026-11-17) may not read back
-// what it wrote.
+// address the conversation goes back as the provider gave it. At a service
+// elsewhere speaking OpenAI's API it goes back in the plain form every
+// compatible server reads, without the model's reasoning: LiteLLM in front
+// of Databricks (the owner's case of 2026-11-17) could not read back the
+// reasoning item it wrote. Speaking Anthropic's API, the same gateway read
+// the thinking blocks back, so Anthropic's conversation goes back whole at
+// every address.
 const openAiMessage = (id, content) => ({ type: "message", id, role: "assistant", status: "completed", content });
 const outputText = (text) => ({ type: "output_text", text, annotations: [] });
 
@@ -662,75 +665,36 @@ await test("OpenAI elsewhere: a refusal goes back as the assistant's text, and a
   ]);
 });
 
-await test("Anthropic at its own address: the next message goes after the content as it was given, thinking included", async () => {
-  const { fetch, requests } = fakeFetch([anthropicThinking(["Weighing."], ["Hi."], [], "end_turn"), anthropicMessage(["Again."], [], "end_turn")]);
-  const chat = startChat("anthropic", "k", anthropicRequest, { fetch, maxRetries: 0 });
-  await chat.send("Hello", collect().handlers, new AbortController().signal);
-  await chat.send("Again", collect().handlers, new AbortController().signal);
-  assert.deepEqual(requests[1].body, {
-    ...anthropicRequest,
-    stream: true,
-    messages: [
-      { role: "user", content: "Hello" },
+await test("Anthropic, at its own address and at a gateway alike: the next message goes after the content as it was given, thinking included", async () => {
+  // A gateway in front of another backend reads the thinking blocks back:
+  // LiteLLM in front of Databricks did (2026-11-17), where it could not
+  // read back OpenAI's reasoning items.
+  for (const baseURL of [undefined, "https://claude-gateway.example.com"]) {
+    const { fetch, requests } = fakeFetch([anthropicThinking(["Weighing."], ["Hi."], [], "end_turn"), anthropicMessage(["Again."], [], "end_turn")]);
+    const chat = startChat("anthropic", "k", anthropicRequest, { fetch, maxRetries: 0, ...(baseURL ? { baseURL } : {}) });
+    await chat.send("Hello", collect().handlers, new AbortController().signal);
+    await chat.send("Again", collect().handlers, new AbortController().signal);
+    assert.equal(requests[1].url, `${baseURL ?? "https://api.anthropic.com"}/v1/messages`);
+    assert.deepEqual(
+      requests[1].body,
       {
-        role: "assistant",
-        content: [
-          { type: "thinking", thinking: "Weighing.", signature: "sig" },
-          { type: "text", text: "Hi." },
+        ...anthropicRequest,
+        stream: true,
+        messages: [
+          { role: "user", content: "Hello" },
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "Weighing.", signature: "sig" },
+              { type: "text", text: "Hi." },
+            ],
+          },
+          { role: "user", content: "Again" },
         ],
       },
-      { role: "user", content: "Again" },
-    ],
-  });
-});
-
-await test("Anthropic elsewhere: the thinking of a finished exchange is not sent back with the next message", async () => {
-  const gateway = "https://claude-gateway.example.com";
-  const { fetch, requests } = fakeFetch([anthropicThinking(["Weighing."], ["Hi."], [], "end_turn"), anthropicMessage(["Again."], [], "end_turn")]);
-  const chat = startChat("anthropic", "gw-token", anthropicRequest, { fetch, maxRetries: 0, baseURL: gateway });
-  await chat.send("Hello", collect().handlers, new AbortController().signal);
-  await chat.send("Again", collect().handlers, new AbortController().signal);
-  assert.equal(requests[1].url, `${gateway}/v1/messages`);
-  assert.deepEqual(requests[1].body, {
-    ...anthropicRequest,
-    stream: true,
-    messages: [
-      { role: "user", content: "Hello" },
-      { role: "assistant", content: [{ type: "text", text: "Hi." }] },
-      { role: "user", content: "Again" },
-    ],
-  });
-});
-
-await test("Anthropic elsewhere: inside a tool loop the content goes back whole, and the thinking is taken out once the turn ends", async () => {
-  const { fetch, requests } = fakeFetch([
-    anthropicThinking(["Weighing."], ["I will fix it."], [["tu_1", "replace", { old_text: "a", new_text: "b" }]], "tool_use"),
-    anthropicThinking(["Checking."], ["Done."], [], "end_turn"),
-    anthropicMessage(["Fine."], [], "end_turn"),
-  ]);
-  const chat = startChat("anthropic", "k", anthropicRequest, { fetch, maxRetries: 0, baseURL: "https://claude-gateway.example.com" });
-  await chat.send("Fix it.", collect().handlers, new AbortController().signal);
-  const use = { type: "tool_use", id: "tu_1", name: "replace", input: { old_text: "a", new_text: "b" } };
-  const result = { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_1", content: "Applied." }] };
-  // While the tool is used, the model's thinking goes back with its call, as
-  // the API requires.
-  assert.deepEqual(requests[1].body.messages, [
-    { role: "user", content: "Fix it." },
-    { role: "assistant", content: [{ type: "thinking", thinking: "Weighing.", signature: "sig" }, { type: "text", text: "I will fix it." }, use] },
-    result,
-  ]);
-  await chat.send("More.", collect().handlers, new AbortController().signal);
-  assert.deepEqual(requests[2].body, {
-    ...anthropicRequest,
-    stream: true,
-    messages: [
-      { role: "user", content: "Fix it." },
-      { role: "assistant", content: [{ type: "text", text: "I will fix it." }, use] },
-      result,
-      { role: "assistant", content: [{ type: "text", text: "Done." }] },
-      { role: "user", content: "More." },
-    ],
-  });
+      baseURL ?? "the provider's own address",
+    );
+  }
 });
 
 if (failures > 0) {

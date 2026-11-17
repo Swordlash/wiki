@@ -20,7 +20,8 @@ title: The assistant starts a new conversation, and works with more gateways
 
 ## Bug fixes
 
-- At an assistant service other than the provider's own (an
-  organisation's gateway), the second message of a conversation no longer
-  fails where the gateway cannot read back the model's thinking. There the
-  conversation is sent without the model's thinking.
+- At an assistant service that speaks OpenAI's API (an organisation's
+  gateway), the second message of a conversation no longer fails where the
+  gateway cannot read back the model's reasoning. There the conversation
+  is sent without the model's reasoning; a service that speaks Anthropic's
+  API gets it as before.

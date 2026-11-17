@@ -20,12 +20,11 @@
 //     promise is the tool's answer ({text, ok}); the model then goes on,
 //     until it answers without a tool call. handlers.thinking and
 //     handlers.toolStart may be left out. The conversation is kept by the
-//     chat for the next message. At the provider's own address it is kept
-//     as the provider gave it (the model's thinking and tool calls
-//     included, unchanged, as both providers ask). At a service elsewhere
-//     (options.baseURL) a finished exchange is kept in the plain form every
-//     compatible server reads, without the model's thinking
-//     (`keptOfOpenAi`, `keptOfAnthropic`).
+//     chat for the next message, as the provider gave it (the model's
+//     thinking and tool calls included, unchanged, as both providers ask).
+//     The one exception is OpenAI's API at a service elsewhere
+//     (options.baseURL): there the model's output is kept in the plain form
+//     every compatible server reads, without its reasoning (`keptOfOpenAi`).
 //   checkKey(provider, key, model): the smallest request there is, which
 //     costs nothing: the model, looked up with the key.
 //   listModels(provider, key): the provider's models (GET /v1/models, every
@@ -80,9 +79,13 @@ const clientOptions = (key, options) => ({
 
 // Whether the chat is asked at a service other than the provider's own: a
 // gateway, a proxy, a server on this machine. Such a service speaks the
-// provider's API, but may not read back everything it wrote. LiteLLM in
-// front of Databricks, for one, writes the model's reasoning as an item of
-// its own and refuses that item when it comes back with the next message.
+// provider's API, but may not read back everything it wrote. Speaking
+// OpenAI's API, LiteLLM in front of Databricks writes the model's reasoning
+// as an item of its own and refuses that item when it comes back with the
+// next message, so OpenAI's chat keeps the plain form there
+// (`keptOfOpenAi`). Speaking Anthropic's API, the same gateway reads the
+// thinking blocks back (seen 2026-11-17), and Anthropic asks for them, so
+// Anthropic's chat keeps its conversation whole at every address.
 const elsewhere = (options) => typeof options.baseURL === "string" && options.baseURL !== "";
 
 // What the chat keeps of a response of OpenAI's Responses API at a service
@@ -100,28 +103,12 @@ const keptOfOpenAi = (output) =>
     return [];
   });
 
-// What the chat keeps of a finished turn of Anthropic's Messages API at a
-// service elsewhere: the messages without their thinking blocks, and
-// without an assistant message left with no block. Anthropic's API allows
-// leaving out the thinking of earlier turns, but not inside a tool loop,
-// so this applies only once a turn has ended. Every thinking block is taken
-// out, never some of them: the API refuses a block left out between two
-// that are kept.
-const keptOfAnthropic = (messages) =>
-  messages.flatMap((message) => {
-    if (message.role !== "assistant" || !Array.isArray(message.content)) return [message];
-    const content = message.content.filter((block) => block.type !== "thinking" && block.type !== "redacted_thinking");
-    return content.length === 0 ? [] : [{ ...message, content }];
-  });
-
 // Anthropic's Messages API: the conversation is its messages; a turn is
 // the model's answer and, while it calls tools, the tools' results and its
-// next answer. Inside a turn the model's content goes back whole, thinking
-// blocks included, as the API requires while a tool is used. At the
-// provider's own address the conversation is kept that way for the next
-// message too. At a service elsewhere, the thinking of a finished turn is
-// taken out ('keptOfAnthropic'), stopped or failed turns included: a
-// gateway that translates to another backend may not read it back.
+// next answer. The model's content goes back whole, thinking blocks
+// included, as the API requires of a conversation that goes on. That holds
+// at a gateway too: LiteLLM in front of Databricks reads the thinking
+// blocks back (2026-11-17).
 //
 // The request asks for adaptive thinking with its summary shown, at the
 // effort chosen (output_config.effort, Wiki.Core.Assistant.Prompt). Older
@@ -185,7 +172,7 @@ const anthropicChat = (key, request, options) => {
           turn.push({ role: "assistant", content: message.content }, { role: "user", content: results });
         }
       } finally {
-        messages.splice(0, messages.length, ...(elsewhere(options) ? keptOfAnthropic(turn) : turn));
+        messages.splice(0, messages.length, ...turn);
       }
     },
   };

@@ -186,7 +186,7 @@ component =
     reload :: H.HalogenM State Action Empty output m ()
     reload = do
       asked <- gets (\st -> st.input.context.revision)
-      stars <- lift starred
+      stars <- H.async starred
       modify (\st -> if st.input.context.revision /= asked then st else st {stars = Just stars})
 
 -- | A starred page as the server lists it, when it is in an encrypted

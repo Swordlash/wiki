@@ -889,10 +889,10 @@ component =
       -- where it is. Its listener has kept the browser from following it.
       FollowLink (CopyAnchor fragment) -> do
         H.liftEffect (markFragment fragment)
-        here <- gets pageAddress >>= absoluteUrl
+        here <- gets pageAddress >>= H.async . absoluteUrl
         copyAddress False (here <> "#" <> encodeComponent fragment)
       -- The permanent address of the version shown ('permanentAddress').
-      CopyPermanentLink -> withPage $ \page -> gets (`permanentAddress` page) >>= absoluteUrl >>= copyAddress True
+      CopyPermanentLink -> withPage $ \page -> gets (`permanentAddress` page) >>= H.async . absoluteUrl >>= copyAddress True
       FollowLink target -> do
         router <- gets (\st -> st.input.context.router)
         H.liftEffect (followArticleLink router target)
@@ -904,7 +904,7 @@ component =
           >>= traverse_
             ( \s -> do
                 modify (\st -> st {selected = Nothing})
-                here <- gets pageAddress >>= absoluteUrl
+                here <- gets pageAddress >>= H.async . absoluteUrl
                 copyAddress False (here <> "#" <> textFragment blocks s.anchor)
             )
       -- A form of the page (Rename, Delete) opens only without unsaved
@@ -1159,7 +1159,7 @@ component =
       st <- get
       let logins = Body.unasked st.people (bodiesOf st.loaded st.discussion.threads)
       unless (null logins) $
-        lift (attempt (Body.askPeople st.input.space logins)) >>= \case
+        H.async (attempt (Body.askPeople st.input.space logins)) >>= \case
           Right found -> modify (\s -> s {people = Body.answered logins found s.people})
           Left _ -> pass
       resolveAvatars
@@ -1173,7 +1173,7 @@ component =
       (ticket, people) <- state $ \st ->
         let (t, asks') = Latest.newAsk st.avatarAsks
          in ((t, peopleOf st.loaded st.discussion.threads st.readers), st {avatarAsks = asks'})
-      avatars <- lift (avatarUrls people)
+      avatars <- H.async (avatarUrls people)
       void (Latest.answered (\st -> st.avatarAsks) (\a st -> st {avatarAsks = a}) ticket (\s -> s {avatars}))
 
     -- Watch the page shown, and nothing else.
@@ -1213,13 +1213,13 @@ component =
     -- with the address left selected to be copied by hand. The notice is
     -- rendered with the address before the copy, since the copy without
     -- an asynchronous clipboard selects it there. The copy waits for the
-    -- browser, so it runs off the loop ('liftIO').
+    -- browser, so it runs off the loop ('H.async').
     copyAddress :: Bool -> Text -> H.HalogenM State Action Slots ViewOutput m ()
     copyAddress pinned address = do
       gets (\st -> st.copiedWait) >>= traverse_ H.kill
       modify (\st -> st {copied = Just Copied {address, pinned, outcome = Nothing}, copiedWait = Nothing})
       element <- gets (\st -> st.copiedText) >>= H.getRef
-      took <- maybe (pure False) (\e -> liftIO (copyText e address)) element
+      took <- maybe (pure False) (\e -> H.async (liftIO (copyText e address))) element
       modify (\st -> st {copied = (\c -> c {outcome = Just took}) <$> st.copied})
       waiting <- H.fork $ do
         H.delay (if took then copiedTime else 4 * copiedTime)
@@ -1280,7 +1280,7 @@ component =
     checkChain = do
       st <- get
       found <- case pageOf st.loaded of
-        Just page | isJust st.input.space.encryption -> lift (chainProblem page.id)
+        Just page | isJust st.input.space.encryption -> H.async (chainProblem page.id)
         _ -> pure Nothing
       modify (\now -> now {chainProblem = found})
 

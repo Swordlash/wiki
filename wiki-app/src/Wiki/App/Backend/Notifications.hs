@@ -33,6 +33,7 @@ where
 import Control.Monad.Trans.Class (MonadTrans)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Protolude
 import Wiki.Api.Notifications (FeedAddress, NotificationSettings, NotificationSettingsChange, Notifications, ReadMark)
 import Wiki.Api.Security (UnsubscribeToken)
@@ -146,4 +147,18 @@ class (Monad m) => MonadNotifications m where
   unsubscribe = lift . unsubscribe
 
 -- | A component's handlers reach the backend through its monad.
-instance (MonadNotifications m) => MonadNotifications (HalogenM st act slots output m)
+-- Each method runs in 'H.async': the handler waits for it, and the rest
+-- of the tree goes on meanwhile.
+instance (MonadNotifications m) => MonadNotifications (HalogenM st act slots output m) where
+  mentionable = H.async . mentionable
+  mentionCandidates = H.async . mentionCandidates
+  spaceReaders = H.async . spaceReaders
+  notifications = H.async notifications
+  markRead = H.async . markRead
+  watching = H.async . watching
+  setWatching t = H.async . setWatching t
+  notificationSettings = H.async notificationSettings
+  setNotificationSettings = H.async . setNotificationSettings
+  feedAddress = H.async feedAddress
+  renewFeedAddress = H.async renewFeedAddress
+  unsubscribe = H.async . unsubscribe

@@ -200,6 +200,7 @@ import Control.Monad.Trans.Class (MonadTrans)
 import Data.Time (UTCTime)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Numeric.Natural (Natural)
 import Protolude
 import Wiki.Api.Error (Staleness (..))
@@ -391,11 +392,12 @@ noUrlOwner = UrlOwner 0
 -- application makes on the wiki.
 --
 -- Every method has a default that lifts it through a monad transformer, so
--- a transformer over a backend is a backend too. 'HalogenM' is such a
--- transformer, so a component's handlers call these methods directly. A
--- call waits for the backend in whatever way that backend waits; in a
--- component, it waits on the component's own fiber (its lightweight
--- thread; see "Loading" above), as any other @lift@ does.
+-- a transformer over a backend is a backend too. 'HalogenM' has an
+-- instance that runs each method in 'Halogen.Query.HalogenM.async', so a
+-- component's handlers call these methods directly. A call waits for the
+-- backend in whatever way that backend waits; in a component, it waits on
+-- the component's own fiber (its lightweight thread; see "Loading"
+-- above), as any other @H.async@ does.
 class (Monad m) => MonadWiki m where
   -- | The session of the current user.
   session :: m Session
@@ -915,7 +917,61 @@ class (Monad m) => MonadWiki m where
   restoreVersion p v = lift . restoreVersion p v
 
 -- | A component's handlers reach the backend through its monad.
-instance (MonadWiki m) => MonadWiki (HalogenM st act slots output m)
+-- Each method runs in 'H.async': the handler waits for it, and the rest
+-- of the tree goes on meanwhile.
+instance (MonadWiki m) => MonadWiki (HalogenM st act slots output m) where
+  session = H.async session
+  getHomeDocument = H.async getHomeDocument
+  listSpaces = H.async listSpaces
+  getSpace = H.async . getSpace
+  createSpace p = H.async . createSpace p
+  renameSpace s = H.async . renameSpace s
+  setSpacePublic s = H.async . setSpacePublic s
+  setSpaceSealed s = H.async . setSpaceSealed s
+  personalSpace = H.async personalSpace
+  setPersonalSpace = H.async . setPersonalSpace
+  setAvatar t = H.async . setAvatar t
+  removeAvatar = H.async removeAvatar
+  avatarUrl u = H.async . avatarUrl u
+  setSpaceMathMacros s = H.async . setSpaceMathMacros s
+  setSpaceProfile s = H.async . setSpaceProfile s
+  uploadSpaceIcon s t = H.async . uploadSpaceIcon s t
+  spaceIconUrl = H.async . spaceIconUrl
+  pageCounts = H.async pageCounts
+  moveSpace s = H.async . moveSpace s
+  deleteSpace = H.async . deleteSpace
+  spaceAccess = H.async . spaceAccess
+  setSpaceGrant s who p = H.async . setSpaceGrant s who p
+  setSpaceOrder s c = H.async . setSpaceOrder s c
+  shiftSpace s = H.async . shiftSpace s
+  shiftPage p = H.async . shiftPage p
+  listPages = H.async . listPages
+  postDetails = H.async . postDetails
+  getPage s = H.async . getPage s
+  pageLocation = H.async . pageLocation
+  pageBacklinks = H.async . pageBacklinks
+  createPage s p t = H.async . createPage s p t
+  createPageOf k s p t = H.async . createPageOf k s p t
+  savePage p v t = H.async . savePage p v t
+  movePage p s = H.async . movePage p s
+  setPageTemplate p = H.async . setPageTemplate p
+  setPageKind p = H.async . setPageKind p
+  deletePage = H.async . deletePage
+  uploadAttachment p n t = H.async . uploadAttachment p n t
+  deleteAttachment = H.async . deleteAttachment
+  newUrlOwner = H.async newUrlOwner
+  releaseUrls = H.async . releaseUrls
+  attachmentUrl o = H.async . attachmentUrl o
+  attachmentDownloadUrl o = H.async . attachmentDownloadUrl o
+  attachmentFrameUrl = H.async . attachmentFrameUrl
+  fetchExport t = H.async . fetchExport t
+  searchPages = H.async . searchPages
+  getDraft = H.async . getDraft
+  saveDraft p v t = H.async . saveDraft p v t
+  discardDraft = H.async . discardDraft
+  listVersions p = H.async . listVersions p
+  getVersion p = H.async . getVersion p
+  restoreVersion p v = H.async . restoreVersion p v
 
 -- | 'MonadLoad' tells whether the backend can answer at once (return the
 -- result synchronously, without waiting for the network), and runs reads
@@ -923,7 +979,7 @@ instance (MonadWiki m) => MonadWiki (HalogenM st act slots output m)
 --
 -- There is deliberately no instance for 'HalogenM'. Both methods take a
 -- backend program as an argument, so a component calls them through
--- 'Halogen.Query.HalogenM.lift' (@H.lift (attempt fetchWorld)@), which runs
+-- 'Halogen.Query.HalogenM.async' (@H.async (attempt fetchWorld)@), which runs
 -- them on a worker thread while the loop goes on.
 class (MonadWiki m) => MonadLoad m where
   -- | The result of these reads, if the backend can return all of them

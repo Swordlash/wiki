@@ -45,6 +45,7 @@ where
 import Control.Monad.Trans.Class (MonadTrans)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Protolude
 import Wiki.App.Backend (WikiError (..))
 import Wiki.Core.Anchor (Anchor)
@@ -98,4 +99,13 @@ class (Monad m) => MonadComments m where
   setResolved p t = lift . setResolved p t
 
 -- | A component's handlers reach the backend through its monad.
-instance (MonadComments m) => MonadComments (HalogenM st act slots output m)
+-- Each method runs in 'H.async': the handler waits for it, and the rest
+-- of the tree goes on meanwhile.
+instance (MonadComments m) => MonadComments (HalogenM st act slots output m) where
+  listThreads = H.async . listThreads
+  openThread p a = H.async . openThread p a
+  reply p t = H.async . reply p t
+  editComment p t c = H.async . editComment p t c
+  deleteComment p t = H.async . deleteComment p t
+  deleteThread p = H.async . deleteThread p
+  setResolved p t = H.async . setResolved p t

@@ -129,7 +129,7 @@ component =
       input <- gets (\st -> st.input)
       -- On a worker thread, where the backend's failure to answer is
       -- caught.
-      results <- either SearchFailed identity <$> lift (attempt (search input))
+      results <- either SearchFailed identity <$> H.async (attempt (search input))
       -- Unless the input has changed meanwhile, in which case its own load
       -- will come.
       now <- gets (\st -> st.input)

@@ -10,7 +10,7 @@
 -- waits for the pause. A test waits for the program to be quiet
 -- (haskell-halogen-playwright's and hspec-halogen's @waitQuiet@, a native
 -- spec's 'Halogen.Activity.quiet'): for every fiber of the program that
--- waits in a @liftIO@ or in @H.delayCounted@, and not for one in
+-- waits in an @H.async@ or in @H.delayCounted@, and not for one in
 -- @H.delay@. Both pauses are in seconds (a @NominalDiffTime@), and both
 -- follow a native test's own clock ('Halogen.Activity.Control.withTestClock').
 --
@@ -24,12 +24,12 @@
 --   with \"Saved\" still shown, and a ticker does not keep the page from
 --   ever being quiet.
 --
--- Not @liftIO (threadDelay n)@: it is counted as a wait too, but it sleeps
+-- Not @H.async (liftIO (threadDelay n))@: it is counted as a wait too, but it sleeps
 -- on the real clock, which a test's clock does not move.
 --
 -- Work that reaches a view through an emitter, with no fiber waiting for
 -- it, is not counted by itself. The writing assistant's turn is such work:
--- its panel forks a fiber that waits in a @liftIO@ until the turn ends
+-- its panel forks a fiber that waits in an @H.async@ until the turn ends
 -- ("Wiki.App.View.Assistant"), so that @waitQuiet@ after Send returns once
 -- the answer has ended.
 module Wiki.App.View.Common

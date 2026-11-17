@@ -156,22 +156,29 @@ Those of haskell-halogen's `AGENTS.md` apply unchanged, in short:
 - Components, specs and helpers are polymorphic in the monad with class constraints
   (`MonadWiki m`, `MonadBrowserTest m`); only an entry point picks one.
 - `RefLabel`s come from `H.newRefLabel` in `initialState`, never a literal.
-- A component's program waits wherever it goes through `lift` or `liftIO`.
-  The pinned haskell-halogen runs that work on a worker thread, and the
-  rest of the program runs later, on the component's loop. In between, the
-  view may close (its program is cancelled), and other programs run. Two
-  rules follow. A resource that `Finalize` releases (a callback, an
-  observer, a watch, an owner of addresses, a key) is made through
-  `H.liftEffect`, and the `modify` directly after it keeps it in the state:
-  a close then comes before both or after both. A write that cannot be
-  taken back (CodeMirror, the DOM, the address, storage, a request sent) is
-  decided in the step that makes it: the condition is read in that step
-  (`state`, `gets`), and the write goes through `H.liftEffect`, or is one
-  JavaScript call that checks and acts. Work that has to wait (a fetch, a
-  module, a key from IndexedDB) cannot be one step: what it makes is named
-  in the state before the wait, so that `Finalize` releases it, or its late
-  answer checks that it is still wanted (a token, the element's
-  `isConnected`).
+- A component's program waits only where it says so: in `H.async` (and
+  `H.asyncWith`, `H.delay`, `H.delayCounted`). The action runs on a worker
+  thread, and the rest of the program runs later, on the component's loop.
+  In between, the view may close (its program is cancelled), and other
+  programs run. `H.sync` (also called `H.liftEffect`) runs its action in
+  place: nothing else of the tree runs until it ends, so it must not wait.
+  `lift`, `liftIO` and `withRunInIO` on `HalogenM` are deprecated in the
+  pinned haskell-halogen, and `-Werror` makes them errors. A backend
+  class's `HalogenM` instance runs each method in `H.async`. A function of
+  the wiki's that asks for `MonadIO m` is called inside `H.async` or
+  `H.sync`, never directly in a handler: wrapped, its waits become one,
+  and one that had none now waits. Two rules follow. A resource that
+  `Finalize` releases (a callback, an observer, a watch, an owner of
+  addresses, a key) is made through `H.sync`, and the `modify` directly
+  after it keeps it in the state: a close then comes before both or after
+  both. A write that cannot be taken back (CodeMirror, the DOM, the
+  address, storage, a request sent) is decided in the step that makes it:
+  the condition is read in that step (`state`, `gets`), and the write goes
+  through `H.sync`, or is one JavaScript call that checks and acts. Work
+  that has to wait (a fetch, a module, a key from IndexedDB) cannot be one
+  step: what it makes is named in the state before the wait, so that
+  `Finalize` releases it, or its late answer checks that it is still
+  wanted (a token, the element's `isConnected`).
 - A view whose state takes more than one ask, a push, or a change of input is written as
   a machine (the owner, 2026-11-14; decision 82 in `docs/PLAN.md`; `Wiki.App.View.Bell` is
   the first): a pure `step :: Event -> Model -> (Model, [Effect])` in
@@ -194,7 +201,7 @@ Those of haskell-halogen's `AGENTS.md` apply unchanged, in short:
   handler may still `lift` where there is one ask and no change of input.
 - A pause in a view is `H.delay` when nothing waits for it (a notice taken off the
   screen, a ticker) and `H.delayCounted` when a test waits for the work after it (a
-  debounce, the autosave, a re-look), never `liftIO (threadDelay n)`: only those two
+  debounce, the autosave, a re-look), never a `threadDelay` inside `H.async`: only those two
   follow a test's clock (`withTestClock`, `advance`), and only the second counts as work
   for `waitQuiet`.
 - A test that fails by chance shows a fault of design, in the program or in the test (the

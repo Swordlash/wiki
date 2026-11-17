@@ -117,17 +117,17 @@ component =
           clearNotice
           target <- gets (\st -> st.input.target)
           modify (\st -> st {making = Just format})
-          result <- lift (fetchExport target format)
+          result <- H.async (fetchExport target format)
           modify (\st -> st {making = Nothing})
           case result of
             Left e -> say True (errorMessage e)
             Right document
               | opensInline format -> do
-                  opened <- liftIO (openInTab document.mediaType document.bytes)
+                  opened <- H.async (liftIO (openInTab document.mediaType document.bytes))
                   unless opened $ do
-                    download document.fileName document.mediaType document.bytes
+                    H.async (download document.fileName document.mediaType document.bytes)
                     say False ("The browser opened no tab for the PDF, so it was saved as " <> document.fileName <> ".")
-              | otherwise -> download document.fileName document.mediaType document.bytes
+              | otherwise -> H.async (download document.fileName document.mediaType document.bytes)
 
     -- Show a notice, and remove it after a while: a refusal after
     -- 'refusalTime', anything else after 'noticeTime'.

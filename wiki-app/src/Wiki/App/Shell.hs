@@ -1423,7 +1423,7 @@ component =
         router <- gets (\st -> st.router)
         void $ H.subscribe (Arrived <$> Router.changes router)
         canonicalAdmin
-        gets (\st -> st.accounts) >>= traverse_ (\a -> lift a.sessionChanges >>= void . H.subscribe . fmap SessionChanged)
+        gets (\st -> st.accounts) >>= traverse_ (\a -> H.async a.sessionChanges >>= void . H.subscribe . fmap SessionChanged)
         entry <- H.liftEffect historyEntry
         modify (\st -> st {entry})
         -- The bars that stick under the header need its height, and the
@@ -1450,7 +1450,7 @@ component =
       -- encrypted spaces goes at once, whether the request then succeeds
       -- or not (offline, it does not).
       SigningOut -> do
-        lift forgetEncrypted
+        H.async forgetEncrypted
         sealScreen
       Online False -> modify (\st -> st {offline = True})
       -- Back online: whatever failed to load because the server could not
@@ -1469,13 +1469,13 @@ component =
         modify (\st -> st {installable})
       -- The browser asks the reader; its offer is used up either way.
       Install -> do
-        void install
+        void (H.async install)
         handleAction InstallChanged
       -- Another tab let go of the user's keys (a sign-out there): nothing
       -- of an encrypted space stays open here, and the session is asked
       -- for again, with everything shown.
       KeysDropped -> do
-        lift forgetEncrypted
+        H.async forgetEncrypted
         sealScreen
         reload Nothing
       Arrived r -> do
@@ -1538,7 +1538,7 @@ component =
       SwitchTo user -> withDemo $ \demo -> do
         shut <- shutMenu
         modify (shut . \st -> st {demoAccountOpen = False, panel = Actions Nothing, settled = False})
-        lift (demo.switchTo user)
+        H.async (demo.switchTo user)
         reload Nothing
       AskReset -> modify (\st -> st {panel = ConfirmingReset})
       CancelPanel -> modify (\st -> st {panel = Actions Nothing})
@@ -1546,28 +1546,28 @@ component =
       -- since nothing else there shows it.
       ResetDemo -> withDemo $ \demo -> do
         modify (\st -> st {panel = Actions Nothing, settled = False})
-        lift demo.resetDemo
+        H.async demo.resetDemo
         reload Nothing
         report False "The demo's content is back as it was at the start."
       Export -> withDemo $ \demo -> do
-        archive <- lift demo.exportDemo
+        archive <- H.async demo.exportDemo
         let name = "wiki-" <> toS (formatTime defaultTimeLocale "%Y-%m-%d" archive.createdAt) <> ".zip"
-        download name "application/zip" =<< zipFiles (writeArchive archive)
+        H.async . download name "application/zip" =<< H.async (zipFiles (writeArchive archive))
         report False ("Exported the wiki as " <> name <> ".")
       -- The file is read and checked in full before anything is asked:
       -- what cannot be imported is refused here, with the reason.
       ImportChosen ev -> do
         picked <- H.liftEffect (chosenFiles ev >>= pickedFiles)
         for_ (head picked) $ \file -> do
-          bytes <- readPickedFile file
-          unzipped <- first (\why -> "It is not a zip file the wiki can read (" <> why <> ").") <$> unzipFiles bytes
+          bytes <- H.async (readPickedFile file)
+          unzipped <- first (\why -> "It is not a zip file the wiki can read (" <> why <> ").") <$> H.async (unzipFiles bytes)
           case unzipped >>= readArchive of
             Left why -> report True ("Not imported: " <> file.name <> ". " <> why)
             Right archive -> modify (\st -> st {panel = ConfirmingImport file.name archive})
       ConfirmImport ->
         gets (\st -> st.panel) >>= \case
           ConfirmingImport name archive -> withDemo $ \demo ->
-            lift (demo.importDemo archive) >>= \case
+            H.async (demo.importDemo archive) >>= \case
               Left why -> report True ("Not imported: " <> name <> ". " <> why <> ".")
               Right () -> do
                 modify (\st -> st {settled = False})
@@ -1637,7 +1637,7 @@ component =
     --
     -- The address is read and written on the loop ('H.liftEffect'), in the
     -- step that compares it, as every write of the shell's to the address
-    -- is ('announce', 'Stay'): through 'liftIO' the write came on a thread
+    -- is ('announce', 'Stay'): through 'H.async' the write came on a thread
     -- of its own, after whatever ran meanwhile, and could take the reader
     -- back from a route followed since.
     canonicalAdmin :: H.HalogenM (State m) Action Slots output m ()
@@ -1667,7 +1667,7 @@ component =
     forgetFormer :: Session -> H.HalogenM (State m) Action Slots output m ()
     forgetFormer s = do
       before <- gets (\st -> st.session.user)
-      for_ before $ \u -> when (((\x -> x.id) <$> s.user) /= Just u.id) (lift (forgetUserKeys u.id))
+      for_ before $ \u -> when (((\x -> x.id) <$> s.user) /= Just u.id) (H.async (forgetUserKeys u.id))
 
     -- Open the live channel again, as the current user.
     restartFeed :: H.HalogenM (State m) Action Slots output m ()
@@ -1708,7 +1708,7 @@ component =
       -- Before the new route renders: its views fetch the page content
       -- they show, rather than read what the server prerendered the first
       -- route with.
-      lift endPreload
+      H.async endPreload
       -- The questions and results about the wiki's data are not shown
       -- again on coming back to the administration.
       shut <- (.) <$> shutMenu <*> shutSwitcher
@@ -1739,7 +1739,7 @@ component =
       Just path -> do
         spaces <- gets (\st -> st.spaces)
         let nearest p = listToMaybe [x.id | n <- reverse [1 .. length p], Just chain <- [findSpace spaces (take n p)], Just x <- [lastMay chain]]
-        lift (readerAt spaces (path >>= nearest))
+        H.async (readerAt spaces (path >>= nearest))
 
     -- Take what is shown of an encrypted space off the screen, at once,
     -- before anything waits: the keys were let go (a sign-out, here or in
@@ -1774,7 +1774,7 @@ component =
     reload next = do
       -- Going to another route after the change ends the preload, as
       -- 'arrive' does.
-      when (isJust next) (lift endPreload)
+      when (isJust next) (H.async endPreload)
       loadWorld
       void (gatesAt =<< maybe (gets (\st -> st.route)) (pure . settledRoute) next)
       modify (\st -> st {generation = st.generation + 1})
@@ -1801,7 +1801,7 @@ component =
     loadWorld = do
       demo <- gets (\st -> st.demo)
       ticket <- Latest.asking worldAsksOf setWorldAsks
-      lift (attempt (fetchWorld demo)) >>= \case
+      H.async (attempt (fetchWorld demo)) >>= \case
         Right w -> whenM (Latest.answered worldAsksOf setWorldAsks ticket (\st -> st {session = w.asking, sessionNumber = if sameUser st.session w.asking then st.sessionNumber else st.sessionNumber + 1, users = w.users, spaces = w.spaces, home = w.home, icons = w.icons, avatars = w.avatars, kept = w.kept, world = WorldReady, stale = Nothing})) $ do
           -- The server says nobody is signed in in this browser: no user's
           -- keys stay on the device, as after a sign-out, even when the
@@ -1817,7 +1817,7 @@ component =
           -- by then (signed in here meanwhile) lets go of nothing, and nor
           -- does a sign-in in another tab ('announceSignIn').
           when (not looked && isNothing w.asking.user && network && isNothing copy && inBrowser) . void . H.fork $
-            whenM (gets (\st -> isNothing st.session.user)) (lift forgetEveryUsersKeys)
+            whenM (gets (\st -> isNothing st.session.user)) (H.async forgetEveryUsersKeys)
           -- A session loaded now may name a newer entry than the page
           -- shown has marked seen.
           whatsNewSeen
@@ -1884,7 +1884,7 @@ component =
         Nothing -> modify (\s -> s {backlinks = Nothing})
         Just pid -> do
           ticket <- Latest.asking (\st -> st.backlinkAsks) (\a st -> st {backlinkAsks = a})
-          listed <- lift (listedBacklinks pid)
+          listed <- H.async (listedBacklinks pid)
           void . Latest.answered (\st -> st.backlinkAsks) (\a st -> st {backlinkAsks = a}) ticket $ \s ->
             if backlinksOf s == Just pid then s {backlinks = forced (Just (pid, listed))} else s
 
@@ -1896,12 +1896,12 @@ component =
     followPermanent :: PageId -> Maybe UTCTime -> H.HalogenM (State m) Action Slots output m ()
     followPermanent pid version = do
       modify (\s -> s {here = Following pid Nothing})
-      result <- lift (pageLocation pid)
+      result <- H.async (pageLocation pid)
       st <- get
       -- The redirect runs on the component's loop ('H.liftEffect'), as the
       -- other redirects that keep the entry's number do. The router's
       -- 'Arrived' is then handled inside the redirect, while
-      -- 'replacingEntry' still holds the entry's number. A bare 'liftIO'
+      -- 'replacingEntry' still holds the entry's number. An 'H.async'
       -- runs it on a worker thread instead, beside the loop, which could
       -- handle that 'Arrived' at the wrong moment and give the entry a new
       -- number: the history's numbers then skip one, and Stay in the editor

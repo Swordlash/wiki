@@ -81,7 +81,7 @@ component =
       st <- get
       unless st.busy $ do
         modify (\s -> s {busy = True})
-        result <- lift (unsubscribe st.input.token)
+        result <- H.async (unsubscribe st.input.token)
         modify $ \s ->
           s
             { busy = False

@@ -174,7 +174,7 @@ component =
       where
         askKeys = do
           sid <- gets (\st -> st.input.space.id)
-          lift (keyState sid) >>= \case
+          H.async (keyState sid) >>= \case
             Left e -> modify (\st -> st {told = Just (errorMessage e)})
             Right k -> do
               modify (\st -> st {keys = Just k})
@@ -186,8 +186,8 @@ component =
           gets (\st -> st.input.context.session.user)
             >>= traverse_
               ( \u -> do
-                  here <- lift passkeysHere
-                  lift (loadUserKeys u.id) >>= \case
+                  here <- H.async passkeysHere
+                  H.async (loadUserKeys u.id) >>= \case
                     Left why -> modify (\st -> st {told = Just why})
                     Right keys -> do
                       let vault = (\v -> v.vault) <$> keys.vault
@@ -205,7 +205,7 @@ component =
             Nothing -> modify (\st -> st {told = Just (keyStateText SignInFirst)})
             Just u -> do
               modify (\st -> st {busy = True, told = Nothing})
-              result <- lift (act u.id)
+              result <- H.async (act u.id)
               modify (\st -> st {busy = False})
               case result of
                 Left why -> modify (\st -> st {told = Just why})

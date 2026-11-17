@@ -108,8 +108,8 @@ installAvailable = liftIO $ Installing <$> Window.window >>= fmap isJust . (.wik
 -- reader accepted it. An offer is shown once: whatever the answer, it is
 -- spent, and the browser makes another if the page is still installable;
 -- the page hears @wiki-installable@ ('installChanges') either way. This
--- waits for the reader, so a component calls it off its loop ('lift' in
--- 'Halogen.HalogenM', not 'Halogen.liftEffect').
+-- waits for the reader, so a component calls it off its loop ('Halogen.async',
+-- not 'Halogen.liftEffect').
 install :: (MonadIO m) => m Bool
 install = liftIO $ do
   page <- Installing <$> Window.window

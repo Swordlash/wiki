@@ -408,7 +408,7 @@ pickedFiles (Files files) =
   pure [PickedFile {name = file.name, mediaType = file.type_, size = fromIntegral @Integer (round file.size), file} | file <- files]
 
 -- | A file's bytes. This waits for the browser to read them, so a
--- component calls it with 'lift', off its loop.
+-- component calls it in 'Halogen.async', off its loop.
 readPickedFile :: (MonadIO m) => PickedFile -> m ByteString
 readPickedFile picked = liftIO (evaluate =<< wait =<< picked.file.bytes)
 

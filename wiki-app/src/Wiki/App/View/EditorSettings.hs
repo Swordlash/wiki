@@ -321,7 +321,7 @@ component =
                     [] -> saveMacros form.typed
                     names -> do
                       onMacros (\f -> f {removal = Asking})
-                      lift (macroUses names) >>= \case
+                      H.async (macroUses names) >>= \case
                         Left e -> do
                           onMacros (\f -> f {removal = NotAsked})
                           modify (\st -> st {refusal = Just e})
@@ -376,7 +376,7 @@ component =
     save :: (ServerSettings -> ServerSettingsChange) -> H.HalogenM State Action Slots ViewOutput m ()
     save change = withSettings $ \s -> do
       modify (\st -> st {busy = True, refusal = Nothing})
-      lift (setServerSettings (change s)) >>= \case
+      H.async (setServerSettings (change s)) >>= \case
         Left e -> modify (\st -> st {busy = False, refusal = Just e})
         Right new -> do
           modify (\st -> st {busy = False, loaded = Ready new, editing = NotEditing})
@@ -384,7 +384,7 @@ component =
 
     load :: H.HalogenM State Action Slots ViewOutput m ()
     load = do
-      result <- lift serverSettings
+      result <- H.async serverSettings
       modify (\st -> st {loaded = either Failed Ready result, busy = False})
       withSettings fillMacros
 

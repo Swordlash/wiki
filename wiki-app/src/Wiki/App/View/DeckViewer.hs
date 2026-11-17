@@ -254,7 +254,7 @@ component =
         modify (\s -> s {owners = Map.insert f owner s.owners})
         context <- gets (\st -> st.input.context)
         void . H.fork $ do
-          found <- lift (attempt (fetchDeck context owner host named))
+          found <- H.async (attempt (fetchDeck context owner host named))
           handleAction (Happen (M.Fetched f (either (const Nothing) identity found)))
       M.Release f -> do
         gets (\st -> Map.lookup f st.owners) >>= traverse_ (H.liftEffect . releaseUrls)

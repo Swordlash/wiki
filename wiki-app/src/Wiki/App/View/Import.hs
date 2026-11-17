@@ -324,17 +324,17 @@ component =
       -- reads the browser's storage, which may wait.
       Initialize -> do
         migration <- gets (\st -> st.migration)
-        here <- lift migration.findDemoData
+        here <- H.async migration.findDemoData
         modify (\st -> st {demoHere = Just here})
       FileChosen ev -> do
         picked <- H.liftEffect (chosenFiles ev >>= pickedFiles)
         for_ (head picked) $ \file -> do
-          bytes <- readPickedFile file
+          bytes <- H.async (readPickedFile file)
           preview Source {name = file.name, zipped = bytes}
       UseDemoData -> do
         modify (\st -> st {step = ReadingDemo})
         migration <- gets (\st -> st.migration)
-        lift migration.readDemoData >>= \case
+        H.async migration.readDemoData >>= \case
           Left why -> modify (\st -> st {step = Start (Just (Refused ("The demo's wiki in this browser could not be read: " <> why <> ".")))})
           Right zipped -> preview Source {name = "this browser's demo data", zipped}
       Retry ->
@@ -363,7 +363,7 @@ component =
     preview source = do
       modify (\st -> st {step = Previewing source})
       migration <- gets (\st -> st.migration)
-      lift (migration.previewImport source.zipped) >>= \case
+      H.async (migration.previewImport source.zipped) >>= \case
         Right plan -> modify (\st -> st {step = Choosing source plan everything Nothing})
         -- A refusal says why the file cannot be imported; trying again
         -- would be refused again.
@@ -376,7 +376,7 @@ component =
         Choosing source plan sel _ -> do
           modify (\st -> st {step = Applying source plan sel})
           migration <- gets (\st -> st.migration)
-          lift (migration.applyImport source.zipped (choicesOf plan sel)) >>= \case
+          H.async (migration.applyImport source.zipped (choicesOf plan sel)) >>= \case
             Right summary -> do
               modify (\st -> st {step = Start (Just (Imported source.name summary))})
               H.raise (Changed Nothing)

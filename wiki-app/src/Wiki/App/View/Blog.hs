@@ -246,7 +246,7 @@ component =
     load :: H.HalogenM State Action Slots ViewOutput m ()
     load = do
       input <- gets (\st -> st.input)
-      loaded <- lift (either Failed identity <$> attempt (fetch input))
+      loaded <- H.async (either Failed identity <$> attempt (fetch input))
       -- Unless the space has changed meanwhile.
       now <- gets (\st -> st.input.space.id)
       when (now == input.space.id) $ do

@@ -180,7 +180,7 @@ component =
       -- A link in a section goes where it leads, and the dialog closes, so
       -- that the page it leads to is not under it. The address is written
       -- on the loop, in this step ('H.liftEffect'), as the page's links are:
-      -- through 'liftIO' it came after whatever ran meanwhile.
+      -- through 'H.async' it came after whatever ran meanwhile.
       FollowLink target -> do
         handleAction Close
         router <- gets (\st -> st.input.context.router)

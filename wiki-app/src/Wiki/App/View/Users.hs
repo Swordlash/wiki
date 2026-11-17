@@ -464,7 +464,7 @@ component =
       -- is not a place to go back to. Every write of the address here
       -- (the words, the filter, the page size, a page back in range) is
       -- made on the loop, in the step that decides it ('H.liftEffect'):
-      -- through 'liftIO' it came on a thread of its own, after whatever
+      -- through 'H.async' it came on a thread of its own, after whatever
       -- ran meanwhile, and could take the reader back from a route
       -- followed in that instant.
       SearchNow -> do

@@ -93,14 +93,14 @@ component =
           Just (Right w) -> do
             target <- gets (\st -> st.input.target)
             modify (\st -> st {busy = True})
-            result <- lift (setWatching target (not w.watching))
+            result <- H.async (setWatching target (not w.watching))
             modify (\st -> st {busy = False, watch = Just result})
           _ -> pass
 
     load :: H.HalogenM State Action Empty output m ()
     load = do
       target <- gets (\st -> st.input.target)
-      result <- lift (watching target)
+      result <- H.async (watching target)
       -- Unless the target has changed meanwhile.
       now <- gets (\st -> st.input.target)
       when (now == target) (modify (\st -> st {watch = Just result}))

@@ -3564,7 +3564,7 @@ for the program to be idle, for a move through the history a handler asked
 for, and for the page's next frame, so what the program renders at once, a
 dialog's `close` and a Back included, is read once after the action. After
 an action that makes the program ask the stand-in server or IndexedDB,
-`waitQuiet` waits until no fiber of the program waits in a `liftIO`;
+`waitQuiet` waits until no fiber of the program waits in an `H.async`;
 `waitQuietWithin ms` gives that wait another deadline. A program still busy
 five seconds after an action fails the example, saying what it was doing.
 An example whose action keeps the program busy longer (a change of reader
@@ -3628,8 +3628,8 @@ autosave, a look again later. It counts as the program waiting, so a wait
 for the program to be quiet waits for it, and `withTestClock` and
 `advance` move it with nothing slept (`Test.Users` advances the users'
 search past its 300 ms pause). A pause nothing waits for, a notice that
-goes away or a ticker, is `H.delay`. Not `liftIO (threadDelay n)`: it
-sleeps on the real clock, which no test moves.
+goes away or a ticker, is `H.delay`. Not `H.async (liftIO (threadDelay n))`:
+it sleeps on the real clock, which no test moves.
 
 ### The smoke tests
 
@@ -3687,7 +3687,7 @@ After a navigation, `visit` (or a reload and `waitStarted`) waits until the
 program has started. An action settles by itself, so what the program
 renders at once is read straight after it. After an action that makes the
 program ask the server or IndexedDB, `waitQuiet` waits until no fiber of the
-program waits in a `liftIO`, and the page is read once. What is not the
+program waits in an `H.async`, and the page is read once. What is not the
 program's is a condition, named in a comment, and the page is settled after
 it: what an island's library draws, a frame's own script or document, the
 service worker, a push over the WebSocket in another tab, something the

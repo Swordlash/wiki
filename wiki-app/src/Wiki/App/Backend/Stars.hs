@@ -36,6 +36,7 @@ where
 import Control.Monad.Trans.Class (MonadTrans)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Protolude
 import Wiki.Api.Stars (StarredPage (..))
 import Wiki.App.Backend (WikiError (..))
@@ -61,7 +62,11 @@ class (Monad m) => MonadStars m where
   setStarred p = lift . setStarred p
 
 -- | A component's handlers reach the backend through its monad.
-instance (MonadStars m) => MonadStars (HalogenM st act slots output m)
+-- Each method runs in 'H.async': the handler waits for it, and the rest
+-- of the tree goes on meanwhile.
+instance (MonadStars m) => MonadStars (HalogenM st act slots output m) where
+  starred = H.async starred
+  setStarred p = H.async . setStarred p
 
 -- | Whether a page is in a list of starred pages.
 isStarred :: PageId -> [StarredPage] -> Bool

@@ -355,7 +355,7 @@ component =
     checkChain = do
       st <- get
       found <- case st.loaded of
-        Ready shown | isJust st.input.space.encryption -> lift (chainProblem shown.page.id)
+        Ready shown | isJust st.input.space.encryption -> H.async (chainProblem shown.page.id)
         _ -> pure Nothing
       modify (\now -> now {chainProblem = found})
 

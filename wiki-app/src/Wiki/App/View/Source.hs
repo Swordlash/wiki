@@ -167,7 +167,7 @@ component =
     copyOut element text = do
       n <- gets (\st -> st.copies + 1)
       modify (\st -> st {copies = n})
-      ok <- liftIO (copyText element text)
+      ok <- H.async (liftIO (copyText element text))
       modify (\st -> st {copied = if ok then Copied else Selected})
       when ok . void . H.fork $ do
         H.delay 2.5

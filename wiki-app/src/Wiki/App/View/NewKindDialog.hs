@@ -121,7 +121,7 @@ component =
     handleAction = \case
       Initialize -> do
         gets (\st -> st.element) >>= H.getRef >>= traverse_ (H.liftEffect . showDialog)
-        result <- lift serverSettings
+        result <- H.async serverSettings
         modify (\st -> st {settings = Just result})
       Close -> unlessM (gets (\st -> st.saving)) $ do
         gets (\st -> st.element) >>= H.getRef >>= traverse_ (H.liftEffect . closeDialog)
@@ -138,7 +138,7 @@ component =
         gets (\st -> st.settings) >>= \case
           Just (Right s) -> do
             modify (\st -> st {saving = True, refusal = Nothing})
-            lift (setServerSettings ((unchanged s) {boxes = s.boxes <> [kind]})) >>= \case
+            H.async (setServerSettings ((unchanged s) {boxes = s.boxes <> [kind]})) >>= \case
               Left e -> modify (\st -> st {saving = False, refusal = Just e})
               Right new -> do
                 modify (\st -> st {saving = False, settings = Just (Right new)})

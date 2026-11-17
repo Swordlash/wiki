@@ -115,6 +115,7 @@ import Data.UUID.Types (toWords64)
 import Halogen.JSBits (inBrowser)
 import Halogen.Net.WebSocket qualified as WS
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Halogen.Subscription (Emitter (..), Listener (..))
 import Halogen.Subscription qualified as HS
 import Protolude
@@ -187,7 +188,11 @@ class (Monad m) => MonadLive m where
   default liveFeed :: (MonadTrans t, m ~ t n, MonadLive n) => m Feed
   liveFeed = lift liveFeed
 
-instance (MonadLive m) => MonadLive (HalogenM st act slots output m)
+-- | A component's handlers reach the live channel through its monad. The
+-- method runs in 'H.async': the handler waits for it, and the rest of the
+-- tree goes on meanwhile.
+instance (MonadLive m) => MonadLive (HalogenM st act slots output m) where
+  liveFeed = H.async liveFeed
 
 -- | The class's method as a value, given to the shell on a backend that
 -- has it.

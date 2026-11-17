@@ -603,7 +603,7 @@ component =
                   then dropKeysOffer
                   else do
                     modify (\st -> st {keysOffer = Nothing, keysProblem = Nothing, keysInUse = key : st.keysInUse})
-                    result <- lift (addPasswordUnlock u (Just key) Nothing)
+                    result <- H.async (addPasswordUnlock u (Just key) Nothing)
                     -- Let go of in any case: 'addPasswordUnlock' does once
                     -- it has the vault, and a refusal before it does not.
                     modify (\st -> st {keysInUse = filter (/= key) st.keysInUse})
@@ -630,7 +630,7 @@ component =
         unless st.busy $ do
           modify (\s -> s {busy = True, problem = Nothing})
           H.liftEffect abortSignInPasskey
-          result <- lift (st.input.accounts.signIn st.typedLogin (Password st.typedPassword))
+          result <- H.async (st.input.accounts.signIn st.typedLogin (Password st.typedPassword))
           case result of
             Left SecondFactorNeeded -> do
               modify (\s -> s {busy = False, step = AtCode, typedPassword = "", typedCode = "", notice = Nothing, problem = Nothing})
@@ -650,13 +650,13 @@ component =
         -- the form or using the button meanwhile keeps the offer from
         -- starting when the challenge arrives.
         ticket <- H.liftEffect passkeyTicket
-        here <- lift conditionalHere
+        here <- H.async conditionalHere
         when here $
           gets (\st -> st.input.accounts) >>= \a ->
-            lift a.beginPasskeySignIn >>= \case
+            H.async a.beginPasskeySignIn >>= \case
               Left _ -> pass
               Right options ->
-                lift (signInPasskey options True ticket) >>= \case
+                H.async (signInPasskey options True ticket) >>= \case
                   Right used -> finishPasskey used
                   Left _ -> pass
       PasskeySignIn -> do
@@ -668,10 +668,10 @@ component =
           H.liftEffect abortSignInPasskey
           ticket <- H.liftEffect passkeyTicket
           modify (\s -> s {busy = True, problem = Nothing})
-          lift st.input.accounts.beginPasskeySignIn >>= \case
+          H.async st.input.accounts.beginPasskeySignIn >>= \case
             Left e -> modify (\s -> s {busy = False, problem = Just (passkeyErrorText e)})
             Right options ->
-              lift (signInPasskey options False ticket) >>= \case
+              H.async (signInPasskey options False ticket) >>= \case
                 Right used -> finishPasskey used
                 Left Cancelled -> modify (\s -> s {busy = False}) *> offer
                 Left (PasskeyFailed why) -> modify (\s -> s {busy = False, problem = Just why}) *> offer
@@ -686,14 +686,14 @@ component =
                 SignInFailed (Invalid why) -> modify (\s -> s {busy = False, step = AtPassword, typedCode = "", problem = Just why}) *> offer
                 WrongCredentials -> modify (\s -> s {busy = False, problem = Just "That passkey was not accepted: use another one, or type a code."})
                 e -> modify (\s -> s {busy = False, problem = Just (passkeyErrorText e)})
-          lift st.input.accounts.beginSecondFactorPasskey >>= \case
+          H.async st.input.accounts.beginSecondFactorPasskey >>= \case
             Left e -> refused e
             Right options ->
-              lift (signInPasskey options False ticket) >>= \case
+              H.async (signInPasskey options False ticket) >>= \case
                 Left Cancelled -> modify (\s -> s {busy = False})
                 Left (PasskeyFailed why) -> modify (\s -> s {busy = False, problem = Just why})
                 Right used ->
-                  lift (st.input.accounts.finishSecondFactorPasskey used) >>= \case
+                  H.async (st.input.accounts.finishSecondFactorPasskey used) >>= \case
                     Left e -> refused e
                     Right s -> do
                       modify (\x -> x {busy = False, open = False, step = AtPassword, typedCode = "", notice = Nothing, problem = Nothing})
@@ -704,7 +704,7 @@ component =
         st <- get
         unless st.busy $ do
           modify (\s -> s {busy = True, problem = Nothing})
-          lift (st.input.accounts.confirmSecondFactor st.typedCode) >>= \case
+          H.async (st.input.accounts.confirmSecondFactor st.typedCode) >>= \case
             -- Waited too long, or too many wrong codes: back to the
             -- password.
             Left (SignInFailed (Invalid why)) -> modify (\s -> s {busy = False, step = AtPassword, typedCode = "", problem = Just why})
@@ -723,7 +723,7 @@ component =
         st <- get
         unless st.busy $ do
           modify (\s -> s {busy = True, problem = Nothing, resetTold = Nothing})
-          lift (st.input.accounts.requestPasswordReset st.typedLogin) >>= \case
+          H.async (st.input.accounts.requestPasswordReset st.typedLogin) >>= \case
             Left e -> modify (\s -> s {busy = False, problem = Just (signInErrorText e)})
             Right () ->
               modify $ \s ->
@@ -745,7 +745,7 @@ component =
         st <- get
         unless st.busy $ do
           modify (\s -> s {busy = True, problem = Nothing})
-          result <- lift (st.input.accounts.register NewAccount {login = st.typedLogin, displayName = st.typedName, password = Password st.typedPassword, email = Nothing})
+          result <- H.async (st.input.accounts.register NewAccount {login = st.typedLogin, displayName = st.typedName, password = Password st.typedPassword, email = Nothing})
           case result of
             Left e -> modify (\s -> s {busy = False, problem = Just (accountErrorText e)})
             Right s -> do
@@ -758,13 +758,13 @@ component =
           False -> do
             modify (\st -> (forgetPassword st) {accountOpen = True, methods = Nothing, problem = Nothing, passwordTold = Nothing})
             st <- get
-            result <- lift st.input.accounts.identities
+            result <- H.async st.input.accounts.identities
             modify (\x -> x {methods = Just result})
       Disconnect provider -> do
         st <- get
         unless st.busy $ do
           modify (\s -> s {busy = True, problem = Nothing})
-          lift (st.input.accounts.unlinkIdentity provider) >>= \case
+          H.async (st.input.accounts.unlinkIdentity provider) >>= \case
             Left e -> modify (\s -> s {busy = False, problem = Just (errorMessage e)})
             Right m -> modify (\s -> s {busy = False, methods = Just (Right m)})
       AskPassword -> do
@@ -789,7 +789,7 @@ component =
             | otherwise -> do
                 modify (\s -> s {busy = True, passwordProblem = Nothing})
                 let change = PasswordChange {current = if m.password then Just (Password st.typedCurrent) else Nothing, new = Password st.typedNew}
-                lift (changeOwnPassword st.input.accounts.changePassword change) >>= \case
+                H.async (changeOwnPassword st.input.accounts.changePassword change) >>= \case
                   Left e -> modify (\s -> s {busy = False, passwordProblem = Just (passwordErrorText e)})
                   Right after ->
                     modify $ \s ->
@@ -809,7 +809,7 @@ component =
         unless st.busy $ do
           modify (\s -> s {busy = True})
           H.raise SigningOut
-          result <- lift st.input.accounts.signOut
+          result <- H.async st.input.accounts.signOut
           modify (\s -> s {busy = False})
           when (isRight result) dropKeysOffer
           -- A sign-out that failed leaves the session as it was; the next
@@ -831,7 +831,7 @@ component =
         -- vault is read.
         key <- H.liftEffect takePasswordKey
         modify (\st -> st {keysInUse = toList key <> st.keysInUse})
-        result <- lift (afterSignIn u.id key)
+        result <- H.async (afterSignIn u.id key)
         -- Nothing waits on the keys: the security panel shows them, and
         -- why they could not be brought up to date, when it is opened.
         -- The answer is taken in one step: the key is no longer the
@@ -846,7 +846,7 @@ component =
 
     -- Withdraw the offer to unlock the keys with the password, and forget
     -- the key it holds: taken out of the state and let go of in one step
-    -- ('forgetKey' does not wait). Forgotten through 'lift' and taken out
+    -- ('forgetKey' does not wait). Forgotten through 'H.async' and taken out
     -- a step later, an offer made in between was taken out unforgotten.
     dropKeysOffer :: H.HalogenM (State m) Action Slots Output m ()
     dropKeysOffer = do
@@ -865,7 +865,7 @@ component =
           else st {open = True, step = AtPassword, registering = False, notice, problem = Nothing, typedLogin = "", typedPassword = "", typedCode = ""}
       gets (\st -> st.loginField) >>= H.getRef >>= traverse_ (H.liftEffect . focusElement)
       unless opened $ do
-        passkeys <- lift passkeysHere
+        passkeys <- H.async passkeysHere
         modify (\st -> st {passkeys})
         offer
 
@@ -882,7 +882,7 @@ component =
     finishPasskey used = do
       modify (\s -> s {busy = True, problem = Nothing})
       accounts <- gets (\st -> st.input.accounts)
-      lift (accounts.finishPasskeySignIn used) >>= \case
+      H.async (accounts.finishPasskeySignIn used) >>= \case
         Left e -> do
           modify (\s -> s {busy = False, problem = Just (passkeyErrorText e)})
           offer

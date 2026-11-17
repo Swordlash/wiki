@@ -144,14 +144,14 @@ component =
     handleAction :: Action -> H.HalogenM State Action Empty output m ()
     handleAction = \case
       Initialize -> do
-        settings <- lift notificationSettings
+        settings <- H.async notificationSettings
         modify (\st -> st {settings = Just settings})
-        lift feedAddress >>= showFeed
+        H.async feedAddress >>= showFeed
       ChooseMail mail -> changing (\s -> NotificationSettingsChange {mail, watchOwn = s.watchOwn})
       SetWatchOwn watchOwn -> changing (\s -> NotificationSettingsChange {mail = s.mail, watchOwn})
       MakeFeed -> do
         modify (\st -> st {busy = True, feedProblem = Nothing, copied = False})
-        result <- lift renewFeedAddress
+        result <- H.async renewFeedAddress
         modify (\st -> st {busy = False})
         case result of
           Left e -> modify (\st -> st {feedProblem = Just e})
@@ -162,7 +162,7 @@ component =
             H.getRef field
               >>= traverse_
                 ( \element -> do
-                    ok <- liftIO (copyText element url)
+                    ok <- H.async (liftIO (copyText element url))
                     modify (\st -> st {copied = ok})
                 )
           _ -> pass
@@ -173,7 +173,7 @@ component =
     showFeed = \case
       Left e -> modify (\st -> st {feed = Just (Left e)})
       Right (FeedAddress address) -> do
-        url <- traverse absoluteUrl address
+        url <- traverse (H.async . absoluteUrl) address
         modify (\st -> st {feed = Just (Right (Feed url))})
 
     changing :: (NotificationSettings -> NotificationSettingsChange) -> H.HalogenM State Action Empty output m ()
@@ -181,7 +181,7 @@ component =
       gets (\st -> st.settings) >>= \case
         Just (Right s) -> do
           modify (\st -> st {busy = True, problem = Nothing})
-          result <- lift (setNotificationSettings (f s))
+          result <- H.async (setNotificationSettings (f s))
           modify $ \st -> case result of
             Right new -> st {busy = False, settings = Just (Right new)}
             Left e -> st {busy = False, problem = Just e}

@@ -192,7 +192,7 @@ component =
         unless fetched $ do
           shownPage <- gets (\st -> st.page)
           owner <- Body.ensureOwned (\st -> st.owners) (\owners st -> st {owners})
-          Fetched saved attachments addresses <- lift (fetchSaved owner input)
+          Fetched saved attachments addresses <- H.async (fetchSaved owner input)
           modifyFor shownPage $ \st ->
             st
               { attachments
@@ -233,11 +233,11 @@ component =
               -- page as the server prerendered it is cached until the
               -- first route; this window has no other route, so the cache
               -- is told to fetch from now on.
-              lift endPreload
+              H.async endPreload
               modify (\st -> st {refreshes = st.refreshes + 1})
               owner <- Body.ensureOwned (\st -> st.owners) (\owners st -> st {owners})
               State {input, page = shownPage, refreshes = refresh} <- get
-              lift (fetchSaved owner input) >>= \case
+              H.async (fetchSaved owner input) >>= \case
                 Fetched (Shows {}) attachments addresses ->
                   modifyFor shownPage (\st -> if st.refreshes == refresh then st {attachments, addresses} else st)
                 -- Not fetched: the attachments as they were.

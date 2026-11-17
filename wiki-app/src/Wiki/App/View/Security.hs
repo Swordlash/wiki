@@ -619,21 +619,21 @@ component =
     handleAction :: Action -> H.HalogenM State Action Empty output m ()
     handleAction = \case
       Initialize -> do
-        available <- lift securityAvailable
+        available <- H.async securityAvailable
         modify (\st -> st {available})
-        sessions <- lift ownSessions
+        sessions <- H.async ownSessions
         modify (\st -> st {sessions = Just sessions})
-        factor <- lift secondFactorState
+        factor <- H.async secondFactorState
         modify (\st -> st {factor = Just factor})
-        mailbox <- lift ownEmail
+        mailbox <- H.async ownEmail
         modify (\st -> st {mailbox = Just mailbox})
-        keysKept <- lift vaultSync
-        keysHere <- lift passkeysHere
+        keysKept <- H.async vaultSync
+        keysHere <- H.async passkeysHere
         modify (\st -> st {keysKept, keysHere})
         when (keysKept && keysHere) $ do
-          keys <- lift listPasskeys
+          keys <- H.async listPasskeys
           modify (\st -> st {keys = Just keys})
-        sealable <- lift sealingHere
+        sealable <- H.async sealingHere
         modify (\st -> st {sealable})
         owner <- gets (\st -> st.owner)
         for_ owner $ \u ->
@@ -641,7 +641,7 @@ component =
             -- Opening the panel brings this browser up to date with the
             -- vault: the private key unsealed, or the key pair made, when
             -- the browser holds the vault key.
-            vault <- lift (settleKeys u)
+            vault <- H.async (settleKeys u)
             modify (\st -> st {userKeys = Just vault})
       TypedVaultPassword t -> modify (\st -> st {typedVaultPassword = t})
       MakeKeys -> withVaultPassword (\u p -> maybe (pure (Left "Type your current password.")) (createWithProvedPassword u) p)
@@ -662,12 +662,12 @@ component =
         -- passkey of theirs.
         modify (\st -> st {typedKeyPassword = ""})
         gets (\st -> st.keyPasswordField) >>= H.getRef >>= traverse_ (H.liftEffect . clearField)
-        lift (beginRegistration (if T.null typed then Nothing else Just (Password typed))) >>= \case
+        H.async (beginRegistration (if T.null typed then Nothing else Just (Password typed))) >>= \case
           Left e -> modify (\st -> st {keysProblem = Just (passwordErrorText e)})
           Right options ->
             -- No salt: a passkey added here signs in, and wraps no vault
             -- key until the assistant asks it to.
-            lift (createPasskey options "" "") >>= \case
+            H.async (createPasskey options "" "") >>= \case
               Left Cancelled -> pass
               Left (PasskeyFailed why) -> modify (\st -> st {keysProblem = Just why})
               Right made -> do
@@ -675,14 +675,14 @@ component =
                 let r = made.response
                     named = RegistrationResponse {id = r.id, clientDataJSON = r.clientDataJSON, attestationObject = r.attestationObject, name = if T.null name then Nothing else Just name}
                 modify (\st -> st {unregistered = Just named})
-                result <- lift (finishRegistration named)
+                result <- H.async (finishRegistration named)
                 modify (\st -> st {unregistered = Nothing})
                 case result of
                   Left e -> do
-                    lift (discardPasskey options.rpId made.response.id)
+                    H.async (discardPasskey options.rpId made.response.id)
                     modify (\st -> st {keysProblem = Just (errorMessage e)})
                   Right _ -> do
-                    keys <- lift listPasskeys
+                    keys <- H.async listPasskeys
                     modify (\st -> st {keys = Just keys})
       -- A passkey made and not answered for: registered from here, as the
       -- step the close cancelled would have. The finalizer may wait; nothing
@@ -707,10 +707,10 @@ component =
       -- passkey stays on the authenticator unknown to the wiki, as before
       -- this was sent again).
       Finalize ->
-        gets (\st -> st.unregistered) >>= traverse_ (\named -> void (lift (finishRegistration named)))
+        gets (\st -> st.unregistered) >>= traverse_ (\named -> void (H.async (finishRegistration named)))
       RemoveKey i -> busily $ do
         modify (\st -> st {keysProblem = Nothing})
-        lift (dropPasskey i) >>= \case
+        H.async (dropPasskey i) >>= \case
           Left e -> modify (\st -> st {keysProblem = Just (errorMessage e)})
           Right keys -> modify (\st -> st {keys = Just (Right keys)})
       EndSession ref -> sessionsChange (endOwnSession ref)
@@ -728,11 +728,11 @@ component =
       TypedCode t -> modify (\st -> st {typedCode = t})
       ConfirmTotp -> busily $ do
         code <- gets (\st -> st.typedCode)
-        lift (confirmTotp code) >>= \case
+        H.async (confirmTotp code) >>= \case
           Left e -> modify (\st -> st {factorProblem = Just (codeErrorText e)})
           Right codes -> do
             modify (\st -> st {enrolment = Nothing, recovery = Just codes.codes, typedCode = "", factorProblem = Nothing})
-            factor <- lift secondFactorState
+            factor <- H.async secondFactorState
             modify (\st -> st {factor = Just factor})
       KeptCodes -> modify (\st -> st {recovery = Nothing})
       AskRemove -> do
@@ -741,7 +741,7 @@ component =
       CancelRemove -> modify (\st -> st {removing = False, typedCode = "", factorProblem = Nothing})
       RemoveFactor -> busily $ do
         code <- gets (\st -> st.typedCode)
-        lift (removeOwnSecondFactor code) >>= \case
+        H.async (removeOwnSecondFactor code) >>= \case
           Left e -> modify (\st -> st {factorProblem = Just (codeErrorText e)})
           Right f -> modify (\st -> st {factor = Just (Right f), removing = False, typedCode = "", factorProblem = Nothing})
       EditEmail -> do
@@ -775,10 +775,10 @@ component =
       where
         changed u = do
           modify (\st -> st {vaultProblem = Nothing})
-          lift (act u) >>= \case
+          H.async (act u) >>= \case
             Left why -> modify (\st -> st {vaultProblem = Just why})
             Right k -> modify (\st -> st {userKeys = Just (Right k)})
-          keys <- lift listPasskeys
+          keys <- H.async listPasskeys
           modify (\st -> st {keys = Just keys})
 
     -- 'withVault', with the password typed, which goes with this one
@@ -802,7 +802,7 @@ component =
     enrol :: Maybe Password -> H.HalogenM State Action Empty output m ()
     enrol password = busily $ do
       modify (\st -> st {factorProblem = Nothing})
-      lift (enrolTotp password) >>= \case
+      H.async (enrolTotp password) >>= \case
         Left e -> modify (\st -> st {factorProblem = Just (passwordErrorText e)})
         Right e -> do
           modify (\st -> st {enrolment = Just e, askingPassword = False, typedPassword = "", typedCode = ""})
@@ -823,14 +823,14 @@ component =
     sessionsChange :: m (Either WikiError [SessionSummary]) -> H.HalogenM State Action Empty output m ()
     sessionsChange act = busily $ do
       modify (\st -> st {sessionsProblem = Nothing})
-      lift act >>= \case
+      H.async act >>= \case
         Left e -> modify (\st -> st {sessionsProblem = Just (errorMessage e)})
         Right ss -> modify (\st -> st {sessions = Just (Right ss)})
 
     emailChange :: Text -> Maybe Password -> H.HalogenM State Action Empty output m ()
     emailChange address password = busily $ do
       modify (\st -> st {emailProblem = Nothing, emailTold = Nothing})
-      lift (setOwnEmail address password) >>= \case
+      H.async (setOwnEmail address password) >>= \case
         Left e -> modify (\st -> st {emailProblem = Just (passwordErrorText e)})
         Right e ->
           modify $ \st ->

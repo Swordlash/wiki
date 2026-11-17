@@ -176,7 +176,7 @@ component =
     handleAction :: Action -> H.HalogenM State Action IslandSlots Output m ()
     handleAction = \case
       Initialize -> resolvePeople >> startWatch
-      Finalize -> gets (\st -> st.watch) >>= traverse_ stopFits
+      Finalize -> gets (\st -> st.watch) >>= traverse_ (H.async . stopFits)
       -- Another slide shown is only another card in sight: the deck is
       -- not parsed again, and the cards, laid out the same, are not
       -- measured again.
@@ -189,7 +189,7 @@ component =
             resolvePeople
             -- Each text shown is measured, also when its cards are laid
             -- out as the last ones were.
-            gets (\st -> st.watch) >>= traverse_ measureAgain
+            gets (\st -> st.watch) >>= traverse_ (H.async . measureAgain)
       -- A link in the preview is followed as in the page: the shell asks
       -- before it leaves unsaved changes behind.
       FollowLink target -> do
@@ -208,7 +208,7 @@ component =
     -- Start measuring a presentation's cards, once they are rendered. The
     -- measuring starts on the loop, without a wait ('H.liftEffect'), in the
     -- step that keeps it in the state and that found none kept. Started
-    -- through 'liftIO', on a thread of its own, and kept a step later, a
+    -- through 'H.async', on a thread of its own, and kept a step later, a
     -- preview closed between the two left it running with nothing to stop
     -- it, and a second start meanwhile (Initialize's and a Receive's)
     -- started a second measuring.
@@ -230,7 +230,7 @@ component =
       st <- get
       let logins = Set.toList (st.parsed.mentioned `Set.difference` st.known.asked)
       unless (null logins) . void . H.fork $
-        lift (attempt (Body.askPeople st.input.place.space logins)) >>= \case
+        H.async (attempt (Body.askPeople st.input.place.space logins)) >>= \case
           Right found -> modify (\s -> s {known = Body.answered logins found s.known})
           Left _ -> pass
 

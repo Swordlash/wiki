@@ -164,7 +164,7 @@ component =
       asking <- gets (\st -> readerOf st.input)
       homes <-
         if isJust asking
-          then starredPages <$> lift starred
+          then starredPages <$> H.async starred
           else pure []
       now <- gets (\st -> readerOf st.input)
       when (now == asking) $ modify (\st -> st {starredHomes = homes})

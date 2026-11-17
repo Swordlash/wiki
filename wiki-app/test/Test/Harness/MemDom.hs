@@ -305,7 +305,7 @@ textOf :: View q -> Text -> IO (Maybe Text)
 textOf view selector = find view selector >>= traverse N.textContent
 
 -- | Wait until the view's program is quiet: no work running or queued,
--- and nothing it waits for in a @liftIO@ still out.
+-- and nothing it waits for in an @H.async@ still out.
 settle :: View q -> IO ()
 settle view = within (("the view to be quiet; it is at " <>) . show <$> view.activity) (view.waitActivity quiet)
 

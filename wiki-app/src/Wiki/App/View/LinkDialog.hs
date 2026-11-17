@@ -181,7 +181,7 @@ component =
             modify (\st -> st {picked = Just Picked {hit, sections = Nothing}})
             -- On a worker thread, where the backend's failure to answer is
             -- caught.
-            found <- lift (attempt (getPage hit.space hit.pagePath))
+            found <- H.async (attempt (getPage hit.space hit.pagePath))
             let sections = join found >>= \page -> first (Invalid . show) (sectionsIn . Toc.anchors <$> parseMarkdown page.body)
             -- Unless another page has been picked meanwhile.
             modify $ \st -> case st.picked of

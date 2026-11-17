@@ -2247,7 +2247,7 @@ holdLimit = 5
 -- the view's components to run the close (they run it after this action
 -- and what follows it in the same step). The gate is then disarmed: one
 -- hold per view. Every action of the component's monad comes here, those
--- of 'H.liftEffect' and of 'liftIO' too, not only the backend's own.
+-- of 'H.liftEffect' and of 'H.async' too, not only the backend's own.
 --
 -- A hold on the test's own thread could never be released: the test's
 -- thread runs the components' work while it mounts them, and a view that

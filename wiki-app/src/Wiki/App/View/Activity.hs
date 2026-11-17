@@ -191,7 +191,7 @@ component =
     load :: H.HalogenM State Action Empty Void m ()
     load = do
       q <- gets (\st -> st.query)
-      result <- lift (activity q)
+      result <- H.async (activity q)
       modify (\st -> st {loaded = either Failed Ready result, busy = False})
 
 -- | A time, in words for a person to read.

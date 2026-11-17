@@ -17,6 +17,7 @@ import Control.Monad.Trans.Class (MonadTrans)
 import Data.Time (getCurrentTime)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Protolude
 import Wiki.Api.Security (EmailState (..), RecoveryCodes, SecondFactorState (..), SessionRef (..), SessionSummary (..), TotpEnrolment)
 import Wiki.App.Account (SignInError (..))
@@ -88,7 +89,19 @@ class (Monad m) => MonadSecurity m where
   setOwnEmail e = lift . setOwnEmail e
 
 -- | A component's handlers ask through its monad.
-instance (MonadSecurity m) => MonadSecurity (HalogenM st act slots output m)
+-- Each method runs in 'H.async': the handler waits for it, and the rest
+-- of the tree goes on meanwhile.
+instance (MonadSecurity m) => MonadSecurity (HalogenM st act slots output m) where
+  securityAvailable = H.async securityAvailable
+  ownSessions = H.async ownSessions
+  endOwnSession = H.async . endOwnSession
+  endOtherSessions = H.async endOtherSessions
+  secondFactorState = H.async secondFactorState
+  enrolTotp = H.async . enrolTotp
+  confirmTotp = H.async . confirmTotp
+  removeOwnSecondFactor = H.async . removeOwnSecondFactor
+  ownEmail = H.async ownEmail
+  setOwnEmail e = H.async . setOwnEmail e
 
 -- | The demo's instance: one session, the browser it runs in, which began
 -- when it is asked about (the demo records no time it was opened) and can

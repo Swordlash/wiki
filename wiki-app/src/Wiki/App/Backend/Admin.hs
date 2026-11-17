@@ -128,6 +128,7 @@ where
 import Control.Monad.Trans.Class (MonadTrans)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Protolude
 import Wiki.Api.Account (Account, NewAccount)
 import Wiki.Api.Activity (Activity, ActivityQuery)
@@ -371,4 +372,41 @@ class (Monad m) => MonadAdmin m where
   installGuide = lift installGuide
 
 -- | A component's handlers reach the backend through its monad.
-instance (MonadAdmin m) => MonadAdmin (HalogenM st act slots output m)
+-- Each method runs in 'H.async': the handler waits for it, and the rest
+-- of the tree goes on meanwhile.
+instance (MonadAdmin m) => MonadAdmin (HalogenM st act slots output m) where
+  directory = H.async directory
+  userPage = H.async . userPage
+  setAdministrator u = H.async . setAdministrator u
+  setCreateSpaces u = H.async . setCreateSpaces u
+  createUser = H.async . createUser
+  setPassword u = H.async . setPassword u
+  sendPasswordLink = H.async . sendPasswordLink
+  setDisabled u = H.async . setDisabled u
+  removeUser = H.async . removeUser
+  createGroup = H.async . createGroup
+  renameGroup g = H.async . renameGroup g
+  deleteGroup = H.async . deleteGroup
+  addMember g = H.async . addMember g
+  removeMember g = H.async . removeMember g
+  wikiSettings = H.async wikiSettings
+  setWikiSettings = H.async . setWikiSettings
+  invitations = H.async invitations
+  invite = H.async . invite
+  revokeInvitation = H.async . revokeInvitation
+  unlinkUserIdentity u = H.async . unlinkUserIdentity u
+  removeSecondFactor = H.async . removeSecondFactor
+  setHomePage = H.async . setHomePage
+  serverSettings = H.async serverSettings
+  setServerSettings = H.async . setServerSettings
+  macroUses = H.async . macroUses
+  checkProvider name = H.async . checkProvider name
+  sendTestMail = H.async . sendTestMail
+  backups = H.async backups
+  setBackupSettings = H.async . setBackupSettings
+  backUpNow = H.async backUpNow
+  activity = H.async . activity
+  serverStatus = H.async serverStatus
+  texEngine = H.async texEngine
+  checkTexEngine = H.async checkTexEngine
+  installGuide = H.async installGuide

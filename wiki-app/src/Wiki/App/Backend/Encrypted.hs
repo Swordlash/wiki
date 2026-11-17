@@ -26,6 +26,7 @@ where
 import Control.Monad.Trans.Class (MonadTrans)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Protolude
 import Wiki.Api.Encrypted (ConversionInfo, SpaceEncryption)
 import Wiki.App.Backend (WikiError (..))
@@ -197,6 +198,22 @@ class (Monad m) => MonadEncryption m where
   forgetEncrypted = lift forgetEncrypted
 
 -- | A component's handlers reach the backend through its monad.
-instance (MonadEncryption m) => MonadEncryption (HalogenM st act slots output m)
+-- Each method runs in 'H.async': the handler waits for it, and the rest
+-- of the tree goes on meanwhile.
+instance (MonadEncryption m) => MonadEncryption (HalogenM st act slots output m) where
+  keyState = H.async . keyState
+  encryptSpace = H.async . encryptSpace
+  spaceEncryption = H.async . spaceEncryption
+  chainProblem = H.async . chainProblem
+  exportDecrypted = H.async . exportDecrypted
+  conversionOf = H.async . conversionOf
+  startConversion sid = H.async . startConversion sid
+  convertNext = H.async . convertNext
+  takeOverConversion = H.async . takeOverConversion
+  reverseConversion = H.async . reverseConversion
+  setEntry s = H.async . setEntry s
+  confirmedEntry = H.async . confirmedEntry
+  readerAt spaces = H.async . readerAt spaces
+  forgetEncrypted = H.async forgetEncrypted
 
 instance (MonadEncryption m) => MonadEncryption (ReaderT r m)

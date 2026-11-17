@@ -18,6 +18,7 @@ where
 import Control.Monad.Trans.Class (MonadTrans)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Halogen.VDom.DOM.Monad (BrowserDOM)
 import Halogen.VDom.DOM.Monad.Mem (MemDOM)
 import Protolude
@@ -145,7 +146,24 @@ data Rewrap = Rewrap
   }
 
 -- | A component's handlers ask through its monad.
-instance (MonadVault m) => MonadVault (HalogenM st act slots output m)
+-- Each method runs in 'H.async': the handler waits for it, and the rest
+-- of the tree goes on meanwhile.
+instance (MonadVault m) => MonadVault (HalogenM st act slots output m) where
+  vaultSync = H.async vaultSync
+  fetchVault = H.async . fetchVault
+  storeVault tag = H.async . storeVault tag
+  storeVaultChange tag = H.async . storeVaultChange tag
+  publicKeyOf = H.async . publicKeyOf
+  deleteVault = H.async deleteVault
+  listPasskeys = H.async listPasskeys
+  beginRegistration = H.async . beginRegistration
+  finishRegistration = H.async . finishRegistration
+  beginAssertion = H.async beginAssertion
+  finishAssertion = H.async . finishAssertion
+  dropPasskey = H.async . dropPasskey
+  takePasswordKey = H.async takePasswordKey
+  provePassword = H.async . provePassword
+  changePasswordCarrying c = H.async . changePasswordCarrying c
 
 instance (MonadVault m) => MonadVault (ReaderT r m)
 

@@ -67,6 +67,7 @@ where
 import Control.Monad.Trans.Class (MonadTrans)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Halogen.Subscription (Emitter)
 import Protolude
 import Wiki.Api.Account (InvitationInfo, InvitationToken, NewAccount, PasswordChange, SignInMethods)
@@ -246,7 +247,26 @@ class (Monad m) => MonadAccount m where
   verifyEmail = lift . verifyEmail
 
 -- | A component's handlers sign in and out through its monad.
-instance (MonadAccount m) => MonadAccount (HalogenM st act slots output m)
+-- Each method runs in 'H.async': the handler waits for it, and the rest
+-- of the tree goes on meanwhile.
+instance (MonadAccount m) => MonadAccount (HalogenM st act slots output m) where
+  signIn login = H.async . signIn login
+  signOut = H.async signOut
+  sessionChanges = H.async sessionChanges
+  register = H.async . register
+  invitationFor = H.async . invitationFor
+  acceptInvitation t = H.async . acceptInvitation t
+  identities = H.async identities
+  unlinkIdentity = H.async . unlinkIdentity
+  changePassword = H.async . changePassword
+  confirmSecondFactor = H.async . confirmSecondFactor
+  beginPasskeySignIn = H.async beginPasskeySignIn
+  finishPasskeySignIn = H.async . finishPasskeySignIn
+  beginSecondFactorPasskey = H.async beginSecondFactorPasskey
+  finishSecondFactorPasskey = H.async . finishSecondFactorPasskey
+  requestPasswordReset = H.async . requestPasswordReset
+  resetPassword t = H.async . resetPassword t
+  verifyEmail = H.async . verifyEmail
 
 -- | The class's methods as values, given to the shell on a backend that
 -- has them.

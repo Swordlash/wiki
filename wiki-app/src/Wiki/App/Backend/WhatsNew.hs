@@ -16,6 +16,7 @@ where
 import Control.Monad.Trans.Class (MonadTrans)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Protolude
 import Wiki.Api.WhatsNew (WhatsNew)
 import Wiki.App.Backend (WikiError (..))
@@ -34,4 +35,7 @@ class (Monad m) => MonadWhatsNew m where
   whatsNew = lift whatsNew
 
 -- | A component's handlers reach the backend through its monad.
-instance (MonadWhatsNew m) => MonadWhatsNew (HalogenM st act slots output m)
+-- Each method runs in 'H.async': the handler waits for it, and the rest
+-- of the tree goes on meanwhile.
+instance (MonadWhatsNew m) => MonadWhatsNew (HalogenM st act slots output m) where
+  whatsNew = H.async whatsNew

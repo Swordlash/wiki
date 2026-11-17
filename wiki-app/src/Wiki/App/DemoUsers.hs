@@ -19,6 +19,7 @@ import Control.Monad.Trans.Class (MonadTrans)
 import Data.Type.Equality (type (~))
 import Data.Version (showVersion)
 import Halogen.Query.HalogenM (HalogenM)
+import Halogen.Query.HalogenM qualified as H
 import Paths_wiki_app qualified as Paths
 import Protolude
 import Wiki.App.Backend.Mem (MemWiki, importMemWiki, memArchive, memKept, memUsers, resetMemWiki, switchUser)
@@ -72,7 +73,15 @@ instance (MonadIO m) => MonadDemoUsers (MemWiki m) where
   importDemo = importMemWiki
 
 -- | A component's handlers switch through its monad.
-instance (MonadDemoUsers m) => MonadDemoUsers (HalogenM st act slots output m)
+-- Each method runs in 'H.async': the handler waits for it, and the rest
+-- of the tree goes on meanwhile.
+instance (MonadDemoUsers m) => MonadDemoUsers (HalogenM st act slots output m) where
+  listUsers = H.async listUsers
+  switchTo = H.async . switchTo
+  resetDemo = H.async resetDemo
+  demoKept = H.async demoKept
+  exportDemo = H.async exportDemo
+  importDemo = H.async . importDemo
 
 -- | The class's methods as values. The shell gets them when it runs on a
 -- backend that has them, and not on one that has none (the HTTP backend,

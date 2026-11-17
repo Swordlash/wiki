@@ -61,7 +61,10 @@ blockStarts source shapes =
     notes = Map.fromList [shapeLines s | s <- shapes, s.kind == NoteShape]
     inNote l = maybe False (\(_, b) -> l <= b) (Map.lookupLE l notes)
     -- The blank lines, found in one pass over the text, so that each
-    -- block's start is a lookup.
+    -- block's start is a lookup in an 'IntSet', as each footnote's is in
+    -- a 'Map'. The check finds the starts after every pause in the
+    -- typing: a walk down the lines for each block was quadratic (1.1 s
+    -- natively for 16,000 short paragraphs, 28 to 42 ms with the lookups).
     blanks = IntSet.fromList [l | (l, line) <- zip [1 ..] (T.splitOn "\n" source), T.null (T.strip line)]
     afterBlank l = IntSet.member (l - 1) blanks
 

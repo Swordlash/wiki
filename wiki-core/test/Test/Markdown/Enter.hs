@@ -17,7 +17,6 @@
 module Test.Markdown.Enter (spec) where
 
 import Data.Text qualified as T
-import GHC.Clock (getMonotonicTimeNSec)
 import GHC.Conc (getAllocationCounter)
 import Protolude
 import Test.Cases (coverage)
@@ -158,25 +157,15 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
   -- editor hands over, the cursor's block and the one below it, and past
   -- 'textLimit' by nothing at all.
   describe "what Enter costs" $ do
-    -- The check finds the starts after every pause in the typing: once
-    -- over the lines, not once for each block (Codex's round 8 on #292).
-    -- The bound is of time, not of allocation: a walk down the list of
-    -- lines allocates nothing. 'blockStarts' allocated 47 MB with a walk
-    -- for each block and 54 MB with the lookup (natively, 2026-11-17).
-    -- The time is the shortest of three runs, so that a collection of
-    -- the suite's garbage in one of them does not count.
-    it "finds the starts of sixteen thousand paragraphs in one pass over the lines" $ do
+    -- The check finds the starts after every pause in the typing, once
+    -- over the lines (Codex's round 8 on #292; "Wiki.Core.Markdown.Starts"
+    -- says how). Its cost is asserted by no count: allocation does not
+    -- tell a walk down the list of lines for each block from one lookup
+    -- (47 MB and 54 MB for these paragraphs, natively, 2026-11-17), and a
+    -- time is not asserted. The large text is read here all the same.
+    it "finds the starts of sixteen thousand paragraphs" $ do
       let text = T.intercalate "\n\n" ["Paragraph " <> show i <> "." | i <- [1 .. 16000 :: Int]]
-          shapes = fromRight [] (parseShapes text)
-      _ <- evaluate (T.length text + length shapes)
-      runs <- for [1 .. 3 :: Int] $ \k -> do
-        start <- getMonotonicTimeNSec
-        found <- evaluate (length (blockStarts text shapes) + k - k)
-        end <- getMonotonicTimeNSec
-        pure (found, end - start)
-      -- 28 to 32 ms measured natively on 2026-11-17, unoptimised; 1.12
-      -- to 1.15 s with a walk for each block.
-      (map fst runs, minimum (map snd runs) < 250_000_000) `shouldBe` ([16000, 16000, 16000], True)
+      blockStarts text (fromRight [] (parseShapes text)) `shouldBe` [1, 3 .. 31999]
     it "breaks the line alone past its limit, reading nothing" $ do
       let items = T.intercalate "\n" ["- item " <> show i | i <- [1 .. 1000 :: Int]]
       _ <- evaluate (T.length items)

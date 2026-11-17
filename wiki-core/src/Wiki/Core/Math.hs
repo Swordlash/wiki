@@ -38,7 +38,6 @@ module Wiki.Core.Math
 
     -- * Which macros a text defines and uses
   , definedMacros
-  , definedMacroArities
   , removedMacros
   , usesMacro
   , onlyDefinitions
@@ -136,18 +135,7 @@ definers =
 -- @\\newcommand@ and its relatives, of @\\DeclareMathOperator@, of
 -- @\\def@ and its relatives, and of @\\let@. A comment defines nothing.
 definedMacros :: Text -> [Text]
-definedMacros = ordNub . map fst . fst . definitionsAndRest . withoutComments
-
--- | The macros a block of TeX defines, as 'definedMacros' reads them, each
--- with the number of arguments it takes in braces: @\newcommand@'s
--- @[n]@ (less one when a default follows it, @[n][default]@, which makes
--- the first argument optional), the parameters of @\def@ (@#1#2@), none
--- for @\let@ and @\DeclareMathOperator@. A macro defined twice has its
--- last definition's, as KaTeX reads the block.
-definedMacroArities :: Text -> [(Text, Int)]
-definedMacroArities tex = [(name, fromMaybe 0 (lookup name (reverse found))) | name <- ordNub (map fst found)]
-  where
-    found = fst (definitionsAndRest (withoutComments tex))
+definedMacros = ordNub . fst . definitionsAndRest . withoutComments
 
 -- | The macros an old block of definitions has and a new one has not:
 -- those whose removal may break a page that uses them ('usesMacro').
@@ -186,11 +174,10 @@ withoutComments = T.intercalate "\n" . map uncomment . T.lines
             | "\\" `T.isSuffixOf` a && not ("\\\\" `T.isSuffixOf` a) -> go (before <> a <> "%") (T.drop 1 b)
             | otherwise -> before <> a
 
--- | The names a text defines, each with the number of arguments it takes
--- in braces, and the text without the definitions it could read whole. A
--- definition it cannot read whole (an unclosed brace) is left in the
--- text, and its name is not counted.
-definitionsAndRest :: Text -> ([(Text, Int)], Text)
+-- | The names a text defines, and the text without the definitions it could
+-- read whole. A definition it cannot read whole (an unclosed brace) is left
+-- in the text, and its name is not counted.
+definitionsAndRest :: Text -> ([Text], Text)
 definitionsAndRest = go [] ""
   where
     go names kept text = case T.breakOn "\\" text of
@@ -208,17 +195,15 @@ definitionsAndRest = go [] ""
         NewCommand -> do
           let starred = fromMaybe after (T.stripPrefix "*" after)
           (name, afterName) <- macroName (T.stripStart starred)
-          let (count, afterCount) = bracketed (T.stripStart afterName)
-              (defaultArg, afterDefault) = bracketed afterCount
-              mandatory = max 0 (fromMaybe 0 (count >>= readMaybe . T.unpack . T.strip) - (if isJust defaultArg then 1 else 0 :: Int))
-          (_, afterBody) <- braced (T.stripStart afterDefault)
-          pure ((name, mandatory), afterBody)
+          let afterArgs = optionalBracket (optionalBracket (T.stripStart afterName))
+          (_, afterBody) <- braced (T.stripStart afterArgs)
+          pure (name, afterBody)
         Def -> do
           (name, afterName) <- controlName (T.stripStart after)
           let params = T.takeWhile (/= '{') afterName
           guard (T.all (\c -> c == '#' || isDigit c || isSpace c) params)
           (_, afterBody) <- braced (T.drop (T.length params) afterName)
-          pure ((name, T.count "#" params), afterBody)
+          pure (name, afterBody)
         Let -> do
           (name, afterName) <- controlName (T.stripStart after)
           let afterEquals = T.stripStart (fromMaybe afterName (T.stripPrefix "=" (T.stripStart afterName)))
@@ -226,7 +211,7 @@ definitionsAndRest = go [] ""
             Just ('\\', _) -> Just (snd (controlSequence afterEquals))
             Just (_, more) -> Just more
             Nothing -> Nothing
-          pure ((name, 0), afterValue)
+          pure (name, afterValue)
     -- A macro's name, braced (@{\\x}@) or not (@\\x@).
     macroName t = case T.uncons t of
       Just ('{', inside) -> do
@@ -237,10 +222,9 @@ definitionsAndRest = go [] ""
     controlName t
       | "\\" `T.isPrefixOf` t = let (name, after) = controlSequence t in if T.length name > 1 then Just (name, after) else Nothing
       | otherwise = Nothing
-    -- What a text starts with in brackets, if it does, and what follows.
-    bracketed t = case T.uncons t of
-      Just ('[', inside) | (within, after) <- T.breakOn "]" inside, not (T.null after) -> (Just within, T.stripStart (T.drop 1 after))
-      _ -> (Nothing, t)
+    optionalBracket t = case T.uncons t of
+      Just ('[', inside) | (_, after) <- T.breakOn "]" inside, not (T.null after) -> T.stripStart (T.drop 1 after)
+      _ -> t
     -- A group in braces, with the braces in it matched, and what follows.
     braced t = case T.uncons t of
       Just ('{', inside) -> closing (1 :: Int) "" inside

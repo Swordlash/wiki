@@ -19,6 +19,8 @@ module Wiki.App.Editor.Complete
   , linkablesFrom
   , sources
   , MathCommand (..)
+  , macroCommands
+  , pageMacroCommands
   , pageSource
   , Readings
   , noReadings
@@ -39,7 +41,9 @@ import Wiki.App.Route (pageLinkText)
 import Wiki.Core.Id (PageId)
 import Wiki.Core.Markdown.Box (BoxKind)
 import Wiki.Core.Markdown.Complete
+import Wiki.Core.Markdown.Edit (pageMacros)
 import Wiki.Core.Markdown.Starts (Earlier (..), earlierFrom, linesBelow, linesFromStart, noEarlier)
+import Wiki.Core.Math (definedMacros)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind)
 import Wiki.Core.Slug (Slug, slugText, slugify)
@@ -160,6 +164,20 @@ baseOrder p = (p.nearness, T.length p.address + maybe 0 (\l -> 1 + T.length l) p
 -- goes after them.
 sources :: Held -> [Source]
 sources held = [wikiSource held.kind held.boxes, pageSource held, slashSource held.entries, mathSource (mathCommands held.mathMacros)]
+
+-- | The macros a block of TeX defines ("Wiki.Core.Math"' 'definedMacros'),
+-- as commands math offers, each with where it comes from: a space by its
+-- name, the wiki.
+macroCommands :: Text -> Text -> [MathCommand]
+macroCommands origin tex = [MathCommand {name, origin} | name <- definedMacros tex]
+
+-- | The macros of a page's block of macros, the @math@ fence under its
+-- title that the editor's "Macros" panel edits ("Wiki.Core.Markdown.Edit"'
+-- 'pageMacros'), as commands math offers. A definition elsewhere in the
+-- page (in a later formula, which KaTeX reads for the formulas after it)
+-- is not offered: finding it means reading every formula of the page.
+pageMacroCommands :: Text -> [MathCommand]
+pageMacroCommands body = macroCommands "this page" (fromMaybe "" (pageMacros body))
 
 -- | The pages of the space, after @[[@: every one but the page being
 -- edited, at most 'shownPages', each shown by its title with its path in
@@ -294,8 +312,7 @@ answer found earlier memo text request = case T.splitOn "\n" text of
 --
 -- What an option writes ('Writes') is its snippet (@template@,
 -- 'snippetTemplate') in place of the answer's range, or there the text
--- @insert@ as it is, the cursor after it, or with @select@ selected in it;
--- or, with @line@, the text
+-- @insert@ as it is, the cursor after it; or, with @line@, the text
 -- @insert@ written as it is in place of the cursor's whole line, which
 -- must still read as @line@ (the editor writes nothing otherwise),
 -- @select@ selected in it (from and to, in characters), the @/@ and its
@@ -325,10 +342,6 @@ completionJson c =
     written candidate = case candidate.writing of
       AsSnippet -> ["template" .= snippetTemplate candidate.skeleton]
       AsText -> ["insert" .= fst (skeletonText candidate.skeleton)]
-      AsTextSelected ->
-        let (text, places) = skeletonText candidate.skeleton
-            (selectFrom, selectTo) = maybe (T.length text, T.length text) snd (head places)
-         in ["insert" .= text, "select" .= [selectFrom, selectTo]]
       LineAsText line (queryFrom, queryTo) ->
         let (text, places) = skeletonText candidate.skeleton
             (selectFrom, selectTo) = maybe (T.length text, T.length text) snd (head places)

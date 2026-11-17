@@ -246,19 +246,45 @@ spec = describe "Wiki.App.Editor.Complete" $ do
         (typed, unchecked typed, cost' < 2_000_000) `shouldBe` (typed, Nothing, True)
 
   describe "commands in math" $ do
-    let macros = [MathCommand {name = "\\R", arguments = 0, origin = "this page"}, MathCommand {name = "\\vect", arguments = 1, origin = "Team"}, MathCommand {name = "\\vect", arguments = 2, origin = "the wiki"}]
+    let macros = [MathCommand {name = "\\R", origin = "this page"}, MathCommand {name = "\\vect", origin = "Team"}, MathCommand {name = "\\vect", origin = "the wiki"}]
         mathHeld = (held Document []) {mathMacros = macros}
         mathAnswer typed rest = answered (sources mathHeld) (typed <> rest) (lineRequest typed rest)
     it "offers the macros of the page, its spaces and the wiki with where each comes from, the nearer shadowing the farther" $ do
       (map (\c -> (c.label, c.note)) . (.candidates) <$> mathAnswer "$\\ve" "$")
         `shouldBe` Just [("\\vec", Just "KaTeX"), ("\\vee", Just "KaTeX"), ("\\vect", Just "Team"), ("\\verb", Just "KaTeX"), ("\\vert", Just "KaTeX"), ("\\veebar", Just "KaTeX")]
-    it "writes a command as text with its braces, the cursor in the first" $ do
+    it "writes a command's name as text, the cursor after it" $ do
       let first' = do
             Object o <- completionJson <$> mathAnswer "$\\fr" "$"
             Array options <- KeyMap.lookup "options" o
             head (toList options)
       first'
-        `shouldBe` Just (object ["label" .= ("\\frac" :: Text), "insert" .= ("\\frac{}{}" :: Text), "select" .= [6 :: Int, 6], "detail" .= ("KaTeX" :: Text)])
+        `shouldBe` Just (object ["label" .= ("\\frac" :: Text), "insert" .= ("\\frac" :: Text), "detail" .= ("KaTeX" :: Text)])
+    it "offers the macros of the page's block of macros, and not a definition in a listing or a later formula" $ do
+      let page = T.intercalate "\n" ["# Title", "", "```math", "\\newcommand{\\R}{\\mathbb{R}}", "\\DeclareMathOperator{\\Tr}{Tr}", "```", "", "Text $\\def\\later{x}$.", "", "```tex", "\\newcommand{\\listed}{x}", "```"]
+      map (.name) (pageMacroCommands page) `shouldBe` ["\\R", "\\Tr"]
+      map (\c -> (c.name, c.origin)) (macroCommands "Team" "\\newcommand{\\vect}[1]{\\vec{#1}}") `shouldBe` [("\\vect", "Team")]
+    it "reads the macros kept with the editor, not the page, at each answer" $ do
+      -- The editor keeps the macros it offers, worked out when their
+      -- sources change. An answer on the long deck with them allocates what
+      -- one without them does, give or take the commands matched; working
+      -- them out from the page at each answer, as #299's first version did,
+      -- added 28 MB to every answer on a large page, after / and [[ too.
+      let page = longDeck <> "\n\n```tex\n\\newcommand{\\listed}{x}\n```"
+          k = paragraphAt page 82
+          ls = T.splitOn "\n" page
+          now typed = T.intercalate "\n" (take k ls <> [typed, ""] <> drop k ls)
+          asked typed = Request {line = k + 1, before = typed, after = "", nodes = ["Paragraph", "Document"]}
+      earlier <- evaluate (earlierOf page)
+      _ <- evaluate (IntSet.size earlier.starts + IntMap.size earlier.definitions + sum (fmap T.length earlier.lines))
+      kept <- evaluate (pageMacroCommands page <> macroCommands "the wiki" "\\newcommand{\\R}{\\mathbb{R}}")
+      _ <- evaluate (T.length (show kept :: Text))
+      _ <- evaluate (length katexOrdered)
+      for_ ["/t", "$\\f", "[[Gu"] $ \typed -> do
+        text' <- evaluate (now typed)
+        let costOf h = allocated (let a = fst (answer (sources h) earlier noReadings text' (asked typed)) in a == a)
+        with' <- costOf mathHeld {mathMacros = kept}
+        without <- costOf mathHeld {mathMacros = []}
+        (typed, with' < without + 2_000_000) `shouldBe` (typed, True)
     it "answers a backslash's first letter within a bound of allocation: KaTeX's thousand commands are ordered once, not at each answer" $ do
       _ <- evaluate (length katexOrdered)
       for_ ["$\\f", "$\\fr", "$\\x"] $ \typed -> do

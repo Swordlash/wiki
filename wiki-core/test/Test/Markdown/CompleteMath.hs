@@ -15,7 +15,6 @@ import Test.Markdown.CompleteStarts (alikeEverywhere, caseAt)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, counterexample, elements, forAll, (===))
 import Wiki.Core.Markdown.Ast (Block (..), Inline (..), ListItem (..), parseMarkdown)
 import Wiki.Core.Markdown.Complete
-import Wiki.Core.Math (definedMacroArities)
 
 spec :: Spec
 spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
@@ -42,34 +41,31 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
         alikeEverywhere [mathSource (mathCommands [])] (caseAt (upTo <> "‸" <> rest) (T.takeWhileEnd (/= '\\') upTo) change)
 
   describe "what it offers" $ do
-    it "reads a macro's arguments from \\newcommand's [n], less a default's, from \\def's parameters, none from \\let" $
-      definedMacroArities "\\newcommand{\\R}{\\mathbb{R}} \\newcommand{\\pair}[2]{(#1, #2)} \\newcommand\\opt[2][x]{#1#2} \\def\\three#1#2#3{#1} \\let\\to\\rightarrow \\DeclareMathOperator{\\Tr}{Tr}"
-        `shouldBe` [("\\R", 0), ("\\pair", 2), ("\\opt", 1), ("\\three", 3), ("\\to", 0), ("\\Tr", 0)]
     it "puts the nearer macro before the farther and before KaTeX's command of its name, which it shadows" $ do
-      let commands = mathCommands [cmd "\\frac" 1 "this page", cmd "\\R" 0 "Team", cmd "\\R" 1 "the wiki"]
-      [(c.arguments, c.origin) | c <- commands, c.name == "\\frac"] `shouldBe` [(1, "this page")]
-      [(c.arguments, c.origin) | c <- commands, c.name == "\\R"] `shouldBe` [(0, "Team")]
+      let commands = mathCommands [cmd "\\frac" "this page", cmd "\\R" "Team", cmd "\\R" "the wiki"]
+      [c.origin | c <- commands, c.name == "\\frac"] `shouldBe` ["this page"]
+      [c.origin | c <- commands, c.name == "\\R"] `shouldBe` ["Team"]
       [c.origin | c <- commands, c.name == "\\sqrt"] `shouldBe` ["KaTeX"]
     it "lists the commands that start with the letters, the shorter first, with where each comes from" $ do
-      (take 3 . map (\c -> (c.label, c.note)) <$> listAt [cmd "\\fraction" 0 "this page"] "$\\fr‸$")
+      (take 3 . map (\c -> (c.label, c.note)) <$> listAt [cmd "\\fraction" "this page"] "$\\fr‸$")
         `shouldBe` Just [("\\frac", Just "KaTeX"), ("\\frak", Just "KaTeX"), ("\\frown", Just "KaTeX")]
-      (map (.label) <$> listAt [cmd "\\fraction" 0 "this page"] "$\\fract‸$") `shouldBe` Just ["\\fraction"]
+      (map (.label) <$> listAt [cmd "\\fraction" "this page"] "$\\fract‸$") `shouldBe` Just ["\\fraction"]
     it "opens no list where the letters name a command already, so that Enter after it is a new line" $
       listAt [] "$$\n\\alpha‸" `shouldBe` Nothing
-    it "offers KaTeX's environments in display math after \\be, and not in a formula" $ do
-      (any ((== "\\begin{matrix}") . (.label)) . (.candidates) <$> completeAt [] "$$\n\\beg‸") `shouldBe` Just True
-      (any ((== "\\begin{matrix}") . (.label)) . (.candidates) <$> completeAt [] "$\\beg‸") `shouldBe` Just False
+    it "offers \\begin and \\end as commands like any other, and no environment" $ do
+      (map (.label) <$> listAt [] "$$\n\\beg‸") `shouldBe` Just ["\\begin"]
+      (map (.label) <$> listAt [] "$$\n\\en‸") `shouldSatisfy` maybe False (elem "\\end")
 
   describe "what choosing writes" $ do
-    it "writes the command with braces for its arguments, the cursor in the first, as text" $ do
-      written "$\\fr‸$" "\\frac" `shouldBe` Just ("\\frac{‸}{}", AsTextSelected)
-      written "$\\alp‸$" "\\alpha" `shouldBe` Just ("\\alpha‸", AsTextSelected)
-    it "writes an environment with its end below, the cursor between, in the containers of the cursor's line" $
-      written "> $$\n> \\beg‸" "\\begin{matrix}" `shouldBe` Just ("\\begin{matrix}\n> ‸\n> \\end{matrix}", AsTextSelected)
+    it "writes the command's name alone, the cursor after it, as text" $ do
+      written "$\\fr‸$" "\\frac" `shouldBe` Just ("\\frac‸", AsText)
+      written "$\\alp‸$" "\\alpha" `shouldBe` Just ("\\alpha‸", AsText)
+      written "> $$\n> \\beg‸" "\\begin" `shouldBe` Just ("\\begin‸", AsText)
+      written "$\\left( x \\ri‸" "\\right" `shouldBe` Just ("\\right‸", AsText)
     it "chooses with Enter only once a letter follows the backslash" $
       (.enter) <$> completeAt [] "$\\fr‸$" `shouldBe` Just (EnterChoosesAfter 2)
   where
-    cmd name arguments origin = MathCommand {name, arguments, origin}
+    cmd name origin = MathCommand {name, origin}
 
 -- | The place a marked text gives: the lines above the cursor's, the
 -- cursor's before the mark and after it, the lines below.
@@ -91,7 +87,7 @@ opens :: Text -> Bool
 opens = isJust . completeAt []
 
 -- | What choosing an entry writes in place of the backslash and the
--- letters, its selection marked, and how.
+-- letters, where the cursor goes after it marked, and how.
 written :: Text -> Text -> Maybe (Text, Writes)
 written marked label = do
   c <- find ((== label) . (.label)) =<< listAt [] marked

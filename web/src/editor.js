@@ -1204,12 +1204,7 @@ const writeOption = (host, option, asked) => (view, completion, from, to) => {
     closeCompletion(view);
     return;
   }
-  if (option.line === undefined && option.insert !== undefined && option.select !== undefined) {
-    // The text as it is, its place selected (a command in math, the cursor
-    // in its first braces).
-    const [start, end] = option.select.map((n) => unitsOf(option.insert, n));
-    writeText(view, completion, from, to, option.insert, start, end);
-  } else if (option.line === undefined && option.insert !== undefined) {
+  if (option.line === undefined && option.insert !== undefined) {
     // No place to fill: the text as it is, the cursor after it.
     writeText(view, completion, from, to, option.insert, option.insert.length, option.insert.length);
   } else if (option.line === undefined) {

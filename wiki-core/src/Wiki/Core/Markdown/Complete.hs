@@ -102,7 +102,7 @@ import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxKind, boxChoices)
 import Wiki.Core.Markdown.Edit (Command, Selection (..), apply, cursor)
 import Wiki.Core.Markdown.Problems (everyBlock)
-import Wiki.Core.Math.KatexCommands (katexCommands, katexEnvironments)
+import Wiki.Core.Math.KatexCommands (katexCommands)
 import Wiki.Core.PageKind (PageKind (..))
 
 ----------------------------------------------------------------------
@@ -807,10 +807,8 @@ data Candidate = Candidate
 -- letters were, in characters: they go as a change of their own, and the
 -- command's edit as the smallest change between the line without them and
 -- the text written, so that no text the two leave alone between them is
--- written again. 'AsTextSelected' writes it as it is in place of what was
--- typed, its first place selected (a command in math, the cursor in its
--- first braces).
-data Writes = AsSnippet | AsText | AsTextSelected | LineAsText Text (Int, Int)
+-- written again.
+data Writes = AsSnippet | AsText | LineAsText Text (Int, Int)
   deriving stock (Eq, Show)
 
 -- | 'Wanted' is what a source is asked for: where (the cursor's place and
@@ -1365,7 +1363,7 @@ mathAt readAt at = do
       { trigger = InMath place
       , letters
       , from = T.length prefix
-      , lineStart = T.takeWhile isBlank at.before <> continuation prefix
+      , lineStart = ""
       , through = 0
       , kept = ""
       , labels = PlainLabel
@@ -1420,12 +1418,10 @@ holdsMath = \case
       _ -> False
 
 -- | 'MathCommand' is a command a list after a backslash in math offers: its
--- name with its backslash, the number of its arguments in braces, and
--- where it comes from, as the list shows it beside the name (KaTeX, the
--- wiki, a space by its name, this page).
+-- name with its backslash, and where it comes from, as the list shows it
+-- beside the name (KaTeX, the wiki, a space by its name, this page).
 data MathCommand = MathCommand
   { name :: Text
-  , arguments :: Int
   , origin :: Text
   }
   deriving stock (Eq, Show)
@@ -1460,45 +1456,28 @@ shownOrder c = (T.length c.name, c.name)
 -- | KaTeX's commands, from KaTeX, in the order the list shows them, put in
 -- it once for the program.
 katexInOrder :: [MathCommand]
-katexInOrder = sortOn shownOrder [MathCommand {name, arguments, origin = "KaTeX"} | (name, arguments) <- katexCommands]
+katexInOrder = sortOn shownOrder [MathCommand {name, origin = "KaTeX"} | name <- katexCommands]
 
 -- | The list after a backslash in math: the commands whose name starts
 -- with the letters typed (as written: TeX tells @\\Gamma@ from
 -- @\\gamma@), in their order ('mathCommands': the shorter first, then by
--- name); and in display math, after
--- @\\be@ and more of @begin@, each of KaTeX's environments. None where the
--- letters name a command already, so that a command typed whole and Enter
--- stay a new line. At most 'shownCommands'.
+-- name). None where the letters name a command already, so that a command
+-- typed whole and Enter stay a new line. At most 'shownCommands'.
 --
--- Choosing one writes it as it is, in place of the backslash and the
--- letters ('AsTextSelected'): the command with a pair of braces for each
--- of its arguments, the cursor in the first, or after the command when it
--- takes none; an environment as @\\begin{name}@ with its arguments' braces,
--- a line for its body, the cursor there, and @\\end{name}@ below, each
--- further line in the containers the cursor's line is in.
+-- Choosing one writes its name as it is, in place of the backslash and the
+-- letters, the cursor after it ('AsText'): what a command takes after it
+-- (its arguments, an environment's body and its end) is the reader's to
+-- type, as KaTeX reads them in so many ways (@\\frac12@, @\\left(@,
+-- @\\operatorname*{…}@) that braces written for them would often be wrong.
 mathSource :: [MathCommand] -> Source
 mathSource commands wanted = case wanted.typed.trigger of
-  InMath place
+  InMath _
     | not (any ((== typedName) . (.name)) commands) ->
-        take shownCommands ([command c | c <- commands, typedName `T.isPrefixOf` c.name] <> environmentsIn place)
+        take shownCommands [command c | c <- commands, typedName `T.isPrefixOf` c.name]
   _ -> []
   where
-    typed = wanted.typed
-    typedName = "\\" <> typed.letters
-    command c =
-      let (written, cursorAt) = if c.arguments == 0 then (c.name, T.length c.name) else (c.name <> T.replicate c.arguments "{}", T.length c.name + 1)
-       in Candidate {label = c.name, skeleton = placed written cursorAt, writing = AsTextSelected, action = Nothing, note = Just c.origin, origin = Nothing}
-    environmentsIn place
-      | place == InDisplay
-      , T.length typed.letters >= 2
-      , typed.letters `T.isPrefixOf` "begin" =
-          [ Candidate {label = opening, skeleton = placed written (T.length opening + 1 + T.length typed.lineStart), writing = AsTextSelected, action = Nothing, note = Just "KaTeX", origin = Nothing}
-          | (env, arguments) <- katexEnvironments
-          , let opening = "\\begin{" <> env <> "}" <> T.replicate arguments "{}"
-                written = opening <> "\n" <> typed.lineStart <> "\n" <> typed.lineStart <> "\\end{" <> env <> "}"
-          ]
-      | otherwise = []
-    placed written at' = [Literal (T.take at' written), Field 1 "", Literal (T.drop at' written)]
+    typedName = "\\" <> wanted.typed.letters
+    command c = Candidate {label = c.name, skeleton = [Literal c.name, Field 0 ""], writing = AsText, action = Nothing, note = Just c.origin, origin = Nothing}
 
 -- | How many commands the list after a backslash shows at most.
 shownCommands :: Int

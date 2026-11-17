@@ -254,7 +254,7 @@ A `math` fence is display math too, and so is a `latex` fence, exactly as `$$` i
 
 A `tex` fence stays a listing of TeX, and either fence with `{.norender}` is one too (see Code).
 
-In the editor, a backslash and a letter typed in math (a formula between `$`, being typed or closed, display math, a `math` or `latex` fence) open a list of the commands that start with them: KaTeX's, and the macros of the page, its spaces and the wiki, with where each comes from beside it. Enter or Tab writes the one chosen with a pair of braces for each of its arguments and the cursor in the first, `\frac{}{}` for `\fr`; in display math `\begin` offers KaTeX's environments, written with their `\end` below and the cursor between. A command typed whole, and `\\`, leave Enter a new line. Math in a heading, a table, or a link's or an image's text opens no list.
+In the editor, a backslash and a letter typed in math (a formula between `$`, being typed or closed, display math, a `math` or `latex` fence) open a list of the commands that start with them: KaTeX's, and the macros of the page's block of macros, of its spaces and of the wiki, with where each comes from beside it. Enter or Tab writes the name of the one chosen, the cursor after it: `\frac` for `\fr`, its arguments yours to type. A command typed whole, and `\\`, leave Enter a new line. Math in a heading, a table, or a link's or an image's text opens no list.
 
 ### What KaTeX sets
 

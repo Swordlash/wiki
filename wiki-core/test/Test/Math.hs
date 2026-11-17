@@ -8,13 +8,12 @@
 -- pinned, so that a KaTeX that moves its tables fails here.
 module Test.Math (spec) where
 
-import Data.List (lookup)
 import Data.Time (UTCTime (..), fromGregorian)
 import Protolude
 import Test.Hspec
 import Wiki.Core.Id (SpaceId (..))
 import Wiki.Core.Math
-import Wiki.Core.Math.KatexCommands (katexCommands, katexEnvironments, katexVersion)
+import Wiki.Core.Math.KatexCommands (katexCommands, katexVersion)
 import Wiki.Core.Order (ChildOrder (..))
 import Wiki.Core.Slug (mkSlug)
 import Wiki.Core.Space (BoxNumbering (..), Entry (..), Space (..))
@@ -64,9 +63,8 @@ spec = describe "Wiki.Core.Math" $ do
   describe "katexCommands, read from KaTeX's tables (Wiki.Core.Math.KatexCommands)" $
     it "holds a pinned sample, which a KaTeX that moves its tables fails" $ do
       katexVersion `shouldBe` "0.19.0"
-      map (`lookup` katexCommands) ["\\frac", "\\sqrt", "\\alpha", "\\mathbb", "\\ce", "\\binom", "\\text"]
-        `shouldBe` map Just [2, 1, 0, 1, 1, 2, 1]
-      map (`lookup` katexEnvironments) ["matrix", "array", "aligned", "cases"] `shouldBe` map Just [0, 1, 0, 0]
+      filter (`notElem` katexCommands) ["\\frac", "\\sqrt", "\\alpha", "\\mathbb", "\\ce", "\\binom", "\\text", "\\begin", "\\end", "\\operatorname"]
+        `shouldBe` []
       length katexCommands `shouldSatisfy` (> 900)
   describe "spaceMacros" $ do
     it "gives a top-level space its own block" $

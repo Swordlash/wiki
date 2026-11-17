@@ -9,6 +9,7 @@ module Test.Markdown.CompleteMath (spec) where
 import Data.Char (isAsciiLower, isAsciiUpper)
 import Data.Text qualified as T
 import Protolude
+import Test.Cases (longTexts)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.Markdown.CompleteStarts (alikeEverywhere, caseAt)
@@ -31,7 +32,7 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
       inLink ["TeXMath", "Image", "Paragraph", "Document"] "![$\\fr‸$][far]\n\nMore." `shouldBe` False
       inLink ["TeXMath", "Paragraph", "Document"] "Text $\\fr‸$" `shouldBe` True
       inLink ["CodeText", "FencedCode", "Document"] "```math\n\\fr‸" `shouldBe` True
-    modifyMaxSuccess (* 10) . prop "opens exactly where the parser reads the command in plain math, once the math being typed is closed, over long texts" $
+    modifyMaxSuccess (* 10) . longTexts . prop "opens exactly where the parser reads the command in plain math, once the math being typed is closed, over long texts" $
       forAll genPlace inMathAsParsed
     -- WP5.124 (f): the same places, read from the starts of a check
     -- ("Test.Markdown.CompleteStarts"' modes): the answer is the whole

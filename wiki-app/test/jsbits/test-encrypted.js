@@ -443,8 +443,8 @@ function wikiTestEncServer(request) {
     }
     // Threads and comments, kept as the browser sends them: the server
     // never reads them.
-    p.threads ??= [];
-    p.attachments ??= [];
+    p.threads = p.threads ?? [];
+    p.attachments = p.attachments ?? [];
     if (rest === "/threads" && request.method === "GET") return wikiTestEncJson(200, { pageKeys: [p.pageKey, ...(p.olderKeys ?? [])], threads: p.threads });
     if (rest === "/threads" && request.method === "POST") {
       if (wikiTestEncDue(s)) return wikiTestEncJson(409, wikiTestEncRenewal);
@@ -568,7 +568,7 @@ async function wikiTestEncStaging(request, header, id, rest) {
   const s = p && wikiTestEncrypted.spaces.get(p.space);
   if (!p || !s.space.conversion) return wikiTestEncJson(409, { error: "Conflict", text: "This page's space is not being converted now." });
   if (header("wiki-conversion-lease") !== s.lease) return wikiTestEncJson(409, { error: "Stale", state: "lease-lost", message: "Another browser is converting this space, or took this browser's lease over: nothing was written." });
-  p.staged ??= { plain: { versions: [], threads: [], comments: [], attachments: [] }, bytes: new Map() };
+  p.staged = p.staged ?? { plain: { versions: [], threads: [], comments: [], attachments: [] }, bytes: new Map() };
   const swap = wikiTestEncrypted.swapStaged;
   const other = new TextEncoder().encode("bytes another browser staged");
   if (rest === "/plain" && request.method === "POST") {

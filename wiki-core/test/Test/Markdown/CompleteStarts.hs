@@ -21,6 +21,7 @@ where
 
 import Data.Text qualified as T
 import Protolude
+import Test.Cases (longText, longTexts)
 import Test.Hspec hiding (after, before)
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, frequency, property, (.&&.), (===))
@@ -78,14 +79,17 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
       fmap (blockDefinitions "[^a\\]:b]: old\n\n[b\\]]: /u\n\n[c]: /v") (parseShapes "[^a\\]:b]: old\n\n[b\\]]: /u\n\n[c]: /v")
         `shouldBe` Right [(1, Nothing), (3, Nothing), (5, Just "[c]: x")]
     it "finds the start in a long text from the cursor up, and the end below within the bound (Codex, #298)" $ do
-      -- 16,000 short paragraphs under a definition: the start is the last
-      -- paragraph's, after the definition.
-      let paragraphs = ["[a]: /u", ""] <> concat [["Paragraph " <> show i <> " [a].", ""] | i <- [1 .. 16000 :: Int]]
+      -- 16,000 short paragraphs under a definition (1,600 on wasm,
+      -- "Test.Cases"): the start is the last paragraph's, after the
+      -- definition.
+      let n = longText 16000
+          paragraphs = ["[a]: /u", ""] <> concat [["Paragraph " <> show i <> " [a].", ""] | i <- [1 .. n]]
       linesFromStart (earlierOf (T.intercalate "\n" (paragraphs <> ["/t"]))) paragraphs
-        `shouldBe` Just ["[a]: x", "", "Paragraph 16000 [a].", ""]
-      -- The first item of a tight list of 16,000: no item follows a blank
-      -- line, and no start is taken below; after the list, two paragraphs.
-      let items = ["- item " <> show i | i <- [1 .. 16000 :: Int]]
+        `shouldBe` Just ["[a]: x", "", "Paragraph " <> show n <> " [a].", ""]
+      -- The first item of a tight list of 16,000 (1,600 on wasm, still
+      -- far past the bound): no item follows a blank line, and no start
+      -- is taken below; after the list, two paragraphs.
+      let items = ["- item " <> show i | i <- [1 .. n]]
           listed = items <> ["", "After.", "", "Last."]
       linesBelow afterBound (earlierOf (T.intercalate "\n" ("- first" : listed))) [] "- first /t" "" listed `shouldBe` Nothing
       let short = take 3 items <> ["", "After.", "", "Last."]
@@ -99,12 +103,13 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
       linesFromStart noEarlier (replicate 100 (T.replicate 60 "x")) `shouldBe` Nothing
 
   -- Every trigger of the wiki's own completion, on generated places, with
-  -- the starts of each mode: 200 cases natively, a quarter on wasm. The
+  -- the starts of each mode: 200 cases natively, five on wasm
+  -- ("Test.Cases"' long texts). The
   -- labels say how often a case reads from a start, with definitions,
   -- and with the lines below cut (about 80, 30 and 15 in a hundred); a
   -- check of the coverage would run the cases on to many more.
   modifyMaxSuccess (* 2) $ do
-    prop "opens the list the whole text opens, for markers, kinds of box, end markers, the / menu and the commands of math" $
+    longTexts . prop "opens the list the whole text opens, for markers, kinds of box, end markers, the / menu and the commands of math" $
       forAll genCase $
         \c -> alikeEverywhere (sourcesOf c) c
   where

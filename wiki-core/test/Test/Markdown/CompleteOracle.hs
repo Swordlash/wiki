@@ -20,10 +20,11 @@ module Test.Markdown.CompleteOracle (spec) where
 
 import Data.Text qualified as T
 import Protolude
+import Test.Cases (coverage, longTexts)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.Markdown.CompleteStarts (alikeEverywhere, caseAt)
-import Test.QuickCheck (Arbitrary (..), Gen, Property, checkCoverage, choose, conjoin, counterexample, cover, elements, forAll, frequency, property, (===))
+import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, frequency, property, (===))
 import Wiki.Core.Markdown.Ast (Block (..), BoxMarker (..), MarkerLine (..), MarkerName (..), MarkerRole (..), closingMarker, holdsBlocks, markerNameText, parseWithAllMarkers)
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.Markdown.Edit qualified as Edit
@@ -62,8 +63,10 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
     prop "writes every marker and kind of box offered as the parser then reads it" $ \(Doc doc) (Line cursor) ->
       counterexample (toS (T.unlines (doc <> [cursor <> "‸"]))) $
         readAsWritten doc cursor === []
-    prop "writes each entry of the / menu as the toolbar's command writes it on the whole text, selection included" $
-      checkCoverage (forAll genSlashCase slashWritesAsApply)
+    -- Its coverage checked natively only, and a tenth of the cases on
+    -- wasm, where each case's text is long ("Test.Cases").
+    longTexts . prop "writes each entry of the / menu as the toolbar's command writes it on the whole text, selection included" $
+      coverage (forAll genSlashCase slashWritesAsApply)
 
   -- WP5.124 (f): the places generated above, read from the starts of a
   -- check ("Test.Markdown.CompleteStarts"' modes): the answer is the

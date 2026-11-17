@@ -3183,6 +3183,18 @@ needs. Each was true when its package merged; check before relying on one.
   cursors. The check of the whole text grew by about 4% on wasm (6 ms
   on the guide, 90 ms on the 318,000-character deck, whose check
   already took 2.5 s).
+- **A line indented after a line of attributes (#300).** CI found it
+  through Enter's property (seed 2030959543, on #298's first head): a
+  line indented by one to three spaces right after a line of
+  attributes failed the whole page's parse (commonmark 0.3.1's
+  continuation of an attribute line reads the spaces and does not give
+  them back). Fixed in `attributeLineBlockSpec` with a `try`. The
+  lesson for a parse of part of the text: where the whole text does
+  not parse and the part does, the two answers differ, and no rule for
+  cuts guards against that. The guard is the property "the parser
+  reads every document the generator writes" (`Test.Markdown.Enter`),
+  which covers only what the generator writes; a way the parser fails
+  that the generator does not write stays unseen.
 - **The nightly's first run (2026-11-17, started by hand: the
   scheduled run of 01:43 UTC had not appeared two hours later, though
   the workflow is registered and active; watch whether the schedule

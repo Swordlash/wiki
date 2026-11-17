@@ -20,8 +20,8 @@ spec :: Spec
 spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
   describe "where a list opens" $ do
     it "opens in a formula, closed or being typed, in braces, in display math, in a math fence, and in emphasis" $
-      map opens ["$\\fr‸$", "$\\fr‸", "Text $a + \\fr‸", "Text $a + \\fr‸ b$ c", "$$\n\\fr‸", "$$\n\\fr‸\n$$", "```math\n\\fr‸", "> $\\fr‸", "- $\\fr‸$", "> [!NOTE]\n> $\\fr‸$", "*so $\\fr‸$ is*", "**so $\\fr‸", "$\\frac{\\fr‸}{}", "Text $\\frac{\\fr‸}{} and more", "$\\sqrt{\\fr‸", "$\\frac{a}{\\sqrt{\\fr‸", "a } b $\\sqrt{\\fr‸"]
-        `shouldBe` replicate 17 True
+      map opens ["$\\fr‸$", "$\\fr‸", "Text $a + \\fr‸", "Text $a + \\fr‸ b$ c", "$$\n\\fr‸", "$$\n\\fr‸\n$$", "```math\n\\fr‸", "> $\\fr‸", "- $\\fr‸$", "> [!NOTE]\n> $\\fr‸$", "*so $\\fr‸$ is*", "**so $\\fr‸", "$\\frac{\\fr‸}{}", "Text $\\frac{\\fr‸}{} and more", "$\\sqrt{\\fr‸", "$\\frac{a}{\\sqrt{\\fr‸", "a } b $\\sqrt{\\fr‸", "Text { $\\fr‸", "See `{` $\\sqrt{\\fr‸"]
+        `shouldBe` replicate 19 True
     it "opens nowhere else: outside math, in code, a heading, a table, a link's or an image's text, a formula over lines, after a line break's two backslashes, after a formula closed already" $
       map opens ["\\fr‸", "Text \\fr‸", "`$\\fr‸`", "```\n\\fr‸", "# $\\fr‸$", "| a |\n| - |\n| $\\fr‸$ |", "[$\\fr‸$](https://example.com)", "![$\\fr‸$](a.png)", "[*$\\fr‸$*](https://example.com)", "$a\n\\fr‸$", "$a \\\\fr‸", "Costs $5$ and \\fr‸", "$\\fr‸$\r", "Costs $5 and \\fr‸\nTitle\n==="]
         `shouldBe` replicate 14 False

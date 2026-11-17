@@ -15,7 +15,7 @@ import { build } from "esbuild";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = new URL("..", import.meta.url);
 const target = new URL("wiki-core/src/Wiki/Core/Math/KatexCommands.hs", root);
@@ -34,7 +34,7 @@ let tables;
 try {
   const out = join(dir, "tables.mjs");
   await build({
-    stdin: { contents: entry, resolveDir: new URL(".", root).pathname, loader: "js" },
+    stdin: { contents: entry, resolveDir: fileURLToPath(new URL(".", root)), loader: "js" },
     bundle: true,
     format: "esm",
     platform: "node",

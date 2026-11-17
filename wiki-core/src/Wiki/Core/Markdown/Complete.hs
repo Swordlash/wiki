@@ -1291,7 +1291,7 @@ mathWord = "Zqxjvmath"
 mathProbes :: At -> Text -> [Probe]
 mathProbes at prefix =
   [ probe (fst (stretchOf at))
-  , probe (lineAfter <> T.replicate (openBraces (prefix <> lineAfter)) "}" <> "$")
+  , probe (lineAfter <> T.replicate (openBraces (snd (T.breakOnEnd "$" prefix) <> lineAfter)) "}" <> "$")
   , probe (lineAfter <> "\n$$")
   ]
   where
@@ -1300,9 +1300,10 @@ mathProbes at prefix =
     lineAfter = T.take afterBound at.after
     probe rest = Probe 1 (T.splitOn "\n" (prefix <> "\\" <> mathWord <> rest))
 
--- | How many braces a line leaves open: each @{@ opens one, each @}@
--- closes the last one open, if any (a @}@ with none open, before the
--- formula, closes nothing), none counted after a backslash (@\\{@ is a brace written in the formula, not
+-- | How many braces a formula's text leaves open (from its opening @$@
+-- to the line's end: a brace of the prose before it is not the formula's):
+-- each @{@ opens one, each @}@ closes the last one open, if any, none
+-- counted after a backslash (@\\{@ is a brace written in the formula, not
 -- a group). Only the probe of a formula being typed uses it, to close the
 -- groups before the formula; the parser reads the result.
 openBraces :: Text -> Int

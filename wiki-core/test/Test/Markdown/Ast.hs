@@ -240,6 +240,13 @@ spec = describe "Markdown.Ast" $ do
       taking "> {.norender}\n> ```html\n> <b>x</b>\n> ```" `shouldBe` [(2, 3, [("class", "norender")])]
       taking "```html {.norender}\n<b>x</b>\n```" `shouldBe` []
       "{.sorted}\n> - [x] a\n> - [ ] b" `parses` [BlockQuote [List BulletList [ListItem (Just True) [Plain [Str "a"]], ListItem (Just False) [Plain [Str "b"]]]]]
+    -- A line indented by one to three spaces after a line of attributes
+    -- failed the whole page's parse ("unexpected >"): the line was read
+    -- as more attributes, and its spaces were not given back.
+    it "reads a line indented by up to three spaces after it as the block it starts" $ do
+      "{.sorted}\n  - a" `parses` [Div [("class", "sorted")] [List BulletList [ListItem Nothing [Plain [Str "a"]]]]]
+      "{#a}\n   > x" `parses` [BlockQuote [Para [Str "x"]]]
+      "{#a}\n text" `parses` [Para [Str "text"]]
     it "gives a fence after a list the line between them, and the list none of it" $
       "- [ ] a\n\n{.norender}\n```mermaid\ngraph TD\n```"
         `parses` [List BulletList [ListItem (Just False) [Plain [Str "a"]]], CodeBlock [("class", "norender")] (Just "mermaid") "graph TD\n"]

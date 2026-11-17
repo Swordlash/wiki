@@ -11,7 +11,7 @@
 -- the panel shows while the model
 -- works: "Thinking" with its dots, the seconds waited and the thinking's
 -- summary, a status line while a tool call is written, a cursor at the
--- end of streaming text, and the time and duration of each message;
+-- end of streaming text, and the time, duration and tokens of each message;
 -- Close and Escape; the effort, from the settings' default and changed
 -- for one conversation; an error shown without anything like a key in
 -- it; the models offered, the provider's own list grouped; a bubble per
@@ -351,8 +351,8 @@ spec m = do
     length <$> findAll ui ".assistant-status" `shouldReturn` 0
     eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Retitled.")
 
-  it "shows the time of each message, and how long a finished answer took" $ runPage $ do
-    script [[quiet 1200, text "Done."]]
+  it "shows the time of each message, and how long a finished answer took and its tokens" $ runPage $ do
+    script [[usage 1240 (Just 0) (Just 1200) 75, usage 1290 (Just 1200) (Just 0) 12, quiet 1200, text "Done."]]
     ui <- openAssistant m
     send ui "Hello?"
     eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Done.")
@@ -360,6 +360,8 @@ spec m = do
     asked `shouldSatisfy` (\t -> T.isInfixOf ":" t && T.any isDigit t)
     find ui ".assistant-message.from-model .assistant-time" >>= textContent >>= (`shouldBe` asked)
     eventually $ find ui ".assistant-message.from-model .assistant-took" >>= textContent >>= (`shouldSatisfy` (`elem` ["1 s", "2 s", "3 s"]))
+    -- The tokens of the answer's two requests, summed.
+    find ui ".assistant-message.from-model .assistant-tokens" >>= (`shouldHaveText` "2,530 tokens in (1,200 from cache, 1,200 written to cache), 87 out")
 
   it "closes with Close in its header, and with Escape in the message box" $ runPage $ do
     script []
@@ -1035,6 +1037,11 @@ hold = object ["hold" .= True]
 -- | A summary of thinking, streamed.
 thinking :: Text -> Value
 thinking t = object ["thinking" .= t]
+
+-- | The tokens of one request, as a provider's usage is told: the input,
+-- the part read from the cache, the part written to it, the output.
+usage :: Int -> Maybe Int -> Maybe Int -> Int -> Value
+usage i c w o = object ["usage" .= object ["input" .= i, "cached" .= c, "written" .= w, "output" .= o]]
 
 -- | A pause of so many milliseconds, before the next step.
 quiet :: Int -> Value

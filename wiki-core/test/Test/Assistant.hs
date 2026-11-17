@@ -27,6 +27,41 @@ spec = describe "Wiki.Core.Assistant" $ do
   requestSpec
   editSpec
   changeSpec
+  usageSpec
+
+usageSpec :: Spec
+usageSpec = describe "usage" $ do
+  let round1 = Usage {input = 1240, cached = Just 0, written = Just 1200, output = 75}
+      round2 = Usage {input = 1290, cached = Just 1200, written = Just 0, output = 12}
+  it "sums a turn's requests, one per round of its tool loop" $ do
+    turnUsage [round1, round2] `shouldBe` Just Usage {input = 2530, cached = Just 1200, written = Just 1200, output = 87}
+    turnUsage [round1] `shouldBe` Just round1
+
+  it "is nothing for a turn whose service reported no usage" $
+    turnUsage [] `shouldBe` Nothing
+
+  it "counts a part one request reported, and leaves out one none did" $ do
+    let bare = Usage {input = 300, cached = Nothing, written = Nothing, output = 20}
+    turnUsage [bare, round2] `shouldBe` Just Usage {input = 1590, cached = Just 1200, written = Just 0, output = 32}
+    turnUsage [bare, bare] `shouldBe` Just Usage {input = 600, cached = Nothing, written = Nothing, output = 40}
+
+  it "says the tokens in, from and to the cache, and out, the thousands set apart" $ do
+    usageText Usage {input = 12340, cached = Just 9800, written = Just 1200, output = 420}
+      `shouldBe` "12,340 tokens in (9,800 from cache, 1,200 written to cache), 420 out"
+    usageText Usage {input = 1234567, cached = Just 1000, written = Just 0, output = 7}
+      `shouldBe` "1,234,567 tokens in (1,000 from cache), 7 out"
+
+  it "says none from the cache when the service read none, and nothing of the cache when it did not say" $ do
+    usageText Usage {input = 5000, cached = Just 0, written = Nothing, output = 80}
+      `shouldBe` "5,000 tokens in (none from cache), 80 out"
+    usageText Usage {input = 5000, cached = Just 0, written = Just 640, output = 80}
+      `shouldBe` "5,000 tokens in (none from cache, 640 written to cache), 80 out"
+    usageText Usage {input = 300, cached = Nothing, written = Nothing, output = 20}
+      `shouldBe` "300 tokens in, 20 out"
+
+  it "reads a request's usage as the browser tells it" $ do
+    decode "{\"input\":900,\"cached\":0,\"written\":null,\"output\":3}" `shouldBe` Just Usage {input = 900, cached = Just 0, written = Nothing, output = 3}
+    (decode "{\"cached\":0,\"output\":3}" :: Maybe Usage) `shouldBe` Nothing
 
 settingsSpec :: Spec
 settingsSpec = describe "settings" $ do

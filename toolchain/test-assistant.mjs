@@ -59,10 +59,11 @@ const sse = (events) =>
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 // Anthropic's stream of one message: text, then tool calls, then why it
-// stopped.
-const anthropicMessage = (texts, tools, stopReason) => {
+// stopped. The usage is the one message_start gives and the one
+// message_delta gives at the end.
+const anthropicMessage = (texts, tools, stopReason, usage = { start: { input_tokens: 1, output_tokens: 1 }, end: { output_tokens: 2 } }) => {
   const events = [
-    ["message_start", { type: "message_start", message: { id: "msg", type: "message", role: "assistant", model: "m", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } }],
+    ["message_start", { type: "message_start", message: { id: "msg", type: "message", role: "assistant", model: "m", content: [], stop_reason: null, stop_sequence: null, usage: usage.start } }],
     ["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }],
     ...texts.map((text) => ["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }]),
     ["content_block_stop", { type: "content_block_stop", index: 0 }],
@@ -75,7 +76,7 @@ const anthropicMessage = (texts, tools, stopReason) => {
     );
   });
   events.push(
-    ["message_delta", { type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 2 } }],
+    ["message_delta", { type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: usage.end }],
     ["message_stop", { type: "message_stop" }],
   );
   return sse(events);
@@ -352,11 +353,11 @@ const openAiRequest = {
   reasoning: { effort: "low", summary: "auto" },
 };
 
-const openAiResponse = (texts, output) =>
+const openAiResponse = (texts, output, usage) =>
   sse([
     ["response.created", { type: "response.created", sequence_number: 0, response: { id: "resp", output: [] } }],
     ...texts.map((delta, i) => ["response.output_text.delta", { type: "response.output_text.delta", sequence_number: i + 1, item_id: "msg", output_index: 0, content_index: 0, delta }]),
-    ["response.completed", { type: "response.completed", sequence_number: 99, response: { id: "resp", status: "completed", output } }],
+    ["response.completed", { type: "response.completed", sequence_number: 99, response: { id: "resp", status: "completed", output, ...(usage ? { usage } : {}) } }],
   ]);
 
 await test("OpenAI: streams the text, runs the tool loop, and sends the conversation whole", async () => {
@@ -695,6 +696,77 @@ await test("Anthropic, at its own address and at a gateway alike: the next messa
       baseURL ?? "the provider's own address",
     );
   }
+});
+
+// The tokens of each request, as the application reads them (WP5.125):
+// `input` every input token of the request, cached or not; `cached` the
+// part read from the provider's cache; `written` the part written to it;
+// `output` the output. Anthropic's input_tokens leaves out the tokens read
+// from and written to the cache, which are beside it; OpenAI's holds them,
+// with input_tokens_details naming the parts.
+const usages = () => {
+  const told = [];
+  const { handlers } = collect();
+  return { told, handlers: { ...handlers, usage: (u) => told.push(u) } };
+};
+
+await test("Anthropic: each request's usage is told, the cache's tokens counted in the input, over a tool loop", async () => {
+  const { fetch } = fakeFetch([
+    anthropicMessage([], [["tu_1", "replace", { old_text: "a", new_text: "b" }]], "tool_use", {
+      start: { input_tokens: 40, cache_creation_input_tokens: 1200, cache_read_input_tokens: 0, output_tokens: 1 },
+      end: { output_tokens: 75 },
+    }),
+    anthropicMessage(["Done."], [], "end_turn", {
+      start: { input_tokens: 90, cache_creation_input_tokens: 0, cache_read_input_tokens: 1200, output_tokens: 1 },
+      end: { output_tokens: 12 },
+    }),
+  ]);
+  const chat = startChat("anthropic", "k", anthropicRequest, { fetch, maxRetries: 0 });
+  const { told, handlers } = usages();
+  await chat.send("Fix it.", handlers, new AbortController().signal);
+  assert.deepEqual(told, [
+    { input: 1240, cached: 0, written: 1200, output: 75 },
+    { input: 1290, cached: 1200, written: 0, output: 12 },
+  ]);
+});
+
+await test("Anthropic: a service that leaves out the cache's counts, or the whole usage, tells only what it gave", async () => {
+  const { fetch } = fakeFetch([
+    anthropicMessage(["One."], [], "end_turn", { start: { input_tokens: 300, output_tokens: 1 }, end: { output_tokens: 20 } }),
+    anthropicMessage(["Two."], [], "end_turn", { start: {}, end: {} }),
+  ]);
+  const chat = startChat("anthropic", "k", anthropicRequest, { fetch, maxRetries: 0 });
+  const { told, handlers } = usages();
+  await chat.send("x", handlers, new AbortController().signal);
+  await chat.send("y", handlers, new AbortController().signal);
+  assert.deepEqual(told, [{ input: 300, cached: null, written: null, output: 20 }]);
+});
+
+await test("OpenAI: each request's usage is told, the cached tokens a part of the input, over a tool loop", async () => {
+  const call = { type: "function_call", id: "fc_1", call_id: "call_1", name: "replace", arguments: '{"old_text":"a","new_text":"b"}', status: "completed" };
+  const message = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Done.", annotations: [] }] };
+  const usage = (input, cached, output) => ({ input_tokens: input, input_tokens_details: { cached_tokens: cached }, output_tokens: output, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: input + output });
+  const { fetch } = fakeFetch([openAiResponse([], [call], usage(5000, 0, 80)), openAiResponse(["Done."], [message], usage(5120, 4864, 15))]);
+  const chat = startChat("openai", "k", openAiRequest, { fetch, maxRetries: 0 });
+  const { told, handlers } = usages();
+  await chat.send("Fix it.", handlers, new AbortController().signal);
+  assert.deepEqual(told, [
+    { input: 5000, cached: 0, written: null, output: 80 },
+    { input: 5120, cached: 4864, written: null, output: 15 },
+  ]);
+});
+
+await test("OpenAI: a response without usage tells nothing, and one with the tokens written to the cache tells them", async () => {
+  const message = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Hi.", annotations: [] }] };
+  const { fetch } = fakeFetch([
+    openAiResponse(["Hi."], [message]),
+    openAiResponse(["Hi."], [message], { input_tokens: "many", output_tokens: 3 }),
+    openAiResponse(["Hi."], [message], { input_tokens: 900, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 640 }, output_tokens: 3, total_tokens: 903 }),
+  ]);
+  const chat = startChat("openai", "", openAiRequest, { fetch, maxRetries: 0, baseURL: "http://localhost:11434/v1" });
+  const { told, handlers } = usages();
+  for (const m of ["x", "y", "z"]) await chat.send(m, handlers, new AbortController().signal);
+  assert.deepEqual(told, [{ input: 900, cached: 0, written: 640, output: 3 }]);
 });
 
 if (failures > 0) {

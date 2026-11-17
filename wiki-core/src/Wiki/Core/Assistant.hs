@@ -78,6 +78,11 @@ module Wiki.Core.Assistant
   , errorMeaning
   , errorDetail
   , redact
+
+    -- * Usage
+  , Usage (..)
+  , turnUsage
+  , usageText
   )
 where
 
@@ -731,3 +736,67 @@ redact key = T.intercalate " " . map hideWord . T.splitOn " " . maybe identity h
       (before, rest) | not (T.null rest) -> before <> "[a key]" <> T.dropWhile keyChar (T.drop 3 rest)
       _ -> w
     keyChar c = isAlphaNum c || c `elem` ("-_*." :: [Char])
+
+-- | 'Usage': the tokens of one request to the provider, as the
+-- browser-side JavaScript reads them from the provider's answer (WP5.125).
+-- 'input' is every input token of the request, cached or not; 'cached' is
+-- the part read from the provider's cache, and 'written' the part written
+-- to it, each 'Nothing' when the service did not say. A request whose
+-- service reports no usage gives no 'Usage' at all: nothing is estimated.
+-- The panel shows a turn's sum, so that whoever uses a gateway can see
+-- whether it passes prompt caching on.
+data Usage = Usage
+  { input :: Int
+  , cached :: Maybe Int
+  , written :: Maybe Int
+  , output :: Int
+  }
+  deriving stock (Eq, Show)
+
+instance FromJSON Usage where
+  parseJSON = withObject "Usage" $ \o ->
+    Usage <$> o .: "input" <*> o .:? "cached" <*> o .:? "written" <*> o .: "output"
+
+-- | The tokens of a turn: the sum of the usages of its requests, one per
+-- round of its tool loop. A part that one request reported counts, and is
+-- 'Nothing' only when no request reported it. 'Nothing' for a turn with
+-- no usage, which then shows nothing.
+turnUsage :: [Usage] -> Maybe Usage
+turnUsage = \case
+  [] -> Nothing
+  u : us -> Just (foldl' plus u us)
+  where
+    plus a b =
+      Usage
+        { input = a.input + b.input
+        , cached = both a.cached b.cached
+        , written = both a.written b.written
+        , output = a.output + b.output
+        }
+    both (Just x) (Just y) = Just (x + y)
+    both x y = x <|> y
+
+-- | A turn's tokens as the panel shows them: "12,340 tokens in (9,800 from
+-- cache, 1,200 written to cache), 420 out". Tokens read from the cache are
+-- said even when there are none ("none from cache"), so that a service
+-- that reads none is told from one that does not say; a service that does
+-- not say has no parenthesis. Tokens written to the cache are said only
+-- when there are some.
+usageText :: Usage -> Text
+usageText u =
+  thousands u.input <> " tokens in" <> parts <> ", " <> thousands u.output <> " out"
+  where
+    parts = case catMaybes [fromCache <$> u.cached, toCache =<< u.written] of
+      [] -> ""
+      said -> " (" <> T.intercalate ", " said <> ")"
+    fromCache 0 = "none from cache"
+    fromCache n = thousands n <> " from cache"
+    toCache n
+      | n > 0 = Just (thousands n <> " written to cache")
+      | otherwise = Nothing
+
+-- | A count with its thousands set apart by commas: "12,340".
+thousands :: Int -> Text
+thousands n
+  | n < 0 = "-" <> thousands (negate n)
+  | otherwise = T.intercalate "," (reverse (map T.reverse (T.chunksOf 3 (T.reverse (show n)))))

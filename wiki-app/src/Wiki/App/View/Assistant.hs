@@ -40,7 +40,11 @@
 -- it is editing the page; the edit's note replaces the line once the edit
 -- is made. Streaming text ends in a blinking cursor. Each message shows
 -- the time it was sent, by the browser's clock, and a finished response
--- shows how long it took.
+-- shows how long it took. Once the model's message ends, it also shows
+-- the tokens its requests took, as the service reported them
+-- ('Wiki.Core.Assistant.usageText'): the input, the part of it read from
+-- the provider's cache, the output. A service that reports none shows
+-- nothing.
 --
 -- What is sent with a message: when the editor has a selection, the
 -- selection is attached, shown as a chip ("lines 12–20") with a button to
@@ -117,6 +121,7 @@ import Wiki.Core.Assistant
   , ProviderSettings (..)
   , Ready (..)
   , Settings (..)
+  , Usage
   , baseUrlOf
   , chosenModel
   , effortOf
@@ -132,6 +137,8 @@ import Wiki.Core.Assistant
   , serviceName
   , serviceOf
   , settingsOf
+  , turnUsage
+  , usageText
   , withMode
   , withModel
   )
@@ -249,6 +256,10 @@ data Reply = Reply
   -- call answered. The seconds counter counts from here.
   , took :: Maybe NominalDiffTime
   -- ^ How long the answer took, once it ended.
+  , used :: [Usage]
+  -- ^ The tokens of each request of the answer that the service reported,
+  -- one per round of its tool loop. Their sum ('turnUsage') shows once
+  -- the answer ended, was stopped or failed.
   }
 
 -- | Where a model's message is.
@@ -637,6 +648,11 @@ component =
                   <span class="assistant-took" title="How long the answer took">{{ duration d }}</span>
                 {% end %}
               {% end %}
+              {% if not (working r.stage) %}
+                {% for u in maybeToList (turnUsage r.used) %}
+                  <span class="assistant-tokens" title="The tokens of this answer, as the service reported them">{{ usageText u }}</span>
+                {% end %}
+              {% end %}
             </p>
           </div>
         |]
@@ -807,7 +823,7 @@ component =
                 (chip, cut) = case context of
                   Selected {lineRange} -> (Just (chipLabel lineRange), Nothing)
                   Whole {cutFrom} -> (Nothing, cutFrom)
-                reply = Reply {said = "", notes = [], stage = Waiting, thinking = "", thought = "", clock = shown, began = sentAt, quietSince = sentAt, took = Nothing}
+                reply = Reply {said = "", notes = [], stage = Waiting, thinking = "", thought = "", clock = shown, began = sentAt, quietSince = sentAt, took = Nothing, used = []}
             talk <- maybe (open md r) pure st.talk
             modify $ \s' ->
               s'
@@ -838,6 +854,7 @@ component =
       HeardText t -> modifyReply (\r -> (settle r) {said = r.said <> t, stage = Writing})
       HeardThinking t -> modifyReply (\r -> r {thinking = r.thinking <> t})
       HeardToolStart _ -> modifyReply (\r -> (settle r) {stage = Editing})
+      HeardUsage u -> modifyReply (\r -> r {used = r.used <> [u]})
       HeardCall call name input -> do
         (edited, told, ok) <- edit name input
         -- The model goes on once it has the answer: a new wait.

@@ -7991,9 +7991,10 @@ a.mention {
   }
 }
 
-/* The time a message was sent, and how long an answer took. */
+/* The time a message was sent, how long an answer took, and its tokens. */
 .assistant-meta {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin: 0.2rem 0 0;
   font-size: 0.7rem;
@@ -8004,7 +8005,8 @@ a.mention {
   justify-content: flex-end;
 }
 
-.assistant-took::before {
+.assistant-took::before,
+.assistant-tokens::before {
   content: "\00b7";
   margin-right: 0.5rem;
 }

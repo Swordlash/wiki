@@ -30,6 +30,14 @@
 --
 -- * an event the channel tells is applied to the threads shown, a thread
 --   or a reply added only when no thread or comment has its id;
+-- * one read of the page's threads is out at a time: a read wanted while
+--   one whose answer can still be taken is out (the page read again, the
+--   read that follows a write, a reload, an encrypted page's change) is
+--   asked when that answer comes, failed or not, and several wanted
+--   meanwhile are one ('reading'). The server handles a read sent after
+--   another's answer came after that one, so a read's answer taken is
+--   never older than the one taken before it, whatever order the server
+--   would handle reads out together in;
 -- * the subscription's answer replaces the threads and puts every read out
 --   behind it;
 -- * a read's answer is taken only if no answer to a later read was
@@ -109,11 +117,13 @@ data Model = Model
   -- ^ What the live channel told on this visit, the newest first, with
   -- the reads as they were then, while a read is out whose answer may be
   -- older ('taking').
-  , following :: Maybe Ask
-  -- ^ The read asked after a write's answer, while it is out.
-  , writtenSince :: Bool
-  -- ^ Whether another write was answered after that read was asked: one
-  -- more read follows when its answer comes.
+  , flight :: Maybe (Ask, PageId)
+  -- ^ The last read of the threads asked, with the page it reads, until
+  -- its answer comes. While its answer can still be taken, no other read
+  -- of that page is asked ('reading').
+  , wanted :: Bool
+  -- ^ Whether a read was wanted while that one was out: it is asked when
+  -- that one's answer comes.
   , quoting :: Maybe Quoting
   -- ^ The quote of the page the reader is commenting on, in its session:
   -- a new thread about it is being written, in the panel beside the page.
@@ -236,7 +246,7 @@ data Effect a
 -- read at once if the backend could.
 initial :: Maybe PageId -> Bool -> Bool -> Maybe (Either WikiError [Thread]) -> Model
 initial page comments encrypted read' =
-  Model {page, comments, encrypted, threads = maybe ThreadsLoading (either ThreadsFailed ThreadsReady) (read' >>= \r -> r <$ guard comments), asks = noAsks, written = 0, writes = mempty, heard = [], following = Nothing, writtenSince = False, quoting = Nothing, sessions = 0, focused = Nothing, behind = False, closed = False}
+  Model {page, comments, encrypted, threads = maybe ThreadsLoading (either ThreadsFailed ThreadsReady) (read' >>= \r -> r <$ guard comments), asks = noAsks, written = 0, writes = mempty, heard = [], flight = Nothing, wanted = False, quoting = Nothing, sessions = 0, focused = Nothing, behind = False, closed = False}
 
 -- | The threads after an event, and what the page view is asked to do.
 step :: Event a -> Model -> (Model, [Effect a])
@@ -261,9 +271,9 @@ step event m
       Loaded asked page answer -> case takes asked m.asks of
         Just after ->
           let m' = taking asked page answer m {asks = after}
-              (m'', fx) = followed asked (if m'.threads /= m.threads then unquiet m' else m')
+              (m'', fx) = landed asked (if m'.threads /= m.threads then unquiet m' else m')
            in (m'', Changed : fx)
-        Nothing -> second (Changed :) (followed asked m)
+        Nothing -> second (Changed :) (landed asked m)
       Write place page request ->
         let n = m.written + 1
             -- A thread about a quote is of the session its request names.
@@ -291,13 +301,16 @@ step event m
       Replaced page ts
         | m.page /= Just page -> (m, [])
         | m.encrypted -> reading m
-        | otherwise -> (unquiet m {threads = ThreadsReady ts, asks = supersede m.asks, heard = [], behind = False, focused = mfilter (\f -> any (\t -> t.id == f) ts) m.focused}, [Changed])
+        -- A read wanted before it is not asked: the subscription's answer
+        -- is the threads as they were when the page was subscribed to, and
+        -- every change after that comes after it on the channel.
+        | otherwise -> (unquiet m {threads = ThreadsReady ts, asks = supersede m.asks, heard = [], wanted = False, behind = False, focused = mfilter (\f -> any (\t -> t.id == f) ts) m.focused}, [Changed])
       Reload -> reading m
 
 -- | The model on another visit, or none: what was kept about the last
 -- one's reads and writes forgotten.
 elsewhere :: Model -> Model
-elsewhere m = m {writes = mempty, heard = [], following = Nothing, writtenSince = False, behind = False, quoting = Nothing, focused = Nothing}
+elsewhere m = m {writes = mempty, heard = [], wanted = False, behind = False, quoting = Nothing, focused = Nothing}
 
 -- | The model after the answer to a write sent on this visit: a thread
 -- opened in the session of quoting still open ends it, and is chosen. A
@@ -320,7 +333,8 @@ unquiet m = m {writes = map (\w -> w {quiet = False}) m.writes}
 --   place already: nothing more;
 -- * otherwise, when the threads shown are as they were when the write was
 --   sent, its event is applied, so that the reader sees it at once;
--- * either way, a read asked after the answer follows: its answer was read
+-- * either way, a read asked after the answer follows ('reading', which
+--   asks it once the read out, if any, is answered): its answer was read
 --   after the write was made, and it puts the write in its place among
 --   what others made meanwhile. A write that failed may have been made
 --   too, and is followed by a read as well.
@@ -328,8 +342,8 @@ wrote :: Writing -> Either WikiError PageEvent -> Model -> (Model, [Effect a])
 wrote w answer m = case answer of
   Right e
     | any (about e) w.told -> (m, [])
-    | w.quiet -> second (Changed :) (follow m {threads = applied e m.threads, heard = heardNow (remembered e m.threads) m})
-  _ -> follow m
+    | w.quiet -> second (Changed :) (reading m {threads = applied e m.threads, heard = heardNow (remembered e m.threads) m})
+  _ -> reading m
 
 -- | Whether an event the channel told is about what a write's answer made
 -- or changed: the write's own event told back, or a later change to the
@@ -361,21 +375,17 @@ about answer told = case answer of
       ThreadDeleted tid -> tid == c.thread
       _ -> False
 
--- | A read asked after a write's answer: one at a time, and one more when
--- its answer comes if another write was answered meanwhile.
-follow :: Model -> (Model, [Effect a])
-follow m = case m.following of
-  Just _ -> (m {writtenSince = True}, [])
-  Nothing -> let (m', fx) = reading m in (m' {following = head [t | Load t _ <- fx]}, fx)
-
--- | The model after the answer to a read came, taken or not: when it was
--- the read that followed a write, one more follows if another write was
--- answered since it was asked.
-followed :: Ask -> Model -> (Model, [Effect a])
-followed asked m
-  | m.following /= Just asked = (m, [])
-  | m.writtenSince = follow m {following = Nothing, writtenSince = False}
-  | otherwise = (m {following = Nothing}, [])
+-- | The model after the answer to a read came, taken or not, failed or
+-- not: when it was the read out, the read wanted meanwhile, if any, is
+-- asked now.
+landed :: Ask -> Model -> (Model, [Effect a])
+landed asked m = case m.flight of
+  Just (out, _)
+    | out == asked ->
+        if m.wanted
+          then reading m {flight = Nothing, wanted = False}
+          else (m {flight = Nothing}, [])
+  _ -> (m, [])
 
 -- | The answer to a read taken: for the page shown, its threads, with
 -- what the live channel told since the read was asked applied again, in
@@ -431,13 +441,18 @@ heardNow e m = stillWanted m.asks ((e, m.asks) : m.heard)
 stillWanted :: Asks -> [(PageEvent, Asks)] -> [(PageEvent, Asks)]
 stillWanted now = filter (\(_, at) -> stillAnswerable at now)
 
--- | A read of the threads begun, for the page shown. A page with no
+-- | A read of the threads begun, for the page shown, or wanted: while a
+-- read of that page is out whose answer can still be taken, no other is
+-- asked; it is marked wanted, and asked when that answer comes
+-- ('landed'). A read whose answer can no longer be taken (another visit,
+-- the subscription's answer since) holds nothing back. A page with no
 -- comments has none, at once, under its own ticket.
 reading :: Model -> (Model, [Effect a])
 reading m = case m.page of
   Nothing -> (m, [])
   Just page
-    | m.comments -> (m {asks = after}, [Load ticket page])
+    | m.comments, Just (out, p) <- m.flight, p == page, isJust (takes out m.asks) -> (m {wanted = True}, [])
+    | m.comments -> (m {asks = after, flight = Just (ticket, page), wanted = False}, [Load ticket page])
     | otherwise -> case takes ticket after of
         Just taken -> (m {asks = taken, threads = ThreadsReady []}, [Changed])
         Nothing -> (m {asks = after}, [])

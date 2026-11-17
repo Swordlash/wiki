@@ -79,6 +79,8 @@
 -- * a comment shown is on the server, unless a message the channel has
 --   still to deliver removes it;
 -- * a failed read is shown only where no threads are;
+-- * no two reads of the page shown are out whose answers the view would
+--   take;
 -- * a write's answer empties the form it came from (or shows why it
 --   failed), and, for a thread opened about a quote, stops the quoting and
 --   chooses the thread, once, on the visit of the page it was sent on, and
@@ -702,6 +704,10 @@ checked shownBefore w = w {faults = w.faults <> problems, seen = seen'}
                , editsOf c.body < editsOf earlier
                , c.id `notElem` editsOnTheWay
                ]
+            <> [ (OneRead, "two reads of the page shown are out whose answers would be taken: " <> show takable)
+               | let takable = [a | Out {asked = ARead a p} <- w.outs, Just p == w.view.page, isJust (takes a w.view.asks)]
+               , length takable > 1
+               ]
             <> [ (FailureOverThreads, "a failed read is shown in place of the threads")
                | Just (ThreadsReady _) <- [shownBefore]
                , ThreadsFailed _ <- [w.view.threads]
@@ -754,7 +760,7 @@ settles w0 =
 
 -- | 'Rule' is each rule a run is checked against, as the module's Haddock
 -- lists them.
-data Rule = OtherPage | Lost | Older | Ghost | FailureOverThreads | Unsaid | AnsweredOnce | Waited | AfterClose
+data Rule = OtherPage | Lost | Older | Ghost | FailureOverThreads | OneRead | Unsaid | AnsweredOnce | Waited | AfterClose
   deriving stock (Eq, Show, Enum, Bounded)
 
 ruleText :: Rule -> [Char]
@@ -767,6 +773,7 @@ ruleText = \case
   Waited -> "carries out every effect of a step before the next event, on any run"
   AnsweredOnce -> "carries out a write's answer in the comments view and the page once on the visit it was sent on, and never on another, on any run"
   FailureOverThreads -> "shows a failed read only where it shows no threads, on any run"
+  OneRead -> "leaves no two reads of the page out whose answers it would take, on any run"
   AfterClose -> "asks nothing once it has gone away"
 
 verdict :: Rule -> World -> Property
@@ -800,6 +807,14 @@ spec = describe "Wiki.App.View.Comments.Machine" $ modifyMaxSuccess (max cases) 
       -- asked after the edit answered without the thread. Applied again,
       -- the opening put the thread back with its first text.
       [t | (Older, t) <- (foldl' play w0 [Tell, Handle, ReaderOpens False, PageAgain, Handle, Handle, Deliver 2, ReaderEdits 0, Handle, Deliver 2, Tell, Deliver 0, OtherDeletesThread 0, Reconnect, Handle, Deliver 1]).faults] `shouldBe` []
+
+    it ("shows no older text when the server handles a later read before an earlier one" <> how) $
+      -- 500,000 cases on #312 (seed 20261117): three reads of the page out,
+      -- the latest handled before someone's edit and an earlier one after
+      -- it; the latest's answer, taken last, put the older text back. One
+      -- read is out at a time now, so the server handles them in the order
+      -- they were asked.
+      [t | (Older, t) <- (foldl' play w0 [PageAgain, PageAgain, Handle, Handle, Handle, PageAgain, PageAgain, PageAgain, OtherOpens True, HandleOut 2, Handle, OtherEdits 0, Handle, Deliver 0, Reconnect, Deliver 3, Deliver 0, Deliver 2]).faults] `shouldBe` []
 
     it ("leaves a new visit's forms alone when a write sent on an earlier visit of the page is answered" <> how) $
       -- Codex on #284: the reader writes on page A, goes to B and back to

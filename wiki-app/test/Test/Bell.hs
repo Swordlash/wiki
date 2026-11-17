@@ -12,8 +12,9 @@
 -- server over one connection: a request sent later reaches the server
 -- later, and the responses travel back on their own. The in-memory
 -- backend is the case where each ask is handled at once. Runs where the
--- server handles asks in any order ('HandleOut', 'genUnordered') break
--- two rules, as the group of examples for them says.
+-- server handles asks out together in any order ('HandleOut',
+-- 'genUnordered') hold every rule too: the bell keeps one read or mark
+-- out at a time, so no two are out together for the server to swap.
 --
 -- = The model's answers have the real answers' shape
 --
@@ -88,8 +89,8 @@
 --   dropped and reconnects ('Make' then 'Tell', first in first out;
 --   'Reconnect');
 -- * reads run on the readers, beside the one writer: a read sent after a
---   mark can be handled before the mark commits (the runs of 'HandleOut',
---   which break the two rules their examples hold).
+--   mark can be handled before the mark commits (the runs of 'HandleOut';
+--   the bell sends no read while a mark is out).
 module Test.Bell
   ( spec
 
@@ -126,7 +127,7 @@ import Test.QuickCheck qualified as QC
 import Wiki.Api.Notifications (Notifications (..), ReadMark (..))
 import Wiki.App.Backend.Http.Cache (Cache (notices), Stored (..), askingNotices, changedBy, emptyCache, forgetNotices, markedAnswer, storedNotices, storedOf, withNotices)
 import Wiki.App.View.Bell.Machine
-import Wiki.App.View.Latest (madeAfter)
+import Wiki.App.View.Latest (Ask, madeAfter, takes)
 import Wiki.Core.Id (NotificationId (..), PageId (..), UserId (..))
 import Wiki.Core.Notification (Kind (..), Notification (..), PageLocation (..))
 import Wiki.Core.Slug (mkSlug)
@@ -467,10 +468,14 @@ afterEvent what event w =
       _ -> Out {ask = e, answer = Nothing, sent = Nothing}
     effectsText = if null effects then "" else " -> " <> T.intercalate ", " (map effectText effects)
     isAsk = isJust . ticketOf
-    ticketOf = \case
-      Load t -> Just t
-      MarkRead t _ -> Just t
-      _ -> Nothing
+    ticketOf = askTicket
+
+-- | The ticket of a read or a mark.
+askTicket :: Effect a -> Maybe Ask
+askTicket = \case
+  Load t -> Just t
+  MarkRead t _ -> Just t
+  _ -> Nothing
 
 -- | The world after the answers the cache gave came back. Over the HTTP
 -- backend a read the cache can answer returns at once: its answer is the
@@ -501,7 +506,12 @@ checked w = w {faults = w.faults <> problems, seenRead = Map.unionWith (||) w.se
       [(ReadStaysRead, idText n <> " was shown read, and is shown unread again") | n <- shown, not n.read, Map.lookup n.id w.seenRead == Just True]
         <> [(NothingLost, "listed before and gone: " <> T.intercalate ", " gone) | let shownIds = Set.fromList (map (\n -> n.id) shown); newest = Set.fromList (map (\n -> n.id) (take w.server.limit w.server.notes)); gone = [unId i | i <- Map.keys w.seenRead, i `Set.notMember` shownIds, i `Set.member` newest, i `Set.notMember` w.leftNewest], not (null gone), isJust (rightNotices w.bell)]
         <> [(CountMatches, "the count says " <> show (unreadCount w.bell) <> ", and " <> show (length (filter (\n -> not n.read) shown)) <> " are listed unread") | isJust (rightNotices w.bell), unreadCount w.bell < length (filter (\n -> not n.read) shown)]
-        <> [(BusyWhileMarking, "the buttons that mark are " <> (if busy w.bell then "disabled with no mark out" else "enabled with a mark out")) | not w.finished, busy w.bell /= marksOut]
+        <> [(BusyWhileMarking, "the buttons that mark are " <> (if busy w.bell then "disabled with no mark out or waiting" else "enabled with a mark out or waiting")) | not w.finished, busy w.bell /= (marksOut || not (null w.bell.queued))]
+        <> [ (OneAsk, "two asks are out whose answers would be taken: " <> show takable)
+           | not w.finished
+           , let takable = [t | o <- w.outs, Just t <- [askTicket o.ask], isJust (takes t w.bell.asks)]
+           , length takable > 1
+           ]
         <> [(ListedOnce, "a notification is listed twice") | let ids = map (\n -> n.id) shown, Set.size (Set.fromList ids) /= length ids]
         <> [(QuietAfterClose, "listening after the bell went away") | w.finished, w.listening /= 0]
 
@@ -516,6 +526,7 @@ data Rule
   | QuietAfterClose
   | AsksNamed
   | ShownWhenTold
+  | OneAsk
   deriving stock (Eq, Show, Enum, Bounded)
 
 rightNotices :: Model -> Maybe Notifications
@@ -649,32 +660,25 @@ properties = do
         forAllShrinkShow genRun shrinkRun show $ \run ->
           settles quieted (foldl' play startCached (filter (`notElem` [Finish]) (filter (not . elsewhere) run)))
 
-  -- What the model assumes of the server: it handles the asks in the
-  -- order they were sent ('Handle'), as one server reached over one
-  -- connection does. Over HTTP/2, or two connections, a read and a mark
-  -- sent in that order may be handled the other way round ('HandleOut').
-  -- Then the bell may take the answer to the later ask, which may be the
-  -- older state: a notification it listed goes until the live channel
-  -- tells of it, and the count may be the older one until the next read
-  -- (the two runs below). A read flag cannot go back ('known' in the
-  -- machine), but a list's members can (the server may drop one: a page no
-  -- longer readable) and the count can (new notifications raise it), so
-  -- neither can be kept the way read flags are. Only an order of the
-  -- server's own (a version on the list) would close these. Every other
-  -- rule holds, and so does the settled list after one more read.
+  -- Over HTTP/2, or two connections, asks out together may be handled in
+  -- another order than they were sent ('HandleOut'). The bell keeps one
+  -- read or mark out at a time, so no two are out together for the
+  -- server to swap, and every rule holds as it does with the asks handled
+  -- in order. Until the bell kept one at a time, it could take the answer
+  -- to the later ask, which may be the older state: the two runs below
+  -- were its expected failures.
   describe "when the server handles asks in any order" $ do
-    it "is known to lose a notification it listed until the channel tells of it" $
-      [t | (NothingLost, t) <- (foldl' play start [ClickBell, HandleOut 1, Make, Handle, Deliver 0, Deliver 0]).faults] `shouldNotBe` []
+    it "keeps a notification it listed when a later read is handled before a notification is made" $
+      [t | (NothingLost, t) <- (foldl' play start [ClickBell, HandleOut 1, Make, Handle, Deliver 0, Deliver 0]).faults] `shouldBe` []
 
-    for_ [rule | rule <- [minBound .. maxBound], rule /= NothingLost] $ \rule ->
+    for_ [minBound .. maxBound] $ \rule ->
       it (ruleText rule) $
         QC.property $
           forAllShrinkShow genUnordered shrinkRun show $ \run ->
             verdict rule (foldl' play start (if rule == QuietAfterClose then run <> [Finish] <> run else run))
 
-    it "is known to show an older count until the next read"
-      $ QC.once . QC.expectFailure
-      $ settles quieted (foldl' play start [ClickBell, Handle, ClickBell, Make, MakeEarly, ClickBell, Make, Make, Reconnect, Handle, Handle, Deliver 1, ClickMarkAll, ClickBell, ClickBell, HandleOut 2])
+    it "counts what the server counts when a mark and the reads around it would have crossed" $
+      settles quieted (foldl' play start [ClickBell, Handle, ClickBell, Make, MakeEarly, ClickBell, Make, Make, Reconnect, Handle, Handle, Deliver 1, ClickMarkAll, ClickBell, ClickBell, HandleOut 2])
 
     it "shows the server's list once everything out has come back and one more read is answered" $
       QC.property $
@@ -726,8 +730,9 @@ ruleText = \case
   ReadStaysRead -> "never shows unread a notification it showed read, on any run"
   NothingLost -> "never loses a notification it listed, on any run"
   CountMatches -> "counts the unread notifications it lists, on any run"
-  BusyWhileMarking -> "disables the buttons that mark exactly while a mark is out, on any run"
+  BusyWhileMarking -> "disables the buttons that mark exactly while a mark is out or waits its turn, on any run"
   ListedOnce -> "lists each notification once, on any run"
   QuietAfterClose -> "asks nothing and stops listening once it has gone away"
   AsksNamed -> "makes every ask under a new ticket its state names, on any run"
   ShownWhenTold -> "lists a notification the live channel tells of at once, on any run"
+  OneAsk -> "leaves no two reads or marks out whose answers it would take, on any run"

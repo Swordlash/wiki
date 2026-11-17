@@ -426,22 +426,25 @@ spec = describe "Wiki.App.View.Page's comments, mounted on the in-memory DOM" $ 
         bodies rig.view (unThread meanwhile.id) `shouldReturn` ["Made meanwhile."]
         length <$> findAll rig.view "mark.comment-mark" `shouldReturn` 0
 
-    it "keeps the threads read last when the threads read first answer after them" $
+    it "asks one read of the threads at a time, and the one wanted meanwhile once the first answers" $
+      -- The machine keeps one read of the page out at a time, so that the
+      -- server handles reads in the order they were asked: a read wanted
+      -- while one is out is asked when that one answers.
       withHeldWaits $ \waits -> withPage Nothing $ \rig -> do
         drain waits
+        readsBefore <- readIORef rig.control.reads
         rig.live.tell (Heard rig.hello ThreadsChanged)
         first' <- newOne waits []
+        -- Told again while that read is out: no second read is asked.
         rig.live.tell (Heard rig.hello ThreadsChanged)
-        second' <- newOne waits [first']
-        made' <- rig.elsewhere "Made meanwhile."
-        release second'
-        drainBut waits [first']
-        bodies rig.view (unThread made'.id) `shouldReturn` ["Made meanwhile."]
-        -- Gone from the wiki, and the older read reads that: its answer
-        -- comes after the later one's, and is not taken.
-        rig.deletedElsewhere made'.id
+        map (\h -> h.number) <$> pending waits `shouldReturn` [first'.number]
         release first'
+        -- Its answer came: the read wanted meanwhile is asked now (held
+        -- with the lookup of the people the answer names), and reads what
+        -- was made after the first was read.
+        made' <- rig.elsewhere "Made meanwhile."
         drain waits
+        readIORef rig.control.reads `shouldReturn` readsBefore + 2
         bodies rig.view (unThread made'.id) `shouldReturn` ["Made meanwhile."]
   where
     unThread (CommentThreadId t) = t

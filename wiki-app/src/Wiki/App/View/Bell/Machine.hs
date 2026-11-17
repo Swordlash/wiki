@@ -36,10 +36,9 @@
 -- * an answer taken (a read's, a mark's) replaces the list, and then what
 --   was told since that answer's ask is added again by id, counted if
 --   unread and not listed;
--- * after a notification is told, a read asked after it follows: one at a
---   time, and one more when its answer comes if more were told meanwhile
---   ('following'). Its answer was asked after everything told so far was
---   made, so it is exact, and it replaces everything.
+-- * after a notification is told, a read asked after it follows. Its
+--   answer was asked after everything told so far was made, so it is
+--   exact, and it replaces everything.
 --
 -- So the only wrong state is a count too high for one request's time: a
 -- notification told after an answer's ask, which the answer counts and
@@ -49,21 +48,23 @@
 --
 -- What any answer says was read stays shown read ('known'), whichever list
 -- is taken: the server never marks a notification unread, and a list taken
--- may be older than an answer dropped (a read the HTTP backend's cache
--- answered at once while the reader's mark was out).
+-- may be older than an answer dropped (a mark's answer that a new
+-- revision of the wiki put behind, taken by no list).
 --
--- These rules assume the server handles the bell's asks in the order they
--- were sent, as one server over one connection does: then a later ask's
--- answer is never an older list from the server (the cache aside, which
--- 'known' covers for the read marks). Over HTTP/2 or two connections a read
--- may be handled after a later one: the read marks still hold, through
--- 'known', but the bell may take a list that lacks a notification it had
--- listed, until the live channel tells of it ("Test.Bell", "when the server
--- handles asks in any order"). Only an order of the server's own on the
--- list would close that.
+-- = One ask at a time
 --
--- The buttons that mark are disabled while any mark is out ('busy'), and
--- enabled again only when the last one has come back.
+-- The reads and the marks are one flight: while one of them is out whose
+-- answer can still be taken, no other is sent ('flight'). A read wanted
+-- meanwhile is sent when that answer comes, failed or not, and several
+-- wanted are one ('wanted'); a mark clicked meanwhile waits its turn, in
+-- the order clicked, before the read ('queued'). An ask sent after
+-- another's answer came is handled by the server after it, whatever
+-- connection carries them, so a later answer is never an older list. A
+-- new revision of the wiki puts the ask out behind it, which then holds
+-- nothing back.
+--
+-- The buttons that mark are disabled while any mark is out or waits its
+-- turn ('busy'), and enabled again only when the last one has come back.
 module Wiki.App.View.Bell.Machine
   ( Model (..)
   , Event (..)
@@ -97,16 +98,20 @@ data Model = Model
   , asks :: Asks
   -- ^ The reads and marks made, and which one's answer is shown.
   , marking :: Int
-  -- ^ How many marks of notifications read are out.
+  -- ^ How many marks of notifications read are out or wait their turn.
   , known :: Set NotificationId
   -- ^ The notifications some answer said were read, taken or not. The
   -- server never marks one unread again, so they are shown read whatever
   -- list is taken.
-  , following :: Maybe Ask
-  -- ^ The read asked after a notification was told, while it is out.
-  , toldSince :: Bool
-  -- ^ Whether a notification was told after that read was asked: one more
-  -- read follows when its answer comes.
+  , flight :: Maybe Ask
+  -- ^ The last read or mark sent, until its answer comes. While its answer
+  -- can still be taken, no other is sent.
+  , wanted :: Bool
+  -- ^ Whether a read was wanted while that ask was out: it is sent when
+  -- that ask's answer comes, after the marks that wait.
+  , queued :: [ReadMark]
+  -- ^ The marks clicked while that ask was out, in the order clicked: each
+  -- is sent in its turn.
   , heard :: [(Notification, Asks)]
   -- ^ The notifications the live channel told of that no answer to an ask
   -- made after them has been taken for, each with the asks as they were
@@ -184,7 +189,7 @@ data Effect a
 -- | The bell before it is mounted, with the notifications read at once if
 -- the backend could ('Nothing' otherwise), under a revision of the wiki.
 initial :: Maybe (Either WikiError Notifications) -> Int -> Model
-initial notices revision = Model {notices, open = False, asks = noAsks, marking = 0, known = mempty, following = Nothing, toldSince = False, heard = [], revision, closed = False}
+initial notices revision = Model {notices, open = False, asks = noAsks, marking = 0, known = mempty, flight = Nothing, wanted = False, queued = [], heard = [], revision, closed = False}
 
 -- | The bell after an event, and what it asks to be done.
 step :: Event a -> Model -> (Model, [Effect a])
@@ -209,26 +214,25 @@ step event m
                 { notices = fmap (withRead m.known . withHeard [n]) <$> m.notices
                 , heard = (n, m.asks) : filter (\(x, _) -> x.id /= n.id) m.heard
                 }
-         in case m.following of
-              Nothing -> let (m', fx) = reading told' in (m' {following = askOf fx}, fx)
-              Just _ -> (told' {toldSince = True}, [])
+         in reading told'
       Reopened -> reading m
-      Loaded asked answer -> followed asked (taking asked answer (learning answer m))
+      Loaded asked answer -> landed asked (taking asked answer (learning answer m))
       MarkClicked i -> marking ReadMark {ids = [i], everything = False} m
       MarkAllClicked -> marking ReadMark {ids = [], everything = True} m
-      -- A mark the server took, whose answer a later ask's answer was
-      -- taken over, is followed by a read: the later answer may be older
-      -- than the mark (a read the cache answered at once while the mark
-      -- was out), and the count beside a list is not a thing that only
-      -- goes one way, as read marks are. The read is asked after the
-      -- mark's answer came, so the server handles it after the mark.
+      -- A mark the server took, whose answer can no longer be taken (a
+      -- new revision of the wiki put it behind), is followed by a read:
+      -- the count beside a list is not a thing that only goes one way, as
+      -- read marks are. The read is asked after the mark's answer came, so
+      -- the server handles it after the mark.
       Marked asked answer ->
-        let m' = learning answer m {marking = max 0 (m.marking - 1)}
-         in case answer of
-              Left _ -> (m', [])
+        let m1 = learning answer m {marking = max 0 (m.marking - 1)}
+            (m2, fx1) = case answer of
+              Left _ -> (m1, [])
               Right _
-                | isJust (takes asked m'.asks) -> (taking asked answer m', [])
-                | otherwise -> reading m'
+                | isJust (takes asked m1.asks) -> (taking asked answer m1, [])
+                | otherwise -> reading m1
+            (m3, fx2) = landed asked m2
+         in (m3, fx1 <> fx2)
       Followed i target ->
         let (closedList, unwatched) = close m
             unread = any (\n -> n.id == i && not n.read) (listed m)
@@ -252,18 +256,22 @@ taking asked answer m = case takes asked m.asks of
       Just (Right _) -> m {asks = after}
       _ -> m {asks = after, notices = Just answer}
 
--- | The bell after the answer to an ask came, taken or not: when it was the
--- read that followed a notification told, one more read follows if more
--- were told since it was asked.
-followed :: Ask -> Model -> (Model, [Effect a])
-followed asked m
-  | m.following /= Just asked = (m, [])
-  | m.toldSince = let (m', fx) = reading m {toldSince = False} in (m' {following = askOf fx}, fx)
-  | otherwise = (m {following = Nothing}, [])
+-- | The bell after the answer to an ask came, taken or not, failed or
+-- not: when it was the ask out, the next is sent, the first mark waiting
+-- or else the read wanted.
+landed :: Ask -> Model -> (Model, [Effect a])
+landed asked m
+  | m.flight /= Just asked = (m, [])
+  | otherwise = case m.queued of
+      r : rest -> sendMark r m {flight = Nothing, queued = rest}
+      []
+        | m.wanted -> sendRead m {flight = Nothing, wanted = False}
+        | otherwise -> (m {flight = Nothing}, [])
 
--- | The read a step asked, if it asked one.
-askOf :: [Effect a] -> Maybe Ask
-askOf fx = head [t | Load t <- fx]
+-- | Whether an ask is out whose answer can still be taken: no other is
+-- sent until it comes.
+inFlight :: Model -> Bool
+inFlight m = maybe False (\a -> isJust (takes a m.asks)) m.flight
 
 -- | The list with these notifications told by the live channel added, the
 -- newest first, each by its id if the list does not hold it, and counted
@@ -275,10 +283,9 @@ withHeard told ns = Notifications {unread = ns.unread + length (filter (\n -> no
     missing = [n | n <- told, all (\x -> x.id /= n.id) ns.items]
 
 -- | What an answer says was read learnt, and shown on the list as it is,
--- whether the answer is taken or not: an answer dropped as older may be
--- the only one that has the reader's own mark (a read the backend's cache
--- answered at once, after the mark went out, is a later ask with an older
--- list).
+-- whether the answer is taken or not: an answer dropped may be the only
+-- one that has the reader's own mark (a mark's answer that a new revision
+-- of the wiki put behind).
 learning :: Either WikiError Notifications -> Model -> Model
 learning answer m = case answer of
   Right ns ->
@@ -297,13 +304,26 @@ withRead known ns = ns {unread = max 0 (ns.unread - length flipped), items = map
 close :: Model -> (Model, [Effect a])
 close m = (m {open = False}, [Unwatch | m.open])
 
--- | A read of the notifications begun.
+-- | A read of the notifications begun, or wanted while an ask is out.
 reading :: Model -> (Model, [Effect a])
-reading m = let (ticket, after) = newAsk m.asks in (m {asks = after}, [Load ticket])
+reading m
+  | inFlight m = (m {wanted = True}, [])
+  | otherwise = sendRead m
 
--- | A mark of notifications read begun.
+-- | A mark of notifications read begun, or put in its turn while an ask is
+-- out.
 marking :: ReadMark -> Model -> (Model, [Effect a])
-marking r m = let (ticket, after) = newAsk m.asks in (m {asks = after, marking = m.marking + 1}, [MarkRead ticket r])
+marking r m
+  | inFlight m = (m {marking = m.marking + 1, queued = m.queued <> [r]}, [])
+  | otherwise = sendMark r m {marking = m.marking + 1}
+
+-- | A read sent, under a new ticket: the ask out.
+sendRead :: Model -> (Model, [Effect a])
+sendRead m = let (ticket, after) = newAsk m.asks in (m {asks = after, flight = Just ticket, wanted = False}, [Load ticket])
+
+-- | A mark sent, under a new ticket: the ask out.
+sendMark :: ReadMark -> Model -> (Model, [Effect a])
+sendMark r m = let (ticket, after) = newAsk m.asks in (m {asks = after, flight = Just ticket}, [MarkRead ticket r])
 
 -- | Whether a mark is out: the buttons that mark are disabled.
 busy :: Model -> Bool

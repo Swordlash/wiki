@@ -15,7 +15,10 @@
 //   thinking streams; {type: "tool-start", name}, when the model begins
 //   writing a tool call; {type: "tool", call, name, input}, the whole tool
 //   call, which the turn waits on until the application answers it
-//   (wiki_assistant_answer); and at the end {type: "done"}, {type:
+//   (wiki_assistant_answer); {type: "usage", input, cached, written,
+//   output}, the tokens of each request that finished with a usage (cached
+//   and written null where the service did not say); and at the end
+//   {type: "done"}, {type:
 //   "stopped"} or {type: "error", kind, status, message};
 // - a stop aborts the turn (the SDK's request with it) and answers any call
 //   still waiting, so that nothing hangs.
@@ -30,7 +33,8 @@
 // a provider (its model, its key, its address) is recorded, and the
 // answers are the script's. Its script is {turns: [[step, ...], ...]},
 // a list of steps for each message in turn: {text} streams text,
-// {thinking} streams a summary of thinking, {tool, input} starts a tool
+// {thinking} streams a summary of thinking, {usage: {input, cached,
+// written, output}} tells the tokens of a request, {tool, input} starts a tool
 // call and, after {pause} milliseconds if given, makes it and waits for
 // its answer, {error: {kind, status, message}} ends the turn with that
 // error, {hold: true} waits until the turn is stopped, and {wait}
@@ -94,6 +98,7 @@ function wikiAssistantHandlers(chat) {
     thinking: (text) => wikiAssistantBuffer(chat, "thinking", text),
     toolStart: (name) => wikiAssistantEmit(chat, { type: "tool-start", name: String(name) }),
     tool: (name, input) => wikiAssistantAsk(chat, name, input),
+    usage: (u) => wikiAssistantEmit(chat, { type: "usage", input: u.input, cached: u.cached ?? null, written: u.written ?? null, output: u.output }),
   };
 }
 
@@ -140,6 +145,7 @@ function wikiAssistantScripted(config) {
         if (signal.aborted) return;
         if (step.text !== undefined) handlers.text(step.text);
         else if (step.thinking !== undefined) handlers.thinking(step.thinking);
+        else if (step.usage !== undefined) handlers.usage(step.usage);
         else if (step.tool !== undefined) {
           handlers.toolStart(step.tool);
           if (typeof step.pause === "number") await new Promise((resolve) => setTimeout(resolve, step.pause));

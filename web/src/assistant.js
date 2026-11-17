@@ -18,8 +18,11 @@
 //     handlers.toolStart(name) as soon as the model begins writing the
 //     call, and each whole tool call to handlers.tool(name, input), whose
 //     promise is the tool's answer ({text, ok}); the model then goes on,
-//     until it answers without a tool call. handlers.thinking and
-//     handlers.toolStart may be left out. The conversation is kept by the
+//     until it answers without a tool call. Each request that finished
+//     with the provider's usage tells it to handlers.usage({input, cached,
+//     written, output}), once per round of the tool loop (`usageOfAnthropic`,
+//     `usageOfOpenAi`). handlers.thinking, handlers.toolStart and
+//     handlers.usage may be left out. The conversation is kept by the
 //     chat for the next message, as the provider gave it (the model's
 //     thinking and tool calls included, unchanged, as both providers ask).
 //     The one exception is OpenAI's API at a service elsewhere
@@ -103,6 +106,41 @@ const keptOfOpenAi = (output) =>
     return [];
   });
 
+// The tokens of one request, read from a provider's usage into the one
+// shape the application reads (Wiki.Core.Assistant.Usage): `input` every
+// input token of the request, cached or not; `cached` the part read from
+// the provider's cache, `written` the part written to it, each null where
+// the service did not say; `output` the output. A usage without a number
+// for the input or the output is no usage (null): a service that reports
+// none shows nothing, and nothing is estimated.
+const count = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+
+// Anthropic's input_tokens leaves out the tokens read from the cache
+// (cache_read_input_tokens) and those written to it
+// (cache_creation_input_tokens): the request's input is the three summed.
+const usageOfAnthropic = (usage) => {
+  const rest = count(usage?.input_tokens);
+  const output = count(usage?.output_tokens);
+  if (rest === null || output === null) return null;
+  const cached = count(usage.cache_read_input_tokens);
+  const written = count(usage.cache_creation_input_tokens);
+  return { input: rest + (cached ?? 0) + (written ?? 0), cached, written, output };
+};
+
+// OpenAI's input_tokens holds every input token; input_tokens_details
+// names the parts read from the cache (cached_tokens) and written to it
+// (cache_write_tokens).
+const usageOfOpenAi = (usage) => {
+  const input = count(usage?.input_tokens);
+  const output = count(usage?.output_tokens);
+  if (input === null || output === null) return null;
+  return { input, cached: count(usage.input_tokens_details?.cached_tokens), written: count(usage.input_tokens_details?.cache_write_tokens), output };
+};
+
+const tellUsage = (handlers, usage) => {
+  if (usage !== null) handlers.usage?.(usage);
+};
+
 // Anthropic's Messages API: the conversation is its messages; a turn is
 // the model's answer and, while it calls tools, the tools' results and its
 // next answer. The model's content goes back whole, thinking blocks
@@ -151,6 +189,7 @@ const anthropicChat = (key, request, options) => {
             }
             throw error;
           }
+          tellUsage(handlers, usageOfAnthropic(message.usage));
           if (message.stop_reason === "refusal") {
             throw Object.assign(new Error(message.stop_details?.explanation ?? "The model declined."), { wikiKind: "refusal" });
           }
@@ -228,17 +267,23 @@ const openAiChat = (key, request, options) => {
             else if (event.type === "response.completed") response = event.response;
             else if (event.type === "response.incomplete") {
               // Cut short: a reasoning model can spend its whole budget on
-              // reasoning and write nothing, which is no answer.
+              // reasoning and write nothing, which is no answer. Its tokens
+              // were spent all the same: the response carries their usage,
+              // told before the error.
+              tellUsage(handlers, usageOfOpenAi(event.response?.usage));
               const reason = event.response?.incomplete_details?.reason;
               throw Object.assign(new Error(`The answer was cut short${reason ? ` (${reason})` : ""}.`), { wikiKind: "failed" });
             }
             else if (event.type === "response.failed") {
+              // A failed response may carry its usage too.
+              tellUsage(handlers, usageOfOpenAi(event.response?.usage));
               throw Object.assign(new Error(event.response?.error?.message ?? "The response failed."), { wikiKind: "failed" });
             } else if (event.type === "error") {
               throw Object.assign(new Error(event.message ?? "The response failed."), { wikiKind: "failed" });
             }
           }
           if (response === null) return;
+          tellUsage(handlers, usageOfOpenAi(response.usage));
           const calls = response.output.filter((item) => item.type === "function_call");
           if (calls.length === 0) {
             turn.push(...kept(response.output));

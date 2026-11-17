@@ -111,7 +111,7 @@ import Web.Storage.IndexedDB qualified as IDB
 import Web.UIEvent.KeyboardEvent (KeyboardEvent (..))
 import Wiki.Api.ContentPolicy (allowsConnect, extraHosts, originOf)
 import Wiki.Api.Vault (AssertionOptions, AssertionResponse, RegistrationOptions, RegistrationResponse)
-import Wiki.Core.Assistant (AssistantError (..), ErrorKind (..), Listed, Ready (..), providerKey)
+import Wiki.Core.Assistant (AssistantError (..), ErrorKind (..), Listed, Ready (..), Usage, providerKey)
 import Wiki.Core.Assistant.Vault (Ciphertext (..), CredentialId (..), KeyId (..), Nonce (..), PublicKey (..), Salt (..), Sealed (..), WrappedKey (..), identityData, identityDataPrefix, passwordWrappingInfo, wrappingData)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Url (Url (..))
@@ -345,6 +345,9 @@ data Heard
   | -- | A tool call, by its number in the chat: the tool's name and its
     -- input. The turn waits for 'answerCall'.
     HeardCall Int Text Value
+  | -- | The tokens of one request of the turn, once it finished: one per
+    -- round of its tool loop, when the service reports them.
+    HeardUsage Usage
   | -- | The turn ended.
     HeardDone
   | -- | The turn was stopped.
@@ -360,6 +363,7 @@ instance FromJSON Heard where
       "thinking" -> HeardThinking <$> o .: "text"
       "tool-start" -> HeardToolStart <$> o .: "name"
       "tool" -> HeardCall <$> o .: "call" <*> o .: "name" <*> o .: "input"
+      "usage" -> HeardUsage <$> parseJSON (Object o)
       "done" -> pure HeardDone
       "stopped" -> pure HeardStopped
       "error" -> HeardFailed <$> parseJSON (Object o)

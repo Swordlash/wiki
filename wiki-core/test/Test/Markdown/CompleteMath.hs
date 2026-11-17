@@ -20,11 +20,11 @@ spec :: Spec
 spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
   describe "where a list opens" $ do
     it "opens in a formula, closed or being typed, in braces, in display math, in a math fence, and in emphasis" $
-      map opens ["$\\fr‸$", "$\\fr‸", "Text $a + \\fr‸", "Text $a + \\fr‸ b$ c", "$$\n\\fr‸", "$$\n\\fr‸\n$$", "```math\n\\fr‸", "> $\\fr‸", "- $\\fr‸$", "> [!NOTE]\n> $\\fr‸$", "*so $\\fr‸$ is*", "**so $\\fr‸", "$\\frac{\\fr‸}{}", "Text $\\frac{\\fr‸}{} and more", "$\\sqrt{\\fr‸", "$\\frac{a}{\\sqrt{\\fr‸", "a } b $\\sqrt{\\fr‸", "Text { $\\fr‸", "See `{` $\\sqrt{\\fr‸"]
-        `shouldBe` replicate 19 True
+      map opens ["$\\fr‸$", "$\\fr‸", "Text $a + \\fr‸", "Text $a + \\fr‸ b$ c", "$$\n\\fr‸", "$$\n\\fr‸\n$$", "```math\n\\fr‸", "> $\\fr‸", "- $\\fr‸$", "> [!NOTE]\n> $\\fr‸$", "*so $\\fr‸$ is*", "**so $\\fr‸", "$\\frac{\\fr‸}{}", "Text $\\frac{\\fr‸}{} and more", "$\\sqrt{\\fr‸", "$\\frac{a}{\\sqrt{\\fr‸", "a } b $\\sqrt{\\fr‸", "Text { $\\fr‸", "See `{` $\\sqrt{\\fr‸", "$$\n\\frac{\\fr‸", "$$\n\\frac{a}{\n\\fr‸", "$$\n\\frac{a}{\n\\sqrt{\\fr‸"]
+        `shouldBe` replicate 22 True
     it "opens nowhere else: outside math, in code, a heading, a table, a link's or an image's text, a formula over lines, after a line break's two backslashes, after a formula closed already" $
-      map opens ["\\fr‸", "Text \\fr‸", "`$\\fr‸`", "```\n\\fr‸", "# $\\fr‸$", "| a |\n| - |\n| $\\fr‸$ |", "[$\\fr‸$](https://example.com)", "![$\\fr‸$](a.png)", "[*$\\fr‸$*](https://example.com)", "$a\n\\fr‸$", "$a \\\\fr‸", "Costs $5$ and \\fr‸", "$\\fr‸$\r", "Costs $5 and \\fr‸\nTitle\n==="]
-        `shouldBe` replicate 14 False
+      map opens ["\\fr‸", "Text \\fr‸", "`$\\fr‸`", "```\n\\fr‸", "# $\\fr‸$", "| a |\n| - |\n| $\\fr‸$ |", "[$\\fr‸$](https://example.com)", "![$\\fr‸$](a.png)", "[*$\\fr‸$*](https://example.com)", "$a\n\\fr‸$", "$a \\\\fr‸", "Costs $5$ and \\fr‸", "$\\fr‸$\r", "Costs $5 and \\fr‸\nTitle\n===", "$\\fr‸ac{1}{2}$"]
+        `shouldBe` replicate 15 False
     it "opens nothing in math in a link's or an image's text, the syntax tree's reading, which a reference defined past what is read makes one" $ do
       let inLink nodes marked = let at = placeAt marked in isJust (complete [mathSource (mathCommands [])] (readLine at.above) at {place = placeOf nodes})
       inLink ["TeXMath", "Link", "Paragraph", "Document"] "[$\\fr‸$][far]\n\nMore." `shouldBe` False
@@ -100,7 +100,7 @@ written marked label = do
 -- anything; with a text longer than every bound before or after it.
 genPlace :: Gen (Text, Text)
 genPlace = do
-  opening <- elements ["", "Text ", "$", "Text $a + ", "costs $5 and ", "$$\n", "```math\n", "```\n", "> $", "- $", "# $", "`$", "$a$ and ", "$a\n", "*so $", "[$", "![$", "$\\frac{", "Text $a \\sqrt{", "$\\frac{a}{\\sqrt{", "$\\{", "a } b $\\sqrt{"]
+  opening <- elements ["", "Text ", "$", "Text $a + ", "costs $5 and ", "$$\n", "```math\n", "```\n", "> $", "- $", "# $", "`$", "$a$ and ", "$a\n", "*so $", "[$", "![$", "$\\frac{", "Text $a \\sqrt{", "$\\frac{a}{\\sqrt{", "$\\{", "a } b $\\sqrt{", "$$\n\\frac{a}{\n", "$$ \\sqrt{\n", "$$\n\\left( \\frac{\n"]
   closing <- elements ["", "$", " b$", "$ more", "\n$$", "\n```", "`", " and $b$", "$ is*", "$](x)", "}{}", "} b", "}{b}$"]
   letters <- elements ["fr", "alp", "beg", "x"]
   intro <- elements ["", "Intro.\n\n", longText <> "\n\n"]
@@ -121,7 +121,7 @@ longText = T.intercalate "\n\n" (replicate 40 (T.replicate 6 "Some more words. "
 inMathAsParsed :: (Text, Text) -> Property
 inMathAsParsed (upTo, rest) =
   counterexample (toS (upTo <> "‸" <> rest)) $
-    opens (upTo <> "‸" <> rest) === (settled && readsMath rest || settled && (not (T.any (== '$') lineAfter) && any (\k -> readsMath (lineAfter <> T.replicate k "}" <> "$")) [0 .. 3]) || settled && readsMath (lineAfter <> "\n$$"))
+    opens (upTo <> "‸" <> rest) === (settled && readsMath rest || settled && (not (T.any (== '$') lineAfter) && any (\k -> readsMath (lineAfter <> T.replicate k "}" <> "$")) [0 .. 3]) || settled && any (\k -> readsMath (lineAfter <> T.replicate k "}" <> "\n$$")) [0 .. 3])
   where
     lineAfter = T.takeWhile (/= '\n') rest
     -- The completion reads 2,000 characters after the cursor: where the

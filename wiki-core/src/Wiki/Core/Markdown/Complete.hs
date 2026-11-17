@@ -1291,17 +1291,25 @@ mathWord = "Zqxjvmath"
 mathProbes :: At -> Text -> [Probe]
 mathProbes at prefix =
   [ probe (fst (stretchOf at))
-  , probe (lineAfter <> T.replicate (openBraces (snd (T.breakOnEnd "$" prefix) <> lineAfter)) "}" <> "$")
-  , probe (lineAfter <> "\n$$")
+  , probe (lineAfter <> T.replicate (openGroups "$" prefix) "}" <> "$")
+  , probe (lineAfter <> T.replicate (openGroups "$$" (T.concat [l <> "\n" | l <- paragraphAbove] <> prefix)) "}" <> "\n$$")
   ]
   where
+    -- The groups a formula opened before the cursor and leaves open on
+    -- the cursor's line: counted from its opening delimiter, the last
+    -- before the cursor, to the line's end.
+    openGroups delimiter before = openBraces (snd (T.breakOnEnd delimiter before) <> lineAfter)
+    -- The lines above the cursor's in its paragraph, where display math
+    -- opened on an earlier line is (a blank line ends it).
+    paragraphAbove = reverse (takeWhile (not . T.null . T.strip) (reverse at.above))
     -- The line after the cursor, as far as the first probe reads: where
     -- it goes on further, 'mathAt' declines before these are read.
     lineAfter = T.take afterBound at.after
     probe rest = Probe 1 (T.splitOn "\n" (prefix <> "\\" <> mathWord <> rest))
 
 -- | How many braces a formula's text leaves open (from its opening @$@
--- to the line's end: a brace of the prose before it is not the formula's):
+-- or @$$@ to the line's end, earlier lines of display math included: a
+-- brace of the prose before it is not the formula's):
 -- each @{@ opens one, each @}@ closes the last one open, if any, none
 -- counted after a backslash (@\\{@ is a brace written in the formula, not
 -- a group). Only the probe of a formula being typed uses it, to close the
@@ -1343,6 +1351,9 @@ mathAt :: LineReader -> At -> Maybe Typed
 mathAt readAt at = do
   guard (at.place /= InLinkText)
   (prefix, letters) <- mathShape at
+  -- Not inside a name: an entry would write its own letters before those
+  -- after the cursor (@\\fr‸ac@).
+  guard (maybe True (\(c, _) -> not (isAsciiLower c || isAsciiUpper c)) (T.uncons at.after))
   guard (not (heldReturn at))
   let probes = mathProbes at prefix
       readings = map readAt probes

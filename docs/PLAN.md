@@ -3168,6 +3168,36 @@ needs. Each was true when its package merged; check before relying on one.
   after 5,000 ms. Both passed once the load ended. By decision 81 a
   cost is asserted as a count, not a time: to be turned into bounds on
   allocation or on steps, with the slides editor's group (WP5.116).
+- **The pin at 66c1f48: a component waits in `H.async` (#296, the
+  owner's word of 2026-11-16 to bump when `Halogen.Machine` landed).**
+  The library names what `lift` and `liftIO` meant in a component's
+  program (`H.async` waits, `H.sync` runs in place; `H.liftEffect` is
+  `H.sync`) and deprecates the old names on `HalogenM`; the wiki's
+  `-Werror` makes them errors. The migration was mechanical and keeps
+  behaviour: 172 methods of 12 backend classes' `HalogenM` instances
+  written out as `H.async` (a method missing from an instance would
+  fall back to the class's `lift` default with no warning: count them
+  when a class gains a method), 141 `lift`, 20 `liftIO` and 18 calls
+  of the wiki's own `MonadIO` functions in 44 files. Two places are
+  not quite as before: `absoluteUrl`, `zipFiles` and `unzipFiles`
+  suspend once natively where they did not (in the browser nothing
+  changes). AGENTS.md's bullet says the rule. **Packages this opens,
+  none taken yet:** (1) 25 `H.async` sites wrap something certainly
+  synchronous (the clock, `absoluteUrl`, a download's start, a
+  JavaScript call returning a Bool; `passkeysHere`, `sealingHere`):
+  turn them into `H.sync`, which changes when they run. (2)
+  `Halogen.Test.Native` in place of most of `Test.Harness.MemDom` (a
+  page for each view, so no lock; a reader's whole click with default
+  actions); the wiki keeps `viewContext`, `TestFeed`, `driven`. (3)
+  `Halogen.Latest` in place of `Wiki.App.View.Latest` but for
+  `takesPage`: not possible as it stands, since it exports `Asks`
+  without its fields and the wiki's `madeAfter`, `stillAnswerable` and
+  `superseded` (the bell's and the comments') cannot be written over
+  it: said to the owner, who writes to the library's agent himself.
+  (4) `Halogen.Machine` for the three machines' shells: the compiler
+  then checks that an effect carried out in place cannot wait, and
+  asks can be cancelled by key; each `perform` is rewritten as its
+  `carry`.
 - **The `/` menu (#295, WP5.124 (d)).** Narrow by design: it opens
   only for `/` at a line's start or after a space with nothing after
   the cursor, in a paragraph's own text (the Haddock of `slash` names

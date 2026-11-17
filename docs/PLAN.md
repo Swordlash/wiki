@@ -2007,18 +2007,7 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   is.
   (b) **The framework, with `[[!`, `[[/` and `[!`**: merged (#293).
   (c) **`[[` for a page**: merged (#294).
-  (d) **The `/` menu** (narrow from the start, the owner on
-  2026-11-16 finding the feature far too slow to land: it opens only
-  at a line's start or after a space with nothing after the cursor,
-  in a paragraph, a list item, a quotation or a box; everywhere else
-  there is no list): every toolbar entry that writes text, and
-  "Link to a page" and "Image or attachment", which open their
-  dialogs; not the colours, the emoji or "New kind…". It opens at a
-  line's start or after a space, never in code, math, a link or HTML.
-  Accepting removes `/query` and writes what the toolbar would, as one
-  undo step, with the first place selected and Tab going to the next.
-  A property: for every tool, text and cursor the result equals
-  `apply` on the text without `/query`.
+  (d) **The `/` menu**: merged (#295).
   (e) **`\` in math**: KaTeX's commands (it exports no list: a script
   at bundle time reads its tables into a small JSON and fails the
   build if they move), the wiki's, the space chain's and the page's
@@ -3179,6 +3168,27 @@ needs. Each was true when its package merged; check before relying on one.
   after 5,000 ms. Both passed once the load ended. By decision 81 a
   cost is asserted as a count, not a time: to be turned into bounds on
   allocation or on steps, with the slides editor's group (WP5.116).
+- **The `/` menu (#295, WP5.124 (d)).** Narrow by design: it opens
+  only for `/` at a line's start or after a space with nothing after
+  the cursor, in a paragraph's own text (the Haddock of `slash` names
+  where it does not); every entry is the toolbar's command, written
+  as plain text with its selection, never a snippet (CodeMirror's
+  snippets put a line's leading whitespace before later lines and
+  break at `\r`); the `/query` and the command's edit are two changes
+  in one transaction, each the smallest, so that an undecided
+  assistant's edit on the line keeps its range; every completion
+  write compares, in the step that dispatches it, the text outside
+  what it replaces with the text its answer was made from. The
+  toolbar's definitions are `Wiki.App.Editor.Tools`, read by both.
+  It also mended #294 (`[[` in an early item of a long list; a link
+  written as the smallest change; no list where the text read holds
+  `\r`, which the parser takes for a line break and the editor does
+  not). Left on purpose: Escape's dismissal of a `/` is kept in one
+  editor's state, so closing and reopening a slide's row, or going to
+  Raw, then typing a letter opens the menu again for that `/`.
+  "Image or attachment" is untested in a browser. The first `/` after
+  the text above changed still parses that text (as `[[` does): to be
+  bounded with `Wiki.Core.Markdown.Starts` once #292 is merged.
 - **`[[` completing a page's link (#294, WP5.124 (c)).** Six rounds
   of review, most about completing inside a link that is already
   there, which the issue did not ask for; the lesson is in the next

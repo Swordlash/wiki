@@ -231,8 +231,12 @@ spec = describe "Wiki.App.View.Page's comments, mounted on the in-memory DOM" $ 
       send rig.view (thread "thread-hello-3" <> " .comment-reply") "Thanks @editor."
       w <- newOne waits []
       release w
+      -- Held: the lookup of the people, that of the authors' avatars
+      -- (the threads' machine asks both at once, where the page view
+      -- looked the avatars up after the people), and the read that follows
+      -- the write.
       held <- pending waits
-      length held `shouldBe` 2
+      length held `shouldBe` 3
       valueIn rig.view (thread "thread-hello-3" <> " .comment-reply textarea") `shouldReturn` Just ""
       valueIn rig.view (thread "thread-hello-1" <> " .comment-reply textarea") `shouldReturn` Just "Beside, not sent."
       bodies rig.view "thread-hello-3" >>= (`shouldSatisfy` elem "Thanks @editor.")

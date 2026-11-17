@@ -140,9 +140,11 @@ import Halogen qualified as H
 import Halogen.HTML qualified as HH
 import Halogen.HTML.Events qualified as HE
 import Halogen.HTML.Properties qualified as HP
+import Halogen.Machine qualified as Machine
 import Halogen.Router (Follow)
 import Halogen.Router qualified as Router
 import Halogen.Router.Duplex (encodeComponent)
+import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
 import Protolude hiding (State)
 import Web.Event.Event (EventType (..))
@@ -233,9 +235,12 @@ data State = State
   , loaded :: Loaded
   , mode :: Mode
   , problem :: Maybe WikiError
-  , discussion :: Threads.Model
-  -- ^ The page's threads, with their reads ("Wiki.App.View.Comments.Machine"):
-  -- every change to them is a 'Threads.step' ('threadsStep').
+  , discussion :: Machine.Machine () (Threads.Event (CommentsView.Placement, CommentsView.Mount)) Threads.Model
+  -- ^ The page's threads, with their reads, the people the page and its
+  -- comments mention, and the avatars of the comments' authors
+  -- ("Wiki.App.View.Comments.Machine"), run by "Halogen.Machine": every
+  -- change to them is a 'Threads.step' ('threadsStep'). Read the model
+  -- with 'threadsOf'.
   , panelOpen :: Bool
   -- ^ Whether the panel of inline threads is shown.
   , selected :: Maybe Selected
@@ -250,15 +255,16 @@ data State = State
   -- ^ Who else reads the page, as the live channel last said.
   , avatars :: Map UserId Text
   -- ^ The URLs of the avatars of the people the view shows: who wrote the
-  -- page, the comments' authors, the readers ('avatarUrls').
+  -- page, the comments' authors, the readers ('avatarUrls'), as the view
+  -- looked them up when it took a page or heard of its readers. The
+  -- threads' machine looks up the authors' again as the threads change
+  -- ('avatarsOf').
   , changed :: Bool
   -- ^ Whether the page has been saved since it was loaded, while the
   -- reader was busy with it: the bar then offers the new version.
   , text :: H.RefLabel
   -- ^ The element the article is in, with the panel beside it: its
   -- selection is read, and the button to comment goes there.
-  , people :: Body.People
-  -- ^ The people the page and its comments mention.
   , copied :: Maybe Copied
   -- ^ The address of a section or of selected text being copied, shown in
   -- a notice until 'copiedWait' removes it.
@@ -327,9 +333,6 @@ data Action
   | Retry
   | Finalize
   | FromComments CommentsView.Placement CommentsView.Output
-  | -- | An answer to a read or a write of the threads, as the threads'
-    -- machine takes it.
-    ThreadsHappened (Threads.Event (CommentsView.Placement, CommentsView.Mount))
   | Heard Heard
   | Selecting
   | CommentOnSelection
@@ -359,10 +362,13 @@ component =
           read' <- case loaded of
             Ready page _ _ _ | commentsHere input -> atOnce (listThreads page.id)
             _ -> pure Nothing
-          let discussion = Threads.initial ((\p -> p.id) <$> pageOf loaded) (commentsHere input) (isJust input.space.encryption) read'
-              threads = discussion.threads
-          let logins = Body.unasked Body.noPeople (bodiesOf loaded threads)
-          people <- maybe Body.noPeople (\found -> Body.answered logins found Body.noPeople) <$> atOnce (Body.askPeople input.space logins)
+          let unread = Threads.initial ((\p -> p.id) <$> pageOf loaded) (commentsHere input) input.space (maybe "" (\p -> p.body) (pageOf loaded)) read'
+              threads = unread.threads
+              logins = Threads.lacking unread
+          found <- if null logins then pure Nothing else atOnce (Body.askPeople input.space logins)
+          -- The people found at once are the machine's answer to their
+          -- lookup, as if it had asked.
+          let discussion = Machine.new (maybe unread (\f -> fst (Threads.step (Threads.Found unread.lookups logins (Right f)) unread)) found)
           avatars <- fromMaybe mempty <$> atOnce (avatarUrls (peopleOf loaded threads noReaders))
           text <- H.newRefLabel "page-text"
           copiedText <- H.newRefLabel "page-copied-address"
@@ -382,7 +388,6 @@ component =
               , avatars
               , changed = False
               , text
-              , people
               , copied = Nothing
               , copiedWait = Nothing
               , copiedText
@@ -443,7 +448,7 @@ component =
                 <> [ticksBar st]
                 <> Reading.attachmentList page.attachments addresses
                 <> [commentsOf st place text page CommentsView.Below | commentsHere input]
-          place = placeOf input page addresses st.people.found
+          place = placeOf input page addresses (threadsOf st).people
           -- Rendered once: the article shows it with its quotes
           -- highlighted, and its text is where the quotes are looked for.
           rendered = Body.renderedTicking (Tick <$ guard (boxesEnabled st)) (\i -> Map.findWithDefault 0 i st.staging.drawn) (Just embedded) place st.staging.shown
@@ -458,7 +463,7 @@ component =
             | Body.startsWithHeading page.body = []
             | otherwise =
                 [ Reading.titleRow page.title page.body (readersStack st)
-                , byline st.avatars page
+                , byline (avatarsOf st) page
                 ]
 
     -- The "Export" menu, on a backend that makes documents
@@ -657,7 +662,7 @@ component =
         -- goes after it, once its quotes are marked.
         titled = Body.startsWithHeading page.body
         withByline
-          | titled = (\nodes -> take 1 nodes <> [byline st.avatars page] <> drop 1 nodes) <$> marked
+          | titled = (\nodes -> take 1 nodes <> [byline (avatarsOf st) page] <> drop 1 nodes) <$> marked
           | otherwise = marked
         commentsEnabled = commentsHere st.input
         quoteClicks = [HE.handler' (EventType "click") (fmap ClickedQuote . clickedThread) | commentsEnabled]
@@ -678,14 +683,14 @@ component =
           , page = page.id
           , space = page.space
           , placement
-          , comments = case st.discussion.threads of
+          , comments = case (threadsOf st).threads of
               ThreadsLoading -> CommentsView.CommentsLoading
               ThreadsFailed e -> CommentsView.CommentsFailed e
               ThreadsReady ts -> CommentsView.CommentsReady (shownIn text placement ts)
-          , behind = st.discussion.behind
-          , focused = st.discussion.focused
-          , quoting = st.discussion.quoting
-          , avatars = st.avatars
+          , behind = (threadsOf st).behind
+          , focused = (threadsOf st).focused
+          , quoting = (threadsOf st).quoting
+          , avatars = (avatarsOf st)
           }
         (FromComments placement)
 
@@ -748,7 +753,7 @@ component =
     -- Who else reads the page: a stack of their avatars, as the module's
     -- Haddock says; nothing when nobody does.
     readersStack :: State -> [H.ComponentHTML Action Slots m]
-    readersStack st = maybeToList (readersView st.avatars st.readers)
+    readersStack st = maybeToList (readersView (avatarsOf st) st.readers)
 
     -- "Comments (n)", counting the unresolved inline threads, which opens
     -- their panel.
@@ -760,7 +765,7 @@ component =
         </button>
       |]
       where
-        label = case st.discussion.threads of
+        label = case (threadsOf st).threads of
           ThreadsReady ts -> "Comments (" <> show (length [t | t <- ts, isInline t, not t.resolved]) <> ")" :: Text
           _ -> "Comments"
 
@@ -782,7 +787,7 @@ component =
             -- not for one the program renders itself.
             H.liftEffect revealFragment
             watch
-            resolvePeople
+            resolveAvatars
             threadsStep Threads.Started
       -- The browser's question before closing the tab is the view's only
       -- while it has ticks: the editor sets it too, and may be the next
@@ -790,7 +795,7 @@ component =
       -- The view closes: every owner of addresses it registered is let go,
       -- and none is registered in their place.
       Finalize -> do
-        threadsStep Threads.Finished
+        Machine.finish threadsMachine Threads.Finished
         Body.releaseOwned ownersOf' setOwners
         disconnectFeed
         whenM (gets unsaved) (H.liftEffect (guardUnload False))
@@ -822,7 +827,8 @@ component =
         when (elsewhere || old.context.revision /= input.context.revision) $ do
           -- The people mentioned are looked up again: the current user may
           -- be someone else now.
-          modify (\st -> st {mode = Viewing, problem = Nothing, changed = False, people = Body.noPeople})
+          threadsStep Threads.PeopleAgain
+          modify (\st -> st {mode = Viewing, problem = Nothing, changed = False})
           load
         -- Another page, or another version, in the same view, as a link
         -- followed from a page of the same space shows it: scroll to the
@@ -924,7 +930,6 @@ component =
         CommentsView.StopQuoting -> threadsStep Threads.GaveUp
         CommentsView.Close -> modify (\st -> st {panelOpen = False}) >> threadsStep Threads.Closed
         CommentsView.Reload -> threadsStep Threads.Reload
-      ThreadsHappened event -> threadsStep event
       Heard heard -> do
         here <- gets (\st -> st.watching)
         case heard of
@@ -1081,44 +1086,37 @@ component =
         void (takeFetched owner loaded)
         H.raise Loaded
 
-    -- One step of the threads' machine, in one step of the program, and
-    -- then its effects, which never wait: each is a write of state, a tell
-    -- that does not wait, or a fork. A read, a write and the lookup of the
-    -- people are forked; the answer to a read or a write comes back as an
-    -- event ('ThreadsHappened'). So no effect of a step is carried out
-    -- after a later event.
     threadsStep :: Threads.Event (CommentsView.Placement, CommentsView.Mount) -> H.HalogenM State Action Slots ViewOutput m ()
-    threadsStep event = do
-      effects <- state (\st -> let (discussion, fx) = Threads.step event st.discussion in (fx, st {discussion}))
-      for_ effects $ \case
-        Threads.Load ticket page -> void . H.fork $ listThreads page >>= handleAction . ThreadsHappened . Threads.Loaded ticket page
-        Threads.Send placement n page request -> void . H.fork $ sendWrite page request >>= handleAction . ThreadsHappened . Threads.Wrote placement n request
-        Threads.Answered (placement, asker) request failure -> void (H.tell "comments" placement (CommentsView.Answered asker request failure))
-        -- The lookup waits, so it is forked: the effects after it are not
-        -- carried out after a later event.
-        Threads.Changed -> void (H.fork resolvePeople)
+    threadsStep = Machine.happen threadsMachine
 
-    -- Look up the people the page and its comments mention, for the
-    -- logins not looked up yet.
-    resolvePeople :: H.HalogenM State Action Slots ViewOutput m ()
-    resolvePeople = do
-      st <- get
-      let logins = Body.unasked st.people (bodiesOf st.loaded st.discussion.threads)
-      unless (null logins) $
-        H.async (attempt (Body.askPeople st.input.space logins)) >>= \case
-          Right found -> modify (\s -> s {people = Body.answered logins found s.people})
-          Left _ -> pass
-      resolveAvatars
+    -- The threads' machine, run by "Halogen.Machine": one step in one step
+    -- of the program, then its effects, with no other event of the threads
+    -- in between. A read, a write, the lookup of the people and that of
+    -- the authors' avatars are asks ('Machine.Ask'), whose work only waits
+    -- and answers and whose answer is a later step; the answer to a write
+    -- told to the comments view that asked is done in place ('Machine.Now').
+    threadsMachine :: Machine.Spec () State Action Slots ViewOutput m (Threads.Event (CommentsView.Placement, CommentsView.Mount)) (Threads.Effect (CommentsView.Placement, CommentsView.Mount)) Threads.Model
+    threadsMachine = Machine.Spec {Machine.step = Threads.step, Machine.carry = carryThreads, Machine.get = \st -> st.discussion, Machine.set = \discussion st -> st {discussion}}
+
+    carryThreads :: Threads.Effect (CommentsView.Placement, CommentsView.Mount) -> Machine.Carry () State Action Slots ViewOutput m (Threads.Event (CommentsView.Placement, CommentsView.Mount))
+    carryThreads = \case
+      Threads.Load ticket page -> Machine.Ask (Machine.run (listThreads page)) (Threads.Loaded ticket page . asAnswer)
+      Threads.Send placement n page request -> Machine.Ask (Machine.run (sendWrite page request)) (Threads.Wrote placement n request . asAnswer)
+      Threads.Answered (placement, asker) request failure -> Machine.Now (Sync.send "comments" placement (CommentsView.Answered asker request failure))
+      Threads.LookUp space n logins -> Machine.Ask (Machine.run (attempt (Body.askPeople space logins))) (Threads.Found n logins . asAnswer)
+      Threads.Avatars ticket authors -> Machine.Ask (Machine.run (avatarUrls authors)) (Threads.Avatared ticket . rightToMaybe)
 
     -- The URLs of the avatars of the people shown: who wrote the page,
-    -- the comments' authors and the readers. Lookups run beside each other
-    -- (the threads' machine forks them), so the answer of one is taken only
-    -- if no later one's was ("Wiki.App.View.Latest").
+    -- the comments' authors and the readers, when the view takes a page
+    -- and when it hears who reads it; the threads' machine looks up the
+    -- authors' again as the threads change. Lookups can run beside each
+    -- other (the readers heard while one is out), so the answer of one is
+    -- taken only if no later one's was ("Wiki.App.View.Latest").
     resolveAvatars :: H.HalogenM State Action Slots ViewOutput m ()
     resolveAvatars = do
       (ticket, people) <- state $ \st ->
         let (t, asks') = Latest.newAsk st.avatarAsks
-         in ((t, peopleOf st.loaded st.discussion.threads st.readers), st {avatarAsks = asks'})
+         in ((t, peopleOf st.loaded (threadsOf st).threads st.readers), st {avatarAsks = asks'})
       avatars <- H.async (avatarUrls people)
       void (Latest.answered (\st -> st.avatarAsks) (\a st -> st {avatarAsks = a}) ticket (\s -> s {avatars}))
 
@@ -1195,7 +1193,8 @@ component =
     -- A page fetched, as every fetch of the view takes it: shown as 'adopt'
     -- shows it, then what the page shown needs looked up again: the people
     -- its text and its comments mention, and their avatars
-    -- ('resolvePeople'); the shell told which page is shown ('Showing');
+    -- ('Threads.Fetched', 'resolveAvatars'); the shell told which page is
+    -- shown ('Showing');
     -- the live channel watching it ('watch'); its comments
     -- ('Threads.Fetched'). Both fetches ('load', 'catchUp') go through here,
     -- so that none of these is forgotten by one of them.
@@ -1213,11 +1212,11 @@ component =
           Body.settleOwned ownersOf' setOwners owner True
           adopt loaded
           checkChain
-          resolvePeople
+          resolveAvatars
           gets (\st -> pageOf st.loaded) >>= traverse_ (H.raise . Showing)
           watch
           st <- get
-          for_ (pageOf st.loaded) $ \page -> threadsStep (Threads.Fetched page.id (commentsHere st.input) (isJust st.input.space.encryption))
+          for_ (pageOf st.loaded) $ \page -> threadsStep (Threads.Fetched page.id (commentsHere st.input) st.input.space page.body)
           pure True
 
     -- What the backend found wrong with the versions of the page shown, in
@@ -1474,23 +1473,37 @@ pageOf = \case
   Ready page _ _ _ -> Just page
   _ -> Nothing
 
+-- | The threads of the page, with the people they and the page mention:
+-- the threads' machine's model.
+threadsOf :: State -> Threads.Model
+threadsOf st = Machine.current st.discussion
+
+-- | The URLs of the avatars the view shows: those the threads' machine
+-- looked up for the comments' authors as the threads changed, then those
+-- the view looked up for the writers, the authors and the readers.
+avatarsOf :: State -> Map UserId Text
+avatarsOf st = (threadsOf st).avatars <> st.avatars
+
+-- | A read's, a write's or a lookup's answer, as the threads' machine
+-- takes it. The backend gives what went wrong as a 'Left' and does not
+-- throw for it ("Wiki.App.Backend"'s "Errors"); what it throws all the
+-- same is taken as the failure it is, or as 'Unreachable'.
+asAnswer :: Either SomeException (Either WikiError a) -> Either WikiError a
+asAnswer = either (Left . failure) identity
+  where
+    failure e = fromMaybe (Unreachable (toS (displayException e))) (fromException e)
+
 -- | The place the page's links, and its comments' links, are resolved
 -- from: where the page is.
 placeOf :: Input -> Page -> Body.Addresses -> Map Text Author -> Body.Place
 placeOf input page addresses people =
   Body.Place {context = input.context, space = input.space, pages = input.pages, path = input.path, attachments = page.attachments, urls = addresses.urls, downloads = addresses.downloads, frames = addresses.frames, people}
 
--- | The Markdown the view shows: the page's, and its comments'.
-bodiesOf :: Loaded -> Threads -> [Text]
-bodiesOf loaded threads = case loaded of
-  Ready page _ _ _ -> page.body : [c.body | ThreadsReady ts <- [threads], t <- ts, c <- t.comments]
-  _ -> []
-
 -- | Whether the reader is busy with the page as shown: something selected
 -- in it, a quote being commented on, or a rename or a move begun. A new
 -- version of the page would discard that.
 busy :: State -> Bool
-busy st = isJust st.selected || isJust st.discussion.quoting || not viewing || unsaved st
+busy st = isJust st.selected || isJust (threadsOf st).quoting || not viewing || unsaved st
   where
     viewing = case st.mode of
       Viewing -> True
@@ -1590,9 +1603,9 @@ locatedIn text ts = [(t, maybe Orphaned (locate text) t.anchor) | t <- ts, isInl
 -- | The quotes to highlight in the page's text: those of the unresolved
 -- inline threads that are found.
 markings :: State -> Text -> [Marking]
-markings st text = case st.discussion.threads of
+markings st text = case (threadsOf st).threads of
   ThreadsReady ts ->
-    [ Marking t.id range (st.discussion.focused == Just t.id)
+    [ Marking t.id range ((threadsOf st).focused == Just t.id)
     | (t, Found range) <- locatedIn text ts
     , not t.resolved
     ]

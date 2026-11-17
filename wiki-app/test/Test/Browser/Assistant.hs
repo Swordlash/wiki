@@ -428,8 +428,8 @@ spec m = do
   -- "New" drops the chat: the next message opens another, which the
   -- scripted provider counts from one again, and which is told nothing of
   -- the changes the earlier chat's model made.
-  it "starts a new conversation with New, disabled while the model works, and keeps the draft" $ runPage $ do
-    script [[replace "which is what makes this a blog" "which makes this a blog", text "One."], [text "Two.", hold], [text "Three."]]
+  it "starts a new conversation with New, disabled while the model works, and keeps the draft; and with /clear, /help sending nothing" $ runPage $ do
+    script [[replace "which is what makes this a blog" "which makes this a blog", text "One."], [text "Two.", hold], [text "Three."], [text "Four."]]
     ui <- openAssistant m
     send ui "First."
     _ <- find ui ".assistant-message.from-model .assistant-took"
@@ -458,6 +458,16 @@ spec m = do
     let users = map (fromMaybe "" . fieldText ["user"]) asked
     map (T.isInfixOf "<page>\n# Hello, world") users `shouldBe` [True, False, True]
     map (T.isInfixOf "<changes>\n@@ ") users `shouldBe` [False, True, False]
+    -- The commands are the panel's, and none is sent: /help lists them,
+    -- and /clear starts a new conversation as "New" does.
+    send ui "/help"
+    eventually $ length <$> findAll ui ".assistant-notice" `shouldReturn` 2
+    send ui "/clear"
+    _ <- find ui ".assistant-empty"
+    find ui ".assistant-input" >>= (`getProperty` "value") >>= (`shouldBe` "")
+    send ui "Four."
+    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Four.")
+    map (at ["conversation"]) <$> requests >>= (`shouldBe` map (Just . Aeson.Number) [1, 2, 1, 1])
 
   -- A chat that could not be made (its script did not load) took no
   -- message, so the next message, to a new chat, carries the page again.

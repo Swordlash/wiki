@@ -14,7 +14,11 @@
 -- "Close" in its header. "New" in the header starts a new conversation
 -- ('NewConversation'). The editor's buttons open the panel with a
 -- provider ('UseProvider'); a provider other than the conversation's
--- starts a new conversation too.
+-- starts a new conversation too. A message that is a command
+-- ('Wiki.Core.Assistant.Prompt.command') is the panel's, never sent:
+-- @/new@ or @/clear@ starts a new conversation, as "New" does, and
+-- @/help@ lists the commands; a word that is no command is said to be one,
+-- and stays in the box to be corrected.
 --
 -- The mode (WP5.43, issue #120): in Agent mode the model edits the page,
 -- as described below; in Ask mode it only answers. Its tools are then
@@ -148,12 +152,15 @@ import Wiki.Core.Assistant
   )
 import Wiki.Core.Assistant.Edit (Change (..), Decision (..), Refusal (..), answer, describeEdit, parseEdit)
 import Wiki.Core.Assistant.Prompt
-  ( Outcome (..)
+  ( Command (Help)
+  , Outcome (..)
   , PageContext (..)
   , Shortcut (..)
   , Span (..)
   , anthropicRequest
   , chipLabel
+  , command
+  , commandHelp
   , copyAfter
   , lineSpan
   , openAiRequest
@@ -163,8 +170,10 @@ import Wiki.Core.Assistant.Prompt
   , shortcutLabel
   , shortcutText
   , shortcuts
+  , unknownCommand
   , userTurn
   )
+import Wiki.Core.Assistant.Prompt qualified as Prompt
 
 -- | 'Input': what the editor passes to the panel. Where the page's text
 -- is, its current title and Markdown, the selection in it, and the number
@@ -432,9 +441,9 @@ component =
             <div class="assistant-messages" aria-live="polite">
               {% if null st.entries %}
                 {% if modeNow st == Ask %}
-                  <p class="assistant-empty">Ask about the page, or choose a request below: in Ask mode the assistant answers and changes nothing. Select text first to ask about it alone.</p>
+                  <p class="assistant-empty">Ask about the page, or choose a request below: in Ask mode the assistant answers and changes nothing. Select text first to ask about it alone. Type /help for the commands.</p>
                 {% else %}
-                  <p class="assistant-empty">Ask for a change to the page, or choose one below. Select text first to ask about it alone. Each change the assistant makes is shown in the page, for you to accept or reject.</p>
+                  <p class="assistant-empty">Ask for a change to the page, or choose one below. Select text first to ask about it alone. Each change the assistant makes is shown in the page, for you to accept or reject. Type /help for the commands.</p>
                 {% end %}
               {% end %}
               {% for e in st.entries %}
@@ -815,46 +824,62 @@ component =
     send = do
       st <- get
       let text = T.strip st.message
-      unless (st.talking || T.null text) $ case (st.input.settings, st.input.host) of
-        (Just (Right s), Just host) -> case ready s of
-          Left why -> addEntry (Trouble why)
-          Right kept -> do
-            -- The effort of this conversation, which the settings do not
-            -- keep.
-            let r = Ready {provider = kept.provider, model = kept.model, key = kept.key, effort = effortNow st s, baseUrl = kept.baseUrl}
-                md = s.chatMode
-            body <- H.liftEffect (currentText host)
-            decided <- outcomes host
-            -- The clock read on the loop, without a wait ('H.liftEffect'):
-            -- from the check above to the turn begun below is one step.
-            -- Read through 'H.async', the second click of a double click
-            -- came between, found the panel idle as well, and sent the
-            -- message again in a conversation of its own.
-            sentAt <- H.liftEffect (liftIO getCurrentTime)
-            shown <- H.liftEffect (clockTime sentAt)
-            let context = pageContext st.input.title body st.sentCopy (attached st)
-                chip = case context of
-                  Selected {lineRange} -> Just (chipLabel lineRange)
-                  _ -> Nothing
-                reply = Reply {said = "", notes = [], stage = Waiting, thinking = "", thought = "", clock = shown, began = sentAt, quietSince = sentAt, took = Nothing, used = []}
-            talk <- maybe (open md r) pure st.talk
-            modify $ \s' ->
-              s'
-                { entries = s'.entries <> [FromUser Said {asked = text, chip, sent = sentNote context, askedAt = shown}, FromModel reply]
-                , message = ""
-                , talking = True
-                , talk = Just talk
-                , using = Just r
-                , detached = Nothing
-                , sentCopy = copyAfter body context st.sentCopy
-                , now = Just sentAt
-                , turnMode = md
-                }
-            startTicker
-            countTurn
-            H.liftEffect (sayTo talk (requestFor md r) (userTurn md decided context text))
-        (Just (Left why), _) -> addEntry (Trouble why)
-        _ -> pass
+      unless (st.talking || T.null text) $ case command text of
+        -- A command is the panel's, before anything of a message is sent:
+        -- no selection attached, no copy of the page sent, no chat made.
+        Just (Right Prompt.New) -> do
+          handleAction NewConversation
+          modify (\s' -> s' {message = ""})
+        Just (Right Help) -> do
+          traverse_ (addEntry . Notice) commandHelp
+          modify (\s' -> s' {message = ""})
+        -- An unknown command stays in the box, to be corrected.
+        Just (Left word) -> addEntry (Notice (unknownCommand word))
+        Nothing -> sendMessage st text
+
+    -- Send the message to the model: the chat opened if none is, the
+    -- page's context worked out, the turn begun.
+    sendMessage :: State -> Text -> H.HalogenM State Action Empty Output m ()
+    sendMessage st text = case (st.input.settings, st.input.host) of
+      (Just (Right s), Just host) -> case ready s of
+        Left why -> addEntry (Trouble why)
+        Right kept -> do
+          -- The effort of this conversation, which the settings do not
+          -- keep.
+          let r = Ready {provider = kept.provider, model = kept.model, key = kept.key, effort = effortNow st s, baseUrl = kept.baseUrl}
+              md = s.chatMode
+          body <- H.liftEffect (currentText host)
+          decided <- outcomes host
+          -- The clock read on the loop, without a wait ('H.liftEffect'):
+          -- from the check above to the turn begun below is one step.
+          -- Read through 'H.async', the second click of a double click
+          -- came between, found the panel idle as well, and sent the
+          -- message again in a conversation of its own.
+          sentAt <- H.liftEffect (liftIO getCurrentTime)
+          shown <- H.liftEffect (clockTime sentAt)
+          let context = pageContext st.input.title body st.sentCopy (attached st)
+              chip = case context of
+                Selected {lineRange} -> Just (chipLabel lineRange)
+                _ -> Nothing
+              reply = Reply {said = "", notes = [], stage = Waiting, thinking = "", thought = "", clock = shown, began = sentAt, quietSince = sentAt, took = Nothing, used = []}
+          talk <- maybe (open md r) pure st.talk
+          modify $ \s' ->
+            s'
+              { entries = s'.entries <> [FromUser Said {asked = text, chip, sent = sentNote context, askedAt = shown}, FromModel reply]
+              , message = ""
+              , talking = True
+              , talk = Just talk
+              , using = Just r
+              , detached = Nothing
+              , sentCopy = copyAfter body context st.sentCopy
+              , now = Just sentAt
+              , turnMode = md
+              }
+          startTicker
+          countTurn
+          H.liftEffect (sayTo talk (requestFor md r) (userTurn md decided context text))
+      (Just (Left why), _) -> addEntry (Trouble why)
+      _ -> pass
 
     -- The chat, opened with the settings' provider, model and key, its
     -- turn events handled by the panel.

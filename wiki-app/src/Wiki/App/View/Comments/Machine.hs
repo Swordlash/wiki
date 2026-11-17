@@ -35,7 +35,8 @@
 -- * a read's answer is taken only if no answer to a later read was
 --   ("Wiki.App.View.Latest"), and only for the page shown; what the
 --   channel told since the read was asked is applied to it again, in the
---   order told ('taking'). A failed read is shown only where no threads
+--   order told, as the threads shown took it when it came ('taking',
+--   'remembered'). A failed read is shown only where no threads
 --   are; threads kept after it are marked behind ('behind'), and the
 --   comments view says so, with a button to read them again;
 -- * a write's answer is taken only on the visit of the page it was sent
@@ -286,7 +287,7 @@ step event m
       Heard page e
         | m.page /= Just page -> (m, [])
         | e == ThreadsChanged -> reading m
-        | otherwise -> (m {threads = applied e m.threads, heard = heardNow e m, writes = map (\w -> w {told = e : w.told, quiet = False}) m.writes}, [Changed])
+        | otherwise -> (m {threads = applied e m.threads, heard = heardNow (remembered e m.threads) m, writes = map (\w -> w {told = e : w.told, quiet = False}) m.writes}, [Changed])
       Replaced page ts
         | m.page /= Just page -> (m, [])
         | m.encrypted -> reading m
@@ -327,7 +328,7 @@ wrote :: Writing -> Either WikiError PageEvent -> Model -> (Model, [Effect a])
 wrote w answer m = case answer of
   Right e
     | any (about e) w.told -> (m, [])
-    | w.quiet -> second (Changed :) (follow m {threads = applied e m.threads, heard = heardNow e m})
+    | w.quiet -> second (Changed :) (follow m {threads = applied e m.threads, heard = heardNow (remembered e m.threads) m})
   _ -> follow m
 
 -- | Whether an event the channel told is about what a write's answer made
@@ -380,11 +381,16 @@ followed asked m
 -- what the live channel told since the read was asked applied again, in
 -- the order told. The answer may have been read before or after each of
 -- those changes was made, and nothing in it says which. Applied again, an
--- addition the answer holds is kept as the answer has it, a deletion is
--- one again, and an edit or a resolution is as told, which a later one
--- still on its way corrects. A failure is shown only where no threads are:
--- threads shown are kept, and marked behind the server's ('behind'), until
--- a read's or a subscription's answer is taken.
+-- addition the answer holds is kept as the answer has it, one it lacks
+-- is added as the threads showed it when it was told ('remembered'), a
+-- deletion is one again, and an edit or a resolution is as told, which a
+-- later one still on its way corrects. An addition the answer lacks may
+-- also be one deleted since, whose deletion the channel has still to tell
+-- or lost with the connection: it is shown until that deletion, or the
+-- subscription's answer after the channel opens again, comes. A failure
+-- is shown only where no threads are: threads shown are kept, and marked
+-- behind the server's ('behind'), until a read's or a subscription's
+-- answer is taken.
 taking :: Ask -> PageId -> Either WikiError [Thread] -> Model -> Model
 taking asked page answer m
   | m.page /= Just page = m'
@@ -394,6 +400,26 @@ taking asked page answer m
       (Left e, _) -> m' {behind = False, threads = ThreadsFailed e}
   where
     m' = m {heard = stillWanted m.asks m.heard}
+
+-- | An event of the channel, or of a write's answer, as the threads shown
+-- took it, to be applied again to a read's answer ('taking'). A thread
+-- opened or a reply added whose id the threads already show changed
+-- nothing when it came: the threads show that thread or comment as
+-- something taken before it left it, which may be newer than the event
+-- (the answer to the reader's edit, taken before the channel told of the
+-- thread's opening). So it is remembered as the threads show it, by its
+-- id: applied again to an answer that lacks it, it shows what was shown,
+-- never the text it was told with. Every other event changed the threads
+-- as it says when it came, and is remembered as it is.
+remembered :: PageEvent -> Threads -> PageEvent
+remembered e threads = case e of
+  ThreadOpened t | Just t' <- find (\x -> x.id == t.id) shown -> ThreadOpened t'
+  CommentAdded c | Just c' <- find (\x -> x.id == c.id) [x | t <- shown, x <- t.comments] -> CommentAdded c'
+  _ -> e
+  where
+    shown = case threads of
+      ThreadsReady ts -> ts
+      _ -> []
 
 -- | The channel's event kept, if a read is out whose answer it may be newer
 -- than.

@@ -282,36 +282,51 @@ data Step
     Finish
   deriving stock (Eq, Show)
 
+-- | A run: half of them with the steps at their everyday weights, half
+-- with the channel slower than the answers and the rare steps of the
+-- races between them more often ('rare'): a message told after the
+-- answer to a later write, a deletion, the channel lost, the page read
+-- again. A race of all of these together (CI on #309, seed 1937263785:
+-- the reader's own thread told after the answer to the reader's edit,
+-- then deleted by someone else, then the channel lost) was found by none
+-- of 1.2 million runs at the everyday weights alone (twelve seeds, on
+-- 2026-11-17), and by about one in 250,000 with the rare half; the
+-- example below holds the run CI found.
 genRun :: Gen [Step]
-genRun =
-  listOf $
-    frequency
-      [ (3, OtherOpens <$> QC.arbitrary)
-      , (3, OtherReplies <$> chooseInt (0, 2))
-      , (1, OtherEdits <$> chooseInt (0, 3))
-      , (1, OtherResolves <$> chooseInt (0, 2))
-      , (1, OtherDeletesComment <$> chooseInt (0, 3))
-      , (1, OtherDeletesThread <$> chooseInt (0, 2))
-      , (2, ReaderOpens <$> QC.arbitrary)
-      , (2, Quote <$> chooseInt (0, 1))
-      , (1, Choose <$> chooseInt (0, 2))
-      , (4, pure PeopleFound)
-      , (2, ReaderReplies <$> chooseInt (0, 2))
-      , (1, ReaderEdits <$> chooseInt (0, 3))
-      , (1, ReaderResolves <$> chooseInt (0, 2))
-      , (1, ReaderDeletes <$> chooseInt (0, 3))
-      , (1, ReaderDeletesThread <$> chooseInt (0, 2))
-      , (6, pure Tell)
-      , (1, pure Reconnect)
-      , (5, pure Handle)
-      , (2, HandleOut <$> chooseInt (0, 3))
-      , (1, pure HandleFail)
-      , (6, Deliver <$> chooseInt (0, 3))
-      , (1, pure Navigate)
-      , (1, pure PageAgain)
-      , (1, pure Reopen)
-      , (1, pure Finish)
-      ]
+genRun = frequency [(1, listOf (stepWith False)), (1, listOf (stepWith True))]
+
+-- | One step, at the everyday weights, or with the rare ones raised.
+stepWith :: Bool -> Gen Step
+stepWith rare =
+  frequency
+    [ (3, OtherOpens <$> QC.arbitrary)
+    , (3, OtherReplies <$> chooseInt (0, 2))
+    , (often 1, OtherEdits <$> chooseInt (0, 3))
+    , (1, OtherResolves <$> chooseInt (0, 2))
+    , (often 1, OtherDeletesComment <$> chooseInt (0, 3))
+    , (often 1, OtherDeletesThread <$> chooseInt (0, 2))
+    , (2, ReaderOpens <$> QC.arbitrary)
+    , (2, Quote <$> chooseInt (0, 1))
+    , (1, Choose <$> chooseInt (0, 2))
+    , (4, pure PeopleFound)
+    , (2, ReaderReplies <$> chooseInt (0, 2))
+    , (often 1, ReaderEdits <$> chooseInt (0, 3))
+    , (1, ReaderResolves <$> chooseInt (0, 2))
+    , (1, ReaderDeletes <$> chooseInt (0, 3))
+    , (1, ReaderDeletesThread <$> chooseInt (0, 2))
+    , (if rare then 1 else 6, pure Tell)
+    , (often 1, pure Reconnect)
+    , (5, pure Handle)
+    , (2, HandleOut <$> chooseInt (0, 3))
+    , (1, pure HandleFail)
+    , (6, Deliver <$> chooseInt (0, 3))
+    , (1, pure Navigate)
+    , (often 1, pure PageAgain)
+    , (1, pure Reopen)
+    , (1, pure Finish)
+    ]
+  where
+    often n = if rare then 5 * n else n
 
 shrinkRun :: [Step] -> [[Step]]
 shrinkRun = shrinkList $ \case
@@ -777,6 +792,14 @@ spec = describe "Wiki.App.View.Comments.Machine" $ modifyMaxSuccess (max cases) 
       -- someone else's comment was made, answered after the channel told
       -- of it (WP5.95's open case).
       [t | (Lost, t) <- (foldl' play w0 [Tell, PageAgain, Handle, Handle, OtherOpens True, Tell, Deliver 1]).faults] `shouldBe` []
+
+    it ("shows the reader's edit, not the thread's first text, when a late opening is applied again to a read's answer" <> how) $
+      -- CI on #309 (seed 1937263785): the channel told of the reader's
+      -- own thread after the answer to the reader's edit of its comment,
+      -- someone deleted the thread, the channel was lost, and the read
+      -- asked after the edit answered without the thread. Applied again,
+      -- the opening put the thread back with its first text.
+      [t | (Older, t) <- (foldl' play w0 [Tell, Handle, ReaderOpens False, PageAgain, Handle, Handle, Deliver 2, ReaderEdits 0, Handle, Deliver 2, Tell, Deliver 0, OtherDeletesThread 0, Reconnect, Handle, Deliver 1]).faults] `shouldBe` []
 
     it ("leaves a new visit's forms alone when a write sent on an earlier visit of the page is answered" <> how) $
       -- Codex on #284: the reader writes on page A, goes to B and back to

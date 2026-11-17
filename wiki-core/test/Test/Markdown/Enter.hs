@@ -126,6 +126,11 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
         plainItem = Item 0 "-" (Spaces 1) Nothing
     review "an empty task under a line of attributes, a list below" (Doc [Chunk [] [] Attrs, Chunk [] [task] Empty, Chunk [] [plainItem] Text]) 2 NewLine
     review "the same in a quotation" (Doc [Chunk [] [Quote 0 (Spaces 1)] Attrs, Chunk [Quote 0 (Spaces 1)] [task] Empty, Chunk [Quote 0 (Spaces 1)] [plainItem] Text]) 2 NewLine
+    -- CI's seed 2030959543 on main: a footnote's line of attributes with
+    -- a quotation indented under it failed the page's parse, so Enter
+    -- broke the line alone over the whole text, and went on over the text
+    -- handed over, which ends above the footnote.
+    review "an item above a line of attributes with an indented line under it" (Doc [Chunk [] [Item 0 "1." (Spaces 1) Nothing] Text, Chunk [] [Item 0 "2." (Spaces 1) Nothing] Text, Chunk [] [Note 1] Attrs, Chunk [Note 1] [Quote 3 (Spaces 1)] Text]) 1 (NewLineWith "2. ")
 
   -- Texts CodeMirror's tree cut where the wiki's parser reads on (Codex's
   -- review of #292's 0dd1018b): from the start the check keeps, the text
@@ -265,6 +270,11 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
             $ cover 30 (isNewItem expected) "an item"
             $ cover 20 (not (isNewItem expected)) "a quoted line"
             $ enter rendered "" === expected
+    -- Every document generated is one the parser reads: on one it cannot
+    -- read, Enter over the whole text is a line break alone, while the
+    -- text handed over, which may end above where the parse fails, reads.
+    prop "reads every document" $ \doc ->
+      counterexample (toS (render doc)) (isRight (parseShapes (render doc)))
     -- The documents meet every kind of answer often enough for the
     -- properties above to mean something.
     prop "covers every answer" $ \doc ->
@@ -324,7 +334,7 @@ data Gap = Spaces Int | Tab
   deriving stock (Eq, Show)
 
 -- | What a chunk's lines hold after their containers' marks.
-data Body = Attrs | Text | TabText | TextLazy | Heading | Box | Blank | Empty | Indented | Fenced | OpenFence | Html | Table | Opener | Closer | TextOpener | RawHtml Int
+data Body = Attrs | AttrsIndented | Text | TabText | TextLazy | Heading | Box | Blank | Empty | Indented | Fenced | OpenFence | Html | Table | Opener | Closer | TextOpener | RawHtml Int
   deriving stock (Eq, Show)
 
 -- | Some lines: the containers kept from the chunk before, written as on
@@ -359,7 +369,7 @@ chunk stack = do
     -- one (the parser reads one in an item too, and lists it at the end).
     footnote <- if k == 0 then frequency [(5, pure []), (1, (: []) . Note <$> choose (1, 1000000))] else pure []
     pure (footnote <> first' <> rest)
-  body <- frequency [(2, pure Attrs), (6, pure Text), (1, pure TabText), (2, pure TextLazy), (1, pure Heading), (1, pure Box), (2, pure Blank), (2, pure Empty), (1, pure Indented), (1, pure Fenced), (1, pure OpenFence), (1, pure Html), (1, pure Table), (1, pure Opener), (1, pure Closer), (1, pure TextOpener), (2, RawHtml <$> choose (1, 7))]
+  body <- frequency [(2, pure Attrs), (1, pure AttrsIndented), (6, pure Text), (1, pure TabText), (2, pure TextLazy), (1, pure Heading), (1, pure Box), (2, pure Blank), (2, pure Empty), (1, pure Indented), (1, pure Fenced), (1, pure OpenFence), (1, pure Html), (1, pure Table), (1, pure Opener), (1, pure Closer), (1, pure TextOpener), (2, RawHtml <$> choose (1, 7))]
   pure (Chunk kept fresh body)
 
 -- | A new container.
@@ -394,6 +404,9 @@ bodyLines :: Body -> [(Bool, Text)]
 bodyLines = \case
   -- A line of attributes alone, which the block after it takes.
   Attrs -> [(False, "{#a .b}")]
+  -- The same, and a line indented by less than code's four spaces right
+  -- after it, which is no line of attributes.
+  AttrsIndented -> [(False, "{#a .b}"), (False, "   Some text.")]
   Text -> [(False, "Some text.")]
   -- A tab in the text, after its first character.
   TabText -> [(False, "a\tb")]

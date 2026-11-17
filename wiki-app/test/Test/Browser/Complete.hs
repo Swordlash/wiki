@@ -243,6 +243,47 @@ spec m = do
     press "Enter"
     eventually $ length <$> findAll ui ".link-dialog" `shouldReturn` 1
     markdown ui `shouldReturn` titleLines <> "See "
+  -- Commands in math (WP5.124 (e)): where the list opens and what it
+  -- offers are tested natively ("Test.Markdown.CompleteMath"); here, the
+  -- list in the long guide, a space's macro in it with where it comes
+  -- from, the command's name written with the cursor after it, and a line
+  -- break's two backslashes left to Enter.
+  it "completes \\fr to \\frac in a formula in the middle of the long guide, the cursor after it, as a step of the undo, and lists the space's macros" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-admin") (EditPage (slugs ["docs"]) (slugs ["markdown-guide"]))
+    text <- editorText ui
+    guide <- eventually $ markdown ui >>= \t -> t <$ (t `shouldSatisfy` ((> 10_000) . T.length))
+    let (upTo, _) = T.breakOn "\n\n" (T.drop (T.length guide `div` 2) guide)
+        at = T.length guide `div` 2 + T.length upTo + 1
+        units = at + T.length (T.filter ((> 0xFFFF) . ord) (T.take at guide))
+    selectText ui units units
+    typeText text "$\\fr"
+    eventually $ (take 1 <$> labels ui) `shouldReturn` ["\\frac"]
+    listReady ui
+    press "Enter"
+    markdown ui `shouldReturn` T.take at guide <> "$\\frac" <> T.drop at guide
+    (snd <$> editorSelection ui) `shouldReturn` units + T.length "$\\frac"
+    -- In a brace typed after it, the Docs space's macro, with the space's
+    -- name beside it.
+    typeText text "{\\Ho"
+    eventually $ (findAll ui ".cm-tooltip-autocomplete .cm-completionDetail" >>= traverse textContent) `shouldReturn` ["Docs"]
+    labels ui `shouldReturn` ["\\Hom"]
+    -- The command written is a step of the undo of its own: one undo takes
+    -- back "{\\Ho", the next the command, leaving "$\\fr" as typed.
+    press "Escape"
+    press "Control+z"
+    eventually $ markdown ui `shouldReturn` T.take at guide <> "$\\frac" <> T.drop at guide
+    press "Control+z"
+    eventually $ markdown ui `shouldReturn` T.take at guide <> "$\\fr" <> T.drop at guide
+
+  it "leaves a line break's two backslashes to Enter in display math" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    text <- editorText ui
+    setMarkdown ui (titleLines <> "$$\na")
+    selectText ui (T.length titleLines + 4) (T.length titleLines + 4)
+    typeText text " \\\\"
+    press "Enter"
+    typeText text "b"
+    markdown ui `shouldReturn` titleLines <> "$$\na \\\\\nb"
   where
     helloEditor = EditPage (slugs ["blog"]) (slugs ["hello-world"])
     exercise = BoxKind {name = "exercise", label = "Exercise", colour = Teal, icon = Pencil}

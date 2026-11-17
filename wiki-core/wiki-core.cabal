@@ -98,6 +98,7 @@ library
       Wiki.Core.Markdown.Tikz
       Wiki.Core.Markdown.Toc
       Wiki.Core.Math
+      Wiki.Core.Math.KatexCommands
       Wiki.Core.Notification
     Wiki.Core.Offered
       Wiki.Core.Order
@@ -178,6 +179,7 @@ test-suite wiki-core-test
       Test.Markdown.Comments
       Test.Markdown.Edit
       Test.Markdown.Complete
+      Test.Markdown.CompleteMath
       Test.Markdown.CompleteOracle
       Test.Markdown.CompleteStarts
       Test.Markdown.Enter

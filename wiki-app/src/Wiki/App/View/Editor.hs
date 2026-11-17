@@ -446,7 +446,7 @@ import Wiki.Core.SlideRows (RowKey (..), Rows)
 import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.Slides qualified as Slides
 import Wiki.Core.Slug (Slug)
-import Wiki.Core.Space (Space (encryption, id))
+import Wiki.Core.Space (Space (encryption, id, mathMacros, name))
 import Wiki.Core.User (Login (..), User (displayName, id, login))
 import Wiki.Core.Version (Author (..), Version (author))
 
@@ -634,6 +634,18 @@ data State = State
   , linkables :: [Complete.Linkable]
   -- ^ The pages a link may name, with their paths and links, worked out
   -- when the input's pages or the page's path change ('linkablesOf').
+  , shippedMacros :: Text
+  -- ^ The built-in macros the wiki ships with, read once the editor
+  -- starts ('builtinMacros'): the wiki's macros the completion in math
+  -- offers, where the server's settings keep no copy of their own.
+  , outerMacros :: [Complete.MathCommand]
+  -- ^ The macros the completion in math offers from the wiki and the
+  -- space's chain, the nearest first, worked out when the input or the
+  -- shipped macros change ('outerMacrosOf'), not at each question.
+  , pageMacroNames :: [Complete.MathCommand]
+  -- ^ The macros of the page's block of macros (the @math@ fence under its
+  -- title, 'pageMacros', which the "Macros" panel edits), worked out with
+  -- each check of the text.
   , host :: H.RefLabel
   -- ^ The element where CodeMirror goes, in the textarea's place; the
   -- text is reached through it ("Wiki.App.Editor.Browser").
@@ -1183,6 +1195,9 @@ component =
               , emojiQuery = ""
               , readings = Complete.noReadings
               , linkables = linkablesOf input
+              , shippedMacros = ""
+              , outerMacros = outerMacrosOf "" input
+              , pageMacroNames = []
               , host
               , fileInput
               , backButton
@@ -2124,6 +2139,8 @@ component =
       -- After the first render, so that render is the same whatever the
       -- browser has stored.
       Initialize -> do
+        shipped <- H.liftEffect Islands.builtinMacros
+        modify (\st -> st {shippedMacros = shipped, outerMacros = outerMacrosOf shipped st.input})
         H.liftEffect (Storage.getItem LocalStorage rawSlidesKey) >>= \case
           Just (Right True) -> modify (\st -> st {slidesMode = False})
           _ -> pass
@@ -2174,9 +2191,10 @@ component =
       Receive input -> modify $ \st ->
         -- The pages' paths and links change only with the pages, the
         -- space, or the page's own path.
-        if (input.space, input.pages, input.path) == (st.input.space, st.input.pages, st.input.path)
-          then st {input}
-          else st {input, linkables = linkablesOf input}
+        let macros = outerMacrosOf st.shippedMacros input
+         in if (input.space, input.pages, input.path) == (st.input.space, st.input.pages, st.input.path)
+              then st {input, outerMacros = macros}
+              else st {input, linkables = linkablesOf input, outerMacros = macros}
       -- Cancel, from the preview shown alone, takes the preview's entry of
       -- the history, as Save and close does (see "Wiki.App.Shell").
       Followed f@(Router.Follow route _) -> do
@@ -3154,7 +3172,7 @@ component =
         gets (\st -> st.loaded) >>= \case
           Ready w -> do
             found <- H.async (liftIO (evaluate (force (Problems.checkText w.page.kind w.body))))
-            modify $ \st -> measuredNow (keepDrawnFailures st {checkWait = Nothing, checked = found, checkedText = w.body, earlier = Complete.earlierFrom w.body found.starts found.definitions})
+            modify $ \st -> measuredNow (keepDrawnFailures st {checkWait = Nothing, checked = found, checkedText = w.body, earlier = Complete.earlierFrom w.body found.starts found.definitions, pageMacroNames = Complete.pageMacroCommands w.body})
             gets (\st -> st.hostElement) >>= traverse_ (\host -> H.liftEffect (offerFolds host w.body found.folds >> offerStarts host w.body found.starts))
             -- Cut first: the rows a block left open swallows are problems.
             -- One publication for the pause, after the re-cut.
@@ -3689,8 +3707,9 @@ emojiColumns = 8
 
 -- | What the completion of the wiki's own Markdown reads of the editor
 -- ("Wiki.App.Editor.Complete"): the page's kind, the kinds of box, the
--- page being edited, and the pages of its space a link may name, as the
--- state keeps them ('linkables').
+-- page being edited, the pages of its space a link may name, and the
+-- macros math may use, as the state keeps them ('linkables',
+-- 'outerMacros', 'pageMacroNames'): nothing worked out at each question.
 heldFor :: State -> Work -> Complete.Held
 heldFor st work =
   Complete.Held
@@ -3699,7 +3718,18 @@ heldFor st work =
     , editing = work.page.id
     , pages = st.linkables
     , entries = slashEntries (boxChoices st.input.context.session.boxes)
+    , mathMacros = st.pageMacroNames <> st.outerMacros
     }
+
+-- | The macros the completion in math offers from the wiki and the
+-- space's chain, as the preview passes them to KaTeX
+-- ("Wiki.Core.Math"): the space's own first, then each ancestor's up the
+-- chain, then the wiki's (the administration's copy, or the shipped ones
+-- while it keeps none), each with where it comes from.
+outerMacrosOf :: Text -> Input -> [Complete.MathCommand]
+outerMacrosOf shipped input =
+  concat [Complete.macroCommands s.name s.mathMacros | s <- reverse (chainOf input.context input.space.id)]
+    <> Complete.macroCommands "the wiki" (fromMaybe shipped input.context.session.mathMacros)
 
 -- | The action an entry of the @/@ menu asks for once it is written
 -- ('completeAction'): the toolbar's own, as its button runs it.

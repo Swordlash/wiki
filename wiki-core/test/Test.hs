@@ -17,6 +17,7 @@ import Test.Markdown.Ast qualified as Ast
 import Test.Markdown.Box qualified as Box
 import Test.Markdown.Comments qualified as Comments
 import Test.Markdown.Complete qualified as Complete
+import Test.Markdown.CompleteMath qualified as CompleteMath
 import Test.Markdown.CompleteOracle qualified as CompleteOracle
 import Test.Markdown.CompleteStarts qualified as CompleteStarts
 import Test.Markdown.Edit qualified as Edit
@@ -60,6 +61,7 @@ main = hspec . parallel . wasmCases $ do
   Complete.spec
   CompleteOracle.spec
   CompleteStarts.spec
+  CompleteMath.spec
   Edit.spec
   Enter.spec
   Tikz.spec

@@ -18,6 +18,9 @@ module Wiki.App.Editor.Complete
   , linkables
   , linkablesFrom
   , sources
+  , MathCommand (..)
+  , macroCommands
+  , pageMacroCommands
   , pageSource
   , Readings
   , noReadings
@@ -38,7 +41,9 @@ import Wiki.App.Route (pageLinkText)
 import Wiki.Core.Id (PageId)
 import Wiki.Core.Markdown.Box (BoxKind)
 import Wiki.Core.Markdown.Complete
+import Wiki.Core.Markdown.Edit (pageMacros)
 import Wiki.Core.Markdown.Starts (Earlier (..), earlierFrom, linesBelow, linesFromStart, noEarlier)
+import Wiki.Core.Math (definedMacros)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind)
 import Wiki.Core.Slug (Slug, slugText, slugify)
@@ -60,14 +65,17 @@ data Request = Request
 -- kind, which says the markers it reads; the kinds of box the
 -- administration defined; the page being edited, by its id; the pages
 -- of its space a link may name, as the editor keeps them ('linkables');
--- and the entries of the @/@ menu, what the toolbar writes
--- ("Wiki.App.Editor.Tools"' 'Wiki.App.Editor.Tools.slashEntries').
+-- the entries of the @/@ menu, what the toolbar writes
+-- ("Wiki.App.Editor.Tools"' 'Wiki.App.Editor.Tools.slashEntries'); and
+-- the macros math may use, the nearest first (the page's, each space's up
+-- its chain, the wiki's), each with where it comes from.
 data Held = Held
   { kind :: PageKind
   , boxes :: [BoxKind]
   , editing :: PageId
   , pages :: [Linkable]
   , entries :: [SlashEntry]
+  , mathMacros :: [MathCommand]
   }
 
 -- | 'Linkable' is a page of the space a link may name, with what the list
@@ -151,10 +159,25 @@ baseOrder :: Linkable -> (Int, Int, Text, [Text])
 baseOrder p = (p.nearness, T.length p.address + maybe 0 (\l -> 1 + T.length l) p.label, p.lowerTitle, p.segments)
 
 -- | The sources of the editor's list, in the order their candidates are
--- listed: the wiki's own markers and kinds of box, the space's pages, and
--- what the toolbar writes. A plugin's source (#186) goes after them.
+-- listed: the wiki's own markers and kinds of box, the space's pages, what
+-- the toolbar writes, and the commands of math. A plugin's source (#186)
+-- goes after them.
 sources :: Held -> [Source]
-sources held = [wikiSource held.kind held.boxes, pageSource held, slashSource held.entries]
+sources held = [wikiSource held.kind held.boxes, pageSource held, slashSource held.entries, mathSource (mathCommands held.mathMacros)]
+
+-- | The macros a block of TeX defines ("Wiki.Core.Math"' 'definedMacros'),
+-- as commands math offers, each with where it comes from: a space by its
+-- name, the wiki.
+macroCommands :: Text -> Text -> [MathCommand]
+macroCommands origin tex = [MathCommand {name, origin} | name <- definedMacros tex]
+
+-- | The macros of a page's block of macros, the @math@ fence under its
+-- title that the editor's "Macros" panel edits ("Wiki.Core.Markdown.Edit"'
+-- 'pageMacros'), as commands math offers. A definition elsewhere in the
+-- page (in a later formula, which KaTeX reads for the formulas after it)
+-- is not offered: finding it means reading every formula of the page.
+pageMacroCommands :: Text -> [MathCommand]
+pageMacroCommands body = macroCommands "this page" (fromMaybe "" (pageMacros body))
 
 -- | The pages of the space, after @[[@: every one but the page being
 -- edited, at most 'shownPages', each shown by its title with its path in

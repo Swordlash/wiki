@@ -93,7 +93,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
           , linkable "inside" "The user guide" ["projects", "the-user-guide"]
           , linkable "other" "Projects" ["projects"]
           ]
-        onHandbook = Held {kind = Document, boxes = [], editing = PageId "editing", pages = linkablesFrom handbookEditing pages, entries = []}
+        onHandbook = Held {kind = Document, boxes = [], editing = PageId "editing", pages = linkablesFrom handbookEditing pages, entries = [], mathMacros = []}
         offered typed = map (\c -> (c.label, c.note)) . (.candidates) <$> answered (sources onHandbook) typed (lineRequest typed "")
     it "offers every page but the one edited, the nearer first: siblings, then its branch, then the others" $
       (map fst <$> offered "[[")
@@ -221,9 +221,9 @@ spec = describe "Wiki.App.Editor.Complete" $ do
     it "reads the text from a start in the middle and near the end of the Markdown guide, and in the fiftieth slide of a long deck" $
       for_ [("the guide's middle", markdownReference, 50, 15_000_000), ("near the guide's end", markdownReference, 90, 50_000_000), ("the fiftieth slide", longDeck, 82, 100_000_000)] $ \(name, page, percent, bound) -> do
         let k = paragraphAt page percent
-        costs <- for ["/t", "[[!", "[[Gu"] (\typed -> (typed,) <$> firstAnswer page (k, typed))
+        costs <- for ["/t", "[[!", "[[Gu", "$\\f", "Text \\f"] (\typed -> (typed,) <$> firstAnswer page (k, typed))
         (name :: Text, [(t, c) | (t, c) <- costs, c > bound]) `shouldBe` (name, [])
-    it "where no start serves, reads the whole text above for a marker or a link, and opens nothing for a / without reading it" $ do
+    it "where no start serves, reads the whole text above for a marker or a link, and opens nothing for a / or a backslash without reading it" $ do
       -- Before the first check (none kept) and more than the limit above:
       -- a marker and a link to a page are answered as from the whole
       -- text; a / is not answered, and costs no parse (0.4 MB natively,
@@ -239,6 +239,58 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       text' <- evaluate (now "/t")
       cost <- allocated (isNothing (fst (answer (sources onLong) noEarlier noReadings text' (asked "/t"))))
       (unchecked "/t", cost < 2_000_000) `shouldBe` (Nothing, True)
+      -- A backslash and a letter, in prose and in a formula, the same.
+      for_ ["Text \\f", "$\\f"] $ \typed -> do
+        typed' <- evaluate (now typed)
+        cost' <- allocated (isNothing (fst (answer (sources onLong) noEarlier noReadings typed' (asked typed))))
+        (typed, unchecked typed, cost' < 2_000_000) `shouldBe` (typed, Nothing, True)
+
+  describe "commands in math" $ do
+    let macros = [MathCommand {name = "\\R", origin = "this page"}, MathCommand {name = "\\vect", origin = "Team"}, MathCommand {name = "\\vect", origin = "the wiki"}]
+        mathHeld = (held Document []) {mathMacros = macros}
+        mathAnswer typed rest = answered (sources mathHeld) (typed <> rest) (lineRequest typed rest)
+    it "offers the macros of the page, its spaces and the wiki with where each comes from, the nearer shadowing the farther" $ do
+      (map (\c -> (c.label, c.note)) . (.candidates) <$> mathAnswer "$\\ve" "$")
+        `shouldBe` Just [("\\vec", Just "KaTeX"), ("\\vee", Just "KaTeX"), ("\\vect", Just "Team"), ("\\verb", Just "KaTeX"), ("\\vert", Just "KaTeX"), ("\\veebar", Just "KaTeX")]
+    it "writes a command's name as text, the cursor after it" $ do
+      let first' = do
+            Object o <- completionJson <$> mathAnswer "$\\fr" "$"
+            Array options <- KeyMap.lookup "options" o
+            head (toList options)
+      first'
+        `shouldBe` Just (object ["label" .= ("\\frac" :: Text), "insert" .= ("\\frac" :: Text), "detail" .= ("KaTeX" :: Text)])
+    it "offers the macros of the page's block of macros, and not a definition in a listing or a later formula" $ do
+      let page = T.intercalate "\n" ["# Title", "", "```math", "\\newcommand{\\R}{\\mathbb{R}}", "\\DeclareMathOperator{\\Tr}{Tr}", "```", "", "Text $\\def\\later{x}$.", "", "```tex", "\\newcommand{\\listed}{x}", "```"]
+      map (.name) (pageMacroCommands page) `shouldBe` ["\\R", "\\Tr"]
+      map (\c -> (c.name, c.origin)) (macroCommands "Team" "\\newcommand{\\vect}[1]{\\vec{#1}}") `shouldBe` [("\\vect", "Team")]
+    it "reads the macros kept with the editor, not the page, at each answer" $ do
+      -- The editor keeps the macros it offers, worked out when their
+      -- sources change. An answer on the long deck with them allocates what
+      -- one without them does, give or take the commands matched; working
+      -- them out from the page at each answer, as #299's first version did,
+      -- added 28 MB to every answer on a large page, after / and [[ too.
+      let page = longDeck <> "\n\n```tex\n\\newcommand{\\listed}{x}\n```"
+          k = paragraphAt page 82
+          ls = T.splitOn "\n" page
+          now typed = T.intercalate "\n" (take k ls <> [typed, ""] <> drop k ls)
+          asked typed = Request {line = k + 1, before = typed, after = "", nodes = ["Paragraph", "Document"]}
+      earlier <- evaluate (earlierOf page)
+      _ <- evaluate (IntSet.size earlier.starts + IntMap.size earlier.definitions + sum (fmap T.length earlier.lines))
+      kept <- evaluate (pageMacroCommands page <> macroCommands "the wiki" "\\newcommand{\\R}{\\mathbb{R}}")
+      _ <- evaluate (T.length (show kept :: Text))
+      _ <- evaluate (length katexOrdered)
+      for_ ["/t", "$\\f", "[[Gu"] $ \typed -> do
+        text' <- evaluate (now typed)
+        let costOf h = allocated (let a = fst (answer (sources h) earlier noReadings text' (asked typed)) in a == a)
+        with' <- costOf mathHeld {mathMacros = kept}
+        without <- costOf mathHeld {mathMacros = []}
+        (typed, with' < without + 2_000_000) `shouldBe` (typed, True)
+    it "answers a backslash's first letter within a bound of allocation: KaTeX's thousand commands are ordered once, not at each answer" $ do
+      _ <- evaluate (length katexOrdered)
+      for_ ["$\\f", "$\\fr", "$\\x"] $ \typed -> do
+        typed' <- evaluate (T.copy typed)
+        cost <- allocated (let a = mathAnswer typed' "$" in a == a)
+        (typed, cost < mathBound) `shouldBe` (typed, True)
 
   describe "the pages offered in a space of 10,000 pages" $
     it "are matched and ranked within a bound of allocation, their paths and links worked out before, and again no more" $ do
@@ -249,7 +301,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       -- page's path (each page above it searched for in the list) and its
       -- link, as the editor did before #294's review, allocated 11 GB.
       let kept = linkables space largeSpace (slugs ["section-0", "page-77"])
-          h = Held {kind = Document, boxes = [], editing = PageId "p77", pages = kept, entries = []}
+          h = Held {kind = Document, boxes = [], editing = PageId "p77", pages = kept, entries = [], mathMacros = []}
       _ <- evaluate (kept == kept)
       let asked typed = answered (sources h) typed (lineRequest typed "")
       for_ ["[[", "[[pag", "[[zz"] $ \typed -> do
@@ -264,7 +316,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       -- link that ends further away is offered nothing. Asking the parser
       -- again for each character of what followed the cursor, as before
       -- #294's second review, allocated 1.6 GB for 1,000 characters.
-      let h = Held {kind = Document, boxes = [], editing = PageId "none", pages = linkablesFrom [] [linkable "guide" "Guide" ["guide"]], entries = []}
+      let h = Held {kind = Document, boxes = [], editing = PageId "none", pages = linkablesFrom [] [linkable "guide" "Guide" ["guide"]], entries = [], mathMacros = []}
       for_ [1_000, 10_000] $ \n -> do
         let lineAfter = T.replicate n "x" <> "|label]] end"
             page = "Some text\n\nSee [[Gu" <> lineAfter
@@ -530,6 +582,19 @@ allocated value = do
 linkBound :: Int64
 linkBound = 20_000_000
 
+-- | The allocation an answer after a backslash in math stays within:
+-- 0.81 to 0.85 MB natively for the letters measured, the commands matched
+-- in their order. Sorting KaTeX's commands again at each answer allocates
+-- 1.14 to 1.18 MB, over the bound: the sort is lazy, and only the part the
+-- list takes is paid for, so the margin is narrow on purpose.
+mathBound :: Int64
+mathBound = 1_000_000
+
+-- | KaTeX's commands in the list's order, forced before an answer is
+-- counted: the program orders them once.
+katexOrdered :: [MathCommand]
+katexOrdered = mathCommands []
+
 -- | The allocation an answer over 'largeSpace' stays within.
 answerBound :: Int64
 answerBound = 40_000_000
@@ -549,7 +614,7 @@ largeSpace =
 
 -- | What the editor holds of a page of a kind, with no page to link to.
 held :: PageKind -> [BoxKind] -> Held
-held kind boxes = Held {kind, boxes, editing = PageId "none", pages = [], entries = []}
+held kind boxes = Held {kind, boxes, editing = PageId "none", pages = [], entries = [], mathMacros = []}
 
 -- | The path of the page edited in the tests of the pages offered.
 handbookEditing :: [Slug]

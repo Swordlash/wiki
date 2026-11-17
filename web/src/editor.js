@@ -1109,8 +1109,10 @@ const emojiSource = (names, whole) => {
 // no list opens). A "[" may stand in a link's address.
 //
 // A "/" at the line's start or after a space or a tab, and letters after
-// it, asks too: the "/" menu of what the toolbar writes (WP5.124 (d)).
-const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$|(^|[ \t])\/[A-Za-z]*$/;
+// it, asks too: the "/" menu of what the toolbar writes (WP5.124 (d)); and
+// a backslash and letters: a command in math (WP5.124 (e)), where Haskell
+// asks the parser whether it is in math.
+const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$|(^|[ \t])\/[A-Za-z]*$|\\[A-Za-z]+$/;
 
 // The "/" whose menu Escape closed, by position in each state, kept
 // where the text around them moves: the letters typed after such a "/"

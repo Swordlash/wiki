@@ -2016,7 +2016,25 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   at rest (something outside the loop). Only the third needs the
   islands to report. The smoke suites have 56 explicit waits against
   236 `waitQuiet`, to be listed with what each waits for. The owner:
-  "poświęć effort na to".
+  "poświęć effort na to". **His target and the way (2026-11-18):** as
+  few timed delays as can be; a test says "I click X, I wait, hanging
+  on something, I check the result"; foreign components (highlighted
+  code, KaTeX, Mermaid, CodeMirror) are tested statically or apart, or
+  made to say when they are done. **And the library's part is the
+  session's own now:** haskell-halogen is cloned at
+  `/home/claude-user/haskell-halogen`, a builder changes it there by
+  its own AGENTS.md, the wiki is built against the library's branch to
+  show the change is enough, and only then is a pull request opened in
+  the library (the owner: "olej ten pingponging, sklonuj go sobie i
+  sam zaproponuj PRy, a przed proponowaniem sprawdź czy to
+  wystarczy"). So the measure's instrumentation is written in the
+  library (a report of retries, behind an environment variable, on a
+  branch cut from the wiki's pin), and what follows it there, as
+  expected before the data: reads that read once and fail, chosen for
+  a group of examples so a suite moves over group by group; the
+  deadline of `settle` and `waitQuiet` as a watchdog a suite sets; and,
+  only if the data asks for it, a way for work outside the loop to
+  count in `Halogen.Activity`.
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
   przed pluginami").** One builder, in this order, each its own pull

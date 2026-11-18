@@ -70,6 +70,7 @@ module Wiki.App.View.AssistantSettings
   )
 where
 
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
 import Data.Map.Strict qualified as Map
 import Data.Row (Empty)
@@ -221,7 +222,7 @@ data Action
   | TypedCap Text
   | KeepCap Text
 
-component :: forall query output m. (MonadAssistant m, MonadVault m, MonadUUID m, MonadIO m) => H.Component query Input output m
+component :: forall query output m. (MonadAssistant m, MonadVault m, MonadUUID m, MonadUnliftIO m) => H.Component query Input output m
 component =
   H.mkComponent
     H.ComponentSpec

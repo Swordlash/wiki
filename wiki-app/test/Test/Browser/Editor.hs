@@ -80,10 +80,9 @@ spec m = readsOnce Idle $ do
     text <- editorText ui
     clearBody ui
     typeText text "Euler: $e^{i\\pi} + 1 = 0$"
-    -- MEASUREMENT (WP5.137): the preview follows after its pause, a wait the
-    -- program counts.
-    waitQuiet
-    find ui ".editor-preview .page-body h1" >>= (`shouldHaveText` "Hello, world")
+    -- MEASUREMENT (WP5.137): the preview follows after its pause; the read
+    -- of it below waits for it as the named wait, without the draft's.
+    eventually (find ui ".editor-preview .page-body h1" >>= (`shouldHaveText` "Hello, world"))
     formula <- find ui ".editor-preview .wiki-math-inline .katex"
     findIn formula "annotation" >>= (`shouldHaveText` "e^{i\\pi} + 1 = 0")
     -- More typing redraws the preview, but not a formula it has not touched.
@@ -413,10 +412,9 @@ spec m = readsOnce Idle $ do
     typeText text "Look: "
     perform (dropFile ".editor-cm .cm-content" "dot.png" "image/png" dotPng)
     eventually $ markdown ui `shouldReturn` "# Hello, world\n\nLook: ![dot.png](attachment:dot.png)"
-    -- MEASUREMENT (WP5.137): the preview follows after its pause, a wait the
-    -- program counts.
-    waitQuiet
-    image <- find ui ".editor-preview .page-body img[alt='dot.png']"
+    -- MEASUREMENT (WP5.137): the preview follows after its pause; the read
+    -- of it below waits for it as the named wait, without the draft's.
+    image <- eventually (find ui ".editor-preview .page-body img[alt='dot.png']")
     getAttribute image "src" >>= (`shouldSatisfy` maybe False (T.isPrefixOf "blob:"))
     find ui ".editor-attachments li a" >>= (`shouldHaveText` "dot.png")
     find ui ".editor-save-close" >>= click
@@ -436,10 +434,9 @@ spec m = readsOnce Idle $ do
     prevented `shouldBe` True
     settle
     eventually $ markdown ui `shouldReturn` "# Hello, world\n\nLook: ![dot.png](attachment:dot.png)"
-    -- MEASUREMENT (WP5.137): the preview follows after its pause, a wait the
-    -- program counts.
-    waitQuiet
-    image <- find ui ".editor-preview .page-body img[alt='dot.png']"
+    -- MEASUREMENT (WP5.137): the preview follows after its pause; the read
+    -- of it below waits for it as the named wait, without the draft's.
+    image <- eventually (find ui ".editor-preview .page-body img[alt='dot.png']")
     getAttribute image "src" >>= (`shouldSatisfy` maybe False (T.isPrefixOf "blob:"))
     find ui ".editor-attachments li a" >>= (`shouldHaveText` "dot.png")
     -- A paste in the textarea (the editor before CodeMirror has come) is
@@ -475,10 +472,9 @@ spec m = readsOnce Idle $ do
     clearBody ui
     perform (chooseFile ".editor-attach input" "meeting notes.txt" "text/plain" "aGVsbG8K")
     eventually $ markdown ui `shouldReturn` "# Hello, world\n\n[meeting notes.txt](<attachment:meeting notes.txt>)"
-    -- MEASUREMENT (WP5.137): the preview follows after its pause, a wait the
-    -- program counts.
-    waitQuiet
-    download <- find ui ".editor-preview .page-body a[download='meeting notes.txt']"
+    -- MEASUREMENT (WP5.137): the preview follows after its pause; the read
+    -- of it below waits for it as the named wait, without the draft's.
+    download <- eventually (find ui ".editor-preview .page-body a[download='meeting notes.txt']")
     getAttribute download "href" >>= (`shouldSatisfy` maybe False (T.isPrefixOf "blob:"))
 
   it "makes a selected word bold from the toolbar, in the Markdown and the preview" $ runPage $ do
@@ -602,10 +598,9 @@ spec m = readsOnce Idle $ do
     typeText text "."
     markdown ui `shouldReturn` "# Hello, world\n\nSee [Diagrams](/s/docs/p/markdown-guide/diagrams/)."
     -- The address leads to the page.
-    -- MEASUREMENT (WP5.137): the preview follows after its pause, a wait the
-    -- program counts.
-    waitQuiet
-    _ <- find ui ".editor-preview .page-body a[href$='#/s/docs/p/markdown-guide/diagrams/']"
+    -- MEASUREMENT (WP5.137): the preview follows after its pause; the read
+    -- of it below waits for it as the named wait, without the draft's.
+    _ <- eventually (find ui ".editor-preview .page-body a[href$='#/s/docs/p/markdown-guide/diagrams/']")
     pure ()
 
   it "links the selection to a section of a page, from Ctrl+Shift+K" $ runPage $ do

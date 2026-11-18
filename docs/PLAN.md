@@ -3377,9 +3377,17 @@ needs. Each was true when its package merged; check before relying on one.
   tab has its own lock and can still write over a change of this one
   (closing it needs read, compare and write in one IndexedDB
   readwrite transaction, which `MonadIndexedDB` does not offer); the
-  vault's own device record (`readDevice`/`writeDevice` in `Vault.hs`:
-  `settleWith`, `setVaultAskEachTime` and one more) reads, waits and
-  writes in the same way and is not locked.
+  vault's own device record read, waited and wrote in the same way:
+  **fixed (#326)**, one lock for both records (`deviceRecordsLock` in
+  `Wiki.App.Assistant`), taken by the ten exported functions of
+  `Wiki.App.Vault` that read and write the record; a reader could meet
+  it as "Ask each time" turned off again by a sign-in still unlocking
+  the keys. Left there: `forgetUserKeys` (the sign-out of one user)
+  takes no lock and has no generation check, so a settling under way
+  could keep a key after the forget. The failures under load at
+  `Vault.hs:771` and `:602` were not this: the first is a read that
+  gave up while the program was still keeping the key (the tests'
+  kind, for `readsOnce`), the second was not reproduced.
 - **One read of a thing in flight (#314, WP5.135).** A run of 500,000
   cases found a text going back in the comments with no push
   involved: two reads of the page out, the server handling the

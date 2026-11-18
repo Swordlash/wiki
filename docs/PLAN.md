@@ -2108,11 +2108,18 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   `perform`, `countHeld`; a read checks the rest at the moment it
   looks. The wiki pins it (#328): its code needed no change, and the
   whole suite passed on CI with mounts settling. Next, in this order: move the
-  wiki's browser groups to `readsOnce`, one group a pull request,
-  starting with the editor's and the Tasks example that holds a save
-  (shown on a measurement branch: no failure, the retries left are the
-  explicit `eventually`s; the editor's group 14% slower because
-  `waitQuiet` sits out the two-second draft); the library's
+  wiki's browser groups to `readsOnce`, one group a pull request.
+  **The editor's group and the Tasks example that holds a save are
+  moved (#329)**: the group in `readsOnce Idle` with a `waitQuiet`
+  before the preview's five reads, the example in `readsOnce Quiet`
+  with no `eventually` left, the stand-in server telling the harness
+  what it holds (`countHeld`). The editor's group still has 44
+  explicit `eventually`s: most wait for what the harness cannot see
+  (CodeMirror's text and marks read through JavaScript, the store, a
+  timed notice), about twenty (the preview, the link dialog, the box
+  kinds, the macros, the completion's tooltip) can become a
+  `waitQuiet` and one read; one `threadDelay` is left in `completing`.
+  The vault's group is next; then the library's
   `quiet-under-test-clock` (two commits, local only, in the stopped
   builder's library worktree) so that it does not.** What is left,
   each a

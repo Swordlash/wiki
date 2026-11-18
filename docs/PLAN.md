@@ -2115,10 +2115,12 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   (asked by the owner on 2026-11-17 and on the library's master the
   next day, `M.AskWith`, at ef044ca). The comments' shell is done
   (#316).
-  **Next, one builder: WP5.136, the pin at ef044ca** (with it the
-  harness's own deadlines and a view's own activity, so
-  `Test.Harness.MemDom` loses its copies), **then the deck viewer's
-  shell with `M.AskWith`.** The library's notes are in the session's
+  **WP5.136, the pin at ef044ca, is merged (#318):** nothing of the
+  wiki broke; `Test.Harness.MemDom` is 98 lines, the wiki's own
+  context and feed, and re-exports `Halogen.Test.Native` whole (its
+  waits give up after ten seconds by themselves; a view's own
+  activity replaces `settleWaiting`). **The deck viewer's shell with
+  `M.AskWith` is being built.** The library's notes are in the session's
   scratchpad (`wp5118/halogen-answer-2026-11-17.md`); it asks which
   of the machine's awkward corners hurt in the three views (a
   debounce as two effects and a key; the name `Ask` twice; every

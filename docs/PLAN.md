@@ -2094,7 +2094,8 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   (#275's fault); the way on is for the library to gain a `Carry`
   that does something in place and then asks with what it made
   (asked by the owner on 2026-11-17 and on the library's master the
-  next day, `M.AskWith`, at ef044ca). The comments' shell is #316.
+  next day, `M.AskWith`, at ef044ca). The comments' shell is done
+  (#316).
   **Next, one builder: WP5.136, the pin at ef044ca** (with it the
   harness's own deadlines and a view's own activity, so
   `Test.Harness.MemDom` loses its copies), **then the deck viewer's
@@ -3356,6 +3357,28 @@ needs. Each was true when its package merged; check before relying on one.
   installed by the maker. No style hints are on. Merged with the
   `wasm` job red on the owner's word: an editor example held to a
   clock failed on a slow runner (below).
+- **The comments' shell on `Halogen.Machine` (#316, WP5.133's second
+  part).** The people the comments and the page's text mention, and
+  the page's one map of avatars, are in the threads' model now, so
+  `threadsStep` in `Page.hs` is `Machine.happen`: reads, writes and
+  lookups are `Ask`s, the tell of a write's answer a `Now`. Three
+  things review found, each a rule for a machine that takes over
+  state a shell kept: (1) two maps with a precedence between them are
+  wrong either way round (the page's stale avatar over the machine's
+  removal, then the machine's old snapshot over the page's newer one):
+  one map, in the model, where the last event about a person wins,
+  whichever lookup it came from; what that leaves is two lookups out
+  at once landing in the wrong order until the next change, since the
+  server gives no order between snapshots. (2) **A field of the model
+  that mirrors an input must change in the step that takes the
+  input**, not when the page's read comes back: the model kept the
+  old space until `Fetched`, so when an open plain space became
+  encrypted a lookup of people could go out under the plain space
+  with logins of decrypted comments (a P1; not on `main` before).
+  `PeopleAgain` carries the space now. (3) On `Initialize` the
+  threads' first read no longer waits for the people's lookup, so a
+  mention's name can come a moment after its comment. The deck
+  viewer's shell is next, with `M.AskWith`, after the pin at ef044ca.
 - **Enter's text ended at a start mapped across a deletion (#317;
   found by Enter's property in CI, seed 1649390415).** `textRange`
   ended the text at the second start below the cursor whatever had

@@ -421,7 +421,8 @@ readPickedFile picked = liftIO (evaluate =<< wait =<< picked.file.bytes)
 -- | 'EnterAsk' is what CodeMirror's Enter asks Haskell, as
 -- @web/src/editor.js@ makes it, in two calls. First @cut@, JSON: the
 -- starts the last check kept, as CodeMirror has mapped them through the
--- changes since, each with where its line now starts and ends, the first
+-- changes since, each with where its line now starts and ends and
+-- whether that line is flush, the first
 -- change's offset, the start and the end of the cursor's line and the
 -- text's length ("Wiki.Core.Markdown.Starts"' 'Kept' and 'textRange');
 -- 'answerEnter' sets @range@, "from to", the part of the text to hand
@@ -450,7 +451,7 @@ data EnterCut = EnterCut [Kept] Int Int Int Int
 instance FromJSON EnterCut where
   parseJSON = withObject "EnterCut" $ \o -> do
     kept <- o .: "kept"
-    EnterCut [Kept {at, lineFrom, lineTo} | (at, lineFrom, lineTo) <- kept]
+    EnterCut [Kept {at, lineFrom, lineTo, flush} | (at, lineFrom, lineTo, flush) <- kept]
       <$> o
       .: "firstChange"
       <*> o .: "lineStart"

@@ -1517,9 +1517,11 @@ const askEnter = (host, state, pos) => {
   if (typeof enter !== "function" || kept === undefined) return null;
   const { doc } = state;
   const line = doc.lineAt(pos);
+  // Each start, its line's start and end, and whether its line is flush
+  // (Wiki.Core.Markdown.Starts' Kept): text from its first column.
   const starts = kept.starts.map((start) => {
     const at = doc.lineAt(start);
-    return [start, at.from, at.to];
+    return [start, at.from, at.to, /^[^ \t]/.test(at.text)];
   });
   const cut = { cut: JSON.stringify({ kept: starts, firstChange: kept.firstChange, lineStart: line.from, lineEnd: line.to, length: doc.length }), range: null };
   const ask = { cut: null, before: "", after: "", insert: null, line: null };

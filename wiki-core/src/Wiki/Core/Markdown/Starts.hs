@@ -80,14 +80,16 @@ blockStarts source shapes =
     afterBlank l = IntSet.member (l - 1) blanks
 
 -- | 'Kept' is a start the last parse found, as the editor holds it after
--- the changes since: mapped through them, where it is now, and where the
--- line it is on now starts and ends (offsets in the text now). A change
--- can map a start into the middle of a line, or several starts onto one
--- place (a deletion across them).
+-- the changes since: mapped through them, where it is now, where the line
+-- it is on now starts and ends (offsets in the text now), and whether that
+-- line is flush: it holds text from its first column, not a blank or a
+-- tab. A change can map a start into the middle of a line, onto a blank
+-- line, or several starts onto one place (a deletion across them).
 data Kept = Kept
   { at :: Int
   , lineFrom :: Int
   , lineTo :: Int
+  , flush :: Bool
   }
   deriving stock (Eq, Ord, Show)
 
@@ -102,7 +104,8 @@ data Kept = Kept
 -- line twice and cut the block below short).
 --
 -- The text starts at the last start before the start of the cursor's
--- line whose line ends at or before the first change, or at 0. Before the
+-- line whose line ends at or before the first change and starts before
+-- it, or at 0. Before the
 -- cursor's line, not at it: on a line that starts a block, the block
 -- above comes too, since Enter may empty that line, and a block above
 -- that goes on over blank lines (a fence left open in an item) would take
@@ -115,15 +118,29 @@ data Kept = Kept
 -- block cut short reads otherwise (a table's header without its delimiter
 -- row is a paragraph), and Enter checks that a new line leaves the lines
 -- below it read as they were; the blocks after one read as it was are
--- read as they were. A start the changes have put in a block that reads
--- on (an end marker typed above it) Enter sees only on the lines it is
--- given.
+-- read as they were. A start after the first change counts there only
+-- if its line is flush ('Kept'). A change above a start can make an
+-- indented line part of a block above: a deletion of the block between
+-- an item and an indented line, since the check, makes the line the
+-- item's next paragraph, and the deleted block's start lands on the blank
+-- line above it, which is no start either; an item typed above an
+-- indented line takes it in the same way. No block above takes in a
+-- flush line by its indentation. One may take it in as a lazy line, but
+-- then the first start below the cursor's line is a flush line taken in
+-- too, and it comes whole: Enter reads that the cursor's block goes on
+-- below it. A start the changes have put in a block that reads on (an end
+-- marker typed above it) Enter sees only on the lines it is given.
 textRange :: [Kept] -> Int -> Int -> Int -> Int -> Maybe (Int, Int)
 textRange kept firstChange lineStart lineEnd len = do
   let starts = ordNub (sort [k | k <- kept, k.at == k.lineFrom])
-      positions = ordNub (map (.at) starts)
-      begins = fromMaybe 0 (lastMay [k.at | k <- starts, k.at < lineStart, k.lineTo <= firstChange])
-      ends = case dropWhile (<= lineEnd) positions of
+      -- A start the check read, on a line the changes have left: one
+      -- that ends at or before the first change, and starts before it. A
+      -- start the changes mapped onto an empty line where the first
+      -- change begins (one in a block deleted there) is none.
+      checked k = k.lineFrom < firstChange && k.lineTo <= firstChange
+      begins = fromMaybe 0 (lastMay [k.at | k <- starts, k.at < lineStart, checked k])
+      below = ordNub [k.at | k <- starts, checked k || k.flush]
+      ends = case dropWhile (<= lineEnd) below of
         _ : end : _ -> end - 1
         _ -> len
   guard (ends - begins <= textLimit)

@@ -165,7 +165,7 @@ function wiki_test_passkeys_offers() {
 
 // The person picks the passkey the login field offers. The offer ends at
 // once, not a microtask later when the stub's get resumes: a test that
-// counts the offer as held (Test.Browser.Vault's 'holding') then waits for
+// counts the offer as held (Test.Browser.Vault's 'offerOpen') then waits for
 // the sign-in the pick sets going.
 function wiki_test_passkeys_pick() {
   const pick = wikiTestPasskeys.offered;

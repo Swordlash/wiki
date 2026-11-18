@@ -31,8 +31,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Encrypted qualified as E
-import Test.Browser.Http (Asked (..), answerWith, asked, holdAt, release, serveDemo, serverStops, startServer)
-import Test.Browser.Http qualified as Http
+import Test.Browser.Http (Asked (..), answerWith, asked, holdAt, release, serveDemo, serverStartsWith, serverStops, startServer)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
 import Web.Storage.IndexedDB qualified as IDB
@@ -153,25 +152,13 @@ runOwn test = do
     panic ("the example left keys in the page that can be exported (handle:algorithm:usages): " <> left)
   pure result
 
--- | Count as held ('countHeld') the waits the test makes on purpose: the
--- login field's offer of passkeys, which waits until the test picks one or
--- the form ends it, and the given number of requests the test's server
--- holds until 'released'. A read in a 'Quiet' group otherwise waits for
--- them until the deadline. The count is set once the requests have
--- reached the server: set before, it would take another wait (a request
--- on its way) for a held one.
-holding :: Int -> PageM s ()
-holding n = countHeld ((+ n) . fromEnum <$> unsafeIOToPageM js_offered)
-
--- | The test's server started, with the offer of passkeys counted as held.
--- The last count set is the one that counts, so this one comes after the
--- server's start.
-serverStarts :: PageM s ()
-serverStarts = Http.serverStarts *> holding 0
-
--- | Answer the requests the server holds, which are then held no more.
-released :: PageM s ()
-released = release *> holding 0
+-- | Whether the login field's offer of passkeys is open, as a count of
+-- the waits the test holds on purpose ('serverStartsWith'): the offer
+-- waits in the program until the test picks a passkey or the form ends
+-- it, and a read in a 'Quiet' group would otherwise wait for it until the
+-- deadline.
+offerOpen :: PageM s Int
+offerOpen = fromEnum <$> unsafeIOToPageM js_offered
 
 js_assistant_key :: JSText -> Bool -> IO ()
 js_assistant_key a1 a2 = if inBrowser then wait =<< js_assistant_keyPromise a1 a2 else pure inert
@@ -183,7 +170,7 @@ type Specs m = (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands 
 
 -- The reads look once, with the program quiet: its requests to the test's
 -- server, IndexedDB and WebCrypto answered. What the test holds on purpose
--- is counted as held ('holding').
+-- is counted as held ('offerOpen', and the server's own count).
 spec :: forall m -> (Specs m) => Spec
 spec m = readsOnce Quiet $ do
   vault m
@@ -239,13 +226,11 @@ signing m = describe "signing in with a passkey" $ do
     (ui, _) <- signedOut m
     holdAt "POST" "api/v1/session/passkey"
     find ui ".sign-in-toggle" >>= click
-    -- The test's server holds the request, so the program is not quiet
-    -- until the release: what the server was asked is read from the
-    -- test's side, again until it is there.
-    eventually $ length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 1
-    holding 1
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 1
     find ui ".sign-in-toggle" >>= click
-    released
+    release
     -- The challenge arrived after the form it was for closed. The form
     -- opened again starts its own offer, and only that one.
     find ui ".sign-in-toggle" >>= click
@@ -259,13 +244,11 @@ signing m = describe "signing in with a passkey" $ do
     offered `shouldReturn` True
     holdAt "POST" "api/v1/session/passkey"
     find ui ".passkey-sign-in" >>= click
-    -- The test's server holds the request, so the program is not quiet
-    -- until the release: what the server was asked is read from the
-    -- test's side, again until it is there.
-    eventually $ length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 2
-    holding 1
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 2
     find ui ".sign-in-toggle" >>= click
-    released
+    release
     -- The form opened again offers in the field; no dialog was opened, and
     -- nobody signed in.
     find ui ".sign-in-toggle" >>= click
@@ -292,7 +275,7 @@ signing m = describe "signing in with a passkey" $ do
     closedSignedIn ui
 
   it "lists the account's passkeys, adds one with a name, and removes one" $ runOwn $ do
-    serverStarts
+    serverStartsWith offerOpen
     serveDemo
     me <- signedInAs "user-editor"
     answerWith "GET" "api/v1/session" 200 me
@@ -334,7 +317,7 @@ signing m = describe "signing in with a passkey" $ do
   -- the panel's finalizer, so that the passkey the person made is the
   -- account's rather than one on their authenticator that signs nobody in.
   it "registers a passkey made as the account's panel closes" $ runOwn $ do
-    serverStarts
+    serverStartsWith offerOpen
     serveDemo
     me <- signedInAs "user-editor"
     answerWith "GET" "api/v1/session" 200 me
@@ -350,14 +333,14 @@ signing m = describe "signing in with a passkey" $ do
     let finishes = length . filter (\r -> r.method == "PUT" && r.url == "api/v1/account/passkeys/registration") <$> asked
     holdAt "PUT" "api/v1/account/passkeys/registration"
     find ui ".passkey-add button[type=submit]" >>= click
-    -- The test's server holds the request, so the program is not quiet
-    -- until the release: what the server was asked is read from the
-    -- test's side, again until it is there.
-    eventually $ finishes `shouldReturn` 1
-    holding 1
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    finishes `shouldReturn` 1
     find ui ".account-toggle" >>= click
     length <$> findAll ui ".passkey-add" `shouldReturn` 0
-    released
+    release
+    -- The closed panel's finalizer sends the registration on the shell's
+    -- tree, which is still mounted: 'waitQuiet' counts its wait.
     waitQuiet
     unsafeIOToPageM (fromJSText <$> js_unregistered) `shouldReturn` "[]"
     closedSignedIn ui
@@ -369,7 +352,7 @@ signing m = describe "signing in with a passkey" $ do
   -- the account's; the first stays on the authenticator unknown to the
   -- wiki, as one did before the panel sent it again.
   it "registers a passkey begun in the panel reopened while the closed panel's registration waits" $ runOwn $ do
-    serverStarts
+    serverStartsWith offerOpen
     serveDemo
     me <- signedInAs "user-editor"
     answerWith "GET" "api/v1/session" 200 me
@@ -387,26 +370,25 @@ signing m = describe "signing in with a passkey" $ do
     length <$> findAll ui ".passkey-item" `shouldReturn` 1
     holdAt "PUT" "api/v1/account/passkeys/registration"
     addPasskey "My phone"
-    -- The test's server holds the request, so the program is not quiet
-    -- until the release: what the server was asked is read from the
-    -- test's side, again until it is there.
-    eventually $ finishes `shouldReturn` 1
-    holding 1
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    finishes `shouldReturn` 1
     -- Closed: its finalizer sends the registration again, held too, in
     -- place of the panel's own, which the close ended.
     find ui ".account-toggle" >>= click
-    eventually $ finishes `shouldReturn` 2
+    waitQuiet
+    finishes `shouldReturn` 2
     find ui ".account-toggle" >>= click
     length <$> findAll ui ".passkey-item" `shouldReturn` 1
     addPasskey "My tablet"
-    eventually $ finishes `shouldReturn` 3
-    holding 2
-    released
+    waitQuiet
+    finishes `shouldReturn` 3
+    release
     map T.strip <$> (findAll ui ".passkey-name" >>= traverse textContent) `shouldReturn` ["My laptop", "My tablet"]
     closedSignedIn ui
 
   it "offers no passkey on a page served over plain HTTP, and says why" $ runOwn $ do
-    serverStarts
+    serverStartsWith offerOpen
     serveDemo
     answerWith "GET" "api/v1/session" 200 nobody
     unsafeIOToPageM js_vault_server
@@ -435,7 +417,7 @@ signing m = describe "signing in with a passkey" $ do
     -- the page, and the passkey's id.
     signedOut :: forall m -> (Specs m) => PageM s (Mounted s Shell.Query Void m, Text)
     signedOut m' = do
-      serverStarts
+      serverStartsWith offerOpen
       serveDemo
       answerWith "GET" "api/v1/session" 200 nobody
       answerWith "POST" "api/v1/session/passkey" 200 (Aeson.object ["challenge" Aeson..= ("Y2hhbGxlbmdl" :: Text), "rpId" Aeson..= ("localhost" :: Text), "allow" Aeson..= ([] :: [Text])])
@@ -791,7 +773,7 @@ vault m = do
 -- are made or only when used; and a key kept for Anthropic.
 opened :: forall m -> (Specs m) => Bool -> Bool -> PageM s (Mounted s Shell.Query Void m)
 opened m prf atCreate = do
-  serverStarts
+  serverStartsWith offerOpen
   serveDemo
   unsafeIOToPageM js_scripted
   me <- signedInAs "user-editor"
@@ -1033,18 +1015,16 @@ userKeys m = describe "the user's keys" $ do
     before <- passwordKeys
     readsBefore <- vaultReads
     holdAt "GET" "api/v1/assistant/vault"
-    find ui ".sign-in-toggle" >>= click
-    find ui ".sign-in-form input[name=login]" >>= (`typeText` "editor")
-    find ui ".sign-in-form input[name=password]" >>= (`typeText` "editor's password")
-    find ui ".sign-in-form button[type=submit]" >>= click
-    -- The test's server holds the request, so the program is not quiet
-    -- until the release: what the server was asked is read from the
-    -- test's side, again until it is there.
-    eventually $ vaultReads >>= (`shouldSatisfy` (> readsBefore))
-    holding 1
-    find ui ".account .user-name" >>= (`shouldHaveText` "Edgar Editor")
+    signIn ui "editor's password"
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    vaultReads >>= (`shouldSatisfy` (> readsBefore))
+    -- The unmount disposes of the tree: the sign-in view's finalizer lets
+    -- go of the key synchronously, and the view's fiber waiting for the
+    -- held answer is cancelled. A disposed tree is not in the harness's
+    -- count, so nothing of it is left to wait for.
     unmount ui
-    released
+    release
     passwordKeys `shouldReturn` before
     unsafeIOToPageM js_uninstall
     serverStops
@@ -1254,7 +1234,7 @@ userKeys m = describe "the user's keys" $ do
     signedOut = signedOutAt Home
     signedOutAt :: Route -> Text -> PageM s (Mounted s Shell.Query Void m)
     signedOutAt at password = do
-      serverStarts
+      serverStartsWith offerOpen
       serveDemo
       answerAccount
       unsafeIOToPageM js_vault_server

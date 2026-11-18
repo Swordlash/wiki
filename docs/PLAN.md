@@ -2173,6 +2173,34 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   focus. The first time (#316) the wait was only made longer, on the
   guess that the browser was slow. To look at one day, for a reader:
   the page does not keep its scroll when an island above grows.
+- **WP5.138 An API for a page's Markdown, with a user's own keys (the
+  owner, 2026-11-18: "robię to z myślą o lokalnych asystentach i
+  MCP").** Not started; to be confirmed with him before it is built
+  (the questions are at the end). What he asked for: a user makes a
+  key in their own panel, it is shown once, it can only be revoked,
+  and at first it never expires; with it a program reads a whole
+  page's Markdown (`GET /api/<slug>`) and writes it back whole (`PUT`
+  to the same address); one more endpoint gives what the assistants
+  are told about the wiki's Markdown today. The first cut is these
+  three and nothing else. The session's reading, to be confirmed:
+  the key is sent as `Authorization: Bearer` (and accepted as
+  `X-API-Key`), the server keeps only its hash, and a request made
+  with it acts as that user, with the spaces' permissions as they
+  are; no Basic authentication (a password in every request, and a
+  user with passkeys only has none); the addresses get a prefix of
+  their own beside the application's API, with the space's path and
+  the page's path as the reading address has them; a `PUT` makes a
+  new version in the page's history like any save, and takes an
+  optional `If-Match` with the version read, refused when the page
+  has moved on, so that a local assistant does not write over
+  someone's edit; an encrypted space is refused with a clear error
+  (the server cannot read it). Left for after the first cut, his own
+  list: attachments, a listing of a space's contents, an address for
+  one section of a page; and an MCP server over the API as a package
+  of its own. To ask him before building: whether keys only is right
+  (no Basic); whether a key should be for all the user may do or for
+  reading only when they choose so; whether this goes before the
+  plugins (#186).
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
   przed pluginami").** One builder, in this order, each its own pull

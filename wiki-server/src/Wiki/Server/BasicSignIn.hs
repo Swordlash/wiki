@@ -33,8 +33,9 @@
 -- The limit is the form's own ("Wiki.Server.Limiter", the server's one
 -- 'Limiter'), by login and address. A full check is counted as a failure
 -- before it runs, and given back when the password was right, as the
--- form's OPAQUE sign-in does; so parallel guesses cannot outrun the
--- limit. A refused verdict refuses a remembered login too.
+-- form's OPAQUE sign-in does. A refused verdict refuses a remembered login
+-- too. As with the form, the verdict and the count are two steps: requests
+-- sent at the same moment may all pass the verdict before any is counted.
 --
 -- = What is refused
 --

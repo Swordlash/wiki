@@ -22,12 +22,16 @@ import Protolude
 import Test.Database (Backing)
 import Test.Hspec
 import Test.Server.Fixture
-import Wiki.Api (PagesApi (..), SpacesApi (..), WikiApi (..))
+import Test.Server.Hygiene (setUp)
+import Web.HttpApiData (toHeader)
+import Wiki.Api (AdminApi (..), PagesApi (..), SpacesApi (..), WikiApi (..))
+import Wiki.Api.Account (Account, AccountDisabled (..))
 import Wiki.Api.Encrypted (EncryptSpace (..), NewGrant (..), NewSealedPage (..))
 import Wiki.Api.Error (ApiError (..))
 import Wiki.Api.Links (links)
 import Wiki.Api.Types qualified as Api
 import Wiki.Api.Vault (NewPublicKey (..), VaultChange (..))
+import Wiki.Api.Version (PageVersion (..))
 import Wiki.Core.Assistant (Mode (..), ModelName (..))
 import Wiki.Core.Assistant.Prompt (openAiRequest)
 import Wiki.Core.Assistant.Reference (markdownReference)
@@ -132,6 +136,18 @@ signingIn backing = describe "signing in" $ do
     -- Another login is not.
     (.status) <$> request r methodGet "s/team/projects/p/the-wiki/" [basic "reader" "reader's password"] "" `shouldReturn` 200
 
+  it "refuses an account once it is disabled, though its password was remembered" $ withPasswords backing $ \r -> do
+    (.status) <$> request r methodGet "s/blog/p/hello-world/" [editor] "" `shouldReturn` 200
+    _ :: Account <- sendJson r methodPut (r.admin <> "/admin/" <> links.admin.setDisabled (UserId "user-editor")) AccountDisabled {disabled = True} >>= jsonAs 200
+    (.status) <$> request r methodGet "s/blog/p/hello-world/" [editor] "" `shouldReturn` 401
+
+  it "refuses an account with a second factor, whose password alone signs nobody in" $ withPasswords backing $ \r -> do
+    token <- signInAs r "editor" "editor's password"
+    _ <- setUp r token
+    refused <- request r methodGet "s/blog/p/hello-world/" [editor] ""
+    refused.status `shouldBe` 403
+    decodeUtf8 (BSL.toStrict refused.body) `shouldSatisfy` T.isInfixOf "second factor"
+
   it "refuses the session's cookie alone, and reads nothing of it beside a password" $ withPasswords backing $ \r -> do
     token <- signInAs r "admin" "admin's password"
     alone <- request r methodGet "s/blog/p/hello-world/" [cookie token] ""
@@ -148,6 +164,7 @@ pages backing = describe "a page's Markdown" $ do
     tag1 <- maybe (expectationFailure "no ETag" >> pure "") pure (header "ETag" read1)
     (page1, _) <- appPage r
     read1.body `shouldBe` toS (encodeUtf8 page1.body)
+    history1 :: [VersionInfo] <- versionsOf r
     let new = toS (encodeUtf8 ("# Hello again\n\nWritten by a program: ünïcode too.\n" :: Text)) :: LByteString
     written <- request r methodPut "s/blog/p/hello-world/" [editor, ("If-Match", tag1)] new
     written.status `shouldBe` 204
@@ -156,10 +173,11 @@ pages backing = describe "a page's Markdown" $ do
     read2 <- request r methodGet "s/blog/p/hello-world/" [editor] ""
     (read2.body, header "ETag" read2) `shouldBe` (new, Just tag2)
     -- The title stays; the history has a new version, by the editor.
-    (page2, session) <- appPage r
+    (page2, _) <- appPage r
     page2.title `shouldBe` page1.title
-    history :: [VersionInfo] <- ok200 (getUrlWith r (r.public <> "/" <> links.pages.versions page2.id Nothing Nothing) [session])
-    map (\v -> (\a -> a.id) <$> v.author) (take 1 history) `shouldBe` [Just (UserId "user-editor")]
+    history2 <- versionsOf r
+    length history2 `shouldBe` length history1 + 1
+    map (\v -> (toHeader (PageVersion v.updatedAt), (\a -> a.id) <$> v.author)) (take 1 history2) `shouldBe` [(tag2, Just (UserId "user-editor"))]
 
   it "is not written over a version saved since, with If-Match" $ withPasswords backing $ \r -> do
     old <- request r methodGet "s/blog/p/hello-world/" [editor] ""
@@ -207,6 +225,11 @@ pages backing = describe "a page's Markdown" $ do
       session <- cookie <$> signInAs r "editor" "editor's password"
       blog :: SpaceId <- (\(s :: S.Space) -> s.id) <$> ok200 (getUrlWith r (r.public <> "/" <> links.spaces.atPath (slugs "blog")) [session])
       (,session) <$> ok200 (getUrlWith r (r.public <> "/" <> links.spaces.pageAt blog (slugs "hello-world")) [session])
+    -- The page's history, newest first, as the application lists it.
+    versionsOf :: Running -> IO [VersionInfo]
+    versionsOf r = do
+      (page, session) <- appPage r
+      ok200 (getUrlWith r (r.public <> "/" <> links.pages.versions page.id Nothing Nothing) [session])
     slugs = either (panic . show) identity . parsePath
 
 reference :: Backing -> Spec

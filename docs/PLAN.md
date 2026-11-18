@@ -2173,34 +2173,37 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   focus. The first time (#316) the wait was only made longer, on the
   guess that the browser was slow. To look at one day, for a reader:
   the page does not keep its scroll when an island above grows.
-- **WP5.138 An API for a page's Markdown, with a user's own keys (the
-  owner, 2026-11-18: "robię to z myślą o lokalnych asystentach i
-  MCP").** Not started; to be confirmed with him before it is built
-  (the questions are at the end). What he asked for: a user makes a
-  key in their own panel, it is shown once, it can only be revoked,
-  and at first it never expires; with it a program reads a whole
-  page's Markdown (`GET /api/<slug>`) and writes it back whole (`PUT`
-  to the same address); one more endpoint gives what the assistants
-  are told about the wiki's Markdown today. The first cut is these
-  three and nothing else. The session's reading, to be confirmed:
-  the key is sent as `Authorization: Bearer` (and accepted as
-  `X-API-Key`), the server keeps only its hash, and a request made
-  with it acts as that user, with the spaces' permissions as they
-  are; no Basic authentication (a password in every request, and a
-  user with passkeys only has none); the addresses get a prefix of
+- **WP5.138 An API for a page's Markdown (the owner, 2026-11-18:
+  "robię to z myślą o lokalnych asystentach i MCP").** Not started.
+  **The first cut, as he decided the same day:** the user's login and
+  password in each request (Basic authentication), sent in plain text
+  over the wiki's HTTPS; a programmer's API, whose user accepts that
+  the password leaves the browser's OPAQUE exchange; keys come later.
+  With it a program reads a whole page's Markdown (`GET /api/<slug>`)
+  and writes it back whole (`PUT` to the same address); one more
+  endpoint gives what the assistants are told about the wiki's
+  Markdown today. Nothing else in the first cut. To settle while
+  building: the server keeps no hash of a password, only the OPAQUE
+  record, so it checks a plain password by running the client's side
+  of OPAQUE against its own record (opaque-hs has both sides, and no
+  new storage is needed); that costs the password's stretching at
+  each request, so a checked login is remembered in memory for some
+  minutes, or the first request gives a token; a user with passkeys
+  only has no password and cannot use the first cut; the limit on
+  failed sign-ins applies to it as to the form. The session's reading
+  of the rest, not contradicted: a request acts as that user, with
+  the spaces' permissions as they are; the addresses get a prefix of
   their own beside the application's API, with the space's path and
-  the page's path as the reading address has them; a `PUT` makes a
-  new version in the page's history like any save, and takes an
-  optional `If-Match` with the version read, refused when the page
-  has moved on, so that a local assistant does not write over
-  someone's edit; an encrypted space is refused with a clear error
-  (the server cannot read it). Left for after the first cut, his own
-  list: attachments, a listing of a space's contents, an address for
-  one section of a page; and an MCP server over the API as a package
-  of its own. To ask him before building: whether keys only is right
-  (no Basic); whether a key should be for all the user may do or for
-  reading only when they choose so; whether this goes before the
-  plugins (#186).
+  the page's path as the reading address has them; a `PUT` makes a new
+  version in the page's history like any save, and takes an optional
+  `If-Match` with the version read, refused when the page has moved
+  on; an encrypted space is refused with a clear error. **Later cuts,
+  his list:** a key made in the user's panel (shown once, revoked
+  only, never expiring at first; `Authorization: Bearer` or
+  `X-API-Key`, the server keeping its hash), attachments, a listing of
+  a space's contents, an address for one section of a page, and an
+  MCP server over the API as a package of its own. Still to ask:
+  whether it goes before the plugins (#186).
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
   przed pluginami").** One builder, in this order, each its own pull

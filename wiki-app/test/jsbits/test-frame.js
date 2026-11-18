@@ -29,6 +29,30 @@ function wiki_test_frame_text(frameSelector) {
   return wikiTestFrameDocument(frameSelector)?.body.textContent ?? "";
 }
 
+// A promise that resolves once the first frame a selector finds holds its
+// srcdoc's document, loaded: at once if it does, or at a load of its that
+// does. For a frame no program fits, which nothing else waits for (a
+// prerendered page's, before the program adopts it).
+function wiki_test_frame_loaded(frameSelector) {
+  const frame = document.querySelector(frameSelector);
+  const done = () => frame?.contentDocument?.readyState === "complete" && frame.contentDocument.URL === "about:srcdoc";
+  if (!frame || done()) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onLoad = () => {
+      if (!done()) return;
+      frame.removeEventListener("load", onLoad);
+      resolve();
+    };
+    frame.addEventListener("load", onLoad);
+  });
+}
+
+// The readyState of the document of the first frame a selector finds:
+// "complete" once it has loaded; "" when there is none.
+function wiki_test_frame_ready(frameSelector) {
+  return document.querySelector(frameSelector)?.contentDocument?.readyState ?? "";
+}
+
 // Three heights in whole pixels, "frame content cap": the frame's on the
 // page, its content's, and the most the stylesheet lets a frame be (80% of
 // the window's). "" before the document has loaded.

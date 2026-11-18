@@ -67,7 +67,7 @@ import Halogen.TH (hh)
 import Protolude hiding (State)
 import Web.DOM.Internal.Types (Element)
 import Web.Event.Event (EventType (..))
-import Wiki.App.Islands.Monad (MathMode (..), MonadIslands (..), drawnProblem)
+import Wiki.App.Islands.Monad (Drawing, MathMode (..), MonadIslands (..), drawnProblem)
 import Wiki.Core.Markdown.Frame (frameSandbox, scriptSandbox)
 import Wiki.Core.Markdown.Frame qualified as Frame
 import Wiki.Core.Markdown.Render (lineNumbers, scrollingCode)
@@ -116,6 +116,9 @@ data State = State
   , failed :: Bool
   -- ^ Whether the last output was 'Failed': only then does a success
   -- raise 'Cleared'.
+  , awaiting :: Maybe H.ForkId
+  -- ^ The fork that waits for the island's current 'Drawing', if one
+  -- does: killed when a newer input starts another, and with the island.
   }
 
 data Action
@@ -138,7 +141,7 @@ islands :: forall query output m. (MonadIslands m, MonadUUID m) => (Output -> Ma
 islands toOutput =
   H.mkComponent
     H.ComponentSpec
-      { initialState = \island -> (\ref -> State {island, ref, failed = False}) <$> H.newRefLabel "island"
+      { initialState = \island -> (\ref -> State {island, ref, failed = False, awaiting = Nothing}) <$> H.newRefLabel "island"
       , render
       , eval =
           H.mkEval
@@ -215,8 +218,13 @@ islands toOutput =
       Receive island -> do
         current <- gets (\st -> st.island)
         when (island /= current) $ do
-          -- Rendered first: an island of another kind is another element,
-          -- and the ref points to the new one once the render is done.
+          -- The wait for the drawing of the input before goes in the step
+          -- that takes the new one, whatever the new one is: a listing,
+          -- which starts no drawing, leaves nothing counted as waiting
+          -- for a drawing nobody shows. Rendered first: an island of
+          -- another kind is another element, and the ref points to the
+          -- new one once the render is done.
+          stopWaiting
           modify (\st -> st {island})
           fill
       Drawn problem -> report problem
@@ -233,17 +241,37 @@ islands toOutput =
       -- A diagram and a picture are only started here, and drawn into the
       -- element when they are done (Mermaid's bundle and TeX's files are
       -- fetched the first time; TeX runs in a web worker); the page goes
-      -- on meanwhile. A newer input's drawing can finish before an older
-      -- one's; islands.js keeps the newer, and tells of it alone
-      -- ('Drawn').
-      Mermaid source -> H.liftEffect (renderMermaid source element)
-      Tikz source -> H.liftEffect (renderTikz source (tikzDocument source) element)
+      -- on meanwhile, and a fork waits for the drawing ('awaitIn'). A
+      -- newer input's drawing can finish before an older one's;
+      -- islands.js keeps the newer, and tells of it alone ('Drawn').
+      Mermaid source -> H.liftEffect (renderMermaid source element) >>= awaitIn
+      Tikz source -> H.liftEffect (renderTikz source (tikzDocument source) element) >>= awaitIn
       -- A listing, a frame and a time never fail; one may be in the slot
       -- of a formula that did, whose problem then goes.
       CodeBlock language _ _ code -> H.liftEffect (highlightCode language code element) >> report Nothing
-      HtmlFrame _ _ -> H.liftEffect (fitFrame element) >> report Nothing
+      HtmlFrame _ _ -> (H.liftEffect (fitFrame element) >>= awaitIn) >> report Nothing
       SvgFrame frame -> H.liftEffect (loadFrame frame.url element) >> report Nothing
       LocalTime at -> H.liftEffect (renderTime at element) >> report Nothing
+
+    -- Wait for a drawing in a fork that does nothing else: the program
+    -- counts as busy until the island is drawn, so that a test's
+    -- waitQuiet means "and drawn", and nothing of the island waits for it.
+    -- The fork of an older drawing goes ('stopWaiting'), and the island's
+    -- forks go with it: nothing waits for a drawing nobody shows. The
+    -- drawing itself is islands.js's, which carries on or drops it as it
+    -- is newer or not.
+    awaitIn :: Drawing -> H.HalogenM State Action Empty output m ()
+    awaitIn drawing = do
+      stopWaiting
+      fork <- H.fork (H.async (awaitDrawing drawing))
+      modify (\st -> st {awaiting = Just fork})
+
+    -- Kill the fork that waits for a drawing, if one does, and forget it,
+    -- in one step: nothing waits between the kill and the state.
+    stopWaiting :: H.HalogenM State Action Empty output m ()
+    stopWaiting = do
+      gets (\st -> st.awaiting) >>= traverse_ H.kill
+      modify (\st -> st {awaiting = Nothing})
 
     -- Tell the parent of a failure, and of a success after one.
     report :: Maybe Text -> H.HalogenM State Action Empty output m ()

@@ -33,19 +33,42 @@ function wiki_islands_builtin_macros() {
   return islands ? islands.builtinMacros() : "";
 }
 
+// The longest the application waits for an island's work that ends later
+// (Wiki.App.Islands.Monad's Drawing), in milliseconds: a watchdog, which
+// no drawing that ends reaches (TeX's own limit on a run is 30 s, after
+// its files are in). What has not ended by then goes on, and fills its
+// element if it ends.
+const wikiIslandsWaitMs = 60_000;
+
+// A promise of the end of some work, which never rejects, and resolves at
+// the latest after wikiIslandsWaitMs.
+function wikiIslandsBounded(work) {
+  let timer;
+  const bound = new Promise((resolve) => {
+    timer = setTimeout(resolve, wikiIslandsWaitMs);
+  });
+  return Promise.race([Promise.resolve(work).then(
+    () => {},
+    () => {},
+  ), bound]).finally(() => clearTimeout(timer));
+}
+
 // A diagram and a picture are drawn later: the page's islands.js tells the
 // element with a "wiki-island-drawn" event when it is done
-// (Wiki.App.Islands.Monad's drawnProblem).
+// (Wiki.App.Islands.Monad's drawnProblem), and its promise, returned here,
+// settles then, or when the drawing is dropped for a newer one.
 function wiki_islands_render_mermaid(element, source) {
   const islands = globalThis.wikiIslands;
-  if (islands) islands.renderMermaid(element, source);
-  else element.textContent = source;
+  if (islands) return wikiIslandsBounded(islands.renderMermaid(element, source));
+  element.textContent = source;
+  return Promise.resolve();
 }
 
 function wiki_islands_render_tikz(element, source, preamble, picture) {
   const islands = globalThis.wikiIslands;
-  if (islands) islands.renderTikz(element, source, preamble, picture);
-  else element.textContent = source;
+  if (islands) return wikiIslandsBounded(islands.renderTikz(element, source, preamble, picture));
+  element.textContent = source;
+  return Promise.resolve();
 }
 
 function wiki_islands_highlight(element, language, code) {
@@ -112,6 +135,31 @@ function wiki_islands_highlight(element, language, code) {
 // is dropped from it, its observer disconnected, whenever another frame is
 // fitted, the window's height changes, or its own observer fires; the
 // window's listener goes with the last frame.
+//
+// Each ask returns a promise that resolves once the document the frame was
+// last given (its srcdoc, as last set) has loaded, with what it loads
+// (images), and the frame has been measured with it: at once when it has,
+// or after its load event. Whether the frame shows that document is asked
+// two ways, and a document counts only when both agree:
+//
+// - Its key. The wiki writes each document with a key on its root element
+//   (Wiki.Core.Markdown.Frame's frameKey, data-wiki-frame), the same of
+//   the same document on the server and in the browser. A document counts
+//   only when its key is the one the srcdoc's text has now. This settles
+//   a srcdoc written before the frame was first fitted, which no observer
+//   saw: hydration giving a prerendered frame (A, loaded or loading) the
+//   program's document B.
+// - A count of the writes since the frame was first fitted. Every time
+//   the srcdoc is set (a MutationObserver sees it) the count goes up, and
+//   the document the frame holds then is stale. A document with the right
+//   key can still be stale: a frame given A, then B, then A again shows
+//   the first A, with A's key, until the last A replaces it. An ask waits
+//   for the count as it is when asked, and a load counts only for a
+//   document that is not stale.
+//
+// A srcdoc is written by the island's render alone, and the island asks
+// after every render that writes it, so at most one write comes before
+// the first ask. A frame dropped from the set resolves what waited for it.
 const wikiFittedFrames = new Map();
 let wikiFramesResizing = false;
 
@@ -133,6 +181,7 @@ function wikiFramesSweep() {
   for (const [frame, fitted] of wikiFittedFrames) {
     if (!frame.isConnected) {
       fitted.stop();
+      fitted.release();
       wikiFittedFrames.delete(frame);
     }
   }
@@ -193,9 +242,60 @@ function wikiFrameExtent(doc) {
 
 function wiki_islands_fit_frame(frame) {
   wikiFramesSweep();
-  const fitted = wikiFittedFrames.get(frame);
-  if (fitted) return fitted.measure();
+  const known = wikiFittedFrames.get(frame);
+  if (known) {
+    known.measure();
+    return wikiIslandsBounded(known.loaded());
+  }
   let observer = null;
+  // How many times the frame's srcdoc has been set since it was first
+  // fitted; the count as it was when the frame's document loaded, or -1
+  // while none has; the documents loaded before the last set; and what
+  // waits, each with the count it waits for.
+  let sets = 0;
+  let loadedAt = -1;
+  const stale = new WeakSet();
+  let waiting = [];
+  const noteSets = (records) => {
+    if (records.length === 0) return;
+    sets += records.length;
+    const doc = frame.contentDocument;
+    if (doc) stale.add(doc);
+  };
+  const setWatch = new MutationObserver(noteSets);
+  setWatch.observe(frame, { attributes: true, attributeFilter: ["srcdoc"] });
+  // The records not delivered yet: a set made in this task, before the
+  // observer's callback.
+  const catchUp = () => noteSets(setWatch.takeRecords());
+  const release = () => {
+    const resolved = waiting;
+    waiting = [];
+    for (const { resolve } of resolved) resolve();
+  };
+  const settle = () => {
+    const done = waiting.filter((w) => w.wanted <= loadedAt);
+    waiting = waiting.filter((w) => w.wanted > loadedAt);
+    for (const { resolve } of done) resolve();
+  };
+  const loaded = () =>
+    new Promise((resolve) => {
+      catchUp();
+      waiting.push({ wanted: sets, resolve });
+      settle();
+    });
+  // The key a srcdoc's text gives its root element, or null for a text
+  // the wiki did not write.
+  const keyOf = (text) => /^<!DOCTYPE html><html data-wiki-frame="([0-9a-f]+)">/.exec(text ?? "")?.[1] ?? null;
+  // The frame's document has loaded: it counts if it is the srcdoc's own
+  // (not the frame's first about:blank), made from the srcdoc the frame
+  // has now (its key), and given after the last set seen (not stale).
+  const onLoad = () => {
+    catchUp();
+    const doc = frame.contentDocument;
+    const key = keyOf(frame.srcdoc);
+    const shown = doc?.documentElement?.dataset.wikiFrame;
+    if (doc && doc.URL === "about:srcdoc" && key !== null && shown === key && !stale.has(doc)) loadedAt = sets;
+  };
   const measure = () => {
     if (!frame.isConnected) return wikiFramesSweep();
     // 0. A height the fence gives: the frame is left alone.
@@ -238,8 +338,21 @@ function wiki_islands_fit_frame(frame) {
     for (const type of ["load", "toggle", "transitionend", "animationend"]) doc.addEventListener(type, measure, true);
     measure();
   };
-  wikiFittedFrames.set(frame, { measure, stop: () => observer?.disconnect() });
+  const stop = () => {
+    observer?.disconnect();
+    setWatch.disconnect();
+  };
+  wikiFittedFrames.set(frame, { measure, stop, release, loaded });
   if (wikiFittedFrames.size === 1) window.addEventListener("resize", wikiFramesOnResize);
-  frame.addEventListener("load", watch);
+  frame.addEventListener("load", () => {
+    onLoad();
+    watch();
+    settle();
+  });
+  // A document loaded before the program asked: the prerendered page's.
+  // A frame just made holds about:blank until its srcdoc loads.
+  const doc = frame.contentDocument;
+  if (doc?.readyState === "complete") onLoad();
   watch();
+  return wikiIslandsBounded(loaded());
 }

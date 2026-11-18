@@ -23,6 +23,7 @@
 module Wiki.App.Islands.Monad
   ( MonadIslands (..)
   , MathMode (..)
+  , Drawing (..)
   , drawnProblem
   )
 where
@@ -34,6 +35,8 @@ import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Data.Type.Equality (type (~))
 import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, isNull, jsValText, toJSText)
+import Halogen.JSBits.Promise (Promise)
+import Halogen.JSBits.Promise qualified as Promise
 import Halogen.VDom.DOM.Monad (BrowserDOM)
 import Protolude
 import Web.DOM.Internal.Types (Element (..))
@@ -51,17 +54,17 @@ import Web.HTML.Common (AttrName (..))
 -- One binding list for every backend: embedded in the wasm JSFFI module
 -- there, an inert stub natively. Mermaid and TikZJax draw asynchronously
 -- (they may fetch their own bundles first, and TeX runs in a web worker),
--- but their bindings only start the drawing and do not wait for it: see
--- 'renderMermaid'.
+-- and an html fence's frame loads its document later: their bindings
+-- start the work and return a promise of its end ('Drawing').
 $( browserJS
      ["jsbits/islands.js"]
      [ ("js_render_math", "wiki_islands_render_math", Safe, [t|Element -> JSText -> Bool -> JSText -> IO JSText|])
      , ("js_check_macros", "wiki_islands_check_macros", Safe, [t|JSText -> JSText -> IO JSText|])
      , ("js_builtin_macros", "wiki_islands_builtin_macros", Safe, [t|IO JSText|])
-     , ("js_render_mermaid", "wiki_islands_render_mermaid", Safe, [t|Element -> JSText -> IO ()|])
-     , ("js_render_tikz", "wiki_islands_render_tikz", Safe, [t|Element -> JSText -> JSText -> JSText -> IO ()|])
+     , ("js_render_mermaid", "wiki_islands_render_mermaid", Safe, [t|Element -> JSText -> IO (Promise ())|])
+     , ("js_render_tikz", "wiki_islands_render_tikz", Safe, [t|Element -> JSText -> JSText -> JSText -> IO (Promise ())|])
      , ("js_highlight", "wiki_islands_highlight", Safe, [t|Element -> JSText -> JSText -> IO ()|])
-     , ("js_fit_frame", "wiki_islands_fit_frame", Safe, [t|Element -> IO ()|])
+     , ("js_fit_frame", "wiki_islands_fit_frame", Safe, [t|Element -> IO (Promise ())|])
      ]
  )
 
@@ -70,6 +73,15 @@ $( browserJS
 data MathMode = Inline | Display
   deriving stock (Eq, Show)
 
+-- | 'Drawing' is the end of an island's work that finishes after its
+-- method returns: a diagram drawn, a picture drawn, a frame's document
+-- loaded and fitted. It settles when that work is in the page, or has
+-- failed (the failure is shown in the element), or was dropped for a
+-- newer one, or after a minute at most (@jsbits/islands.js@): a drawing
+-- that never ends (a bundle whose fetch hangs) does not keep anyone
+-- waiting for ever. It never fails.
+newtype Drawing = Drawing (Promise ())
+
 -- | 'MonadIslands' fills an island's element, replacing its content.
 --
 -- Each method returns at once, so a component calls them with
@@ -77,15 +89,13 @@ data MathMode = Inline | Display
 -- element by then. 'renderMermaid' and 'renderTikz' have only started: a
 -- drawing may need a fetch (and for TikZ a run of TeX), and the library
 -- fills the element when it is done, unless the element was given a newer
--- source meanwhile (@web/src/islands.js@ counts the requests). They do not
--- wait for the drawing. When it is done, the element gets a
--- @wiki-island-drawn@ event ('drawnProblem'), which says whether the
--- library failed; a drawing dropped for a newer one, or finished after the
--- element left the page, sends none. When they did (a safe import, forced, from a
--- component's 'H.async'), following a link in the built page while a page's
--- diagram or picture was still being drawn left the page unchanged, for
--- as long as anyone watched. The cause is not known yet (the browser
--- tests' harness does not reproduce it); not waiting avoids it.
+-- source meanwhile (@web/src/islands.js@ counts the requests). When it is
+-- done, the element gets a @wiki-island-drawn@ event ('drawnProblem'),
+-- which says whether the library failed; a drawing dropped for a newer
+-- one, or finished after the element left the page, sends none. They
+-- return its 'Drawing', and so does 'fitFrame', which a component waits
+-- for in a fork of its own ('awaitDrawing'), so that the program counts
+-- as busy ("Halogen.Activity") until the island is drawn.
 --
 -- An application monad over one that has an instance gets the methods
 -- lifted, so @instance MonadIslands App@ is enough for a transformer
@@ -118,15 +128,16 @@ class (Monad m) => MonadIslands m where
   default builtinMacros :: (MonadTrans t, MonadIslands n, m ~ t n) => m Text
   builtinMacros = lift builtinMacros
 
-  renderMermaid :: Text -> Element -> m ()
-  default renderMermaid :: (MonadTrans t, MonadIslands n, m ~ t n) => Text -> Element -> m ()
+  -- | A Mermaid diagram, started.
+  renderMermaid :: Text -> Element -> m Drawing
+  default renderMermaid :: (MonadTrans t, MonadIslands n, m ~ t n) => Text -> Element -> m Drawing
   renderMermaid source = lift . renderMermaid source
 
   -- | A TikZ picture: the fence's source as written, which a picture that
   -- does not compile shows above TeX's error, and the TeX document that
   -- draws it ("Wiki.Core.Markdown.Tikz").
-  renderTikz :: Text -> TikzDocument -> Element -> m ()
-  default renderTikz :: (MonadTrans t, MonadIslands n, m ~ t n) => Text -> TikzDocument -> Element -> m ()
+  renderTikz :: Text -> TikzDocument -> Element -> m Drawing
+  default renderTikz :: (MonadTrans t, MonadIslands n, m ~ t n) => Text -> TikzDocument -> Element -> m Drawing
   renderTikz source document = lift . renderTikz source document
 
   -- | Code in a language, if it has one; a language highlight.js does not
@@ -140,11 +151,19 @@ class (Monad m) => MonadIslands m where
   -- document. Asked again, it measures the frame again. A frame with a
   -- @data-height@ attribute (a height its fence gives) is left as it is,
   -- and a frame with anything placed fixed in it is at its cap (the rule
-  -- is in @islands.js@). Natively there is no layout to measure, and
-  -- nothing to do.
-  fitFrame :: Element -> m ()
-  default fitFrame :: (MonadTrans t, MonadIslands n, m ~ t n) => Element -> m ()
+  -- is in @islands.js@). Its 'Drawing' settles once the document the
+  -- frame was given last (counted, not compared by its text) has loaded
+  -- and the frame has been measured with it.
+  -- Natively there is no layout to measure, and nothing to do.
+  fitFrame :: Element -> m Drawing
+  default fitFrame :: (MonadTrans t, MonadIslands n, m ~ t n) => Element -> m Drawing
   fitFrame = lift . fitFrame
+
+  -- | Wait until a 'Drawing' has settled: in a component, in @H.async@, in
+  -- a fork that does nothing else. Natively there is nothing to wait for.
+  awaitDrawing :: Drawing -> m ()
+  default awaitDrawing :: (MonadTrans t, MonadIslands n, m ~ t n) => Drawing -> m ()
+  awaitDrawing = lift . awaitDrawing
 
   -- | Load an address into a frame, an interactive SVG's
   -- ("Wiki.Core.Markdown.Frame"), unless the frame's @src@ attribute is
@@ -179,14 +198,16 @@ instance MonadIslands BrowserDOM where
 
   builtinMacros = liftIO (fromJSText <$> js_builtin_macros)
 
-  renderMermaid source element = liftIO $ js_render_mermaid element (toJSText source)
+  renderMermaid source element = liftIO $ Drawing <$> js_render_mermaid element (toJSText source)
 
   renderTikz source TikzDocument {preamble, picture} element =
-    liftIO $ js_render_tikz element (toJSText source) (toJSText preamble) (toJSText picture)
+    liftIO $ Drawing <$> js_render_tikz element (toJSText source) (toJSText preamble) (toJSText picture)
 
   highlightCode language code element = liftIO $ js_highlight element (toJSText (fromMaybe "" language)) (toJSText code)
 
-  fitFrame element = liftIO $ js_fit_frame element
+  fitFrame element = liftIO $ Drawing <$> js_fit_frame element
+
+  awaitDrawing (Drawing done) = liftIO $ void (Promise.waitCatch done)
 
   loadFrame url element = liftIO $ do
     current <- element.getAttribute "src"
@@ -216,13 +237,14 @@ instance MonadIslands MemDOM where
   renderMath _ _ tex element = Nothing <$ asText tex element
   checkMacros _ _ = pure Nothing
   builtinMacros = pure ""
-  renderMermaid = asText
-  renderTikz source _ = asText source
+  renderMermaid source element = drawnNow <$ asText source element
+  renderTikz source _ element = drawnNow <$ asText source element
   highlightCode _ = asText
   -- The frame's document is its srcdoc attribute, which the render wrote:
   -- nothing goes inside the element (the serialiser takes an iframe's
   -- content as raw text).
-  fitFrame _ = pure ()
+  fitFrame _ = pure drawnNow
+  awaitDrawing _ = pure ()
   -- The address goes into the prerendered page as the frame's src, which
   -- the browser then finds there and leaves alone.
   loadFrame url = setAttribute Nothing (AttrName "src") url
@@ -230,4 +252,8 @@ instance MonadIslands MemDOM where
 
 asText :: Text -> Element -> MemDOM ()
 asText text element = elementToNode element >>= setTextContent text
+
+-- | Work done as it was asked for.
+drawnNow :: Drawing
+drawnNow = Drawing (Promise.resolved ())
 #endif

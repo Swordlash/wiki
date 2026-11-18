@@ -2119,7 +2119,15 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   timed notice), about twenty (the preview, the link dialog, the box
   kinds, the macros, the completion's tooltip) can become a
   `waitQuiet` and one read; one `threadDelay` is left in `completing`.
-  The vault's group is next; then the library's
+  **The vault's group is moved (#330)**, to `readsOnce Quiet`: 95
+  `eventually`s down to 3, each for a message between tabs. What a
+  test holds on purpose is counted where it is held
+  (`Http.serverStartsWith`: the stand-in server's set of held
+  requests, plus one while the passkey stub's offer is open), never by
+  a number the test keeps; a `waitQuiet` after a click whose request
+  the server holds waits exactly until it is held. A tree that has
+  been disposed of is not in the harness's activity: a read after an
+  `unmount` cannot wait on quiet. The search's group is next; then the library's
   `quiet-under-test-clock` (two commits, local only, in the stopped
   builder's library worktree) so that it does not.** What is left,
   each a

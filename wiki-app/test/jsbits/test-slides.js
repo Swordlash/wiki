@@ -268,12 +268,24 @@ function wiki_test_editor_script(how) {
 // that its module failed ("wiki-editor-failed"). This is the moment
 // between the master taking the textarea's place and a row taking the
 // focus, held open for a test.
+//
+// A row held gives the component a promise, as the islands' attachRow
+// does, which settles once the row is in place after its release: the
+// component waits for it (Wiki.App.Editor.Browser's whileAttaching), so
+// the program counts the held row as work it waits for. A settle (idle)
+// returns while the row is held; a waitQuiet, once it is in place.
 function wiki_test_editor_arrives_rows_held() {
   const islands = globalThis.wikiTestIslands ?? globalThis.wikiIslands;
   const held = globalThis.wikiTestHeld ?? [];
   globalThis.wikiTestHeld = [];
   globalThis.wikiTestHeldRows = [];
-  globalThis.wikiIslands = { ...islands, attachRow: (...args) => globalThis.wikiTestHeldRows.push(args) };
+  globalThis.wikiIslands = {
+    ...islands,
+    attachRow: (...args) =>
+      new Promise((resolve) => {
+        globalThis.wikiTestHeldRows.push({ args, resolve });
+      }),
+  };
   const told = held.map(
     ([, host]) =>
       new Promise((resolve) => {
@@ -290,11 +302,12 @@ function wiki_test_rows_held() {
   return (globalThis.wikiTestHeldRows ?? []).length;
 }
 
-// The rows held made, and those asked for from now on made at once.
+// The rows held made, each held promise settling with the row's own, and
+// those asked for from now on made at once.
 function wiki_test_rows_release() {
   const islands = globalThis.wikiTestIslands ?? globalThis.wikiIslands;
   globalThis.wikiIslands = islands;
-  for (const args of globalThis.wikiTestHeldRows ?? []) islands.attachRow(...args);
+  for (const { args, resolve } of globalThis.wikiTestHeldRows ?? []) resolve(islands.attachRow(...args));
   globalThis.wikiTestHeldRows = [];
 }
 

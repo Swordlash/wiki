@@ -45,8 +45,10 @@ import Halogen.HTML qualified as HH
 import Halogen.HTML.Events qualified as HE
 import Halogen.HTML.Properties qualified as HP
 import Halogen.JSBits (Callback, Safety (..), browserJS, freeCallback, mkSyncCallback)
+import Halogen.Machine qualified as Machine
 import Halogen.Router qualified as Router
 import Halogen.Subscription qualified as HS
+import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
 import Protolude hiding (First, Last, State)
 -- With its constructor: the FFI passes the value inside the newtype.
@@ -121,7 +123,9 @@ type Event = M.Event Int PageLink Place (Place, Page)
 
 data State = State
   { input :: Input
-  , model :: Model
+  , machine :: Machine.Machine () Event Model
+  -- ^ What the viewer knows ("Wiki.App.View.DeckViewer.Machine"), run by
+  -- "Halogen.Machine": every change to it is a step.
   , root :: H.RefLabel
   , nearIds :: Map Int Int
   -- ^ The browser's watch of each watch the model runs, by its number.
@@ -149,7 +153,7 @@ component =
     H.ComponentSpec
       { initialState = \input -> do
           root <- H.newRefLabel "deck-viewer"
-          pure State {input, model = M.initial (targetOf input), root, nearIds = mempty, callbacks = [], owners = mempty}
+          pure State {input, machine = Machine.new (M.initial (targetOf input)), root, nearIds = mempty, callbacks = [], owners = mempty}
       , render
       , eval =
           H.mkEval
@@ -162,12 +166,12 @@ component =
       }
   where
     render :: State -> H.ComponentHTML Action Slots m
-    render st = case st.model.loaded of
+    render st = case (Machine.current st.machine).loaded of
       M.Link -> linkOf st.root st.input
       M.Ready (place, page) deck ->
         let count = length deck.slides
-            current = st.model.current
-            shownStep = st.model.shownStep
+            current = (Machine.current st.machine).current
+            shownStep = (Machine.current st.machine).shownStep
             shown = [showingStep (if n == current then shownStep else s.steps) s | (n, s) <- zip [1 ..] deck.slides]
             rendered = Body.slidesWithIds st.input.ids place deck {slides = shown}
             present = Router.href st.input.context.router (documentRoute st.input.context place.space.id (PageSlides (spacePathOfPlace place) place.path current shownStep))
@@ -207,7 +211,7 @@ component =
       -- embedded page and adoption repairs nothing.
       Initialize -> happen M.Started
       Finalize -> do
-        happen M.Finished
+        Machine.finish machineSpec M.Finished
         gets (\st -> st.callbacks) >>= traverse_ (H.liftEffect . liftIO)
         modify (\st -> st {callbacks = []})
       Receive new -> do
@@ -218,53 +222,62 @@ component =
         router <- gets (\st -> st.input.context.router)
         H.liftEffect (followArticleLink router target)
 
-    -- One step of the machine, in one step of the program, and then its
-    -- effects. None of them waits: each is a write of state through
-    -- 'H.liftEffect' and 'modify' (a watch started or stopped, an owner
-    -- made or let go, a channel to tell 'M.Rendered' after this action), or
-    -- a fork (the read of the page, whose answer comes back as an event).
-    -- So no effect of a step is carried out after a later event: a viewer
-    -- closed while a watch starts finds it kept, and a change of reader
-    -- finds the watch it stops (#275's two faults, which came from waits
-    -- here).
     happen :: Event -> H.HalogenM State Action Slots Void m ()
-    happen event = do
-      effects <- state (\st -> let (model, fx) = M.step event st.model in (fx, st {model}))
-      traverse_ perform effects
+    happen = Machine.happen machineSpec
 
-    perform :: M.Effect PageLink Place -> H.HalogenM State Action Slots Void m ()
-    perform = \case
+    -- The viewer's machine, run by "Halogen.Machine": one step in one
+    -- step of the program, then its effects, with no other event of the
+    -- viewer in between. Each effect is done in place ('Machine.Now', which
+    -- cannot wait: a watch started or stopped, an owner let go, a channel
+    -- to tell 'M.Rendered' after this action), or is the read of the page
+    -- ('Machine.AskWith'), whose owner of addresses is made and kept in
+    -- the state in place before the read starts. So a viewer closed while
+    -- a watch starts finds it kept, a change of reader finds the watch it
+    -- stops, and a viewer closed while the read is out releases its owner
+    -- (#275's faults, which came from waits here).
+    machineSpec :: Machine.Spec () State Action Slots Void m Event (M.Effect PageLink Place) Model
+    machineSpec = Machine.Spec {Machine.step = M.step, Machine.carry = carry, Machine.get = \st -> st.machine, Machine.set = \machine st -> st {machine}}
+
+    carry :: M.Effect PageLink Place -> Machine.Carry () State Action Slots Void m Event
+    carry = \case
       -- The link watched until it comes near the window, in a browser.
-      M.Watch w -> do
+      M.Watch w -> Machine.Now $ do
         st <- get
-        H.getRef st.root
+        Sync.getRef st.root
           >>= traverse_
             ( \element -> do
-                channel <- H.liftEffect (liftIO HS.create)
-                void (H.subscribe channel.emitter)
-                (i, freeIt) <- H.liftEffect (liftIO (st.input.watcher.start element (HS.notify channel.listener (Happen (M.Near w)))))
+                channel <- Sync.sync (liftIO HS.create)
+                void (Sync.subscribe channel.emitter)
+                (i, freeIt) <- Sync.sync (liftIO (st.input.watcher.start element (HS.notify channel.listener (Happen (M.Near w)))))
                 modify (\s -> s {nearIds = Map.insert w i s.nearIds, callbacks = freeIt : s.callbacks})
             )
-      M.Unwatch w -> do
+      M.Unwatch w -> Machine.Now $ do
         st <- get
-        traverse_ (H.liftEffect . liftIO . st.input.watcher.stop) (Map.lookup w st.nearIds)
+        traverse_ (Sync.sync . liftIO . st.input.watcher.stop) (Map.lookup w st.nearIds)
         modify (\s -> s {nearIds = Map.delete w s.nearIds})
-      M.Fetch f named host -> do
-        owner <- H.liftEffect newUrlOwner
-        modify (\s -> s {owners = Map.insert f owner s.owners})
-        context <- gets (\st -> st.input.context)
-        void . H.fork $ do
-          found <- H.async (attempt (fetchDeck context owner host named))
-          handleAction (Happen (M.Fetched f (either (const Nothing) identity found)))
-      M.Release f -> do
-        gets (\st -> Map.lookup f st.owners) >>= traverse_ (H.liftEffect . releaseUrls)
+      -- The read's owner of addresses is made and kept in place, before
+      -- the read starts with it: 'Finalize' releases it if the viewer
+      -- closes while the read is out. What either part throws is the
+      -- read's answer, the link.
+      M.Fetch f named host ->
+        Machine.AskWith
+          ( do
+              owner <- Sync.sync newUrlOwner
+              modify (\s -> s {owners = Map.insert f owner s.owners})
+              context <- gets (\st -> st.input.context)
+              pure (owner, context)
+          )
+          (\(owner, context) -> Machine.run (attempt (fetchDeck context owner host named)))
+          (M.Fetched f . either (const Nothing) (either (const Nothing) identity))
+      M.Release f -> Machine.Now $ do
+        gets (\st -> Map.lookup f st.owners) >>= traverse_ (Sync.sync . releaseUrls)
         modify (\s -> s {owners = Map.delete f s.owners})
       -- The element the ref holds until this action ends is the viewer's,
       -- being removed: the link is watched in an action of its own.
-      M.WhenRendered -> do
-        channel <- H.liftEffect (liftIO HS.create)
-        void (H.subscribe channel.emitter)
-        H.liftEffect (liftIO (HS.notify channel.listener (Happen M.Rendered)))
+      M.WhenRendered -> Machine.Now $ do
+        channel <- Sync.sync (liftIO HS.create)
+        void (Sync.subscribe channel.emitter)
+        Sync.sync (liftIO (HS.notify channel.listener (Happen M.Rendered)))
 
     -- Which of the viewer's keys a keydown is: the arrows, Home and End,
     -- without a modifier. Any other key is left to the browser.

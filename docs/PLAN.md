@@ -2077,8 +2077,12 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   shared (the runner's Playwright timeout, the page's own deadline,
   `actionDeadlineMs`, and `hspec-halogen open`). What is left, each a
   package or a part of one: the assistant's "keeps the text's
-  selection in sight…" fails in every nightly run (the scripted
-  provider not in the list: being read for its cause); the slides'
+  selection in sight…" failed in every nightly run: **fixed (#321),
+  a fault of the test**: it set no scripted provider and passed only
+  because the example before it on the same page of the browser had
+  left one (the harness sends example i to page i mod the number of
+  pages: two in CI, eight in the nightly); every example of the
+  assistant now starts and ends without a script; the slides'
   editor loses a typed character as CodeMirror takes the focus
   (`SlideEditor.hs:1111`: the same); `Tasks.hs:533` ("1 box changed,
   not saved yet" at rest after twenty seconds); `SlideEditor.hs:962`
@@ -3334,8 +3338,11 @@ needs. Each was true when its package merged; check before relying on one.
   cursors. The check of the whole text grew by about 4% on wasm (6 ms
   on the guide, 90 ms on the 318,000-character deck, whose check
   already took 2.5 s).
-- **An example of the assistant's settings failed once by chance
-  (2026-11-17, a builder's run of the assistant's browser group).**
+- **An example of the assistant's settings fails about half the runs
+  at eight pages, on `main`, at rest (2026-11-18): being read as a
+  lost update of the user's keys by two checks of providers
+  (`changeKeys`), a fault of the application. First seen 2026-11-17 in
+  a builder's run of the assistant's browser group.**
   "dims a provider that cannot be reached…"
   (`Test/Browser/Assistant.hs`, about line 536) waits up to two
   seconds for the stored settings to say the provider is unreachable,

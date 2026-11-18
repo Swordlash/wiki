@@ -202,7 +202,12 @@ Those of haskell-halogen's `AGENTS.md` apply unchanged, in short:
   ticket, never an equal value: two visits of a page, a view mounted again, the same text
   quoted twice are told apart by identity. State that the machine's effects write lives
   in the model, and the component's runner never waits between the effects of one step:
-  an effect is a write of state, a tell, or a fork. The model of the server takes from
+  an effect is a write of state, a tell, or a fork. A field of the model that mirrors
+  an input (the space, the page, the reader) changes in the step that takes the new
+  input, not when a read comes back: an ask made in between would go out under the old
+  value (#316: a lookup of people under a space that had just become encrypted). Where
+  two lookups tell of one thing, the model keeps one map and the last answer about a
+  thing wins; two maps with a precedence between them are wrong either way round. The model of the server takes from
   the real code the answers' shape, limits, counts, order and atomicity, every way the
   server deletes, and every bounded buffer between the server and the view. A plain
   handler may still `lift` where there is one ask and no change of input.

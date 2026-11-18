@@ -3596,6 +3596,10 @@ deadline is a watchdog against a program that never finishes, not a
 measure of speed. To set another for one run, give it in the environment:
 `HSPEC_HALOGEN_DEADLINE_MS=10000 npm run test-wasm`. A test that checks
 that the deadline fires gives that part its own with `withDeadline ms`.
+The whole run has a limit of its own, `HSPEC_HALOGEN_TIMEOUT` in seconds
+from the runner's start: hspec-halogen's default is 600, and the same
+script sets 1800, since a slow hosted runner once passed 600 with no
+example at fault; it is only a last watchdog behind the deadline.
 `HSPEC_HALOGEN_RETRIES=1` writes a report to standard error of every read
 whose first attempt failed, and of every `settle` or `waitQuiet` that
 took longer than a second, with what the program was doing at the time; CI

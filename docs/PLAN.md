@@ -2116,18 +2116,20 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   not saved yet" at rest after twenty seconds); `SlideEditor.hs:962`
   and `Http.hs:1581` (a read while a fiber waits); `Contents.hs:114`
   and `Comments.hs:87` (the clipboard's promise); `Vault.hs:771` and
-  `:602`. **Found on CI, cause not known (2026-11-18, the `wasm` job
-  of #322, seed 2139537605):** `DeckViewer.hs:67`, an embedded
-  presentation whose watch (the browser's `IntersectionObserver`) had
-  not ended after thirty seconds, with the program idle for the whole
-  wait. The wait was two seconds until #316 failed the same way (seed
-  120510329) and was made longer on the guess that the browser was
-  slow; it was not slowness. Not a loop of renders that restarts the
-  watch (looked for, not in the trace); 57 local runs under load did
-  not show it. Next: the wait's failure says where the link is against
-  the window, whether it is the element watched, what an observer of
-  the test's own was told and how many frames the page drew; and the
-  example's group repeated on GitHub's runner until it shows.
+  `:602`. **`DeckViewer.hs:67`, found on CI twice (#316's run and #322's):
+fixed (#327), a fault of the test.** An embedded presentation's watch
+  had not ended after thirty seconds with the program idle. The test's
+  `bringNear` focused the link while the page was still rendering,
+  what was above the link grew before the browser's next frame, Chrome
+  did not keep the scroll, and the link ended beyond the observer's
+  margin, where the viewer rightly never reads its deck. Caught on
+  GitHub's runner with a diagnostic the test now carries (the link's
+  box against the window, what the program's observer and one of the
+  test's own were told, the frames drawn); forced locally in one
+  JavaScript call. The example waits for the page at rest before the
+  focus. The first time (#316) the wait was only made longer, on the
+  guess that the browser was slow. To look at one day, for a reader:
+  the page does not keep its scroll when an island above grows.
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
   przed pluginami").** One builder, in this order, each its own pull

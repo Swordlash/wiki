@@ -2127,7 +2127,15 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   a number the test keeps; a `waitQuiet` after a click whose request
   the server holds waits exactly until it is held. A tree that has
   been disposed of is not in the harness's activity: a read after an
-  `unmount` cannot wait on quiet. The search's group is next; then the library's
+  `unmount` cannot wait on quiet. **The search's group is moved
+  (#331)**, to `readsOnce Quiet`, no `eventually` left; its first
+  example was wrong (it expected a page the words typed do not find,
+  and passed by catching the list before the box's pause ended), which
+  is why it failed under load. Not moved: `EditorSearch.hs` (47
+  `eventually`s, most on CodeMirror's own state). The assistant's
+  group is next, then by the measure's count of retried sites:
+  `SlideEditor.hs`, `Http.hs`, `Encrypted.hs`, `Problems.hs`,
+  `Complete.hs`; then the library's
   `quiet-under-test-clock` (two commits, local only, in the stopped
   builder's library worktree) so that it does not.** What is left,
   each a

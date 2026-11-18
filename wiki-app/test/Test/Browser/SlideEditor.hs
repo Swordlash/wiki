@@ -68,6 +68,9 @@ $( browserJS
      , ("js_row_focused", "wiki_test_slide_row_focused", Safe, [t|Int -> IO Bool|])
      , ("js_stale_rows", "wiki_test_stale_rows", Safe, [t|JSText -> IO JSText|])
      , ("js_editor_script", "wiki_test_editor_script", Safe, [t|JSText -> IO ()|])
+     , ("js_editor_arrives_rows_heldPromise", "wiki_test_editor_arrives_rows_held", Safe, [t|IO (Promise ())|])
+     , ("js_rows_held", "wiki_test_rows_held", Safe, [t|IO Int|])
+     , ("js_rows_release", "wiki_test_rows_release", Safe, [t|IO ()|])
      , ("js_fit_log_start", "wiki_test_fit_log_start", Safe, [t|IO ()|])
      , ("js_fit_log", "wiki_test_fit_log", Safe, [t|IO JSText|])
      , ("js_slide_cut", "wiki_test_slide_cut", Safe, [t|Int -> IO JSText|])
@@ -78,6 +81,9 @@ $( browserJS
      , ("js_search_panel_seen", "wiki_test_search_panel_seen", Safe, [t|IO Bool|])
      ]
  )
+
+js_editor_arrives_rows_held :: IO ()
+js_editor_arrives_rows_held = if inBrowser then wait =<< js_editor_arrives_rows_heldPromise else pure inert
 
 js_drop_file :: JSText -> JSText -> JSText -> JSText -> IO ()
 js_drop_file a1 a2 a3 a4 = if inBrowser then wait =<< js_drop_filePromise a1 a2 a3 a4 else pure inert
@@ -1114,6 +1120,41 @@ spec m = do
     rowSelection 3 `shouldReturn` (end, end)
     press "g"
     eventually $ markdown ui `shouldReturn` typed <> "g"
+
+  -- The same hand-off with a key typed in the middle of it, in that order
+  -- every time. CodeMirror takes the textarea's place and tells the
+  -- component ("wiki-ready"); the component cuts the rows and asks for the
+  -- cursor's row, which takes the focus once it is made. The textarea is
+  -- hidden from the first step, and the master is hidden slide by slide,
+  -- so a key typed before the row is made went to no text and was lost.
+  -- The program reaches the third step some tasks after the first (a
+  -- trace under load put 200 to 460 ms between them, with "d" lost in
+  -- every run that lost one). Here the row is held until the key is typed.
+  it "keeps a key typed between CodeMirror's arrival and the cursor's row taking the focus" $ runPage $ do
+    unsafeIOToPageM (js_editor_script (toJSText "hold"))
+    (ui, _) <- openDeckWith False deck
+    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    area <- find ui ".editor-text"
+    focus area
+    press "Control+End"
+    typeText area "\n\nAbc"
+    unsafeIOToPageM js_editor_arrives_rows_held
+    -- The program has taken the master's news and asked for the row.
+    settle
+    unsafeIOToPageM js_rows_held `shouldReturn` 1
+    press "d"
+    unsafeIOToPageM js_rows_release
+    settle
+    traverse_ press ["e", "f"]
+    waitQuiet
+    let typed = deck <> "\n\nAbcdef"
+    markdown ui `shouldReturn` typed
+    slideFocus `shouldReturn` "text 3"
+    let end = T.length (rowTextOf typed 3)
+    rowSelection 3 `shouldReturn` (end, end)
+    press "g"
+    waitQuiet
+    markdown ui `shouldReturn` typed <> "g"
 
   -- The editor's search over the whole text (WP5.103b), slide by slide.
   it "searches the whole presentation from a row with Ctrl+F: the closed rows' headers count their matches, Enter opens the closed row of the next with it selected and in sight, the rows open before stay open, and Escape gives the focus to the match, past an emoji" $ runPage $ do

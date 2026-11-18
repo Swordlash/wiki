@@ -49,6 +49,17 @@ if node -e '
   # a watchdog against a program that never finishes, not a measure of speed.
   HSPEC_HALOGEN_DEADLINE_MS=${HSPEC_HALOGEN_DEADLINE_MS:-30000}
   export HSPEC_HALOGEN_DEADLINE_MS
+  # HSPEC_HALOGEN_TIMEOUT is hspec-halogen's limit, in seconds, for the
+  # whole run, counted from the runner's start; when it passes, the suite
+  # stops with "no result" whatever its examples were doing. hspec-halogen's
+  # default is 600. Here it is 1800, unless the caller sets it (the nightly
+  # sets 1800 too). The limit is only a last watchdog: each wait above
+  # already gives up after thirty seconds, so a real hang fails an example
+  # long before. 600 was below the suite's own time budget of 650 seconds
+  # in ci-suite-time.sh, and on 2026-11-18 a slow hosted runner passed it
+  # with no example at fault, the slower page 87% through.
+  HSPEC_HALOGEN_TIMEOUT=${HSPEC_HALOGEN_TIMEOUT:-1800}
+  export HSPEC_HALOGEN_TIMEOUT
   timed "${HSPEC_HALOGEN:?build it first: HSPEC_HALOGEN=\$(sh toolchain/build-hspec-halogen.sh)}" test "$wasm_binary" "$@"
   exit
 fi

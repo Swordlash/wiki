@@ -340,10 +340,10 @@ spec m = describe "an html fence" $ do
 
 -- | Once the program is quiet, each frame has loaded its document and been
 -- fitted to it: the island waits for both (Wiki.App.Islands' fitFrame).
--- The deadline is a watchdog against a hang, longer than the island's own
--- bound (a minute, jsbits/islands.js); no passing test comes near it.
+-- The deadline is the suite's (thirty seconds,
+-- toolchain/wasm-test-wrapper.sh), a watchdog no passing test comes near.
 fitted :: (HasCallStack) => PageM s ()
-fitted = waitQuietWithin 120000
+fitted = waitQuiet
 
 -- | A parent for one island, whose input a test changes with 'SetFrames',
 -- as a page re-rendered with a new fence would: to each in turn, in one

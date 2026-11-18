@@ -78,8 +78,8 @@ spec m = do
     find ui ".page-body a[href$='#/s/docs/p/markdown-guide/diagrams/']" >>= click
     find ui ".page-body h1" >>= (`shouldHaveText` "Diagrams")
     -- Its diagrams are drawn once the program is quiet: each island waits
-    -- for its drawing (Wiki.App.Islands). The deadline is a watchdog.
-    waitQuietWithin 120000
+    -- for its drawing (Wiki.App.Islands).
+    waitQuiet
     diagrams <- findAll ui ".page-body .wiki-mermaid"
     drawn <- findAll ui ".page-body .wiki-mermaid > svg"
     -- Every diagram of the page drawn, and there is one at least.

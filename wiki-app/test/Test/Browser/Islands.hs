@@ -227,10 +227,10 @@ spec m = do
     waitForDiagram ui = drawn ui "div.wiki-mermaid > svg"
     waitForPicture ui = drawn ui "div.wiki-tikz > svg"
     -- The one element a selector finds once the program is quiet, read
-    -- once. The deadline is a watchdog against a hang, longer than the
-    -- island's own bound on a drawing (a minute, jsbits/islands.js).
+    -- once. The deadline is the suite's (thirty seconds,
+    -- toolchain/wasm-test-wrapper.sh), a watchdog against a hang.
     drawn ui selector = do
-      waitQuietWithin 120000
+      waitQuiet
       findAll ui selector >>= \case
         [element] -> pure element
         found -> expectationFailure ("drawn, " <> selector <> " finds " <> show (length found) <> " elements, not one")

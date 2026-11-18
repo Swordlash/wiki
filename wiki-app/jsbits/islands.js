@@ -139,15 +139,27 @@ function wiki_islands_highlight(element, language, code) {
 // Each ask returns a promise that resolves once the document the frame was
 // last given (its srcdoc, as last set) has loaded, with what it loads
 // (images), and the frame has been measured with it: at once when it has,
-// or after its load event. Which document is meant is a count, never the
-// text: every time the frame's srcdoc is set (a MutationObserver sees it)
-// the count goes up, and the document the frame holds then is stale, as
-// is whatever it loads. An ask waits for the count as it is when asked,
-// and a load counts only for a document that is not stale, which is the
-// last one set: a frame given A, then B, then A again before B loaded
-// waits for that last A, not for the first. A frame of the prerendered
-// page whose document had loaded before the program asked counts as
-// loaded. A frame dropped from the set resolves what waited for it.
+// or after its load event. Whether the frame shows that document is asked
+// two ways, and a document counts only when both agree:
+//
+// - Its key. The wiki writes each document with a key on its root element
+//   (Wiki.Core.Markdown.Frame's frameKey, data-wiki-frame), the same of
+//   the same document on the server and in the browser. A document counts
+//   only when its key is the one the srcdoc's text has now. This settles
+//   a srcdoc written before the frame was first fitted, which no observer
+//   saw: hydration giving a prerendered frame (A, loaded or loading) the
+//   program's document B.
+// - A count of the writes since the frame was first fitted. Every time
+//   the srcdoc is set (a MutationObserver sees it) the count goes up, and
+//   the document the frame holds then is stale. A document with the right
+//   key can still be stale: a frame given A, then B, then A again shows
+//   the first A, with A's key, until the last A replaces it. An ask waits
+//   for the count as it is when asked, and a load counts only for a
+//   document that is not stale.
+//
+// A srcdoc is written by the island's render alone, and the island asks
+// after every render that writes it, so at most one write comes before
+// the first ask. A frame dropped from the set resolves what waited for it.
 const wikiFittedFrames = new Map();
 let wikiFramesResizing = false;
 
@@ -271,12 +283,18 @@ function wiki_islands_fit_frame(frame) {
       waiting.push({ wanted: sets, resolve });
       settle();
     });
-  // The frame's document has loaded: it counts if it was given after the
-  // last set, the srcdoc's own (not the frame's first about:blank).
+  // The key a srcdoc's text gives its root element, or null for a text
+  // the wiki did not write.
+  const keyOf = (text) => /^<!DOCTYPE html><html data-wiki-frame="([0-9a-f]+)">/.exec(text ?? "")?.[1] ?? null;
+  // The frame's document has loaded: it counts if it is the srcdoc's own
+  // (not the frame's first about:blank), made from the srcdoc the frame
+  // has now (its key), and given after the last set seen (not stale).
   const onLoad = () => {
     catchUp();
     const doc = frame.contentDocument;
-    if (doc && doc.URL === "about:srcdoc" && !stale.has(doc)) loadedAt = sets;
+    const key = keyOf(frame.srcdoc);
+    const shown = doc?.documentElement?.dataset.wikiFrame;
+    if (doc && doc.URL === "about:srcdoc" && key !== null && shown === key && !stale.has(doc)) loadedAt = sets;
   };
   const measure = () => {
     if (!frame.isConnected) return wikiFramesSweep();

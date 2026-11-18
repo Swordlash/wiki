@@ -19,6 +19,8 @@ import Data.Text qualified as T
 import Halogen qualified as H
 import Halogen.HTML qualified as HH
 import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
+import Halogen.JSBits.Promise (Promise)
+import Halogen.JSBits.Promise qualified as Promise
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
 import Test.Browser.Mount (adopt, slugs, start, startChanged, startWith)
@@ -54,6 +56,7 @@ $( browserJS
      , ("js_window_height", "wiki_test_window_height", Safe, [t|Int -> IO ()|])
      , ("js_frame_grow", "wiki_test_frame_grow", Safe, [t|JSText -> IO Bool|])
      , ("js_frame_ready", "wiki_test_frame_ready", Safe, [t|JSText -> IO JSText|])
+     , ("js_frame_loaded", "wiki_test_frame_loaded", Safe, [t|JSText -> IO (Promise ())|])
      ]
  )
 
@@ -232,6 +235,29 @@ spec m = describe "an html fence" $ do
     unsafeIOToPageM (js_frame_marked (toJSText island)) `shouldReturn` False
     unsafeIOToPageM (fromJSText <$> js_frame_ready (toJSText island)) `shouldReturn` "complete"
     frameCountIn island ".page-body p" `shouldReturn` paragraphs
+
+  -- Codex's second round on #319: the program adopting a prerendered frame
+  -- whose block has changed since (the page holds A, the program B)
+  -- writes B before the island first fits the frame, which no observer
+  -- sees; A's document, loaded or still loading, was taken for the one
+  -- the frame was given. Only a document with B's key counts now. B is
+  -- long, so that it is still being read when an early answer lets the
+  -- program go quiet.
+  for_ [(True, "loaded"), (False, "still loading")] $ \(waited, how) ->
+    it ("waits, adopting a frame whose document A is " <> how <> ", for the document B the program gives it") $ runPage $ do
+      let paragraphs = 20000 :: Int
+          given body = HtmlFrame Nothing (frameDocument SystemScheme body)
+          island = "iframe.wiki-html"
+      shown <- mount m frameHolder (given "<p>A</p>")
+      fitted
+      prerendered <- find shown island >>= outerHTML
+      unmount shown
+      arrived <- htmlContainer ("<div>" <> prerendered <> "</div>")
+      when waited $ unsafeIOToPageM (js_frame_loaded (toJSText island) >>= Promise.wait)
+      _ <- hydrate m arrived frameHolder (given (T.concat (replicate paragraphs "<p>B</p>")))
+      fitted
+      unsafeIOToPageM (fromJSText <$> js_frame_ready (toJSText island)) `shouldReturn` "complete"
+      frameCountIn island ".page-body p" `shouldReturn` paragraphs
 
   it "runs no script even written straight into the frame's document: the sandbox forbids it" $ runPage $ do
     ui <- mount m (Islands.component @(Const Void) @Void) (HtmlFrame Nothing (frameDocument SystemScheme "<p>shown</p><script>parent.wikiFrameScriptRan = 'script'</script><img src=\"nowhere.png\" onerror=\"parent.wikiFrameScriptRan = 'handler'\">"))

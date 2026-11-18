@@ -130,6 +130,7 @@
 module Wiki.Core.Markdown.Frame
   ( -- * The frame
     frameDocument
+  , frameKey
   , FrameScheme (..)
   , frameStylesheet
 
@@ -146,7 +147,9 @@ module Wiki.Core.Markdown.Frame
   )
 where
 
+import Data.ByteString qualified as BS
 import Data.Text qualified as T
+import Numeric (showHex)
 import Protolude
 import Wiki.Core.Attachment (MimeType (..), mimeEssence)
 
@@ -247,17 +250,42 @@ data FrameScheme
 -- @html-frame-dark@, which the stylesheet gives a slide's palettes. The
 -- author's styles are in the block, after the stylesheet, and outside any
 -- layer, so they win over the wiki's.
+--
+-- The root element carries the document's key ('frameKey'), as
+-- @data-wiki-frame@: the page's script reads it from the document a frame
+-- shows and from the frame's @srcdoc@, to tell whether the frame shows the
+-- document it was last given (@jsbits/islands.js@). The prerender and the
+-- program make the same key of the same document; nothing in the frame
+-- reads it, and it changes nothing a reader sees.
 frameDocument :: FrameScheme -> Text -> Text
 frameDocument scheme content =
-  "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>@import url(\""
-    <> frameStylesheet
-    <> "\") layer(wiki);</style></head><body class=\""
-    <> bodyClass
-    <> "\"><div class=\"page-body\">"
-    <> content
-    <> "</div></body></html>"
+  "<!DOCTYPE html><html data-wiki-frame=\""
+    <> frameKey unkeyed
+    <> "\">"
+    <> T.drop (T.length "<!DOCTYPE html><html>") unkeyed
   where
+    unkeyed =
+      "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>@import url(\""
+        <> frameStylesheet
+        <> "\") layer(wiki);</style></head><body class=\""
+        <> bodyClass
+        <> "\"><div class=\"page-body\">"
+        <> content
+        <> "</div></body></html>"
     bodyClass = case scheme of
       SystemScheme -> "html-frame"
       LightScheme -> "html-frame html-frame-light"
       DarkScheme -> "html-frame html-frame-dark"
+
+-- | 'frameKey' is a document's key: sixteen hexadecimal digits, the 64-bit
+-- FNV-1a hash of its text in UTF-8. Equal documents have equal keys, on
+-- the server and in the browser alike (the arithmetic is on 'Word64'
+-- whatever the machine's word). Two documents with equal keys are taken
+-- for the same one, so the hash is wide enough that two different
+-- documents of a page share one only by a chance of about one in 10^19.
+frameKey :: Text -> Text
+frameKey document = T.justifyRight 16 '0' (toS (showHex hashed ""))
+  where
+    hashed = BS.foldl' step 14695981039346656037 (encodeUtf8 document)
+    step :: Word64 -> Word8 -> Word64
+    step h byte = (h `xor` fromIntegral byte) * 1099511628211

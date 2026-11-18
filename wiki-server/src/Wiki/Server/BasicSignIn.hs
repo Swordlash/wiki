@@ -22,6 +22,12 @@
 -- budget, if that is less), and 'Refused'. That check costs what any other check costs, and its answer
 -- and time are those of a wrong password.
 --
+-- A login that cannot sign in with a password (see below) goes through the
+-- same steps as a usable account given a wrong password, against the fake
+-- record: so nothing a caller without the password can see (the answer,
+-- the limit, how many checks run for requests at once, their time) tells
+-- the two apart.
+--
 -- Requests that carry the same login, password and record while a check of
 -- them runs do not start another: they wait for that check's result. Only
 -- the first is counted as a failure, and only one stretching runs. If that
@@ -235,36 +241,37 @@ signInBasic storage limiter s now address login password = do
     Limiter.Refused seconds -> pure (Limited seconds)
     Allowed -> do
       found <- readAccount
-      case found of
-        Usable u r _ _ -> do
-          -- Computed in full here, so that nothing stored or shared holds
-          -- the password ('mac' gives a strict ByteString).
-          digest <- evaluate (mac s.key u password r)
-          -- A check registered as under way is always given a result, even
-          -- if this thread is killed right after registering it: the step
-          -- and the handler that ends the check are taken with exceptions
-          -- masked.
-          mask $ \restore ->
-            atomically (stepFor u digest) >>= \case
-              Lead v -> lead restore found digest v
-              Known -> restore (decide found found True)
-              Join v ->
-                restore $
-                  atomically (readTMVar v) >>= \case
-                    -- The check ended without a result: start again.
-                    Nothing -> signInBasic storage limiter s now address login password
-                    Just right -> readAccount >>= \again -> decide found again right
-        Unusable _ ->
-          Limiter.reserve limiter now login address >>= \case
-            Limiter.Refused seconds -> pure (Limited seconds)
-            Allowed -> fullCheck found $> Refused
+      -- What is checked, as an HMAC computed in full here, so that nothing
+      -- stored or shared holds the password ('mac' gives a strict
+      -- ByteString). A login that cannot sign in is checked as any other,
+      -- against the fake record: the same sharing, the same one failure,
+      -- the same one stretching. Only its answer is always 'Refused', and
+      -- nothing of it is remembered.
+      let (user, checked) = case found of
+            Usable u r _ _ -> (Just u, [encodeUtf8 u.text, encodeUtf8 password, encodeUtf8 r.record, encodeUtf8 r.stretch])
+            Unusable c -> (Nothing, [c, encodeUtf8 password])
+      digest <- evaluate (mac s.key checked)
+      -- A check registered as under way is always given a result, even if
+      -- this thread is killed right after registering it: the step and the
+      -- handler that ends the check are taken with exceptions masked.
+      mask $ \restore ->
+        atomically (stepFor user digest) >>= \case
+          Lead v -> lead restore found digest v
+          Known -> restore (decide found found True)
+          Join v ->
+            restore $
+              atomically (readTMVar v) >>= \case
+                -- The check ended without a result: start again.
+                Nothing -> signInBasic storage limiter s now address login password
+                Just right -> readAccount >>= \again -> decide found again right
   where
     -- Remembered, joining a check under way, or leading a new one: decided
-    -- in one transaction, so that two requests never both lead.
-    stepFor :: UserId -> ByteString -> STM Step
-    stepFor u digest = do
+    -- in one transaction, so that two requests never both lead. Only a
+    -- usable account's user can be remembered.
+    stepFor :: Maybe UserId -> ByteString -> STM Step
+    stepFor user digest = do
       m <- readTVar s.memory
-      case (Map.lookup u m.remembered, Map.lookup digest m.underWay) of
+      case ((`Map.lookup` m.remembered) =<< user, Map.lookup digest m.underWay) of
         (Just (d, _), _) | constEq d digest -> pure Known
         (_, Just (v, n)) -> do
           writeTVar s.memory m {underWay = Map.insert digest (v, n + 1) m.underWay}
@@ -348,10 +355,11 @@ signInBasic storage limiter s now address login password = do
         pure (if factor then SecondFactorOn else SignedIn u)
       _ -> pure Refused
 
--- | The HMAC remembered for a user's login: of the user's id, the
--- password and the stored record, each with its length before it, so that
--- no two different triples are written the same.
-mac :: ByteString -> UserId -> Text -> StoredRecord -> ByteString
-mac key u password r = convert (hmac key (BS.concat (concatMap framed [encodeUtf8 u.text, encodeUtf8 password, encodeUtf8 r.record, encodeUtf8 r.stretch])) :: HMAC SHA256)
+-- | The HMAC of what a check checks: for a usable account the user's id,
+-- the password and the stored record; for any other login the credential
+-- id of the fake record and the password. Each part has its length before
+-- it, so that no two different lists are written the same.
+mac :: ByteString -> [ByteString] -> ByteString
+mac key parts = convert (hmac key (BS.concat (concatMap framed parts)) :: HMAC SHA256)
   where
     framed bytes = [show (BS.length bytes) <> ":", bytes]

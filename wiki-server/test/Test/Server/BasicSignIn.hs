@@ -44,6 +44,7 @@ spec backing = describe "the API's sign-in" $ do
   budget
   readAgain backing
   shared backing
+  alike backing
   leftOfThePassword backing
 
 -- | What a test signs in with: the test server's database, a limiter and
@@ -163,12 +164,51 @@ shared backing = describe "requests with the same password at once" $ do
       length (lefts results) `shouldBe` 1
       rights results `shouldBe` replicate 4 (SignedIn editorId)
       fullChecks s.signIns `shouldReturn` 1
+
+-- | Wait until this many requests wait for, or run, a check, or fail after
+-- ten seconds.
+joined :: Signing -> Int -> IO ()
+joined s n =
+  timeout 10000000 (atomically (sharingChecks s.signIns >>= \k -> unless (k >= n) retry))
+    >>= maybe (expectationFailure ("fewer than " <> show n <> " requests share the check")) pure
+
+-- | Logins that cannot sign in with a password, to someone without the
+-- password: the same as a usable account given a wrong one.
+alike :: Backing -> Spec
+alike backing = describe "a login that cannot sign in with a password" $ do
+  it "answers five wrong passwords at once and a sixth as a usable account does, and is limited alike" $ withSigning backing (const identity) $ \s -> do
+    bursts <- burstsOf s
+    map (\(l, (five, sixth, v, _)) -> (l, five, sixth, v)) bursts
+      `shouldBe` [(l, replicate 5 Refused, Refused, Allowed) | l <- logins]
+
+  it "runs as many full checks as a usable account does" $ withSigning backing (const identity) $ \s -> do
+    bursts <- burstsOf s
+    map (\(l, (_, _, _, checks)) -> (l, checks)) bursts `shouldBe` [(l, 2) | l <- logins]
   where
-    -- Wait until this many requests wait for, or run, a check, or fail
-    -- after ten seconds.
-    joined s n =
-      timeout 10000000 (atomically (sharingChecks s.signIns >>= \k -> unless (k >= n) retry))
-        >>= maybe (expectationFailure ("fewer than " <> show n <> " requests share the check")) pure
+    -- A usable account, a login nobody has, a disabled account and one
+    -- without a password.
+    logins = ["editor", "nobody", "reader", "admin"]
+    burstsOf s = do
+      _ :: Account <- sendJson s.running "PUT" (s.running.admin <> "/admin/" <> links.admin.setDisabled (UserId "user-reader")) AccountDisabled {disabled = True} >>= jsonAs 200
+      for logins $ \l -> (l,) <$> burst s l
+    -- Five requests at once with one wrong password, held until all five
+    -- have joined, then a sixth: their outcomes, the limit's verdict after
+    -- them, and how many full checks ran; with a limiter and a memory of
+    -- sign-ins fresh for the login.
+    burst s0 login = do
+      gate <- newEmptyMVar
+      limiter <- newLimiter defaultLimits
+      signIns <- newBasicSignInsWith defaultStretch (\run -> readMVar gate >> run)
+      let s = s0 {limiter, signIns}
+      requests <- replicateM 5 (async (signIn s login "a wrong password"))
+      joined s 5
+      putMVar gate ()
+      five <- traverse wait requests
+      sixth <- signIn s login "a wrong password"
+      now <- getCurrentTime
+      verdict <- Limiter.verdict limiter now login address
+      checks <- fullChecks signIns
+      pure (five, sixth, verdict, checks)
 
 -- | What is left of a password once the request that carried it is
 -- answered.

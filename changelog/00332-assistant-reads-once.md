@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 332
 title: The writing assistant's browser tests read the page once, at rest
 technical: true
 ---

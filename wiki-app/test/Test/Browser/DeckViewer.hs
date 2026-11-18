@@ -90,8 +90,16 @@ runWatched :: (HasCallStack) => (forall s. PageM s a) -> IO a
 runWatched body = bracket_ js_deck_spy js_deck_spy_stop (runPage body)
 
 -- | What the record left on the page after 'runWatched': "" for nothing.
+-- Read inside 'runWatched' after 'bringNear', it names all three parts.
 deckLeft :: IO Text
 deckLeft = fromJSText <$> js_deck_left
+
+-- | The failure the leak check's example throws on purpose inside
+-- 'runWatched'. It is the only failure that example takes as expected.
+data FailedOnPurpose = FailedOnPurpose
+  deriving stock (Eq, Show)
+
+instance Exception FailedOnPurpose
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
 spec m = do
@@ -138,15 +146,19 @@ spec m = do
   -- The record 'runWatched' puts on the page is taken off it after the
   -- example, though the example failed with the record's observer and
   -- frame counter running; and 'bringNear' outside 'runWatched' starts
-  -- neither.
+  -- neither. Inside, the same read names all three, so the empty read
+  -- after it is not empty for want of a record ever started. Only the
+  -- example's own 'FailedOnPurpose' is taken: any other failure inside,
+  -- a mount or a wait that failed by chance, fails the example.
   it "leaves nothing of the watches' record on the page, after an example that failed with it open, nor outside it" $ do
-    failed <- try @SomeException $ runWatched $ do
+    failed :: Either FailedOnPurpose () <- try $ runWatched $ do
       ui <- start m Nothing (Page docs guide)
       waitQuietWithin guideLoaded
       bringNear ui
-      expectationFailure "failed on purpose, with the record open"
+      unsafeIOToPageM deckLeft `shouldReturn` "the page's IntersectionObserver is still the recording one; the record is still there; the frame counter still runs"
+      unsafeIOToPageM (throwIO FailedOnPurpose)
     runPage $ do
-      isLeft failed `shouldBe` True
+      failed `shouldBe` Left FailedOnPurpose
       unsafeIOToPageM deckLeft `shouldReturn` ""
       ui <- start m Nothing (Page docs guide)
       waitQuietWithin guideLoaded

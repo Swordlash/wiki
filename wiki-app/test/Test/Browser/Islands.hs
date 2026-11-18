@@ -66,16 +66,15 @@ spec m = do
       ui <- mount m harness (Tikz "\\begin{tikzpicture}[scale=2]\n\\draw (0,0) circle (1);\n\\end{tikzpicture}")
       _ <- waitForPicture ui
       changeTo ui (Tikz "\\begin{tikzcd}\nA \\arrow[r, \"f\"] & B\n\\end{tikzcd}")
-      eventuallyWithin 30000 $ do
-        picture <- find ui "div.wiki-tikz > svg"
-        texts <- traverse textContent =<< findAllIn picture "text"
-        length texts `shouldSatisfy` (>= 3)
+      picture <- waitForPicture ui
+      texts <- traverse textContent =<< findAllIn picture "text"
+      length texts `shouldSatisfy` (>= 3)
       count ui "div.wiki-tikz svg" `shouldReturn` 1
 
     it "shows TeX's error under the source of a picture TeX cannot draw" $ runPage $ do
       let source = "\\draw (0,0) -- (1,1);\n\\undefinedcommand"
       ui <- mount m harness (Tikz source)
-      message <- eventuallyWithin 30000 (find ui "div.wiki-tikz > .wiki-island-error")
+      message <- drawn ui "div.wiki-tikz > .wiki-island-error"
       message `shouldHaveText'` "Undefined control sequence"
       -- TeX's line, counted as the author's.
       message `shouldHaveText'` "l.2 \\undefinedcommand"
@@ -142,14 +141,12 @@ spec m = do
       ui <- mount m harness (Mermaid "graph LR\n  first --> second")
       waitForDiagram ui >>= outerHTML >>= (`shouldSatisfy` T.isInfixOf "second")
       changeTo ui (Mermaid "graph LR\n  first --> third")
-      eventuallyWithin 15000 $ do
-        diagram <- waitForDiagram ui
-        outerHTML diagram >>= (`shouldSatisfy` T.isInfixOf "third")
+      waitForDiagram ui >>= outerHTML >>= (`shouldSatisfy` T.isInfixOf "third")
       count ui "div.wiki-mermaid svg" `shouldReturn` 1
 
     it "shows a source Mermaid cannot parse as an error in its place" $ runPage $ do
       ui <- mount m harness (Mermaid "graph LR\n  first -->")
-      _ <- eventuallyWithin 15000 (find ui "div.wiki-mermaid .wiki-island-error")
+      _ <- drawn ui "div.wiki-mermaid .wiki-island-error"
       count ui "div.wiki-mermaid svg" `shouldReturn` 0
       -- Mermaid's message goes to the parent; the diagram fixed clears it.
       eventually $ failures ui >>= (`shouldSatisfy` ((== 1) . length))
@@ -222,12 +219,21 @@ spec m = do
     lastOutput ui = lastMay <$> outputs ui
     count ui selector = length <$> findAll ui selector
     countIn element selector = length <$> findAllIn element selector
-    -- Mermaid's bundle is fetched the first time a diagram is drawn, which
-    -- can take longer than find's two seconds.
-    waitForDiagram ui = eventuallyWithin 15000 (find ui "div.wiki-mermaid > svg")
-    -- TikZJax's TeX, the first time, is 6 MB to fetch and inflate, and TeX
-    -- then runs.
-    waitForPicture ui = eventuallyWithin 30000 (find ui "div.wiki-tikz > svg")
+    -- A diagram and a picture are drawn once the program is quiet: the
+    -- island waits for its drawing in a fork of its own, which counts as
+    -- waiting (Wiki.App.Islands). Mermaid's bundle is fetched the first
+    -- time a diagram is drawn; TikZJax's TeX, the first time, is 6 MB to
+    -- fetch and inflate, and TeX then runs.
+    waitForDiagram ui = drawn ui "div.wiki-mermaid > svg"
+    waitForPicture ui = drawn ui "div.wiki-tikz > svg"
+    -- The one element a selector finds once the program is quiet, read
+    -- once. The deadline is a watchdog against a hang, longer than the
+    -- island's own bound on a drawing (a minute, jsbits/islands.js).
+    drawn ui selector = do
+      waitQuietWithin 120000
+      findAll ui selector >>= \case
+        [element] -> pure element
+        found -> expectationFailure ("drawn, " <> selector <> " finds " <> show (length found) <> " elements, not one")
     fetched part = unsafeIOToPageM (js_fetched (toJSText part))
     fontLoaded font = unsafeIOToPageM (js_font_loaded (toJSText font))
     shouldNotSatisfy' value p = value `shouldSatisfy` (not . p)

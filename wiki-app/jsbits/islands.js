@@ -33,19 +33,42 @@ function wiki_islands_builtin_macros() {
   return islands ? islands.builtinMacros() : "";
 }
 
+// The longest the application waits for an island's work that ends later
+// (Wiki.App.Islands.Monad's Drawing), in milliseconds: a watchdog, which
+// no drawing that ends reaches (TeX's own limit on a run is 30 s, after
+// its files are in). What has not ended by then goes on, and fills its
+// element if it ends.
+const wikiIslandsWaitMs = 60_000;
+
+// A promise of the end of some work, which never rejects, and resolves at
+// the latest after wikiIslandsWaitMs.
+function wikiIslandsBounded(work) {
+  let timer;
+  const bound = new Promise((resolve) => {
+    timer = setTimeout(resolve, wikiIslandsWaitMs);
+  });
+  return Promise.race([Promise.resolve(work).then(
+    () => {},
+    () => {},
+  ), bound]).finally(() => clearTimeout(timer));
+}
+
 // A diagram and a picture are drawn later: the page's islands.js tells the
 // element with a "wiki-island-drawn" event when it is done
-// (Wiki.App.Islands.Monad's drawnProblem).
+// (Wiki.App.Islands.Monad's drawnProblem), and its promise, returned here,
+// settles then, or when the drawing is dropped for a newer one.
 function wiki_islands_render_mermaid(element, source) {
   const islands = globalThis.wikiIslands;
-  if (islands) islands.renderMermaid(element, source);
-  else element.textContent = source;
+  if (islands) return wikiIslandsBounded(islands.renderMermaid(element, source));
+  element.textContent = source;
+  return Promise.resolve();
 }
 
 function wiki_islands_render_tikz(element, source, preamble, picture) {
   const islands = globalThis.wikiIslands;
-  if (islands) islands.renderTikz(element, source, preamble, picture);
-  else element.textContent = source;
+  if (islands) return wikiIslandsBounded(islands.renderTikz(element, source, preamble, picture));
+  element.textContent = source;
+  return Promise.resolve();
 }
 
 function wiki_islands_highlight(element, language, code) {
@@ -112,6 +135,14 @@ function wiki_islands_highlight(element, language, code) {
 // is dropped from it, its observer disconnected, whenever another frame is
 // fitted, the window's height changes, or its own observer fires; the
 // window's listener goes with the last frame.
+//
+// Each ask returns a promise that resolves once the frame's current
+// document (its srcdoc as it is now) has loaded, with what it loads
+// (images), and the frame has been measured with it: at once when it has,
+// or after its load event. The document the frame last loaded is noted at
+// its load; a frame of the prerendered page whose document had loaded
+// before the program asked counts as loaded with the srcdoc it has. A
+// frame dropped from the set resolves what waited for it.
 const wikiFittedFrames = new Map();
 let wikiFramesResizing = false;
 
@@ -133,6 +164,7 @@ function wikiFramesSweep() {
   for (const [frame, fitted] of wikiFittedFrames) {
     if (!frame.isConnected) {
       fitted.stop();
+      fitted.release();
       wikiFittedFrames.delete(frame);
     }
   }
@@ -193,9 +225,29 @@ function wikiFrameExtent(doc) {
 
 function wiki_islands_fit_frame(frame) {
   wikiFramesSweep();
-  const fitted = wikiFittedFrames.get(frame);
-  if (fitted) return fitted.measure();
+  const known = wikiFittedFrames.get(frame);
+  if (known) {
+    known.measure();
+    return wikiIslandsBounded(known.loaded());
+  }
   let observer = null;
+  // The srcdoc of the document the frame last loaded, and what waits for
+  // the current one.
+  let loadedSource = null;
+  let waiting = [];
+  const release = () => {
+    const resolved = waiting;
+    waiting = [];
+    for (const resolve of resolved) resolve();
+  };
+  const settleIfLoaded = () => {
+    if (loadedSource === frame.srcdoc) release();
+  };
+  const loaded = () =>
+    new Promise((resolve) => {
+      waiting.push(resolve);
+      settleIfLoaded();
+    });
   const measure = () => {
     if (!frame.isConnected) return wikiFramesSweep();
     // 0. A height the fence gives: the frame is left alone.
@@ -238,8 +290,17 @@ function wiki_islands_fit_frame(frame) {
     for (const type of ["load", "toggle", "transitionend", "animationend"]) doc.addEventListener(type, measure, true);
     measure();
   };
-  wikiFittedFrames.set(frame, { measure, stop: () => observer?.disconnect() });
+  wikiFittedFrames.set(frame, { measure, stop: () => observer?.disconnect(), release, loaded });
   if (wikiFittedFrames.size === 1) window.addEventListener("resize", wikiFramesOnResize);
-  frame.addEventListener("load", watch);
+  frame.addEventListener("load", () => {
+    loadedSource = frame.srcdoc;
+    watch();
+    settleIfLoaded();
+  });
+  // A document loaded before the program asked: the prerendered page's.
+  // A frame just made holds about:blank until its srcdoc loads.
+  const doc = frame.contentDocument;
+  if (doc?.readyState === "complete" && doc.URL === "about:srcdoc") loadedSource = frame.srcdoc;
   watch();
+  return wikiIslandsBounded(loaded());
 }

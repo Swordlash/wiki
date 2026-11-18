@@ -58,7 +58,8 @@ spec m = describe "an html fence" $ do
   it "shows a frame with the author's styles, and the wiki's classes as the page has them" $ runPage $ do
     ui <- page m styled
     _ <- find ui ".page-body iframe.wiki-html"
-    eventually $ frameStyle ".card" "border-top-width" `shouldReturn` "3px"
+    fitted
+    frameStyle ".card" "border-top-width" `shouldReturn` "3px"
     frameStyle "#styled" "color" `shouldReturn` "rgb(4, 5, 6)"
     -- The author's rule wins over the wiki's, however specific the
     -- wiki's: the wiki's stylesheet is in a layer of its own.
@@ -73,11 +74,12 @@ spec m = describe "an html fence" $ do
   it "is as high as its content, and no higher than most of the window, scrolling beyond" $ runPage $ do
     ui <- page m (styled <> "\n\n```html\n" <> T.concat (replicate 120 "<p>A line of a long block.</p>\n") <> "```\n")
     _ <- find ui ".page-body iframe.wiki-html"
-    eventually $ do
+    fitted
+    do
       (high, content, _) <- heights ".page-body iframe.wiki-html"
       content `shouldSatisfy` (> 0)
       abs (high - content) `shouldSatisfy` (<= 1)
-    eventually $ do
+    do
       (high, content, cap) <- heights ".page-body iframe.wiki-html ~ iframe.wiki-html"
       content `shouldSatisfy` (> cap)
       abs (high - cap) `shouldSatisfy` (<= 1)
@@ -85,7 +87,8 @@ spec m = describe "an html fence" $ do
   it "runs no script: the allowlist leaves none in the frame's document" $ runPage $ do
     ui <- page m hostile
     _ <- find ui ".page-body iframe.wiki-html"
-    eventually $ frameText `shouldReturn` "shown"
+    fitted
+    frameText `shouldReturn` "shown"
     frameCount "script" `shouldReturn` 0
     frameCount "[onerror], [onload], [onclick]" `shouldReturn` 0
     notAllowed `shouldReturn` ""
@@ -100,7 +103,8 @@ spec m = describe "an html fence" $ do
     _ <- find ui ".page-body iframe.wiki-html"
     -- Every line's paragraph after it is there: the element before it
     -- ended where the browser ends it.
-    eventually $ frameCount ".page-body p.after" `shouldReturn` length rawTextLines
+    fitted
+    frameCount ".page-body p.after" `shouldReturn` length rawTextLines
     frameCount "script" `shouldReturn` 0
     frameCount "[onerror], [onload]" `shouldReturn` 0
     notAllowed `shouldReturn` ""
@@ -112,9 +116,10 @@ spec m = describe "an html fence" $ do
   it "is as high as its content, measured with the frame at its largest, the same when measured again" $ runPage $ do
     ui <- page m (T.intercalate "\n\n" (map (\(_, b, _) -> "```html\n" <> b <> "\n```") sized))
     _ <- find ui ".page-body iframe.wiki-html"
+    fitted
     for_ (zip [1 :: Int ..] sized) $ \(n, (name, _, expected)) -> do
       let frameN = ".page-body iframe.wiki-html:nth-of-type(" <> show n <> ")"
-      eventually $ do
+      do
         (high, _, cap) <- heights frameN
         (name, high, abs (high - expected cap) <= 2) `shouldSatisfy` (\(_, _, ok) -> ok)
       -- The postcondition: nothing to scroll to below the height, unless
@@ -132,11 +137,12 @@ spec m = describe "an html fence" $ do
     ui <- page m "```html {height=300}\n<div style=\"height: 3000px\">tall</div>\n```\n\n```html {height=tall}\n<p>fitted</p>\n```\n"
     _ <- find ui frame
     let ignored = frame <> " ~ iframe.wiki-html"
-    eventually $ do
+    fitted
+    do
       (high, content, _) <- heights frame
       high `shouldBe` 300
       content `shouldSatisfy` (> 300)
-    before <- eventually $ do
+    before <- do
       (high, content, _) <- heights ignored
       content `shouldSatisfy` (> 0)
       abs (high - content) `shouldSatisfy` (<= 1)
@@ -157,7 +163,8 @@ spec m = describe "an html fence" $ do
   it "is fitted again to the window's new height" $ runPage $ do
     ui <- page m "```html\n<div style=\"height: 3000px\">tall</div>\n```\n"
     _ <- find ui frame
-    (_, fitted, cap) <- eventually $ do
+    fitted
+    (_, fittedHeight, cap) <- do
       found@(_, given, cap) <- fit frame
       given `shouldBe` cap
       pure found
@@ -171,7 +178,7 @@ spec m = describe "an html fence" $ do
     unsafeIOToPageM (js_window_height 0)
     eventually $ do
       (_, given, _) <- fit frame
-      given `shouldBe` fitted
+      given `shouldBe` fittedHeight
 
   describe "on a slide, drawn in the slide's colours, whatever the system's" $ do
     let slides = PageSlides (slugs ["team", "projects"]) (slugs ["html-blocks"]) 1 1
@@ -182,7 +189,8 @@ spec m = describe "an html fence" $ do
       _ <- find ui onSlide
       slideText <- computedStyle ".slide-frame.current .slide" "color"
       slideText `shouldBe` "rgb(230, 237, 243)"
-      eventually $ frameStyleIn onSlide "#text" "color" `shouldReturn` slideText
+      fitted
+      frameStyleIn onSlide "#text" "color" `shouldReturn` slideText
     it "is dark text on a light slide whatever the root's palette, as under the system's dark scheme" $ runPage $ do
       -- The runner's system is light; the dark scheme gives the root the
       -- dark palette, which the block's own rule does here.
@@ -190,20 +198,23 @@ spec m = describe "an html fence" $ do
       _ <- find ui onSlide
       slideText <- computedStyle ".slide-frame.current .slide" "color"
       slideText `shouldBe` "rgb(31, 35, 40)"
-      eventually $ frameStyleIn onSlide "#text" "color" `shouldReturn` slideText
+      fitted
+      frameStyleIn onSlide "#text" "color" `shouldReturn` slideText
     it "is the page's colours on a page" $ runPage $ do
       ui <- page m "```html\n<p id=\"text\">Readable</p>\n```\n"
       _ <- find ui ".page-body iframe.wiki-html"
       pageText <- computedStyle ".page-body" "color"
-      eventually $ frameStyle "#text" "color" `shouldReturn` pageText
+      fitted
+      frameStyle "#text" "color" `shouldReturn` pageText
       frameCount "body.html-frame-light, body.html-frame-dark" `shouldReturn` 0
 
   it "runs no script even written straight into the frame's document: the sandbox forbids it" $ runPage $ do
     ui <- mount m (Islands.component @(Const Void) @Void) (HtmlFrame Nothing (frameDocument SystemScheme "<p>shown</p><script>parent.wikiFrameScriptRan = 'script'</script><img src=\"nowhere.png\" onerror=\"parent.wikiFrameScriptRan = 'handler'\">"))
     _ <- find ui "iframe.wiki-html"
-    eventually $ frameCountIn "iframe.wiki-html" "script" `shouldReturn` 1
+    fitted
+    frameCountIn "iframe.wiki-html" "script" `shouldReturn` 1
     -- The image's error has come and gone by the time the frame loaded.
-    eventually $ frameCountIn "iframe.wiki-html" "img" `shouldReturn` 1
+    frameCountIn "iframe.wiki-html" "img" `shouldReturn` 1
     flag `shouldReturn` ""
 
   it "shows the frame in the live preview, following the text" $ runPage $ do
@@ -212,19 +223,25 @@ spec m = describe "an html fence" $ do
     find ui ".editor-preview" >>= shouldBeVisible
     setMarkdown ui ("# Hello, world\n\n" <> styled)
     _ <- find ui ".editor-preview iframe.wiki-html"
-    eventually $ frameStyleIn ".editor-preview iframe.wiki-html" ".card" "border-top-width" `shouldReturn` "3px"
+    fitted
+    frameStyleIn ".editor-preview iframe.wiki-html" ".card" "border-top-width" `shouldReturn` "3px"
+    -- The preview follows after its pause, which the program counts, and
+    -- its frame loads the new document: both are over once it is quiet.
     setMarkdown ui "# Hello, world\n\n```html\n<p class=\"changed\">Changed.</p>\n```\n"
-    eventually $ frameCountIn ".editor-preview iframe.wiki-html" "p.changed" `shouldReturn` 1
-    eventually $ do
+    fitted
+    frameCountIn ".editor-preview iframe.wiki-html" "p.changed" `shouldReturn` 1
+    do
       (high, content, _) <- heights ".editor-preview iframe.wiki-html"
       abs (high - content) `shouldSatisfy` (<= 1)
     -- A height typed in, then taken away again.
     setMarkdown ui "# Hello, world\n\n```html {height=300}\n<p class=\"changed\">Changed.</p>\n```\n"
-    eventually $ do
+    fitted
+    do
       (high, _, _) <- heights ".editor-preview iframe.wiki-html"
       high `shouldBe` 300
     setMarkdown ui "# Hello, world\n\n```html\n<p class=\"changed\">Changed.</p>\n```\n"
-    eventually $ do
+    fitted
+    do
       (high, content, _) <- heights ".editor-preview iframe.wiki-html"
       high `shouldSatisfy` (< 300)
       abs (high - content) `shouldSatisfy` (<= 1)
@@ -243,7 +260,8 @@ spec m = describe "an html fence" $ do
     ui <- adopt m arrived Nothing guide
     find ui frame >>= (`shouldBeSameElement` framed)
     -- The program has measured it, so it has filled the island.
-    eventually $ do
+    fitted
+    do
       (high, content, _) <- heights frame
       abs (high - content) `shouldSatisfy` (<= 1)
     settle
@@ -268,6 +286,13 @@ spec m = describe "an html fence" $ do
     _ <- find ui ".page-body pre.wiki-code > code.hljs.language-html span.hljs-tag"
     _ <- find ui ".page-body pre.wiki-code > code.hljs.language-latex"
     length <$> findAll ui ".page-body iframe.wiki-html, .page-body .wiki-math-display" `shouldReturn` 0
+
+-- | Once the program is quiet, each frame has loaded its document and been
+-- fitted to it: the island waits for both (Wiki.App.Islands' fitFrame).
+-- The deadline is a watchdog against a hang, longer than the island's own
+-- bound (a minute, jsbits/islands.js); no passing test comes near it.
+fitted :: (HasCallStack) => PageM s ()
+fitted = waitQuietWithin 120000
 
 -- | The elements of the page's frame that are not among the allowlist's
 -- (and the frame's style elements): "" when there are none.

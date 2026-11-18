@@ -77,8 +77,13 @@ spec m = do
     find ui ".page-body h1" >>= (`shouldHaveText` "Tour")
     find ui ".page-body a[href$='#/s/docs/p/markdown-guide/diagrams/']" >>= click
     find ui ".page-body h1" >>= (`shouldHaveText` "Diagrams")
-    _ <- eventuallyWithin 15000 (find ui ".page-body .wiki-mermaid > svg")
-    pure ()
+    -- Its diagrams are drawn once the program is quiet: each island waits
+    -- for its drawing (Wiki.App.Islands). The deadline is a watchdog.
+    waitQuietWithin 120000
+    diagrams <- findAll ui ".page-body .wiki-mermaid"
+    drawn <- findAll ui ".page-body .wiki-mermaid > svg"
+    -- Every diagram of the page drawn, and there is one at least.
+    (length drawn, length diagrams) `shouldSatisfy` (\(d, n) -> d > 0 && d == n)
 
   it "lets admin create a space, which opens at its home page" $ runPage $ do
     ui <- start m Nothing Home

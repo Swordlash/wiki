@@ -243,28 +243,27 @@ spec site paths visitorGate = do
   -- at once. (When an island's component waited for its drawing, following
   -- a link then left the page as it was; see Wiki.App.Islands.Monad.)
   -- TeX's format is held back until the end, so that the picture is still
-  -- being drawn when the links are followed; nothing here may wait for it,
-  -- and each view is read once its action has settled and its content has
-  -- been read.
+  -- being drawn when the links are followed. The island waits for its
+  -- drawing in a fork, which the program counts as waiting: a page with
+  -- the picture is never quiet here, so a read on it waits for the
+  -- program's settle (every action ends with it), not for quiet.
   it "gives way to the next page at once while a TikZ picture is being drawn" $ onDemoPage demoContext $ \page -> do
     -- Held on the context: the request is TikZJax's worker's, which a
     -- page's route may not see.
     format <- hold (pageContext page) "**/tikzjax/core.dump.bin"
     visit page (address site.demo "/s/docs/p/markdown-guide/")
-    waitQuiet page
     -- TikZJax's worker has asked for TeX's format, which is held: the
     -- picture is being drawn, and stays so until the end.
     waitHeld format
+    settle page
     count (locator page "#app .wiki-tikz > svg") `shouldReturn` 0
     click (withText "Edit" (locator page "#app .page-view .actions a"))
     waitQuiet page
     (\s -> s.view) <$> shown page `shouldReturn` Just "editor"
     editorReady page
     goBack page
-    waitQuiet page
     textContent (locator page "#app .page-view h1") `shouldReturn` "Markdown guide"
     click (withText "Mathematics" (locator page "#app .wiki-sidebar .page-tree a"))
-    waitQuiet page
     textContent (locator page "#app .page-view h1") `shouldReturn` "Mathematics"
     count (locator page "#app .wiki-tikz > svg") `shouldReturn` 0
     release format

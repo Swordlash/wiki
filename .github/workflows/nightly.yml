@@ -81,6 +81,8 @@ env:
 
 jobs:
   properties:
+    # MEASUREMENT (WP5.137): the browser suite's waits only.
+    if: false
     name: the machines' properties
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -188,6 +190,8 @@ jobs:
     # As in build.yml's wasm job: the test bundle's digest takes it in.
     env:
       HALOGEN_BASE_PATH: /${{ github.event.repository.name }}/
+      # MEASUREMENT (WP5.137): the report's lines, kept.
+      BLIND_LOG: ${{ github.workspace }}/blind-waits.log
 
     steps:
     - name: Checkout code
@@ -321,7 +325,11 @@ jobs:
     # (renamed, or skipped by the wrapper) fails the step rather than
     # passing it.
     - name: Run the browser suite under load
+      # MEASUREMENT (WP5.137): bash, for pipefail through the tee.
+      shell: bash
       env:
+        # MEASUREMENT (WP5.137): the report of the waits that retried.
+        HSPEC_HALOGEN_RETRIES: '1'
         WIKI_NIGHTLY_RUNS: ${{ env.RUNS }}
         HSPEC_HALOGEN_TIMEOUT: '1800'
       run: |
@@ -330,10 +338,21 @@ jobs:
         export HSPEC_HALOGEN_JOBS WIKI_NIGHTLY_MARK
         echo "### The browser suite, $RUNS runs of $HSPEC_HALOGEN_JOBS pages side by side on $(nproc) cores" >> "$GITHUB_STEP_SUMMARY"
         status=0
-        npm run test-wasm -- --test-show-details=direct --test-wrapper="$PWD/toolchain/nightly-browser-runs.sh" || status=$?
+        # MEASUREMENT (WP5.137): every line of the runs kept, with each
+        # example's time.
+        npm run test-wasm -- --test-show-details=direct --test-options=--times --test-wrapper="$PWD/toolchain/nightly-browser-runs.sh" 2>&1 | tee "$BLIND_LOG" || status=$?
+        echo "cpu: $(sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -n 1)" >> "$BLIND_LOG"
         made=$(cat "$WIKI_NIGHTLY_MARK" 2>/dev/null || echo 0)
         if [ "$made" != "$WIKI_NIGHTLY_RUNS" ]; then
           echo "::error title=The browser suite did not run::$made of $WIKI_NIGHTLY_RUNS runs of wiki-app-browser-test were made"
           exit 1
         fi
         exit "$status"
+
+    # MEASUREMENT (WP5.137): the lines, whatever the runs' outcome.
+    - name: Keep the measurement
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: blind-waits-nightly
+        path: blind-waits.log

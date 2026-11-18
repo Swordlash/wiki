@@ -180,9 +180,11 @@ leftOfThePassword backing = describe "the password" $ do
       w <- weakOfText password
       signIn s "editor" password `shouldReturn` SignedIn editorId
       pure w
-    rememberedLogins s.signIns `shouldReturn` 1
     performMajorGC
     deRefWeak weak >>= (`shouldSatisfy` isNothing)
+    -- Read after the collection, so that the memory of sign-ins was alive
+    -- through it: the password is gone though what was remembered is not.
+    rememberedLogins s.signIns `shouldReturn` 1
 
   it "is forgotten once remembered too long, by any later request" $ withSigning backing (const identity) $ \s -> do
     now <- getCurrentTime

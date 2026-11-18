@@ -6,6 +6,13 @@
 // browser ran no observer for the page (the test's own observer heard
 // nothing either, and no frame was drawn), the browser reported and the
 // program's observer did not hear, or the link was never near.
+//
+// Everything the diagnostic puts on the page is started by
+// wiki_test_deck_spy and taken away by wiki_test_deck_spy_stop, which the
+// test calls around an example's whole body, whether it passes or fails
+// (Test.Browser.DeckViewer's runWatched): the page's IntersectionObserver
+// replaced, the record, the test's own observer and the frame counter. The
+// next example on the same page finds none of it.
 
 // The page's IntersectionObserver, as the browser gives it.
 const wikiTestNativeObserver = globalThis.wikiTestNativeObserver ?? globalThis.IntersectionObserver;
@@ -16,7 +23,8 @@ globalThis.wikiTestNativeObserver = wikiTestNativeObserver;
 // it is given, with the time. Nothing else changes: the callback is called
 // as before. Made again, the record starts afresh.
 function wiki_test_deck_spy() {
-  const spied = { observers: [] };
+  wiki_test_deck_spy_stop();
+  const spied = { observers: [], near: null };
   globalThis.wikiTestDeckSpy = spied;
   globalThis.IntersectionObserver = class extends wikiTestNativeObserver {
     constructor(callback, options) {
@@ -50,14 +58,22 @@ function wikiTestEntry(entry) {
   };
 }
 
-// From the moment a test brings the link near: an observer of the test's
-// own on the link the selector finds, with the program's margin, keeping
-// every entry; and a count of the animation frames the page draws.
+// How many animation frames the diagnostic's frame counter has seen, on
+// this page, ever: a leak check reads it twice across a frame, and a
+// counter left running moves it.
+if (globalThis.wikiTestDeckFrameTicks === undefined) globalThis.wikiTestDeckFrameTicks = 0;
+
+// From the moment a test brings the link near, while the record is open
+// (wiki_test_deck_spy): an observer of the test's own on the link the
+// selector finds, with the program's margin, keeping every entry; and a
+// count of the animation frames the page draws. Without a record, nothing.
 function wiki_test_deck_near_start(selector) {
+  const spied = globalThis.wikiTestDeckSpy;
+  if (spied === undefined) return;
+  spied.near?.stop();
   const link = document.querySelector(selector);
-  const near = { link, selector, since: Math.round(performance.now()), heard: [], frames: 0 };
-  globalThis.wikiTestDeckNear?.stop();
-  globalThis.wikiTestDeckNear = near;
+  const near = { link, selector, since: Math.round(performance.now()), heard: [], frames: 0, stop: () => {} };
+  spied.near = near;
   if (link === null) return;
   const observer = new wikiTestNativeObserver(
     (entries) => {
@@ -67,14 +83,17 @@ function wiki_test_deck_near_start(selector) {
   );
   observer.observe(link);
   let running = true;
+  let pending = 0;
   const frame = () => {
     if (!running) return;
     near.frames += 1;
-    requestAnimationFrame(frame);
+    globalThis.wikiTestDeckFrameTicks += 1;
+    pending = requestAnimationFrame(frame);
   };
-  requestAnimationFrame(frame);
+  pending = requestAnimationFrame(frame);
   near.stop = () => {
     running = false;
+    cancelAnimationFrame(pending);
     observer.disconnect();
   };
 }
@@ -86,7 +105,7 @@ function wiki_test_deck_near_start(selector) {
 // the test's observer heard, and what each observer of the program's
 // margin was told.
 function wiki_test_deck_report() {
-  const near = globalThis.wikiTestDeckNear;
+  const near = globalThis.wikiTestDeckSpy?.near ?? null;
   const link = near?.link ?? null;
   const box = link?.getBoundingClientRect();
   const watches = (globalThis.wikiTestDeckSpy?.observers ?? []).filter((o) => o.margin.startsWith("200px"));
@@ -114,11 +133,23 @@ function wiki_test_deck_report() {
   );
 }
 
-// The page's own IntersectionObserver again, and the test's observer and
-// frame count stopped.
+// The page's own IntersectionObserver again, the test's observer and frame
+// counter stopped, and the record gone.
 function wiki_test_deck_spy_stop() {
   globalThis.IntersectionObserver = wikiTestNativeObserver;
-  globalThis.wikiTestDeckNear?.stop?.();
+  globalThis.wikiTestDeckSpy?.near?.stop();
   delete globalThis.wikiTestDeckSpy;
-  delete globalThis.wikiTestDeckNear;
+}
+
+// What the diagnostic left on the page, once it is meant to be gone: ""
+// for nothing, else what. The frame counter is read twice, two frames
+// apart.
+async function wiki_test_deck_left() {
+  const left = [];
+  if (globalThis.IntersectionObserver !== wikiTestNativeObserver) left.push("the page's IntersectionObserver is still the recording one");
+  if (globalThis.wikiTestDeckSpy !== undefined) left.push("the record is still there");
+  const ticks = globalThis.wikiTestDeckFrameTicks;
+  await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+  if (globalThis.wikiTestDeckFrameTicks !== ticks) left.push("the frame counter still runs");
+  return left.join("; ");
 }

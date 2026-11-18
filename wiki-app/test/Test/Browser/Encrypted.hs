@@ -64,7 +64,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import System.Timeout (timeout)
-import Test.Browser.Http (Asked (..), answerWith, answersTaken, asked, holdAt, offline, release, said, serveDemo, serverStarts, startServer, startServerOver, startServerThrough, tellServer)
+import Test.Browser.Http (Asked (..), answerWith, answersTaken, asked, holdAt, offline, release, said, serveDemo, serverStartsWith, startServer, startServerOver, startServerThrough, tellServer)
 import Test.Browser.Mount (clickButton)
 import Test.Browser.Text (editorText)
 import Test.Hspec.Halogen
@@ -145,7 +145,6 @@ $( browserJS
      , ("js_hold_decryptions", "wiki_test_encrypted_hold_decryptions", Safe, [t|JSText -> IO ()|])
      , ("js_decryptions_held", "wiki_test_encrypted_decryptions_held", Safe, [t|IO Int|])
      , ("js_release_decryptions", "wiki_test_encrypted_release_decryptions", Safe, [t|IO Int|])
-     , ("js_decryptions_done", "wiki_test_encrypted_decryptions_done", Safe, [t|IO Int|])
      , ("js_committed", "wiki_test_encrypted_committed", Safe, [t|IO JSText|])
      , ("js_go_to", "wiki_test_encrypted_go_to", Safe, [t|JSText -> IO ()|])
      , ("js_settle", "wiki_test_encrypted_settle", Safe, [t|JSText -> JSText -> IO ()|])
@@ -200,8 +199,12 @@ js_unlock_device a = if inBrowser then wait =<< js_unlock_devicePromise a else p
 
 type Specs m = (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m)
 
+-- The reads look once, with the program quiet: its requests to the test's
+-- server, IndexedDB and WebCrypto answered. What the test holds on purpose
+-- is counted as held: the server's held requests, and the decryptions an
+-- example holds ('encryptedSpaceWith').
 spec :: forall m -> (Specs m) => Spec
-spec m = do
+spec m = readsOnce Quiet $ do
   it "turns a space encrypted, writes a page and reads it back with its history, and the server stores none of its text" $ runPage $ do
     env <- encryptedSpace "user-admin"
     run env (encryptSpace secret.id) >>= \case
@@ -301,12 +304,12 @@ spec m = do
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     ui <- startServer m (R.Space [secretSlug])
-    eventually (find ui ".encrypted-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "does not hold your keys"))
+    find ui ".encrypted-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "does not hold your keys")
     _ <- find ui ".encrypted-unlock-passkey"
     -- What an unlock of the vault puts on the device ("Wiki.App.Vault").
     unsafeIOToPageM (js_unlock_device (toJSText ("user-admin" :: Text)))
     find ui ".encrypted-retry" >>= click
-    eventually (find ui ".page-tree" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Behind the lock"))
+    find ui ".page-tree" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Behind the lock")
     length <$> findAll ui ".encrypted-space" `shouldReturn` 0
 
   -- Item 1 of WP5.74b3: a comment, the text it quotes, and an
@@ -428,8 +431,9 @@ spec m = do
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     let imageOf ui = do
-          img <- eventually (find ui ".page-view .page-body img")
-          src <- eventually (getAttribute img "src" >>= maybe (panic "no src") pure >>= \u -> u <$ (u `shouldSatisfy` T.isPrefixOf "blob:"))
+          img <- find ui ".page-view .page-body img"
+          src <- getAttribute img "src" >>= maybe (panic "no src") pure
+          src `shouldSatisfy` T.isPrefixOf "blob:"
           pure src
         go ui title = do
           links <- findAll ui ".wiki-sidebar .page-tree a"
@@ -440,18 +444,20 @@ spec m = do
     unsafeIOToPageM (js_image_width (toJSText oneSrc)) `shouldReturn` 3
     -- Another page: the first page's URL is let go.
     go ui "Two"
-    eventually (find ui ".page-view .page-title-row" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Two"))
+    find ui ".page-view .page-title-row" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Two")
     void (imageOf ui)
-    eventually (unsafeIOToPageM (js_image_width (toJSText oneSrc)) `shouldReturn` (-1))
+    unsafeIOToPageM (js_image_width (toJSText oneSrc)) `shouldReturn` (-1)
     -- The third page's answer is held; the reader goes back to the second
     -- before it comes.
     let threeAt = endpointUrl (\e -> e.encrypted.pageAt secret.id [pageThree.slug])
     holdAt "GET" threeAt
     go ui "Three"
-    -- Asked for, and held.
-    eventually ((\sent -> [r.url | r <- sent, r.url == threeAt]) <$> asked >>= (`shouldSatisfy` (not . null)))
+    -- Asked for, and held: quiet once the server holds the request, which
+    -- it counts as held.
+    waitQuiet
+    (\sent -> [r.url | r <- sent, r.url == threeAt]) <$> asked >>= (`shouldSatisfy` (not . null))
     go ui "Two"
-    eventually (find ui ".page-view .page-title-row" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Two"))
+    find ui ".page-view .page-title-row" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Two")
     twoAgain <- imageOf ui
     -- The third page's answer, taken: the second stays.
     release
@@ -488,7 +494,8 @@ spec m = do
     ui <- startServer m (R.PageSlides [secretSlug] [made.slug] 1 1)
     -- The first attachment's URL is made; the second's bytes are held.
     let images = (\blobs -> [u | (u, (t, gone)) <- Map.toList blobs, t == "image/svg+xml", not gone]) <$> blobsNow
-    eventually (images >>= (`shouldSatisfy` ((== 1) . length)))
+    waitQuiet
+    images >>= (`shouldSatisfy` ((== 1) . length))
     firstUrl <- fromMaybe "" . head <$> images
     unsafeIOToPageM (js_image_width (toJSText firstUrl)) `shouldReturn` 3
     unmount ui
@@ -530,7 +537,7 @@ spec m = do
     -- view that left it.
     let openAndClose (route, shown) = do
           ui <- startServerOver m tab route
-          _ <- eventuallyWithin 8000 (find ui shown)
+          _ <- find ui shown
           unmount ui
           settle
           (route,) <$> held `shouldReturn` (route, before)
@@ -545,8 +552,10 @@ spec m = do
     for_ (map fst sealed) $ \route -> do
       n <- askedFor
       ui <- startServerOver m tab route
-      -- The view asked for the page, and waits for it.
-      eventually (askedFor >>= (`shouldSatisfy` (> n)))
+      -- The view asked for the page, and waits for it: quiet once the
+      -- server holds the request.
+      waitQuiet
+      askedFor >>= (`shouldSatisfy` (> n))
       unmount ui
       settle
       (route,) <$> held `shouldReturn` (route, before)
@@ -646,9 +655,9 @@ spec m = do
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     ui <- startServer m (R.Page [secretSlug] [made.slug])
-    eventually (find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Tuesday"))
+    find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Tuesday")
     -- A comment about the whole page is shown below it.
-    _ <- eventually (find ui ".page-comments")
+    _ <- find ui ".page-comments"
     -- Another tab of the reader's writes a comment; the server tells the
     -- page only that the threads changed.
     other <- as "user-admin"
@@ -657,10 +666,12 @@ spec m = do
     let event = Event made.id ThreadsChanged
     decodeUtf8 (toS (encode event)) `shouldSatisfy` (not . T.isInfixOf "Written")
     -- Told once the page has subscribed: before, its socket may not be
-    -- open, and the event would reach nothing.
+    -- open, and the event would reach nothing. The test's socket opens on
+    -- the browser's timer, which the program does not count as its work,
+    -- so this read is tried again until the subscription is there.
     eventually ((Subscribe made.id `elem`) <$> said `shouldReturn` True)
     tellServer event
-    eventually (find ui ".page-comments" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Written in another tab."))
+    find ui ".page-comments" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Written in another tab.")
     unmount ui
 
   -- Item 5 of WP5.74b3: a subspace of an encrypted space is made
@@ -878,8 +889,8 @@ spec m = do
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     ui <- startServer m (R.Page [secretSlug] [made.slug])
-    eventually (find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Second."))
-    eventually (find ui ".page-view .encrypted-rollback" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "older version of this page"))
+    find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Second.")
+    find ui ".page-view .encrypted-rollback" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "older version of this page")
     actions <- findAll ui ".page-actions a" >>= traverse textContent
     filter (T.isInfixOf "Edit") actions `shouldBe` []
     unmount ui
@@ -965,10 +976,10 @@ spec m = do
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     ui <- startServer m (R.PageHistory [secretSlug] [made.slug] Nothing R.AgainstPrevious)
-    _ <- eventually (find ui ".versions-older")
+    _ <- find ui ".versions-older"
     length <$> findAll ui ".encrypted-rollback" `shouldReturn` 0
     find ui ".versions-older" >>= click
-    eventually (find ui ".history-view .encrypted-rollback" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "version missing"))
+    find ui ".history-view .encrypted-rollback" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "version missing")
     unmount ui
 
   it "remembers a version seen only forward, whatever another tab remembered meanwhile, and a fork not at all" $ runPage $ do
@@ -1086,9 +1097,10 @@ spec m = do
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     ui <- startServer m (R.SpacePages [secretSlug])
     find ui ".space-settings-toggle" >>= click
-    eventually (find ui ".grant-row[data-subject=reader] .grant-revoke" >>= click)
-    eventually (unsafeIOToPageM (fromJSText <$> js_rotations) >>= (`shouldSatisfy` (/= "[]")))
+    find ui ".grant-row[data-subject=reader] .grant-revoke" >>= click
+    waitQuiet
     rotations <- unsafeIOToPageM (fromJSText <$> js_rotations)
+    rotations `shouldSatisfy` (/= "[]")
     "user-reader" `T.isInfixOf` rotations `shouldBe` False
     unmount ui
 
@@ -1158,9 +1170,9 @@ spec m = do
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     tab <- unsafeIOToPageM (newHttpEnv browserTransport)
     ui <- startServerOver m tab (R.Page [secretSlug] [made.slug])
-    eventually (find ui ".encrypted-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "asks for a passkey or your password each time"))
+    find ui ".encrypted-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "asks for a passkey or your password each time")
     -- This device has no vault to unlock: it cannot be opened here.
-    _ <- eventually (find ui ".encrypted-confirm-none")
+    _ <- find ui ".encrypted-confirm-none"
     run tab (keyState secret.id) `shouldReturn` Right ConfirmFirst
     decryptedSince `shouldReturn` []
     (\h -> h.keys) <$> unsafeIOToPageM (heldNow tab) `shouldReturn` mempty
@@ -1169,7 +1181,7 @@ spec m = do
     -- attachment too, and the stars name it.
     run tab (confirmedEntry secret.id)
     find ui ".encrypted-retry" >>= click
-    eventually (find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Read me once confirmed."))
+    find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Read me once confirmed.")
     opened <- decryptedSince
     filter (T.isInfixOf secret.id.text) opened `shouldSatisfy` (not . null)
     run tab endPreload
@@ -1184,15 +1196,16 @@ spec m = do
     links <- findAll ui ".wiki-sidebar .page-tree a"
     named <- filterM (\l -> (== "Second room") . T.strip <$> textContent l) links
     maybe (panic "no link to the second page") click (head named)
-    eventually (find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Also behind it."))
+    find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Also behind it.")
     length <$> findAll ui ".encrypted-space" `shouldReturn` 0
     -- Left for the front page: nothing of the space is held, its pages and
     -- attachments are refused, the page shows nothing of them, and they are
     -- named as a notification names them.
     find ui ".wiki-brand" >>= click
-    eventually $ unsafeIOToPageM (heldNow tab) `shouldReturn` HeldNow {keys = mempty, found = mempty, confirmed = mempty, attachments = 0, urls = 0}
+    waitQuiet
+    unsafeIOToPageM (heldNow tab) `shouldReturn` HeldNow {keys = mempty, found = mempty, confirmed = mempty, attachments = 0, urls = 0}
     shell <- find ui ".wiki"
-    eventually (textContent shell >>= (`shouldSatisfy` \t -> not (any (`T.isInfixOf` t) ["Behind the gate", "Read me once confirmed.", "Second room", "Also behind it.", "gate.txt"])))
+    textContent shell >>= (`shouldSatisfy` \t -> not (any (`T.isInfixOf` t) ["Behind the gate", "Read me once confirmed.", "Second room", "Also behind it.", "gate.txt"]))
     run tab (getPage secret.id [made.slug]) >>= (`shouldSatisfy` isLeft)
     run tab (listPages secret.id) >>= (`shouldSatisfy` isLeft)
     run tab (listThreads made.id) >>= (`shouldSatisfy` isLeft)
@@ -1205,7 +1218,7 @@ spec m = do
     -- Back in the space: asked again, and nothing decrypted until then.
     unmount ui
     again <- startServerOver m tab (R.Space [secretSlug])
-    _ <- eventually (find again ".encrypted-confirm-none")
+    _ <- find again ".encrypted-confirm-none"
     filter (T.isInfixOf secret.id.text) <$> decryptedSince `shouldReturn` []
     -- A key that was being opened when the reader left is not held once
     -- it opens: confirmed again, the answer with the reader's grant held
@@ -1216,13 +1229,19 @@ spec m = do
     holdAt "GET" grantAt
     run tab (confirmedEntry secret.id)
     find again ".encrypted-retry" >>= click
-    eventually (askedFor >>= (`shouldSatisfy` (> n)))
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    askedFor >>= (`shouldSatisfy` (> n))
     find again ".wiki-brand" >>= click
-    eventually ((\h -> h.confirmed) <$> unsafeIOToPageM (heldNow tab) `shouldReturn` mempty)
+    -- The program is held inside the read of the grant: at quiet, the
+    -- leaving is done, and the read still held.
+    waitQuiet
+    (\h -> h.confirmed) <$> unsafeIOToPageM (heldNow tab) `shouldReturn` mempty
     release
     -- The grant was opened (HPKE's opening names no additional data), and
     -- the key it gave was not held.
-    eventually (decryptedSince >>= (`shouldSatisfy` elem ""))
+    waitQuiet
+    decryptedSince >>= (`shouldSatisfy` elem "")
     (\h -> h.keys) <$> unsafeIOToPageM (heldNow tab) `shouldReturn` mempty
     filter (T.isInfixOf secret.id.text) <$> decryptedSince `shouldReturn` []
     unmount again
@@ -1239,15 +1258,17 @@ spec m = do
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     tab <- unsafeIOToPageM (newHttpEnv browserTransport)
     ui <- startServerOver m tab (R.Page [secretSlug] [made.slug])
-    eventually (find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Read in the tab left open."))
+    find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Read in the tab left open.")
     (\h -> h.keys) <$> unsafeIOToPageM (heldNow tab) `shouldReturn` Set.singleton secret.id
     -- Signed out in another tab: the server's answer for this browser, and
     -- the other tab's message.
     answerWith "GET" "api/v1/session" 200 signedOut
     unsafeIOToPageM (js_tell_dropped (toJSText ("vault:user-admin" :: Text)))
     shell <- find ui ".wiki"
+    -- The other tab's message comes over a BroadcastChannel, which the
+    -- browser delivers later: until then the program has nothing to do.
     eventually (textContent shell >>= (`shouldSatisfy` \t -> not (any (`T.isInfixOf` t) ["Open in a tab", "Read in the tab left open."])))
-    _ <- eventually (find ui ".sign-in-toggle")
+    _ <- find ui ".sign-in-toggle"
     unsafeIOToPageM (heldNow tab) `shouldReturn` HeldNow {keys = mempty, found = mempty, confirmed = mempty, attachments = 0, urls = 0}
     run tab (getPage secret.id [made.slug]) >>= (`shouldSatisfy` isLeft)
     unmount ui
@@ -1271,12 +1292,12 @@ spec m = do
             run tab (confirmedEntry secret.id)
           pure (tab, made)
         typed ui = do
-          text <- eventually (editorText ui)
+          text <- editorText ui
           typeText text " Unsaved canary."
-          eventually (find ui ".wiki" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Unsaved canary"))
+          find ui ".wiki" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Unsaved canary")
         gone ui = do
-          eventually (find ui ".wiki" >>= textContent >>= (`shouldSatisfy` \t -> not (any (`T.isInfixOf` t) ["Unsaved canary", "Saved text.", "Secret draft"])))
-          eventually (find ui ".dropped-unsaved" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "dropped"))
+          find ui ".wiki" >>= textContent >>= (`shouldSatisfy` \t -> not (any (`T.isInfixOf` t) ["Unsaved canary", "Saved text.", "Secret draft"]))
+          find ui ".dropped-unsaved" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "dropped")
 
     it "takes an encrypted editor's unsaved text off the screen when another tab signs out" $ runPage $ do
       (tab, made) <- openEditor False
@@ -1284,7 +1305,9 @@ spec m = do
       typed ui
       offline True
       unsafeIOToPageM (js_tell_dropped (toJSText ("vault:user-admin" :: Text)))
-      gone ui
+      -- The other tab's message comes over a BroadcastChannel, which the
+      -- browser delivers later: until then the program has nothing to do.
+      eventually (gone ui)
       unmount ui
 
     it "takes an encrypted editor's unsaved text off the screen at this tab's sign-out" $ runPage $ do
@@ -1304,7 +1327,7 @@ spec m = do
       offline True
       unsafeIOToPageM (js_go_to (toJSText ("/" :: Text)))
       find ui ".leave-confirm .danger" >>= click
-      eventually (find ui ".wiki" >>= textContent >>= (`shouldSatisfy` \t -> not (any (`T.isInfixOf` t) ["Unsaved canary", "Saved text."])))
+      find ui ".wiki" >>= textContent >>= (`shouldSatisfy` \t -> not (any (`T.isInfixOf` t) ["Unsaved canary", "Saved text."]))
       unmount ui
 
     it "keeps a plain page's unsaved text when another tab signs out" $ runPage $ do
@@ -1313,13 +1336,14 @@ spec m = do
       answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
       let docs = either (const (panic "not a slug")) identity . mkSlug
       ui <- startServer m (R.EditPage [docs "docs"] [docs "tour"])
-      text <- eventually (editorText ui)
+      text <- editorText ui
       typeText text " Plain unsaved."
       offline True
       unsafeIOToPageM (js_tell_dropped (toJSText ("vault:user-admin" :: Text)))
       -- Heard: the tab reloads the wiki, which fails offline, and keeps
       -- what is shown because it has unsaved changes, saying so. Only then
-      -- is the text's presence a sign that it was kept.
+      -- is the text's presence a sign that it was kept. The message comes
+      -- over a BroadcastChannel, which the browser delivers later.
       eventuallyWithin 10000 $ find ui ".stale-reload" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "What is shown stays")
       find ui ".wiki" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Plain unsaved.")
       length <$> findAll ui ".dropped-unsaved" `shouldReturn` 0
@@ -1338,11 +1362,14 @@ spec m = do
     tab <- unsafeIOToPageM (newHttpEnv browserTransport)
     ui <- startServerOver m tab (R.Page [secretSlug] [made.slug])
     let title = unsafeIOToPageM (fromJSText <$> js_document_title)
-    eventually (find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Body of it."))
-    eventually (title >>= (`shouldSatisfy` T.isInfixOf "Titled secret"))
+    find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Body of it.")
+    title >>= (`shouldSatisfy` T.isInfixOf "Titled secret")
     -- The reload after the keys go, held at its first request.
     holdAt "GET" "api/v1/session"
     unsafeIOToPageM (js_tell_dropped (toJSText ("vault:user-admin" :: Text)))
+    -- The message comes over a BroadcastChannel, which the browser
+    -- delivers later. The title is read at the first sight of the page
+    -- gone, the reload still held.
     eventually (find ui ".wiki" >>= textContent >>= (`shouldSatisfy` (not . T.isInfixOf "Body of it.")))
     title `shouldReturn` "Wiki"
     release
@@ -1361,8 +1388,11 @@ spec m = do
     tab <- unsafeIOToPageM (newHttpEnv browserTransport)
     run tab (confirmedEntry secret.id)
     ui <- startServerOver m tab (R.LivePreview [secretSlug] [made.slug])
-    eventually (find ui ".live-preview-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "As saved."))
+    find ui ".live-preview-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "As saved.")
     let key = secret.id.text <> "/" <> slugText made.slug
+        -- What the editor says comes over a BroadcastChannel, which the
+        -- browser delivers later: each read after it is tried again until
+        -- the preview has heard it.
         say message = unsafeIOToPageM (js_live (toJSText (decodeUtf8 (toS (encode message)) :: Text)))
     say (object ["key" .= key, "text" .= ("# Previewed\n\nTyped behind the gate." :: Text), "title" .= ("Previewed" :: Text)])
     eventually (find ui ".live-preview-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Typed behind the gate."))
@@ -1423,18 +1453,18 @@ spec m = do
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     answerWith "GET" "api/v1/notifications" 200 Notifications {unread = 1, items = [notice]}
     ui <- startServerOver m gated (R.Page [secretSlug] [made.slug])
-    eventually (find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Changed."))
+    find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Changed.")
     -- The tab's title names the space alone, which the browser keeps in
     -- its history: once the route has set it, after the page shows
     -- (the title waits for the page's backlinks), never the page's.
-    eventually (unsafeIOToPageM (fromJSText <$> js_document_title) >>= (`shouldSatisfy` T.isInfixOf "Secret"))
+    unsafeIOToPageM (fromJSText <$> js_document_title) >>= (`shouldSatisfy` T.isInfixOf "Secret")
     unsafeIOToPageM (fromJSText <$> js_document_title) >>= (`shouldSatisfy` (not . T.isInfixOf "Under the bell"))
     -- Inside: the bell and the stars show the title, decrypted.
     find ui ".notifications-toggle" >>= click
-    eventually (find ui ".notification-list .notification-page" >>= (`shouldHaveText` "Under the bell"))
+    find ui ".notification-list .notification-page" >>= (`shouldHaveText` "Under the bell")
     find ui ".notifications-toggle" >>= click
     find ui ".starred-toggle" >>= click
-    eventually (find ui ".starred-list" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Under the bell"))
+    find ui ".starred-list" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Under the bell")
     find ui ".starred-toggle" >>= click
     -- Left, with the lists' next reads held back: what the bell and the
     -- stars hold already names the page as the server does, before any
@@ -1442,16 +1472,17 @@ spec m = do
     holdAt "GET" "api/v1/notifications"
     holdAt "GET" "api/v1/stars"
     find ui ".wiki-brand" >>= click
-    eventually ((\h -> h.confirmed) <$> unsafeIOToPageM (heldNow gated) `shouldReturn` mempty)
+    waitQuiet
+    (\h -> h.confirmed) <$> unsafeIOToPageM (heldNow gated) `shouldReturn` mempty
     find ui ".notifications-toggle" >>= click
-    eventually (find ui ".notification-list .notification-page" >>= (`shouldHaveText` encryptedPageTitle))
+    find ui ".notification-list .notification-page" >>= (`shouldHaveText` encryptedPageTitle)
     find ui ".notifications-toggle" >>= click
     find ui ".starred-toggle" >>= click
-    eventually (find ui ".starred-list" >>= textContent >>= (`shouldSatisfy` \t -> encryptedPageTitle `T.isInfixOf` t && not ("Under the bell" `T.isInfixOf` t)))
+    find ui ".starred-list" >>= textContent >>= (`shouldSatisfy` \t -> encryptedPageTitle `T.isInfixOf` t && not ("Under the bell" `T.isInfixOf` t))
     find ui ".starred-toggle" >>= click
     release
     find ui ".notifications-toggle" >>= click
-    eventually (find ui ".notification-list .notification-page" >>= (`shouldHaveText` encryptedPageTitle))
+    find ui ".notification-list .notification-page" >>= (`shouldHaveText` encryptedPageTitle)
     unsafeIOToPageM (fromJSText <$> js_document_title) >>= (`shouldSatisfy` (not . T.isInfixOf "Under the bell"))
     unmount ui
 
@@ -1461,7 +1492,10 @@ spec m = do
   -- space after, nor by the bell and the stars on the page, which name the
   -- page as the server does.
   it "gives back no title decrypted while the reader left the space's gate, and holds nothing of the space after" $ runPage $ do
-    env <- encryptedSpace "user-admin"
+    -- The decryptions the test holds are waits it makes on purpose, as the
+    -- server's held requests are: counted as held, so that the program is
+    -- quiet once they are held.
+    env <- encryptedSpaceWith (unsafeIOToPageM js_decryptions_held) "user-admin"
     void (ok =<< run env (encryptSpace secret.id))
     made <- ok =<< run env (createPage secret.id Nothing "Under the bell" "Changed.")
     let notice =
@@ -1478,12 +1512,10 @@ spec m = do
             , location = Just PageLocation {space = [secretSlug], page = [made.slug]}
             }
         held = unsafeIOToPageM js_decryptions_held
-        -- Every decryption held let go, and done, and what it gave handed
-        -- on to whatever waited for it.
-        releaseAll = do
-          released <- unsafeIOToPageM js_release_decryptions
-          eventually (unsafeIOToPageM js_decryptions_done >>= (`shouldSatisfy` (>= released)))
-          unsafeIOToPageM (threadDelay 300_000)
+        -- Every decryption held let go. They count as held no more, so the
+        -- next read waits for the program to have done what follows them;
+        -- the backend's own calls below end with them.
+        releaseAll = void (unsafeIOToPageM js_release_decryptions)
     answerWith "GET" "api/v1/notifications" 200 Notifications {unread = 1, items = [notice]}
     gated <- as "user-admin"
     void (ok =<< run gated (setEntry secret.id ConfirmEach))
@@ -1497,6 +1529,8 @@ spec m = do
     starList <- unsafeIOToPageM newEmptyMVar
     void (unsafeIOToPageM (forkIO (runHttpWiki gated notifications >>= putMVar bell)))
     void (unsafeIOToPageM (forkIO (runHttpWiki gated starred >>= putMVar starList)))
+    -- These are the test's own threads, not the program's: nothing the
+    -- harness counts says when they reach the hold.
     eventually (held >>= (`shouldSatisfy` (>= 2)))
     void (run gated (readerAt spaces Nothing))
     releaseAll
@@ -1516,13 +1550,15 @@ spec m = do
     answerWith "GET" "api/v1/notifications" 200 Notifications {unread = 1, items = [notice]}
     run gated (confirmedEntry secret.id)
     ui <- startServerOver m gated (R.Page [secretSlug] [made.slug])
-    eventually (find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Changed."))
+    find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Changed.")
     let leave = do
           unsafeIOToPageM (js_go_to (toJSText ("/" :: Text)))
-          eventually ((\h -> h.confirmed) <$> unsafeIOToPageM (heldNow gated) `shouldReturn` mempty)
+          waitQuiet
+          (\h -> h.confirmed) <$> unsafeIOToPageM (heldNow gated) `shouldReturn` mempty
     unsafeIOToPageM (js_hold_decryptions (toJSText secret.id.text))
     find ui ".notifications-toggle" >>= click
-    eventually (held >>= (`shouldSatisfy` (>= 1)))
+    waitQuiet
+    held >>= (`shouldSatisfy` (>= 1))
     leave
     releaseAll
     find ui ".notification-list .notification-page" >>= (`shouldHaveText` encryptedPageTitle)
@@ -1531,7 +1567,8 @@ spec m = do
     run gated (confirmedEntry secret.id)
     unsafeIOToPageM (js_hold_decryptions (toJSText secret.id.text))
     find ui ".starred-toggle" >>= click
-    eventually (held >>= (`shouldSatisfy` (>= 1)))
+    waitQuiet
+    held >>= (`shouldSatisfy` (>= 1))
     leave
     releaseAll
     find ui ".starred-list" >>= textContent >>= (`shouldSatisfy` \t -> encryptedPageTitle `T.isInfixOf` t && not ("Under the bell" `T.isInfixOf` t))
@@ -1550,7 +1587,7 @@ spec m = do
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     ui <- startServer m (R.Page [secretSlug] [made.slug])
-    eventually (find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Some text."))
+    find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Some text.")
     -- Writes are offered; the plain-only ones are not.
     _ <- find ui ".page-view .comments-toggle, .page-view .page-kind"
     length <$> findAll ui ".use-as-template" `shouldReturn` 0
@@ -1558,15 +1595,15 @@ spec m = do
     unmount ui
     settings <- startServer m (R.SpacePages [secretSlug])
     find settings ".space-settings-toggle" >>= click
-    _ <- eventually (find settings ".entry-switch")
+    _ <- find settings ".entry-switch"
     length <$> findAll settings ".space-blog" `shouldReturn` 0
     length <$> findAll settings ".public-switch" `shouldReturn` 0
     unmount settings
     -- A conversion running: nothing that writes, and why.
     unsafeIOToPageM (js_converting (toJSText secret.id.text) (toJSText ("encrypting" :: Text)))
     during <- startServer m (R.Page [secretSlug] [made.slug])
-    eventually (find during ".conversion-notice" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "being encrypted"))
-    eventually (find during ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Some text."))
+    find during ".conversion-notice" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "being encrypted")
+    find during ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Some text.")
     for_ [".page-kind", ".use-as-template", ".comment-new", ".comment-on-selection"] $ \c -> (c,) . length <$> findAll during c `shouldReturn` (c, 0)
     unmount during
 
@@ -1583,8 +1620,8 @@ spec m = do
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     ui <- startServer m (R.Page [secretSlug] [made.slug])
-    mention <- eventually (find ui ".page-view .page-body a.mention")
-    eventually (getAttribute mention "title" `shouldReturn` Just rita.displayName)
+    mention <- find ui ".page-view .page-body a.mention"
+    getAttribute mention "title" `shouldReturn` Just rita.displayName
     find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "@nobody-here")
     sent <- asked
     [r.url | r <- sent, "notifications/people" `T.isInfixOf` r.url || "nobody-here" `T.isInfixOf` (r.url <> r.body)] `shouldBe` []
@@ -2035,12 +2072,12 @@ spec m = do
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     ui <- startServer m (R.SpacePages [secretSlug])
     find ui ".space-settings-toggle" >>= click
-    eventually (find ui ".decrypt-space") >>= click
-    confirm <- eventually (find ui ".decrypt-confirm")
-    eventually (getAttribute confirm "disabled" `shouldReturn` Nothing)
+    find ui ".decrypt-space" >>= click
+    confirm <- find ui ".decrypt-confirm"
+    getAttribute confirm "disabled" `shouldReturn` Nothing
     holdAt "GET" (endpointUrl (\e -> e.encrypted.conversion secret.id))
     click confirm
-    eventually (find ui ".conversion-progress" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "left"))
+    find ui ".conversion-progress" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "left")
     _ <- find ui ".conversion-stop"
     release
     unmount ui
@@ -2053,10 +2090,10 @@ spec m = do
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     ui <- startServer m (R.SpacePages [secretSlug])
     find ui ".space-settings-toggle" >>= click
-    switch <- eventually (find ui ".entry-switch")
+    switch <- find ui ".entry-switch"
     getAttribute switch "aria-checked" `shouldReturn` Just "false"
     click switch
-    eventually (find ui ".encrypted-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "asks for a passkey or your password each time"))
+    find ui ".encrypted-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "asks for a passkey or your password each time")
     stored <- unsafeIOToPageM (fromJSText <$> js_stored)
     "confirm-each-time" `T.isInfixOf` stored `shouldBe` True
     unmount ui
@@ -2068,8 +2105,8 @@ spec m = do
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     ui <- startServer m (R.Page [secretSlug] [made.slug])
-    eventually (find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Tuesday"))
-    eventually (length <$> findAll ui ".comments-toggle" >>= (`shouldSatisfy` (> 0)))
+    find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Tuesday")
+    length <$> findAll ui ".comments-toggle" >>= (`shouldSatisfy` (> 0))
     unmount ui
     editor <- startServer m (R.EditPage [secretSlug] [made.slug])
     text <- editorText editor
@@ -2081,6 +2118,7 @@ spec m = do
     textContent question >>= (`shouldSatisfy` T.isInfixOf "will be lost")
     map T.strip <$> (findAll editor ".editor-cancel-confirm button" >>= traverse textContent) `shouldReturn` ["Discard my changes", "Go on editing"]
     clickButton editor ".editor-cancel-confirm button" "Go on editing"
+    waitQuiet
     sent <- asked
     [r.url | r <- sent, "/draft" `T.isSuffixOf` r.url, r.method /= "GET"] `shouldBe` []
     unmount editor
@@ -2088,8 +2126,13 @@ spec m = do
     -- The server with the space, the admin and the reader its readers, and
     -- a key pair for the user who asks first, in a tab of theirs.
     encryptedSpace :: Text -> PageM s HttpEnv
-    encryptedSpace user = do
-      serverStarts
+    encryptedSpace = encryptedSpaceWith (pure 0)
+    -- The same, for an example that holds more of the program's waits on
+    -- purpose than the server's requests: the given count of them
+    -- ('serverStartsWith').
+    encryptedSpaceWith :: PageM s Int -> Text -> PageM s HttpEnv
+    encryptedSpaceWith extra user = do
+      serverStartsWith extra
       unsafeIOToPageM (js_start (toJSText (decodeUtf8 (toS (encode secret)))) (toJSText ("[\"user-admin\",\"user-reader\"]" :: Text)))
       unsafeIOToPageM (js_key_pair (toJSText user))
       as user

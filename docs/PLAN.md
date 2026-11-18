@@ -2000,7 +2000,23 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   another tab through the real server, a server's backup) gets its
   signal from that side. Tests are converted, not removed. Step 1
   starts when a builder is free; before plugins unless the owner says
-  otherwise.
+  otherwise. **Read in the library since (2026-11-18), which changes
+  the steps:** the retry is `hspec-halogen`'s own (`find` and every
+  `should…` are an `eventually` of two seconds), so "read once" is a
+  mode the library must give; its `settle` and `waitQuiet` give up at
+  a fixed five seconds, the very deadline that failed on #309's slow
+  runner on rightful work, so the watchdog must be long or settable
+  there too; KaTeX's binding is synchronous and so already counted,
+  while Mermaid's and TikZJax's "only start the drawing and do not
+  wait for it". The measure (being built on a branch that is never
+  merged, with a patched copy of the harness, run on the hosted
+  runners through the nightly workflow) records for each read whose
+  first attempt failed what the program was doing then: still running
+  (the read came too early), waiting (`waitQuiet` would have done), or
+  at rest (something outside the loop). Only the third needs the
+  islands to report. The smoke suites have 56 explicit waits against
+  236 `waitQuiet`, to be listed with what each waits for. The owner:
+  "poświęć effort na to".
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
   przed pluginami").** One builder, in this order, each its own pull

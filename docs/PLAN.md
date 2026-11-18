@@ -1974,6 +1974,33 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   to what needs a browser, with the counts before and after. The
   about forty asks WP5.95 left are taken with the view each belongs
   to; the ones in views with a single ask keep `View.Latest`.
+- **WP5.137 No blind waits in the browser suite (the owner,
+  2026-11-18: "wypierdolić wszystkie testy które na coś czekają z
+  timeoutem"; he is sure the loop can be instrumented so that a test
+  waits on a signal, reads once and fails).** Three pull requests in
+  a day went red on slow hosted runners, each on a read that retries
+  for two seconds or a bound in milliseconds. The program's own signal
+  exists (`settle`, `waitQuiet`: nothing running, nothing waiting);
+  two things still wait blindly. The suite's habit: about 2,800 `find`
+  and 1,380 `eventually` retry until a deadline, also where the
+  signal would do. And what draws outside Halogen's loop and tells
+  nobody when it is done: KaTeX, Mermaid, CodeMirror, highlighting,
+  the browser's observers (an embed that reads its deck when it nears
+  the window). Proposed to him, in three steps: (1) measure: one whole
+  run with the harness recording every read whose first attempt failed
+  and whose retry succeeded, by call site: the list of blind waits;
+  (2) the islands report: every asynchronous piece of work outside
+  the loop counts in the same activity as the program's (a fiber that
+  waits for the island's promise, or a count the library takes from
+  outside), so that "the program is at rest" means "everything is
+  drawn"; (3) the harness's `find` means "wait for rest, read once":
+  one change in one place, and what then fails names what does not
+  report yet. One deadline stays, a watchdog against a hang, which no
+  passing test waits on. What is truly another process (a push from
+  another tab through the real server, a server's backup) gets its
+  signal from that side. Tests are converted, not removed. Step 1
+  starts when a builder is free; before plugins unless the owner says
+  otherwise.
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
   przed pluginami").** One builder, in this order, each its own pull

@@ -2119,8 +2119,16 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   wiki broke; `Test.Harness.MemDom` is 98 lines, the wiki's own
   context and feed, and re-exports `Halogen.Test.Native` whole (its
   waits give up after ten seconds by themselves; a view's own
-  activity replaces `settleWaiting`). **The deck viewer's shell with
-  `M.AskWith` is being built.** The library's notes are in the session's
+  activity replaces `settleWaiting`). **The deck viewer's shell is
+  merged too (#320): its `Fetch` is an `M.AskWith`, and all three of
+  the wiki's machines run on the library's runner.** What the three
+  shells found awkward there, to take to the library by the session
+  itself: every answer is an `Either SomeException`, also from work
+  that cannot fail, so all three fold a double `Either` by hand (a
+  `run` that folds an exception into a given error, or an ask for work
+  that cannot fail); the name `Ask` is both `Halogen.Latest`'s ticket
+  and the machine's effect; `Router.follow` has no `MonadSync` form.
+  None of the three has a debounce or cancels by key. The library's notes are in the session's
   scratchpad (`wp5118/halogen-answer-2026-11-17.md`); it asks which
   of the machine's awkward corners hurt in the three views (a
   debounce as two effects and a key; the name `Ask` twice; every

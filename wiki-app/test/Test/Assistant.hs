@@ -14,6 +14,7 @@ import Control.Monad.Trans.Class (MonadTrans (..))
 import Data.Aeson (encode)
 import Data.ByteString.Lazy qualified as BSL
 import Data.IORef (IORef, atomicModifyIORef', newIORef, writeIORef)
+import Data.Map.Strict qualified as Map
 import Data.Time (UTCTime (..), fromGregorian)
 import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
@@ -21,9 +22,11 @@ import Protolude
 import Test.Hspec
 import Web.Storage.IndexedDB (Database (..))
 import Web.Storage.IndexedDB qualified as IDB
+import Wiki.Api.Vault (StoredVault (..))
 import Wiki.App.Assistant (MonadAssistant (..), assistantDatabase, readRecord, writeRecord)
 import Wiki.App.Assistant.Keys (Keys (..), changeKeys, readKeys)
-import Wiki.App.Assistant.Sync (MonadVault)
+import Wiki.App.Assistant.Sync (Fetched (..), MonadVault (..))
+import Wiki.App.Vault (VaultDevice (..), readDevice, setVaultAskEachTime, settleKeys)
 import Wiki.Core.Assistant
   ( AssistantError (..)
   , ErrorKind (..)
@@ -41,9 +44,15 @@ import Wiki.Core.Assistant
   )
 import Wiki.Core.Assistant.Vault (emptyRecord)
 import Wiki.Core.Id (UserId (..))
+import Wiki.Core.Vault (Item (..), KeyId (..), Sealed (..), Vault (..), VaultTag (..), identityItem, vaultFormat)
 
 spec :: Spec
-spec = describe "Wiki.App.Assistant's settings" $ do
+spec = do
+  settings
+  device
+
+settings :: Spec
+settings = describe "Wiki.App.Assistant's settings" $ do
   let db = Database {name = "wiki-assistant-test", version = 1, stores = ["settings"]}
       fresh = run (IDB.deleteDatabase db.name)
       alice = UserId "user-alice"
@@ -121,6 +130,48 @@ spec = describe "Wiki.App.Assistant's settings" $ do
     run :: MemDOM a -> IO a
     run = runMemDOM
 
+-- | What this device records of the user's vault ("Wiki.App.Vault"'s
+-- 'VaultDevice'): which key pair it holds, whether it asks for an unlock
+-- each time, whether it offered the password. Each function that changes
+-- it reads it, waits, and writes back what it read with its own change.
+device :: Spec
+device = describe "Wiki.App.Vault's record of this device" $
+  -- A sign-in settles the keys (settleKeys, as afterSignIn does): it reads
+  -- the record, fetches the vault, unseals the private key, and records
+  -- the key pair it holds. The security panel's "Ask each time" changes
+  -- the record meanwhile. The settling then wrote the record it had read,
+  -- with the key pair, and "Ask each time" was off again: the vault key
+  -- stayed on disk. Here "Ask each time" starts between the settling's
+  -- read and its write, every time, and either runs to its end there or
+  -- waits for the settling to end.
+  it "keeps Ask each time set while a sign-in's settling of the keys is under way" $ do
+    let carol = UserId "user-carol-device"
+        keyId = KeyId "test-key-pair"
+        stored =
+          StoredVault
+            { tag = VaultTag "1"
+            , vault =
+                Vault
+                  { format = vaultFormat
+                  , salt = "salt"
+                  , items = Map.singleton identityItem Item {keyId = Just keyId, sealed = Sealed {nonce = "nonce", ciphertext = "sealed"}}
+                  , wraps = mempty
+                  }
+            }
+    beforeWrite <- newIORef Nothing
+    askedDone <- newEmptyMVar
+    let unlocked :: Unlocked (Hooked MemDOM) a -> IO a
+        unlocked (Unlocked m) = let Hooked h = runReaderT m stored in runMemDOM (runReaderT h beforeWrite)
+    writeIORef beforeWrite . Just $ do
+      thread <- forkIO (unlocked (setVaultAskEachTime carol True) >>= putMVar askedDone)
+      untilFinishedOrWaiting thread
+    settled <- unlocked (settleKeys carol)
+    asked <- takeMVar askedDone
+    void settled `shouldBe` Right ()
+    void asked `shouldBe` Right ()
+    recorded <- unlocked (readDevice carol)
+    (recorded.held, recorded.askEachTime) `shouldBe` (Just keyId, True)
+
 -- | A monad with an action run before its next write of a device record
 -- ('keepDeviceRecord'), once: where a test puts another change between a
 -- change's read and its write. Everything else is the monad's below.
@@ -137,6 +188,24 @@ instance (MonadAssistant m, MonadIO m) => MonadAssistant (Hooked m) where
     lift (keepDeviceRecord user record)
 
 instance (MonadVault m) => MonadVault (Hooked m)
+
+-- | A browser's unlocked vault, as far as the record of the device needs
+-- one: the server's vault is the one given, every slot holds a key, and
+-- every key opens the user's key pair and is kept. The in-memory document
+-- has no WebCrypto to do these.
+newtype Unlocked m a = Unlocked (ReaderT StoredVault m a)
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO)
+
+instance MonadTrans Unlocked where
+  lift = Unlocked . lift
+
+instance (MonadAssistant m) => MonadAssistant (Unlocked m) where
+  deviceKey _ = Just <$> lift (newVaultKey False)
+  openIdentity _ _ _ = Right <$> lift (newVaultKey False)
+  keepDeviceKey _ _ _ = pure (Right ())
+
+instance (MonadVault m) => MonadVault (Unlocked m) where
+  fetchVault _ = Unlocked (asks (Right . Fetched))
 
 -- | Wait until a thread has finished, or waits for an MVar: a change of
 -- the keys that waits for another to end. Nothing else in the in-memory

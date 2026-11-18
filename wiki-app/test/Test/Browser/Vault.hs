@@ -31,7 +31,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Encrypted qualified as E
-import Test.Browser.Http (Asked (..), answerWith, asked, holdAt, release, serveDemo, serverStarts, serverStops, startServer)
+import Test.Browser.Http (Asked (..), answerWith, asked, holdAt, release, serveDemo, serverStartsWith, serverStops, startServer)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
 import Web.Storage.IndexedDB qualified as IDB
@@ -152,6 +152,14 @@ runOwn test = do
     panic ("the example left keys in the page that can be exported (handle:algorithm:usages): " <> left)
   pure result
 
+-- | Whether the login field's offer of passkeys is open, as a count of
+-- the waits the test holds on purpose ('serverStartsWith'): the offer
+-- waits in the program until the test picks a passkey or the form ends
+-- it, and a read in a 'Quiet' group would otherwise wait for it until the
+-- deadline.
+offerOpen :: PageM s Int
+offerOpen = fromEnum <$> unsafeIOToPageM js_offered
+
 js_assistant_key :: JSText -> Bool -> IO ()
 js_assistant_key a1 a2 = if inBrowser then wait =<< js_assistant_keyPromise a1 a2 else pure inert
 
@@ -160,8 +168,11 @@ js_page_key_hold a1 = if inBrowser then wait =<< js_page_key_holdPromise a1 else
 
 type Specs m = (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m)
 
+-- The reads look once, with the program quiet: its requests to the test's
+-- server, IndexedDB and WebCrypto answered. What the test holds on purpose
+-- is counted as held ('offerOpen', and the server's own count).
 spec :: forall m -> (Specs m) => Spec
-spec m = do
+spec m = readsOnce Quiet $ do
   vault m
   signing m
   userKeys m
@@ -180,10 +191,10 @@ signing m = describe "signing in with a passkey" $ do
     find ui ".sign-in-toggle" >>= click
     -- The login field offers the passkey as the form opens; the button
     -- ends that offer and opens the dialog.
-    eventually $ unsafeIOToPageM js_offered `shouldReturn` True
+    offered `shouldReturn` True
     find ui ".passkey-sign-in" >>= click
     find ui ".account .user-name" >>= (`shouldHaveText` "Edgar Editor")
-    unsafeIOToPageM js_offered `shouldReturn` False
+    offered `shouldReturn` False
     sent <- filter (\r -> r.method == "PUT" && r.url == "api/v1/session/passkey") <$> asked
     map (\r -> (field ["id"] =<< decodeStrict (encodeUtf8 r.body), field ["userHandle"] =<< decodeStrict (encodeUtf8 r.body))) sent
       `shouldBe` [(Just (Aeson.String id'), Just (Aeson.String "dXNlci1lZGl0b3I"))]
@@ -194,7 +205,7 @@ signing m = describe "signing in with a passkey" $ do
     (again, _) <- signedOut m
     answerWith "PUT" "api/v1/session/passkey" 200 me
     find again ".sign-in-toggle" >>= click
-    eventually $ unsafeIOToPageM js_offered `shouldReturn` True
+    offered `shouldReturn` True
     unsafeIOToPageM js_pick
     find again ".account .user-name" >>= (`shouldHaveText` "Edgar Editor")
     closedSignedIn again
@@ -205,39 +216,43 @@ signing m = describe "signing in with a passkey" $ do
     find ui ".sign-in-toggle" >>= click
     find ui ".passkey-sign-in" >>= click
     find ui ".sign-in-form .sign-in-error" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "not one of this wiki's")
-    eventually $ unsafeIOToPageM js_offered `shouldReturn` True
+    offered `shouldReturn` True
     -- Closing the form ends the offer.
     find ui ".sign-in-toggle" >>= click
-    eventually $ unsafeIOToPageM js_offered `shouldReturn` False
+    offered `shouldReturn` False
     closedSignedIn ui
 
   it "starts no offer in the login field whose challenge arrives after the form closed" $ runOwn $ do
     (ui, _) <- signedOut m
     holdAt "POST" "api/v1/session/passkey"
     find ui ".sign-in-toggle" >>= click
-    eventually $ length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 1
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 1
     find ui ".sign-in-toggle" >>= click
     release
     -- The challenge arrived after the form it was for closed. The form
     -- opened again starts its own offer, and only that one.
     find ui ".sign-in-toggle" >>= click
-    eventually $ unsafeIOToPageM js_offered `shouldReturn` True
+    offered `shouldReturn` True
     unsafeIOToPageM js_offers `shouldReturn` 1
     closedSignedIn ui
 
   it "opens no passkey dialog whose challenge arrives after the form closed" $ runOwn $ do
     (ui, _) <- signedOut m
     find ui ".sign-in-toggle" >>= click
-    eventually $ unsafeIOToPageM js_offered `shouldReturn` True
+    offered `shouldReturn` True
     holdAt "POST" "api/v1/session/passkey"
     find ui ".passkey-sign-in" >>= click
-    eventually $ length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 2
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 2
     find ui ".sign-in-toggle" >>= click
     release
     -- The form opened again offers in the field; no dialog was opened, and
     -- nobody signed in.
     find ui ".sign-in-toggle" >>= click
-    eventually $ unsafeIOToPageM js_offered `shouldReturn` True
+    offered `shouldReturn` True
     touches `shouldReturn` 0
     length . filter (\r -> r.method == "PUT") <$> asked `shouldReturn` 0
     closedSignedIn ui
@@ -260,7 +275,7 @@ signing m = describe "signing in with a passkey" $ do
     closedSignedIn ui
 
   it "lists the account's passkeys, adds one with a name, and removes one" $ runOwn $ do
-    serverStarts
+    serverStartsWith offerOpen
     serveDemo
     me <- signedInAs "user-editor"
     answerWith "GET" "api/v1/session" 200 me
@@ -270,12 +285,12 @@ signing m = describe "signing in with a passkey" $ do
     _ <- unsafeIOToPageM js_existing
     ui <- startServer m Home
     find ui ".account-toggle" >>= click
-    eventually $ length <$> findAll ui ".passkey-item" `shouldReturn` 1
+    length <$> findAll ui ".passkey-item" `shouldReturn` 1
     find ui ".passkey-name" >>= (`shouldHaveText` "My laptop")
     find ui ".passkey-add input[name=passkey-name]" >>= (`typeText` "My phone")
     find ui ".passkey-add input[name=passkey-password]" >>= (`typeText` "editor's password")
     find ui ".passkey-add button[type=submit]" >>= click
-    eventually $ length <$> findAll ui ".passkey-item" `shouldReturn` 2
+    length <$> findAll ui ".passkey-item" `shouldReturn` 2
     -- The password went with that one attempt: the field is empty again.
     (find ui ".passkey-add input[name=passkey-password]" >>= (`getProperty` "value")) `shouldReturn` ""
     map (T.strip) <$> (findAll ui ".passkey-name" >>= traverse textContent) `shouldReturn` ["My laptop", "My phone"]
@@ -292,7 +307,7 @@ signing m = describe "signing in with a passkey" $ do
     findAll ui ".passkey-remove" >>= \case
       remove : _ -> click remove
       [] -> panic "no Remove"
-    eventually $ length <$> findAll ui ".passkey-item" `shouldReturn` 1
+    length <$> findAll ui ".passkey-item" `shouldReturn` 1
     find ui ".passkey-name" >>= (`shouldHaveText` "My phone")
     closedSignedIn ui
 
@@ -302,7 +317,7 @@ signing m = describe "signing in with a passkey" $ do
   -- the panel's finalizer, so that the passkey the person made is the
   -- account's rather than one on their authenticator that signs nobody in.
   it "registers a passkey made as the account's panel closes" $ runOwn $ do
-    serverStarts
+    serverStartsWith offerOpen
     serveDemo
     me <- signedInAs "user-editor"
     answerWith "GET" "api/v1/session" 200 me
@@ -312,18 +327,22 @@ signing m = describe "signing in with a passkey" $ do
     _ <- unsafeIOToPageM js_existing
     ui <- startServer m Home
     find ui ".account-toggle" >>= click
-    eventually $ length <$> findAll ui ".passkey-item" `shouldReturn` 1
+    length <$> findAll ui ".passkey-item" `shouldReturn` 1
     find ui ".passkey-add input[name=passkey-name]" >>= (`typeText` "My phone")
     find ui ".passkey-add input[name=passkey-password]" >>= (`typeText` "editor's password")
     let finishes = length . filter (\r -> r.method == "PUT" && r.url == "api/v1/account/passkeys/registration") <$> asked
     holdAt "PUT" "api/v1/account/passkeys/registration"
     find ui ".passkey-add button[type=submit]" >>= click
-    eventually $ finishes `shouldReturn` 1
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    finishes `shouldReturn` 1
     find ui ".account-toggle" >>= click
-    eventually $ length <$> findAll ui ".passkey-add" `shouldReturn` 0
+    length <$> findAll ui ".passkey-add" `shouldReturn` 0
     release
-    settle
-    eventually $ unsafeIOToPageM (fromJSText <$> js_unregistered) `shouldReturn` "[]"
+    -- The closed panel's finalizer sends the registration on the shell's
+    -- tree, which is still mounted: 'waitQuiet' counts its wait.
+    waitQuiet
+    unsafeIOToPageM (fromJSText <$> js_unregistered) `shouldReturn` "[]"
     closedSignedIn ui
 
   -- The panel reopened, and another passkey begun, while the first one's
@@ -333,7 +352,7 @@ signing m = describe "signing in with a passkey" $ do
   -- the account's; the first stays on the authenticator unknown to the
   -- wiki, as one did before the panel sent it again.
   it "registers a passkey begun in the panel reopened while the closed panel's registration waits" $ runOwn $ do
-    serverStarts
+    serverStartsWith offerOpen
     serveDemo
     me <- signedInAs "user-editor"
     answerWith "GET" "api/v1/session" 200 me
@@ -348,24 +367,28 @@ signing m = describe "signing in with a passkey" $ do
           find ui ".passkey-add input[name=passkey-password]" >>= (`typeText` "editor's password")
           find ui ".passkey-add button[type=submit]" >>= click
     find ui ".account-toggle" >>= click
-    eventually $ length <$> findAll ui ".passkey-item" `shouldReturn` 1
+    length <$> findAll ui ".passkey-item" `shouldReturn` 1
     holdAt "PUT" "api/v1/account/passkeys/registration"
     addPasskey "My phone"
-    eventually $ finishes `shouldReturn` 1
-    -- Closed: its finalizer sends the registration again, held too.
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    finishes `shouldReturn` 1
+    -- Closed: its finalizer sends the registration again, held too, in
+    -- place of the panel's own, which the close ended.
     find ui ".account-toggle" >>= click
-    eventually $ finishes `shouldReturn` 2
+    waitQuiet
+    finishes `shouldReturn` 2
     find ui ".account-toggle" >>= click
-    eventually $ length <$> findAll ui ".passkey-item" `shouldReturn` 1
+    length <$> findAll ui ".passkey-item" `shouldReturn` 1
     addPasskey "My tablet"
-    eventually $ finishes `shouldReturn` 3
+    waitQuiet
+    finishes `shouldReturn` 3
     release
-    settle
-    eventually $ map T.strip <$> (findAll ui ".passkey-name" >>= traverse textContent) `shouldReturn` ["My laptop", "My tablet"]
+    map T.strip <$> (findAll ui ".passkey-name" >>= traverse textContent) `shouldReturn` ["My laptop", "My tablet"]
     closedSignedIn ui
 
   it "offers no passkey on a page served over plain HTTP, and says why" $ runOwn $ do
-    serverStarts
+    serverStartsWith offerOpen
     serveDemo
     answerWith "GET" "api/v1/session" 200 nobody
     unsafeIOToPageM js_vault_server
@@ -375,7 +398,7 @@ signing m = describe "signing in with a passkey" $ do
     find ui ".sign-in-toggle" >>= click
     _ <- find ui ".sign-in-form input[name=login]"
     length <$> findAll ui ".passkey-sign-in" `shouldReturn` 0
-    unsafeIOToPageM js_offered `shouldReturn` False
+    offered `shouldReturn` False
     unmount ui
     me <- signedInAs "user-editor"
     answerWith "GET" "api/v1/session" 200 me
@@ -394,7 +417,7 @@ signing m = describe "signing in with a passkey" $ do
     -- the page, and the passkey's id.
     signedOut :: forall m -> (Specs m) => PageM s (Mounted s Shell.Query Void m, Text)
     signedOut m' = do
-      serverStarts
+      serverStartsWith offerOpen
       serveDemo
       answerWith "GET" "api/v1/session" 200 nobody
       answerWith "POST" "api/v1/session/passkey" 200 (Aeson.object ["challenge" Aeson..= ("Y2hhbGxlbmdl" :: Text), "rpId" Aeson..= ("localhost" :: Text), "allow" Aeson..= ([] :: [Text])])
@@ -404,7 +427,10 @@ signing m = describe "signing in with a passkey" $ do
       ui <- startServer m' Home
       pure (ui, id')
     touches :: PageM s Int
-    touches = unsafeIOToPageM js_touches
+    touches = waitQuiet *> unsafeIOToPageM js_touches
+    -- Whether the login field offers a passkey now.
+    offered :: PageM s Bool
+    offered = waitQuiet *> unsafeIOToPageM js_offered
     -- What the account panel fetches besides the passkeys.
     answerAccount = do
       answerWith "GET" "api/v1/account/identities" 200 (Aeson.object ["password" Aeson..= True, "identities" Aeson..= ([] :: [Text])])
@@ -416,7 +442,8 @@ signing m = describe "signing in with a passkey" $ do
       -- What the sign-in set going (the keys brought up to date, a vault
       -- made) ends first: a step stopped halfway by the unmount would leave
       -- its key in the page for the next test.
-      eventually $ unsafeIOToPageM (evaluate =<< js_exportable) `shouldReturn` 0
+      waitQuiet
+      unsafeIOToPageM (evaluate =<< js_exportable) `shouldReturn` 0
       unmount ui
       unsafeIOToPageM js_uninstall
       serverStops
@@ -428,7 +455,7 @@ vault m = do
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     find ui ".assistant-sync-off-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: off")
     find ui ".assistant-sync-on-button" >>= click
-    eventually $ find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
+    find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
     -- One touch: the passkey gave its PRF output as it was made.
     touches `shouldReturn` 1
     length <$> findAll ui ".assistant-passkey" `shouldReturn` 1
@@ -449,17 +476,17 @@ vault m = do
     unmount first'
     leave "first"
     ui <- reopened m
-    eventually $ find ui ".assistant-sync-locked" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "locked in this browser")
+    find ui ".assistant-sync-locked" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "locked in this browser")
     find ui ".assistant-type-here" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "or type a key here")
     -- A key typed here meanwhile stays here.
     openai <- find ui ".assistant-provider-settings[data-provider='openai']"
     findIn openai ".assistant-key" >>= (`typeText` "test-key-openai-typed-here")
     findIn openai ".assistant-key-form button" >>= click
-    eventually $ findIn openai ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
+    findIn openai ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
     field ["revision"] <$> vaultState `shouldReturn` Just (Aeson.Number 1)
     before <- touches
     find ui ".assistant-unlock" >>= click
-    eventually $ find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
+    find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
     touches `shouldReturn` (before + 1)
     -- The vault's key for Anthropic, and the one typed here for OpenAI,
     -- stored on the server with it.
@@ -475,15 +502,15 @@ vault m = do
     unmount first'
     leave "first"
     other <- reopened m
-    eventually (find other ".assistant-unlock") >>= click
-    _ <- eventually $ find other ".assistant-sync-on"
+    find other ".assistant-unlock" >>= click
+    _ <- find other ".assistant-sync-on"
     replaceKey other "test-key-anthropic-changed"
     unmount other
     leave "second"
     back "first"
     before <- touches
     ui <- reopened m
-    _ <- eventually $ find ui ".assistant-sync-on"
+    _ <- find ui ".assistant-sync-on"
     touches `shouldReturn` before
     (\s -> (settingsOf Anthropic s).key) <$> settingsHere m `shouldReturn` Just (ApiKey "test-key-anthropic-changed")
     sentKey `shouldReturn` False
@@ -496,23 +523,23 @@ vault m = do
     -- too: both copies follow the setting.
     stored "vault:user-editor" `shouldReturn` True
     find ui ".assistant-ask-each-time" >>= click
-    eventually $ stored "user-editor" `shouldReturn` False
+    stored "user-editor" `shouldReturn` False
     stored "vault:user-editor" `shouldReturn` False
     unmount ui
     -- The wiki opened again: the page holds no key, and none is stored.
     unsafeIOToPageM js_reload
     again <- reopened m
-    _ <- eventually $ find again ".assistant-sync-locked"
+    _ <- find again ".assistant-sync-locked"
     before <- touches
     find again ".assistant-unlock" >>= click
-    _ <- eventually $ find again ".assistant-sync-on"
+    _ <- find again ".assistant-sync-on"
     touches `shouldReturn` (before + 1)
     find again ".assistant-ask-each-time" >>= (`getProperty` "checked") >>= (`shouldBe` "true")
     stored "user-editor" `shouldReturn` False
     stored "vault:user-editor" `shouldReturn` False
     -- Told not to any more: the key is stored again, in both slots.
     find again ".assistant-ask-each-time" >>= click
-    eventually $ stored "user-editor" `shouldReturn` True
+    stored "user-editor" `shouldReturn` True
     stored "vault:user-editor" `shouldReturn` True
     closed again
 
@@ -521,7 +548,7 @@ vault m = do
     turnOn ui
     before <- touches
     find ui ".assistant-add-passkey" >>= click
-    eventually $ length <$> findAll ui ".assistant-passkey" `shouldReturn` 2
+    length <$> findAll ui ".assistant-passkey" `shouldReturn` 2
     -- A passkey the vault knows gives the vault's key, then the new one is made.
     touches `shouldReturn` (before + 2)
     kept <- vaultState
@@ -529,7 +556,7 @@ vault m = do
     findAll ui ".assistant-remove-passkey" >>= \case
       remove : _ -> click remove
       [] -> panic "no Remove"
-    eventually $ length <$> findAll ui ".assistant-passkey" `shouldReturn` 1
+    length <$> findAll ui ".assistant-passkey" `shouldReturn` 1
     (length . fromMaybe [] . (>>= arrayOf) . field ["passkeys"]) <$> vaultState `shouldReturn` 1
     closed ui
 
@@ -542,7 +569,7 @@ vault m = do
   it "refuses a passkey without the PRF extension for the keys, says why, and keeps it to sign in with" $ runOwn $ do
     ui <- opened m False False
     find ui ".assistant-sync-on-button" >>= click
-    eventually $ find ui ".assistant-sync-problem" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "It was kept to sign in with")
+    find ui ".assistant-sync-problem" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "It was kept to sign in with")
     kept <- vaultState
     (field ["vault"] kept, length . fromMaybe [] . (>>= arrayOf) $ field ["passkeys"] kept) `shouldBe` (Just Aeson.Null, 1)
     find ui ".assistant-sync-off-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "off")
@@ -553,7 +580,7 @@ vault m = do
     find ui ".assistant-passkey-password" >>= (`typeText` "editor's password")
     unsafeIOToPageM js_cancel_next
     find ui ".assistant-sync-on-button" >>= click
-    eventually $ find ui ".assistant-sync-problem" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "dialog was closed")
+    find ui ".assistant-sync-problem" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "dialog was closed")
     (find ui ".assistant-passkey-password" >>= (`getProperty` "value")) `shouldReturn` ""
     find ui ".assistant-passkey-password" >>= (`typeText` "editor's password")
     turnOn ui
@@ -571,7 +598,7 @@ vault m = do
     -- The dialog for the passkey the user has is closed: a new one is made.
     unsafeIOToPageM js_cancel_next
     find ui ".assistant-sync-on-button" >>= click
-    eventually $ find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
+    find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
     kept <- vaultState
     (field ["passkeys", "0", "id"] kept, length . fromMaybe [] . (>>= arrayOf) $ field ["passkeys"] kept, isJust (field ["passkeys", "1", "wrapped", "key"] kept))
       `shouldBe` (Just (Aeson.String existing), 2, True)
@@ -581,7 +608,7 @@ vault m = do
     ui <- opened m True True
     existing <- fromJSText <$> unsafeIOToPageM js_existing
     find ui ".assistant-sync-on-button" >>= click
-    eventually $ find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
+    find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
     -- One touch: the passkey used, none made.
     touches `shouldReturn` 1
     kept <- vaultState
@@ -594,7 +621,7 @@ vault m = do
     turnOn ui
     before <- touches
     find ui ".assistant-sync-off" >>= click
-    eventually $ find ui ".assistant-sync-off-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "off")
+    find ui ".assistant-sync-off-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "off")
     touches `shouldReturn` before
     -- The passkey stays, to sign in with, without its copy of the key.
     kept <- vaultState
@@ -609,16 +636,16 @@ vault m = do
     unmount first'
     leave "first"
     other <- reopened m
-    eventually (find other ".assistant-unlock") >>= click
-    _ <- eventually $ find other ".assistant-sync-on"
+    find other ".assistant-unlock" >>= click
+    _ <- find other ".assistant-sync-on"
     replaceKey other "test-key-anthropic-changed"
     unmount other
     leave "second"
     back "first"
     ui <- reopened m
-    _ <- eventually $ find ui ".assistant-sync-on"
+    _ <- find ui ".assistant-sync-on"
     find ui ".assistant-sync-off" >>= click
-    _ <- eventually $ find ui ".assistant-sync-off-state"
+    _ <- find ui ".assistant-sync-off-state"
     (\s -> (settingsOf Anthropic s).key) <$> settingsHere m `shouldReturn` Just (ApiKey "test-key-anthropic-changed")
     -- And so after a reload, with the key this device keeps.
     unmount ui
@@ -635,8 +662,8 @@ vault m = do
     unsafeIOToPageM js_add_unwrapped
     ui <- reopened m
     before <- touches
-    eventually (find ui ".assistant-unlock") >>= click
-    eventually $ find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
+    find ui ".assistant-unlock" >>= click
+    find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
     touches `shouldReturn` (before + 1)
     closed ui
 
@@ -648,12 +675,12 @@ vault m = do
     -- This device opens the page before the other device's vault exists.
     unsafeIOToPageM js_stash
     ui <- reopened m
-    _ <- eventually $ find ui ".assistant-sync-off-state"
+    _ <- find ui ".assistant-sync-off-state"
     unsafeIOToPageM js_unstash
     before <- touches
     find ui ".assistant-sync-on-button" >>= click
-    eventually $ find ui ".assistant-sync-problem" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "another device of yours syncs them")
-    _ <- eventually $ find ui ".assistant-unlock"
+    find ui ".assistant-sync-problem" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "another device of yours syncs them")
+    _ <- find ui ".assistant-unlock"
     find ui ".assistant-sync-locked" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "locked in this browser")
     touches `shouldReturn` before
     closed ui
@@ -674,7 +701,7 @@ vault m = do
     openai <- find again ".assistant-provider-settings[data-provider='openai']"
     findIn openai ".assistant-key" >>= (`typeText` "test-key-openai-typed-here")
     findIn openai ".assistant-key-form button" >>= click
-    eventually $ findIn openai ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
+    findIn openai ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
     unsafeIOToPageM (evaluate =<< js_stores_key (toJSText "user-editor")) `shouldReturn` True
     closed again
 
@@ -688,17 +715,17 @@ vault m = do
     -- passkey's dialog closed.
     unsafeIOToPageM (js_cancel_after 1)
     find ui ".assistant-add-passkey" >>= click
-    eventually $ find ui ".assistant-sync-problem" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "dialog was closed")
+    find ui ".assistant-sync-problem" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "dialog was closed")
     exportable `shouldReturn` 0
     -- Turning on: a new vault key made, and both dialogs closed, the one
     -- for the passkey kept when syncing was turned off and the one for a
     -- new passkey made in its place.
     find ui ".assistant-sync-off" >>= click
-    _ <- eventually $ find ui ".assistant-sync-off-state"
+    _ <- find ui ".assistant-sync-off-state"
     unsafeIOToPageM js_cancel_next
     unsafeIOToPageM js_cancel_next
     find ui ".assistant-sync-on-button" >>= click
-    eventually $ find ui ".assistant-sync-problem" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "dialog was closed")
+    find ui ".assistant-sync-problem" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "dialog was closed")
     exportable `shouldReturn` 0
     closed ui
 
@@ -714,15 +741,17 @@ vault m = do
   where
     secretKey :: Text
     secretKey = "test-key-anthropic-one"
+    -- The reads of what the program leaves in the page, in IndexedDB and on
+    -- the vault's server wait first for the program to be quiet.
     touches :: PageM s Int
-    touches = unsafeIOToPageM js_touches
+    touches = waitQuiet *> unsafeIOToPageM js_touches
     -- Whether IndexedDB holds a key in this slot.
     stored :: Text -> PageM s Bool
-    stored slot = unsafeIOToPageM (evaluate =<< js_stores_key (toJSText slot))
+    stored slot = waitQuiet *> unsafeIOToPageM (evaluate =<< js_stores_key (toJSText slot))
     exportable :: PageM s Int
-    exportable = unsafeIOToPageM (evaluate =<< js_exportable)
+    exportable = waitQuiet *> unsafeIOToPageM (evaluate =<< js_exportable)
     vaultState :: PageM s Value
-    vaultState = unsafeIOToPageM (fromMaybe Aeson.Null . decodeStrict . encodeUtf8 . fromJSText <$> js_vault_state)
+    vaultState = waitQuiet *> unsafeIOToPageM (fromMaybe Aeson.Null . decodeStrict . encodeUtf8 . fromJSText <$> js_vault_state)
     leave, back :: Text -> PageM s ()
     leave name = unsafeIOToPageM (evaluate =<< js_leave (toJSText name))
     back name = unsafeIOToPageM (evaluate =<< js_return (toJSText name))
@@ -733,7 +762,7 @@ vault m = do
     -- As for the user's keys below: no test leaves a key in the page that
     -- can be exported.
     closed ui = do
-      eventually $ exportable `shouldReturn` 0
+      exportable `shouldReturn` 0
       unmount ui
       unsafeIOToPageM js_uninstall
       serverStops
@@ -744,7 +773,7 @@ vault m = do
 -- are made or only when used; and a key kept for Anthropic.
 opened :: forall m -> (Specs m) => Bool -> Bool -> PageM s (Mounted s Shell.Query Void m)
 opened m prf atCreate = do
-  serverStarts
+  serverStartsWith offerOpen
   serveDemo
   unsafeIOToPageM js_scripted
   me <- signedInAs "user-editor"
@@ -753,10 +782,10 @@ opened m prf atCreate = do
   unsafeIOToPageM (js_install prf atCreate)
   unsafeIOToPageM (evaluate =<< js_new_device)
   ui <- startServer m AssistantSettings
-  anthropic <- eventually (find ui ".assistant-provider-settings[data-provider='anthropic']")
+  anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
   findIn anthropic ".assistant-key" >>= (`typeText` "test-key-anthropic-one")
   findIn anthropic ".assistant-key-form button" >>= click
-  eventually $ findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
+  findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
   pure ui
 
 -- | The settings page again, as when the wiki opens on this device.
@@ -768,15 +797,15 @@ replaceKey :: Mounted s q o n -> Text -> PageM s ()
 replaceKey ui key = do
   anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
   findIn anthropic ".assistant-forget" >>= click
-  eventually $ findIn anthropic ".assistant-key" >>= (`typeText` key)
+  findIn anthropic ".assistant-key" >>= (`typeText` key)
   findIn anthropic ".assistant-key-form button" >>= click
-  eventually $ findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
+  findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
 
 -- | Turn syncing on, and wait until it is.
 turnOn :: Mounted s q o n -> PageM s ()
 turnOn ui = do
   find ui ".assistant-sync-on-button" >>= click
-  eventually $ find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
+  find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
 
 -- | The editor's settings as this device keeps them now.
 settingsHere :: forall m -> (Specs m) => PageM s Settings
@@ -854,7 +883,7 @@ userKeys m = describe "the user's keys" $ do
     find ui ".passkey-sign-in" >>= click
     find ui ".account .user-name" >>= (`shouldHaveText` "Edgar Editor")
     find ui ".account-toggle" >>= click
-    _ <- eventually $ find ui ".keys-none"
+    _ <- find ui ".keys-none"
     field ["vault"] <$> vaultState `shouldReturn` Just Aeson.Null
     closed ui
 
@@ -866,7 +895,7 @@ userKeys m = describe "the user's keys" $ do
     -- key, which is wrapped for the passkey syncing makes.
     find ui ".assistant-passkey-password" >>= (`typeText` "editor's password")
     find ui ".assistant-sync-on-button" >>= click
-    eventually $ find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
+    find ui ".assistant-sync-on" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Sync across devices: on")
     kept <- vaultState
     ( isJust (field ["vault", "items", "assistant"] kept)
       , isJust (field ["passkeys", "0", "wrapped", "key"] kept)
@@ -885,7 +914,7 @@ userKeys m = describe "the user's keys" $ do
     identityExport `shouldReturn` "none"
     again <- restarted
     signIn again "editor's password"
-    eventually $ identityExport `shouldReturn` "refused"
+    identityExport `shouldReturn` "refused"
     now <- vaultState
     (field ["publicKey", "keyId"] now, field ["revision"] now) `shouldBe` (field ["publicKey", "keyId"] made, field ["revision"] made)
     closed again
@@ -909,7 +938,7 @@ userKeys m = describe "the user's keys" $ do
     unsafeIOToPageM (evaluate =<< js_new_device)
     again <- restarted
     signIn again "a password of the editor's"
-    eventually $ identityExport `shouldReturn` "refused"
+    identityExport `shouldReturn` "refused"
     field ["publicKey", "keyId"] <$> vaultState `shouldReturn` field ["publicKey", "keyId"] made
     closed again
 
@@ -943,19 +972,19 @@ userKeys m = describe "the user's keys" $ do
     find ui ".account-toggle" >>= click
     find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
     find ui ".keys-passkey-add" >>= click
-    eventually $ length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
+    length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
     find ui ".keys-password-remove" >>= click
-    eventually $ length <$> findAll ui ".keys-unlock-password" `shouldReturn` 0
+    length <$> findAll ui ".keys-unlock-password" `shouldReturn` 0
     find ui ".account-toggle" >>= click
     -- Signed out and in again with the password: the offer.
     answerWith "DELETE" "api/v1/session" 200 nobody
     find ui ".account .sign-out" >>= click
     signIn ui "editor's password"
-    _ <- eventually $ find ui ".keys-offer"
+    _ <- find ui ".keys-offer"
     -- Signed out: the offer was the editor's, and goes.
     find ui ".account .sign-out" >>= click
     _ <- find ui ".sign-in-toggle"
-    eventually $ length <$> findAll ui ".keys-offer" `shouldReturn` 0
+    length <$> findAll ui ".keys-offer" `shouldReturn` 0
     closed ui
 
   -- The sign-in's view can go while the keys are brought up to date after
@@ -973,25 +1002,30 @@ userKeys m = describe "the user's keys" $ do
     find ui ".account-toggle" >>= click
     find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
     find ui ".keys-passkey-add" >>= click
-    eventually $ length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
+    length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
     find ui ".keys-password-remove" >>= click
-    eventually $ length <$> findAll ui ".keys-unlock-password" `shouldReturn` 0
+    length <$> findAll ui ".keys-unlock-password" `shouldReturn` 0
     find ui ".account-toggle" >>= click
     answerWith "DELETE" "api/v1/session" 200 nobody
     find ui ".account .sign-out" >>= click
     _ <- find ui ".sign-in-toggle"
     settle
-    let passwordKeys = unsafeIOToPageM js_password_keys
+    let passwordKeys = waitQuiet *> unsafeIOToPageM js_password_keys
         vaultReads = length . filter (\r -> r.method == "GET" && r.url == "api/v1/assistant/vault") <$> asked
     before <- passwordKeys
     readsBefore <- vaultReads
     holdAt "GET" "api/v1/assistant/vault"
     signIn ui "editor's password"
-    eventually $ vaultReads >>= (`shouldSatisfy` (> readsBefore))
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    vaultReads >>= (`shouldSatisfy` (> readsBefore))
+    -- The unmount disposes of the tree: the sign-in view's finalizer lets
+    -- go of the key synchronously, and the view's fiber waiting for the
+    -- held answer is cancelled. A disposed tree is not in the harness's
+    -- count, so nothing of it is left to wait for.
     unmount ui
     release
-    settle
-    eventuallyWithin 5000 $ passwordKeys `shouldReturn` before
+    passwordKeys `shouldReturn` before
     unsafeIOToPageM js_uninstall
     serverStops
 
@@ -1005,21 +1039,25 @@ userKeys m = describe "the user's keys" $ do
       ui <- signedOut "editor's password"
       signIn ui "editor's password"
       _ <- madeKeys
-      eventually (stored "vault:user-editor" `shouldReturn` True)
+      stored "vault:user-editor" `shouldReturn` True
       stored "identity:user-editor" `shouldReturn` True
       unsafeIOToPageM (js_assistant_key (toJSText ("user-editor" :: Text)) shared)
       unsafeIOToPageM js_hear_drops
       answerWith "DELETE" "api/v1/session" 200 nobody
       find ui ".account .sign-out" >>= click
       _ <- find ui ".sign-in-toggle"
-      eventually (stored "vault:user-editor" `shouldReturn` False)
+      stored "vault:user-editor" `shouldReturn` False
       stored "identity:user-editor" `shouldReturn` False
       stored "user-editor" `shouldReturn` not shared
+      -- The test hears the messages as another tab does, each in a task
+      -- of its own, outside the program.
       eventually (sort <$> heard `shouldReturn` sort (["vault:user-editor", "identity:user-editor"] <> ["user-editor" | shared]))
       filter (`elem` ["vault:user-editor", "identity:user-editor"]) <$> pageKeySlots `shouldReturn` []
       -- What another tab is told, this one does too: its copy goes.
       unsafeIOToPageM (js_page_key_hold (toJSText ("identity:user-other" :: Text)))
       unsafeIOToPageM (js_tell_dropped (toJSText ("identity:user-other" :: Text)))
+      -- The message from the other tab arrives in a task of its own,
+      -- which the program does not know of until then.
       eventually (filter (== "identity:user-other") <$> pageKeySlots `shouldReturn` [])
       unmount ui
       -- Signed in again, with no password typed: the keys are locked.
@@ -1027,7 +1065,7 @@ userKeys m = describe "the user's keys" $ do
       answerWith "GET" "api/v1/session" 200 me
       again <- startServer m Home
       find again ".account-toggle" >>= click
-      eventually (find again ".keys-device" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "does not hold your keys"))
+      find again ".keys-device" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "does not hold your keys")
       closed again
 
   -- A session can end with no tab open. A page that starts and hears from
@@ -1037,13 +1075,14 @@ userKeys m = describe "the user's keys" $ do
     ui <- signedOut "editor's password"
     signIn ui "editor's password"
     _ <- madeKeys
-    eventually (stored "vault:user-editor" `shouldReturn` True)
+    stored "vault:user-editor" `shouldReturn` True
     stored "identity:user-editor" `shouldReturn` True
     unmount ui
     -- A sign-in completed in another tab before this page looked: it lets
     -- go of nothing.
     unsafeIOToPageM js_reload
     unsafeIOToPageM js_tell_signed_in
+    -- The other tab's message arrives in a task of its own.
     eventually (unsafeIOToPageM js_heard_signed_in `shouldReturn` True)
     kept <- restarted
     _ <- find kept ".sign-in-toggle"
@@ -1053,7 +1092,7 @@ userKeys m = describe "the user's keys" $ do
     unsafeIOToPageM js_reload
     again <- restarted
     _ <- find again ".sign-in-toggle"
-    eventually (stored "vault:user-editor" `shouldReturn` False)
+    stored "vault:user-editor" `shouldReturn` False
     stored "identity:user-editor" `shouldReturn` False
     closed again
 
@@ -1065,7 +1104,7 @@ userKeys m = describe "the user's keys" $ do
     ui <- signedOut "editor's password"
     signIn ui "editor's password"
     _ <- madeKeys
-    eventually (stored "vault:user-editor" `shouldReturn` True)
+    stored "vault:user-editor" `shouldReturn` True
     let doomed = [UserId "vault:user-editor", UserId "identity:user-editor"]
     -- A page started afresh, which heard of no sign-in: only the store's
     -- generation decides.
@@ -1099,40 +1138,40 @@ userKeys m = describe "the user's keys" $ do
     unmount ui
     E.recordDecryptions
     gated <- startServer m (R.Page [E.secretSlug] [page.slug])
-    _ <- eventually (find gated ".encrypted-confirm-password")
+    _ <- find gated ".encrypted-confirm-password"
     length <$> findAll gated ".encrypted-confirm-passkey" `shouldReturn` 0
     find gated "input[name=encrypted-password]" >>= (`typeText` "not the password")
     find gated ".encrypted-confirm-password" >>= click
-    _ <- eventually (find gated ".encrypted-error")
+    _ <- find gated ".encrypted-error"
     length <$> findAll gated ".page-view" `shouldReturn` 0
     filter (T.isInfixOf E.secret.id.text) <$> E.decryptedSince `shouldReturn` []
     find gated "input[name=encrypted-password]" >>= (`typeText` "editor's password")
     find gated ".encrypted-confirm-password" >>= click
-    eventually (find gated ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Opened with the password."))
+    find gated ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Opened with the password.")
     -- A passkey added to the keys: the view offers it, and it opens the
     -- space in another tab.
     find gated ".account-toggle" >>= click
     find gated ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
     find gated ".keys-passkey-add" >>= click
-    eventually $ length <$> findAll gated ".keys-unlock-passkey" `shouldReturn` 1
+    length <$> findAll gated ".keys-unlock-passkey" `shouldReturn` 1
     find gated ".account-toggle" >>= click
     unmount gated
     -- Both are offered: a passkey that fails here (one not on this
     -- device, its dialog closed) leaves the password.
     failing <- startServer m (R.Page [E.secretSlug] [page.slug])
-    _ <- eventually (find failing ".encrypted-confirm-passkey")
+    _ <- find failing ".encrypted-confirm-passkey"
     _ <- find failing ".encrypted-confirm-password"
     unsafeIOToPageM js_cancel_next
     find failing ".encrypted-confirm-passkey" >>= click
-    _ <- eventually (find failing ".encrypted-error")
+    _ <- find failing ".encrypted-error"
     length <$> findAll failing ".page-view" `shouldReturn` 0
     find failing "input[name=encrypted-password]" >>= (`typeText` "editor's password")
     find failing ".encrypted-confirm-password" >>= click
-    eventually (find failing ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Opened with the password."))
+    find failing ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Opened with the password.")
     unmount failing
     other <- startServer m (R.Page [E.secretSlug] [page.slug])
-    eventually (find other ".encrypted-confirm-passkey") >>= click
-    eventually (find other ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Opened with the password."))
+    find other ".encrypted-confirm-passkey" >>= click
+    find other ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Opened with the password.")
     closed other
 
   it "unlocks the key pair with a passkey added to it, on a device where the password was not typed" $ runOwn $ do
@@ -1142,7 +1181,7 @@ userKeys m = describe "the user's keys" $ do
     find ui ".account-toggle" >>= click
     find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
     find ui ".keys-passkey-add" >>= click
-    eventually $ length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
+    length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
     unmount ui
     unsafeIOToPageM (evaluate =<< js_new_device)
     me <- signedInAs "user-editor"
@@ -1151,7 +1190,7 @@ userKeys m = describe "the user's keys" $ do
     find again ".account-toggle" >>= click
     find again ".keys-device" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "does not hold your keys")
     find again ".keys-unlock-passkey-button" >>= click
-    eventually $ find again ".keys-device" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "holds your private key")
+    find again ".keys-device" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "holds your private key")
     identityExport `shouldReturn` "refused"
     field ["publicKey", "keyId"] <$> vaultState `shouldReturn` field ["publicKey", "keyId"] made
     closed again
@@ -1195,7 +1234,7 @@ userKeys m = describe "the user's keys" $ do
     signedOut = signedOutAt Home
     signedOutAt :: Route -> Text -> PageM s (Mounted s Shell.Query Void m)
     signedOutAt at password = do
-      serverStarts
+      serverStartsWith offerOpen
       serveDemo
       answerAccount
       unsafeIOToPageM js_vault_server
@@ -1219,12 +1258,14 @@ userKeys m = describe "the user's keys" $ do
       find ui ".account .user-name" >>= (`shouldHaveText` "Edgar Editor")
     -- The vault's server once the key pair is stored.
     madeKeys = do
-      eventually $ (isJust . field ["publicKey", "keyId"]) <$> vaultState `shouldReturn` True
-      eventually $ identityExport `shouldReturn` "refused"
+      (isJust . field ["publicKey", "keyId"]) <$> vaultState `shouldReturn` True
+      identityExport `shouldReturn` "refused"
       vaultState
-    identityExport = unsafeIOToPageM (fromJSText <$> (evaluate =<< js_identity_export (toJSText "user-editor")))
+    -- The reads of what the program leaves in the page, in IndexedDB and on
+    -- the vault's server wait first for the program to be quiet.
+    identityExport = waitQuiet *> unsafeIOToPageM (fromJSText <$> (evaluate =<< js_identity_export (toJSText "user-editor")))
     stored :: Text -> PageM s Bool
-    stored slot = unsafeIOToPageM (evaluate =<< js_stores_key (toJSText slot))
+    stored slot = waitQuiet *> unsafeIOToPageM (evaluate =<< js_stores_key (toJSText slot))
     heard = unsafeIOToPageM (fromMaybe [] . decodeStrict . encodeUtf8 . fromJSText <$> js_drops_heard) :: PageM s [Text]
     pageKeySlots = unsafeIOToPageM (fromMaybe [] . decodeStrict . encodeUtf8 . fromJSText <$> js_page_key_slots) :: PageM s [Text]
     fingerprint ui = do
@@ -1237,12 +1278,13 @@ userKeys m = describe "the user's keys" $ do
     -- running (a vault being made after a sign-in) is waited for: stopped
     -- halfway by the unmount, it would leave its key behind.
     closed ui = do
-      eventually $ unsafeIOToPageM (evaluate =<< js_exportable) `shouldReturn` 0
+      waitQuiet
+      unsafeIOToPageM (evaluate =<< js_exportable) `shouldReturn` 0
       unmount ui
       unsafeIOToPageM js_uninstall
       serverStops
     vaultState :: PageM s Value
-    vaultState = unsafeIOToPageM (fromMaybe Aeson.Null . decodeStrict . encodeUtf8 . fromJSText <$> js_vault_state)
+    vaultState = waitQuiet *> unsafeIOToPageM (fromMaybe Aeson.Null . decodeStrict . encodeUtf8 . fromJSText <$> js_vault_state)
     answerAccount = do
       answerWith "GET" "api/v1/account/identities" 200 (Aeson.object ["password" Aeson..= True, "identities" Aeson..= ([] :: [Text])])
       answerWith "GET" "api/v1/account/sessions" 200 ([] :: [Text])

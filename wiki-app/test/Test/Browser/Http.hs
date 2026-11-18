@@ -19,6 +19,7 @@ module Test.Browser.Http
     -- * The server in fetch's place, for the other specs
   , Asked (..)
   , serverStarts
+  , serverStartsWith
   , serverStops
   , serveDemo
   , quietServer
@@ -216,11 +217,18 @@ hangUp = unsafeIOToPageM js_server_hang_up
 -- | The server in fetch's place, with nothing to answer yet, for the length
 -- of the test.
 serverStarts :: PageM s ()
-serverStarts = do
+serverStarts = serverStartsWith (pure 0)
+
+-- | 'serverStarts', for a test that holds more of the program's waits on
+-- purpose than the server's requests: the given count of them, read
+-- afresh at each look, as the server's is (a passkey offer the test has
+-- not answered, in "Test.Browser.Vault").
+serverStartsWith :: PageM s Int -> PageM s ()
+serverStartsWith more = do
   unsafeIOToPageM js_server_start
   -- The requests the server holds until a release are waits the test
   -- makes on purpose: 'waitQuiet' takes the program as quiet with them.
-  countHeld (unsafeIOToPageM js_server_holding)
+  countHeld ((+) <$> unsafeIOToPageM js_server_holding <*> more)
   serveOpaque
 
 -- | The answers to OPAQUE's first messages and registrations

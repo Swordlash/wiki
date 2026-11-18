@@ -16,7 +16,7 @@ import Halogen.Router qualified as Router
 import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Protolude hiding (find)
-import Test.Harness.MemDom (advance, settle, settleWaiting, typeInto, viewContext, withTestClock, withView)
+import Test.Harness.MemDom (Activity (..), activity, advance, settle, typeInto, viewContext, waitActivity, withTestClock, withView)
 import Test.Hspec
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
@@ -44,10 +44,11 @@ spec = describe "Wiki.App.View.Users, mounted on the in-memory DOM" $
         -- program waiting, so a wait for the program to be quiet waits
         -- for it.
         typeInto view ".users-search-input" "ad"
-        settleWaiting view 1
+        waitActivity view (\a -> a.running == 0)
+        (\a -> a.waiting) <$> activity view `shouldReturn` 1
         advance clock 0.2
         typeInto view ".users-search-input" "ada"
-        settleWaiting view 1
+        waitActivity view (\a -> a.running == 0)
         advance clock 0.2
         readIORef went `shouldReturn` []
         -- The pause is over: the address is written as the clock moves,

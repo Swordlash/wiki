@@ -55,10 +55,17 @@ deckWatches = unsafeIOToPageM js_deck_watches
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
 spec m = do
   it "shows a presentation embedded in a page a slide at a time, with its controls, and moves by its own keys only" $ runPage $ do
+    before <- deckWatches
     ui <- start m Nothing (Page docs guide)
     -- Far down the page, it is the link until it comes near the window.
     length <$> findAll ui ".deck-embed" `shouldReturn` 0
     bringNear ui
+    -- The read starts when the browser's IntersectionObserver says the
+    -- link has come near the window, and the viewer's watch ends: the
+    -- browser's own time, long on a loaded machine (CI on #316, seed
+    -- 120510329). The read and the viewer's render are then the program's.
+    eventuallyWithin 30000 $ deckWatches `shouldReturn` before
+    waitQuiet
     viewer <- find ui "article.page-body .deck-embed"
     position ui `shouldReturn` "1 / 9"
     cardTitle ui "article.page-body" `shouldReturn` "Presentations"

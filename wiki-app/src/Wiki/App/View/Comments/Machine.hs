@@ -4,8 +4,9 @@
 -- 82). Every input is an 'Event': the page view showing a page or going
 -- elsewhere, the answer to a read of the threads, a message of the live
 -- channel about the page, a write the reader asked for in the comments
--- view, and its answer. Every output is an 'Effect': read the threads,
--- send a write, or look up the people they mention.
+-- view, and its answer, and the answer to a lookup of people. Every
+-- output is an 'Effect': read the threads, send a write, or look up the
+-- people the page and its threads mention.
 --
 -- = Where it sits
 --
@@ -13,11 +14,50 @@
 -- events: the page view turns what concerns the threads (its fetch taken,
 -- a change of route, the feed's messages about the page, a write the
 -- comments view asks for) into events, runs 'step' in one step of its
--- program, and carries out the effects; a read or a write is forked and
--- its answer comes back as one more event. The rest of the page view (its
--- fetch, the ticks, the chain's check, the people, the avatars) is as it
--- was. The comments view holds what is being written, asks for a write
--- ('Write'), and is told its answer by the page view.
+-- program ("Halogen.Machine"), and carries out the effects; a read, a
+-- write or a lookup of people is forked and its answer comes back as one
+-- more event. The rest of the page view (its fetch, the ticks, the
+-- chain's check) is as it was. The comments view holds what
+-- is being written, asks for a write ('Write'), and is told its answer by
+-- the page view.
+--
+-- = The people mentioned
+--
+-- The users the page's text and its comments mention (@\@login@) are the
+-- model's too ('people'), so that the step that changes the threads also
+-- asks for the people it lacks ('LookUp'), and the step that takes the
+-- answer folds it in ('Found'). An answer about people is true whenever
+-- it comes, for the reader and the space it was asked for: one that comes
+-- late, or after the comment that mentioned the login is gone, is folded
+-- in all the same, as it shows nothing wrong. When the reader or the space
+-- may be another ('PeopleAgain', in the step the page view takes its new
+-- input), what was known is forgotten, the lookups are asked in the
+-- input's space from then on, and an answer asked for before then is
+-- told apart by its number ('lookups') and dropped. A login whose lookup failed is asked for again at the next
+-- change of the threads or of the page, not at once.
+--
+-- = The avatars shown
+--
+-- The addresses of the avatars the page view shows (the page's writers,
+-- the comments' authors, the readers) are one map, the model's
+-- ('avatars'), and every answer about avatars is an event of the
+-- machine: the lookup it asks for its comments' authors at the steps
+-- that change the threads ('Avatars', answered by 'Avatared'), and the
+-- page view's own lookup of everyone it shows, when it takes a page or
+-- hears who reads it ('Seen'). An answer sets the address of each person
+-- it was asked for and found with one, and removes that of each person it
+-- was asked for and found without one: someone asked for with no avatar
+-- has none ('seenIn'). The last event about a person wins, in the order
+-- the events are stepped. Each lookup has its tickets
+-- ("Wiki.App.View.Latest"), so that its own late answer does not undo a
+-- later one; between the two lookups the order is that of their answers'
+-- arrival. Two lookups out at once whose snapshots of one person differ
+-- (a comment's author as a read of the threads named them, and the same
+-- person as a reader just now) can land in the wrong order, and the next
+-- change of either puts it right. Nothing in either answer says which
+-- snapshot is newer, and no order of the server's lies between them, as
+-- none lay between two reads of the threads out at once before one read
+-- was kept in flight.
 --
 -- = What an answer says
 --
@@ -73,18 +113,24 @@ module Wiki.App.View.Comments.Machine
   , Effect (..)
   , initial
   , step
+  , lacking
   , readyThreads
   )
 where
 
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Protolude hiding (State)
 import Wiki.Api.Events (PageEvent (..), applyEvent)
 import Wiki.App.Backend (WikiError)
 import Wiki.App.View.Latest (Ask, Asks, madeAfter, newAsk, noAsks, stillAnswerable, supersede, takes)
 import Wiki.Core.Anchor (Anchor)
 import Wiki.Core.Comment (Comment (..), Thread (..))
-import Wiki.Core.Id (CommentId, CommentThreadId, PageId)
+import Wiki.Core.Id (CommentId, CommentThreadId, PageId, UserId)
+import Wiki.Core.Notification (mentionedIn)
+import Wiki.Core.Space (Space (encryption))
+import Wiki.Core.User (Avatar)
+import Wiki.Core.Version (Author (avatar, id))
 
 -- | A page's threads, as far as they have been read.
 data Threads
@@ -102,6 +148,11 @@ data Model = Model
   , comments :: Bool
   -- ^ Whether the page shown has comments: not a home page, nor an older
   -- version ("Wiki.App.View.Page"'s @commentsHere@).
+  , space :: Maybe Space
+  -- ^ The space of the page shown, which the people are looked up in: the
+  -- page view's input's, from the step that takes it ('PeopleAgain'), so
+  -- that a lookup is never asked in a space the page has left (a plain
+  -- space that became encrypted, whose logins must not reach the server).
   , encrypted :: Bool
   -- ^ Whether the page is in an encrypted space: the live channel then
   -- tells only that its threads changed, and they are read again.
@@ -140,6 +191,24 @@ data Model = Model
   , closed :: Bool
   -- ^ Whether the page view has gone away: after that nothing changes and
   -- nothing is asked.
+  , mentioned :: Set Text
+  -- ^ The logins the text of the page shown mentions.
+  , people :: Map Text Author
+  -- ^ The users found among the logins looked up, by login.
+  , lookedUp :: Set Text
+  -- ^ Every login whose lookup answered, found or not.
+  , lookingUp :: Set Text
+  -- ^ The logins asked for whose answer has not come: not asked again
+  -- meanwhile.
+  , lookups :: Int
+  -- ^ Which lookups count: the number 'PeopleAgain' raises. An answer to
+  -- a lookup made under another number is dropped.
+  , avatars :: Map UserId Text
+  -- ^ The addresses of the avatars the page view shows, by person, as the
+  -- events about them last set them (see "The avatars shown").
+  , avatarAsks :: Asks
+  -- ^ The machine's lookups of its authors' avatars, and which one's
+  -- answer was taken last.
   }
   deriving stock (Eq, Show)
 
@@ -194,9 +263,9 @@ data Event a
   | -- | The page view goes away.
     Finished
   | -- | The page view took a page it fetched (a new page, or the page
-    -- shown read again): whether it has comments, and whether it is in an
-    -- encrypted space.
-    Fetched PageId Bool Bool
+    -- shown read again): whether it has comments, its space, and its
+    -- text, for the people it mentions.
+    Fetched PageId Bool Space Text
   | -- | The page view went to another page or version: nothing is shown
     -- until it is fetched.
     Left'
@@ -224,6 +293,20 @@ data Event a
     Closed
   | -- | The reader chose this thread.
     Chose CommentThreadId
+  | -- | The page view took an input that may change who the people are:
+    -- another page, another reader (the wiki changed), or another space,
+    -- or the same space changed (made encrypted). The people are looked up
+    -- again, in this space, the input's, from this step on.
+    PeopleAgain Space
+  | -- | The answer to the lookup of these logins made under this number:
+    -- the users found among them.
+    Found Int [Text] (Either WikiError (Map Text Author))
+  | -- | The answer to the lookup of the avatars of these authors made
+    -- under this ticket, or 'Nothing' when it failed.
+    Avatared Ask [UserId] (Maybe (Map UserId Text))
+  | -- | The page view's own lookup of avatars answered, and taken under
+    -- its ticket: the people it was asked for, and the addresses found.
+    Seen [UserId] (Map UserId Text)
   deriving stock (Eq, Show)
 
 -- | 'Effect' is what a step asks the page view to do.
@@ -237,43 +320,89 @@ data Effect a
     -- asked for: its form emptied, or why the write failed shown. Asked
     -- only on the visit of the page the write was sent on.
     Answered a Request (Maybe WikiError)
-  | -- | The threads shown changed: look up the people they mention.
-    Changed
+  | -- | Look up these logins in this space, under this number; the answer
+    -- comes back as 'Found'.
+    LookUp Space Int [Text]
+  | -- | Look up the addresses of these avatars, under this ticket; the
+    -- answer comes back as 'Avatared'.
+    Avatars Ask [(UserId, Maybe Avatar)]
   deriving stock (Eq, Show)
 
 -- | The threads before the page view is mounted: for the page it shows, if
--- any, with whether it has comments and is encrypted, and the threads
--- read at once if the backend could.
-initial :: Maybe PageId -> Bool -> Bool -> Maybe (Either WikiError [Thread]) -> Model
-initial page comments encrypted read' =
-  Model {page, comments, encrypted, threads = maybe ThreadsLoading (either ThreadsFailed ThreadsReady) (read' >>= \r -> r <$ guard comments), asks = noAsks, written = 0, writes = mempty, heard = [], flight = Nothing, wanted = False, quoting = Nothing, sessions = 0, focused = Nothing, behind = False, closed = False}
+-- any, with whether it has comments, its space, its text, and the threads
+-- read at once if the backend could. The people they mention are looked
+-- up once the view is mounted ('Started'), or at once by the page view,
+-- which gives the answer as 'Found' ('lacking' says which).
+initial :: Maybe PageId -> Bool -> Space -> Text -> Maybe (Either WikiError [Thread]) -> Model
+initial page comments space text read' =
+  Model
+    { page
+    , comments
+    , space = Just space
+    , encrypted = isJust space.encryption
+    , threads = maybe ThreadsLoading (either ThreadsFailed ThreadsReady) (read' >>= \r -> r <$ guard comments)
+    , asks = noAsks
+    , written = 0
+    , writes = mempty
+    , heard = []
+    , flight = Nothing
+    , wanted = False
+    , quoting = Nothing
+    , sessions = 0
+    , focused = Nothing
+    , behind = False
+    , closed = False
+    , mentioned = if isJust page then mentionedIn text else mempty
+    , people = mempty
+    , lookedUp = mempty
+    , lookingUp = mempty
+    , lookups = 0
+    , avatars = mempty
+    , avatarAsks = noAsks
+    }
 
 -- | The threads after an event, and what the page view is asked to do.
 step :: Event a -> Model -> (Model, [Effect a])
 step event m
   | m.closed = (m, [])
   | otherwise = case event of
-      Started -> case m.threads of
+      Started -> lookingFirst $ case m.threads of
         ThreadsLoading -> reading m
         _ -> (m, [])
       Finished -> (m {closed = True}, [])
       -- Another page is another visit: the answers to the writes sent on
       -- the last one are not taken.
-      Fetched page comments encrypted ->
-        reading (if m.page == Just page then m {comments, encrypted} else (elsewhere m) {page = Just page, comments, encrypted})
-      Left' -> ((elsewhere m) {page = Nothing, threads = ThreadsLoading, asks = supersede m.asks}, [])
+      Fetched page comments space text ->
+        let mentioned = mentionedIn text
+            encrypted = isJust space.encryption
+         in lookingFirst (reading (if m.page == Just page then m {comments, space = Just space, encrypted, mentioned} else (elsewhere m) {page = Just page, comments, space = Just space, encrypted, mentioned}))
+      Left' -> ((elsewhere m) {page = Nothing, threads = ThreadsLoading, asks = supersede m.asks, mentioned = mempty}, [])
       Quoted a -> let k = m.sessions + 1 in (m {quoting = Just Quoting {session = k, anchor = a}, sessions = k, focused = Nothing}, [])
       GaveUp -> (m {quoting = Nothing}, [])
       Closed -> (m {quoting = Nothing}, [])
       Chose tid -> (m {focused = Just tid}, [])
+      PeopleAgain space -> (m {space = Just space, encrypted = isJust space.encryption, people = mempty, lookedUp = mempty, lookingUp = mempty, lookups = m.lookups + 1}, [])
+      Found n logins answer
+        | n /= m.lookups -> (m, [])
+        | otherwise ->
+            let asked = Set.fromList logins
+             in case answer of
+                  Right found -> (m {people = found <> m.people, lookedUp = m.lookedUp <> asked, lookingUp = m.lookingUp `Set.difference` asked}, [])
+                  Left _ -> (m {lookingUp = m.lookingUp `Set.difference` asked}, [])
+      -- An answer under an older ticket than the one taken last, or a
+      -- failed one, changes nothing.
+      Avatared asked authors answer -> case (answer, takes asked m.avatarAsks) of
+        (Just found, Just after) -> (m {avatars = seenIn authors found m.avatars, avatarAsks = after}, [])
+        _ -> (m, [])
+      Seen asked found -> (m {avatars = seenIn asked found m.avatars}, [])
       -- The ticket is taken whichever page the answer is for; its threads
       -- only for the page shown.
       Loaded asked page answer -> case takes asked m.asks of
         Just after ->
           let m' = taking asked page answer m {asks = after}
               (m'', fx) = landed asked (if m'.threads /= m.threads then unquiet m' else m')
-           in (m'', Changed : fx)
-        Nothing -> second (Changed :) (landed asked m)
+           in lookingFirst (m'', fx)
+        Nothing -> lookingFirst (landed asked m)
       Write place page request ->
         let n = m.written + 1
             -- A thread about a quote is of the session its request names.
@@ -297,14 +426,14 @@ step event m
       Heard page e
         | m.page /= Just page -> (m, [])
         | e == ThreadsChanged -> reading m
-        | otherwise -> (m {threads = applied e m.threads, heard = heardNow (remembered e m.threads) m, writes = map (\w -> w {told = e : w.told, quiet = False}) m.writes}, [Changed])
+        | otherwise -> lookingFirst (m {threads = applied e m.threads, heard = heardNow (remembered e m.threads) m, writes = map (\w -> w {told = e : w.told, quiet = False}) m.writes}, [])
       Replaced page ts
         | m.page /= Just page -> (m, [])
         | m.encrypted -> reading m
         -- A read wanted before it is not asked: the subscription's answer
         -- is the threads as they were when the page was subscribed to, and
         -- every change after that comes after it on the channel.
-        | otherwise -> (unquiet m {threads = ThreadsReady ts, asks = supersede m.asks, heard = [], wanted = False, behind = False, focused = mfilter (\f -> any (\t -> t.id == f) ts) m.focused}, [Changed])
+        | otherwise -> lookingFirst (unquiet m {threads = ThreadsReady ts, asks = supersede m.asks, heard = [], wanted = False, behind = False, focused = mfilter (\f -> any (\t -> t.id == f) ts) m.focused}, [])
       Reload -> reading m
 
 -- | The model on another visit, or none: what was kept about the last
@@ -342,7 +471,7 @@ wrote :: Writing -> Either WikiError PageEvent -> Model -> (Model, [Effect a])
 wrote w answer m = case answer of
   Right e
     | any (about e) w.told -> (m, [])
-    | w.quiet -> second (Changed :) (reading m {threads = applied e m.threads, heard = heardNow (remembered e m.threads) m})
+    | w.quiet -> lookingFirst (reading m {threads = applied e m.threads, heard = heardNow (remembered e m.threads) m})
   _ -> reading m
 
 -- | Whether an event the channel told is about what a write's answer made
@@ -454,7 +583,7 @@ reading m = case m.page of
     | m.comments, Just (out, p) <- m.flight, p == page, isJust (takes out m.asks) -> (m {wanted = True}, [])
     | m.comments -> (m {asks = after, flight = Just (ticket, page), wanted = False}, [Load ticket page])
     | otherwise -> case takes ticket after of
-        Just taken -> (m {asks = taken, threads = ThreadsReady []}, [Changed])
+        Just taken -> lookingFirst (m {asks = taken, threads = ThreadsReady []}, [])
         Nothing -> (m {asks = after}, [])
     where
       (ticket, after) = newAsk m.asks
@@ -464,6 +593,47 @@ applied :: PageEvent -> Threads -> Threads
 applied e = \case
   ThreadsReady ts -> ThreadsReady (applyEvent e ts)
   other -> other
+
+-- | The step's model and effects, with a lookup of the people it lacks,
+-- if it lacks any ('lacking'), and of the avatars of the threads'
+-- authors, before them: first, as the page view did them before the
+-- step's read or write.
+lookingFirst :: (Model, [Effect a]) -> (Model, [Effect a])
+lookingFirst (m, fx) =
+  let (m', look) = lookUp m
+      (m'', faces) = avatarsLookedUp m'
+   in (m'', look <> faces <> fx)
+
+-- | A lookup of the people the model lacks, begun: they are being looked
+-- up from then on. Nothing for none, or with no page shown.
+lookUp :: Model -> (Model, [Effect a])
+lookUp m = case (m.space, lacking m) of
+  (Just space, logins@(_ : _)) -> (m {lookingUp = m.lookingUp <> Set.fromList logins}, [LookUp space m.lookups logins])
+  _ -> (m, [])
+
+-- | A lookup of the avatars of the threads' authors, under a new ticket,
+-- with a page shown.
+avatarsLookedUp :: Model -> (Model, [Effect a])
+avatarsLookedUp m
+  | isNothing m.page = (m, [])
+  | otherwise =
+      let (ticket, after) = newAsk m.avatarAsks
+       in (m {avatarAsks = after}, [Avatars ticket [(c.author.id, c.author.avatar) | t <- readyThreads m, c <- t.comments]])
+
+-- | The logins the page's text and its threads mention that are neither
+-- looked up nor being looked up. None while no page is shown.
+lacking :: Model -> [Text]
+lacking m
+  | isNothing m.page = []
+  | otherwise = Set.toList (mentions `Set.difference` (m.lookedUp <> m.lookingUp))
+  where
+    mentions = m.mentioned <> foldMap mentionedIn [c.body | t <- readyThreads m, c <- t.comments]
+
+-- | The addresses of avatars after an answer about them: each person
+-- asked for gets the address found, or none when none was found; everyone
+-- else's stays.
+seenIn :: [UserId] -> Map UserId Text -> Map UserId Text -> Map UserId Text
+seenIn asked found avatars = foldr (\u -> Map.alter (const (Map.lookup u found)) u) avatars asked
 
 -- | The threads shown, if they are read.
 readyThreads :: Model -> [Thread]

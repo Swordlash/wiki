@@ -52,10 +52,12 @@ module Wiki.App.Assistant.Keys
   )
 where
 
+import Control.Monad.IO.Unlift (MonadUnliftIO, withRunInIO)
 import Data.Aeson (eitherDecodeStrict, encode)
 import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
 import Protolude
+import System.IO.Unsafe (unsafePerformIO)
 import Wiki.Api.Vault (PasskeyInfo (..), StoredVault (..))
 import Wiki.App.Assistant (KeyRef, MonadAssistant (..))
 import Wiki.App.Assistant.Sync (Fetched (..), MonadVault (..))
@@ -100,8 +102,8 @@ data Opened
 -- reached).
 -- This is also how a device learns that syncing was turned on elsewhere,
 -- so the assistant's settings page loads the keys with it.
-loadKeys :: (MonadAssistant m, MonadVault m) => UserId -> m (Either Text Keys)
-loadKeys user = sealing (plainKeys user) $ runExceptT $ do
+loadKeys :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> m (Either Text Keys)
+loadKeys user = holdingKeys $ sealing (plainKeys user) $ runExceptT $ do
   record <- refreshed user =<< current user
   key <- lift (deviceKey user)
   opened <- open record key
@@ -111,16 +113,16 @@ loadKeys user = sealing (plainKeys user) $ runExceptT $ do
 -- asked only when this device already follows a vault. A page the server
 -- rendered carries everything else the editor needs, so a device that does
 -- not sync makes no request for the assistant when it opens the editor.
-loadFollowedKeys :: (MonadAssistant m, MonadVault m) => UserId -> m (Either Text Keys)
-loadFollowedKeys user = sealing (plainKeys user) $ runExceptT $ do
+loadFollowedKeys :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> m (Either Text Keys)
+loadFollowedKeys user = holdingKeys $ sealing (plainKeys user) $ runExceptT $ do
   kept <- current user
   record <- if isJust kept.server then refreshed user kept else pure kept
   key <- lift (deviceKey user)
   keysOf record <$> open record key
 
 -- | The settings as this device keeps them, without asking the server.
-readKeys :: (MonadAssistant m) => UserId -> m (Either Text Keys)
-readKeys user = sealing (plainKeys user) $ runExceptT $ do
+readKeys :: (MonadAssistant m, MonadUnliftIO m) => UserId -> m (Either Text Keys)
+readKeys user = holdingKeys $ sealing (plainKeys user) $ runExceptT $ do
   record <- current user
   key <- lift (deviceKey user)
   keysOf record <$> open record key
@@ -133,8 +135,8 @@ readKeys user = sealing (plainKeys user) $ runExceptT $ do
 -- kept here either, so that the devices do not drift apart. While the
 -- vault is locked, a change is kept on this device only, under a key of
 -- its own, until the vault is unlocked ('unlockKeys').
-changeKeys :: (MonadAssistant m, MonadVault m) => UserId -> (Settings -> Settings) -> m (Either Text Keys)
-changeKeys user f = sealing (plainChange user f) $ runExceptT (attempt (2 :: Int))
+changeKeys :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> (Settings -> Settings) -> m (Either Text Keys)
+changeKeys user f = holdingKeys $ sealing (plainChange user f) $ runExceptT (attempt (2 :: Int))
   where
     attempt tries = do
       record <- current user
@@ -191,8 +193,8 @@ changeKeys user f = sealing (plainChange user f) $ runExceptT (attempt (2 :: Int
 -- no passkey at hand, no PRF output), a new one is made, as for a user who
 -- has none; one without the PRF extension is kept to sign in with, and
 -- said so ('newPasskey').
-turnOnSync :: (MonadAssistant m, MonadVault m) => UserId -> Maybe Password -> m (Either Text Keys)
-turnOnSync user password = sealing (pure (Left needsSealing)) $ runExceptT $ do
+turnOnSync :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe Password -> m (Either Text Keys)
+turnOnSync user password = holdingKeys $ sealing (pure (Left needsSealing)) $ runExceptT $ do
   record <- refreshed user =<< current user
   when (isJust record.server) (throwError "Your keys sync already, or another device of yours syncs them: unlock them with a passkey.")
   key <- lift (deviceKey user)
@@ -297,8 +299,8 @@ joinVault user password record secrets s = do
 -- unwrapped with what the passkey gives, kept, and the settings opened.
 -- Settings typed here while it was locked are merged in
 -- ('mergeUnlocked') and stored, if they add anything.
-unlockKeys :: (MonadAssistant m, MonadVault m) => UserId -> m (Either Text Keys)
-unlockKeys user = sealing (pure (Left needsSealing)) $ runExceptT $ do
+unlockKeys :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> m (Either Text Keys)
+unlockKeys user = holdingKeys $ sealing (pure (Left needsSealing)) $ runExceptT $ do
   record <- refreshed user =<< current user
   copy <- maybe (throwError "There is nothing to unlock: your keys do not sync.") pure record.server
   key <- lift (deviceKey user)
@@ -331,8 +333,8 @@ unlockKeys user = sealing (pure (Left needsSealing)) $ runExceptT $ do
 -- is unlocked: a passkey the vault knows gives the vault key (one touch),
 -- then the new passkey is made (another, and a third if its authenticator
 -- gives its PRF output only when used).
-addPasskey :: (MonadAssistant m, MonadVault m) => UserId -> Maybe Password -> m (Either Text Keys)
-addPasskey user password = sealing (pure (Left needsSealing)) $ runExceptT $ do
+addPasskey :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe Password -> m (Either Text Keys)
+addPasskey user password = holdingKeys $ sealing (pure (Left needsSealing)) $ runExceptT $ do
   record <- refreshed user =<< current user
   copy <- maybe (throwError "Your keys do not sync: turn syncing on first.") pure record.server
   key <- lift (deviceKey user)
@@ -361,8 +363,8 @@ addPasskey user password = sealing (pure (Left needsSealing)) $ runExceptT $ do
 
 -- | Remove one of the user's passkeys, with its wrapped copy of the vault
 -- key: the passkeys left.
-removePasskey :: (MonadAssistant m, MonadVault m) => UserId -> CredentialId -> m (Either Text [PasskeyInfo])
-removePasskey user credential = runExceptT $ do
+removePasskey :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> CredentialId -> m (Either Text [PasskeyInfo])
+removePasskey user credential = holdingKeys $ runExceptT $ do
   left <- server (dropPasskey credential)
   _ <- refreshed user =<< current user
   pure left
@@ -372,8 +374,8 @@ removePasskey user credential = runExceptT $ do
 -- passkey). The keys stay on this device: the vault's latest version,
 -- fetched first, when this device can open it, or else what was typed
 -- here while it was locked ('leaveVault').
-turnOffSync :: (MonadAssistant m, MonadVault m) => UserId -> m (Either Text Keys)
-turnOffSync user = sealing (runExceptT (server deleteVault) >>= either (pure . Left) (const (plainKeys user))) $ runExceptT $ do
+turnOffSync :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> m (Either Text Keys)
+turnOffSync user = holdingKeys $ sealing (runExceptT (server deleteVault) >>= either (pure . Left) (const (plainKeys user))) $ runExceptT $ do
   record <- refreshed user =<< current user
   server deleteVault
   uncurry keysOf <$> leaveVault user record
@@ -381,8 +383,8 @@ turnOffSync user = sealing (runExceptT (server deleteVault) >>= either (pure . L
 -- | Whether this device asks for the passkey each time the wiki opens: if
 -- so, it keeps the vault key for the page's life only; if not, in
 -- IndexedDB too.
-setAskEachTime :: (MonadAssistant m) => UserId -> Bool -> m (Either Text Keys)
-setAskEachTime user asking = sealing (pure (Left needsSealing)) $ runExceptT $ do
+setAskEachTime :: (MonadAssistant m, MonadUnliftIO m) => UserId -> Bool -> m (Either Text Keys)
+setAskEachTime user asking = holdingKeys $ sealing (pure (Left needsSealing)) $ runExceptT $ do
   record <- current user
   key <- deviceKeyOrFail user
   opened <- open record (Just key)
@@ -403,6 +405,29 @@ setAskEachTime user asking = sealing (pure (Left needsSealing)) $ runExceptT $ d
 -- | The first where this page can seal, the second where it cannot.
 sealing :: (MonadAssistant m) => m a -> m a -> m a
 sealing plain sealed = sealingHere >>= bool plain sealed
+
+-- | 'keysLock' is held by every function of this module that reads what
+-- this device keeps for a user and may write it back ('holdingKeys'),
+-- for the whole of it. Each of them reads the record, waits (on
+-- IndexedDB, on WebCrypto, on the server, on a passkey) and writes the
+-- record it read with its own change. Two at once wrote over each other:
+-- the editor checks each provider in a fork of its own and keeps what
+-- each check learnt, and the second write put back the record from
+-- before the first, so a provider found unreachable was kept as
+-- reachable. With the lock the second reads what the first wrote.
+--
+-- It is one lock for every user, in this page only. Another tab of the
+-- wiki keeps its own, and can still write over a change of this one.
+keysLock :: MVar ()
+keysLock = unsafePerformIO (newMVar ())
+{-# NOINLINE keysLock #-}
+
+-- | Run a reading and writing of the keys holding 'keysLock'. The lock is
+-- given back however the run ends, a cancelled fork's included. Only the
+-- module's exported functions take it, never one of its helpers, which
+-- they call while they hold it.
+holdingKeys :: (MonadUnliftIO m) => m a -> m a
+holdingKeys action = withRunInIO (\run -> withMVar keysLock (const (run action)))
 
 needsSealing :: Text
 needsSealing = "Syncing your keys needs this wiki at its HTTPS address: the browser offers no encryption to a page served over plain HTTP."

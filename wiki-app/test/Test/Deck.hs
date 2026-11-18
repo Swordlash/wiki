@@ -49,6 +49,9 @@
 --   given the context as it is;
 -- * every read's addresses are let go by the time the viewer closed;
 -- * the slide and step shown are within the deck;
+-- * an input equal to the last one asks for nothing: no watch is started
+--   or stopped again, no read made, as the page gives the viewer its input
+--   at each of its renders;
 -- * once every input was given, every link rendered, every watch told and
 --   every read answered, the viewer shows the answer to a read made for
 --   its reading.
@@ -291,7 +294,11 @@ play w = \case
   Relink -> noted "the embed names the other page" w {context = w.context {named = 1 - w.context.named}}
   Give
     | w.finished -> w
-    | otherwise -> event "given its input" (Received (Linked (readingOf w.context) ())) w {given = w.context}
+    | otherwise ->
+        let given = Received (Linked (readingOf w.context) ())
+            (_, fx) = step given w.view
+            w' = event "given its input" given w {given = w.context}
+         in w' {faults = w'.faults <> [(SameInput, "an equal input asked for " <> show fx) | w.context == w.given, not (null fx)]}
   Render
     | w.rendered > 0 -> event "the link is rendered" Rendered w {rendered = w.rendered - 1}
     | otherwise -> w
@@ -414,7 +421,7 @@ settles w0 =
 
 -- | 'Rule' is each rule a run is checked against, as the module's Haddock
 -- lists them.
-data Rule = OneWatch | ForReading | Stale | LiveAddresses | Owners | InDeck
+data Rule = OneWatch | ForReading | Stale | LiveAddresses | Owners | InDeck | SameInput
   deriving stock (Eq, Show, Enum, Bounded)
 
 ruleText :: Rule -> [Char]
@@ -425,6 +432,7 @@ ruleText = \case
   LiveAddresses -> "shows no deck whose addresses were let go, on any run"
   Owners -> "lets go of every read's addresses by the time it closes, on any run"
   InDeck -> "shows a slide and a step within the deck, on any run"
+  SameInput -> "asks for nothing, no watch started or stopped, when given an input equal to the last, on any run"
 
 verdict :: Rule -> World -> Property
 verdict rule w =

@@ -136,13 +136,18 @@ function wiki_islands_highlight(element, language, code) {
 // fitted, the window's height changes, or its own observer fires; the
 // window's listener goes with the last frame.
 //
-// Each ask returns a promise that resolves once the frame's current
-// document (its srcdoc as it is now) has loaded, with what it loads
+// Each ask returns a promise that resolves once the document the frame was
+// last given (its srcdoc, as last set) has loaded, with what it loads
 // (images), and the frame has been measured with it: at once when it has,
-// or after its load event. The document the frame last loaded is noted at
-// its load; a frame of the prerendered page whose document had loaded
-// before the program asked counts as loaded with the srcdoc it has. A
-// frame dropped from the set resolves what waited for it.
+// or after its load event. Which document is meant is a count, never the
+// text: every time the frame's srcdoc is set (a MutationObserver sees it)
+// the count goes up, and the document the frame holds then is stale, as
+// is whatever it loads. An ask waits for the count as it is when asked,
+// and a load counts only for a document that is not stale, which is the
+// last one set: a frame given A, then B, then A again before B loaded
+// waits for that last A, not for the first. A frame of the prerendered
+// page whose document had loaded before the program asked counts as
+// loaded. A frame dropped from the set resolves what waited for it.
 const wikiFittedFrames = new Map();
 let wikiFramesResizing = false;
 
@@ -231,23 +236,48 @@ function wiki_islands_fit_frame(frame) {
     return wikiIslandsBounded(known.loaded());
   }
   let observer = null;
-  // The srcdoc of the document the frame last loaded, and what waits for
-  // the current one.
-  let loadedSource = null;
+  // How many times the frame's srcdoc has been set since it was first
+  // fitted; the count as it was when the frame's document loaded, or -1
+  // while none has; the documents loaded before the last set; and what
+  // waits, each with the count it waits for.
+  let sets = 0;
+  let loadedAt = -1;
+  const stale = new WeakSet();
   let waiting = [];
+  const noteSets = (records) => {
+    if (records.length === 0) return;
+    sets += records.length;
+    const doc = frame.contentDocument;
+    if (doc) stale.add(doc);
+  };
+  const setWatch = new MutationObserver(noteSets);
+  setWatch.observe(frame, { attributes: true, attributeFilter: ["srcdoc"] });
+  // The records not delivered yet: a set made in this task, before the
+  // observer's callback.
+  const catchUp = () => noteSets(setWatch.takeRecords());
   const release = () => {
     const resolved = waiting;
     waiting = [];
-    for (const resolve of resolved) resolve();
+    for (const { resolve } of resolved) resolve();
   };
-  const settleIfLoaded = () => {
-    if (loadedSource === frame.srcdoc) release();
+  const settle = () => {
+    const done = waiting.filter((w) => w.wanted <= loadedAt);
+    waiting = waiting.filter((w) => w.wanted > loadedAt);
+    for (const { resolve } of done) resolve();
   };
   const loaded = () =>
     new Promise((resolve) => {
-      waiting.push(resolve);
-      settleIfLoaded();
+      catchUp();
+      waiting.push({ wanted: sets, resolve });
+      settle();
     });
+  // The frame's document has loaded: it counts if it was given after the
+  // last set, the srcdoc's own (not the frame's first about:blank).
+  const onLoad = () => {
+    catchUp();
+    const doc = frame.contentDocument;
+    if (doc && doc.URL === "about:srcdoc" && !stale.has(doc)) loadedAt = sets;
+  };
   const measure = () => {
     if (!frame.isConnected) return wikiFramesSweep();
     // 0. A height the fence gives: the frame is left alone.
@@ -290,17 +320,21 @@ function wiki_islands_fit_frame(frame) {
     for (const type of ["load", "toggle", "transitionend", "animationend"]) doc.addEventListener(type, measure, true);
     measure();
   };
-  wikiFittedFrames.set(frame, { measure, stop: () => observer?.disconnect(), release, loaded });
+  const stop = () => {
+    observer?.disconnect();
+    setWatch.disconnect();
+  };
+  wikiFittedFrames.set(frame, { measure, stop, release, loaded });
   if (wikiFittedFrames.size === 1) window.addEventListener("resize", wikiFramesOnResize);
   frame.addEventListener("load", () => {
-    loadedSource = frame.srcdoc;
+    onLoad();
     watch();
-    settleIfLoaded();
+    settle();
   });
   // A document loaded before the program asked: the prerendered page's.
   // A frame just made holds about:blank until its srcdoc loads.
   const doc = frame.contentDocument;
-  if (doc?.readyState === "complete" && doc.URL === "about:srcdoc") loadedSource = frame.srcdoc;
+  if (doc?.readyState === "complete") onLoad();
   watch();
   return wikiIslandsBounded(loaded());
 }

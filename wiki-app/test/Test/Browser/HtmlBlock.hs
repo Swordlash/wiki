@@ -14,7 +14,10 @@ module Test.Browser.HtmlBlock (spec) where
 import Control.Monad.UUID (MonadUUID)
 import Data.Aeson (decodeStrict)
 import Data.Map.Strict qualified as Map
+import Data.Row (type (.==))
 import Data.Text qualified as T
+import Halogen qualified as H
+import Halogen.HTML qualified as HH
 import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
@@ -50,6 +53,7 @@ $( browserJS
      , ("js_frame_fit", "wiki_test_frame_fit", Safe, [t|JSText -> IO JSText|])
      , ("js_window_height", "wiki_test_window_height", Safe, [t|Int -> IO ()|])
      , ("js_frame_grow", "wiki_test_frame_grow", Safe, [t|JSText -> IO Bool|])
+     , ("js_frame_ready", "wiki_test_frame_ready", Safe, [t|JSText -> IO JSText|])
      ]
  )
 
@@ -208,6 +212,27 @@ spec m = describe "an html fence" $ do
       frameStyle "#text" "color" `shouldReturn` pageText
       frameCount "body.html-frame-light, body.html-frame-dark" `shouldReturn` 0
 
+  -- Codex's first round on #319: a frame given A, then B, then A again
+  -- before B loaded was taken for loaded with the first A, whose text is
+  -- the same. The first A's document is marked; B and A are given in one
+  -- step of the program, so that the browser loads nothing in between. A
+  -- is long, so that the last A is still being read when an early answer
+  -- lets the program go quiet. Once the program is quiet, the frame holds
+  -- the last A, loaded and whole, and not the marked one.
+  it "waits for the document it was given last, not an earlier one with the same text" $ runPage $ do
+    let paragraphs = 20000 :: Int
+        given body = HtmlFrame Nothing (frameDocument SystemScheme body)
+        a = given (T.concat (replicate paragraphs "<p>A</p>"))
+        island = "iframe.wiki-html"
+    ui <- mount m frameHolder a
+    fitted
+    unsafeIOToPageM (js_frame_mark (toJSText island)) `shouldReturn` True
+    void (query ui (H.mkTell (SetFrames [given "<p>B</p>", a])))
+    fitted
+    unsafeIOToPageM (js_frame_marked (toJSText island)) `shouldReturn` False
+    unsafeIOToPageM (fromJSText <$> js_frame_ready (toJSText island)) `shouldReturn` "complete"
+    frameCountIn island ".page-body p" `shouldReturn` paragraphs
+
   it "runs no script even written straight into the frame's document: the sandbox forbids it" $ runPage $ do
     ui <- mount m (Islands.component @(Const Void) @Void) (HtmlFrame Nothing (frameDocument SystemScheme "<p>shown</p><script>parent.wikiFrameScriptRan = 'script'</script><img src=\"nowhere.png\" onerror=\"parent.wikiFrameScriptRan = 'handler'\">"))
     _ <- find ui "iframe.wiki-html"
@@ -293,6 +318,26 @@ spec m = describe "an html fence" $ do
 -- bound (a minute, jsbits/islands.js); no passing test comes near it.
 fitted :: (HasCallStack) => PageM s ()
 fitted = waitQuietWithin 120000
+
+-- | A parent for one island, whose input a test changes with 'SetFrames',
+-- as a page re-rendered with a new fence would: to each in turn, in one
+-- step of the program.
+data FrameQuery a = SetFrames [Island] a
+
+frameHolder :: forall m. (MonadIslands m, MonadUUID m) => H.Component FrameQuery Island Void m
+frameHolder =
+  H.mkComponent
+    H.ComponentSpec
+      { initialState = pure
+      , render
+      , eval = H.mkEval H.defaultEval {H.handleQuery = handleQuery}
+      }
+  where
+    render :: Island -> H.ComponentHTML Void ("island" .== H.Slot (Const Void) Void ()) m
+    render island = HH.div_ [HH.slot_ "island" () Islands.component island]
+
+    handleQuery :: FrameQuery a -> H.HalogenM Island Void ("island" .== H.Slot (Const Void) Void ()) Void m (Maybe a)
+    handleQuery (SetFrames islands next) = traverse_ put islands $> Just next
 
 -- | The elements of the page's frame that are not among the allowlist's
 -- (and the frame's style elements): "" when there are none.

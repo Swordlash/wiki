@@ -29,6 +29,12 @@ function wiki_test_frame_text(frameSelector) {
   return wikiTestFrameDocument(frameSelector)?.body.textContent ?? "";
 }
 
+// The readyState of the document of the first frame a selector finds:
+// "complete" once it has loaded; "" when there is none.
+function wiki_test_frame_ready(frameSelector) {
+  return document.querySelector(frameSelector)?.contentDocument?.readyState ?? "";
+}
+
 // Three heights in whole pixels, "frame content cap": the frame's on the
 // page, its content's, and the most the stylesheet lets a frame be (80% of
 // the window's). "" before the document has loaded.

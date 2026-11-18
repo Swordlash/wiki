@@ -218,8 +218,13 @@ islands toOutput =
       Receive island -> do
         current <- gets (\st -> st.island)
         when (island /= current) $ do
-          -- Rendered first: an island of another kind is another element,
-          -- and the ref points to the new one once the render is done.
+          -- The wait for the drawing of the input before goes in the step
+          -- that takes the new one, whatever the new one is: a listing,
+          -- which starts no drawing, leaves nothing counted as waiting
+          -- for a drawing nobody shows. Rendered first: an island of
+          -- another kind is another element, and the ref points to the
+          -- new one once the render is done.
+          stopWaiting
           modify (\st -> st {island})
           fill
       Drawn problem -> report problem
@@ -251,14 +256,22 @@ islands toOutput =
     -- Wait for a drawing in a fork that does nothing else: the program
     -- counts as busy until the island is drawn, so that a test's
     -- waitQuiet means "and drawn", and nothing of the island waits for it.
-    -- The fork of an older drawing goes, and the island's go with it:
-    -- nothing waits for a drawing nobody shows. The drawing itself is
-    -- islands.js's, which carries on or drops it as it is newer or not.
+    -- The fork of an older drawing goes ('stopWaiting'), and the island's
+    -- forks go with it: nothing waits for a drawing nobody shows. The
+    -- drawing itself is islands.js's, which carries on or drops it as it
+    -- is newer or not.
     awaitIn :: Drawing -> H.HalogenM State Action Empty output m ()
     awaitIn drawing = do
-      gets (\st -> st.awaiting) >>= traverse_ H.kill
+      stopWaiting
       fork <- H.fork (H.async (awaitDrawing drawing))
       modify (\st -> st {awaiting = Just fork})
+
+    -- Kill the fork that waits for a drawing, if one does, and forget it,
+    -- in one step: nothing waits between the kill and the state.
+    stopWaiting :: H.HalogenM State Action Empty output m ()
+    stopWaiting = do
+      gets (\st -> st.awaiting) >>= traverse_ H.kill
+      modify (\st -> st {awaiting = Nothing})
 
     -- Tell the parent of a failure, and of a success after one.
     report :: Maybe Text -> H.HalogenM State Action Empty output m ()

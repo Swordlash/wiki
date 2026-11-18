@@ -2,16 +2,86 @@
 -- them, each element holds its source as text, which is what a prerendered
 -- page shows until the program has loaded. In a browser,
 -- @Test.Browser.Islands@ checks the drawing.
+--
+-- And the island's wait for a drawing, on the in-memory DOM
+-- ("Test.Harness.MemDom"), with drawings the test holds ('Holding').
 module Test.Islands (spec) where
 
+import Control.Concurrent.STM (TMVar, newEmptyTMVarIO, readTMVar)
+import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Control.Monad.Primitive (PrimMonad)
+import Control.Monad.Trans.Class (MonadTrans (..))
+import Control.Monad.UUID (MonadUUID (..))
+import Halogen.JSBits.Promise (Promise (..))
+import Halogen.JSBits.Promise qualified as Promise
+import Halogen.JSBits.Value (jsNull)
 import Halogen.Static (renderToHtml)
-import Protolude
+import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
+import Protolude hiding (find)
+import Test.Harness.MemDom (Activity (..), activity, setInput, settle, waitActivity, withView)
 import Test.Hspec
-import Wiki.App.Islands (Island (..))
+import Wiki.App.Islands (Island (..), MonadIslands (..))
 import Wiki.App.Islands qualified as Islands
+import Wiki.App.Islands.Monad (Drawing (..))
+
+-- | The in-memory DOM's islands, but for a diagram's, a picture's and a
+-- frame's drawing: each is one the test holds, which ends when the test
+-- fills the variable, and never before.
+newtype Holding m a = Holding (ReaderT (TMVar ()) m a)
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO, PrimMonad)
+
+instance MonadTrans Holding where
+  lift = Holding . lift
+
+deriving newtype instance (MonadDOM m) => MonadDOM (Holding m)
+
+deriving newtype instance (MonadAttributes m) => MonadAttributes (Holding m)
+
+deriving newtype instance (MonadBrowserDOM m) => MonadBrowserDOM (Holding m)
+
+instance (MonadUUID m) => MonadUUID (Holding m) where
+  generateV4 = lift generateV4
+
+instance (MonadIslands m, MonadIO m) => MonadIslands (Holding m) where
+  renderMath mode macros tex = lift . renderMath mode macros tex
+  checkMacros macros = lift . checkMacros macros
+  builtinMacros = lift builtinMacros
+  renderMermaid source element = lift (renderMermaid source element) >> held
+  renderTikz source document element = lift (renderTikz source document element) >> held
+  highlightCode language code = lift . highlightCode language code
+  fitFrame element = lift (fitFrame element) >> held
+  loadFrame url = lift . loadFrame url
+  renderTime at = lift . renderTime at
+  awaitDrawing (Drawing done) = liftIO (void (Promise.waitCatch done))
+
+-- | A drawing that ends when the test fills the variable.
+held :: (Monad m) => Holding m Drawing
+held = Holding $ asks $ \gate -> Drawing Promise {rawPromise = jsNull, settled = Right <$> readTMVar gate}
 
 spec :: Spec
-spec = describe "Wiki.App.Islands, prerendered" $ do
+spec = do
+  prerendered
+  waiting
+
+-- | An island's wait for its drawing, which the program counts as
+-- waiting ("Halogen.Activity"), is gone once the island no longer shows
+-- that drawing.
+waiting :: Spec
+waiting = describe "Wiki.App.Islands, waiting for a drawing" $ do
+  -- Codex's first round on #319: an input that starts no drawing left the
+  -- fork of the one before counted as waiting.
+  for_ [("a diagram", Mermaid "graph LR\n  a --> b"), ("a picture", Tikz "\\draw (0,0) -- (1,1);"), ("a frame", HtmlFrame Nothing "<p>a</p>")] $ \(name, drawing) ->
+    it ("waits for " <> name <> " held, and for nothing once its input is a listing") $ do
+      gate <- newEmptyTMVarIO
+      withView (\(Holding p) -> runReaderT p gate) (Islands.component @(Const Void) @Void) drawing $ \view -> do
+        waitActivity view (\a -> a.running == 0 && a.waiting == 1)
+        setInput view (CodeBlock (Just "haskell") Nothing False "main = pure ()")
+        -- Quiet, with the drawing still held: nothing waits for it.
+        settle view
+        (\a -> a.waiting) <$> activity view `shouldReturn` 0
+
+prerendered :: Spec
+prerendered = describe "Wiki.App.Islands, prerendered" $ do
   it "shows inline mathematics as its TeX, in a span" $
     renderToHtml Islands.component (MathInline mempty "x^2")
       `shouldReturn` "<span class=\"wiki-math wiki-math-inline\">x^2</span>"

@@ -151,8 +151,9 @@ class (Monad m) => MonadIslands m where
   -- document. Asked again, it measures the frame again. A frame with a
   -- @data-height@ attribute (a height its fence gives) is left as it is,
   -- and a frame with anything placed fixed in it is at its cap (the rule
-  -- is in @islands.js@). Its 'Drawing' settles once the frame's current
-  -- document has loaded and the frame has been measured with it.
+  -- is in @islands.js@). Its 'Drawing' settles once the document the
+  -- frame was given last (counted, not compared by its text) has loaded
+  -- and the frame has been measured with it.
   -- Natively there is no layout to measure, and nothing to do.
   fitFrame :: Element -> m Drawing
   default fitFrame :: (MonadTrans t, MonadIslands n, m ~ t n) => Element -> m Drawing

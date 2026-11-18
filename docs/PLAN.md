@@ -3325,6 +3325,23 @@ needs. Each was true when its package merged; check before relying on one.
   installed by the maker. No style hints are on. Merged with the
   `wasm` job red on the owner's word: an editor example held to a
   clock failed on a slow runner (below).
+- **Enter's text ended at a start mapped across a deletion (#317;
+  found by Enter's property in CI, seed 1649390415).** `textRange`
+  ended the text at the second start below the cursor whatever had
+  changed since the check. A deleted block's start is mapped onto the
+  empty line where the deletion began, which counted as a start the
+  check had read, and the next start was an indented line the
+  deletion had just made the item's second paragraph: Enter continued
+  the list and took the paragraph from its item. Two rules now: a
+  start counts as read only if its line starts before the first change
+  and ends at or before it (not one mapped onto an empty line at the
+  change), above the cursor as well as below; and below the first
+  change a start ends the text only on a flush line (`Kept.flush`,
+  sent by the editor's JavaScript). Until the next check an indented
+  start below a change no longer ends the text. The completion's
+  `linesBelow` cannot have it (it cuts only when every other line
+  equals what the check read). A new property deletes a block at
+  every blank line below every line end.
 - **A push that changed nothing, applied again later (#312; found by
   the comments' property in CI, seed 1937263785).** The comments'
   machine remembered each event of the channel as it was told, not as

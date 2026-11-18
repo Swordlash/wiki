@@ -1,6 +1,5 @@
 ---
 pr: 336
-technical: true
 title: A server started right after a restore on PostgreSQL is no longer refused
 technical: true
 ---

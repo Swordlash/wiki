@@ -812,32 +812,23 @@ function wiki_test_encrypted_decrypted() {
 
 // Hold every decryption the page makes by WebCrypto from now on whose
 // additional data names the text given, as a slow device would, until
-// the test releases them; how many are held, and how many of those
-// released are done.
-const wikiTestEncHold = { text: null, waiting: [], done: 0 };
+// the test releases them. How many wait is what the test counts as held.
+const wikiTestEncHold = { text: null, waiting: [] };
 function wiki_test_encrypted_hold_decryptions(text) {
-  Object.assign(wikiTestEncHold, { text, done: 0 });
+  wikiTestEncHold.text = text;
   if (crypto.subtle.wikiTestHeld) return;
   const decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
   crypto.subtle.decrypt = async (algorithm, key, data) => {
     const aad = algorithm?.additionalData ? new TextDecoder().decode(algorithm.additionalData) : "";
     if (!(wikiTestEncHold.text && aad.includes(wikiTestEncHold.text))) return decrypt(algorithm, key, data);
     await new Promise((resolve) => wikiTestEncHold.waiting.push(resolve));
-    try {
-      return await decrypt(algorithm, key, data);
-    } finally {
-      wikiTestEncHold.done++;
-    }
+    return await decrypt(algorithm, key, data);
   };
   crypto.subtle.wikiTestHeld = true;
 }
 
 function wiki_test_encrypted_decryptions_held() {
   return wikiTestEncHold.waiting.length;
-}
-
-function wiki_test_encrypted_decryptions_done() {
-  return wikiTestEncHold.done;
 }
 
 // Go to an address as the browser's Back or Forward does, with no press on

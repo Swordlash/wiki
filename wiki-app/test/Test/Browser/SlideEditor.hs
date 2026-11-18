@@ -28,7 +28,6 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (slugs, startOn, startWith)
-import Test.Browser.Outside (watchdogMs)
 import Test.Browser.Text (completing, editorText, inputsSeen, insertText, markdown, problemsMarked, proposeText, selectText, setMarkdown, watchEditor)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
@@ -1729,7 +1728,7 @@ spec m = do
               let typing = any (`T.isPrefixOf` label) ["type", "split", "Backspace"]
               settle
               stepped <- unsafeIOToPageM getCurrentTime
-              rowsSettled 5000
+              rowsSettled 30000
               waited <- unsafeIOToPageM ((`diffUTCTime` stepped) <$> getCurrentTime)
               when (typing && waited < 0.6) (unsafeIOToPageM (threadDelay (ceiling ((0.6 - waited) * 1_000_000))))
               broken <- unsafeIOToPageM (fromJSText <$> js_slide_invariants)
@@ -1962,13 +1961,13 @@ spec m = do
       -- The editor waits for its CodeMirror in a fork
       -- ('Wiki.App.Editor.Browser.whileAttaching'), and the preview for its
       -- diagrams and frames (Wiki.App.Islands): once the program is quiet,
-      -- the master is in place. A deck's first diagram fetches Mermaid, so
-      -- the deadline is the suite's watchdog, not the five seconds of an
-      -- action. A drawing the test holds is not waited for: the test's
-      -- stub gives the program no promise (test-slides.js's
-      -- wiki_test_mermaid).
+      -- the master is in place. A deck's first diagram fetches Mermaid,
+      -- within the suite's deadline (thirty seconds,
+      -- toolchain/wasm-test-wrapper.sh). A drawing the test holds is not
+      -- waited for: the test's stub gives the program no promise
+      -- (test-slides.js's wiki_test_mermaid).
       when waiting $ do
-        waitQuietWithin watchdogMs
+        waitQuiet
         masters <- findAll ui ".editor-cm .cm-content"
         when (null masters) $ expectationFailure "no CodeMirror in place once the editor was quiet"
       pure (ui, wiki)

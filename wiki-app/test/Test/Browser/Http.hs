@@ -1591,8 +1591,9 @@ overtaken m space page at url change shown = do
 
 -- | Press an element with the page's own @click()@, once it is there, and
 -- wait for nothing after it: an action of the harness waits for the
--- program, and fails when the program is still busy five seconds after
--- it. The Markdown guide is long: its load over HTTP, and a change of
+-- program, and fails when the program is still busy at the suite's
+-- deadline after it (thirty seconds, toolchain/wasm-test-wrapper.sh; five
+-- when this was written). The Markdown guide is long: its load over HTTP, and a change of
 -- reader on it ("Test.Browser.DeckViewer"), which renders it again for
 -- each step of its load, keep the program busy for longer than that. The
 -- example then waits for the program itself, with the deadline it

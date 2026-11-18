@@ -2034,7 +2034,38 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   a group of examples so a suite moves over group by group; the
   deadline of `settle` and `waitQuiet` as a watchdog a suite sets; and,
   only if the data asks for it, a way for work outside the loop to
-  count in `Halogen.Activity`.
+  count in `Halogen.Activity`. **The measure is in (2026-11-18;
+  the session's scratchpad, `wp5137/blind-waits.md` and `data.md`;
+  the library's branch `measure/retries`, the wiki's
+  `blind-waits-measure`, never merged; nine runs on hosted runners,
+  101,266 waits).** 93% of the waits never retried: 4,431 of 4,960
+  sites in no run. The 529 that did, by what the program was doing at
+  the first failed attempt: still running, 174 sites, three quarters
+  of them the first read after a mount (the wiki's `startServer`,
+  `start`, `signIn`), the rest after a query or the test's own
+  JavaScript call, none of which settles; waiting, 381 sites, where
+  `waitQuiet` would have done (the editor's completion, check and
+  mention lookup, the assistant's stream, IndexedDB), 40 examples
+  holding a request on purpose; at rest and still absent, 60 sites:
+  CodeMirror made outside the loop (283 retried reads), TikZJax
+  (133), the html fences' frames (107), another window or the live
+  channel (90), Mermaid (58), observers (38), and a few small ones.
+  And what changes the order: **of 135 failures under load, 123 were
+  the runner's five-second deadline on an action** (click, typing),
+  the same fixed number as `settle`'s; rightful work reached 5.4 s.
+  So the library's first pull request is one deadline a suite sets
+  (`settle`, `waitQuiet` and the runner's action timeout) and the
+  retry report, checked first on the measurement branches (failures
+  under load should fall to about a dozen); then mount, query and the
+  test's own calls settling, and reads that read once, with "rest"
+  (idle or quiet) chosen for a group, because the worst waiting cases
+  sit behind counted pauses of seconds. In the wiki, in parallel:
+  Mermaid, TikZJax and the frames awaited by a fiber so that they
+  count (after finding why awaiting them once left a followed link's
+  page unchanged); CodeMirror's start, the observers, a transition and
+  the clipboard brought into the loop or waited for by their own
+  event. The smoke suites have 53 explicit waits, listed by cause in
+  the report: 20 on a library's drawing, 11 on another process.
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
   przed pluginami").** One builder, in this order, each its own pull

@@ -15,10 +15,11 @@ import Control.Monad.UUID (MonadUUID)
 import Data.Aeson (FromJSON (..), decodeStrict, withObject, (.:))
 import Data.IORef (IORef)
 import Data.Text qualified as T
-import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText)
+import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
+import Halogen.JSBits.Promise (Promise, wait)
 import Halogen.Router.Duplex qualified as Duplex
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
-import Protolude hiding (find)
+import Protolude hiding (find, wait)
 import Test.Browser.Http (Asked (..), answerRaw, asked, guideLoaded, pressNow, serveDemo, serverStarts, startServer)
 import Test.Browser.Mount (slugs, start, startOn, startWith)
 import Test.Hspec.Halogen
@@ -42,29 +43,82 @@ import Wiki.Core.PageKind qualified as Kind
 import Wiki.Core.Space (Space (id))
 
 $( browserJS
-     ["jsbits/test-slides.js"]
+     ["jsbits/test-slides.js", "jsbits/test-deck-watch.js"]
      [ ("js_ids_report", "wiki_test_ids_report", Safe, [t|IO JSText|])
      , ("js_deck_watches", "wiki_test_deck_watches", Safe, [t|IO Int|])
+     , ("js_deck_spy", "wiki_test_deck_spy", Safe, [t|IO ()|])
+     , ("js_deck_spy_stop", "wiki_test_deck_spy_stop", Safe, [t|IO ()|])
+     , ("js_deck_near_start", "wiki_test_deck_near_start", Safe, [t|JSText -> IO ()|])
+     , ("js_deck_report", "wiki_test_deck_report", Safe, [t|IO JSText|])
+     , ("js_deck_leftPromise", "wiki_test_deck_left", Safe, [t|IO (Promise JSText)|])
      ]
  )
+
+js_deck_left :: IO JSText
+js_deck_left = if inBrowser then wait =<< js_deck_leftPromise else pure inert
 
 -- | How many watches of an embed's link coming near the window run.
 deckWatches :: PageM s Int
 deckWatches = unsafeIOToPageM js_deck_watches
 
+-- | Wait until the watches of embeds' links are back to a count, as each
+-- ends once the browser's IntersectionObserver says its link is near: the
+-- browser's own time, long on a loaded machine (CI on #316, seed
+-- 120510329). When the wait gives up, its failure says why the watch did
+-- not end (test-deck-watch.js's report): where the link was against the
+-- window, whether the program's observer watched it and what it heard,
+-- what an observer of the test's own heard, and how many frames the page
+-- drew. The record it reads is 'runWatched''s, and 'bringNear' marks the
+-- focus in it.
+watchesBackTo :: (HasCallStack) => Int -> PageM s ()
+watchesBackTo count =
+  eventuallyWithin 30000 $ do
+    now <- deckWatches
+    when (now /= count) $ do
+      why <- unsafeIOToPageM (fromJSText <$> js_deck_report)
+      expectationFailure ("the watches of the embeds' links are " <> show now <> ", not " <> show count <> ", and the link's watch has not ended:\n" <> why)
+
+-- | Run an example with the record 'watchesBackTo' reports from: every
+-- IntersectionObserver the page makes is recorded from before the page is
+-- mounted, so that the viewer's is among them, and 'bringNear' starts an
+-- observer of the test's own and a frame counter in the record. All of it
+-- is taken off the page when the example ends, passed or failed: the next
+-- example on the same page finds the browser's own IntersectionObserver
+-- and nothing of the record running (#321's kind: what an example leaves
+-- on the page, the next one inherits).
+runWatched :: (HasCallStack) => (forall s. PageM s a) -> IO a
+runWatched body = bracket_ js_deck_spy js_deck_spy_stop (runPage body)
+
+-- | What the record left on the page after 'runWatched': "" for nothing.
+-- Read inside 'runWatched' after 'bringNear', it names all three parts.
+deckLeft :: IO Text
+deckLeft = fromJSText <$> js_deck_left
+
+-- | The failure the leak check's example throws on purpose inside
+-- 'runWatched'. It is the only failure that example takes as expected.
+data FailedOnPurpose = FailedOnPurpose
+  deriving stock (Eq, Show)
+
+instance Exception FailedOnPurpose
+
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
 spec m = do
-  it "shows a presentation embedded in a page a slide at a time, with its controls, and moves by its own keys only" $ runPage $ do
+  it "shows a presentation embedded in a page a slide at a time, with its controls, and moves by its own keys only" $ runWatched $ do
     before <- deckWatches
     ui <- start m Nothing (Page docs guide)
     -- Far down the page, it is the link until it comes near the window.
     length <$> findAll ui ".deck-embed" `shouldReturn` 0
+    -- The page at rest before the focus brings the link near: a render of
+    -- the page that grows what is above the link after the focus, before
+    -- the browser's next frame, pushes it far below the window, where the
+    -- watch never ends (CI on #316 and #322: the focus landed while the
+    -- page rendered again and again). As the examples over HTTP wait.
+    waitQuietWithin guideLoaded
     bringNear ui
     -- The read starts when the browser's IntersectionObserver says the
-    -- link has come near the window, and the viewer's watch ends: the
-    -- browser's own time, long on a loaded machine (CI on #316, seed
-    -- 120510329). The read and the viewer's render are then the program's.
-    eventuallyWithin 30000 $ deckWatches `shouldReturn` before
+    -- link has come near the window, and the viewer's watch ends. The read
+    -- and the viewer's render are then the program's.
+    watchesBackTo before
     waitQuiet
     viewer <- find ui "article.page-body .deck-embed"
     position ui `shouldReturn` "1 / 9"
@@ -88,6 +142,28 @@ spec m = do
     find ui "article.page-body > p" >>= click
     for_ ["End", "ArrowRight", "ArrowRight"] press
     position ui `shouldReturn` "1 / 9"
+
+  -- The record 'runWatched' puts on the page is taken off it after the
+  -- example, though the example failed with the record's observer and
+  -- frame counter running; and 'bringNear' outside 'runWatched' starts
+  -- neither. Inside, the same read names all three, so the empty read
+  -- after it is not empty for want of a record ever started. Only the
+  -- example's own 'FailedOnPurpose' is taken: any other failure inside,
+  -- a mount or a wait that failed by chance, fails the example.
+  it "leaves nothing of the watches' record on the page, after an example that failed with it open, nor outside it" $ do
+    failed :: Either FailedOnPurpose () <- try $ runWatched $ do
+      ui <- start m Nothing (Page docs guide)
+      waitQuietWithin guideLoaded
+      bringNear ui
+      unsafeIOToPageM deckLeft `shouldReturn` "the page's IntersectionObserver is still the recording one; the record is still there; the frame counter still runs"
+      unsafeIOToPageM (throwIO FailedOnPurpose)
+    runPage $ do
+      failed `shouldBe` Left FailedOnPurpose
+      unsafeIOToPageM deckLeft `shouldReturn` ""
+      ui <- start m Nothing (Page docs guide)
+      waitQuietWithin guideLoaded
+      bringNear ui
+      unsafeIOToPageM deckLeft `shouldReturn` ""
 
   it "is the link it is without the class for a page the reader cannot see or that is a document, with nothing of the page in the page" $ runPage $ do
     let embeds =
@@ -308,9 +384,17 @@ spec m = do
       pure (ui, wiki)
 
 -- | Bring the guide's embedded presentation near the window: the focus on
--- its link scrolls to it.
+-- its link scrolls to it. Called with the page at rest: the scroll is not
+-- kept when what is above the link grows before the browser's next frame.
+-- In an example run by 'runWatched', the record's observer of the link
+-- and its frame counter start then; elsewhere nothing starts.
 bringNear :: Mounted s q o m -> PageM s ()
-bringNear ui = find ui "article.page-body > p > a[href$='markdown-guide/presentations/']:only-child" >>= focus
+bringNear ui = do
+  near <- find ui linkSelector
+  unsafeIOToPageM (js_deck_near_start (toJSText linkSelector))
+  focus near
+  where
+    linkSelector = "article.page-body > p > a[href$='markdown-guide/presentations/']:only-child"
 
 -- | The slide's number out of the deck's, as the page's first viewer
 -- shows it.

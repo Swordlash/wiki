@@ -109,6 +109,10 @@ nearNow ws = atomicModifyIORef' ws.running (mempty :: Map Int (IO ()),) >>= trav
 watching :: Watches -> IO Int
 watching ws = Map.size <$> readIORef ws.running
 
+-- | How many watches were started, ever.
+started :: Watches -> IO Int
+started ws = readIORef ws.next
+
 slugs :: [Text] -> [Slug]
 slugs = mapMaybe (rightToMaybe . mkSlug)
 
@@ -197,6 +201,26 @@ spec = describe "Wiki.App.View.DeckViewer, mounted on the in-memory DOM" $ do
       position rig.view `shouldReturn` Just "1 / 9"
       length <$> made rig `shouldReturn` 1
       watching rig.watches `shouldReturn` 0
+      dispose rig.view
+
+  it "starts no watch again and asks for nothing when given an equal input, as each render of the page around it gives" $
+    -- The page renders again and again while its islands draw, and gives
+    -- the viewer its input each time, equal. A watch started again for it
+    -- would be a new browser observer each time, whose first look could
+    -- come after the next render, and never.
+    withHeldWaits $ \waits -> withDeck $ \rig -> do
+      drain waits
+      started rig.watches `shouldReturn` 1
+      for_ [1 :: Int .. 5] $ \_ -> do
+        rig.readAs Reading {session = rig.admin, number = 0, revision = 0}
+        drain waits
+      started rig.watches `shouldReturn` 1
+      watching rig.watches `shouldReturn` 1
+      length <$> made rig `shouldReturn` 0
+      length <$> released rig `shouldReturn` 0
+      nearNow rig.watches
+      drain waits
+      position rig.view `shouldReturn` Just "1 / 9"
       dispose rig.view
 
   it "hears the watch kept when the reader changes as it starts" $

@@ -37,6 +37,18 @@ if node -e '
   const names = WebAssembly.Module.exports(new WebAssembly.Module(bytes)).map((e) => e.name);
   process.exit(names.includes("hs_start") ? 0 : 1);
 ' "$wasm_binary"; then
+  # HSPEC_HALOGEN_DEADLINE_MS is how long the browser suite waits for the
+  # page: an action's wait for its element, the settle after every action,
+  # and waitQuiet. hspec-halogen's default is five seconds. Here it is thirty,
+  # unless the caller sets it: npm run test-wasm, CI's wasm job and the
+  # nightly all come through this script. Under load (the nightly runs two
+  # pages per core, and GitHub's runners are slow on some days) 123 of 135
+  # failures in two nightly runs were a click or typing that ran out of the
+  # five seconds. With thirty, on a branch that measured it, there were none,
+  # and forty settles that took five to nine seconds passed. The deadline is
+  # a watchdog against a program that never finishes, not a measure of speed.
+  HSPEC_HALOGEN_DEADLINE_MS=${HSPEC_HALOGEN_DEADLINE_MS:-30000}
+  export HSPEC_HALOGEN_DEADLINE_MS
   timed "${HSPEC_HALOGEN:?build it first: HSPEC_HALOGEN=\$(sh toolchain/build-hspec-halogen.sh)}" test "$wasm_binary" "$@"
   exit
 fi

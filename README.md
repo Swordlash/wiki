@@ -3574,8 +3574,8 @@ dialog's `close` and a Back included, is read once after the action. After
 an action that makes the program ask the stand-in server or IndexedDB,
 `waitQuiet` waits until no fiber of the program waits in an `H.async`;
 `waitQuietWithin ms` gives that wait another deadline. A program still busy
-five seconds after an action fails the example, saying what it was doing.
-An example whose action keeps the program busy longer (a change of reader
+at the deadline (below) after an action fails the example, saying what it
+was doing. An example whose action keeps the program busy longer (a change of reader
 on the Markdown guide, the guide's load over HTTP) presses through the page
 itself (`pressNow` in `Test.Browser.Http`) and waits with
 `waitQuietWithin`, its deadline named with what was measured. The suite's own waits are built on
@@ -3584,6 +3584,22 @@ program is quiet) and the slides' walk's `rowsSettled`. `eventually` stays
 for what the program does not know of: what the live channel or another tab
 pushes, a library's own drawing, the stand-in server's state. A failing read
 says what it found and what the program was doing.
+
+The deadline is how long the browser suite waits for the page: an action's
+wait for its element to be visible and enabled, the `settle` after every
+action, and `waitQuiet`. hspec-halogen's default is five seconds; here it is
+thirty, set by `toolchain/wasm-test-wrapper.sh`, which `npm run test-wasm`,
+CI's `wasm` job and the nightly all run the suite through. Under load a
+click can take more than five seconds to become possible, and in two
+nightly runs 123 of 135 failures were that, not the test's fault. The
+deadline is a watchdog against a program that never finishes, not a
+measure of speed. To set another for one run, give it in the environment:
+`HSPEC_HALOGEN_DEADLINE_MS=10000 npm run test-wasm`. A test that checks
+that the deadline fires gives that part its own with `withDeadline ms`.
+`HSPEC_HALOGEN_RETRIES=1` writes a report to standard error of every read
+whose first attempt failed, and of every `settle` or `waitQuiet` that
+took longer than a second, with what the program was doing at the time; CI
+does not turn it on.
 
 A browser example is heavy, slow and brittle, so it is written only for
 what needs a browser (decision 83 of `docs/PLAN.md`): the logic is a native

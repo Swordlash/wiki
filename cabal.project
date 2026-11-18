@@ -62,7 +62,7 @@ source-repository-package
   location: https://github.com/Swordlash/haskell-halogen
   -- MEASUREMENT (WP5.137), never to be merged: hspec-halogen with reads
   -- that look once (branch hspec-halogen-reads-once).
-  tag: 64379f83082b2ae2e53659b17db3d5d0e15676bd
+  tag: 86d5585fb0a9ac8e63406fd87ff4cd10e853c3d3
   subdir:
     core
     jsbits

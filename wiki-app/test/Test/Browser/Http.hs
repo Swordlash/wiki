@@ -174,7 +174,7 @@ holdNext method url = unsafeIOToPageM (js_server_hold_next (toJSText method) (to
 -- | Answer the requests held, and hold every request of this method to
 -- this address from now on, until the next 'release'.
 releaseHolding :: Text -> Text -> PageM s ()
-releaseHolding method url = perform (js_server_release_holding (toJSText method) (toJSText url))
+releaseHolding method url = unsafeIOToPageM (js_server_release_holding (toJSText method) (toJSText url))
 
 -- | Wait until the page has a socket open to the server: what the server
 -- says before that reaches nothing, as a real server's message to a tab
@@ -203,7 +203,7 @@ answersTaken within = do
 
 -- | Answer the requests held.
 release :: PageM s ()
-release = perform js_server_release
+release = unsafeIOToPageM js_server_release
 
 -- | Close the live channel's sockets as a network that drops them does:
 -- the program opens one again, and is told it missed what was sent

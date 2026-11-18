@@ -323,7 +323,11 @@ spec m = describe "tasks ticked in a page" $ do
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     answerWith "GET" guideAt 200 saved
     answerRaw "GET" "api/v1/spaces" 503 "<html>down for maintenance</html>"
+    -- The save is let go, and its answer, the reload and its failure waited
+    -- for. ('release' does not settle: other tests hold the program in an
+    -- action at that moment, which a settle would wait out.)
     release
+    waitQuiet
     find ui ".stale-reload" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "What is shown stays")
     find ui ".page-ticks" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "kept on the new version")
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")

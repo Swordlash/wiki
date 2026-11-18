@@ -157,7 +157,9 @@ runOwn test = do
 -- login field's offer of passkeys, which waits until the test picks one or
 -- the form ends it, and the given number of requests the test's server
 -- holds until 'released'. A read in a 'Quiet' group otherwise waits for
--- them until the deadline.
+-- them until the deadline. The count is set once the requests have
+-- reached the server: set before, it would take another wait (a request
+-- on its way) for a held one.
 holding :: Int -> PageM s ()
 holding n = countHeld ((+ n) . fromEnum <$> unsafeIOToPageM js_offered)
 
@@ -236,10 +238,12 @@ signing m = describe "signing in with a passkey" $ do
   it "starts no offer in the login field whose challenge arrives after the form closed" $ runOwn $ do
     (ui, _) <- signedOut m
     holdAt "POST" "api/v1/session/passkey"
-    holding 1
     find ui ".sign-in-toggle" >>= click
-    waitQuiet
-    length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 1
+    -- The test's server holds the request, so the program is not quiet
+    -- until the release: what the server was asked is read from the
+    -- test's side, again until it is there.
+    eventually $ length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 1
+    holding 1
     find ui ".sign-in-toggle" >>= click
     released
     -- The challenge arrived after the form it was for closed. The form
@@ -254,10 +258,12 @@ signing m = describe "signing in with a passkey" $ do
     find ui ".sign-in-toggle" >>= click
     offered `shouldReturn` True
     holdAt "POST" "api/v1/session/passkey"
-    holding 1
     find ui ".passkey-sign-in" >>= click
-    waitQuiet
-    length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 2
+    -- The test's server holds the request, so the program is not quiet
+    -- until the release: what the server was asked is read from the
+    -- test's side, again until it is there.
+    eventually $ length . filter (\r -> r.url == "api/v1/session/passkey") <$> asked `shouldReturn` 2
+    holding 1
     find ui ".sign-in-toggle" >>= click
     released
     -- The form opened again offers in the field; no dialog was opened, and
@@ -341,11 +347,14 @@ signing m = describe "signing in with a passkey" $ do
     length <$> findAll ui ".passkey-item" `shouldReturn` 1
     find ui ".passkey-add input[name=passkey-name]" >>= (`typeText` "My phone")
     find ui ".passkey-add input[name=passkey-password]" >>= (`typeText` "editor's password")
-    let finishes = waitQuiet *> (length . filter (\r -> r.method == "PUT" && r.url == "api/v1/account/passkeys/registration") <$> asked)
+    let finishes = length . filter (\r -> r.method == "PUT" && r.url == "api/v1/account/passkeys/registration") <$> asked
     holdAt "PUT" "api/v1/account/passkeys/registration"
-    holding 1
     find ui ".passkey-add button[type=submit]" >>= click
-    finishes `shouldReturn` 1
+    -- The test's server holds the request, so the program is not quiet
+    -- until the release: what the server was asked is read from the
+    -- test's side, again until it is there.
+    eventually $ finishes `shouldReturn` 1
+    holding 1
     find ui ".account-toggle" >>= click
     length <$> findAll ui ".passkey-add" `shouldReturn` 0
     released
@@ -369,7 +378,7 @@ signing m = describe "signing in with a passkey" $ do
     unsafeIOToPageM (js_install True True)
     _ <- unsafeIOToPageM js_existing
     ui <- startServer m Home
-    let finishes = waitQuiet *> (length . filter (\r -> r.method == "PUT" && r.url == "api/v1/account/passkeys/registration") <$> asked)
+    let finishes = length . filter (\r -> r.method == "PUT" && r.url == "api/v1/account/passkeys/registration") <$> asked
         addPasskey name = do
           find ui ".passkey-add input[name=passkey-name]" >>= (`typeText` name)
           find ui ".passkey-add input[name=passkey-password]" >>= (`typeText` "editor's password")
@@ -377,18 +386,21 @@ signing m = describe "signing in with a passkey" $ do
     find ui ".account-toggle" >>= click
     length <$> findAll ui ".passkey-item" `shouldReturn` 1
     holdAt "PUT" "api/v1/account/passkeys/registration"
-    holding 1
     addPasskey "My phone"
-    finishes `shouldReturn` 1
+    -- The test's server holds the request, so the program is not quiet
+    -- until the release: what the server was asked is read from the
+    -- test's side, again until it is there.
+    eventually $ finishes `shouldReturn` 1
+    holding 1
     -- Closed: its finalizer sends the registration again, held too, in
     -- place of the panel's own, which the close ended.
     find ui ".account-toggle" >>= click
-    finishes `shouldReturn` 2
+    eventually $ finishes `shouldReturn` 2
     find ui ".account-toggle" >>= click
     length <$> findAll ui ".passkey-item" `shouldReturn` 1
-    holding 2
     addPasskey "My tablet"
-    finishes `shouldReturn` 3
+    eventually $ finishes `shouldReturn` 3
+    holding 2
     released
     map T.strip <$> (findAll ui ".passkey-name" >>= traverse textContent) `shouldReturn` ["My laptop", "My tablet"]
     closedSignedIn ui
@@ -1021,10 +1033,16 @@ userKeys m = describe "the user's keys" $ do
     before <- passwordKeys
     readsBefore <- vaultReads
     holdAt "GET" "api/v1/assistant/vault"
+    find ui ".sign-in-toggle" >>= click
+    find ui ".sign-in-form input[name=login]" >>= (`typeText` "editor")
+    find ui ".sign-in-form input[name=password]" >>= (`typeText` "editor's password")
+    find ui ".sign-in-form button[type=submit]" >>= click
+    -- The test's server holds the request, so the program is not quiet
+    -- until the release: what the server was asked is read from the
+    -- test's side, again until it is there.
+    eventually $ vaultReads >>= (`shouldSatisfy` (> readsBefore))
     holding 1
-    signIn ui "editor's password"
-    waitQuiet
-    vaultReads >>= (`shouldSatisfy` (> readsBefore))
+    find ui ".account .user-name" >>= (`shouldHaveText` "Edgar Editor")
     unmount ui
     released
     passwordKeys `shouldReturn` before

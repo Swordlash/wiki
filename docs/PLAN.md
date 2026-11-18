@@ -2138,9 +2138,15 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   by the panel's ticker); the scripted provider counts what the test
   holds (`script.held`), and three examples that caught a state on its
   way by timed pauses in the script now hold the provider, read once
-  and let it go. Next, by the measure's count of retried sites:
-  `SlideEditor.hs`, `Http.hs`, `Encrypted.hs`, `Problems.hs`,
-  `Complete.hs`; then the library's
+  and let it go. **The encrypted spaces' group is moved (#333)**, to
+  `readsOnce Quiet`: 75 `eventually`s down to 8 (messages on a
+  `BroadcastChannel`, the test's socket opening, threads the test
+  forks itself), the held decryptions counted where they are held.
+  Not exact there: `countHeld` compares counts, so a held request
+  whose view is gone hides one other fiber's wait (the loop over
+  views closed while their fetch is held; the grant released as the
+  reader leaves). Next, by the measure's count of retried sites:
+  `SlideEditor.hs`, `Http.hs`, `Problems.hs`, `Complete.hs`; then the library's
   `quiet-under-test-clock` (two commits, local only, in the stopped
   builder's library worktree) so that it does not.** What is left,
   each a

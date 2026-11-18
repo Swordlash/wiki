@@ -298,7 +298,9 @@ spec m = describe "tasks ticked in a page" $ do
     (readIt ui >>= (`getProperty` "checked")) `shouldReturn` "true"
     serverStops
 
-  it "keeps the view and its ticks when a reload of the wiki it did not ask for fails" $ runPage $ do
+  -- MEASUREMENT (WP5.137): the reads look once, at quiet; the save held
+  -- on purpose counts as done ('countHeld', in serverStarts).
+  readsOnce Quiet $ it "keeps the view and its ticks when a reload of the wiki it did not ask for fails" $ runPage $ do
     serverStarts
     serveDemo
     let guide = demoPage "markdown-guide"
@@ -309,21 +311,25 @@ spec m = describe "tasks ticked in a page" $ do
     holdAt "PUT" saveAt
     ui <- startServer m (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
     readIt ui >>= click
-    eventually $ find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
+    find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     find ui ".page-ticks-save" >>= click
     -- The reader leaves, comes back and ticks again; the first save then
     -- lands, and the shell reloads the wiki, whose list of spaces fails.
     find ui ".breadcrumbs a[href$='#/s/docs/']" >>= click
     find ui ".leave-confirm button.danger" >>= click
-    eventually $ find ui ".page-body h1" >>= (`shouldHaveText` "Tour")
+    find ui ".page-body h1" >>= (`shouldHaveText` "Tour")
     find ui ".wiki-sidebar a[href$='#/s/docs/p/markdown-guide/']" >>= click
-    eventuallyWithin 20000 (find ui ".page-body input[aria-label='Write the page'][data-task]") >>= click
-    eventually $ find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
+    find ui ".page-body input[aria-label='Write the page'][data-task]" >>= click
+    find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     answerWith "GET" guideAt 200 saved
     answerRaw "GET" "api/v1/spaces" 503 "<html>down for maintenance</html>"
+    -- The save is let go, and its answer, the reload and its failure waited
+    -- for. ('release' does not settle: other tests hold the program in an
+    -- action at that moment, which a settle would wait out.)
     release
-    eventuallyWithin 20000 $ find ui ".stale-reload" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "What is shown stays")
-    eventuallyWithin 20000 $ find ui ".page-ticks" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "kept on the new version")
+    waitQuiet
+    find ui ".stale-reload" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "What is shown stays")
+    find ui ".page-ticks" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "kept on the new version")
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     (find ui ".page-body input[aria-label='Write the page']" >>= (`getProperty` "checked")) `shouldReturn` "false"
     serverStops

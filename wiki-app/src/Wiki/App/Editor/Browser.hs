@@ -36,6 +36,7 @@ module Wiki.App.Editor.Browser
 
     -- * The text
   , attachEditor
+  , whileAttaching
   , detachEditor
   , editorAvailable
   , typedText
@@ -150,15 +151,16 @@ import Data.Foreign (foreignToInt)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (lookup)
 import Data.Text qualified as T
+import Halogen qualified as H
 import Halogen.JSBits (Callback, Inert (..), JSText, JSVal, Safety (..), browserJS, freeCallback, fromJSText, inBrowser, isNull, jsValText, mkSyncCallback, toJSText)
 import Halogen.JSBits.Fields (Member (..), inlineJS, jsFields)
-import Halogen.JSBits.Promise (wait)
+import Halogen.JSBits.Promise (Promise, wait, waitCatch)
 import Halogen.Query.Event.Window qualified as WindowEvent
 import Halogen.Subscription (Emitter)
 import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Numeric.Natural (Natural)
-import Protolude hiding (wait)
+import Protolude hiding (wait, waitCatch)
 import System.IO.Unsafe (unsafePerformIO)
 import Web.Clipboard.ClipboardEvent (ClipboardEvent (..))
 import Web.DOM.Element qualified as Element
@@ -194,8 +196,8 @@ import Wiki.Core.User (Login (..), User (..))
 -- of its own, which stays JavaScript.
 $( browserJS
      ["jsbits/editor.js"]
-     [ ("js_attach", "wiki_editor_attach", Safe, [t|Element -> JSText -> Callback -> IO ()|])
-     , ("js_attach_row", "wiki_editor_attach_row", Safe, [t|Element -> Element -> Int -> Bool -> IO ()|])
+     [ ("js_attach", "wiki_editor_attach", Safe, [t|Element -> JSText -> Callback -> IO (Promise ())|])
+     , ("js_attach_row", "wiki_editor_attach_row", Safe, [t|Element -> Element -> Int -> Bool -> IO (Promise ())|])
      , ("js_detach_row", "wiki_editor_detach_row", Safe, [t|Element -> IO ()|])
      , ("js_available", "wiki_editor_available", Safe, [t|IO Bool|])
      , ("js_rows", "wiki_editor_rows", Safe, [t|Element -> IO JSText|])
@@ -519,14 +521,35 @@ answerText asked = do
 -- which reports each change with a @wiki-input@ event on the host
 -- ('typedText'); until then, it is the textarea's.
 --
+-- The promise returned settles once CodeMirror is in place and the host
+-- has had its @wiki-ready@ event, or once the module has failed to load
+-- and the host has had @wiki-editor-failed@. It never rejects; natively it
+-- has been rejected already, as every promise there. Give it to
+-- 'whileAttaching'.
+--
 -- The functions here that edit the text take the host, and act on
 -- CodeMirror if it is there and on the textarea if not.
 --
 -- The host is given 'enterCallback' too, which CodeMirror's Enter calls.
-attachEditor :: (MonadIO m) => Element -> Text -> m ()
+attachEditor :: (MonadIO m) => Element -> Text -> m (Promise ())
 attachEditor host original = liftIO $ do
   callback <- enterCallback
   js_attach host (toJSText original) callback
+
+-- | Count the time until CodeMirror, or a row of it, is in place as the
+-- component's work: a fork of the component waits in 'H.async' for the
+-- promise 'attachEditor' or 'attachRow' gave. The module is fetched and
+-- CodeMirror is built outside Halogen's loop, and "Halogen.Activity" counts
+-- only the program's own fibers; a fiber waiting here is one of them. So a
+-- browser test's @waitQuiet@ returns with the editor in place, and what it
+-- told the host (@wiki-ready@) handled. Nothing runs after the wait: what
+-- CodeMirror tells comes as events on the host. The fork ends with the
+-- component.
+--
+-- Call it right after the attach, in the same step, so that no other step
+-- runs between the start and the wait.
+whileAttaching :: (MonadIO m) => Promise () -> H.HalogenM st act slots out m ()
+whileAttaching attaching = void (H.fork (void (H.async (liftIO (waitCatch attaching)))))
 
 -- | Remove the host's CodeMirror, if it has one.
 detachEditor :: (MonadIO m) => Element -> m ()
@@ -993,8 +1016,10 @@ answerCompletion host i found =
 -- the row with this key in its layout ('setRows'). The row's edits are the
 -- master's: one text, one history. With 'True', the row takes the focus.
 -- Nothing before the master is in place, for a key its layout does not
--- have, nor natively.
-attachRow :: (MonadIO m) => Element -> Element -> RowKey -> Bool -> m ()
+-- have, nor natively. The row comes a task later, as the editor's module
+-- is asked for again: the promise returned settles once it is in place,
+-- for 'whileAttaching'.
+attachRow :: (MonadIO m) => Element -> Element -> RowKey -> Bool -> m (Promise ())
 attachRow master row (RowKey key) focus = liftIO (js_attach_row master row key focus)
 
 -- | Let go of the row in an element, as its slide is closed or goes.

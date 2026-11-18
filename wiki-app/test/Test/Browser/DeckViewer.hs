@@ -178,8 +178,10 @@ spec m = do
             ]
     (ui, wiki) <- changed [(["blog"], ["hello-world"], embeds)] (Just "user-reader") (Page (slugs ["blog"]) (slugs ["hello-world"]))
     -- The presentation the reader may read is shown, fetched with the
-    -- others.
-    _ <- find ui "article.page-body .deck-embed"
+    -- others. The viewers read their decks once the browser has said their
+    -- links are near the window, which the program waits for.
+    waitQuiet
+    length <$> findAll ui "article.page-body .deck-embed" `shouldReturn` 1
     paragraphs <- findAll ui "article.page-body > p" >>= traverse outerHTML
     case paragraphs of
       [handbook, handbookLink, diagrams, diagramsLink, _] -> do

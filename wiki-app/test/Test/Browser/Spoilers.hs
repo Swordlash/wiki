@@ -24,6 +24,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (slugs, startChanged, startChangedAgain)
+import Test.Browser.Outside (untilTransitionsDone)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend.Mem.State (MemState (..), insertPage)
@@ -61,8 +62,10 @@ spec m = describe "spoilers and listings in a page" $ do
     computedStyle ".page-body span.spoiler" "user-select" `shouldReturn` "none"
     click spoiler
     eventually $ getAttribute spoiler "class" `shouldReturn` Just "spoiler shown"
-    -- The blur fades out, and the computed style follows the transition.
-    eventually $ computedStyle ".page-body span.spoiler" "filter" `shouldReturn` "none"
+    -- The blur fades out, and the computed style follows the transition:
+    -- read once it has ended.
+    untilTransitionsDone ".page-body span.spoiler"
+    computedStyle ".page-body span.spoiler" "filter" `shouldReturn` "none"
     click spoiler
     eventually $ getAttribute spoiler "class" `shouldReturn` Just "spoiler"
     -- The clicks gave it the focus, as a button has it.

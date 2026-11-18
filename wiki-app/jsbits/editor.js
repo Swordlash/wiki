@@ -32,19 +32,24 @@ function wikiTextarea(host) {
 // browser has made the textarea's line endings "\n" in. Without the page's
 // islands.js the textarea stays. `enter` is the Haskell callback
 // CodeMirror's Enter asks (Wiki.App.Editor.Browser's enterCallback), kept
-// on the host as `wikiEnter` for the master and its rows.
+// on the host as `wikiEnter` for the master and its rows. The promise
+// returned settles once CodeMirror is in place and has told the host so
+// ("wiki-ready"), or has failed to load ("wiki-editor-failed"); at once
+// without islands.js or a textarea. It never rejects.
 function wiki_editor_attach(host, original, enter) {
   host.wikiEnter = enter;
   const textarea = wikiTextarea(host);
-  if (textarea) globalThis.wikiIslands?.attachEditor?.(textarea, host, original);
+  return Promise.resolve(textarea ? globalThis.wikiIslands?.attachEditor?.(textarea, host, original) : undefined);
 }
 
 // Put a row of a presentation's slide mode in `rowHost`: a CodeMirror over
 // the range the master's layout gives the row with this key, the master
 // being the CodeMirror in `masterHost` (web/src/editor.js's attachRow).
 // Without the page's islands.js, or before the master is in place, nothing.
+// The promise returned settles once the row is in place, or at once
+// without islands.js. It never rejects.
 function wiki_editor_attach_row(masterHost, rowHost, key, focus) {
-  globalThis.wikiIslands?.attachRow?.(masterHost, rowHost, key, focus);
+  return Promise.resolve(globalThis.wikiIslands?.attachRow?.(masterHost, rowHost, key, focus));
 }
 
 // Let go of the row in `rowHost`, if it has one.

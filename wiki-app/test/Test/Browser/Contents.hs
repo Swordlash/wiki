@@ -20,6 +20,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (slugs, start, startWith)
+import Test.Browser.Outside (untilAttribute)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend (MonadWiki (..))
@@ -60,18 +61,26 @@ spec m = do
     deeper `shouldBe` ["Lists", "Tasks", "Tables", "Emoji"]
     -- Nothing of the panel's in the page's text.
     length <$> findAll ui ".page-text .toc" `shouldReturn` 0
-    -- At the top, the first section is the one read.
-    eventually $ current ui `shouldReturn` ["#markdown-guide"]
+    -- At the top, the first section is the one read. jsbits/toc.js marks
+    -- the section read when the browser's IntersectionObserver calls it,
+    -- outside the program: each wait is for its mark on the section's
+    -- link, and then what is marked is read once.
+    marked "#markdown-guide"
+    current ui `shouldReturn` ["#markdown-guide"]
     scrollTo "#tables"
-    eventually $ current ui `shouldReturn` ["#tables"]
+    marked "#tables"
+    current ui `shouldReturn` ["#tables"]
     scrollTo "#mathematics"
-    eventually $ current ui `shouldReturn` ["#mathematics"]
+    marked "#mathematics"
+    current ui `shouldReturn` ["#mathematics"]
     -- A section's link scrolls to it: the last, at the end of the page,
     -- which cannot be scrolled to the top of the window.
     find ui ".page-contents a[href='#images-video-and-attachments']" >>= click
-    eventually $ current ui `shouldReturn` ["#images-video-and-attachments"]
+    marked "#images-video-and-attachments"
+    current ui `shouldReturn` ["#images-video-and-attachments"]
     scrollTop 0
-    eventually $ current ui `shouldReturn` ["#markdown-guide"]
+    marked "#markdown-guide"
+    current ui `shouldReturn` ["#markdown-guide"]
 
   it "folds the panel, and keeps it folded on the next long page" $ runPage $ do
     ui <- start m Nothing (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
@@ -223,8 +232,11 @@ spec m = do
     -- The links marked as the section being read, in every list of the
     -- page's headings.
     current ui = do
-      marked <- findAll ui ".toc-list a[data-current]"
-      ordNub . catMaybes <$> traverse (`getAttribute` "href") marked
+      links <- findAll ui ".toc-list a[data-current]"
+      ordNub . catMaybes <$> traverse (`getAttribute` "href") links
+    -- Until jsbits/toc.js has marked the panel's link to a section as the
+    -- one read.
+    marked section = untilAttribute (".page-contents a[href='" <> section <> "']") "data-current" (Just "")
     scrollTo selector = unsafeIOToPageM (evaluate =<< js_scroll_into_view (toJSText selector))
     scrollTop y = unsafeIOToPageM (evaluate =<< js_scroll_to y)
     -- Where the first footnote is in the window: its top, its bottom and

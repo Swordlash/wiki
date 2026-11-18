@@ -18,6 +18,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (slugs, start, startAgain)
+import Test.Browser.Outside (untilAttribute)
 import Test.Browser.Text (editorSelection, editorText, markdown, setMarkdown)
 import Test.Hspec.Halogen
 import Web.Storage.Storage (StorageKind (..))
@@ -267,14 +268,16 @@ spec m = do
     -- from the top until the end of the text is just in the window, with
     -- the page going on under it, the last section is the one read, though
     -- its heading never reached the line a quarter of the way down the
-    -- window, nor the window the end of the page. The wait is for the
-    -- browser's IntersectionObserver, which is not the program's.
+    -- window, nor the window the end of the page. The wait is for
+    -- jsbits/toc.js's mark on the section's link, which it makes when the
+    -- browser's IntersectionObserver calls it, outside the program.
     unsafeIOToPageM (js_scroll_to 0)
     endTop <- boxTop ".page-text-end"
     height <- windowHeight
     unsafeIOToPageM (js_scroll_to (round (endTop - height + 10)))
     boxTop ".page-text-end" >>= \t -> t `shouldSatisfy` (\x -> abs (x - (height - 10)) < 1)
-    eventually $ current ui `shouldReturn` [Just "#section-60"]
+    untilAttribute ".page-contents .toc-list a[href='#section-60']" "data-current" (Just "")
+    current ui `shouldReturn` [Just "#section-60"]
     unsafeIOToPageM js_live_close
     eventually $ find ui ".live-preview-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The editor was closed")
     length <$> findAll ui ".live-preview .page-body h2" `shouldReturn` 60

@@ -452,6 +452,7 @@ test-suite wiki-app-browser-test
       Test.Browser.Macros
       Test.Browser.Menus
       Test.Browser.Mount
+      Test.Browser.Outside
       Test.Browser.Notifications
       Test.Browser.Offline
       Test.Browser.Order

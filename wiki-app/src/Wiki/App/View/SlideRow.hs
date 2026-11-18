@@ -33,7 +33,7 @@ import Halogen.HTML.Properties qualified as HP
 import Protolude hiding (State, head)
 import Web.DOM.Internal.Types (Element)
 import Web.Event.Event (EventType (..))
-import Wiki.App.Editor.Browser (attachRow, detachRow, dragCarries, historyKey, markDragged, moveKey, pointerAfter)
+import Wiki.App.Editor.Browser (attachRow, detachRow, dragCarries, historyKey, markDragged, moveKey, pointerAfter, whileAttaching)
 import Wiki.App.Editor.Problems (ProblemRange (..))
 import Wiki.Core.SlideRows (Row (..), RowKey (..), Rows (..), rowLines, rowStarts)
 import Wiki.Core.Slides (Fit (..), SlideSpan (..), fitName)
@@ -305,15 +305,18 @@ component =
     key = gets (\st -> st.input.head.key)
 
     -- The row's CodeMirror put in while the row is open and the master is
-    -- there, and let go of when it closes.
+    -- there, and let go of when it closes. It comes a task later; a fork
+    -- waits for it ('whileAttaching'), so that the program is not quiet
+    -- until it is there.
     sync :: H.HalogenM State Action Empty Output m ()
     sync = do
       st <- get
       found <- H.getRef st.host
       case (st.input.open, st.attached, st.input.master, found) of
         (True, False, Just master, Just host) -> do
-          H.liftEffect (attachRow master host st.input.head.key st.input.focus)
+          attaching <- H.liftEffect (attachRow master host st.input.head.key st.input.focus)
           modify (\s -> s {attached = True})
+          whileAttaching attaching
         (False, True, _, Just host) -> do
           H.liftEffect (detachRow host)
           modify (\s -> s {attached = False})

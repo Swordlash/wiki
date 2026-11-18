@@ -45,12 +45,13 @@ import Halogen.HTML qualified as HH
 import Halogen.HTML.Events qualified as HE
 import Halogen.HTML.Properties qualified as HP
 import Halogen.JSBits (Callback, Safety (..), browserJS, freeCallback, mkSyncCallback)
+import Halogen.JSBits.Promise (Promise, waitCatch)
 import Halogen.Machine qualified as Machine
 import Halogen.Router qualified as Router
 import Halogen.Subscription qualified as HS
 import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
-import Protolude hiding (First, Last, State)
+import Protolude hiding (First, Last, State, waitCatch)
 -- With its constructor: the FFI passes the value inside the newtype.
 import Web.DOM.Internal.Types (Element (..))
 import Web.Event.Event (EventType (..))
@@ -91,12 +92,17 @@ data Input = Input
 
 -- | 'Watcher' is how the viewer learns that its link came near the
 -- window. 'start' watches an element and runs the action once when it
--- comes near, and gives the watch's number and what lets go of what the
--- watch holds when the viewer closes; 'stop' stops a watch by its number.
--- Neither waits: both run in the step that keeps the watch. A test gives
--- one of its own and says when the link is near.
+-- comes near, and gives the watch's number, what lets go of what the
+-- watch holds when the viewer closes, and a wait that ends once the watch
+-- has looked at the element (after the action, when it was near) or was
+-- stopped; 'stop' stops a watch by its number. Neither waits: both run in
+-- the step that keeps the watch. The third is the work of an ask of the
+-- machine's, whose answer it takes as nothing ('M.Looked'), so that the
+-- program is not quiet while the browser has not yet said whether the
+-- link is near. A test gives one of its own and says when the link is
+-- near.
 data Watcher = Watcher
-  { start :: Element -> IO () -> IO (Int, IO ())
+  { start :: Element -> IO () -> IO (Int, IO (), IO ())
   , stop :: Int -> IO ()
   }
 
@@ -143,6 +149,7 @@ data Action = Initialize | Finalize | Receive Input | Happen Event | FollowLink 
 $( browserJS
      ["jsbits/deck-viewer.js"]
      [ ("js_when_near", "wiki_deck_when_near", Safe, [t|Element -> Callback -> IO Int|])
+     , ("js_looked", "wiki_deck_looked", Safe, [t|Int -> IO (Promise ())|])
      , ("js_stop", "wiki_deck_stop", Safe, [t|Int -> IO ()|])
      ]
  )
@@ -240,17 +247,28 @@ component =
 
     carry :: M.Effect PageLink Place -> Machine.Carry () State Action Slots Void m Event
     carry = \case
-      -- The link watched until it comes near the window, in a browser.
-      M.Watch w -> Machine.Now $ do
-        st <- get
-        Sync.getRef st.root
-          >>= traverse_
-            ( \element -> do
-                channel <- Sync.sync (liftIO HS.create)
-                void (Sync.subscribe channel.emitter)
-                (i, freeIt) <- Sync.sync (liftIO (st.input.watcher.start element (HS.notify channel.listener (Happen (M.Near w)))))
-                modify (\s -> s {nearIds = Map.insert w i s.nearIds, callbacks = freeIt : s.callbacks})
-            )
+      -- The link watched until it comes near the window, in a browser. The
+      -- watch is made and kept in place; then the program waits for the
+      -- browser's first look at the link, which comes a frame later,
+      -- outside the program, near or not. The machine takes the answer as
+      -- nothing ('M.Looked'): the ask is there so that the program is not
+      -- quiet until the browser has said whether the link is near, and,
+      -- near, the read has started.
+      M.Watch w ->
+        Machine.AskWith
+          ( do
+              st <- get
+              Sync.getRef st.root >>= \case
+                Nothing -> pure pass
+                Just element -> do
+                  channel <- Sync.sync (liftIO HS.create)
+                  void (Sync.subscribe channel.emitter)
+                  (i, freeIt, looked) <- Sync.sync (liftIO (st.input.watcher.start element (HS.notify channel.listener (Happen (M.Near w)))))
+                  modify (\s -> s {nearIds = Map.insert w i s.nearIds, callbacks = freeIt : s.callbacks})
+                  pure looked
+          )
+          (Machine.run . liftIO)
+          (const (M.Looked w))
       M.Unwatch w -> Machine.Now $ do
         st <- get
         traverse_ (Sync.sync . liftIO . st.input.watcher.stop) (Map.lookup w st.nearIds)
@@ -353,6 +371,7 @@ browserWatcher =
     { start = \element tell -> do
         callback <- mkSyncCallback (const tell)
         i <- js_when_near element callback
-        pure (i, freeCallback callback)
+        looked <- js_looked i
+        pure (i, freeCallback callback, void (waitCatch looked))
     , stop = js_stop
     }

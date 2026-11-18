@@ -2079,7 +2079,7 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   the library's pull request 145, written by this session, makes them
   one setting, `HSPEC_HALOGEN_DEADLINE_MS`, with a report of the waits
   that retry (`HSPEC_HALOGEN_RETRIES=1`) and `withDeadline` for a part
-  of a test; the wiki pins it (357b732c) and gives its browser suite
+  of a test; the wiki pinned it and gives its browser suite
   thirty seconds in `toolchain/wasm-test-wrapper.sh` (#325). Open in
   the library: pull request 146, `readsOnce` (a group's reads look
   once, at rest), and after it a pause asleep on the test's clock
@@ -2106,9 +2106,8 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   no more: its pull request 146 is merged (c5b09f02), `readsOnce` with
   `Rest = Idle | Quiet`, settling `mount`, `hydrate` and `query`,
   `perform`, `countHeld`; a read checks the rest at the moment it
-  looks. Next, in this order: bump the wiki's pin to it (the settling
-  mounts change every browser example: that pull request's CI is the
-  check, since the rerun on the wiki's stack was not made); move the
+  looks. The wiki pins it (#328): its code needed no change, and the
+  whole suite passed on CI with mounts settling. Next, in this order: move the
   wiki's browser groups to `readsOnce`, one group a pull request,
   starting with the editor's and the Tasks example that holds a save
   (shown on a measurement branch: no failure, the retries left are the

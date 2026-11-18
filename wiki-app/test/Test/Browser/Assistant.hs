@@ -94,7 +94,9 @@ $( browserJS
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadVault m, MonadUUID m, MonadIndexedDB m) => Spec
 spec m = do
-  it "sends a selection, streams the answer, and makes its edit a change that Accept keeps and Ctrl+Z undoes" $ runPage $ do
+  -- Every example runs on a page without the scripted provider's script
+  -- ('runFresh'), and installs the one it needs.
+  it "sends a selection, streams the answer, and makes its edit a change that Accept keeps and Ctrl+Z undoes" $ runFresh $ do
     script [[text "I will ", text "make it the very first.", replace "the first post" "the very first post", text " Done."]]
     ui <- openAssistant m
     _ <- unsafeIOToPageM (js_select 16 38)
@@ -136,7 +138,7 @@ spec m = do
     press "Control+z"
     eventually $ markdown ui >>= (`shouldSatisfy` T.isInfixOf "This is the first post of a blog")
 
-  it "shows a presentation's changes in its rows, opens a closed row it writes in without the focus, and accepts and rejects in a row, one history" $ runPage $ do
+  it "shows a presentation's changes in its rows, opens a closed row it writes in without the focus, and accepts and rejects in a row, one history" $ runFresh $ do
     script [[replace "Second." "Second, better.", replace "Third." "Third, better.", text "Two changes."]]
     ui <- openDeckAssistant m
     eventually $ openRowTitles ui `shouldReturn` ["Deck"]
@@ -158,7 +160,7 @@ spec m = do
     press "Control+z"
     eventually $ markdown ui >>= (`shouldSatisfy` T.isInfixOf "Second, better.")
 
-  it "shows a change across two of a presentation's rows in both, its controls where it ends" $ runPage $ do
+  it "shows a change across two of a presentation's rows in both, its controls where it ends" $ runFresh $ do
     script [[replace "Second.\n\n## Three\n\nThird." "Second and more.\n\n## Three\n\nThird and more.", text "Done."]]
     ui <- openDeckAssistant m
     send ui "Lengthen."
@@ -174,7 +176,7 @@ spec m = do
     find ui ".editor-slides > li:nth-child(4) .cm-wiki-change-reject" >>= click
     eventually $ markdown ui >>= (`shouldSatisfy` T.isInfixOf "Second.\n\n## Three\n\nThird.")
 
-  it "rejects a change from the change itself, putting back what it replaced, and tells the model so" $ runPage $ do
+  it "rejects a change from the change itself, putting back what it replaced, and tells the model so" $ runFresh $ do
     script [[replace "## Why a wiki" "## Why this is a wiki", text "Retitled."], [text "Noted."]]
     ui <- openAssistant m
     send ui "Change the heading."
@@ -194,7 +196,7 @@ spec m = do
     told `shouldSatisfy` T.isInfixOf "Since your last message, the user decided on your changes"
     told `shouldSatisfy` T.isInfixOf "- Rejected (what it replaced is back): Replaced \8220## Why a wiki\8221 with \8220## Why this is a wiki\8221"
 
-  it "makes two edits in one turn, one an insertion at the end, and Reject all takes both back" $ runPage $ do
+  it "makes two edits in one turn, one an insertion at the end, and Reject all takes both back" $ runFresh $ do
     script [[replace "spaces in other spaces" "spaces inside other spaces", insert "end" "after" "\n\nThat is all.\n", text "Two changes."]]
     (ui, original) <- openAssistantWith m
     send ui "Polish it."
@@ -207,7 +209,7 @@ spec m = do
     find ui ".assistant-reject-all" >>= click
     eventually $ markdown ui `shouldReturn` original
 
-  it "answers in Ask mode without changing the page: its tools are off, and an edit asked for anyway is refused" $ runPage $ do
+  it "answers in Ask mode without changing the page: its tools are off, and an edit asked for anyway is refused" $ runFresh $ do
     script [[replace "## Why a wiki" "## Why", text "I would retitle it."]]
     (ui, original) <- openAssistantWith m
     -- Agent mode at first. The mode is chosen above the conversation, with
@@ -235,7 +237,7 @@ spec m = do
     at ["request", "tools"] request `shouldSatisfy` isJust
     fromMaybe "" (fieldText ["user"] request) `shouldSatisfy` T.isInfixOf "Ask mode"
 
-  it "opens in the mode the settings keep, and back in Agent mode sends the tools on" $ runPage $ do
+  it "opens in the mode the settings keep, and back in Agent mode sends the tools on" $ runFresh $ do
     keep m (UserId "user-editor") (withMode Ask (chooseProvider Scripted defaultSettings))
     script [[text "Fine."]]
     ui <- openAssistantKept m
@@ -250,7 +252,8 @@ spec m = do
     at ["request", "tool_choice"] request `shouldBe` Nothing
     fromMaybe "" (fieldText ["user"] request) `shouldNotSatisfy'` T.isInfixOf "Ask mode"
 
-  it "keeps the text's selection in sight while the message box has the focus" $ runPage $ do
+  it "keeps the text's selection in sight while the message box has the focus" $ runFresh $ do
+    script []
     ui <- openAssistant m
     _ <- unsafeIOToPageM (js_select 16 38)
     find ui ".assistant-input" >>= focus
@@ -262,7 +265,7 @@ spec m = do
     find ui ".assistant-input" >>= focus
     eventually $ length <$> findAll ui ".cm-wiki-kept-selection" `shouldReturn` 1
 
-  it "answers a replacement of text the page does not have with why, and the model goes on" $ runPage $ do
+  it "answers a replacement of text the page does not have with why, and the model goes on" $ runFresh $ do
     script [[replace "a sentence nowhere" "anything", text "Sorry, I could not find it."]]
     (ui, original) <- openAssistantWith m
     send ui "Fix it."
@@ -280,7 +283,7 @@ spec m = do
   -- button under it is Stop by then). Deciding it after reading the clock
   -- on a thread of its own, both clicks found the panel idle, and each
   -- opened a conversation and sent the message.
-  it "sends the message once for Send clicked twice at once" $ runPage $ do
+  it "sends the message once for Send clicked twice at once" $ runFresh $ do
     script [[text "Once."], [text "Twice."]]
     ui <- openAssistant m
     find ui ".assistant-input" >>= (`typeText` "Hello.")
@@ -291,7 +294,7 @@ spec m = do
     length <$> requests `shouldReturn` 1
     length <$> findAll ui ".assistant-message.from-user" `shouldReturn` 1
 
-  it "stops a turn with Stop, and keeps the change made by then" $ runPage $ do
+  it "stops a turn with Stop, and keeps the change made by then" $ runFresh $ do
     script [[replace "## Why a wiki" "## Why", text "Working", hold, text "never"]]
     ui <- openAssistant m
     send ui "Go on."
@@ -306,7 +309,7 @@ spec m = do
     _ <- find ui ".assistant-send"
     pass
 
-  it "stops a turn when the panel is closed, and keeps the conversation" $ runPage $ do
+  it "stops a turn when the panel is closed, and keeps the conversation" $ runFresh $ do
     script [[text "Thinking it over", hold, text "never"], [text "Again."]]
     ui <- openAssistant m
     send ui "Go on."
@@ -322,7 +325,7 @@ spec m = do
     eventually $ length <$> findAll ui ".assistant-message.from-user" `shouldReturn` 2
     eventually $ findAll ui ".assistant-message.from-model .assistant-text" >>= traverse textContent >>= (`shouldBe` ["Thinking it over", "Again."])
 
-  it "shows Thinking with three dots until the first text, the seconds waited, and the thinking's summary, kept as Thought" $ runPage $ do
+  it "shows Thinking with three dots until the first text, the seconds waited, and the thinking's summary, kept as Thought" $ runFresh $ do
     script [[thinking "Weighing the words.", quiet 4000, text "Here it is."]]
     ui <- openAssistant m
     send ui "Go on."
@@ -344,7 +347,7 @@ spec m = do
     eventually $ length <$> findAll ui ".assistant-thinking" `shouldReturn` 0
     find ui ".assistant-thought-text" >>= (`shouldHaveText` "Weighing the words.")
 
-  it "says the page is being edited while the model writes a tool call, and shows the edit's note once it is made" $ runPage $ do
+  it "says the page is being edited while the model writes a tool call, and shows the edit's note once it is made" $ runFresh $ do
     script [[pausing 1500 (replace "## Why a wiki" "## Why"), text "Retitled."]]
     ui <- openAssistant m
     send ui "Retitle it."
@@ -354,7 +357,7 @@ spec m = do
     length <$> findAll ui ".assistant-status" `shouldReturn` 0
     eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Retitled.")
 
-  it "shows the time of each message, and how long a finished answer took and its tokens, and the conversation's" $ runPage $ do
+  it "shows the time of each message, and how long a finished answer took and its tokens, and the conversation's" $ runFresh $ do
     script [[usage 1240 (Just 0) (Just 1200) 75, usage 1290 (Just 1200) (Just 0) 12, quiet 1200, text "Done."], [usage 1400 (Just 1290) (Just 0) 30, text "Again."]]
     ui <- openAssistant m
     send ui "Hello?"
@@ -371,7 +374,7 @@ spec m = do
     find ui ".assistant-head .assistant-new" >>= click
     eventually $ length <$> findAll ui ".assistant-spent" `shouldReturn` 0
 
-  it "closes with Close in its header, and with Escape in the message box" $ runPage $ do
+  it "closes with Close in its header, and with Escape in the message box" $ runFresh $ do
     script []
     ui <- openAssistant m
     close <- find ui ".assistant-head .assistant-close"
@@ -386,7 +389,7 @@ spec m = do
     eventually $ find ui ".editor-assistant" >>= shouldBeHidden
     find ui scriptedButton >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "false")
 
-  it "starts the chat's effort at the settings' default, and a change in the chat stays with the conversation" $ runPage $ do
+  it "starts the chat's effort at the settings' default, and a change in the chat stays with the conversation" $ runFresh $ do
     script [[text "One."], [text "Two."]]
     keep m (UserId "user-editor") (withEffort Scripted "xhigh" (chooseProvider Scripted defaultSettings))
     ui <- openAssistantKept m
@@ -404,7 +407,7 @@ spec m = do
     -- The settings keep their default.
     (\s -> (settingsOf Scripted s).effort) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just "xhigh")
 
-  it "opens with a provider from its button, and switching starts a new conversation with the changes kept" $ runPage $ do
+  it "opens with a provider from its button, and switching starts a new conversation with the changes kept" $ runFresh $ do
     script [[replace "## Why a wiki" "## Why", text "Retitled."], [text "Claude here."]]
     keep m (UserId "user-editor") (withKey Anthropic (Just "sk-ant-test") (chooseProvider Scripted defaultSettings))
     ui <- openAssistantKept m
@@ -436,7 +439,7 @@ spec m = do
   -- "New" drops the chat: the next message opens another, which the
   -- scripted provider counts from one again, and which is told nothing of
   -- the changes the earlier chat's model made.
-  it "starts a new conversation with New, disabled while the model works, and keeps the draft; and with /clear, /help sending nothing" $ runPage $ do
+  it "starts a new conversation with New, disabled while the model works, and keeps the draft; and with /clear, /help sending nothing" $ runFresh $ do
     script [[replace "which is what makes this a blog" "which makes this a blog", text "One."], [text "Two.", hold], [text "Three."], [text "Four."]]
     ui <- openAssistant m
     send ui "First."
@@ -479,7 +482,7 @@ spec m = do
 
   -- A chat that could not be made (its script did not load) took no
   -- message, so the next message, to a new chat, carries the page again.
-  it "sends the page whole again after a message whose chat could not be made" $ runPage $ do
+  it "sends the page whole again after a message whose chat could not be made" $ runFresh $ do
     unsafeIOToPageM $ do
       js_forget
       js_script (toJSText (decodeUtf8 (BSL.toStrict (encode (object ["turns" .= [[text "Hi."]], "makeFails" .= (1 :: Int)])))))
@@ -491,7 +494,7 @@ spec m = do
     users <- map (fromMaybe "" . fieldText ["user"]) <$> requests
     map (T.isInfixOf "<page>\n# Hello, world") users `shouldBe` [True]
 
-  it "shows a provider's error as it gave it, without anything like a key" $ runPage $ do
+  it "shows a provider's error as it gave it, without anything like a key" $ runFresh $ do
     script [[failing "permission" 403 "not for this key: sk-ant-api03-abcdefgh1234"]]
     ui <- openAssistant m
     send ui "Hello?"
@@ -502,7 +505,7 @@ spec m = do
     _ <- find ui ".assistant-send"
     pass
 
-  it "asks Anthropic's API at a gateway with its key, and a refused key says to paste a new one, with a link to the settings" $ runPage $ do
+  it "asks Anthropic's API at a gateway with its key, and a refused key says to paste a new one, with a link to the settings" $ runFresh $ do
     script [[failing "authentication" 401 "token expired: sk-ant-api03-abcdefgh1234"]]
     keep m (UserId "user-editor") (withKey Anthropic (Just "gw-token") (withBaseUrl Anthropic gateway defaultSettings))
     (ui, _) <- startWith m (Just "user-editor") (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
@@ -528,7 +531,7 @@ spec m = do
     click settingsLink
     eventually $ find ui ".assistant-settings h1" >>= (`shouldHaveText` "Writing assistant")
 
-  it "offers the provider's own models, grouped, the first recommended the default, and asks the one chosen" $ runPage $ do
+  it "offers the provider's own models, grouped, the first recommended the default, and asks the one chosen" $ runFresh $ do
     scriptWith [[text "Hello."]] (object ["scripted" .= scriptedModels])
     ui <- openAssistant m
     -- Asked for when the editor opened, and kept.
@@ -544,8 +547,7 @@ spec m = do
     [request] <- requests
     fieldText ["request", "model"] request `shouldBe` Just "claude-opus-4-8"
 
-  it "shows one Assistant bubble to a user without a key, which opens the panel to say where keys go" $ runPage $ do
-    unsafeIOToPageM js_forget
+  it "shows one Assistant bubble to a user without a key, which opens the panel to say where keys go" $ runFresh $ do
     keep m (UserId "user-editor") defaultSettings
     (ui, _) <- startWith m (Just "user-editor") (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
     _ <- editorText ui
@@ -556,7 +558,7 @@ spec m = do
     eventually $ find ui ".assistant-setup" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "There is no API key for Anthropic (Claude)")
     find ui ".assistant-setup a" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Open the assistant's settings")
 
-  it "dims a provider that cannot be reached, says so in the panel, and tries again" $ runPage $ do
+  it "dims a provider that cannot be reached, says so in the panel, and tries again" $ runFresh $ do
     let blocked = object ["error" .= object ["kind" .= ("connection" :: Text), "message" .= ("Failed to fetch" :: Text)]]
     scriptWith [[failing "connection" 0 "Failed to fetch"], [text "Back."]] (object ["anthropic" .= blocked])
     keep m (UserId "user-editor") (withKey Anthropic (Just "sk-ant-test") defaultSettings)
@@ -584,7 +586,7 @@ spec m = do
     eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Back.")
     eventually $ find ui claude >>= (`getAttribute` "class") >>= (`shouldBe` Just "editor-provider")
 
-  it "asks OpenAI's API at another address, without a key" $ runPage $ do
+  it "asks OpenAI's API at another address, without a key" $ runFresh $ do
     scriptWith [[text "From the local server."]] (object ["openai" .= [object ["id" .= ("llama4:8b" :: Text), "created" .= (20 :: Int)], object ["id" .= ("nomic-embed-text" :: Text), "created" .= (10 :: Int)]]])
     keep m (UserId "user-editor") (chooseProvider OpenAI (withBaseUrl OpenAI "http://localhost:11434/v1" defaultSettings))
     (ui, _) <- startWith m (Just "user-editor") (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
@@ -602,7 +604,7 @@ spec m = do
     fieldText ["key"] request `shouldBe` Just ""
     fieldText ["model"] request `shouldBe` Just "llama4:8b"
 
-  it "keeps a key for each user, forgets it, and tests it" $ runPage $ do
+  it "keeps a key for each user, forgets it, and tests it" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withKey Anthropic Nothing defaultSettings)
     keep m (UserId "user-admin") (withKey Anthropic Nothing defaultSettings)
@@ -641,7 +643,8 @@ spec m = do
     findIn scripted ".assistant-test" >>= click
     eventually $ findIn scripted ".assistant-check-works" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The key works")
 
-  it "keeps the page's cap typed on the settings page, with about how many tokens it is, and refuses one out of bounds" $ runPage $ do
+  it "keeps the page's cap typed on the settings page, with about how many tokens it is, and refuses one out of bounds" $ runFresh $ do
+    script []
     keep m (UserId "user-editor") (withKey Anthropic (Just "sk-ant-test") defaultSettings)
     (ui, _) <- startWith m (Just "user-editor") AssistantSettings
     field <- find ui ".assistant-page-cap"
@@ -661,7 +664,7 @@ spec m = do
     press "Tab"
     eventually $ (\s -> s.pageCap) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just 50000)
 
-  it "chooses each provider's default effort on the settings page, medium unless one is chosen" $ runPage $ do
+  it "chooses each provider's default effort on the settings page, medium unless one is chosen" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withKey Anthropic (Just "sk-ant-test") defaultSettings)
     (ui, _) <- startWith m (Just "user-editor") AssistantSettings
@@ -680,7 +683,7 @@ spec m = do
     choose "medium"
     eventually $ (\s -> (settingsOf Anthropic s).effort) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
 
-  it "chooses a gateway the server offers for Anthropic, fetches its models there, and says what a refused key and no connection mean" $ runPage $ do
+  it "chooses a gateway the server offers for Anthropic, fetches its models there, and says what a refused key and no connection mean" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withKey Anthropic (Just "gw-token") defaultSettings)
     ui <- settingsOver m [corporateGateway, ollama]
@@ -713,7 +716,7 @@ spec m = do
     unmount ui
     serverStops
 
-  it "offers the session's services under the provider whose API they speak, and the request goes to the one chosen" $ runPage $ do
+  it "offers the session's services under the provider whose API they speak, and the request goes to the one chosen" $ runFresh $ do
     scriptWith [] (object [])
     keep m (UserId "user-editor") (withKey OpenAI (Just "sk-proj") (withKey Anthropic (Just "gw-token") defaultSettings))
     ui <- settingsOver m [corporateGateway, ollama]
@@ -740,7 +743,7 @@ spec m = do
     unmount ui
     serverStops
 
-  it "shows a kept address that no service offers as such, and replaces it with the service chosen" $ runPage $ do
+  it "shows a kept address that no service offers as such, and replaces it with the service chosen" $ runFresh $ do
     scriptWith [] (object [])
     let retired = "https://old-gateway.example.com"
     keep m (UserId "user-editor") (withKey Anthropic (Just "gw-token") (withBaseUrl Anthropic retired defaultSettings))
@@ -756,7 +759,7 @@ spec m = do
     unmount ui
     serverStops
 
-  it "offers only the provider's own service in the demo, which has no server" $ runPage $ do
+  it "offers only the provider's own service in the demo, which has no server" $ runFresh $ do
     scriptWith [] (object [])
     keep m (UserId "user-editor") defaultSettings
     (ui, _) <- startWith m (Just "user-editor") AssistantSettings
@@ -765,7 +768,7 @@ spec m = do
     findAll ui ".assistant-provider-settings[data-provider='openai'] .assistant-service option" >>= traverse textContent >>= (`shouldBe` ["OpenAI's own"])
     find ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service-hint" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "the only one this wiki offers")
 
-  it "tests the connection to another address without a key, until a key is typed, which is then the only one tested" $ runPage $ do
+  it "tests the connection to another address without a key, until a key is typed, which is then the only one tested" $ runFresh $ do
     scriptWith [] (object [])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
     (ui, _) <- startWith m (Just "user-editor") AssistantSettings
@@ -786,7 +789,7 @@ spec m = do
     findIn anthropic ".assistant-key" >>= clear
     eventually $ findIn anthropic ".assistant-test" >>= (`shouldHaveText` "Test the connection (no key)")
 
-  it "tests a typed key before keeping it: a refused one is not kept and stays in the field, an accepted one is kept with its models, and Enter tests it" $ runPage $ do
+  it "tests a typed key before keeping it: a refused one is not kept and stays in the field, an accepted one is kept with its models, and Enter tests it" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
     (ui, _) <- startWith m (Just "user-editor") AssistantSettings
@@ -826,7 +829,7 @@ spec m = do
     findIn anthropic ".assistant-forget" >>= click
     eventually $ findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "")
 
-  it "disables the provider's inputs while a typed key is tested, and keeps nothing when the address changes before the answer" $ runPage $ do
+  it "disables the provider's inputs while a typed key is tested, and keeps nothing when the address changes before the answer" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
     (ui, _) <- startWith m (Just "user-editor") AssistantSettings
@@ -853,7 +856,7 @@ spec m = do
     findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "gw-token")
     (map (fieldText ["baseUrl"]) <$> checks) `shouldReturn` [Just gateway]
 
-  it "refuses a typed key with which the service refuses its model list (a 401), and keeps nothing" $ runPage $ do
+  it "refuses a typed key with which the service refuses its model list (a 401), and keeps nothing" $ runFresh $ do
     let refused = object ["error" .= object ["kind" .= ("authentication" :: Text), "status" .= (401 :: Int), "message" .= ("bad token" :: Text)]]
     scriptWith [] (object ["anthropic" .= refused])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
@@ -867,7 +870,7 @@ spec m = do
     -- The list's refusal is enough: no message test was made.
     checks `shouldReturn` []
 
-  it "keeps a typed key whose list comes and whose message test passes, with a model from the list, and shows the list" $ runPage $ do
+  it "keeps a typed key whose list comes and whose message test passes, with a model from the list, and shows the list" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     -- A model chosen earlier that the gateway does not list.
     keep m (UserId "user-editor") (withModel Anthropic "claude-retired-1" (withBaseUrl Anthropic gateway defaultSettings))
@@ -887,7 +890,7 @@ spec m = do
     isJust kept.fetched `shouldBe` True
     findIn anthropic ".assistant-model-choice" >>= (`getProperty` "value") >>= (`shouldBe` "claude-opus-5-5")
 
-  it "keeps nothing when the message test fails with the model, and keeps the key with another model chosen from the list" $ runPage $ do
+  it "keeps nothing when the message test fails with the model, and keeps the key with another model chosen from the list" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
     (ui, _) <- startWith m (Just "user-editor") AssistantSettings
@@ -914,7 +917,7 @@ spec m = do
     keyNow `shouldReturn` Just (ApiKey "gw-token")
     (\s -> (settingsOf Anthropic s).model) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ModelName "claude-sonnet-5-5"))
 
-  it "keeps a typed key at a gateway without a model list when the message test passes with the model chosen" $ runPage $ do
+  it "keeps a typed key at a gateway without a model list when the message test passes with the model chosen" $ runFresh $ do
     let missing = object ["error" .= object ["kind" .= ("not_found" :: Text), "status" .= (404 :: Int), "message" .= ("no such route" :: Text)]]
     scriptWith [] (object ["anthropic" .= missing])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
@@ -1039,6 +1042,19 @@ keep m user settings = void (unsafeIOToPageM (runTest (changeKeys user (const se
 
 settingsFor :: forall m -> (MonadBrowserTest m, MonadAssistant m) => UserId -> PageM s Settings
 settingsFor m user = unsafeIOToPageM (either (const defaultSettings) (\k -> k.settings) <$> runTest (readKeys user :: m (Either Text Keys)))
+
+-- | Run an example on a page without the scripted provider's script, and
+-- leave the page without one. The script is a global of the page
+-- (@globalThis.wikiAssistantScript@, set by 'script'), and one page runs
+-- several examples, one after another: hspec-halogen gives the suite's
+-- example number i to page i mod the number of pages. So an example that
+-- set no script used the script of the example before it on its page, and
+-- which example that is depends on the number of pages: at two pages it
+-- was an example of this group, at eight the last example of the group
+-- before, which sets none. Here an example that sets no script finds none,
+-- whatever the number of pages.
+runFresh :: (HasCallStack) => (forall s. PageM s a) -> IO a
+runFresh test = js_forget >> (runPage test `finally` js_forget)
 
 -- | Install the scripted provider's script: the steps of each turn.
 script :: [[Value]] -> PageM s ()

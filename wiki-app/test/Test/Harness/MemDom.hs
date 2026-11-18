@@ -13,17 +13,13 @@
 -- 'withView' (with the parent that gives the input, 'setInput', and keeps
 -- the outputs, 'outputs'), 'click' (a reader's whole click, with what the
 -- browser does by default), 'typeInto', 'press', 'clickOutside', 'find',
--- 'textOf', the 'Gate' a test's backend holds its asks in, and the
+-- 'textOf', 'settle' and 'settleHolding' (which give up after ten seconds,
+-- saying what the view is doing), a view's own activity ('activity',
+-- 'waitActivity'), the 'Gate' a test's backend holds its asks in, and the
 -- library's held waits and test clock ("Halogen.Activity.Control").
 --
--- What this module adds:
---
--- * 'settle' and 'settleHolding' fail after ten seconds, saying what they
---   waited for: the library's wait for as long as it takes.
--- * 'settleWaiting', for a spec that checks how many of the view's fibers
---   wait (a counted pause). The library does not give a view's activity.
--- * What a view of the wiki is given: 'viewContext', and a live channel the
---   test tells through ('TestFeed').
+-- What this module adds is what a view of the wiki is given: 'viewContext',
+-- and a live channel the test tells through ('TestFeed').
 --
 -- Each view has a page of its own, with its own document: an event in one
 -- view's page never reaches another's listeners, so views run side by side.
@@ -33,11 +29,6 @@
 module Test.Harness.MemDom
   ( -- * The library's harness
     module Halogen.Test.Native
-
-    -- * Waiting for the program, with a deadline
-  , settle
-  , settleHolding
-  , settleWaiting
 
     -- * What the shell gives a view
   , viewContext
@@ -50,8 +41,7 @@ where
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Halogen.Router (Router)
 import Halogen.Subscription qualified as HS
-import Halogen.Test.Native hiding (settle, settleHolding)
-import Halogen.Test.Native qualified as T
+import Halogen.Test.Native
 import Protolude hiding (find)
 import Wiki.App.Backend (Session, anonymousIn)
 import Wiki.App.Live (Feed (..), Heard)
@@ -60,31 +50,6 @@ import Wiki.App.View.Common (Context (..), PageWidth (..))
 import Wiki.Core.Access (Access (..))
 import Wiki.Core.Id (PageId)
 import Wiki.Core.Space (Space)
-
--- | Wait until the view's program is quiet: nothing running or queued, and
--- no fiber waiting in an @H.async@. A wait that has not ended after ten
--- seconds has hung, and the test fails with the view's HTML.
-settle :: View q i o -> IO ()
-settle view = within (("the view to be quiet. Its HTML:\n" <>) <$> html view) (T.settle view)
-
--- | Wait until the view's program has done all it can while the gates hold
--- their asks ('holds'), with the same ten seconds as 'settle'.
-settleHolding :: View q i o -> Holds -> IO ()
-settleHolding view gates = within (("the view to wait only for the asks held. Its HTML:\n" <>) <$> html view) (T.settleHolding view gates)
-
--- | Wait until the view's program is idle with exactly this many fibers
--- waiting: a counted pause ('H.delayCounted') is one. The library reads
--- what a view does only through a gate's asks ('settleHolding'), so the
--- count is given as a gate holding that many placeholder asks, which no
--- fiber of the view makes; they are let go when the wait ends. It waits
--- at most ten seconds, as 'settle' does: a view with another number of
--- fibers waiting fails the test then.
-settleWaiting :: View q i o -> Int -> IO ()
-settleWaiting view n = do
-  gate <- newGate :: IO (Gate () ())
-  placeholders <- replicateM n (forkIO (hold gate ()))
-  waitHeld gate (\hs -> length hs == n) $> ()
-  settleHolding view (holds gate) `finally` traverse_ killThread placeholders
 
 -- | What the shell gives a view ('Context'), as a native spec gives it:
 -- this router, nobody signed in on an open wiki, no spaces, at a

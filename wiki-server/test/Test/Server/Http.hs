@@ -45,7 +45,7 @@ import Wiki.Server.Limiter (defaultLimits, newLimiter)
 import Wiki.Server.Log (newErrorRing, silentLogger)
 import Wiki.Server.Metrics (newMetrics)
 import Wiki.Server.Oidc (newFlows, newProviderCache)
-import Wiki.Server.Opaque (newAttempts, newProofs)
+import Wiki.Server.Opaque (defaultStretch, newAttempts, newProofs)
 import Wiki.Server.Render (inProcess)
 import Wiki.Server.SecondFactor (newPendingSignIns)
 import Wiki.Server.Storage (Storage, Who (..))
@@ -135,7 +135,7 @@ withApiEnv storage test = Ki.scoped $ \resetTasks -> do
   pending <- newPendingSignIns
   attempts <- newAttempts
   proofs <- newProofs
-  basicSignIns <- newBasicSignIns
+  basicSignIns <- newBasicSignIns defaultStretch
   errors <- newErrorRing
   metrics <- newMetrics
   feeds <- newFeedCache

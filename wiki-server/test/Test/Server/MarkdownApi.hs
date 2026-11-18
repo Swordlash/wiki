@@ -10,6 +10,7 @@
 -- password until the administrator gives one.
 module Test.Server.MarkdownApi (spec) where
 
+import Crypto.OPAQUE qualified as O
 import Data.Aeson (Value (..), decodeStrict, encode)
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteArray.Encoding (Base (..), convertToBase)
@@ -29,6 +30,8 @@ import Wiki.Api.Account (Account, AccountDisabled (..))
 import Wiki.Api.Encrypted (EncryptSpace (..), NewGrant (..), NewSealedPage (..))
 import Wiki.Api.Error (ApiError (..))
 import Wiki.Api.Links (links)
+import Wiki.Api.Opaque (PasswordRecord (..), RegistrationChallenge (..), RegistrationFor (..), RegistrationStart (..), Stretch (..), messageOf)
+import Wiki.Api.Opaque qualified as Opaque
 import Wiki.Api.Types qualified as Api
 import Wiki.Api.Vault (NewPublicKey (..), VaultChange (..))
 import Wiki.Api.Version (PageVersion (..))
@@ -44,6 +47,8 @@ import Wiki.Core.Slug (slugText)
 import Wiki.Core.Space qualified as S
 import Wiki.Core.Vault
 import Wiki.Core.Version (Author (..), VersionInfo (..))
+import Wiki.Server.Opaque (opaqueConfig)
+import Wiki.Server.Options (ServeOptions (..))
 import Wiki.Server.Vault (keyIdOf)
 import Wiki.Server.WebAuthn (toBase64Url)
 
@@ -84,6 +89,18 @@ fullChecks r = do
   reply <- getUrl r (r.admin <> "/metrics")
   let counted = [n | line <- T.lines (decodeUtf8 (BSL.toStrict reply.body)), Just rest <- [T.stripPrefix "wiki_api_password_checks_total " line], Just n <- [readMaybe (T.unpack rest)]]
   maybe (expectationFailure ("no count of password checks in the metrics: " <> show reply) >> pure 0) pure (head counted)
+
+-- | The record of a password for a user, made with this stretching rather
+-- than the one the server asks for: what a browser that chose its own
+-- stretching would send. Registered on the admin listener.
+stretchedRecord :: Running -> UserId -> Text -> Stretch -> IO PasswordRecord
+stretchedRecord r u password stretch = do
+  (st, req) <- either (\e -> panic ("no request: " <> show e)) pure =<< O.registrationRequest (encodeUtf8 password)
+  reply <- send r methodPost (r.admin <> "/admin/" <> links.passwordRegistration) [(hContentType, "application/json")] (encode RegistrationStart {for = ForUser u, request = messageOf (O.encode req)})
+  challenge :: RegistrationChallenge <- jsonAs 200 reply
+  response <- maybe (panic "no response") pure (Opaque.bytesOf challenge.response >>= rightToMaybe . O.decode)
+  (record, _) <- either (\e -> panic ("no record: " <> show e)) pure =<< O.finalizeRegistration (opaqueConfig stretch) st response O.defaultIdentities
+  pure PasswordRecord {credential = challenge.credential, record = messageOf (O.encode record), stretch}
 
 -- | The error a refusal names, from its JSON body.
 errorName :: Reply -> Maybe Text
@@ -140,6 +157,21 @@ signingIn backing = describe "signing in" $ do
     (.status) <$> request r methodGet "s/blog/p/hello-world/" [editor] "" `shouldReturn` 200
     _ :: Account <- sendJson r methodPut (r.admin <> "/admin/" <> links.admin.setDisabled (UserId "user-editor")) AccountDisabled {disabled = True} >>= jsonAs 200
     (.status) <$> request r methodGet "s/blog/p/hello-world/" [editor] "" `shouldReturn` 401
+
+  it "refuses, as a wrong password, an account whose record asks for more stretching than the budget" $ withDemoRunning backing (\o -> o {apiStretchBudget = Stretch {opsLimit = 1, memLimit = 8192}}) $ \r -> do
+    -- The editor's record asks for twice the passes and memory the budget
+    -- allows; the reader's is the tests' own, within it.
+    record <- stretchedRecord r (UserId "user-editor") "editor's password" Stretch {opsLimit = 2, memLimit = 16384}
+    _ :: Account <- sendJson r methodPut (r.admin <> "/admin/" <> links.admin.setPassword (UserId "user-editor")) record >>= jsonAs 200
+    givePassword r "user-reader" "reader's password"
+    counted <- fullChecks r
+    right <- request r methodGet "s/blog/p/hello-world/" [editor] ""
+    wrong <- request r methodGet "s/blog/p/hello-world/" [basic "editor" "not the password"] ""
+    (right.status, right.body) `shouldBe` (401, wrong.body)
+    -- Each ran one check, against the fake record, as a login without a
+    -- record does.
+    fullChecks r `shouldReturn` (counted + 2)
+    (.status) <$> request r methodGet "s/team/projects/p/the-wiki/" [basic "reader" "reader's password"] "" `shouldReturn` 200
 
   it "refuses an account with a second factor, whose password alone signs nobody in" $ withPasswords backing $ \r -> do
     token <- signInAs r "editor" "editor's password"

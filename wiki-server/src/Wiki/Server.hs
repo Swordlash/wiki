@@ -139,7 +139,7 @@ withServerUsing given raw sendMail action = do
   pending <- newPendingSignIns
   attempts <- newAttempts
   proofs <- newProofs
-  basicSignIns <- newBasicSignIns
+  basicSignIns <- newBasicSignIns options.apiStretchBudget
   ceremonies <- newCeremonies
   events <- newHub
   wake <- newWake

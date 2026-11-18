@@ -14,50 +14,83 @@
 -- runs at a time ('BasicSignIns' holds the lock), so that a burst of
 -- requests does not ask for that memory many times over.
 --
+-- A record's stretching was chosen by the browser that registered it, so
+-- it is not trusted: a record that asks for more passes or more memory
+-- than the operator's budget ('budget', @--api-max-stretch@) is never run.
+-- Its account is answered as one without a record: a check against the
+-- server's fake record, with the stretching new records get, and
+-- 'Refused'. That check costs what any other check costs, and its answer
+-- and time are those of a wrong password.
+--
+-- Requests that carry the same login, password and record while a check of
+-- them runs do not start another: they wait for that check's result. Only
+-- the first is counted as a failure, and only one stretching runs. If that
+-- check ends without a result (it threw, or its request was cancelled),
+-- the requests that waited for it start again from the beginning; none is
+-- let in without a check.
+--
+-- = Read again after the check
+--
+-- The check waits for the lock and runs the stretching, and the account
+-- may change meanwhile: a reset, a new password, a second factor turned on,
+-- the account disabled. So after the check every request reads the account
+-- again, and is let in only if the record it checked is still the stored
+-- one and the account is still enabled. Whether a second factor is on is
+-- taken from that second read.
+--
 -- = Remembered sign-ins
 --
 -- A login checked as right is remembered for 'rememberFor' (five
 -- minutes), so that a program that sends many requests pays the stretching
 -- once. What is remembered is an HMAC-SHA-256, under a key made at the
 -- process's start and never stored, of the user's id, the password, and
--- the stored record the check ran against. The password itself is not
--- kept. The next request with the same login computes the same HMAC and
--- compares it in constant time. A change of password or a reset gives
--- the user a new record, so the HMAC no longer matches, and the next
--- request checks the password again. Every request also reads the account
--- afresh: a disabled or removed account is refused at once, remembered or
--- not.
+-- the stored record the check ran against. The HMAC is computed in full
+-- before it is stored, so nothing remembered holds the password. The next
+-- request with the same login computes the same HMAC and compares it in
+-- constant time. A change of password or a reset gives the user a new
+-- record, so the HMAC no longer matches, and the next request checks the
+-- password again. Every request also reads the account afresh: a disabled
+-- or removed account is refused at once, remembered or not. Every request
+-- drops the entries that have expired.
 --
 -- = The limit on failed sign-ins
 --
 -- The limit is the form's own ("Wiki.Server.Limiter", the server's one
--- 'Limiter'), by login and address. A full check is counted as a failure
--- before it runs, and given back when the password was right, as the
--- form's OPAQUE sign-in does. A refused verdict refuses a remembered login
--- too. As with the form, the verdict and the count are two steps: requests
--- sent at the same moment may all pass the verdict before any is counted.
+-- 'Limiter'), by login and address. A refused verdict refuses a remembered
+-- login too. A full check is counted as a failure in the same step as its
+-- verdict ('Wiki.Server.Limiter.reserve'), so requests sent at the same
+-- moment cannot all pass the verdict before any is counted. The failure is
+-- given back when the password was right, as the form's OPAQUE sign-in
+-- does.
 --
 -- = What is refused
 --
 -- A wrong password, a login nobody has, an account from before OPAQUE
 -- (which has a hash, not a record, until it signs in once in the browser),
--- an account with passkeys only, and a disabled account all get the same
--- answer, 'Refused', after the same stretching. An account with a second
--- factor gets 'SecondFactorOn': a password alone is not enough to sign it
--- in, and a request has no place for the code.
+-- an account with passkeys only, an account whose record asks for more
+-- stretching than the budget, and a disabled account all get the same
+-- answer, 'Refused', after a stretching of the same cost. An account with
+-- a second factor gets 'SecondFactorOn': a password alone is not enough to
+-- sign it in, and a request has no place for the code.
 module Wiki.Server.BasicSignIn
   ( BasicSignIns
   , newBasicSignIns
+  , newBasicSignInsWith
   , rememberFor
   , fullChecks
+  , rememberedLogins
+  , sharingChecks
+  , withinBudget
   , Outcome (..)
   , signInBasic
   , credentialsOf
   )
 where
 
+import Control.Concurrent.STM (TMVar, TVar, modifyTVar', newEmptyTMVar, newTVarIO, readTMVar, readTVar, readTVarIO, tryPutTMVar, writeTVar)
 import Crypto.Hash.Algorithms (SHA256)
 import Crypto.MAC.HMAC (HMAC (..), hmac)
+import Crypto.OPAQUE (RegistrationRecord)
 import Crypto.Random (getRandomBytes)
 import Data.ByteArray (constEq, convert)
 import Data.ByteString qualified as BS
@@ -68,6 +101,7 @@ import Data.Time (NominalDiffTime, UTCTime, addUTCTime)
 import Network.Wai.Middleware.HttpAuth (extractBasicAuth)
 import Protolude
 import Wiki.Api.Account (Account (..))
+import Wiki.Api.Opaque (Stretch (..))
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.User (Password (..), User (..))
 import Wiki.Server.Limiter (Limiter, Verdict (Allowed))
@@ -77,28 +111,50 @@ import Wiki.Server.Storage (Storage, reading, serverSetup, storageStretch)
 import Wiki.Server.Storage.Rows (StoredPassword (..), StoredRecord (..), loadPasswordByLogin, totpEnabled)
 
 -- | 'BasicSignIns' is the server's memory of the logins checked as right,
--- with what checking them needs: the key of the HMAC, the lock that lets
--- one check run at a time, and how many full checks have run (the
--- metric @wiki_api_password_checks_total@). It lives as long as the
--- process, and starts empty.
+-- with what checking them needs: the key of the HMAC, the budget of
+-- stretching, the checks under way, the lock that lets one check run at a
+-- time, and how many full checks have run (the metric
+-- @wiki_api_password_checks_total@). It lives as long as the process, and
+-- starts empty.
 data BasicSignIns = BasicSignIns
   { key :: ByteString
   -- ^ The HMAC's key: 32 random bytes made at the process's start.
-  , remembered :: IORef (Map UserId (ByteString, UTCTime))
-  -- ^ By user: the HMAC of the last login checked as right, and until
-  -- when it is remembered.
+  , budget :: Stretch
+  -- ^ The most stretching a check runs ('withinBudget').
+  , memory :: TVar Memory
   , checking :: MVar ()
   , checks :: IORef Int
+  , around :: IO Bool -> IO Bool
+  -- ^ What runs a full check: the check itself, or, in the tests, the
+  -- check with something done before or after it.
   }
 
--- | Nothing remembered, under a new key.
-newBasicSignIns :: IO BasicSignIns
-newBasicSignIns = do
+-- | 'Memory' is what 'BasicSignIns' changes as requests come: the logins
+-- remembered and the checks under way.
+data Memory = Memory
+  { remembered :: Map UserId (ByteString, UTCTime)
+  -- ^ By user: the HMAC of the last login checked as right, and until
+  -- when it is remembered.
+  , underWay :: Map ByteString (TMVar (Maybe Bool), Int)
+  -- ^ By the HMAC of what is being checked: where the check's result will
+  -- be put ('Nothing' when it ended without one), and how many requests
+  -- share it, the one running it included.
+  }
+
+-- | Nothing remembered, under a new key, with this budget of stretching.
+newBasicSignIns :: Stretch -> IO BasicSignIns
+newBasicSignIns b = newBasicSignInsWith b identity
+
+-- | 'newBasicSignIns' with what runs each full check: the tests use it to
+-- change an account while a check runs, or to hold a check until other
+-- requests have joined it.
+newBasicSignInsWith :: Stretch -> (IO Bool -> IO Bool) -> IO BasicSignIns
+newBasicSignInsWith budget around = do
   key <- getRandomBytes 32
-  remembered <- newIORef mempty
+  memory <- newTVarIO Memory {remembered = mempty, underWay = mempty}
   checking <- newMVar ()
   checks <- newIORef 0
-  pure BasicSignIns {key, remembered, checking, checks}
+  pure BasicSignIns {key, budget, memory, checking, checks, around}
 
 -- | How long a login checked as right is remembered: five minutes, the
 -- time a proof of a password lasts ('Wiki.Server.Opaque.proofLifetime').
@@ -109,6 +165,19 @@ rememberFor = 5 * 60
 -- since the process started.
 fullChecks :: BasicSignIns -> IO Int
 fullChecks s = readIORef s.checks
+
+-- | How many logins are remembered, expired ones not yet dropped included.
+rememberedLogins :: BasicSignIns -> IO Int
+rememberedLogins s = Map.size . (.remembered) <$> readTVarIO s.memory
+
+-- | How many requests wait for, or run, the checks under way.
+sharingChecks :: BasicSignIns -> STM Int
+sharingChecks s = sum . map snd . Map.elems . (.underWay) <$> readTVar s.memory
+
+-- | Whether a record's stretching is within a budget: no more passes and
+-- no more memory.
+withinBudget :: Stretch -> Stretch -> Bool
+withinBudget b r = r.opsLimit <= b.opsLimit && r.memLimit <= b.memLimit
 
 -- | 'Outcome' is what signing in with a login and a password gave.
 data Outcome
@@ -130,60 +199,150 @@ credentialsOf header = do
   (login, password) <- extractBasicAuth header
   (,) <$> rightToMaybe (decodeUtf8' login) <*> rightToMaybe (decodeUtf8' password)
 
+-- | An account as one request reads it: whether it may sign in with this
+-- password at all, and if so, against which record.
+data Found
+  = -- | An enabled account whose record decodes and is within the budget,
+    -- with whether its second factor is on.
+    Usable UserId StoredRecord (RegistrationRecord, Stretch) Bool
+  | -- | Anything else: no account, no record, a disabled account, a record
+    -- that does not decode or asks for too much. The credential id the
+    -- fake record is answered under.
+    Unusable ByteString
+
+-- | What a request does once it has read the account.
+data Step
+  = -- | The login is remembered with this password and record.
+    Known
+  | -- | A check of the same login, password and record is under way.
+    Join (TMVar (Maybe Bool))
+  | -- | This request runs the check of what has this HMAC, and puts its
+    -- result here.
+    Lead ByteString (TMVar (Maybe Bool))
+  | -- | This request runs a check nobody shares: of an unusable account.
+    Alone
+
 -- | Sign in with the login and password a request carries, from an
 -- address, at a time: the checks of the module's haddock, in order. The
--- limit's verdict comes first. Then the account and its record are read.
--- A login remembered with this password and record signs in without the
--- stretching. Otherwise the check is counted as a failure, run, and the
--- failure given back if the password was right.
+-- remembered logins that have expired are dropped, and the limit's verdict
+-- comes first. Then the account and its record are read. A login
+-- remembered with this password and record signs in without the
+-- stretching. A request that finds a check of the same login, password and
+-- record under way waits for its result. Otherwise the check is counted as
+-- a failure, run, and the failure given back if the password was right.
+-- After a check, the account is read again.
 signInBasic :: Storage -> Limiter -> BasicSignIns -> UTCTime -> Text -> Text -> Text -> IO Outcome
-signInBasic storage limiter s now address login password =
+signInBasic storage limiter s now address login password = do
+  atomically $ modifyTVar' s.memory $ \m -> m {remembered = Map.filter (\(_, until') -> until' > now) m.remembered}
   Limiter.verdict limiter now login address >>= \case
     Limiter.Refused seconds -> pure (Limited seconds)
     Allowed -> do
-      found <- reading storage $ do
+      found <- readAccount
+      step <- case found of
+        Usable u r _ _ -> do
+          -- Computed in full here, so that nothing stored or shared holds
+          -- the password ('mac' gives a strict ByteString).
+          digest <- evaluate (mac s.key u password r)
+          atomically (stepFor u digest)
+        Unusable _ -> pure Alone
+      case step of
+        Known -> decide found found True
+        Join v ->
+          atomically (readTMVar v) >>= \case
+            -- The check ended without a result: start again.
+            Nothing -> signInBasic storage limiter s now address login password
+            Just right -> readAccount >>= \again -> decide found again right
+        Lead digest v -> lead found digest v
+        Alone ->
+          Limiter.reserve limiter now login address >>= \case
+            Limiter.Refused seconds -> pure (Limited seconds)
+            Allowed -> fullCheck found $> Refused
+  where
+    -- Remembered, joining a check under way, or leading a new one: decided
+    -- in one transaction, so that two requests never both lead.
+    stepFor :: UserId -> ByteString -> STM Step
+    stepFor u digest = do
+      m <- readTVar s.memory
+      case (Map.lookup u m.remembered, Map.lookup digest m.underWay) of
+        (Just (d, _), _) | constEq d digest -> pure Known
+        (_, Just (v, n)) -> do
+          writeTVar s.memory m {underWay = Map.insert digest (v, n + 1) m.underWay}
+          pure (Join v)
+        _ -> do
+          v <- newEmptyTMVar
+          writeTVar s.memory m {underWay = Map.insert digest (v, 1) m.underWay}
+          pure (Lead digest v)
+
+    readAccount :: IO Found
+    readAccount = do
+      loaded <- reading storage $ do
         loaded <- loadPasswordByLogin (T.strip login)
         for loaded $ \(a, stored) -> (a,stored,) <$> totpEnabled a.user.id
-      let usable = case found of
-            Just (a, WithRecord r, factor) | not a.disabled -> Just (a.user.id, r, factor)
-            _ -> Nothing
-          digestOf (u, r, _) = mac s.key u password r
-      known <- case usable of
-        Just found'@(u, _, _) -> do
-          kept <- Map.lookup u <$> readIORef s.remembered
-          pure (any (\(d, until') -> until' > now && constEq d (digestOf found')) kept)
-        Nothing -> pure False
-      right <-
-        if known
-          then pure True
-          else do
-            Limiter.failed limiter now login address
-            -- A long password is refused without the stretching, as the
-            -- form's old sign-in refuses one ('Wiki.Server.Accounts.signIn').
-            ok <-
-              if T.length password > 1024
-                then pure False
-                else do
-                  setup <- serverSetup storage
-                  let record = case found of
-                        Just (_, WithRecord r, _) -> recordFromStored r
-                        _ -> Nothing
-                      credential = case found of
-                        Just (a, _, _) -> encodeUtf8 a.user.id.text
-                        -- As the form's sign-in names a login nobody has.
-                        Nothing -> "unknown:" <> encodeUtf8 (T.toCaseFold (T.strip login))
-                  withMVar s.checking $ \() -> do
-                    atomicModifyIORef' s.checks (\n -> (n + 1, ()))
-                    checkHere setup (storageStretch storage) record credential (Password password)
-            when (ok && isJust usable) $ Limiter.succeededAfter limiter now login address
-            pure ok
-      case usable of
-        Just found'@(u, _, factor) | right -> do
-          Limiter.succeeded limiter login address
-          unless known $ atomicModifyIORef' s.remembered $ \m ->
-            (Map.insert u (digestOf found', addUTCTime rememberFor now) (Map.filter (\(_, until') -> until' > now) m), ())
-          pure (if factor then SecondFactorOn else SignedIn u)
-        _ -> pure Refused
+      pure $ case loaded of
+        Just (a, WithRecord r, factor)
+          | not a.disabled
+          , Just record <- recordFromStored r
+          , withinBudget s.budget (snd record) ->
+              Usable a.user.id r record factor
+        Just (a, _, _) -> Unusable (encodeUtf8 a.user.id.text)
+        -- As the form's sign-in names a login nobody has.
+        Nothing -> Unusable ("unknown:" <> encodeUtf8 (T.toCaseFold (T.strip login)))
+
+    -- Run the check this request leads, put its result for the requests
+    -- that wait for it, and remember the login if it signs in. Whatever
+    -- ends the check, the requests that wait get an answer: 'Nothing' if
+    -- the check ended without one.
+    lead :: Found -> ByteString -> TMVar (Maybe Bool) -> IO Outcome
+    lead found digest v = flip onException (atomically (finish Nothing Nothing)) $ do
+      Limiter.reserve limiter now login address >>= \case
+        Limiter.Refused seconds -> atomically (finish Nothing Nothing) $> Limited seconds
+        Allowed -> do
+          right <- fullCheck found
+          again <- readAccount
+          outcome <- decide found again right
+          let admitted = case found of
+                Usable u _ _ _ | outcome `elem` [SignedIn u, SecondFactorOn] -> Just u
+                _ -> Nothing
+          when (isJust admitted) $ Limiter.succeededAfter limiter now login address
+          atomically (finish (Just right) admitted)
+          pure outcome
+      where
+        finish result admitted = do
+          m <- readTVar s.memory
+          let remembered = case admitted of
+                Just u -> Map.insert u (digest, addUTCTime rememberFor now) m.remembered
+                Nothing -> m.remembered
+              underWay = Map.update (\(v', n) -> if v' == v then Nothing else Just (v', n)) digest m.underWay
+          writeTVar s.memory m {remembered, underWay}
+          void (tryPutTMVar v result)
+
+    -- The full check, with its stretching, one at a time: against the
+    -- record of a usable account, or against the fake record with the
+    -- stretching new records get. Whether the password is right.
+    fullCheck :: Found -> IO Bool
+    fullCheck found
+      -- A long password is refused without the stretching, as the form's
+      -- old sign-in refuses one ('Wiki.Server.Accounts.signIn').
+      | T.length password > 1024 = pure False
+      | otherwise = do
+          setup <- serverSetup storage
+          let (record, credential) = case found of
+                Usable u _ r _ -> (Just r, encodeUtf8 u.text)
+                Unusable c -> (Nothing, c)
+          right <- s.around $ withMVar s.checking $ \() -> do
+            atomicModifyIORef' s.checks (\n -> (n + 1, ()))
+            checkHere setup (storageStretch storage) record credential (Password password)
+          evaluate right
+
+    -- The outcome, from the account read before the check and the account
+    -- read after it: a sign-in only if the password was right, the
+    -- account is still enabled, and its record is still the one checked.
+    decide :: Found -> Found -> Bool -> IO Outcome
+    decide before after right = case (before, after) of
+      (Usable u r _ _, Usable u' r' _ factor) | right && u == u' && r == r' -> do
+        Limiter.succeeded limiter login address
+        pure (if factor then SecondFactorOn else SignedIn u)
+      _ -> pure Refused
 
 -- | The HMAC remembered for a user's login: of the user's id, the
 -- password and the stored record, each with its length before it, so that

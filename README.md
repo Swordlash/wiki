@@ -2657,11 +2657,19 @@ uses (`{"error": "…", "message": "…"}`):
 - 409 for a page of an encrypted space: its text is encrypted in its members'
   browsers, and the server can neither read nor write it.
 
-A right password is checked in full once (the check costs the record's key
-stretching, as a sign-in does in the browser), and remembered by the server
-for five minutes, until a change of password or account. Keys made in your
-own panel instead of a password, attachments, a space's list of pages, a
-page's sections, creating pages and an MCP server are to come.
+A right password is checked in full once, and remembered by the server for
+five minutes, until a change of password or account. Requests that carry the
+same password at once share one check. The check runs the key stretching of
+the password's record on the server (in the browser's sign-in, the browser
+runs it), one check at a time. The record's stretching was chosen by the
+browser that registered the password, so the server runs at most a budget,
+`--api-max-stretch t=PASSES,m=BYTES` on `wiki-server serve`; by default
+`t=4,m=134217728`, what the wiki's own registration asks for (four passes of
+Argon2id over 128 MiB). An account whose record asks for more passes or more
+memory than the budget is refused (401) as a wrong password is, and costs the
+server no more than one. Keys made in your own panel instead of a password,
+attachments, a space's list of pages, a page's sections, creating pages and
+an MCP server are to come.
 
 #### Bringing the demo's pages into the server
 

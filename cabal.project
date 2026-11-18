@@ -60,7 +60,9 @@ package wiki-smoke
 source-repository-package
   type: git
   location: https://github.com/Swordlash/haskell-halogen
-  tag: 70bd31f16910b7b88777d757877685ff711bce1a
+  -- MEASUREMENT (WP5.137), never to be merged: the pin with hspec-halogen's
+  -- report of the waits that retry (branch measure/retries, 841e584).
+  tag: 841e58418b80b5977bf59d1bb2698038082ef731
   subdir:
     core
     jsbits

@@ -1120,13 +1120,25 @@ jobs:
     # wiki-api-test run under Node beside the browser suite's two shards.
     - name: Test
       if: github.job == 'wasm'
+      # MEASUREMENT (WP5.137): bash, for pipefail through the tee.
+      shell: bash
       env:
         HSPEC_HALOGEN_JOBS: '2'
+        HSPEC_HALOGEN_RETRIES: '1'
         WIKI_SUITE_TIMES: '1'
       run: |
         cpu=$(sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo 2>/dev/null | head -n 1) || true
         echo "### The wasm test suites on $(nproc) cores of ${cpu:-an unnamed processor}: wall time, budget, slowest examples" >> "$GITHUB_STEP_SUMMARY"
-        npm run test-wasm
+        echo "cpu: ${cpu:-unnamed}" > blind-waits-ci.log
+        npm run test-wasm 2>&1 | tee -a blind-waits-ci.log
+
+    # MEASUREMENT (WP5.137): the lines of hspec-halogen's report, kept.
+    - name: Keep the measurement
+      if: always() && github.job == 'wasm'
+      uses: actions/upload-artifact@v4
+      with:
+        name: blind-waits-ci
+        path: blind-waits-ci.log
 
     # The demo's smoke test with every page's processor four times slower,
     # in smoke-throttled's run of these steps only (see that job). Each call

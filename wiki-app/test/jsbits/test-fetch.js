@@ -13,7 +13,7 @@
 // to read; an aborted request is rejected with an AbortError, as fetch
 // rejects it, held or not.
 
-const wikiTestServer = { answers: new Map(), asked: [], offline: false, holdAll: false, heldAt: new Set(), heldNext: new Set(), held: null, release: null, fetch: null, WebSocket: null, sockets: [], said: [], presence: new Map(), pending: new Set() };
+const wikiTestServer = { answers: new Map(), asked: [], offline: false, holdAll: false, heldAt: new Set(), heldNext: new Set(), held: null, release: null, fetch: null, WebSocket: null, sockets: [], said: [], presence: new Map(), pending: new Set(), holding: 0 };
 
 // The server's live channel (Wiki.App.Live), in the place of the page's
 // WebSocket: a socket opens as soon as it is made, keeps what the page
@@ -79,7 +79,7 @@ function wiki_test_server_start() {
   if (wikiTestServer.WebSocket === null) wikiTestServer.WebSocket = globalThis.WebSocket;
   for (const socket of wikiTestServer.sockets) socket.hangUp(1001);
   globalThis.wikiTestHandlers = [];
-  Object.assign(wikiTestServer, { answers: new Map(), asked: [], offline: false, holdAll: false, heldAt: new Set(), heldNext: new Set(), held: null, release: null, sockets: [], said: [], presence: new Map(), pending: new Set() });
+  Object.assign(wikiTestServer, { answers: new Map(), asked: [], offline: false, holdAll: false, heldAt: new Set(), heldNext: new Set(), held: null, release: null, sockets: [], said: [], presence: new Map(), pending: new Set(), holding: 0 });
   globalThis.WebSocket = WikiTestSocket;
   globalThis.fetch = wikiTestServerCounted(async (url, init = {}) => {
     const method = init.method ?? "GET";
@@ -113,9 +113,9 @@ function wiki_test_server_start() {
     if (wikiTestServer.held !== null && wikiTestServer.heldNext.has(key)) {
       wikiTestServer.heldNext.delete(key);
       early = await wikiTestAnswer(request);
-      await Promise.race([wikiTestServer.held, aborted]);
+      await wikiTestHolding(Promise.race([wikiTestServer.held, aborted]));
     } else if (wikiTestServer.held !== null && (wikiTestServer.holdAll || wikiTestServer.heldAt.has(key))) {
-      await Promise.race([wikiTestServer.held, aborted]);
+      await wikiTestHolding(Promise.race([wikiTestServer.held, aborted]));
     }
     if (signal?.aborted) throw abortError();
     if (wikiTestServer.offline) throw new TypeError("Failed to fetch");
@@ -152,6 +152,22 @@ async function wikiTestAnswer(request) {
     if (answer) break;
   }
   return answer ?? wikiTestServer.answers.get(`${request.method} ${request.url}`) ?? { status: 404, body: '{"error":"NotFound"}' };
+}
+
+// MEASUREMENT (WP5.137): a request held until a release, counted while it
+// is ('holding').
+async function wikiTestHolding(until) {
+  wikiTestServer.holding += 1;
+  try {
+    await until;
+  } finally {
+    wikiTestServer.holding -= 1;
+  }
+}
+
+// How many requests the server holds now, until a release.
+function wiki_test_server_holding() {
+  return wikiTestServer.holding;
 }
 
 // How many requests the server has not answered yet.

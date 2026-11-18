@@ -130,6 +130,7 @@ $( browserJS
      , ("js_network_event", "wiki_test_network_event", Safe, [t|Bool -> IO ()|])
      , ("js_server_release", "wiki_test_server_release", Safe, [t|IO ()|])
      , ("js_server_pending", "wiki_test_server_pending", Safe, [t|IO Int|])
+     , ("js_server_holding", "wiki_test_server_holding", Safe, [t|IO Int|])
      , ("js_server_open_sockets", "wiki_test_server_open_sockets", Safe, [t|IO Int|])
      , ("js_server_asked", "wiki_test_server_asked", Safe, [t|IO JSText|])
      , ("js_markup", "wiki_test_markup", Safe, [t|IO JSText|])
@@ -173,7 +174,7 @@ holdNext method url = unsafeIOToPageM (js_server_hold_next (toJSText method) (to
 -- | Answer the requests held, and hold every request of this method to
 -- this address from now on, until the next 'release'.
 releaseHolding :: Text -> Text -> PageM s ()
-releaseHolding method url = unsafeIOToPageM (js_server_release_holding (toJSText method) (toJSText url))
+releaseHolding method url = perform (js_server_release_holding (toJSText method) (toJSText url))
 
 -- | Wait until the page has a socket open to the server: what the server
 -- says before that reaches nothing, as a real server's message to a tab
@@ -202,7 +203,7 @@ answersTaken within = do
 
 -- | Answer the requests held.
 release :: PageM s ()
-release = unsafeIOToPageM js_server_release
+release = perform js_server_release
 
 -- | Close the live channel's sockets as a network that drops them does:
 -- the program opens one again, and is told it missed what was sent
@@ -215,6 +216,9 @@ hangUp = unsafeIOToPageM js_server_hang_up
 serverStarts :: PageM s ()
 serverStarts = do
   unsafeIOToPageM js_server_start
+  -- MEASUREMENT (WP5.137): the requests held on purpose count as done for
+  -- waitQuiet and the reads that look once at quiet.
+  countHeld (unsafeIOToPageM js_server_holding)
   serveOpaque
 
 -- | The answers to OPAQUE's first messages and registrations

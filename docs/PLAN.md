@@ -2146,7 +2146,13 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   whose view is gone hides one other fiber's wait (the loop over
   views closed while their fetch is held; the grant released as the
   reader leaves). Next, by the measure's count of retried sites:
-  `SlideEditor.hs`, `Http.hs`, `Problems.hs`, `Complete.hs`; then the library's
+  `SlideEditor.hs`, `Http.hs`, `Problems.hs`, `Complete.hs`. The
+  suite got slower with these moves (about 470 to 510 s on a normal
+  hosted runner; a quiet wait sits out the editor's two-second
+  draft), and on a slow runner it passed the runner's limit of 600 s
+  for a whole run with no example at fault: the limit is 1800 s now
+  (#335, `HSPEC_HALOGEN_TIMEOUT` in the wrapper), and the two pages
+  are uneven (the second gets about 85 s more work). Then the library's
   `quiet-under-test-clock` (two commits, local only, in the stopped
   builder's library worktree) so that it does not.** What is left,
   each a
@@ -2185,37 +2191,44 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   guess that the browser was slow. To look at one day, for a reader:
   the page does not keep its scroll when an island above grows.
 - **WP5.138 An API for a page's Markdown (the owner, 2026-11-18:
-  "robię to z myślą o lokalnych asystentach i MCP").** Not started.
-  **The first cut, as he decided the same day:** the user's login and
-  password in each request (Basic authentication), sent in plain text
-  over the wiki's HTTPS; a programmer's API, whose user accepts that
-  the password leaves the browser's OPAQUE exchange; keys come later.
-  With it a program reads a whole page's Markdown (`GET /api/<slug>`)
-  and writes it back whole (`PUT` to the same address); one more
-  endpoint gives what the assistants are told about the wiki's
-  Markdown today. Nothing else in the first cut. To settle while
-  building: the server keeps no hash of a password, only the OPAQUE
-  record, so it checks a plain password by running the client's side
-  of OPAQUE against its own record (opaque-hs has both sides, and no
-  new storage is needed); that costs the password's stretching at
-  each request, so a checked login is remembered in memory for some
-  minutes, or the first request gives a token; a user with passkeys
-  only has no password and cannot use the first cut; the limit on
-  failed sign-ins applies to it as to the form. A request acts as
-  that user, with all the user may do (the owner: "niech hasło ma
-  pełne uprawnienia"), the spaces' permissions as they are. The
-  session's reading of the rest, not contradicted: the addresses get a prefix of
-  their own beside the application's API, with the space's path and
-  the page's path as the reading address has them; a `PUT` makes a new
-  version in the page's history like any save, and takes an optional
-  `If-Match` with the version read, refused when the page has moved
-  on; an encrypted space is refused with a clear error. **Later cuts,
-  his list:** a key made in the user's panel (shown once, revoked
-  only, never expiring at first; `Authorization: Bearer` or
-  `X-API-Key`, the server keeping its hash), attachments, a listing of
-  a space's contents, an address for one section of a page, and an
-  MCP server over the API as a package of its own. Still to ask:
-  whether it goes before the plugins (#186).
+  "robię to z myślą o lokalnych asystentach i MCP").** **The first
+  cut is merged (#334), server only.** `GET` and `PUT` of a page's
+  whole Markdown at `/api/markdown/` followed by the page's reading
+  address (`/api/markdown/s/<space…>/p/<page…>/`; a space's home page
+  at `/api/markdown/s/<space…>/`), read by the application's own
+  router; `GET /api/markdown/reference` gives what the assistants are
+  told about the wiki's Markdown, from the prompt's own binding. A
+  `PUT` goes through the editor's save (a version in the history, the
+  push, the notifications) and takes an optional `If-Match` with the
+  version from the `ETag` (412 when the page has moved on); a page
+  that does not exist is 404; an encrypted space is refused (409).
+  The prefix is outside `/api/v1`, whose same-origin check would
+  refuse a plain `curl`; the endpoints never read the cookie.
+  **Signing in is the user's login and password in each request
+  (Basic), the owner's decision for the first cut**, with all the
+  user may do. The server keeps only the OPAQUE record, so it runs
+  both sides of an OPAQUE sign-in in process (`checkHere`); a checked
+  login is remembered five minutes as an HMAC under a key made at the
+  process's start, and the account is read again after every check;
+  requests with one login, password and record share one check and
+  one reserved failure in the form's own limiter; every login goes
+  one path, the fake record standing in where there is none, so a
+  login that cannot sign in is not told from a wrong password; a
+  record whose stretching is over the operator's budget
+  (`wiki-server serve --api-max-stretch`, by default what registration
+  asks for) is answered as one with no record. Choices that stand
+  until the owner says otherwise: an account with a second factor is
+  refused (403), an account from before OPAQUE gets 401 until one
+  sign-in in the browser, a user with passkeys only cannot use this
+  cut. Seen and left: the request log's principal is the cookie's
+  user, never the Basic user; a `PUT`'s body has no size limit, as
+  the editor's save has none; the wiki's front page has no address.
+  **Later cuts, his list:** a key made in the user's panel (shown
+  once, revoked only, never expiring at first; `Authorization:
+  Bearer` or `X-API-Key`, the server keeping its hash), creating
+  pages, attachments, a listing of a space's contents, an address for
+  one section of a page, and an MCP server over the API as a package
+  of its own.
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
   przed pluginami").** One builder, in this order, each its own pull

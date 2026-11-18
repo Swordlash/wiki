@@ -93,6 +93,7 @@ library
         Wiki.Server.App
         Wiki.Server.Auth
         Wiki.Server.Backups
+        Wiki.Server.BasicSignIn
         Wiki.Server.Compress
         Wiki.Server.Console
         Wiki.Server.CopyDatabase
@@ -108,6 +109,7 @@ library
         Wiki.Server.Limiter
         Wiki.Server.Log
         Wiki.Server.Mail
+        Wiki.Server.MarkdownApi
         Wiki.Server.Metrics
         Wiki.Server.Notifier
         Wiki.Server.Oidc
@@ -349,6 +351,7 @@ test-suite wiki-server-test
         Test.Server.Guide
         Test.Server.Import
         Test.Server.Mail
+        Test.Server.MarkdownApi
         Test.Server.Metrics
         Test.Server.Notifications
         Test.Server.Observability

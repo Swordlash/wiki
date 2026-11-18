@@ -46,6 +46,7 @@ import Wiki.Core.Url (Url (..))
 import Wiki.Server.Api (Env (..))
 import Wiki.Server.App (Finding (..), Listener (..), listenerApp)
 import Wiki.Server.Backups (newBackupService, runScheduler)
+import Wiki.Server.BasicSignIn (newBasicSignIns)
 import Wiki.Server.Events (closeAll, newHub)
 import Wiki.Server.Events qualified as Events
 import Wiki.Server.Export (currentEngine, logEngine, newEngine, newExports)
@@ -138,6 +139,7 @@ withServerUsing given raw sendMail action = do
   pending <- newPendingSignIns
   attempts <- newAttempts
   proofs <- newProofs
+  basicSignIns <- newBasicSignIns
   ceremonies <- newCeremonies
   events <- newHub
   wake <- newWake
@@ -185,6 +187,7 @@ withServerUsing given raw sendMail action = do
               , pending
               , attempts
               , proofs
+              , basicSignIns
               , logger
               , errors
               , metrics

@@ -25,6 +25,7 @@ import Wiki.Api.Info (Health (..))
 import Wiki.Core.Id (BlobId (..))
 import Wiki.Core.Space (Icon (..))
 import Wiki.Server.Api (Env (..))
+import Wiki.Server.BasicSignIn (fullChecks)
 import Wiki.Server.Events (openConnections)
 import Wiki.Server.Log (errorCount)
 import Wiki.Server.Metrics (Kind (..), Sample (..), contentType, renderMetrics, snapshot)
@@ -89,6 +90,7 @@ metricSamples env = do
   iconBytes <- sum <$> traverse (maybe (pure 0) sizeOf . blobFile (attachmentsDir dataDir)) iconsAlone
   kept <- backupFiles (backupsDir dataDir)
   errors <- errorCount env.errors
+  checks <- fullChecks env.basicSignIns
   pure $
     [ Sample {name = "wiki_build_info", help = "The server program and its version.", kind = Gauge, labels = [("version", env.version)], value = 1}
     , gauge "wiki_start_time_seconds" "When the server started, in seconds since the epoch." (posix env.startedAt)
@@ -105,6 +107,7 @@ metricSamples env = do
          | Just t <- [lastMay kept >>= backupTime]
          ]
       <> [Sample {name = "wiki_errors_total", help = "Errors the server logged since it started.", kind = Counter, labels = [], value = fromIntegral errors}]
+      <> [Sample {name = "wiki_api_password_checks_total", help = "Passwords the API for a page's Markdown checked in full, each with its stretching, since the server started.", kind = Counter, labels = [], value = fromIntegral checks}]
   where
     posix t = realToFrac (utcTimeToPOSIXSeconds t)
     imageOf :: Icon -> Maybe BlobId

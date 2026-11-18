@@ -37,6 +37,7 @@ import Wiki.Core.Slug (mkSlug)
 import Wiki.Core.Space qualified as S
 import Wiki.Server.Api (Env (..))
 import Wiki.Server.Backups (newBackupService)
+import Wiki.Server.BasicSignIn (newBasicSignIns)
 import Wiki.Server.Events (newHub)
 import Wiki.Server.Export (newEngine, newExports, probeTimeout)
 import Wiki.Server.Feed (newFeedCache)
@@ -134,8 +135,9 @@ withApiEnv storage test = Ki.scoped $ \resetTasks -> do
   pending <- newPendingSignIns
   attempts <- newAttempts
   proofs <- newProofs
+  basicSignIns <- newBasicSignIns
   errors <- newErrorRing
   metrics <- newMetrics
   feeds <- newFeedCache
   ceremonies <- newCeremonies
-  test Env {storage, version = "wiki-server-test", startedAt, dataDir = "", maxImportSize = 64 * 1024 * 1024, limiter, registrations, sendMail = \_ _ _ -> pure (Left "no mail here"), providerCache, flows, events, exports, texEngine, backups, resets, resetTasks, pending, attempts, proofs, logger = silentLogger (const pass), errors, metrics, feeds, assistantHosts = [], ceremonies, whatsNew = Nothing}
+  test Env {storage, version = "wiki-server-test", startedAt, dataDir = "", maxImportSize = 64 * 1024 * 1024, limiter, registrations, sendMail = \_ _ _ -> pure (Left "no mail here"), providerCache, flows, events, exports, texEngine, backups, resets, resetTasks, pending, attempts, proofs, basicSignIns, logger = silentLogger (const pass), errors, metrics, feeds, assistantHosts = [], ceremonies, whatsNew = Nothing}

@@ -72,6 +72,7 @@ module Wiki.Server.Opaque
   , decodeStored
   , registerHere
   , registrationChallenge
+  , checkHere
 
     -- * Sign-ins under way
   , Attempts
@@ -93,7 +94,7 @@ module Wiki.Server.Opaque
   )
 where
 
-import Crypto.OPAQUE (Config (..), CredentialId (..), Encoding (..), KE1, Ksf (..), RegistrationRecord, ServerLoginState, ServerSetup, defaultIdentities, finalizeRegistration, generateServerSetup, registrationRequest, registrationResponse, serverRespond)
+import Crypto.OPAQUE (Config (..), CredentialId (..), Encoding (..), KE1, Ksf (..), RegistrationRecord, Scrub (..), ServerLoginState, ServerSetup, clientFinish, clientStart, defaultIdentities, finalizeRegistration, generateServerSetup, registrationRequest, registrationResponse, serverFinish, serverRespond)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
@@ -219,6 +220,43 @@ registrationChallenge setup stretch u request = do
   req <- first (const "The request is not an OPAQUE registration request.") (decode bytes)
   response <- first (const "The request cannot be answered.") (registrationResponse setup (CredentialId (encodeUtf8 u.text)) req)
   pure RegistrationChallenge {credential = u.text, response = messageOf (encode response), stretch}
+
+-- | 'checkHere' checks a password with both sides of an OPAQUE sign-in in
+-- this process: what the API for a page's Markdown does with the password
+-- each request carries ("Wiki.Server.BasicSignIn"). The server keeps no
+-- hash of a password, only the record, so the only way to check a plain
+-- password is to run the client's side against the server's own answer.
+--
+-- The record is the user's, with its stretching, or 'Nothing' for a login
+-- without one (nobody's, an account from before OPAQUE, an account with
+-- passkeys only). Without a record the server answers with the setup's
+-- fake record, under the credential id given, as the browser's sign-in
+-- does: the check then fails at the client's last step, after the same
+-- stretching, so its time does not tell a wrong password from a login
+-- nobody has. The stretching is the record's, or the current one for a
+-- login without a record. The result is whether the password is right.
+-- Every state and key the exchange made is zeroed before the answer.
+checkHere :: ServerSetup -> Stretch -> Maybe (RegistrationRecord, Stretch) -> ByteString -> Password -> IO Bool
+checkHere setup current found credential (Password password) =
+  clientStart (encodeUtf8 password) >>= \case
+    Left _ -> pure False
+    Right (client, ke1) ->
+      serverRespond config setup (fst <$> found) (CredentialId credential) ke1 defaultIdentities >>= \case
+        Left _ -> scrub client $> False
+        Right (server, ke2) -> do
+          right <- case clientFinish config client ke2 defaultIdentities of
+            Left _ -> pure False
+            Right (ke3, clientKey, exportKey) -> do
+              scrub clientKey
+              scrub exportKey
+              case serverFinish server ke3 of
+                Left _ -> pure False
+                Right serverKey -> scrub serverKey $> True
+          scrub client
+          scrub server
+          pure (right && isJust found)
+  where
+    config = opaqueConfig (maybe current snd found)
 
 --------------------------------------------------------------------------------
 -- Sign-ins under way

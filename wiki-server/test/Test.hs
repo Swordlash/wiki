@@ -23,6 +23,7 @@ import Test.Server.Http qualified as Http
 import Test.Server.Hygiene qualified as Hygiene
 import Test.Server.Import qualified as Import
 import Test.Server.Mail qualified as Mail
+import Test.Server.MarkdownApi qualified as MarkdownApi
 import Test.Server.Metrics qualified as Metrics
 import Test.Server.Notifications qualified as Notifications
 import Test.Server.Observability qualified as Observability
@@ -117,6 +118,7 @@ main = secureMain $ do
           Access.spec b
           Comments.spec b
           Mail.spec b
+          MarkdownApi.spec b
           Settings.spec b
           Backups.spec b
           Oidc.spec b

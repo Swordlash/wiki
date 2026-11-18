@@ -136,6 +136,7 @@ import Wiki.Core.Version (VersionsQuery (VersionsQuery), versionsPageSize)
 import Wiki.Server.Accounts (endSession)
 import Wiki.Server.Accounts qualified as Accounts
 import Wiki.Server.Backups (BackupService, currentBackups, requestBackup, settingsChanged)
+import Wiki.Server.BasicSignIn (BasicSignIns)
 import Wiki.Server.Events (Hub, openConnections)
 import Wiki.Server.Export (Engine, Exported (..), Exports, availableFormats, checkEngine, currentEngine, engineReport, exportPage, exportSpace, logEngine)
 import Wiki.Server.Feed (FeedCache)
@@ -211,6 +212,9 @@ data Env = Env
   -- ("Wiki.Server.Opaque").
   , proofs :: Proofs
   -- ^ The sessions that have just proved their password.
+  , basicSignIns :: BasicSignIns
+  -- ^ The logins the API for a page's Markdown has checked as right,
+  -- remembered for a few minutes ("Wiki.Server.BasicSignIn").
   , logger :: Logger
   -- ^ Where events after an answer are logged, such as a reset mail that
   -- could not be sent.

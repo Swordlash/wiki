@@ -66,7 +66,7 @@ startWith
   -> PageM s (Mounted s Shell.Query Void m, IORef MemState)
 startWith m who at = do
   (wiki, router) <- prepare who at
-  ui <- mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
+  ui <- settled =<< mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
   pure (ui, wiki)
 
 -- | The shell mounted again over a wiki a test started already
@@ -81,7 +81,7 @@ startOn
 startOn m wiki at = do
   router <- unsafeIOToPageM testRouter
   unsafeIOToPageM (Router.redirect router at)
-  mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
+  settled =<< mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
 
 -- | 'start', over the demo changed first: for a test that needs content
 -- of its own (a space with macros, a page with formulas).
@@ -106,7 +106,7 @@ startChangedWith
 startChangedWith m change who at = do
   (wiki, router) <- prepare who at
   unsafeIOToPageM (modifyIORef' wiki change)
-  ui <- mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
+  ui <- settled =<< mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
   pure (ui, wiki)
 
 -- | 'startChanged', keeping what the browser's local storage holds from
@@ -123,7 +123,7 @@ startChangedAgain m change who at = do
   wiki <- unsafeIOToPageM (newMemWiki (change ((demoState demoNow) {current = UserId <$> who})))
   router <- unsafeIOToPageM testRouter
   unsafeIOToPageM (Router.redirect router at)
-  mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
+  settled =<< mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
 
 -- | 'start', keeping what the browser's local storage holds from before:
 -- the shell mounted again, as after a reload, for a test of what the
@@ -138,7 +138,7 @@ startAgain m who at = do
   wiki <- unsafeIOToPageM (newMemWiki ((demoState demoNow) {current = UserId <$> who}))
   router <- unsafeIOToPageM testRouter
   unsafeIOToPageM (Router.redirect router at)
-  mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
+  settled =<< mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
 
 -- | 'start', in a container that holds the shell's HTML for the route
 -- already ('htmlContainer'), as a prerendered page does: the shell adopts
@@ -152,7 +152,7 @@ adopt
   -> PageM s (Mounted s Shell.Query Void m)
 adopt m page who at = do
   (wiki, router) <- prepare who at
-  hydrate m page (H.hoist (NT (runMemWiki wiki)) component) (input router)
+  settled =<< hydrate m page (H.hoist (NT (runMemWiki wiki)) component) (input router)
 
 -- | A fresh demo, as someone, and a router at the route, with nothing in
 -- the browser's local storage.
@@ -203,7 +203,7 @@ startOpened m opened who at = do
   router <- unsafeIOToPageM testRouter
   unsafeIOToPageM forgetStorage
   unsafeIOToPageM (Router.redirect router at)
-  mount m (H.hoist (NT (runMemWikiWith opened.store opened.wiki)) component) (input router)
+  settled =<< mount m (H.hoist (NT (runMemWikiWith opened.store opened.wiki)) component) (input router)
 
 -- | A router that keeps the route in the test page's fragment. Natively
 -- there is no browser to make one in, and the suite only reports that it
@@ -236,3 +236,8 @@ clickButton ui selector label = do
 
 slugs :: [Text] -> [Slug]
 slugs = map (either (panic . show) identity . mkSlug)
+
+-- | MEASUREMENT (WP5.137), never to be merged: a mount settled, as an
+-- action is, so that the first read after it finds the program idle.
+settled :: Mounted s q o m -> PageM s (Mounted s q o m)
+settled ui = ui <$ settle

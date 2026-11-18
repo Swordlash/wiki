@@ -385,7 +385,7 @@ startServerThrough
   -> PageM s (Mounted s Shell.Query Void m)
 startServerThrough m run at = do
   router <- prepare at
-  mount m (H.hoist (NT run) component) (serverInput router)
+  settled =<< mount m (H.hoist (NT run) component) (serverInput router)
 
 -- | 'startServer', with the demo's wiki in this browser looked for in this
 -- database rather than the demo's own.
@@ -398,7 +398,7 @@ startServerWith
 startServerWith m db at = do
   env <- unsafeIOToPageM (newHttpEnv browserTransport)
   router <- prepare at
-  mount m (H.hoist (NT (runHttpWiki env)) component) (serverInputWith db router)
+  settled =<< mount m (H.hoist (NT (runHttpWiki env)) component) (serverInputWith db router)
 
 -- | 'startServer', adopting a page that holds the shell's HTML already.
 adoptServer
@@ -421,7 +421,7 @@ adoptServerOver
   -> PageM s (Mounted s Shell.Query Void m)
 adoptServerOver m env page at = do
   router <- prepare at
-  hydrate m page (H.hoist (NT (runHttpWiki env)) component) (serverInput router)
+  settled =<< hydrate m page (H.hoist (NT (runHttpWiki env)) component) (serverInput router)
 
 prepare :: Route -> PageM s (Router Route)
 prepare at = do
@@ -1613,3 +1613,8 @@ pressNow ui selector = do
 -- failed before it). The deadline is twice the longest.
 guideLoaded :: Int
 guideLoaded = 33000
+
+-- | MEASUREMENT (WP5.137), never to be merged: a mount settled, as an
+-- action is, so that the first read after it finds the program idle.
+settled :: Mounted s q o m -> PageM s (Mounted s q o m)
+settled ui = ui <$ settle

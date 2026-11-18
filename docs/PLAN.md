@@ -2132,8 +2132,13 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   example was wrong (it expected a page the words typed do not find,
   and passed by catching the list before the box's pause ended), which
   is why it failed under load. Not moved: `EditorSearch.hs` (47
-  `eventually`s, most on CodeMirror's own state). The assistant's
-  group is next, then by the measure's count of retried sites:
+  `eventually`s, most on CodeMirror's own state). **The assistant's
+  group is moved (#332)**, to `readsOnce Quiet`: 136 `eventually`s
+  down to one (the "seconds waited" label, written after an `H.delay`
+  by the panel's ticker); the scripted provider counts what the test
+  holds (`script.held`), and three examples that caught a state on its
+  way by timed pauses in the script now hold the provider, read once
+  and let it go. Next, by the measure's count of retried sites:
   `SlideEditor.hs`, `Http.hs`, `Encrypted.hs`, `Problems.hs`,
   `Complete.hs`; then the library's
   `quiet-under-test-clock` (two commits, local only, in the stopped
@@ -2190,9 +2195,10 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   each request, so a checked login is remembered in memory for some
   minutes, or the first request gives a token; a user with passkeys
   only has no password and cannot use the first cut; the limit on
-  failed sign-ins applies to it as to the form. The session's reading
-  of the rest, not contradicted: a request acts as that user, with
-  the spaces' permissions as they are; the addresses get a prefix of
+  failed sign-ins applies to it as to the form. A request acts as
+  that user, with all the user may do (the owner: "niech hasło ma
+  pełne uprawnienia"), the spaces' permissions as they are. The
+  session's reading of the rest, not contradicted: the addresses get a prefix of
   their own beside the application's API, with the space's path and
   the page's path as the reading address has them; a `PUT` makes a new
   version in the page's history like any save, and takes an optional

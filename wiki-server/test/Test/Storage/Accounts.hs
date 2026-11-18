@@ -20,7 +20,7 @@ import Wiki.Core.Permission (GlobalGrant (..), GlobalPermission (..), Grants (..
 import Wiki.Core.User (Login (..), Password (..), Standing (..), User (..))
 import Wiki.Server.Accounts hiding (signIn)
 import Wiki.Server.Console (Users (..), UsersCommand (..), runUsers)
-import Wiki.Server.Limiter (Limits (..), Verdict (..), failed, newLimiter, succeeded, verdict)
+import Wiki.Server.Limiter (Limits (..), Verdict (..), failed, newLimiter, reserve, succeeded, verdict)
 import Wiki.Server.Opaque (opaqueConfig, recordFromStored, respondTo)
 import Wiki.Server.Password
 import Wiki.Server.Storage (Storage, Who (..), defaultConfig, reading, runStoredWiki, serverSetup, storageStretch, withStorage)
@@ -131,6 +131,14 @@ limits = describe "failed sign-ins" $ do
     for_ ["a", "b", "c", "d", "e"] $ \login -> failed l now login "10.0.0.1"
     verdict l now "f" "10.0.0.1" >>= (`shouldSatisfy` (/= Allowed))
     verdict l now "f" "10.0.0.2" `shouldReturn` Allowed
+
+  it "are counted in the same step as the verdict, by reserve, up to the limit" $ do
+    l <- newLimiter small
+    now <- getCurrentTime
+    replicateM 4 (reserve l now "ada" "10.0.0.1") `shouldReturn` [Allowed, Allowed, Allowed, Refused 60]
+    -- A refused attempt is not counted: the address has three failures.
+    replicateM 2 (reserve l now "bea" "10.0.0.1") `shouldReturn` [Allowed, Allowed]
+    reserve l now "cid" "10.0.0.1" >>= (`shouldSatisfy` (/= Allowed))
 
   it "are forgotten for the login once it has signed in from there" $ do
     l <- newLimiter small

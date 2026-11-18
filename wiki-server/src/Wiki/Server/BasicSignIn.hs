@@ -18,8 +18,8 @@
 -- it is not trusted: a record that asks for more passes or more memory
 -- than the operator's budget ('budget', @--api-max-stretch@) is never run.
 -- Its account is answered as one without a record: a check against the
--- server's fake record, with the stretching new records get, and
--- 'Refused'. That check costs what any other check costs, and its answer
+-- server's fake record, with the stretching new records get (or the
+-- budget, if that is less), and 'Refused'. That check costs what any other check costs, and its answer
 -- and time are those of a wrong password.
 --
 -- Requests that carry the same login, password and record while a check of
@@ -216,11 +216,8 @@ data Step
     Known
   | -- | A check of the same login, password and record is under way.
     Join (TMVar (Maybe Bool))
-  | -- | This request runs the check of what has this HMAC, and puts its
-    -- result here.
-    Lead ByteString (TMVar (Maybe Bool))
-  | -- | This request runs a check nobody shares: of an unusable account.
-    Alone
+  | -- | This request runs the check, and puts its result here.
+    Lead (TMVar (Maybe Bool))
 
 -- | Sign in with the login and password a request carries, from an
 -- address, at a time: the checks of the module's haddock, in order. The
@@ -238,22 +235,26 @@ signInBasic storage limiter s now address login password = do
     Limiter.Refused seconds -> pure (Limited seconds)
     Allowed -> do
       found <- readAccount
-      step <- case found of
+      case found of
         Usable u r _ _ -> do
           -- Computed in full here, so that nothing stored or shared holds
           -- the password ('mac' gives a strict ByteString).
           digest <- evaluate (mac s.key u password r)
-          atomically (stepFor u digest)
-        Unusable _ -> pure Alone
-      case step of
-        Known -> decide found found True
-        Join v ->
-          atomically (readTMVar v) >>= \case
-            -- The check ended without a result: start again.
-            Nothing -> signInBasic storage limiter s now address login password
-            Just right -> readAccount >>= \again -> decide found again right
-        Lead digest v -> lead found digest v
-        Alone ->
+          -- A check registered as under way is always given a result, even
+          -- if this thread is killed right after registering it: the step
+          -- and the handler that ends the check are taken with exceptions
+          -- masked.
+          mask $ \restore ->
+            atomically (stepFor u digest) >>= \case
+              Lead v -> lead restore found digest v
+              Known -> restore (decide found found True)
+              Join v ->
+                restore $
+                  atomically (readTMVar v) >>= \case
+                    -- The check ended without a result: start again.
+                    Nothing -> signInBasic storage limiter s now address login password
+                    Just right -> readAccount >>= \again -> decide found again right
+        Unusable _ ->
           Limiter.reserve limiter now login address >>= \case
             Limiter.Refused seconds -> pure (Limited seconds)
             Allowed -> fullCheck found $> Refused
@@ -271,7 +272,7 @@ signInBasic storage limiter s now address login password = do
         _ -> do
           v <- newEmptyTMVar
           writeTVar s.memory m {underWay = Map.insert digest (v, 1) m.underWay}
-          pure (Lead digest v)
+          pure (Lead v)
 
     readAccount :: IO Found
     readAccount = do
@@ -292,8 +293,8 @@ signInBasic storage limiter s now address login password = do
     -- that wait for it, and remember the login if it signs in. Whatever
     -- ends the check, the requests that wait get an answer: 'Nothing' if
     -- the check ended without one.
-    lead :: Found -> ByteString -> TMVar (Maybe Bool) -> IO Outcome
-    lead found digest v = flip onException (atomically (finish Nothing Nothing)) $ do
+    lead :: (forall a. IO a -> IO a) -> Found -> ByteString -> TMVar (Maybe Bool) -> IO Outcome
+    lead restore found digest v = flip onException (atomically (finish Nothing Nothing)) . restore $ do
       Limiter.reserve limiter now login address >>= \case
         Limiter.Refused seconds -> atomically (finish Nothing Nothing) $> Limited seconds
         Allowed -> do
@@ -318,7 +319,8 @@ signInBasic storage limiter s now address login password = do
 
     -- The full check, with its stretching, one at a time: against the
     -- record of a usable account, or against the fake record with the
-    -- stretching new records get. Whether the password is right.
+    -- stretching new records get, and never more than the budget. Whether
+    -- the password is right.
     fullCheck :: Found -> IO Bool
     fullCheck found
       -- A long password is refused without the stretching, as the form's
@@ -331,8 +333,10 @@ signInBasic storage limiter s now address login password = do
                 Unusable c -> (Nothing, c)
           right <- s.around $ withMVar s.checking $ \() -> do
             atomicModifyIORef' s.checks (\n -> (n + 1, ()))
-            checkHere setup (storageStretch storage) record credential (Password password)
+            checkHere setup (fakeStretch (storageStretch storage)) record credential (Password password)
           evaluate right
+
+    fakeStretch current = Stretch {opsLimit = min current.opsLimit s.budget.opsLimit, memLimit = min current.memLimit s.budget.memLimit}
 
     -- The outcome, from the account read before the check and the account
     -- read after it: a sign-in only if the password was right, the

@@ -128,25 +128,44 @@ databaseLockKey = 0x77696b692d736572
 -- holds the lock until it is closed. The data directory's lock does not
 -- do this on PostgreSQL: two data directories may name one database. The
 -- result is the action that releases the lock, or 'Nothing' when a
--- restore holds it ('withDatabaseAlone').
+-- restore holds it ('withDatabaseAlone'). The release unlocks before it
+-- closes the connection ('unlock').
 holdDatabaseShared :: PgDatabase -> IO (Maybe (IO ()))
 holdDatabaseShared db = do
   c <- openPostgres db
   took <- tryLock c "pg_try_advisory_lock_shared" `onException` close c
-  if took then pure (Just (close c)) else close c $> Nothing
+  if took then pure (Just (unlock c "pg_advisory_unlock_shared" `finally` close c)) else close c $> Nothing
 
 -- | Run an action with the database's lock taken alone, as a restore
 -- does: no storage has the database open while the action runs, and none
 -- can open it. The result is 'Nothing', and the action is not run, when a
--- storage has the database open.
+-- storage has the database open. The lock is released ('unlock') before
+-- this returns, so a server started right after a restore can open the
+-- database.
 withDatabaseAlone :: PgDatabase -> IO a -> IO (Maybe a)
 withDatabaseAlone db act = bracket (openPostgres db) close $ \c ->
-  ifM (tryLock c "pg_try_advisory_lock") (Just <$> act) (pure Nothing)
+  ifM (tryLock c "pg_try_advisory_lock") (Just <$> (act `finally` unlock c "pg_advisory_unlock")) (pure Nothing)
 
 -- | Try to take the database's lock with one of PostgreSQL's functions
 -- for it, which answers whether it took the lock.
 tryLock :: Connection -> ByteString -> IO Bool
 tryLock c function = (== [Only True]) <$> Pg.query c (Query ("SELECT " <> function <> "(?)")) (Only databaseLockKey)
+
+-- | Release the database's lock with one of PostgreSQL's functions for
+-- it, on the connection that holds it, before that connection is closed.
+-- Closing the connection alone is not enough: libpq's close sends its
+-- goodbye and returns at once, and the server's process frees the lock
+-- only when it exits, a moment later. In that moment the lock is still
+-- held, and a server started right after a restore was refused as if the
+-- restore were still running (and a restore right after a server stopped,
+-- as if the server still ran). The unlock's answer comes once the lock is
+-- free. An unlock that fails (the connection is broken) is let go: the
+-- close that follows frees the lock when the server's process ends, as
+-- before.
+unlock :: Connection -> ByteString -> IO ()
+unlock c function =
+  void (Pg.query c (Query ("SELECT " <> function <> "(?)")) (Only databaseLockKey) :: IO [Only Bool])
+    `catch` \(_ :: SqlError) -> pass
 
 --------------------------------------------------------------------------------
 -- Transactions

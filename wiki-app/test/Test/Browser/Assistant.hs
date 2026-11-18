@@ -87,28 +87,35 @@ $( browserJS
      , ("js_lists", "wiki_test_assistant_lists", Safe, [t|JSText -> IO Bool|])
      , ("js_check", "wiki_test_assistant_check", Safe, [t|JSText -> IO Bool|])
      , ("js_checks", "wiki_test_assistant_checks", Safe, [t|IO JSText|])
-     , ("js_check_wait", "wiki_test_assistant_check_wait", Safe, [t|Int -> IO Bool|])
+     , ("js_hold_check", "wiki_test_assistant_hold_check", Safe, [t|IO Bool|])
+     , ("js_holding", "wiki_test_assistant_holding", Safe, [t|IO Int|])
+     , ("js_let_go", "wiki_test_assistant_let_go", Safe, [t|IO ()|])
      , ("js_click_twice", "wiki_test_click_twice", Safe, [t|JSText -> IO Bool|])
      ]
  )
 
+-- The reads look once, with the program quiet. A turn of the model's is
+-- the panel's work until it ends (the panel waits for its end in an
+-- 'H.async'), so a read after Send sees the whole answer. What the test
+-- holds on purpose (a step of the script that holds, a held "Test the
+-- key") is counted as held ('runFresh').
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadVault m, MonadUUID m, MonadIndexedDB m) => Spec
-spec m = do
+spec m = readsOnce Quiet $ do
   -- Every example runs on a page without the scripted provider's script
   -- ('runFresh'), and installs the one it needs.
   it "sends a selection, streams the answer, and makes its edit a change that Accept keeps and Ctrl+Z undoes" $ runFresh $ do
     script [[text "I will ", text "make it the very first.", replace "the first post" "the very first post", text " Done."]]
     ui <- openAssistant m
-    _ <- unsafeIOToPageM (js_select 16 38)
+    _ <- perform (js_select 16 38)
     chip <- find ui ".assistant-scope .assistant-chip"
     chip `shouldHaveText` "line 3×"
     -- The effort starts at the default, medium. One chosen under the
     -- message goes with the message, and the settings keep their default.
     find ui ".assistant-effort" >>= (`getProperty` "value") >>= (`shouldBe` "medium")
-    _ <- unsafeIOToPageM (js_choose (toJSText ".assistant-effort") (toJSText "high"))
-    eventually $ find ui ".assistant-effort" >>= (`getProperty` "value") >>= (`shouldBe` "high")
+    _ <- perform (js_choose (toJSText ".assistant-effort") (toJSText "high"))
+    find ui ".assistant-effort" >>= (`getProperty` "value") >>= (`shouldBe` "high")
     send ui "Make it sound newer."
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "I will make it the very first. Done.")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "I will make it the very first. Done.")
     find ui ".assistant-made" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Replaced")
     find ui ".assistant-message.from-user .assistant-chip" >>= (`shouldHaveText` "line 3")
     -- The page has the new text, shown as a change with what it replaced.
@@ -129,67 +136,66 @@ spec m = do
     user `shouldSatisfy` T.isInfixOf "<request>\nMake it sound newer.\n</request>"
     -- Accepted: the text stays, the change goes.
     find ui ".assistant-accept-all" >>= click
-    eventually $ length <$> findAll ui ".cm-wiki-inserted" `shouldReturn` 0
+    length <$> findAll ui ".cm-wiki-inserted" `shouldReturn` 0
     length <$> findAll ui ".cm-wiki-removed" `shouldReturn` 0
     length <$> findAll ui ".assistant-pending" `shouldReturn` 0
     markdown ui >>= (`shouldSatisfy` T.isInfixOf "the very first post")
     -- And undoing goes back to before the edit, as any edit.
     editorText ui >>= click
     press "Control+z"
-    eventually $ markdown ui >>= (`shouldSatisfy` T.isInfixOf "This is the first post of a blog")
+    markdown ui >>= (`shouldSatisfy` T.isInfixOf "This is the first post of a blog")
 
   it "shows a presentation's changes in its rows, opens a closed row it writes in without the focus, and accepts and rejects in a row, one history" $ runFresh $ do
     script [[replace "Second." "Second, better.", replace "Third." "Third, better.", text "Two changes."]]
     ui <- openDeckAssistant m
-    eventually $ openRowTitles ui `shouldReturn` ["Deck"]
+    openRowTitles ui `shouldReturn` ["Deck"]
     send ui "Polish."
     -- The rows the changes are in open, the focus left in the panel.
-    eventually $ openRowTitles ui `shouldReturn` ["Deck", "Two", "Three"]
-    eventually $ (findAll ui ".editor-slides .cm-wiki-inserted" >>= traverse textContent) `shouldReturn` ["Second, better.", "Third, better."]
+    openRowTitles ui `shouldReturn` ["Deck", "Two", "Three"]
+    (findAll ui ".editor-slides .cm-wiki-inserted" >>= traverse textContent) `shouldReturn` ["Second, better.", "Third, better."]
     (findAll ui ".editor-slides .cm-wiki-removed" >>= traverse textContent) `shouldReturn` ["Second.", "Third."]
     length <$> findAll ui ".editor-slides .slide-row-body:focus-within" `shouldReturn` 0
     -- Rejected in its row: what it replaced is back, as a step Ctrl+Z
     -- takes back.
     find ui ".editor-slides > li:nth-child(3) .cm-wiki-change-reject" >>= click
-    eventually $ markdown ui >>= (`shouldSatisfy` T.isInfixOf "\n\nSecond.\n\n")
+    markdown ui >>= (`shouldSatisfy` T.isInfixOf "\n\nSecond.\n\n")
     -- Accepted in its row: the text stays, the marks go.
     find ui ".editor-slides > li:nth-child(4) .cm-wiki-change-accept" >>= click
-    eventually $ length <$> findAll ui ".editor-slides .cm-wiki-inserted" `shouldReturn` 0
+    length <$> findAll ui ".editor-slides .cm-wiki-inserted" `shouldReturn` 0
     markdown ui >>= (`shouldSatisfy` T.isInfixOf "Third, better.")
     find ui ".editor-slides > li:nth-child(4) .cm-content" >>= click
     press "Control+z"
-    eventually $ markdown ui >>= (`shouldSatisfy` T.isInfixOf "Second, better.")
+    markdown ui >>= (`shouldSatisfy` T.isInfixOf "Second, better.")
 
   it "shows a change across two of a presentation's rows in both, its controls where it ends" $ runFresh $ do
     script [[replace "Second.\n\n## Three\n\nThird." "Second and more.\n\n## Three\n\nThird and more.", text "Done."]]
     ui <- openDeckAssistant m
     send ui "Lengthen."
-    eventually $ openRowTitles ui `shouldReturn` ["Deck", "Two", "Three"]
+    openRowTitles ui `shouldReturn` ["Deck", "Two", "Three"]
     -- The change takes in the start of "Three": its rows are cut again
     -- after the pause, and then each shows its part.
-    eventually $ do
-      length <$> findAll ui ".editor-slides > li:nth-child(3) .cm-wiki-inserted" >>= (`shouldSatisfy` (> 0))
-      length <$> findAll ui ".editor-slides > li:nth-child(4) .cm-wiki-inserted" >>= (`shouldSatisfy` (> 0))
-      length <$> findAll ui ".editor-slides > li:nth-child(3) .cm-wiki-change-controls" `shouldReturn` 0
-      length <$> findAll ui ".editor-slides > li:nth-child(4) .cm-wiki-change-controls" `shouldReturn` 1
+    length <$> findAll ui ".editor-slides > li:nth-child(3) .cm-wiki-inserted" >>= (`shouldSatisfy` (> 0))
+    length <$> findAll ui ".editor-slides > li:nth-child(4) .cm-wiki-inserted" >>= (`shouldSatisfy` (> 0))
+    length <$> findAll ui ".editor-slides > li:nth-child(3) .cm-wiki-change-controls" `shouldReturn` 0
+    length <$> findAll ui ".editor-slides > li:nth-child(4) .cm-wiki-change-controls" `shouldReturn` 1
     openRowTitles ui `shouldReturn` ["Deck", "Two", "Three"]
     find ui ".editor-slides > li:nth-child(4) .cm-wiki-change-reject" >>= click
-    eventually $ markdown ui >>= (`shouldSatisfy` T.isInfixOf "Second.\n\n## Three\n\nThird.")
+    markdown ui >>= (`shouldSatisfy` T.isInfixOf "Second.\n\n## Three\n\nThird.")
 
   it "rejects a change from the change itself, putting back what it replaced, and tells the model so" $ runFresh $ do
     script [[replace "## Why a wiki" "## Why this is a wiki", text "Retitled."], [text "Noted."]]
     ui <- openAssistant m
     send ui "Change the heading."
-    eventually $ find ui ".cm-wiki-inserted" >>= (`shouldHaveText` "## Why this is a wiki")
+    find ui ".cm-wiki-inserted" >>= (`shouldHaveText` "## Why this is a wiki")
     find ui ".cm-wiki-change-reject" >>= click
-    eventually $ length <$> findAll ui ".cm-wiki-inserted" `shouldReturn` 0
+    length <$> findAll ui ".cm-wiki-inserted" `shouldReturn` 0
     markdown ui >>= (`shouldSatisfy` T.isInfixOf "\n## Why a wiki\n")
     markdown ui >>= (`shouldNotSatisfy'` T.isInfixOf "Why this is")
     -- The model is told, with the next message, that the user threw its
     -- change away, so that it does not look for it.
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Retitled.")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Retitled.")
     send ui "And now?"
-    eventually $ length <$> requests `shouldReturn` 2
+    length <$> requests `shouldReturn` 2
     [before, after] <- requests
     fromMaybe "" (fieldText ["user"] before) `shouldNotSatisfy'` T.isInfixOf "Since your last message"
     let told = fromMaybe "" (fieldText ["user"] after)
@@ -200,14 +206,14 @@ spec m = do
     script [[replace "spaces in other spaces" "spaces inside other spaces", insert "end" "after" "\n\nThat is all.\n", text "Two changes."]]
     (ui, original) <- openAssistantWith m
     send ui "Polish it."
-    eventually $ find ui ".assistant-pending" >>= (`shouldHaveText` "2 suggested changes to accept or reject")
+    find ui ".assistant-pending" >>= (`shouldHaveText` "2 suggested changes to accept or reject")
     length <$> findAll ui ".assistant-made" `shouldReturn` 2
     markdown ui >>= (`shouldSatisfy` T.isSuffixOf "That is all.\n")
     -- Nothing was selected: the page went with the message.
     [request] <- requests
     fromMaybe "" (fieldText ["user"] request) `shouldSatisfy` T.isInfixOf "<page>\n# Hello, world"
     find ui ".assistant-reject-all" >>= click
-    eventually $ markdown ui `shouldReturn` original
+    markdown ui `shouldReturn` original
 
   it "answers in Ask mode without changing the page: its tools are off, and an edit asked for anyway is refused" $ runFresh $ do
     script [[replace "## Why a wiki" "## Why", text "I would retitle it."]]
@@ -217,12 +223,12 @@ spec m = do
     _ <- find ui ".assistant-head + .assistant-choices .assistant-effort"
     find ui ".assistant-mode-choice[data-mode='agent']" >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "true")
     find ui ".assistant-mode-choice[data-mode='ask']" >>= click
-    eventually $ find ui ".assistant-mode-choice[data-mode='ask']" >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "true")
+    find ui ".assistant-mode-choice[data-mode='ask']" >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "true")
     find ui ".assistant-mode-choice[data-mode='agent']" >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "false")
-    eventually $ (\s -> s.chatMode) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Ask)
+    (\s -> s.chatMode) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Ask)
     find ui ".assistant-input" >>= (`getProperty` "placeholder") >>= (`shouldBe` "Ask a question about the page")
     send ui "Is the heading good?"
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "I would retitle it.")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "I would retitle it.")
     find ui ".assistant-not-made" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "edits are off in Ask mode")
     -- Nothing in the page changed, and the model was told why.
     length <$> findAll ui ".cm-wiki-inserted" `shouldReturn` 0
@@ -243,11 +249,11 @@ spec m = do
     ui <- openAssistantKept m
     find ui ".assistant-mode-choice[data-mode='ask']" >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "true")
     find ui ".assistant-mode-choice[data-mode='agent']" >>= click
-    eventually $ find ui ".assistant-mode-choice[data-mode='agent']" >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "true")
-    eventually $ (\s -> s.chatMode) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Agent)
+    find ui ".assistant-mode-choice[data-mode='agent']" >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "true")
+    (\s -> s.chatMode) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Agent)
     find ui ".assistant-input" >>= (`getProperty` "placeholder") >>= (`shouldBe` "Ask for a change, or a question about the page")
     send ui "Hello."
-    eventually $ length <$> requests `shouldReturn` 1
+    length <$> requests `shouldReturn` 1
     [request] <- requests
     at ["request", "tool_choice"] request `shouldBe` Nothing
     fromMaybe "" (fieldText ["user"] request) `shouldNotSatisfy'` T.isInfixOf "Ask mode"
@@ -255,21 +261,21 @@ spec m = do
   it "keeps the text's selection in sight while the message box has the focus" $ runFresh $ do
     script []
     ui <- openAssistant m
-    _ <- unsafeIOToPageM (js_select 16 38)
+    _ <- perform (js_select 16 38)
     find ui ".assistant-input" >>= focus
-    eventually $ find ui ".cm-wiki-kept-selection" >>= (`shouldHaveText` "This is the first post")
+    find ui ".cm-wiki-kept-selection" >>= (`shouldHaveText` "This is the first post")
     find ui ".assistant-scope .assistant-chip" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "line 3")
     -- Back in the text, the browser shows the selection itself.
     editorText ui >>= focus
-    eventually $ length <$> findAll ui ".cm-wiki-kept-selection" `shouldReturn` 0
+    length <$> findAll ui ".cm-wiki-kept-selection" `shouldReturn` 0
     find ui ".assistant-input" >>= focus
-    eventually $ length <$> findAll ui ".cm-wiki-kept-selection" `shouldReturn` 1
+    length <$> findAll ui ".cm-wiki-kept-selection" `shouldReturn` 1
 
   it "answers a replacement of text the page does not have with why, and the model goes on" $ runFresh $ do
     script [[replace "a sentence nowhere" "anything", text "Sorry, I could not find it."]]
     (ui, original) <- openAssistantWith m
     send ui "Fix it."
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Sorry, I could not find it.")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Sorry, I could not find it.")
     find ui ".assistant-not-made" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "the page has no such text")
     [answered] <- answers
     fieldText ["text"] answered `shouldSatisfy` maybe False (T.isInfixOf "does not contain")
@@ -288,9 +294,7 @@ spec m = do
     ui <- openAssistant m
     find ui ".assistant-input" >>= (`typeText` "Hello.")
     settle
-    unsafeIOToPageM (js_click_twice (toJSText ".assistant-send")) `shouldReturn` True
-    eventually $ length <$> requests >>= (`shouldSatisfy` (> 0))
-    settle
+    perform (js_click_twice (toJSText ".assistant-send")) `shouldReturn` True
     length <$> requests `shouldReturn` 1
     length <$> findAll ui ".assistant-message.from-user" `shouldReturn` 1
 
@@ -298,11 +302,11 @@ spec m = do
     script [[replace "## Why a wiki" "## Why", text "Working", hold, text "never"]]
     ui <- openAssistant m
     send ui "Go on."
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Working")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Working")
     -- The streaming text ends in a cursor, which goes when the message ends.
     _ <- find ui ".assistant-message.from-model .assistant-text .assistant-cursor"
     find ui ".assistant-stop" >>= click
-    eventually $ find ui ".assistant-stopped" >>= (`shouldHaveText` "Stopped.")
+    find ui ".assistant-stopped" >>= (`shouldHaveText` "Stopped.")
     length <$> findAll ui ".assistant-cursor" `shouldReturn` 0
     find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Working")
     find ui ".cm-wiki-inserted" >>= (`shouldHaveText` "## Why")
@@ -313,66 +317,70 @@ spec m = do
     script [[text "Thinking it over", hold, text "never"], [text "Again."]]
     ui <- openAssistant m
     send ui "Go on."
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Thinking it over")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Thinking it over")
     -- The provider's button again closes the panel; once more opens it.
     find ui scriptedButton >>= click
     find ui ".editor-assistant" >>= shouldBeHidden
     find ui scriptedButton >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "false")
     find ui scriptedButton >>= click
-    eventually $ find ui ".assistant-stopped" >>= (`shouldHaveText` "Stopped.")
+    find ui ".assistant-stopped" >>= (`shouldHaveText` "Stopped.")
     -- The conversation goes on where it was.
     send ui "Once more."
-    eventually $ length <$> findAll ui ".assistant-message.from-user" `shouldReturn` 2
-    eventually $ findAll ui ".assistant-message.from-model .assistant-text" >>= traverse textContent >>= (`shouldBe` ["Thinking it over", "Again."])
+    length <$> findAll ui ".assistant-message.from-user" `shouldReturn` 2
+    findAll ui ".assistant-message.from-model .assistant-text" >>= traverse textContent >>= (`shouldBe` ["Thinking it over", "Again."])
 
   it "shows Thinking with three dots until the first text, the seconds waited, and the thinking's summary, kept as Thought" $ runFresh $ do
-    script [[thinking "Weighing the words.", quiet 4000, text "Here it is."]]
+    script [[thinking "Weighing the words.", hold, text "Here it is."]]
     ui <- openAssistant m
     send ui "Go on."
-    eventually $ find ui ".assistant-message.from-model .assistant-thinking" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "Thinking")
+    find ui ".assistant-message.from-model .assistant-thinking" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "Thinking")
     length <$> findAll ui ".assistant-message.from-model .assistant-dots span" `shouldReturn` 3
     length <$> findAll ui ".assistant-message.from-model .assistant-text" `shouldReturn` 0
     -- The summary of the thinking, collapsed under the line; a click opens it.
-    eventually $ find ui "details.assistant-thinking .assistant-thinking-text" >>= (`shouldHaveText` "Weighing the words.")
+    find ui "details.assistant-thinking .assistant-thinking-text" >>= (`shouldHaveText` "Weighing the words.")
     find ui "details.assistant-thinking" >>= (`getProperty` "open") >>= (`shouldBe` "false")
     find ui "details.assistant-thinking summary" >>= click
     find ui "details.assistant-thinking" >>= (`getProperty` "open") >>= (`shouldBe` "true")
     -- After a few seconds without anything from the model, the seconds
-    -- waited, beside the dots.
+    -- waited, beside the dots. The seconds are the panel's ticker, a pause
+    -- in 'H.delay' that the harness does not wait for: this read waits for
+    -- the clock.
     waited <- eventuallyWithin 5000 $ find ui ".assistant-thinking .assistant-waited" >>= textContent
     waited `shouldSatisfy` T.isSuffixOf " s"
     -- The first text ends the wait: the line goes, and the summary stays
     -- at the top of the message as Thought.
-    eventuallyWithin 5000 $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Here it is.")
-    eventually $ length <$> findAll ui ".assistant-thinking" `shouldReturn` 0
+    letGo
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Here it is.")
+    length <$> findAll ui ".assistant-thinking" `shouldReturn` 0
     find ui ".assistant-thought-text" >>= (`shouldHaveText` "Weighing the words.")
 
   it "says the page is being edited while the model writes a tool call, and shows the edit's note once it is made" $ runFresh $ do
-    script [[pausing 1500 (replace "## Why a wiki" "## Why"), text "Retitled."]]
+    script [[held (replace "## Why a wiki" "## Why"), text "Retitled."]]
     ui <- openAssistant m
     send ui "Retitle it."
-    eventually $ find ui ".assistant-message.from-model .assistant-status" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "Editing the page")
+    find ui ".assistant-message.from-model .assistant-status" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "Editing the page")
     length <$> findAll ui ".assistant-made" `shouldReturn` 0
-    eventuallyWithin 4000 $ find ui ".assistant-made" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Replaced")
+    letGo
+    find ui ".assistant-made" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Replaced")
     length <$> findAll ui ".assistant-status" `shouldReturn` 0
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Retitled.")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Retitled.")
 
   it "shows the time of each message, and how long a finished answer took and its tokens, and the conversation's" $ runFresh $ do
     script [[usage 1240 (Just 0) (Just 1200) 75, usage 1290 (Just 1200) (Just 0) 12, quiet 1200, text "Done."], [usage 1400 (Just 1290) (Just 0) 30, text "Again."]]
     ui <- openAssistant m
     send ui "Hello?"
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Done.")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Done.")
     asked <- find ui ".assistant-message.from-user .assistant-time" >>= textContent
     asked `shouldSatisfy` (\t -> T.isInfixOf ":" t && T.any isDigit t)
     find ui ".assistant-message.from-model .assistant-time" >>= textContent >>= (`shouldBe` asked)
-    eventually $ find ui ".assistant-message.from-model .assistant-took" >>= textContent >>= (`shouldSatisfy` (`elem` ["1 s", "2 s", "3 s"]))
+    find ui ".assistant-message.from-model .assistant-took" >>= textContent >>= (`shouldSatisfy` (`elem` ["1 s", "2 s", "3 s"]))
     -- The tokens of the answer's two requests, summed.
     find ui ".assistant-message.from-model .assistant-tokens" >>= (`shouldHaveText` "2,530 tokens in (1,200 from cache, 1,200 written to cache), 87 out")
     -- The conversation's, under the header: both answers summed, until "New".
     send ui "Once more?"
-    eventually $ find ui ".assistant-spent" >>= (`shouldHaveText` "This conversation: 3,930 tokens in (2,490 from cache, 1,200 written to cache), 117 out")
+    find ui ".assistant-spent" >>= (`shouldHaveText` "This conversation: 3,930 tokens in (2,490 from cache, 1,200 written to cache), 117 out")
     find ui ".assistant-head .assistant-new" >>= click
-    eventually $ length <$> findAll ui ".assistant-spent" `shouldReturn` 0
+    length <$> findAll ui ".assistant-spent" `shouldReturn` 0
 
   it "closes with Close in its header, and with Escape in the message box" $ runFresh $ do
     script []
@@ -380,13 +388,13 @@ spec m = do
     close <- find ui ".assistant-head .assistant-close"
     close `shouldHaveText` "Close"
     click close
-    eventually $ find ui ".editor-assistant" >>= shouldBeHidden
+    find ui ".editor-assistant" >>= shouldBeHidden
     find ui scriptedButton >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "false")
     find ui scriptedButton >>= click
-    eventually $ find ui ".editor-assistant" >>= shouldBeVisible
+    find ui ".editor-assistant" >>= shouldBeVisible
     find ui ".assistant-input" >>= focus
     press "Escape"
-    eventually $ find ui ".editor-assistant" >>= shouldBeHidden
+    find ui ".editor-assistant" >>= shouldBeHidden
     find ui scriptedButton >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "false")
 
   it "starts the chat's effort at the settings' default, and a change in the chat stays with the conversation" $ runFresh $ do
@@ -395,12 +403,12 @@ spec m = do
     ui <- openAssistantKept m
     find ui ".assistant-effort" >>= (`getProperty` "value") >>= (`shouldBe` "xhigh")
     send ui "First."
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "One.")
-    eventually $ find ui ".assistant-effort" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
-    _ <- unsafeIOToPageM (js_choose (toJSText ".assistant-effort") (toJSText "low"))
-    eventually $ find ui ".assistant-effort" >>= (`getProperty` "value") >>= (`shouldBe` "low")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "One.")
+    find ui ".assistant-effort" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
+    _ <- perform (js_choose (toJSText ".assistant-effort") (toJSText "low"))
+    find ui ".assistant-effort" >>= (`getProperty` "value") >>= (`shouldBe` "low")
     send ui "Second."
-    eventually $ length <$> requests `shouldReturn` 2
+    length <$> requests `shouldReturn` 2
     [firstAsked, secondAsked] <- requests
     fieldText ["request", "output_config", "effort"] firstAsked `shouldBe` Just "xhigh"
     fieldText ["request", "output_config", "effort"] secondAsked `shouldBe` Just "low"
@@ -416,14 +424,14 @@ spec m = do
     find ui ".editor-provider[data-provider='anthropic']" >>= (`getAttribute` "title") >>= (`shouldBe` Just "Chat with Claude")
     length <$> findAll ui ".editor-provider[data-provider='openai']" `shouldReturn` 0
     send ui "Retitle it."
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Retitled.")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Retitled.")
     -- Claude: the panel stays, its conversation ends; the change is still
     -- to decide.
     find ui ".editor-provider[data-provider='anthropic']" >>= click
-    eventually $ find ui ".assistant-notice" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The next message starts a new one with Anthropic (Claude).")
+    find ui ".assistant-notice" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The next message starts a new one with Anthropic (Claude).")
     find ui ".editor-provider[data-provider='anthropic']" >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "true")
     find ui scriptedButton >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "false")
-    eventually $ (\s -> s.provider) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Anthropic)
+    (\s -> s.provider) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Anthropic)
     find ui ".cm-wiki-inserted" >>= (`shouldHaveText` "## Why")
     find ui ".assistant-pending" >>= (`shouldHaveText` "1 suggested change to accept or reject")
     -- Claude's models and efforts are offered at the top of the panel.
@@ -431,7 +439,7 @@ spec m = do
     find ui ".assistant-model-choice" >>= (`getProperty` "value") >>= (`shouldBe` "claude-opus-5-5")
     -- The next message goes to Claude, with its key.
     send ui "Hello?"
-    eventually $ length <$> requests `shouldReturn` 2
+    length <$> requests `shouldReturn` 2
     [_, toClaude] <- requests
     fieldText ["provider"] toClaude `shouldBe` Just "anthropic"
     fieldText ["key"] toClaude `shouldBe` Just "sk-ant-test"
@@ -445,22 +453,22 @@ spec m = do
     send ui "First."
     _ <- find ui ".assistant-message.from-model .assistant-took"
     send ui "Second."
-    eventually $ findAll ui ".assistant-message.from-model .assistant-text" >>= traverse textContent >>= (`shouldBe` ["One.", "Two."])
+    findAll ui ".assistant-message.from-model .assistant-text" >>= traverse textContent >>= (`shouldBe` ["One.", "Two."])
     find ui ".assistant-head .assistant-new" >>= (`getAttribute` "disabled") >>= (`shouldSatisfy` isJust)
     find ui ".assistant-stop" >>= click
     _ <- find ui ".assistant-stopped"
-    eventually $ find ui ".assistant-head .assistant-new" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
+    find ui ".assistant-head .assistant-new" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
     -- The first chat's change, rejected now, would be told with its next
     -- message; the new chat's first message tells nothing of it.
     find ui ".assistant-reject-all" >>= click
-    eventually $ length <$> findAll ui ".cm-wiki-inserted" `shouldReturn` 0
+    length <$> findAll ui ".cm-wiki-inserted" `shouldReturn` 0
     find ui ".assistant-input" >>= (`typeText` "Third.")
     find ui ".assistant-head .assistant-new" >>= click
     _ <- find ui ".assistant-empty"
     length <$> findAll ui ".assistant-message" `shouldReturn` 0
     find ui ".assistant-input" >>= (`getProperty` "value") >>= (`shouldBe` "Third.")
     find ui ".assistant-send" >>= click
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Three.")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Three.")
     asked <- requests
     map (at ["conversation"]) asked `shouldBe` map (Just . Aeson.Number) [1, 2, 1]
     fromMaybe "" (fieldText ["user"] =<< lastMay asked) `shouldNotSatisfy'` T.isInfixOf "Since your last message"
@@ -472,12 +480,12 @@ spec m = do
     -- The commands are the panel's, and none is sent: /help lists them,
     -- and /clear starts a new conversation as "New" does.
     send ui "/help"
-    eventually $ length <$> findAll ui ".assistant-notice" `shouldReturn` 2
+    length <$> findAll ui ".assistant-notice" `shouldReturn` 2
     send ui "/clear"
     _ <- find ui ".assistant-empty"
     find ui ".assistant-input" >>= (`getProperty` "value") >>= (`shouldBe` "")
     send ui "Four."
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Four.")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Four.")
     map (at ["conversation"]) <$> requests >>= (`shouldBe` map (Just . Aeson.Number) [1, 2, 1, 1])
 
   -- A chat that could not be made (its script did not load) took no
@@ -490,7 +498,7 @@ spec m = do
     send ui "First."
     _ <- find ui ".assistant-error"
     send ui "Second."
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Hi.")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Hi.")
     users <- map (fromMaybe "" . fieldText ["user"]) <$> requests
     map (T.isInfixOf "<page>\n# Hello, world") users `shouldBe` [True]
 
@@ -498,7 +506,7 @@ spec m = do
     script [[failing "permission" 403 "not for this key: sk-ant-api03-abcdefgh1234"]]
     ui <- openAssistant m
     send ui "Hello?"
-    shown <- eventually $ find ui ".assistant-error" >>= textContent
+    shown <- find ui ".assistant-error" >>= textContent
     shown `shouldSatisfy` T.isInfixOf "The key may not do this."
     shown `shouldSatisfy` T.isInfixOf "(403)"
     shown `shouldNotSatisfy'` T.isInfixOf "abcdefgh1234"
@@ -510,15 +518,15 @@ spec m = do
     keep m (UserId "user-editor") (withKey Anthropic (Just "gw-token") (withBaseUrl Anthropic gateway defaultSettings))
     (ui, _) <- startWith m (Just "user-editor") (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
     _ <- editorText ui
-    eventually (find ui ".editor-provider[data-provider='anthropic']") >>= click
-    eventually $ find ui ".assistant-using" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "claude-gateway.example.com")
+    find ui ".editor-provider[data-provider='anthropic']" >>= click
+    find ui ".assistant-using" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "claude-gateway.example.com")
     send ui "Hello?"
-    eventually $ length <$> requests `shouldReturn` 1
+    length <$> requests `shouldReturn` 1
     [request] <- requests
     fieldText ["provider"] request `shouldBe` Just "anthropic"
     fieldText ["baseUrl"] request `shouldBe` Just gateway
     fieldText ["key"] request `shouldBe` Just "gw-token"
-    refused <- eventually $ find ui ".assistant-key-refused"
+    refused <- find ui ".assistant-key-refused"
     textContent refused >>= (`shouldSatisfy` T.isInfixOf "claude-gateway.example.com refused the key: it has probably expired or been revoked. Paste a new one in the assistant's settings.")
     -- The provider's own words follow, smaller, without the key.
     detail <- findIn refused ".assistant-error-detail" >>= textContent
@@ -529,21 +537,21 @@ spec m = do
     settingsLink <- findIn refused "a.assistant-settings-open"
     textContent settingsLink >>= (`shouldSatisfy` T.isInfixOf "Open the assistant's settings")
     click settingsLink
-    eventually $ find ui ".assistant-settings h1" >>= (`shouldHaveText` "Writing assistant")
+    find ui ".assistant-settings h1" >>= (`shouldHaveText` "Writing assistant")
 
   it "offers the provider's own models, grouped, the first recommended the default, and asks the one chosen" $ runFresh $ do
     scriptWith [[text "Hello."]] (object ["scripted" .= scriptedModels])
     ui <- openAssistant m
     -- Asked for when the editor opened, and kept.
-    eventually $ findAll ui ".assistant-model-choice optgroup" >>= traverse (`getAttribute` "label") >>= (`shouldBe` [Just "Recommended", Just "All models"])
+    findAll ui ".assistant-model-choice optgroup" >>= traverse (`getAttribute` "label") >>= (`shouldBe` [Just "Recommended", Just "All models"])
     findAll ui ".assistant-model-choice optgroup[label='Recommended'] option" >>= traverse textContent >>= (`shouldBe` ["Claude Opus 5.5", "Claude Sonnet 5.5"])
     findAll ui ".assistant-model-choice optgroup[label='All models'] option" >>= traverse textContent >>= (`shouldBe` ["Claude Opus 4.8", "Claude Haiku 4.5"])
     find ui ".assistant-model-choice" >>= (`getProperty` "value") >>= (`shouldBe` "claude-opus-5-5")
-    eventually $ (\s -> isJust (settingsOf Scripted s).fetched) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` True)
-    _ <- unsafeIOToPageM (js_choose (toJSText ".assistant-model-choice") (toJSText "claude-opus-4-8"))
-    eventually $ (\s -> (settingsOf Scripted s).model) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ModelName "claude-opus-4-8"))
+    (\s -> isJust (settingsOf Scripted s).fetched) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` True)
+    _ <- perform (js_choose (toJSText ".assistant-model-choice") (toJSText "claude-opus-4-8"))
+    (\s -> (settingsOf Scripted s).model) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ModelName "claude-opus-4-8"))
     send ui "Hello?"
-    eventually $ length <$> requests `shouldReturn` 1
+    length <$> requests `shouldReturn` 1
     [request] <- requests
     fieldText ["request", "model"] request `shouldBe` Just "claude-opus-4-8"
 
@@ -551,11 +559,11 @@ spec m = do
     keep m (UserId "user-editor") defaultSettings
     (ui, _) <- startWith m (Just "user-editor") (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
     _ <- editorText ui
-    bubble <- eventually $ find ui ".editor-provider[data-provider='assistant']"
+    bubble <- find ui ".editor-provider[data-provider='assistant']"
     getAttribute bubble "title" >>= (`shouldBe` Just "Assistant")
     length <$> findAll ui ".editor-provider" `shouldReturn` 1
     click bubble
-    eventually $ find ui ".assistant-setup" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "There is no API key for Anthropic (Claude)")
+    find ui ".assistant-setup" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "There is no API key for Anthropic (Claude)")
     find ui ".assistant-setup a" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Open the assistant's settings")
 
   it "dims a provider that cannot be reached, says so in the panel, and tries again" $ runFresh $ do
@@ -565,39 +573,39 @@ spec m = do
     (ui, _) <- startWith m (Just "user-editor") (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
     _ <- editorText ui
     let claude = ".editor-provider[data-provider='anthropic']"
-    eventually $ find ui claude >>= (`getAttribute` "class") >>= (`shouldBe` Just "editor-provider unreachable")
+    find ui claude >>= (`getAttribute` "class") >>= (`shouldBe` Just "editor-provider unreachable")
     find ui claude >>= (`getAttribute` "title") >>= (`shouldBe` Just "Cannot reach Anthropic from this network")
-    eventually $ (\s -> (settingsOf Anthropic s).unreachable) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` True)
+    (\s -> (settingsOf Anthropic s).unreachable) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` True)
     -- It still opens, and the panel says why, with a way to try again,
     -- which finds it now.
     find ui claude >>= click
     find ui ".assistant-unreachable" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Cannot reach Anthropic from this network.")
     setLists (object ["anthropic" .= scriptedModels])
-    -- Once the check the opening made is over.
-    eventually $ find ui ".assistant-try-again" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
+    -- The check the opening made is over: the button is enabled again.
+    find ui ".assistant-try-again" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
     find ui ".assistant-try-again" >>= click
-    eventually $ length <$> findAll ui ".assistant-unreachable" `shouldReturn` 0
+    length <$> findAll ui ".assistant-unreachable" `shouldReturn` 0
     find ui claude >>= (`getAttribute` "class") >>= (`shouldBe` Just "editor-provider")
     -- A message that gets no answer says it again; one that gets one, not.
     send ui "Hello?"
-    eventually $ find ui ".assistant-error" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "could not be reached")
-    eventually $ find ui claude >>= (`getAttribute` "class") >>= (`shouldBe` Just "editor-provider unreachable")
+    find ui ".assistant-error" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "could not be reached")
+    find ui claude >>= (`getAttribute` "class") >>= (`shouldBe` Just "editor-provider unreachable")
     send ui "Again?"
-    eventually $ find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Back.")
-    eventually $ find ui claude >>= (`getAttribute` "class") >>= (`shouldBe` Just "editor-provider")
+    find ui ".assistant-message.from-model .assistant-text" >>= (`shouldHaveText` "Back.")
+    find ui claude >>= (`getAttribute` "class") >>= (`shouldBe` Just "editor-provider")
 
   it "asks OpenAI's API at another address, without a key" $ runFresh $ do
     scriptWith [[text "From the local server."]] (object ["openai" .= [object ["id" .= ("llama4:8b" :: Text), "created" .= (20 :: Int)], object ["id" .= ("nomic-embed-text" :: Text), "created" .= (10 :: Int)]]])
     keep m (UserId "user-editor") (chooseProvider OpenAI (withBaseUrl OpenAI "http://localhost:11434/v1" defaultSettings))
     (ui, _) <- startWith m (Just "user-editor") (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
     _ <- editorText ui
-    onMachine <- eventually $ find ui ".editor-provider[data-provider='openai']"
+    onMachine <- find ui ".editor-provider[data-provider='openai']"
     getAttribute onMachine "title" >>= (`shouldBe` Just "Chat through localhost:11434")
     click onMachine
     -- Its own models, every one, none of OpenAI's names.
-    eventually $ findAll ui ".assistant-model-choice optgroup[label='All models'] option" >>= traverse textContent >>= (`shouldBe` ["llama4:8b", "nomic-embed-text"])
+    findAll ui ".assistant-model-choice optgroup[label='All models'] option" >>= traverse textContent >>= (`shouldBe` ["llama4:8b", "nomic-embed-text"])
     send ui "Hello?"
-    eventually $ length <$> requests `shouldReturn` 1
+    length <$> requests `shouldReturn` 1
     [request] <- requests
     fieldText ["provider"] request `shouldBe` Just "openai"
     fieldText ["baseUrl"] request `shouldBe` Just "http://localhost:11434/v1"
@@ -617,31 +625,31 @@ spec m = do
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     findIn anthropic ".assistant-key" >>= (`typeText` "sk-ant-test-key")
     findIn anthropic ".assistant-key-form button" >>= click
-    eventually $ findIn anthropic ".assistant-key-kept" >>= (`shouldHaveText` "A key is kept for Anthropic (Claude) in this browser.")
+    findIn anthropic ".assistant-key-kept" >>= (`shouldHaveText` "A key is kept for Anthropic (Claude) in this browser.")
     -- Its list of models, fetched with it, and fetched again on request.
-    eventually $ findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
+    findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
     findAllIn anthropic ".assistant-model-choice optgroup[label='Recommended'] option" >>= traverse textContent >>= (`shouldBe` ["Claude Opus 5.5", "Claude Sonnet 5.5"])
     setLists (object ["anthropic" .= scriptedModels])
     findIn anthropic ".assistant-refresh" >>= click
-    eventually $ findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "4 models fetched from Anthropic (Claude), 4 of them offered for a chat.")
+    findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "4 models fetched from Anthropic (Claude), 4 of them offered for a chat.")
     findAllIn anthropic ".assistant-model-choice optgroup[label='All models'] option" >>= traverse textContent >>= (`shouldBe` ["Claude Opus 4.8", "Claude Haiku 4.5"])
     -- Kept under the user's id, and only theirs.
-    eventually $ (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ApiKey "sk-ant-test-key"))
+    (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ApiKey "sk-ant-test-key"))
     (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-admin") >>= (`shouldBe` Nothing)
     -- The page never shows a key once kept.
     outerHTML anthropic >>= (`shouldNotSatisfy'` T.isInfixOf "sk-ant-test-key")
     -- Forgotten, it is gone from the browser.
     findIn anthropic ".assistant-forget" >>= click
-    eventually $ findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "")
-    eventually $ (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
+    findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "")
+    (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
     (\s -> (settingsOf Anthropic s).fetched) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
     -- The scripted provider, chosen and tested: its script refuses, then
     -- accepts.
     find ui "input[name='assistant-provider'][value='scripted']" >>= click
-    eventually $ (\s -> s.provider) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Scripted)
+    (\s -> s.provider) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Scripted)
     scripted <- find ui ".assistant-provider-settings[data-provider='scripted']"
     findIn scripted ".assistant-test" >>= click
-    eventually $ findIn scripted ".assistant-check-works" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The key works")
+    findIn scripted ".assistant-check-works" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The key works")
 
   it "keeps the page's cap typed on the settings page, with about how many tokens it is, and refuses one out of bounds" $ runFresh $ do
     script []
@@ -655,14 +663,13 @@ spec m = do
     typeText field "500"
     find ui ".assistant-page-cap-error" >>= (`shouldHaveText` "At least 1,000 characters.")
     press "Tab"
-    settle
     (\s -> s.pageCap) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
     -- Within them: the estimate follows the field, and the cap is kept.
     clear field
     typeText field "50000"
     find ui ".assistant-page-cap-estimate" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "About 14,000 tokens")
     press "Tab"
-    eventually $ (\s -> s.pageCap) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just 50000)
+    (\s -> s.pageCap) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just 50000)
 
   it "chooses each provider's default effort on the settings page, medium unless one is chosen" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
@@ -674,14 +681,14 @@ spec m = do
     openai <- find ui ".assistant-provider-settings[data-provider='openai']"
     findAllIn openai ".assistant-default-effort option" >>= traverse textContent >>= (`shouldBe` ["minimal", "low", "medium (default)", "high"])
     let choose effort = do
-          eventually $ findIn anthropic ".assistant-default-effort" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
-          void (unsafeIOToPageM (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-default-effort") (toJSText effort)))
+          findIn anthropic ".assistant-default-effort" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
+          void (perform (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-default-effort") (toJSText effort)))
     choose "high"
-    eventually $ (\s -> (settingsOf Anthropic s).effort) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just "high")
+    (\s -> (settingsOf Anthropic s).effort) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just "high")
     (\s -> (settingsOf OpenAI s).effort) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
     -- The default chosen again is kept as none chosen.
     choose "medium"
-    eventually $ (\s -> (settingsOf Anthropic s).effort) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
+    (\s -> (settingsOf Anthropic s).effort) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
 
   it "chooses a gateway the server offers for Anthropic, fetches its models there, and says what a refused key and no connection mean" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
@@ -691,11 +698,11 @@ spec m = do
     hint <- findIn anthropic ".assistant-service-hint" >>= textContent
     hint `shouldSatisfy` T.isInfixOf "(Administration, Server, The assistant's services)"
     findIn anthropic ".assistant-service" >>= (`getProperty` "value") >>= (`shouldBe` "")
-    _ <- unsafeIOToPageM (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-service") (toJSText gateway))
-    eventually $ (\s -> (settingsOf Anthropic s).baseUrl) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (Url gateway))
+    _ <- perform (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-service") (toJSText gateway))
+    (\s -> (settingsOf Anthropic s).baseUrl) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (Url gateway))
     (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ApiKey "gw-token"))
     -- The other service's own list, fetched at once with the key.
-    eventually $ findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
+    findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
     findIn anthropic ".assistant-service" >>= (`getProperty` "value") >>= (`shouldBe` gateway)
     length <$> findAllIn anthropic ".assistant-insecure-base-url" `shouldReturn` 0
     -- A refused key, in the model list and in "Test the key", says what
@@ -703,14 +710,14 @@ spec m = do
     let expired = "claude-gateway.example.com refused the key: it has probably expired or been revoked. Paste a new one in the assistant's settings."
     setLists (object ["anthropic" .= object ["error" .= object ["kind" .= ("authentication" :: Text), "status" .= (401 :: Int), "message" .= ("token expired" :: Text)]]])
     findIn anthropic ".assistant-refresh" >>= click
-    eventually $ findIn anthropic ".assistant-not-listed" >>= textContent >>= (`shouldSatisfy` T.isInfixOf expired)
+    findIn anthropic ".assistant-not-listed" >>= textContent >>= (`shouldSatisfy` T.isInfixOf expired)
     unsafeIOToPageM (js_check (toJSText (decodeUtf8 (BSL.toStrict (encode (object ["kind" .= ("authentication" :: Text), "status" .= (401 :: Int)])))))) >>= (`shouldBe` True)
     findIn anthropic ".assistant-test" >>= click
-    eventually $ findIn anthropic ".assistant-check-fails" >>= textContent >>= (`shouldSatisfy` T.isInfixOf expired)
+    findIn anthropic ".assistant-check-fails" >>= textContent >>= (`shouldSatisfy` T.isInfixOf expired)
     -- No connection at all names CORS and the administrator's list as causes.
     setLists (object ["anthropic" .= object ["error" .= object ["kind" .= ("connection" :: Text), "message" .= ("Failed to fetch" :: Text)]]])
     findIn anthropic ".assistant-refresh" >>= click
-    unreachable <- eventually $ findIn anthropic ".assistant-unreachable" >>= textContent
+    unreachable <- findIn anthropic ".assistant-unreachable" >>= textContent
     unreachable `shouldSatisfy` T.isInfixOf "Cannot reach claude-gateway.example.com from this network"
     unreachable `shouldSatisfy` T.isInfixOf "The assistant's services"
     unmount ui
@@ -729,16 +736,16 @@ spec m = do
     -- again, the provider.
     let anthropic = ".assistant-provider-settings[data-provider='anthropic'] "
         test = do
-          eventually $ find ui (anthropic <> ".assistant-test") >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
+          find ui (anthropic <> ".assistant-test") >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
           before <- length <$> checks
           find ui (anthropic <> ".assistant-test") >>= click
-          eventually $ length <$> checks `shouldReturn` (before + 1)
+          length <$> checks `shouldReturn` (before + 1)
           fmap (fieldText ["baseUrl"]) . lastMay <$> checks
-    _ <- unsafeIOToPageM (js_choose (toJSText (anthropic <> ".assistant-service")) (toJSText gateway))
-    eventually $ (\s -> (settingsOf Anthropic s).baseUrl) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (Url gateway))
+    _ <- perform (js_choose (toJSText (anthropic <> ".assistant-service")) (toJSText gateway))
+    (\s -> (settingsOf Anthropic s).baseUrl) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (Url gateway))
     test `shouldReturn` Just (Just gateway)
-    _ <- unsafeIOToPageM (js_choose (toJSText (anthropic <> ".assistant-service")) (toJSText ""))
-    eventually $ (\s -> (settingsOf Anthropic s).baseUrl) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
+    _ <- perform (js_choose (toJSText (anthropic <> ".assistant-service")) (toJSText ""))
+    (\s -> (settingsOf Anthropic s).baseUrl) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
     test `shouldReturn` Just Nothing
     unmount ui
     serverStops
@@ -752,9 +759,9 @@ spec m = do
     findIn anthropic ".assistant-service" >>= (`getProperty` "value") >>= (`shouldBe` retired)
     findIn anthropic ".assistant-service option:checked" >>= (`shouldHaveText` (retired <> " (no longer offered by this wiki)"))
     findIn anthropic ".assistant-service-stale" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "no longer among the services this wiki offers")
-    _ <- unsafeIOToPageM (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-service") (toJSText gateway))
-    eventually $ (\s -> (settingsOf Anthropic s).baseUrl) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (Url gateway))
-    eventually $ length <$> findAllIn anthropic ".assistant-service-stale" `shouldReturn` 0
+    _ <- perform (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-service") (toJSText gateway))
+    (\s -> (settingsOf Anthropic s).baseUrl) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (Url gateway))
+    length <$> findAllIn anthropic ".assistant-service-stale" `shouldReturn` 0
     findAllIn anthropic ".assistant-service option" >>= traverse textContent >>= (`shouldBe` ["Anthropic's own", "Corporate gateway (" <> gateway <> ")"])
     unmount ui
     serverStops
@@ -764,7 +771,7 @@ spec m = do
     keep m (UserId "user-editor") defaultSettings
     (ui, _) <- startWith m (Just "user-editor") AssistantSettings
     -- Once the settings are read.
-    eventually $ findAll ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service option" >>= traverse textContent >>= (`shouldBe` ["Anthropic's own"])
+    findAll ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service option" >>= traverse textContent >>= (`shouldBe` ["Anthropic's own"])
     findAll ui ".assistant-provider-settings[data-provider='openai'] .assistant-service option" >>= traverse textContent >>= (`shouldBe` ["OpenAI's own"])
     find ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service-hint" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "the only one this wiki offers")
 
@@ -777,17 +784,17 @@ spec m = do
     test <- findIn anthropic ".assistant-test"
     textContent test >>= (`shouldBe` "Test the connection (no key)")
     click test
-    eventually $ findIn anthropic ".assistant-check-works" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The connection works without a key")
+    findIn anthropic ".assistant-check-works" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The connection works without a key")
     [checked] <- checks
     fieldText ["key"] checked `shouldBe` Just ""
     fieldText ["baseUrl"] checked `shouldBe` Just gateway
     -- A key typed: the only test offered is the one with the key.
     findIn anthropic ".assistant-key" >>= (`typeText` "gw-typed")
-    eventually $ length <$> findAllIn anthropic ".assistant-test" `shouldReturn` 0
+    length <$> findAllIn anthropic ".assistant-test" `shouldReturn` 0
     findIn anthropic ".assistant-key-form button[type='submit']" >>= (`shouldHaveText` "Test and keep the key")
     -- Emptied again, the connection test is back.
     findIn anthropic ".assistant-key" >>= clear
-    eventually $ findIn anthropic ".assistant-test" >>= (`shouldHaveText` "Test the connection (no key)")
+    findIn anthropic ".assistant-test" >>= (`shouldHaveText` "Test the connection (no key)")
 
   it "tests a typed key before keeping it: a refused one is not kept and stays in the field, an accepted one is kept with its models, and Enter tests it" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
@@ -802,7 +809,7 @@ spec m = do
     refuse >>= (`shouldBe` True)
     findIn anthropic ".assistant-key" >>= (`typeText` "gw-wrong")
     findIn anthropic ".assistant-key-form button[type='submit']" >>= click
-    refused <- eventually $ findIn anthropic ".assistant-check-fails" >>= textContent
+    refused <- findIn anthropic ".assistant-check-fails" >>= textContent
     refused `shouldSatisfy` T.isInfixOf "claude-gateway.example.com refused the key: it has probably expired or been revoked."
     refused `shouldSatisfy` T.isInfixOf "(401)"
     -- The key checked is the one typed, and the provider's words do not show it.
@@ -812,7 +819,7 @@ spec m = do
     length <$> findAllIn anthropic ".assistant-key-kept" `shouldReturn` 0
     findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "gw-wrong")
     -- Once the settings have stored that the gateway answered.
-    eventually $ findIn anthropic ".assistant-key-form button[type='submit']" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
+    findIn anthropic ".assistant-key-form button[type='submit']" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
     -- The corrected key, submitted with Enter: kept, the field emptied,
     -- the models fetched with it.
     accept >>= (`shouldBe` True)
@@ -820,14 +827,14 @@ spec m = do
     clear field
     typeText field "gw-token"
     press "Enter"
-    eventually $ findIn anthropic ".assistant-key-kept" >>= (`shouldHaveText` "A key is kept for Anthropic (Claude) in this browser.")
+    findIn anthropic ".assistant-key-kept" >>= (`shouldHaveText` "A key is kept for Anthropic (Claude) in this browser.")
     findIn anthropic ".assistant-check-kept" >>= (`shouldHaveText` "The key works and is kept.")
     (map (fieldText ["key"]) <$> checks) `shouldReturn` [Just "gw-wrong", Just "gw-token"]
-    eventually $ keyOf `shouldReturn` Just (ApiKey "gw-token")
-    eventually $ findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
+    keyOf `shouldReturn` Just (ApiKey "gw-token")
+    findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
     -- Forgotten, the field is empty: what was typed is not kept in the page.
     findIn anthropic ".assistant-forget" >>= click
-    eventually $ findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "")
+    findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "")
 
   it "disables the provider's inputs while a typed key is tested, and keeps nothing when the address changes before the answer" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
@@ -835,22 +842,23 @@ spec m = do
     (ui, _) <- startWith m (Just "user-editor") AssistantSettings
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     let settingsNow = settingsOf Anthropic <$> settingsFor m (UserId "user-editor")
-    -- A gateway that takes its time to answer.
-    unsafeIOToPageM (js_check_wait 1500) >>= (`shouldBe` True)
+    -- A gateway that answers only when the test lets the check go.
+    unsafeIOToPageM js_hold_check >>= (`shouldBe` True)
     findIn anthropic ".assistant-key" >>= (`typeText` "gw-token")
     findIn anthropic ".assistant-key-form button[type='submit']" >>= click
-    eventually $ findIn anthropic ".assistant-key-form button[type='submit']" >>= (`shouldHaveText` "Checking…")
+    findIn anthropic ".assistant-key-form button[type='submit']" >>= (`shouldHaveText` "Checking…")
     for_ [".assistant-service", ".assistant-key", ".assistant-model", ".assistant-default-effort"] $ \selector ->
       findIn anthropic selector >>= (`getAttribute` "disabled") >>= (`shouldBe` Just "")
     -- The address changes all the same before the answer comes, as a
     -- change from another device would: the choice's change, sent by the
     -- test, since the choice takes no input from the user. The demo
     -- offers the provider's own service only, which is the other address.
-    _ <- unsafeIOToPageM (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-service") (toJSText ""))
-    eventually $ (\ps -> ps.baseUrl) <$> settingsNow >>= (`shouldBe` Nothing)
+    _ <- perform (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-service") (toJSText ""))
+    (\ps -> ps.baseUrl) <$> settingsNow >>= (`shouldBe` Nothing)
     -- The old address's answer keeps nothing, and says why; the key stays
     -- in the field, to be tested at the new address.
-    eventually $ findIn anthropic ".assistant-check-fails" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The base URL changed while the key was tested, so the key was not kept")
+    letGo
+    findIn anthropic ".assistant-check-fails" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The base URL changed while the key was tested, so the key was not kept")
     (\ps -> ps.key) <$> settingsNow >>= (`shouldBe` Nothing)
     length <$> findAllIn anthropic ".assistant-key-kept" `shouldReturn` 0
     findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "gw-token")
@@ -864,7 +872,7 @@ spec m = do
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     findIn anthropic ".assistant-key" >>= (`typeText` "gw-wrong")
     findIn anthropic ".assistant-key-form button[type='submit']" >>= click
-    eventually $ findIn anthropic ".assistant-check-fails" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "claude-gateway.example.com refused the key: it has probably expired or been revoked.")
+    findIn anthropic ".assistant-check-fails" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "claude-gateway.example.com refused the key: it has probably expired or been revoked.")
     (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
     findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "gw-wrong")
     -- The list's refusal is enough: no message test was made.
@@ -878,7 +886,7 @@ spec m = do
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     findIn anthropic ".assistant-key" >>= (`typeText` "gw-token")
     findIn anthropic ".assistant-key-form button[type='submit']" >>= click
-    eventually $ findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
+    findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
     findIn anthropic ".assistant-check-kept" >>= (`shouldHaveText` "The key works and is kept.")
     findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
     -- Tested, and kept, with the list's first model, in place of the one
@@ -900,19 +908,19 @@ spec m = do
     unsafeIOToPageM (js_check (toJSText (decodeUtf8 (BSL.toStrict fail404)))) >>= (`shouldBe` True)
     findIn anthropic ".assistant-key" >>= (`typeText` "gw-token")
     findIn anthropic ".assistant-key-form button[type='submit']" >>= click
-    eventually $ findIn anthropic ".assistant-check-fails" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The provider has no such model")
+    findIn anthropic ".assistant-check-fails" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The provider has no such model")
     keyNow `shouldReturn` Nothing
     findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "gw-token")
     -- The list stays, to choose another model from.
     findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
-    eventually $ findIn anthropic ".assistant-model" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
-    _ <- unsafeIOToPageM (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-model-choice") (toJSText "claude-sonnet-5-5"))
-    eventually $ (\s -> (settingsOf Anthropic s).model) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ModelName "claude-sonnet-5-5"))
+    findIn anthropic ".assistant-model" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
+    _ <- perform (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-model-choice") (toJSText "claude-sonnet-5-5"))
+    (\s -> (settingsOf Anthropic s).model) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ModelName "claude-sonnet-5-5"))
     -- The gateway has that one: pressed again, the key is kept with it.
     unsafeIOToPageM (js_check (toJSText "null")) >>= (`shouldBe` True)
-    eventually $ findIn anthropic ".assistant-key-form button[type='submit']" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
+    findIn anthropic ".assistant-key-form button[type='submit']" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
     findIn anthropic ".assistant-key-form button[type='submit']" >>= click
-    eventually $ findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
+    findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
     (map (fieldText ["model"]) <$> checks) `shouldReturn` [Just "claude-opus-5-5", Just "claude-sonnet-5-5"]
     keyNow `shouldReturn` Just (ApiKey "gw-token")
     (\s -> (settingsOf Anthropic s).model) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ModelName "claude-sonnet-5-5"))
@@ -925,7 +933,7 @@ spec m = do
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     findIn anthropic ".assistant-key" >>= (`typeText` "gw-token")
     findIn anthropic ".assistant-key-form button[type='submit']" >>= click
-    eventually $ findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
+    findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
     findIn anthropic ".assistant-check-kept" >>= (`shouldHaveText` "The key works and is kept.")
     findIn anthropic ".assistant-not-listed" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The list of models could not be fetched.")
     (map (fieldText ["model"]) <$> checks) `shouldReturn` [Just "claude-opus-5-5"]
@@ -947,7 +955,7 @@ settingsOver m services = do
     runMemWiki wiki session
   answerWith "GET" "api/v1/session" 200 SessionInfo {user = me.user, groups = me.groups, grants = me.grants, standing = SignedIn, providers = [], exports = [], boxes = [], homePage = me.homePage, mathMacros = Nothing, assistantServices = services, whatsNew = Nothing}
   ui <- startServer m AssistantSettings
-  _ <- eventually $ find ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service"
+  _ <- find ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service"
   pure ui
 
 -- | The administration's services of the test's server: a gateway that
@@ -981,7 +989,7 @@ openAssistantKeptWith m = do
   original <- markdown ui
   find ui scriptedButton >>= click
   _ <- find ui ".assistant-input"
-  eventually $ find ui ".assistant-using" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Scripted")
+  find ui ".assistant-using" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Scripted")
   pure (ui, original)
 
 openAssistant
@@ -1016,7 +1024,7 @@ openDeckAssistant m = do
   _ <- editorText ui
   find ui scriptedButton >>= click
   _ <- find ui ".assistant-input"
-  eventually $ find ui ".assistant-using" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Scripted")
+  find ui ".assistant-using" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Scripted")
   pure ui
 
 -- | The presentation the assistant edits slide by slide.
@@ -1040,8 +1048,10 @@ send ui message = do
 keep :: forall m -> (MonadBrowserTest m, MonadAssistant m, MonadVault m) => UserId -> Settings -> PageM s ()
 keep m user settings = void (unsafeIOToPageM (runTest (changeKeys user (const settings) :: m (Either Text Keys))))
 
+-- | The settings kept for a user, read once the program is quiet: its
+-- writes of the settings are done in an 'H.async'.
 settingsFor :: forall m -> (MonadBrowserTest m, MonadAssistant m) => UserId -> PageM s Settings
-settingsFor m user = unsafeIOToPageM (either (const defaultSettings) (\k -> k.settings) <$> runTest (readKeys user :: m (Either Text Keys)))
+settingsFor m user = waitQuiet *> unsafeIOToPageM (either (const defaultSettings) (\k -> k.settings) <$> runTest (readKeys user :: m (Either Text Keys)))
 
 -- | Run an example on a page without the scripted provider's script, and
 -- leave the page without one. The script is a global of the page
@@ -1053,8 +1063,19 @@ settingsFor m user = unsafeIOToPageM (either (const defaultSettings) (\k -> k.se
 -- was an example of this group, at eight the last example of the group
 -- before, which sets none. Here an example that sets no script finds none,
 -- whatever the number of pages.
+--
+-- The scripted provider's waits that the test holds ('hold', 'held', a
+-- held check) are counted as held ('countHeld'), read from the script at
+-- each look: a read waits for the program to be quiet, and a held turn
+-- would otherwise keep it from being quiet until the deadline. An example
+-- that starts the test's server ('settingsOver') counts the server's held
+-- requests instead, and holds nothing of the script's.
 runFresh :: (HasCallStack) => (forall s. PageM s a) -> IO a
-runFresh test = js_forget >> (runPage test `finally` js_forget)
+runFresh test = js_forget >> (runPage (countHeld (unsafeIOToPageM js_holding) *> test) `finally` js_forget)
+
+-- | Let go every wait of the scripted provider that the test holds.
+letGo :: PageM s ()
+letGo = perform js_let_go
 
 -- | Install the scripted provider's script: the steps of each turn.
 script :: [[Value]] -> PageM s ()
@@ -1085,11 +1106,13 @@ scriptedModels =
   ]
 
 -- | What the scripted provider was sent, what its tools were answered,
--- and what the settings' tests checked with it.
+-- and what the settings' tests checked with it, read once the program is
+-- quiet: the provider is asked, and its tools answered, while the program
+-- waits for a turn or a check.
 requests, answers, checks :: PageM s [Value]
-requests = unsafeIOToPageM (decoded <$> js_requests)
-answers = unsafeIOToPageM (decoded <$> js_answers)
-checks = unsafeIOToPageM (decoded <$> js_checks)
+requests = waitQuiet *> unsafeIOToPageM (decoded <$> js_requests)
+answers = waitQuiet *> unsafeIOToPageM (decoded <$> js_answers)
+checks = waitQuiet *> unsafeIOToPageM (decoded <$> js_checks)
 
 decoded :: JSText -> [Value]
 decoded = fromMaybe [] . decodeStrict . encodeUtf8 . fromJSText
@@ -1104,6 +1127,8 @@ replace old new = object ["tool" .= ("replace" :: Text), "input" .= object ["old
 insert :: Text -> Text -> Text -> Value
 insert anchor place t = object ["tool" .= ("insert" :: Text), "input" .= object ["anchor" .= anchor, "where" .= place, "text" .= t]]
 
+-- | A pause that lasts until the turn is stopped or the test lets it go
+-- ('letGo'), with what came before it shown.
 hold :: Value
 hold = object ["hold" .= True]
 
@@ -1120,11 +1145,11 @@ usage i c w o = object ["usage" .= object ["input" .= i, "cached" .= c, "written
 quiet :: Int -> Value
 quiet ms = object ["wait" .= ms]
 
--- | A tool call that the model takes so many milliseconds to write: the
--- call starts, and is made after the pause.
-pausing :: Int -> Value -> Value
-pausing ms (Aeson.Object o) = Aeson.Object (o <> KeyMap.fromList [("pause", Aeson.toJSON ms)])
-pausing _ other = other
+-- | A tool call that the model writes until the test lets it go ('letGo'):
+-- the call starts, and is made then.
+held :: Value -> Value
+held (Aeson.Object o) = Aeson.Object (o <> KeyMap.fromList [("hold", Aeson.Bool True)])
+held other = other
 
 failing :: Text -> Int -> Text -> Value
 failing kind status message = object ["error" .= object ["kind" .= kind, "status" .= status, "message" .= message]]

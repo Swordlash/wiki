@@ -71,7 +71,9 @@ js_choose_file :: JSText -> JSText -> JSText -> JSText -> IO ()
 js_choose_file a1 a2 a3 a4 = if inBrowser then wait =<< js_choose_filePromise a1 a2 a3 a4 else pure inert
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
-spec m = do
+-- The reads look once, with the program idle; a read of the preview after
+-- typing first waits for the preview's pause ('waitQuiet').
+spec m = readsOnce Idle $ do
   it "previews what is typed, with its formulas drawn, and saves it" $ runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     find ui ".editor-heading" >>= (`shouldHaveText` "Editing Hello, world")
@@ -79,6 +81,8 @@ spec m = do
     text <- editorText ui
     clearBody ui
     typeText text "Euler: $e^{i\\pi} + 1 = 0$"
+    -- The preview follows after its pause.
+    waitQuiet
     find ui ".editor-preview .page-body h1" >>= (`shouldHaveText` "Hello, world")
     formula <- find ui ".editor-preview .wiki-math-inline .katex"
     findIn formula "annotation" >>= (`shouldHaveText` "e^{i\\pi} + 1 = 0")
@@ -193,8 +197,7 @@ spec m = do
     length <$> findAll ui ".editor-attach.disabled" `shouldReturn` 0
     -- Once CodeMirror has the text, which the reference goes into.
     _ <- editorText ui
-    unsafeIOToPageM (chooseFile ".editor-attach input" "dot.png" "image/png" dotPng)
-    settle
+    perform (chooseFile ".editor-attach input" "dot.png" "image/png" dotPng)
     eventually $ markdown ui `shouldReturn` "# With a picture\n\n![dot.png](attachment:dot.png)"
     find ui ".editor-attachments li a" >>= (`shouldHaveText` "dot.png")
     find ui ".editor-hint" >>= textContent >>= (`shouldSatisfy` (not . T.isInfixOf "first"))
@@ -407,9 +410,10 @@ spec m = do
     text <- editorText ui
     clearBody ui
     typeText text "Look: "
-    unsafeIOToPageM (dropFile ".editor-cm .cm-content" "dot.png" "image/png" dotPng)
-    settle
+    perform (dropFile ".editor-cm .cm-content" "dot.png" "image/png" dotPng)
     eventually $ markdown ui `shouldReturn` "# Hello, world\n\nLook: ![dot.png](attachment:dot.png)"
+    -- The preview follows after its pause.
+    waitQuiet
     image <- find ui ".editor-preview .page-body img[alt='dot.png']"
     getAttribute image "src" >>= (`shouldSatisfy` maybe False (T.isPrefixOf "blob:"))
     find ui ".editor-attachments li a" >>= (`shouldHaveText` "dot.png")
@@ -430,6 +434,8 @@ spec m = do
     prevented `shouldBe` True
     settle
     eventually $ markdown ui `shouldReturn` "# Hello, world\n\nLook: ![dot.png](attachment:dot.png)"
+    -- The preview follows after its pause.
+    waitQuiet
     image <- find ui ".editor-preview .page-body img[alt='dot.png']"
     getAttribute image "src" >>= (`shouldSatisfy` maybe False (T.isPrefixOf "blob:"))
     find ui ".editor-attachments li a" >>= (`shouldHaveText` "dot.png")
@@ -464,9 +470,10 @@ spec m = do
     sideBySide ui
     _ <- editorText ui
     clearBody ui
-    unsafeIOToPageM (chooseFile ".editor-attach input" "meeting notes.txt" "text/plain" "aGVsbG8K")
-    settle
+    perform (chooseFile ".editor-attach input" "meeting notes.txt" "text/plain" "aGVsbG8K")
     eventually $ markdown ui `shouldReturn` "# Hello, world\n\n[meeting notes.txt](<attachment:meeting notes.txt>)"
+    -- The preview follows after its pause.
+    waitQuiet
     download <- find ui ".editor-preview .page-body a[download='meeting notes.txt']"
     getAttribute download "href" >>= (`shouldSatisfy` maybe False (T.isPrefixOf "blob:"))
 
@@ -591,6 +598,8 @@ spec m = do
     typeText text "."
     markdown ui `shouldReturn` "# Hello, world\n\nSee [Diagrams](/s/docs/p/markdown-guide/diagrams/)."
     -- The address leads to the page.
+    -- The preview follows after its pause.
+    waitQuiet
     _ <- find ui ".editor-preview .page-body a[href$='#/s/docs/p/markdown-guide/diagrams/']"
     pure ()
 

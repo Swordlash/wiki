@@ -130,6 +130,7 @@ $( browserJS
      , ("js_network_event", "wiki_test_network_event", Safe, [t|Bool -> IO ()|])
      , ("js_server_release", "wiki_test_server_release", Safe, [t|IO ()|])
      , ("js_server_pending", "wiki_test_server_pending", Safe, [t|IO Int|])
+     , ("js_server_holding", "wiki_test_server_holding", Safe, [t|IO Int|])
      , ("js_server_open_sockets", "wiki_test_server_open_sockets", Safe, [t|IO Int|])
      , ("js_server_asked", "wiki_test_server_asked", Safe, [t|IO JSText|])
      , ("js_markup", "wiki_test_markup", Safe, [t|IO JSText|])
@@ -200,7 +201,9 @@ answersTaken within = do
   eventuallyWithin within (unsafeIOToPageM js_server_pending `shouldReturn` 0)
   waitQuietWithin within
 
--- | Answer the requests held.
+-- | Answer the requests held. It does not settle the program, as
+-- 'perform' would: some tests (the encrypted spaces') hold the program
+-- inside an action at that moment, which a settle would wait out.
 release :: PageM s ()
 release = unsafeIOToPageM js_server_release
 
@@ -215,6 +218,9 @@ hangUp = unsafeIOToPageM js_server_hang_up
 serverStarts :: PageM s ()
 serverStarts = do
   unsafeIOToPageM js_server_start
+  -- The requests the server holds until a release are waits the test
+  -- makes on purpose: 'waitQuiet' takes the program as quiet with them.
+  countHeld (unsafeIOToPageM js_server_holding)
   serveOpaque
 
 -- | The answers to OPAQUE's first messages and registrations

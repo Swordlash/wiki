@@ -2066,6 +2066,25 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   the clipboard brought into the loop or waited for by their own
   event. The smoke suites have 53 explicit waits, listed by cause in
   the report: 20 on a library's drawing, 11 on another process.
+  **The check that the first change is enough (2026-11-18, on the
+  measurement branches; `wp5137/after.md`):** with the deadline at
+  thirty seconds and a `settle` after the mount in the wiki's shell
+  helpers, the failures under load fell from 135 to 19 on two kinds
+  of runner (Xeon 6975P-C and EPYC 7763); the runner's timeouts from
+  123 to none; the retries of reads that came before the program was
+  idle from 1,733 to 91. Forty settles ran between five and 8.7
+  seconds and passed. The five seconds lived in four places, none
+  shared (the runner's Playwright timeout, the page's own deadline,
+  `actionDeadlineMs`, and `hspec-halogen open`). What is left, each a
+  package or a part of one: the assistant's "keeps the text's
+  selection in sight…" fails in every nightly run (the scripted
+  provider not in the list: being read for its cause); the slides'
+  editor loses a typed character as CodeMirror takes the focus
+  (`SlideEditor.hs:1111`: the same); `Tasks.hs:533` ("1 box changed,
+  not saved yet" at rest after twenty seconds); `SlideEditor.hs:962`
+  and `Http.hs:1581` (a read while a fiber waits); `Contents.hs:114`
+  and `Comments.hs:87` (the clipboard's promise); `Vault.hs:771` and
+  `:602`.
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
   przed pluginami").** One builder, in this order, each its own pull

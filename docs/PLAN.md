@@ -2083,8 +2083,16 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   left one (the harness sends example i to page i mod the number of
   pages: two in CI, eight in the nightly); every example of the
   assistant now starts and ends without a script; the slides'
-  editor loses a typed character as CodeMirror takes the focus
-  (`SlideEditor.hs:1111`: the same); `Tasks.hs:533` ("1 box changed,
+  editor lost a typed character as CodeMirror took the focus
+  (`SlideEditor.hs:1111`): **fixed (#322), a fault of the program**:
+  slide by slide the master is not drawn and could not take the focus
+  that the hidden textarea gave up, and the cursor's row took it some
+  tasks later, so a key typed in between went to no text; the master
+  now holds the focus, drawn one pixel and clipped, until the row
+  takes it. Left: a master attached again slide by slide (a reload of
+  the editor) reads whether it had the focus from the old master,
+  which is false while a row has it, so no row is opened with the
+  focus; `Tasks.hs:533` ("1 box changed,
   not saved yet" at rest after twenty seconds); `SlideEditor.hs:962`
   and `Http.hs:1581` (a read while a fiber waits); `Contents.hs:114`
   and `Comments.hs:87` (the clipboard's promise); `Vault.hs:771` and

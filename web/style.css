@@ -3711,6 +3711,20 @@ body:has(.slides-view) {
   display: none;
 }
 
+/* The master in the moment it holds the focus slide by slide: from
+   CodeMirror taking the textarea's place, while the author was typing in
+   it, until the cursor's row takes the focus (web/src/editor.js's attach).
+   It is drawn out of sight, one pixel clipped away, so that it can have
+   the focus and the keys typed meanwhile go into the text. */
+.editor-form.slides .editor-source > .editor-cm[data-holds-focus] {
+  display: flex;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
 .editor-slides {
   --slide-gap: 0.6rem;
   display: flex;

@@ -112,7 +112,9 @@ spec m = do
     -- the page that grows what is above the link after the focus, before
     -- the browser's next frame, pushes it far below the window, where the
     -- watch never ends (CI on #316 and #322: the focus landed while the
-    -- page rendered again and again). As the examples over HTTP wait.
+    -- page rendered again and again). As the examples over HTTP wait. With
+    -- the islands counted as the program's work (#319), this rest also
+    -- covers what Mermaid, TikZ and the frames draw.
     waitQuietWithin guideLoaded
     bringNear ui
     -- The read starts when the browser's IntersectionObserver says the

@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 327
 title: An embed's test waits for the page at rest, and says why if it waits in vain
 technical: true
 ---

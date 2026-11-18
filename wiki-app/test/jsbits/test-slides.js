@@ -243,6 +243,43 @@ function wiki_test_editor_script(how) {
   }
 }
 
+// The editor held by wiki_test_editor_script("hold") put in place, with
+// the rows of the slide mode held from then on: a row the component asks
+// for is not made until wiki_test_rows_release. The promise settles once
+// the master has told its host that it is in place ("wiki-ready"), or
+// that its module failed ("wiki-editor-failed"). This is the moment
+// between the master taking the textarea's place and a row taking the
+// focus, held open for a test.
+function wiki_test_editor_arrives_rows_held() {
+  const islands = globalThis.wikiTestIslands ?? globalThis.wikiIslands;
+  const held = globalThis.wikiTestHeld ?? [];
+  globalThis.wikiTestHeld = [];
+  globalThis.wikiTestHeldRows = [];
+  globalThis.wikiIslands = { ...islands, attachRow: (...args) => globalThis.wikiTestHeldRows.push(args) };
+  const told = held.map(
+    ([, host]) =>
+      new Promise((resolve) => {
+        host.addEventListener("wiki-ready", resolve, { once: true });
+        host.addEventListener("wiki-editor-failed", resolve, { once: true });
+      }),
+  );
+  for (const args of held) islands.attachEditor(...args);
+  return Promise.all(told).then(() => undefined);
+}
+
+// How many rows the component has asked for since they were held.
+function wiki_test_rows_held() {
+  return (globalThis.wikiTestHeldRows ?? []).length;
+}
+
+// The rows held made, and those asked for from now on made at once.
+function wiki_test_rows_release() {
+  const islands = globalThis.wikiTestIslands ?? globalThis.wikiIslands;
+  globalThis.wikiIslands = islands;
+  for (const args of globalThis.wikiTestHeldRows ?? []) islands.attachRow(...args);
+  globalThis.wikiTestHeldRows = [];
+}
+
 // Start, or read, the log of the preview's measures of its cards
 // (wiki-app/jsbits/slide-fit.js), as JSON.
 function wiki_test_fit_log_start() {

@@ -3028,7 +3028,23 @@ export function attach(textarea, host, original, codeTokens) {
   const view = new EditorView({ state });
   host.replaceChildren(view.dom);
   view.scrollDOM.scrollTop = scrolled;
-  if (focused) view.focus();
+  if (focused) {
+    view.focus();
+    // Slide by slide the master is hidden (display: none) and cannot take
+    // the focus, and the textarea is hidden from now on too. The row the
+    // cursor is in takes the focus once the component has made it, some
+    // tasks later, and a key typed meanwhile would go to no text. So the
+    // master holds the focus until then: its host is marked to be drawn
+    // out of sight rather than not at all, which lets it be focused, and
+    // the mark goes when the master loses the focus (to the row). A key
+    // typed meanwhile goes into the master's text, which the row is made
+    // from.
+    if (document.activeElement !== view.contentDOM) {
+      host.dataset.holdsFocus = "true";
+      view.contentDOM.addEventListener("focusout", () => delete host.dataset.holdsFocus, { once: true });
+      view.focus();
+    }
+  }
   // Scrolling the text, the preview follows its top line. The listener
   // goes with the editor (destroy), before the channel it reports on.
   const scrolledText = () => {
@@ -3495,7 +3511,10 @@ export function attach(textarea, host, original, codeTokens) {
       completion.stop();
       follow.stop();
       view.destroy();
-      if (host.wikiEditor === editor) delete host.wikiEditor;
+      if (host.wikiEditor === editor) {
+        delete host.wikiEditor;
+        delete host.dataset.holdsFocus;
+      }
       delete view.contentDOM.wikiEditor;
     },
   };

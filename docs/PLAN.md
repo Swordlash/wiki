@@ -2095,7 +2095,28 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   equal. Left: a frame's element that Halogen moves in the page (two
   fences swapped in the editor's preview) is loaded again by the
   browser and the island is not told (the library's vdom would have
-  to move nodes with `moveBefore`). What is left, each a
+  to move nodes with `moveBefore`). **Merged too (#323): the editor's
+  CodeMirror and a slide's row (`attachEditor` and `attachRow` give a
+  promise, `whileAttaching` waits for it in a fork), and the first
+  look of the deck embed's `IntersectionObserver` (an `AskWith` of
+  the viewer's machine answering `Looked`), count as the program's
+  work; the table of contents' mark, the copy button's state and a
+  spoiler's transition are waited for by the browser's own signal
+  (`Test.Browser.Outside`), each read once.** **Open in the library
+  no more: its pull request 146 is merged (c5b09f02), `readsOnce` with
+  `Rest = Idle | Quiet`, settling `mount`, `hydrate` and `query`,
+  `perform`, `countHeld`; a read checks the rest at the moment it
+  looks. Next, in this order: bump the wiki's pin to it (the settling
+  mounts change every browser example: that pull request's CI is the
+  check, since the rerun on the wiki's stack was not made); move the
+  wiki's browser groups to `readsOnce`, one group a pull request,
+  starting with the editor's and the Tasks example that holds a save
+  (shown on a measurement branch: no failure, the retries left are the
+  explicit `eventually`s; the editor's group 14% slower because
+  `waitQuiet` sits out the two-second draft); the library's
+  `quiet-under-test-clock` (two commits, local only, in the stopped
+  builder's library worktree) so that it does not.** What is left,
+  each a
   package or a part of one: the assistant's "keeps the text's
   selection in sight…" failed in every nightly run: **fixed (#321),
   a fault of the test**: it set no scripted provider and passed only

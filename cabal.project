@@ -61,8 +61,9 @@ source-repository-package
   type: git
   location: https://github.com/Swordlash/haskell-halogen
   -- MEASUREMENT (WP5.137), never to be merged: the pin with hspec-halogen's
-  -- report of the waits that retry (branch measure/retries, 841e584).
-  tag: 841e58418b80b5977bf59d1bb2698038082ef731
+  -- report of the waits that retry and its settable deadline (branch
+  -- measure/retries, aa78e24).
+  tag: aa78e241d1c97fbc94e04721c90ee9b6058857ae
   subdir:
     core
     jsbits

@@ -1125,6 +1125,8 @@ jobs:
       env:
         HSPEC_HALOGEN_JOBS: '2'
         HSPEC_HALOGEN_RETRIES: '1'
+        # MEASUREMENT (WP5.137): the deadline of the actions and settles.
+        HSPEC_HALOGEN_DEADLINE_MS: '30000'
         WIKI_SUITE_TIMES: '1'
       run: |
         cpu=$(sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo 2>/dev/null | head -n 1) || true

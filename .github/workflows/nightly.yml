@@ -329,6 +329,8 @@ jobs:
       shell: bash
       env:
         HSPEC_HALOGEN_RETRIES: '1'
+        # MEASUREMENT (WP5.137): the deadline of the actions and settles.
+        HSPEC_HALOGEN_DEADLINE_MS: '30000'
         WIKI_NIGHTLY_RUNS: ${{ env.RUNS }}
         HSPEC_HALOGEN_TIMEOUT: '1800'
       run: |

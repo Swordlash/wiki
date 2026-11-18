@@ -97,7 +97,7 @@ watcherOf ws =
     { start = \_ tell -> do
         i <- atomicModifyIORef' ws.next (\n -> (n + 1, n + 1))
         atomicModifyIORef' ws.running (\m -> (Map.insert i tell m, ()))
-        pure (i, pass)
+        pure (i, pass, pass)
     , stop = \i -> atomicModifyIORef' ws.running (\m -> (Map.delete i m, ()))
     }
 

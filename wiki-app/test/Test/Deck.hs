@@ -2,7 +2,8 @@
 -- ("Wiki.App.View.DeckViewer.Machine"), run on generated runs: the reader
 -- signing out and in, the shell reloading, the embed naming another page,
 -- the viewer's input given late (several changes in one), the link's
--- watch telling, the reads answered in any order, other people's writes
+-- watch telling, the answer of the browser's first look at the link
+-- coming in any order with it, the reads answered in any order, other people's writes
 -- anywhere, even between the two reads of one fetch, moves through the
 -- slides, and the viewer closing.
 --
@@ -49,6 +50,8 @@
 --   given the context as it is;
 -- * every read's addresses are let go by the time the viewer closed;
 -- * the slide and step shown are within the deck;
+-- * the answer of the browser's first look at the link changes nothing:
+--   the component asks for it only so that the program counts the wait;
 -- * once every input was given, every link rendered, every watch told and
 --   every read answered, the viewer shows the answer to a read made for
 --   its reading.
@@ -153,6 +156,9 @@ data World = World
   , nears :: [(Int, Int, Context)]
   -- ^ The watches' tellings not yet taken by the viewer: the watch, its
   -- number it tells, its reading.
+  , looks :: [Int]
+  -- ^ The asks of the browser's first look at a watch's link out, by the
+  -- watch's number: their answers, 'Looked', not yet taken.
   , outs :: [Out]
   , owners :: Map Int Bool
   -- ^ Every read's owner made, and whether it was let go.
@@ -179,6 +185,8 @@ data Step
     Tell Int
   | -- | The viewer takes the telling at this place.
     TakeNear Int
+  | -- | The viewer takes the answer of the first look at this place.
+    TakeLook Int
   | -- | The server reads the page for the read at this place.
     HandlePage Int
   | -- | The server reads the list for the read at this place.
@@ -209,6 +217,7 @@ genRun =
       , (4, pure Render)
       , (4, Tell <$> chooseInt (0, 1))
       , (4, TakeNear <$> chooseInt (0, 1))
+      , (2, TakeLook <$> chooseInt (0, 1))
       , (4, HandlePage <$> chooseInt (0, 1))
       , (4, HandleList <$> chooseInt (0, 1))
       , (5, Deliver <$> chooseInt (0, 1))
@@ -224,6 +233,7 @@ shrinkRun :: [Step] -> [[Step]]
 shrinkRun = shrinkList $ \case
   Tell i -> Tell <$> [0 .. i - 1]
   TakeNear i -> TakeNear <$> [0 .. i - 1]
+  TakeLook i -> TakeLook <$> [0 .. i - 1]
   HandlePage i -> HandlePage <$> [0 .. i - 1]
   HandleList i -> HandleList <$> [0 .. i - 1]
   Deliver i -> Deliver <$> [0 .. i - 1]
@@ -241,7 +251,7 @@ readingOf c = Reading {session = c.sessionNo, revision = c.rev, link = c.named}
 start :: World
 start =
   let c = Context {user = Just 1, sessionNo = 1, rev = 0, named = 0}
-      w0 = World {view = initial (Linked (readingOf c) ()), server = firstServer, context = c, given = c, rendered = 0, watchesRunning = mempty, nears = [], outs = [], owners = mempty, readsMade = mempty, answers = mempty, finished = False, trace = [], faults = []}
+      w0 = World {view = initial (Linked (readingOf c) ()), server = firstServer, context = c, given = c, rendered = 0, watchesRunning = mempty, nears = [], looks = [], outs = [], owners = mempty, readsMade = mempty, answers = mempty, finished = False, trace = [], faults = []}
    in event "mounted" Started w0
 
 -- | The world after the viewer took an event, and carried out its
@@ -257,7 +267,7 @@ event what e w0 = checked (noted (what <> named) w2)
 -- | One effect carried out, as the component does.
 effect :: Effect Int () -> World -> World
 effect e w = case e of
-  Watch n -> w {watchesRunning = Map.insert n (n, w.given) w.watchesRunning}
+  Watch n -> w {watchesRunning = Map.insert n (n, w.given) w.watchesRunning, looks = w.looks <> [n]}
   Unwatch n -> w {watchesRunning = Map.delete n w.watchesRunning}
   Fetch f _ () -> w {outs = w.outs <> [Out {fetch = f, madeFor = w.given, sentIn = w.context.sessionNo, pageRead = Nothing, answer = Nothing}], owners = Map.insert f False w.owners, readsMade = Map.insert f w.given w.readsMade}
   Release f -> w {owners = Map.insert f True w.owners}
@@ -305,6 +315,14 @@ play w = \case
           w' = event ("told by watch " <> show n) (Near g) w {nears = [x | (j, x) <- zip [0 ..] w.nears, j /= i]}
           started = Map.keysSet w'.owners `Set.difference` owned
        in w' {faults = w'.faults <> [(Stale, "a read started by a watch for an earlier reading") | not (Set.null started), c /= w.given]}
+    Nothing -> w
+  -- The answer to the ask of the browser's first look, which comes in any
+  -- order with the watch's telling: the viewer takes it as nothing.
+  TakeLook i -> case atMay w.looks i of
+    Just n ->
+      let (looked, fx) = step (Looked n) w.view
+          w' = event ("the first look of watch " <> show n) (Looked n) w {looks = [x | (j, x) <- zip [0 ..] w.looks, j /= i]}
+       in w' {faults = w'.faults <> [(Looks, "the first look of watch " <> show n <> " changed the model, or asked " <> show fx) | not (null fx) || show looked /= (show w.view :: Text)]}
     Nothing -> w
   HandlePage i -> onOut i (isNothing . (.pageRead)) $ \o -> noted ("the server reads page " <> show o.madeFor.named <> " for read " <> show o.fetch) (setOut o {pageRead = Just (pageFor o w)} w)
   HandleList i -> onOut i (\o -> isJust o.pageRead && isNothing o.answer) $ \o ->
@@ -393,6 +411,7 @@ settled w0 = go (40 :: Int) (play w0 Give)
       | w.rendered > 0 = go (n - 1) (play w Render)
       | not (Map.null w.watchesRunning) = go (n - 1) (play w (Tell 0))
       | not (null w.nears) = go (n - 1) (play w (TakeNear 0))
+      | not (null w.looks) = go (n - 1) (play w (TakeLook 0))
       | any (isNothing . (.pageRead)) w.outs = go (n - 1) (play w (HandlePage 0))
       | any (isNothing . (.answer)) w.outs = go (n - 1) (play w (HandleList 0))
       | not (null w.outs) = go (n - 1) (play w (Deliver 0))
@@ -414,7 +433,7 @@ settles w0 =
 
 -- | 'Rule' is each rule a run is checked against, as the module's Haddock
 -- lists them.
-data Rule = OneWatch | ForReading | Stale | LiveAddresses | Owners | InDeck
+data Rule = OneWatch | ForReading | Stale | LiveAddresses | Owners | InDeck | Looks
   deriving stock (Eq, Show, Enum, Bounded)
 
 ruleText :: Rule -> [Char]
@@ -425,6 +444,7 @@ ruleText = \case
   LiveAddresses -> "shows no deck whose addresses were let go, on any run"
   Owners -> "lets go of every read's addresses by the time it closes, on any run"
   InDeck -> "shows a slide and a step within the deck, on any run"
+  Looks -> "takes the browser's first look at its link as nothing, on any run"
 
 verdict :: Rule -> World -> Property
 verdict rule w =

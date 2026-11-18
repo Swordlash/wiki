@@ -13,8 +13,8 @@
 //   wikiIslands.renderMermaid(element, source): Promise<void>
 //   wikiIslands.renderTikz(element, source, preamble, picture): Promise<void>
 //   wikiIslands.highlight(element, language, code)
-//   wikiIslands.attachEditor(textarea, host, original)
-//   wikiIslands.attachRow(masterHost, rowHost, key, focus)
+//   wikiIslands.attachEditor(textarea, host, original): Promise<void>
+//   wikiIslands.attachRow(masterHost, rowHost, key, focus): Promise<void>
 //   wikiIslands.assistant(): Promise<module>
 //   wikiIslands.cropAvatar(host, file): Promise<void>
 //   wikiIslands.opaque(): Promise<module>
@@ -354,23 +354,28 @@ const codeTokens = (language, code) => {
 // with a "wiki-editor-failed" event: the component shows the textarea in
 // every mode, a presentation's slide by slide too, which needs CodeMirror.
 // `load` loads the module; a browser test gives one that fails.
-const attachEditor = (textarea, host, original, load = loadEditor) => {
+//
+// The promise returned settles once CodeMirror is in place and the host has
+// had its "wiki-ready" event, or once the host has had "wiki-editor-failed".
+// It never rejects. The component waits for it in a fiber of its own, so
+// that the program is not quiet while the editor is still coming.
+const attachEditor = (textarea, host, original, load = loadEditor) =>
   load()
     .then((editor) => editor.attach(textarea, host, original, codeTokens))
     .catch((error) => {
       console.error("The editor's formatting could not be loaded:", error);
       host.dispatchEvent(new CustomEvent("wiki-editor-failed"));
     });
-};
 
 // A row of a presentation's slide mode over the editor's text (editor.js's
 // attachRow), once the editor's module has loaded: the module is loaded
-// already when the master is in place, so this waits only for a task.
-const attachRow = (masterHost, rowHost, key, focus) => {
+// already when the master is in place, so this waits only for a task. The
+// promise returned settles once the row is in place, and never rejects,
+// as attachEditor's.
+const attachRow = (masterHost, rowHost, key, focus) =>
   loadEditor()
     .then((editor) => editor.attachRow(masterHost, rowHost, key, focus))
     .catch((error) => console.error("A slide's row could not be shown:", error));
-};
 
 // The cropper in the avatar's dialog, once its module has loaded. A module
 // that does not load leaves the dialog without one, and says so in the

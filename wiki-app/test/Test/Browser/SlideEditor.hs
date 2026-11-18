@@ -28,6 +28,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (slugs, startOn, startWith)
+import Test.Browser.Outside (watchdogMs)
 import Test.Browser.Text (completing, editorText, inputsSeen, insertText, markdown, problemsMarked, proposeText, selectText, setMarkdown, watchEditor)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
@@ -75,6 +76,7 @@ $( browserJS
      , ("js_fit_log", "wiki_test_fit_log", Safe, [t|IO JSText|])
      , ("js_slide_cut", "wiki_test_slide_cut", Safe, [t|Int -> IO JSText|])
      , ("js_fit_hold", "wiki_test_fit_hold", Safe, [t|Bool -> IO ()|])
+     , ("js_fit_releasePromise", "wiki_test_fit_release", Safe, [t|IO (Promise ())|])
      , ("js_viewport_rules", "wiki_test_viewport_rules", Safe, [t|IO JSText|])
      , ("js_search_focus", "wiki_test_search_focus", Safe, [t|IO JSText|])
      , ("js_search_marks", "wiki_test_search_marks", Safe, [t|IO JSText|])
@@ -91,6 +93,17 @@ js_drop_file a1 a2 a3 a4 = if inBrowser then wait =<< js_drop_filePromise a1 a2 
 js_paste :: JSText -> JSText -> JSText -> JSText -> JSText -> IO Bool
 js_paste a1 a2 a3 a4 a5 = if inBrowser then wait =<< js_pastePromise a1 a2 a3 a4 a5 else pure inert
 
+js_fit_release :: IO ()
+js_fit_release = if inBrowser then wait =<< js_fit_releasePromise else pure inert
+
+-- | Let the preview's measures held back through, and wait until the
+-- program has done with them: the measures are taken in an animation
+-- frame, outside the program, and told to it then (test-slides.js's
+-- wiki_test_fit_release settles after them); what the program makes of
+-- them is 'waitQuiet''s.
+fitRelease :: PageM s ()
+fitRelease = unsafeIOToPageM js_fit_release >> waitQuiet
+
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
 spec m = do
   it "lists the slides as rows, the cursor's open as the editor opens, each opened and closed by its header, several at once" $ runPage $ do
@@ -104,8 +117,8 @@ spec m = do
     eventually $ openTitles ui `shouldReturn` ["Deck"]
     headers <- findAll ui ".editor-slides .slide-row-toggle"
     editorFits `shouldReturn` replicate 4 "unmeasured"
-    unsafeIOToPageM (js_fit_hold False)
-    eventually $ editorFits `shouldReturn` replicate 4 "fits"
+    fitRelease
+    editorFits `shouldReturn` replicate 4 "fits"
     traverse isAttached headers `shouldReturn` replicate 4 True
     watchEditor ui
     rowHeader ui "Two" >>= click
@@ -624,7 +637,10 @@ spec m = do
     rowSelect 1 8 14
     find ui ".editor-new-slide" >>= focus
     eventually $ kept `shouldReturn` "First."
-    -- In the text again, the browser shows the selection itself.
+    -- In the text again, the browser shows the selection itself. The
+    -- marks follow the focus by CodeMirror's own timer (it tells its
+    -- plugins of a change of the focus ten milliseconds after it), which
+    -- nothing of the program's or the browser's signals: a named wait.
     rowSelect 1 8 14
     eventually $ kept `shouldReturn` ""
 
@@ -1023,9 +1039,7 @@ spec m = do
     eventually $ problemsOf10 `shouldReturn` "1 problem"
     waitQuiet
     unsafeIOToPageM js_publications `shouldReturn` 1
-    unsafeIOToPageM (js_fit_hold False)
-    eventually $ unsafeIOToPageM js_publications `shouldReturn` 2
-    waitQuiet
+    fitRelease
     unsafeIOToPageM js_publications `shouldReturn` 2
 
   it "takes the emoji or the mention chosen with the arrows in a row, though the hidden editor changes before Enter, with another row open" $ runPage $ do
@@ -1670,10 +1684,18 @@ spec m = do
           when (bothWays && width == 1024 && fit /= "fits") $ (deckName, n, fit, seen.cut) `shouldSatisfy` (\(_, _, _, c) -> c)
         -- To the next slide, through the steps of this one: a later step's
         -- content is laid out, hidden, from the first step on, so the cut
-        -- is the same at every step.
-        when (n < length fits) . eventually $ do
-          c <- slideCut 1024
-          when (c.slide == n) (press "ArrowRight")
+        -- is the same at every step. ArrowRight is pressed until the slide
+        -- is the next one, each press settled before the slide is read; a
+        -- slide has fewer steps than the bound.
+        when (n < length fits) $ do
+          let next :: Int -> PageM s ()
+              next pressed = do
+                c <- slideCut 1024
+                when (c.slide == n) $
+                  if pressed >= 50
+                    then expectationFailure ("slide " <> show n <> " still shown after 50 presses of ArrowRight")
+                    else press "ArrowRight" >> next (pressed + 1)
+          next 0
           after <- slideCut 1024
           after.slide `shouldBe` n + 1
 
@@ -1937,7 +1959,18 @@ spec m = do
         made <- either (panic . show) identity <$> setPageKind hello.id Kind.Presentation
         void (either (panic . show) identity <$> savePage made.id made.updatedAt "Deck" text)
       ui <- startOn m wiki helloEditor
-      when waiting (void (editorText ui))
+      -- The editor waits for its CodeMirror in a fork
+      -- ('Wiki.App.Editor.Browser.whileAttaching'), and the preview for its
+      -- diagrams and frames (Wiki.App.Islands): once the program is quiet,
+      -- the master is in place. A deck's first diagram fetches Mermaid, so
+      -- the deadline is the suite's watchdog, not the five seconds of an
+      -- action. A drawing the test holds is not waited for: the test's
+      -- stub gives the program no promise (test-slides.js's
+      -- wiki_test_mermaid).
+      when waiting $ do
+        waitQuietWithin watchdogMs
+        masters <- findAll ui ".editor-cm .cm-content"
+        when (null masters) $ expectationFailure "no CodeMirror in place once the editor was quiet"
       pure (ui, wiki)
 
 -- | The presentation the tests edit: a title slide and three others,
@@ -2187,9 +2220,18 @@ rowContent ui title = eventually $ do
   named <- filterM (\r -> (== title) <$> (findIn r ".slide-row-title" >>= textContent)) rows
   maybe (expectationFailure ("no open row " <> title)) (`findIn` ".cm-content") (head named)
 
--- | What one types into in the open row whose editor has the focus.
+-- | What one types into in the open row whose editor has the focus. A row
+-- opened comes with its CodeMirror a task later, which the program waits
+-- for ('Wiki.App.Editor.Browser.whileAttaching'), so it is there once the
+-- program is quiet. The focus read is the browser's own (:focus), set as
+-- the row takes it: CodeMirror's class cm-focused follows it by a timer of
+-- its own, ten milliseconds later.
 openRowContent :: Mounted s q o m -> PageM s (Element s)
-openRowContent ui = find ui ".editor-slides .cm-editor.cm-focused .cm-content"
+openRowContent ui = do
+  waitQuiet
+  findAll ui ".editor-slides .cm-content:focus" >>= \case
+    [content] -> pure content
+    found -> expectationFailure ("not one row's text with the focus, but " <> show (length found))
 
 -- | The text of the row at an index ("" when it is closed), its
 -- selection, and whether it has the focus; select in it, in characters.

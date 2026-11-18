@@ -25,6 +25,7 @@ import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
 import Test.Browser.Mount (slugs, startChanged)
+import Test.Browser.Outside (untilAttribute)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend.Mem.State (MemState (..), insertPage)
@@ -65,11 +66,13 @@ spec m = describe "a code block's copy button" $ do
     textContent button `shouldReturn` ""
     find ui ".page-body" >>= textContent >>= (`shouldSatisfy` \text -> "Before.main :: IO ()\nmain = print (1 < 2 && True)\nAfter." `T.isInfixOf` text && not ("Copy" `T.isInfixOf` text))
     click button
-    eventually $ copied `shouldReturn` ["main :: IO ()\nmain = print (1 < 2 && True)\n"]
-    eventually $ label `shouldReturn` "\"Copied\""
+    shown "copied"
+    copied `shouldReturn` ["main :: IO ()\nmain = print (1 < 2 && True)\n"]
+    label `shouldReturn` "\"Copied\""
     getAttribute button "aria-label" `shouldReturn` Just "Copied"
     -- About two seconds later, as it was.
-    eventuallyWithin 6000 $ label `shouldReturn` "\"Copy\""
+    shownNoLonger
+    label `shouldReturn` "\"Copy\""
     getAttribute button "aria-label" `shouldReturn` Just "Copy the code"
     getAttribute button "data-copy" `shouldReturn` Nothing
     unstubClipboard
@@ -89,8 +92,9 @@ spec m = describe "a code block's copy button" $ do
     cornerOf ".page-body .code-block > button.code-copy" `shouldReturn` corner
     focus button
     press "Enter"
-    eventually $ copied `shouldReturn` [code]
-    eventually $ label `shouldReturn` "\"Copied\""
+    shown "copied"
+    copied `shouldReturn` [code]
+    label `shouldReturn` "\"Copied\""
     unstubClipboard
 
   it "numbers each line of a numbered listing, and neither a selection nor a copy has the numbers" $ runPage $ do
@@ -117,7 +121,8 @@ spec m = describe "a code block's copy button" $ do
     selected `shouldSatisfy` (not . T.any isDigit)
     T.strip selected `shouldBe` T.strip code
     find ui ".page-body .code-block > button.code-copy" >>= click
-    eventually $ copied `shouldReturn` [code]
+    shown "copied"
+    copied `shouldReturn` [code]
     unstubClipboard
 
   it "says Not copied when the browser refuses, and Copy again after" $ runPage $ do
@@ -125,10 +130,12 @@ spec m = describe "a code block's copy button" $ do
     ui <- page m "```\nsecret\n```"
     _ <- find ui ".page-body .code-block > pre.wiki-code > code"
     find ui ".page-body .code-block > button.code-copy" >>= click
-    eventually $ label `shouldReturn` "\"Not copied\""
+    shown "failed"
+    label `shouldReturn` "\"Not copied\""
     find ui ".page-body .code-block > button.code-copy" >>= (`getAttribute` "aria-label") >>= (`shouldBe` Just "Not copied")
     copied `shouldReturn` []
-    eventuallyWithin 6000 $ label `shouldReturn` "\"Copy\""
+    shownNoLonger
+    label `shouldReturn` "\"Copy\""
     unstubClipboard
 
 -- | The demo's Projects space with a page of this text, shown to an
@@ -162,6 +169,16 @@ copied = unsafeIOToPageM (fromMaybe [] . decodeStrict . encodeUtf8 . fromJSText 
 -- | The label the style sheet draws on the page's first copy button.
 label :: PageM s Text
 label = unsafeIOToPageM (fromJSText <$> js_before_content (toJSText (".page-body .code-copy" :: Text)))
+
+-- | Until the copy button says how the copy went (its data-copy, "copied"
+-- or "failed"), which web/src/islands.js sets once the clipboard's promise
+-- has settled, outside the program; and until it says nothing again, which
+-- its own timer brings about two seconds later.
+shown :: (HasCallStack) => Text -> PageM s ()
+shown how = untilAttribute ".page-body .code-block > button.code-copy" "data-copy" (Just how)
+
+shownNoLonger :: (HasCallStack) => PageM s ()
+shownNoLonger = untilAttribute ".page-body .code-block > button.code-copy" "data-copy" Nothing
 
 -- | A property the style sheet gives the first element a selector finds.
 computedStyle :: Text -> Text -> PageM s Text

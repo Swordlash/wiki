@@ -2075,7 +2075,16 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   idle from 1,733 to 91. Forty settles ran between five and 8.7
   seconds and passed. The five seconds lived in four places, none
   shared (the runner's Playwright timeout, the page's own deadline,
-  `actionDeadlineMs`, and `hspec-halogen open`). What is left, each a
+  `actionDeadlineMs`, and `hspec-halogen open`). **Done (2026-11-18):
+  the library's pull request 145, written by this session, makes them
+  one setting, `HSPEC_HALOGEN_DEADLINE_MS`, with a report of the waits
+  that retry (`HSPEC_HALOGEN_RETRIES=1`) and `withDeadline` for a part
+  of a test; the wiki pins it (357b732c) and gives its browser suite
+  thirty seconds in `toolchain/wasm-test-wrapper.sh` (#325). Open in
+  the library: pull request 146, `readsOnce` (a group's reads look
+  once, at rest), and after it a pause asleep on the test's clock
+  counting as rest, so that a quiet wait does not sit out the
+  editor's two-second draft.** What is left, each a
   package or a part of one: the assistant's "keeps the text's
   selection in sight…" failed in every nightly run: **fixed (#321),
   a fault of the test**: it set no scripted provider and passed only

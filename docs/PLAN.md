@@ -2084,7 +2084,18 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   the library: pull request 146, `readsOnce` (a group's reads look
   once, at rest), and after it a pause asleep on the test's clock
   counting as rest, so that a quiet wait does not sit out the
-  editor's two-second draft.** What is left, each a
+  editor's two-second draft.** **In the wiki, merged (#319): Mermaid,
+  TikZ and the html frames count as the program's work.** Each
+  island's script gives a promise (`Drawing`), and the island waits
+  for it in a fork, so `waitQuiet` covers a drawing; a new input stops
+  the wait of the old one; a frame's load is told by a count of the
+  writes of `srcdoc` and by a key the document carries
+  (`data-wiki-frame`, a hash made in `Wiki.Core.Markdown.Frame`, the
+  same on the server and in the browser), never by its text being
+  equal. Left: a frame's element that Halogen moves in the page (two
+  fences swapped in the editor's preview) is loaded again by the
+  browser and the island is not told (the library's vdom would have
+  to move nodes with `moveBefore`). What is left, each a
   package or a part of one: the assistant's "keeps the text's
   selection in sight…" failed in every nightly run: **fixed (#321),
   a fault of the test**: it set no scripted provider and passed only

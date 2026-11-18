@@ -34,6 +34,8 @@ routePattern mounted segments = case segments of
   _
     | mounted `isPrefixOf` segments -> case drop (length mounted) segments of
         ["api", "v1", "events"] -> "/api/v1/events"
+        ["api", "markdown", "reference"] -> "/api/markdown/reference"
+        "api" : "markdown" : _ -> "/api/markdown/page"
         rest@("api" : _) -> maybe "/api/unmatched" (("/" <>) . T.intercalate "/") (apiPattern rest)
         "auth" : _ : [step] | step `elem` ["start", "callback"] -> "/auth/:provider/" <> step
         "auth" : _ -> "/auth/unmatched"

@@ -85,6 +85,7 @@ import Wiki.Server.Events (eventsApplication)
 import Wiki.Server.Feed (FeedKind (..), feedApplication, notificationFeedApplication, sitemapApplication)
 import Wiki.Server.Health (healthApplication, metricsApplication)
 import Wiki.Server.Log (Logger, logRequests)
+import Wiki.Server.MarkdownApi (markdownApplication)
 import Wiki.Server.Metrics (observe)
 import Wiki.Server.Render (renderPage, routeAddress, routeOf)
 import Wiki.Server.Routes (routePattern)
@@ -275,6 +276,13 @@ listenerRoutes logger env site l caller request respond = do
         case drop (length mounted) segments of
           -- The path itself without its trailing slash.
           [] | not (null mounted) -> redirect (encodeUtf8 l.mount)
+          -- The API for a page's Markdown, signed in by HTTP Basic alone,
+          -- never by the cookie ("Wiki.Server.MarkdownApi"): on the
+          -- public listener only, since on the admin listener everyone
+          -- would be the administrator.
+          "api" : "markdown" : endpoint -> case l.finding of
+            BySession _ -> markdownApplication env l.mount caller.address endpoint request respond
+            EveryoneAdministers -> notFound
           rest@("api" : "v1" : endpoint)
             | shut, take 1 endpoint `notElem` map pure openToAnyone, not homeRead -> unauthenticated
             -- The live channel, upgraded to a WebSocket on its own, outside

@@ -61,7 +61,7 @@ import System.Environment (lookupEnv)
 import Wiki.Api.ContentPolicy (parseAssistantHost)
 import Wiki.Api.Opaque (Stretch)
 import Wiki.Server.Export (probeTimeout)
-import Wiki.Server.Opaque (defaultStretch)
+import Wiki.Server.Opaque (defaultStretch, readStretch, stretchText)
 import Wiki.Server.Secret (Secret (..))
 import Wiki.Server.Storage (Database (..), Place (..))
 import Wiki.Server.Storage.Layout (PgDatabase (..), PgPrograms (..), defaultDatabase, defaultPgPrograms, postgresAt, withPostgres, withoutPostgres)
@@ -227,6 +227,12 @@ data ServeOptions = ServeOptions
   -- ^ The Argon2id new OPAQUE records are stretched with
   -- ("Wiki.Server.Opaque"'s 'defaultStretch'). No option sets it: the tests
   -- lower it, so that their many sign-ins are quick.
+  , apiStretchBudget :: Stretch
+  -- ^ The most stretching the API for a page's Markdown runs on the server
+  -- to check a password ("Wiki.Server.BasicSignIn"): @--api-max-stretch@,
+  -- 'defaultStretch' unless it is given. A record's stretching is chosen by
+  -- the browser that registered it, so a record that asks for more is not
+  -- checked with it: its account cannot sign in to the API.
   }
   deriving stock (Eq, Show)
 
@@ -253,6 +259,7 @@ defaultServeOptions dataDir =
     , whatsNew = True
     , texProbeTimeout = probeTimeout
     , passwordStretch = defaultStretch
+    , apiStretchBudget = defaultStretch
     }
 
 -- | 512 MiB: an archive holds every attachment of the wiki, each up to 50
@@ -287,6 +294,7 @@ serveOptions = do
   noGuide <- switch (long "no-guide" <> help "Do not install the guide (a public space Guide, the wiki's documentation) when the server first starts with no spaces")
   noPdf <- switch (long "no-pdf" <> help "Make no PDFs: do not look for xelatex, and offer no PDF exports (toolchain/deploy-local.sh sets it when it finds no xelatex that works)")
   noWhatsNew <- switch (long "no-whats-new" <> help "Show no page \"What's new?\" (the changelog entries the server was built with), and no link to it")
+  apiStretchBudget <- option stretch (long "api-max-stretch" <> metavar "t=PASSES,m=BYTES" <> value defaultStretch <> showDefaultWith (toS . stretchText) <> help "The most Argon2id the API for a page's Markdown runs on the server to check a password: an account whose password record asks for more passes or more memory cannot sign in there. The default is what the wiki's own registration asks for")
   maxImportMb <- option auto (long "max-import-size" <> metavar "MB" <> value (defaultMaxImportSize `div` (1024 * 1024)) <> showDefault <> help "The largest archive an import takes, in MiB")
   -- The options of earlier versions that the administration's "Server"
   -- section replaced: refused, with where they went, rather than left to
@@ -314,9 +322,11 @@ serveOptions = do
       , whatsNew = not noWhatsNew
       , texProbeTimeout = probeTimeout
       , passwordStretch = defaultStretch
+      , apiStretchBudget
       }
   where
     address = eitherReader (first toS . parseListen . toS)
+    stretch = eitherReader (maybe (Left "not t=PASSES,m=BYTES, with 1 to 16 passes and 8 KiB to 1 GiB of memory in whole KiB") Right . readStretch . toS)
     hosts = eitherReader (first toS . traverse parseAssistantHost . filter (not . T.null) . map T.strip . T.splitOn "," . toS)
     gone :: ReadM ()
     gone = eitherReader (const (Left (toS removedMessage)))

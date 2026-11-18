@@ -31,6 +31,7 @@ module Wiki.Server.Limiter
   , Verdict (..)
   , verdict
   , addressVerdict
+  , reserve
   , failed
   , failedAt
   , succeeded
@@ -89,7 +90,13 @@ maxKeys = 10000
 verdict :: Limiter -> UTCTime -> Text -> Text -> IO Verdict
 verdict l now login address = atomicModifyIORef' l.failures $ \m ->
   let pruned = prune l.limits now m
-      waits =
+   in (pruned, verdictIn l now login address pruned)
+
+-- | The verdict on a login from an address, given the failures in the
+-- window.
+verdictIn :: Limiter -> UTCTime -> Text -> Text -> Map Key [UTCTime] -> Verdict
+verdictIn l now login address pruned =
+  let waits =
         [ seconds
         | (key, limit) <- [(LoginAt (normal login) address, l.limits.perLogin), (Address address, l.limits.perAddress)]
         , let recent = Map.findWithDefault [] key pruned
@@ -97,7 +104,22 @@ verdict l now login address = atomicModifyIORef' l.failures $ \m ->
         , oldest <- maybeToList (lastMay (take limit recent))
         , let seconds = ceiling (diffUTCTime (addUTCTime l.limits.window oldest) now) :: Int
         ]
-   in (pruned, maybe Allowed (Refused . max 1) (maximumMay waits))
+   in maybe Allowed (Refused . max 1) (maximumMay waits)
+
+-- | 'verdict' and 'failed' in one step: whether a login may be tried from
+-- an address now, and if it may, the attempt counted as a failure at once.
+-- Requests sent at the same moment cannot then all pass the verdict before
+-- any of them is counted. The API's sign-in ("Wiki.Server.BasicSignIn")
+-- uses it, and gives the failure back with 'succeededAfter' when the
+-- password was right.
+reserve :: Limiter -> UTCTime -> Text -> Text -> IO Verdict
+reserve l now login address = atomicModifyIORef' l.failures $ \m ->
+  let pruned = prune l.limits now m
+      answer = verdictIn l now login address pruned
+      add key = Map.insertWith (<>) key [now]
+   in case answer of
+        Allowed -> (add (LoginAt (normal login) address) (add (Address address) pruned), Allowed)
+        refused -> (pruned, refused)
 
 -- | Whether an address may try to sign in now, by its own limit alone:
 -- for an attempt that names no login yet.

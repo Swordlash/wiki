@@ -14,6 +14,7 @@ import Test.Server.Access qualified as Access
 import Test.Server.Accounts qualified as Accounts
 import Test.Server.Api qualified as Api
 import Test.Server.Backups qualified as Backups
+import Test.Server.BasicSignIn qualified as BasicSignIn
 import Test.Server.Comments qualified as Comments
 import Test.Server.Compress qualified as Compress
 import Test.Server.Export qualified as Export
@@ -23,6 +24,7 @@ import Test.Server.Http qualified as Http
 import Test.Server.Hygiene qualified as Hygiene
 import Test.Server.Import qualified as Import
 import Test.Server.Mail qualified as Mail
+import Test.Server.MarkdownApi qualified as MarkdownApi
 import Test.Server.Metrics qualified as Metrics
 import Test.Server.Notifications qualified as Notifications
 import Test.Server.Observability qualified as Observability
@@ -117,8 +119,10 @@ main = secureMain $ do
           Access.spec b
           Comments.spec b
           Mail.spec b
+          MarkdownApi.spec b
           Settings.spec b
           Backups.spec b
+          BasicSignIn.spec b
           Oidc.spec b
           Export.spec b
           Vault.spec b

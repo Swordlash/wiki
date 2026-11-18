@@ -2600,6 +2600,77 @@ to the demo, keeping `data/`.
   (listener, who, method, path, route, status, milliseconds), and an error line
   with the exception for anything that fails, or answers with a 5xx.
 
+#### The API
+
+Programs on your own machine (a local assistant, a script) can read a page's
+Markdown and write it back, at `/api/markdown/` on the public listener. Each
+request signs in with your login and password (HTTP Basic, `curl -u`) and acts
+as you, with everything you may do in the wiki: the spaces' permissions apply
+as they are. The password travels in the request, outside the browser's OPAQUE
+sign-in, so use the API over HTTPS only. The session cookie is never read
+there: a page open in a browser cannot use these addresses with its reader's
+session.
+
+A page's address is its address in the browser with `/api/markdown` in front:
+`/s/team/projects/p/the-wiki/` is read at `/api/markdown/s/team/projects/p/the-wiki/`,
+and a space's home page, `/s/team/`, at `/api/markdown/s/team/`.
+
+```sh
+# The page's Markdown, as stored; its version is the ETag.
+curl -u editor:'my password' -i https://wiki.example/api/markdown/s/blog/p/hello-world/
+
+# Write the whole page back. With If-Match, only over the version read.
+curl -u editor:'my password' -X PUT --data-binary @hello.md \
+  -H 'If-Match: "2026-11-18T09:30:12.345678Z"' \
+  https://wiki.example/api/markdown/s/blog/p/hello-world/
+
+# What the writing assistant is told about the wiki's Markdown.
+curl https://wiki.example/api/markdown/reference
+```
+
+- **`GET`** answers the page's Markdown as `text/markdown; charset=utf-8`,
+  with an `ETag` that names the page's current version.
+- **`PUT`** makes the request's body (UTF-8) the page's whole Markdown, as a
+  save in the editor does: a new version in the page's history under your
+  name, the change shown to everyone who has the page open, and the same
+  notifications. The title stays. It answers 204 with the new `ETag`. With
+  `If-Match` set to the `ETag` read, a page saved by someone else since is
+  refused with 412 and nothing is written, so a program does not write over
+  someone's edit; without `If-Match` the write goes through.
+- **`GET /api/markdown/reference`** gives the wiki's Markdown reference, the
+  same text the writing assistant's prompt starts with, to anyone; in a
+  closed wiki it needs a sign-in, as everything else there does.
+
+What is refused, each as a small JSON body in the shape the rest of the API
+uses (`{"error": "…", "message": "…"}`):
+
+- 401 for a wrong login or password, for an account without a password (one
+  with passkeys only), and for one from before OPAQUE that has not signed in
+  since in the browser; the same answer for each, so it does not tell which.
+  Failed sign-ins count toward the same limit as the sign-in form's: after
+  five for a login from an address, both refuse it (429) for fifteen minutes.
+- 403 for an account with a second factor, which a password alone does not
+  sign in, and for a write to a page you may read but not edit.
+- 404 for a page that is not there or that you may not read, alike; and, in
+  this first version, for a page that does not exist yet: the API does not
+  create pages.
+- 409 for a page of an encrypted space: its text is encrypted in its members'
+  browsers, and the server can neither read nor write it.
+
+A right password is checked in full once, and remembered by the server for
+five minutes, until a change of password or account. Requests that carry the
+same password at once share one check. The check runs the key stretching of
+the password's record on the server (in the browser's sign-in, the browser
+runs it), one check at a time. The record's stretching was chosen by the
+browser that registered the password, so the server runs at most a budget,
+`--api-max-stretch t=PASSES,m=BYTES` on `wiki-server serve`; by default
+`t=4,m=134217728`, what the wiki's own registration asks for (four passes of
+Argon2id over 128 MiB). An account whose record asks for more passes or more
+memory than the budget is refused (401) as a wrong password is, and costs the
+server no more than one. Keys made in your own panel instead of a password,
+attachments, a space's list of pages, a page's sections, creating pages and
+an MCP server are to come.
+
 #### Bringing the demo's pages into the server
 
 What you wrote in the demo lives in your browser (IndexedDB, kept per address), and

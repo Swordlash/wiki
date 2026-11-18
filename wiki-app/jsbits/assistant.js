@@ -37,9 +37,10 @@
 // a list of steps for each message in turn: {text} streams text,
 // {thinking} streams a summary of thinking, {usage: {input, cached,
 // written, output}} tells the tokens of a request, {tool, input} starts a tool
-// call and, after {pause} milliseconds if given, makes it and waits for
-// its answer, {error: {kind, status, message}} ends the turn with that
-// error, {hold: true} waits until the turn is stopped, and {wait}
+// call and, after {pause} milliseconds if given, or once the test lets
+// it go if {hold: true} is given, makes it and waits for its answer,
+// {error: {kind, status, message}} ends the turn with that error, {hold:
+// true} waits until the turn is stopped or the test lets it go, and {wait}
 // (milliseconds, after any step) paces it; a step of {wait} alone is a
 // pause, before the first text for instance. It
 // keeps what it was sent in script.requests, each with the number of
@@ -51,9 +52,13 @@
 // without one, the scripted provider has the one model "scripted" and the
 // others none. script.check, an error, refuses "Test the key"; each check
 // is kept in script.checks ({provider, model, key, baseUrl}), for the tests
-// to read which key was checked, and answered after script.checkWait
-// milliseconds if that is set. script.makeFails, a number, makes that many
+// to read which key was checked, and answered once the test lets it go if
+// script.holdCheck is true. script.makeFails, a number, makes that many
 // of its chats fail to be made, as when a provider's script does not load.
+//
+// A wait the test holds (a step's hold, a held check) is a function in the
+// set script.held until it ends: the test counts the set as the program's
+// waits it holds on purpose, and lets them go by calling each function.
 //
 // The key is handed to the island, which hands it to the SDK; nothing here
 // logs it or keeps it beyond the chat.
@@ -102,6 +107,10 @@ function wikiAssistantHandlers(chat) {
     toolStart: (name) => wikiAssistantEmit(chat, { type: "tool-start", name: String(name) }),
     tool: (name, input) => wikiAssistantAsk(chat, name, input),
     usage: (u) => wikiAssistantEmit(chat, { type: "usage", input: u.input, cached: u.cached ?? null, written: u.written ?? null, output: u.output }),
+    // Hand on the text and thinking buffered so far at once. The scripted
+    // provider does so before a wait the test holds, so that the test,
+    // which reads the page once that wait is held, finds them shown.
+    flush: () => wikiAssistantFlush(chat),
   };
 }
 
@@ -132,6 +141,23 @@ function wikiAssistantScriptError(error) {
   });
 }
 
+// A wait the test holds (see above): a promise that ends when the test lets
+// it go, or when the signal, if given, aborts. The wait leaves script.held
+// in the same task as the abort or the call that ends it, so that the
+// count the test reads never takes a wait as held once it has ended.
+function wikiAssistantHeld(script, signal) {
+  return new Promise((resolve) => {
+    if (!(script.held instanceof Set)) script.held = new Set();
+    const done = () => {
+      script.held.delete(done);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    script.held.add(done);
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
 // The scripted provider, for the tests (see above).
 function wikiAssistantScripted(config) {
   const script = globalThis.wikiAssistantScript;
@@ -152,6 +178,7 @@ function wikiAssistantScripted(config) {
         else if (step.tool !== undefined) {
           handlers.toolStart(step.tool);
           if (typeof step.pause === "number") await new Promise((resolve) => setTimeout(resolve, step.pause));
+          if (step.hold) await wikiAssistantHeld(script, signal);
           if (signal.aborted) return;
           const answer = await handlers.tool(step.tool, step.input);
           if (!Array.isArray(script.answers)) script.answers = [];
@@ -159,7 +186,8 @@ function wikiAssistantScripted(config) {
         } else if (step.error !== undefined) {
           throw wikiAssistantScriptError(step.error);
         } else if (step.hold) {
-          await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+          handlers.flush();
+          await wikiAssistantHeld(script, signal);
         }
         await new Promise((resolve) => setTimeout(resolve, typeof step.wait === "number" ? step.wait : 5));
       }
@@ -311,8 +339,8 @@ async function wiki_assistant_check(config) {
         if (!Array.isArray(script.checks)) script.checks = [];
         script.checks.push({ provider, model, key, baseUrl: baseUrl ?? null });
       }
-      // A test's slow provider: the answer after so many milliseconds.
-      if (typeof script?.checkWait === "number") await new Promise((done) => setTimeout(done, script.checkWait));
+      // A test's slow provider: the answer once the test lets it go.
+      if (script?.holdCheck === true) await wikiAssistantHeld(script, null);
       const refusal = script?.check;
       if (refusal) throw wikiAssistantScriptError(refusal);
       return "";

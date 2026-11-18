@@ -65,13 +65,29 @@ function wiki_test_assistant_check(json) {
   return true;
 }
 
-// How long "Test the key" takes to answer from now on, in milliseconds
-// (the script's checkWait), the rest of the script kept.
-function wiki_test_assistant_check_wait(ms) {
+// Make "Test the key" wait from now on until the test lets it go (the
+// script's holdCheck), the rest of the script kept.
+function wiki_test_assistant_hold_check() {
   const script = globalThis.wikiAssistantScript;
   if (typeof script !== "object" || script === null) return false;
-  script.checkWait = ms;
+  script.holdCheck = true;
   return true;
+}
+
+// How many of the scripted provider's waits the test holds now: a turn at
+// a step that holds, a check held. Each is one of the program's waits in
+// an H.async (the panel's count of its turn, the settings' check), which
+// the harness then takes as held on purpose.
+function wiki_test_assistant_holding() {
+  const held = globalThis.wikiAssistantScript?.held;
+  return held instanceof Set ? held.size : 0;
+}
+
+// Let go every wait the scripted provider holds: a held step goes on to
+// the next, a held check answers.
+function wiki_test_assistant_let_go() {
+  const held = globalThis.wikiAssistantScript?.held;
+  if (held instanceof Set) for (const done of [...held]) done();
 }
 
 // Click the first element a selector finds twice in one task, as a double

@@ -49,6 +49,15 @@ on:
         description: "Runs of the browser suite"
         type: string
         default: '4'
+      # MEASUREMENT (deck-watch-measure), never to be merged: the examples run.
+      match:
+        description: "The examples each run takes (hspec's --match)"
+        type: string
+        default: '/A presentation embedded in a page/'
+      pages:
+        description: "Pages side by side"
+        type: string
+        default: '2'
 
 permissions:
   contents: read
@@ -82,6 +91,8 @@ env:
 jobs:
   properties:
     name: the machines' properties
+    # MEASUREMENT (deck-watch-measure): the browser's examples only.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -184,7 +195,8 @@ jobs:
   browser:
     name: the browser suite, under load
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # MEASUREMENT (deck-watch-measure): many runs of one group.
+    timeout-minutes: 330
     # As in build.yml's wasm job: the test bundle's digest takes it in.
     env:
       HALOGEN_BASE_PATH: /${{ github.event.repository.name }}/
@@ -325,12 +337,13 @@ jobs:
         WIKI_NIGHTLY_RUNS: ${{ env.RUNS }}
         HSPEC_HALOGEN_TIMEOUT: '1800'
       run: |
-        HSPEC_HALOGEN_JOBS=$((2 * $(nproc)))
+        # MEASUREMENT (deck-watch-measure): CI's pages, and one group.
+        HSPEC_HALOGEN_JOBS=${{ inputs.pages || '2' }}
         WIKI_NIGHTLY_MARK=$RUNNER_TEMP/browser-runs
         export HSPEC_HALOGEN_JOBS WIKI_NIGHTLY_MARK
         echo "### The browser suite, $RUNS runs of $HSPEC_HALOGEN_JOBS pages side by side on $(nproc) cores" >> "$GITHUB_STEP_SUMMARY"
         status=0
-        npm run test-wasm -- --test-show-details=direct --test-wrapper="$PWD/toolchain/nightly-browser-runs.sh" || status=$?
+        npm run test-wasm -- --test-show-details=direct --test-wrapper="$PWD/toolchain/nightly-browser-runs.sh" --test-option=--match "--test-option=${{ inputs.match || '/A presentation embedded in a page/' }}" || status=$?
         made=$(cat "$WIKI_NIGHTLY_MARK" 2>/dev/null || echo 0)
         if [ "$made" != "$WIKI_NIGHTLY_RUNS" ]; then
           echo "::error title=The browser suite did not run::$made of $WIKI_NIGHTLY_RUNS runs of wiki-app-browser-test were made"

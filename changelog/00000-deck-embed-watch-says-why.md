@@ -1,11 +1,16 @@
 ---
 pr: 0
-title: An embed's test says why its watch did not end
+title: An embed's test waits for the page at rest, and says why if it waits in vain
 technical: true
 ---
 
 ## Other changes
 
+- The browser test of an embedded presentation brings its link near the
+  window only once the page is at rest. On a slow machine its focus landed
+  while the page was still rendering, and what is above the link grew
+  before the browser's next frame: the link was pushed far below the
+  window, and the viewer, rightly, never read its deck.
 - The browser test that waits for an embedded presentation's link to come
   near the window says, when it gives up, why the watch did not end: where
   the link was against the window, whether the viewer's observer watched it

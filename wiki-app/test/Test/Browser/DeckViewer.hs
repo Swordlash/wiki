@@ -90,6 +90,12 @@ spec m = do
     ui <- start m Nothing (Page docs guide)
     -- Far down the page, it is the link until it comes near the window.
     length <$> findAll ui ".deck-embed" `shouldReturn` 0
+    -- The page at rest before the focus brings the link near: a render of
+    -- the page that grows what is above the link after the focus, before
+    -- the browser's next frame, pushes it far below the window, where the
+    -- watch never ends (CI on #316 and #322: the focus landed while the
+    -- page rendered again and again). As the examples over HTTP wait.
+    waitQuietWithin guideLoaded
     bringNear ui
     -- The read starts when the browser's IntersectionObserver says the
     -- link has come near the window, and the viewer's watch ends. The read
@@ -339,8 +345,10 @@ spec m = do
       pure (ui, wiki)
 
 -- | Bring the guide's embedded presentation near the window: the focus on
--- its link scrolls to it. The test's record of what the browser says of
--- the link starts then ('watchesBackTo').
+-- its link scrolls to it. Called with the page at rest: the scroll is not
+-- kept when what is above the link grows before the browser's next frame.
+-- The test's record of what the browser says of the link starts then
+-- ('watchesBackTo').
 bringNear :: Mounted s q o m -> PageM s ()
 bringNear ui = do
   near <- find ui linkSelector

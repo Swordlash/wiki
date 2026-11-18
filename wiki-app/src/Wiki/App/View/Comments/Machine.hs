@@ -30,9 +30,10 @@
 -- it comes, for the reader and the space it was asked for: one that comes
 -- late, or after the comment that mentioned the login is gone, is folded
 -- in all the same, as it shows nothing wrong. When the reader or the space
--- may be another ('PeopleAgain'), what was known is forgotten, and an
--- answer asked for before then is told apart by its number ('lookups')
--- and dropped. A login whose lookup failed is asked for again at the next
+-- may be another ('PeopleAgain', in the step the page view takes its new
+-- input), what was known is forgotten, the lookups are asked in the
+-- input's space from then on, and an answer asked for before then is
+-- told apart by its number ('lookups') and dropped. A login whose lookup failed is asked for again at the next
 -- change of the threads or of the page, not at once.
 --
 -- = The avatars shown
@@ -148,7 +149,10 @@ data Model = Model
   -- ^ Whether the page shown has comments: not a home page, nor an older
   -- version ("Wiki.App.View.Page"'s @commentsHere@).
   , space :: Maybe Space
-  -- ^ The space of the page shown, which the people are looked up in.
+  -- ^ The space of the page shown, which the people are looked up in: the
+  -- page view's input's, from the step that takes it ('PeopleAgain'), so
+  -- that a lookup is never asked in a space the page has left (a plain
+  -- space that became encrypted, whose logins must not reach the server).
   , encrypted :: Bool
   -- ^ Whether the page is in an encrypted space: the live channel then
   -- tells only that its threads changed, and they are read again.
@@ -289,9 +293,11 @@ data Event a
     Closed
   | -- | The reader chose this thread.
     Chose CommentThreadId
-  | -- | The people are to be looked up again: the reader, or the space,
-    -- may be another (the page view went elsewhere, or the wiki changed).
-    PeopleAgain
+  | -- | The page view took an input that may change who the people are:
+    -- another page, another reader (the wiki changed), or another space,
+    -- or the same space changed (made encrypted). The people are looked up
+    -- again, in this space, the input's, from this step on.
+    PeopleAgain Space
   | -- | The answer to the lookup of these logins made under this number:
     -- the users found among them.
     Found Int [Text] (Either WikiError (Map Text Author))
@@ -375,7 +381,7 @@ step event m
       GaveUp -> (m {quoting = Nothing}, [])
       Closed -> (m {quoting = Nothing}, [])
       Chose tid -> (m {focused = Just tid}, [])
-      PeopleAgain -> (m {people = mempty, lookedUp = mempty, lookingUp = mempty, lookups = m.lookups + 1}, [])
+      PeopleAgain space -> (m {space = Just space, encrypted = isJust space.encryption, people = mempty, lookedUp = mempty, lookingUp = mempty, lookups = m.lookups + 1}, [])
       Found n logins answer
         | n /= m.lookups -> (m, [])
         | otherwise ->

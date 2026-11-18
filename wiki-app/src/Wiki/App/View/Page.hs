@@ -804,8 +804,18 @@ component =
         let gainedFeed = isNothing old.feed && isJust input.feed
         when (isJust old.feed && isNothing input.feed) disconnectFeed
         modify (\st -> st {input})
-        when gainedFeed subscribeFeed
         let elsewhere = old.space.id /= input.space.id || old.path /= input.path || old.version /= input.version
+            revised = old.context.revision /= input.context.revision
+            -- The same space, changed (made encrypted): its page is read
+            -- again, as for a new revision, and its people looked up again.
+            respaced = old.space /= input.space
+        -- The people mentioned are looked up again, in the input's space
+        -- from this step on: the current user may be someone else now, and
+        -- a space made encrypted while the page is read again must not
+        -- have a lookup asked in it as the plain space it was
+        -- ('Threads.PeopleAgain').
+        when (elsewhere || revised || respaced) $ threadsStep (Threads.PeopleAgain input.space)
+        when gainedFeed subscribeFeed
         -- A reader who may no longer edit the page (their rights changed,
         -- or they signed out) cannot save their ticks. Only the right to
         -- edit counts here, not whether the boxes are enabled just now.
@@ -821,10 +831,7 @@ component =
           -- The page left, and its threads, are not taken after this.
           threadsStep Threads.Left'
           modify (\st -> st {loaded = Loading, fetches = Latest.supersede st.fetches, panelOpen = False, selected = Nothing, editors = [], readers = noReaders, visit = st.visit + 1})
-        when (elsewhere || old.context.revision /= input.context.revision) $ do
-          -- The people mentioned are looked up again: the current user may
-          -- be someone else now.
-          threadsStep Threads.PeopleAgain
+        when (elsewhere || revised || respaced) $ do
           modify (\st -> st {mode = Viewing, problem = Nothing, changed = False})
           load
         -- Another page, or another version, in the same view, as a link

@@ -107,6 +107,10 @@
 --   read that fails leaves the threads as they were;
 -- * every person the view knows is the one the directory of the page's
 --   space names: no answer asked for on another page is taken;
+-- * no lookup of people is asked in a space other than the page's current
+--   one: the page's space may change while asks are out ('SpaceChanges',
+--   as a plain space made encrypted), and the logins of a space made
+--   encrypted must not reach the server as a plain space's;
 -- * once everything out has come back, every login the page's text and
 --   its threads mention is looked up, but those whose last lookup failed
 --   with no change of the threads or the page since.
@@ -137,6 +141,7 @@ import Wiki.Core.Comment (Comment (..), Thread (..))
 import Wiki.Core.Id (BlobId (..), CommentId (..), CommentThreadId (..), PageId (..), UserId (..))
 import Wiki.Core.Space (Space (..))
 import Wiki.Core.User (Avatar (..))
+import Wiki.Core.Vault (KeyId (..))
 import Wiki.Core.Version (Author (..))
 
 -- | The two pages a run goes between.
@@ -152,6 +157,11 @@ theSpace = fromMaybe (panic "the demo has no plain space") (head [sp | sp <- Map
 -- | A page's text, for the people it mentions.
 textOf :: PageId -> Text
 textOf p = if p == pageA then "A page about @bob." else "A page about nobody."
+
+-- | How many times the space has changed ('SpaceChanges' marks each change
+-- in its math macros, which nothing here reads).
+spaceChanges :: Space -> Int
+spaceChanges sp = T.count "'" sp.mathMacros - T.count "'" theSpace.mathMacros
 
 -- | The users the directory of a page's space has, by login: page A's
 -- knows ann and bob, page B's only ann. Zed is nobody's.
@@ -317,6 +327,10 @@ data Step
   | -- | The reader closes the panel of comments and opens it again: a new
     -- comments view, with empty forms.
     Reopen
+  | -- | The page's space changes while asks are out (made encrypted, in
+    -- the wiki): the page view takes the new input, and the page is read
+    -- again later ('PageAgain').
+    SpaceChanges
   | -- | The page view goes away.
     Finish
   deriving stock (Eq, Show)
@@ -364,6 +378,7 @@ stepWith rare =
     , (1, pure Navigate)
     , (often 1, pure PageAgain)
     , (1, pure Reopen)
+    , (often 1, pure SpaceChanges)
     , (1, pure Finish)
     ]
   where
@@ -457,6 +472,11 @@ data World = World
   , failed :: Set Text
   -- ^ The logins whose last lookup failed: not asked again until the
   -- threads or the page change.
+  , spaceNow :: Space
+  -- ^ The space of the page shown, as the page view's input has it now.
+  , reloadOwed :: Bool
+  -- ^ Whether the page view is to read the page again since its space
+  -- changed ('SpaceChanges'), as it does, until 'PageAgain'.
   }
 
 -- | A run from its start: the page view on page A, over a backend that
@@ -465,7 +485,7 @@ startOver :: Maybe Stored -> World
 startOver cache =
   checked Nothing . fromTheCache $
     let (view, fx) = step (Fetched pageA True theSpace (textOf pageA)) (initial (Just pageA) True theSpace (textOf pageA) Nothing)
-        w0 = World {view, server = emptyServer {watched = Just pageA, untold = [MReplaced pageA []]}, outs = [], shownPage = pageA, finished = False, tabCache = cache, trace = [], faults = [], seen = mempty, owed = False, visit = 0, quoteSession = Nothing, quoteSessions = 0, mounted = 0, asksOfView = [], waiting = False, held = [], lookupsOut = [], failed = mempty}
+        w0 = World {view, server = emptyServer {watched = Just pageA, untold = [MReplaced pageA []]}, outs = [], shownPage = pageA, finished = False, tabCache = cache, trace = [], faults = [], seen = mempty, owed = False, visit = 0, quoteSession = Nothing, quoteSessions = 0, mounted = 0, asksOfView = [], waiting = False, held = [], lookupsOut = [], failed = mempty, spaceNow = theSpace, reloadOwed = False}
      in effected "mounted on page A" fx w0
 
 start, startCached :: World
@@ -499,8 +519,15 @@ carry what e w
       Load t p -> asking (show (t, p)) (readOut t p)
       Send sender n p r -> asking ("write " <> show n) Out {asked = AWrite n p r w.visit sender w.quoteSession, answer = Nothing, sent = Nothing}
       Answered asker _ _ -> (w {asksOfView = w.asksOfView <> [TellForm | asker == w.mounted]}, [])
-      LookUp _ n logins ->
-        ( w {lookupsOut = w.lookupsOut <> [Lookup {number = n, logins, onPage = w.shownPage}], failed = w.failed `Set.difference` Set.fromList logins, faults = w.faults <> [(AfterClose, "looked up people after the view went away: " <> what) | w.finished]}
+      LookUp space n logins ->
+        ( w
+            { lookupsOut = w.lookupsOut <> [Lookup {number = n, logins, onPage = w.shownPage}]
+            , failed = w.failed `Set.difference` Set.fromList logins
+            , faults =
+                w.faults
+                  <> [(AfterClose, "looked up people after the view went away: " <> what) | w.finished]
+                  <> [(StaleSpace, "looked up " <> T.intercalate "," logins <> " in the space as it was before change " <> show (spaceChanges w.spaceNow) <> ": " <> what) | not w.finished, space /= w.spaceNow]
+            }
         , ["look up " <> T.intercalate "," logins]
         )
       Avatars _ _ -> (w {faults = w.faults <> [(AfterClose, "looked up avatars after the view went away: " <> what) | w.finished]}, [])
@@ -601,13 +628,21 @@ play w = \case
             -- one: the server answers the new subscription after what it
             -- had queued. On another page the people are looked up again
             -- (the page view's @Receive@).
-            w' = event "goes to the other page" Left' (changing (forgetThreads w.shownPage) w {shownPage = next, owed = False, visit = w.visit + 1, quoteSession = Nothing})
-            w'' = event "looks up the people again" PeopleAgain w' {failed = mempty}
+            w' = event "looks up the people again" (PeopleAgain w.spaceNow) w {failed = mempty}
+            w'' = event "goes to the other page" Left' (changing (forgetThreads w.shownPage) w' {shownPage = next, owed = False, visit = w.visit + 1, quoteSession = Nothing})
             w''' = w'' {server = w''.server {watched = Just next, untold = w''.server.untold <> [MReplaced next (threadsOn next w''.server)]}}
-         in event ("shows " <> show next) (Fetched next True theSpace (textOf next)) w'''
+         in event ("shows " <> show next) (Fetched next True w.spaceNow (textOf next)) w'''
   PageAgain
     | w.finished -> w
-    | otherwise -> event "the page read again" (Fetched w.shownPage True theSpace (textOf w.shownPage)) w
+    | otherwise -> event "the page read again" (Fetched w.shownPage True w.spaceNow (textOf w.shownPage)) w {reloadOwed = False}
+  SpaceChanges
+    | w.finished -> w
+    | otherwise ->
+        -- Another value of the space, plain still: the model's server
+        -- leaves encrypted pages out (see the module's Haddock), and the
+        -- rule is about which space a lookup names, whatever it is.
+        let space = w.spaceNow {mathMacros = w.spaceNow.mathMacros <> "'"}
+         in event ("the page's space changes, change " <> show (spaceChanges space)) (PeopleAgain space) w {spaceNow = space, failed = mempty, reloadOwed = True}
   Reopen
     | w.finished -> w
     | otherwise -> closed (noted "the panel closed and opened again" w {mounted = w.mounted + 1})
@@ -819,6 +854,7 @@ settled w0 = drained (tellAll w0)
   where
     tellAll w
       | w.waiting = tellAll (lookedUp w)
+      | w.reloadOwed && not w.finished = tellAll (play w PageAgain)
       | null w.server.untold && not w.server.fellBehind = w
       | otherwise = tellAll (play w Tell)
 
@@ -851,7 +887,7 @@ everyoneLookedUp w0 =
 
 -- | 'Rule' is each rule a run is checked against, as the module's Haddock
 -- lists them.
-data Rule = OtherPage | Lost | Older | Ghost | FailureOverThreads | OneRead | Unsaid | AnsweredOnce | Waited | AfterClose | WrongPerson
+data Rule = OtherPage | Lost | Older | Ghost | FailureOverThreads | OneRead | Unsaid | AnsweredOnce | Waited | AfterClose | WrongPerson | StaleSpace
   deriving stock (Eq, Show, Enum, Bounded)
 
 ruleText :: Rule -> [Char]
@@ -867,6 +903,7 @@ ruleText = \case
   OneRead -> "leaves no two reads of the page out whose answers it would take, on any run"
   AfterClose -> "asks nothing once it has gone away"
   WrongPerson -> "knows every person as the directory of its page's space names them, whenever the lookups answer, on any run"
+  StaleSpace -> "asks no lookup of people in a space other than the page's current one, on any run"
 
 verdict :: Rule -> World -> Property
 verdict rule w =
@@ -958,6 +995,22 @@ spec = describe "Wiki.App.View.Comments.Machine" $ modifyMaxSuccess (max cases) 
     it ("asks again for a person whose lookup failed, at the next change of the threads" <> how) $
       let w = foldl' play w0 [Tell, OtherOpens False, Tell, PeopleFound, PeopleFail, OtherReplies 0, Tell]
        in map (\l -> l.logins) w.lookupsOut `shouldBe` [["ann", "zed"]]
+
+  -- Codex on #316, round 3: the page's plain space is made encrypted,
+  -- and the page view takes the new input while the page is read again.
+  -- Before that read comes back, the channel says the threads changed;
+  -- their read answers with a comment that mentions ann. The lookup it
+  -- asks is in the encrypted space (its readers, asked for by the space's
+  -- id), not in the plain space it was, where ann's login would have gone
+  -- to the server.
+  it "looks up the people in the space the page view's input names, made encrypted while the page is read again" $ do
+    let encrypted = theSpace {encryption = Just (KeyId "key-1")}
+        (m1, _) = threadsOf []
+        (m2, _) = step (PeopleAgain encrypted) m1
+        (m3, fx3) = step (Heard pageA ThreadsChanged) m2
+        reread = fromMaybe (panic "no read") (head [k | Load k _ <- fx3])
+        (_, fx4) = step (Loaded reread pageA (Right [threadOf [comment Nothing]])) m3
+    [(space.encryption, logins) | LookUp space _ logins <- fx4] `shouldBe` [(Just (KeyId "key-1"), ["ann"])]
 
   -- Codex on #316, round 1: an author with an avatar when the page was
   -- read removes it and edits a comment. The machine's lookup after the

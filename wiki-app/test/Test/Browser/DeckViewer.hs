@@ -15,7 +15,7 @@ import Control.Monad.UUID (MonadUUID)
 import Data.Aeson (FromJSON (..), decodeStrict, withObject, (.:))
 import Data.IORef (IORef)
 import Data.Text qualified as T
-import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText)
+import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.Router.Duplex qualified as Duplex
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
@@ -42,9 +42,13 @@ import Wiki.Core.PageKind qualified as Kind
 import Wiki.Core.Space (Space (id))
 
 $( browserJS
-     ["jsbits/test-slides.js"]
+     ["jsbits/test-slides.js", "jsbits/test-deck-watch.js"]
      [ ("js_ids_report", "wiki_test_ids_report", Safe, [t|IO JSText|])
      , ("js_deck_watches", "wiki_test_deck_watches", Safe, [t|IO Int|])
+     , ("js_deck_spy", "wiki_test_deck_spy", Safe, [t|IO ()|])
+     , ("js_deck_spy_stop", "wiki_test_deck_spy_stop", Safe, [t|IO ()|])
+     , ("js_deck_near_start", "wiki_test_deck_near_start", Safe, [t|JSText -> IO ()|])
+     , ("js_deck_report", "wiki_test_deck_report", Safe, [t|IO JSText|])
      ]
  )
 
@@ -52,19 +56,46 @@ $( browserJS
 deckWatches :: PageM s Int
 deckWatches = unsafeIOToPageM js_deck_watches
 
+-- | Wait until the watches of embeds' links are back to a count, as each
+-- ends once the browser's IntersectionObserver says its link is near: the
+-- browser's own time, long on a loaded machine (CI on #316, seed
+-- 120510329). When the wait gives up, its failure says why the watch did
+-- not end (test-deck-watch.js's report): where the link was against the
+-- window, whether the program's observer watched it and what it heard,
+-- what an observer of the test's own heard, and how many frames the page
+-- drew. The record it reads is started by 'spyWatches' before the page is
+-- mounted, and by 'bringNear'.
+watchesBackTo :: (HasCallStack) => Int -> PageM s ()
+watchesBackTo count =
+  eventuallyWithin 30000 $ do
+    now <- deckWatches
+    when (now /= count) $ do
+      why <- unsafeIOToPageM (fromJSText <$> js_deck_report)
+      expectationFailure ("the watches of the embeds' links are " <> show now <> ", not " <> show count <> ", and the link's watch has not ended:\n" <> why)
+
+-- | Record every IntersectionObserver the page makes from now on, for the
+-- report of 'watchesBackTo'. Called before the page is mounted, so that
+-- the viewer's observer is among them; 'unspyWatches' ends the record.
+spyWatches :: PageM s ()
+spyWatches = unsafeIOToPageM js_deck_spy
+
+unspyWatches :: PageM s ()
+unspyWatches = unsafeIOToPageM js_deck_spy_stop
+
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
 spec m = do
   it "shows a presentation embedded in a page a slide at a time, with its controls, and moves by its own keys only" $ runPage $ do
     before <- deckWatches
+    spyWatches
     ui <- start m Nothing (Page docs guide)
     -- Far down the page, it is the link until it comes near the window.
     length <$> findAll ui ".deck-embed" `shouldReturn` 0
     bringNear ui
     -- The read starts when the browser's IntersectionObserver says the
-    -- link has come near the window, and the viewer's watch ends: the
-    -- browser's own time, long on a loaded machine (CI on #316, seed
-    -- 120510329). The read and the viewer's render are then the program's.
-    eventuallyWithin 30000 $ deckWatches `shouldReturn` before
+    -- link has come near the window, and the viewer's watch ends. The read
+    -- and the viewer's render are then the program's.
+    watchesBackTo before
+    unspyWatches
     waitQuiet
     viewer <- find ui "article.page-body .deck-embed"
     position ui `shouldReturn` "1 / 9"
@@ -308,9 +339,15 @@ spec m = do
       pure (ui, wiki)
 
 -- | Bring the guide's embedded presentation near the window: the focus on
--- its link scrolls to it.
+-- its link scrolls to it. The test's record of what the browser says of
+-- the link starts then ('watchesBackTo').
 bringNear :: Mounted s q o m -> PageM s ()
-bringNear ui = find ui "article.page-body > p > a[href$='markdown-guide/presentations/']:only-child" >>= focus
+bringNear ui = do
+  near <- find ui linkSelector
+  unsafeIOToPageM (js_deck_near_start (toJSText linkSelector))
+  focus near
+  where
+    linkSelector = "article.page-body > p > a[href$='markdown-guide/presentations/']:only-child"
 
 -- | The slide's number out of the deck's, as the page's first viewer
 -- shows it.

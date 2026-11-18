@@ -371,6 +371,7 @@ import Wiki.App.Editor.Browser
   , textShown
   , typedText
   , undoIn
+  , whileAttaching
   )
 import Wiki.App.Editor.Complete qualified as Complete
 import Wiki.App.Editor.Problems (problemRanges)
@@ -2714,7 +2715,8 @@ component =
 
     -- Put CodeMirror in place of the textarea rendered last, with the text
     -- it was created with. CodeMirror arrives once the page has loaded it,
-    -- so this returns at once.
+    -- so this returns at once; a fork waits for it ('whileAttaching'), so
+    -- that the program is not quiet until it has come.
     --
     -- A new CodeMirror has none of the assistant's changes, and no
     -- selection.
@@ -2729,7 +2731,7 @@ component =
           -- The search's count and notes were of the text before; the
           -- search itself stays, and is given to the CodeMirror coming.
           modify (\s -> freshRows s {hostElement = found, pendingChanges = 0, selection = Nothing, master, matches = Nothing, rowMatches = mempty, searchNote = Nothing})
-          traverse_ (\host -> H.liftEffect (attachEditor host w.loadedBody)) found
+          for_ found $ \host -> H.liftEffect (attachEditor host w.loadedBody) >>= whileAttaching
           -- The text loaded is checked at once, the typing after a pause.
           -- Only in a browser: a page prerendered natively has no
           -- CodeMirror to mark, and its first render must be the

@@ -2,8 +2,9 @@
 -- ("Wiki.App.View.DeckViewer") knows, and 'step' is the one place it
 -- changes (WP5.121 of docs/PLAN.md, decision 82). Every input is an
 -- 'Event': the viewer started or closed, a new input, the link rendered,
--- the link come near the window, the answer to a read of the embedded
--- page, a move through the slides. Every output is an 'Effect': watch the
+-- the link come near the window (and the browser's first look at it,
+-- which changes nothing), the answer to a read of the embedded page, a
+-- move through the slides. Every output is an 'Effect': watch the
 -- link, stop a watch, read the page, let go of a read's addresses.
 --
 -- = Where it sits
@@ -116,6 +117,11 @@ data Event s l h x
   | -- | The watch under this number told that the link came near the
     -- window.
     Near Int
+  | -- | The watch under this number has looked at the link once, near or
+    -- not, or was stopped. It changes nothing: it is the answer to the ask
+    -- the component makes of the browser's first look, so that the
+    -- program counts the time until then as its own work.
+    Looked Int
   | -- | The answer to the read under this number: a presentation the
     -- reader may read, or 'Nothing' for the link.
     Fetched Int (Maybe (x, Deck))
@@ -125,7 +131,8 @@ data Event s l h x
 
 -- | 'Effect' is what a step asks the component to do. None of them waits.
 data Effect l h
-  = -- | Watch the link under this number, telling the number.
+  = -- | Watch the link under this number, telling the number; the
+    -- browser's first look at it comes back as 'Looked'.
     Watch Int
   | -- | Stop the watch under this number.
     Unwatch Int
@@ -179,6 +186,7 @@ step event m
         | Map.lookup f m.fetches == Just m.generation -> settled f True m {fetches = Map.delete f m.fetches, loaded = maybe Link (uncurry Ready) answer}
         | otherwise -> settled f False m {fetches = Map.delete f m.fetches}
       Go move -> (moved move m, [])
+      Looked _ -> (m, [])
 
 -- | The link watched, for an embedded page.
 watched :: Model s l h x -> (Model s l h x, [Effect l h])

@@ -34,10 +34,13 @@ function wiki_test_slide_row_select(index, anchor, head) {
 
 // The rows' editors put in place `ms` milliseconds late, or at once for 0:
 // a row shown open before its CodeMirror is there, as on a slow machine.
+// The promise each attach gives settles once the row is in place, late as
+// it is, as the islands' own does, so the program waits for it.
 function wiki_test_rows_late(ms) {
   const islands = globalThis.wikiTestRowIslands ?? globalThis.wikiIslands;
   globalThis.wikiTestRowIslands = islands;
-  globalThis.wikiIslands = ms > 0 ? { ...islands, attachRow: (...args) => setTimeout(() => islands.attachRow(...args), ms) } : islands;
+  const late = (...args) => new Promise((resolve) => setTimeout(() => resolve(islands.attachRow(...args)), ms));
+  globalThis.wikiIslands = ms > 0 ? { ...islands, attachRow: late } : islands;
 }
 
 function wiki_test_slide_row_selection(index) {
@@ -57,7 +60,15 @@ function wiki_test_mermaid(how) {
   globalThis.wikiTestMermaidIslands = islands;
   if (how === "hold") {
     globalThis.wikiTestMermaidHeld = [];
-    globalThis.wikiIslands = { ...islands, renderMermaid: (...args) => globalThis.wikiTestMermaidHeld.push(args) };
+    // Held, a drawing gives no promise: the program does not wait for a
+    // diagram the test holds, and a test waits for the quiet program
+    // meanwhile.
+    globalThis.wikiIslands = {
+      ...islands,
+      renderMermaid: (...args) => {
+        globalThis.wikiTestMermaidHeld.push(args);
+      },
+    };
   } else {
     globalThis.wikiIslands = islands;
     for (const held of globalThis.wikiTestMermaidHeld ?? []) islands.renderMermaid(...held);
@@ -238,8 +249,15 @@ function wiki_test_editor_script(how) {
     const failing = () => Promise.reject(new Error("The test keeps the editor's module from loading."));
     globalThis.wikiIslands = { ...islands, attachEditor: (textarea, host, original) => islands.attachEditor(textarea, host, original, failing) };
   } else {
+    // Held, the attach gives no promise: the program does not wait for an
+    // editor the test holds, and a test reads the page meanwhile.
     globalThis.wikiTestHeld = [];
-    globalThis.wikiIslands = { ...islands, attachEditor: (...args) => globalThis.wikiTestHeld.push(args) };
+    globalThis.wikiIslands = {
+      ...islands,
+      attachEditor: (...args) => {
+        globalThis.wikiTestHeld.push(args);
+      },
+    };
   }
 }
 
@@ -250,12 +268,24 @@ function wiki_test_editor_script(how) {
 // that its module failed ("wiki-editor-failed"). This is the moment
 // between the master taking the textarea's place and a row taking the
 // focus, held open for a test.
+//
+// A row held gives the component a promise, as the islands' attachRow
+// does, which settles once the row is in place after its release: the
+// component waits for it (Wiki.App.Editor.Browser's whileAttaching), so
+// the program counts the held row as work it waits for. A settle (idle)
+// returns while the row is held; a waitQuiet, once it is in place.
 function wiki_test_editor_arrives_rows_held() {
   const islands = globalThis.wikiTestIslands ?? globalThis.wikiIslands;
   const held = globalThis.wikiTestHeld ?? [];
   globalThis.wikiTestHeld = [];
   globalThis.wikiTestHeldRows = [];
-  globalThis.wikiIslands = { ...islands, attachRow: (...args) => globalThis.wikiTestHeldRows.push(args) };
+  globalThis.wikiIslands = {
+    ...islands,
+    attachRow: (...args) =>
+      new Promise((resolve) => {
+        globalThis.wikiTestHeldRows.push({ args, resolve });
+      }),
+  };
   const told = held.map(
     ([, host]) =>
       new Promise((resolve) => {
@@ -272,11 +302,12 @@ function wiki_test_rows_held() {
   return (globalThis.wikiTestHeldRows ?? []).length;
 }
 
-// The rows held made, and those asked for from now on made at once.
+// The rows held made, each held promise settling with the row's own, and
+// those asked for from now on made at once.
 function wiki_test_rows_release() {
   const islands = globalThis.wikiTestIslands ?? globalThis.wikiIslands;
   globalThis.wikiIslands = islands;
-  for (const args of globalThis.wikiTestHeldRows ?? []) islands.attachRow(...args);
+  for (const { args, resolve } of globalThis.wikiTestHeldRows ?? []) resolve(islands.attachRow(...args));
   globalThis.wikiTestHeldRows = [];
 }
 
@@ -332,6 +363,16 @@ function wiki_test_slide_cut(width) {
 function wiki_test_fit_hold(hold) {
   if (hold) globalThis.wikiFitHold = true;
   else globalThis.wikiFitRelease?.();
+}
+
+// Let the measures held back through, and settle once they have been
+// taken. The release asks each watch for a measure in the next animation
+// frame; the promise settles in a frame callback asked for after theirs,
+// which the browser runs after them, so the measures have been told to the
+// program by then (the program's own handling of them is waitQuiet's).
+function wiki_test_fit_release() {
+  globalThis.wikiFitRelease?.();
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 // The style rules that can make a slide's layout depend on the window: a

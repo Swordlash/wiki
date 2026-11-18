@@ -35,7 +35,7 @@ import Protolude hiding (State, find)
 import Test.Hspec.Halogen
 import Web.DOM.Internal.Types qualified as Web
 import Web.Event.Event (EventType (..))
-import Wiki.App.Editor.Browser (answerEmoji, answerMention, attachEditor, attachRow, detachRow, emojiAsked, mentionAsked, setRows, slidesModeIn)
+import Wiki.App.Editor.Browser (answerEmoji, answerMention, attachEditor, attachRow, detachRow, emojiAsked, mentionAsked, setRows, slidesModeIn, whileAttaching)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.SlideRows (Row (..), RowKey (..), Rows (..), cutRows, rowStarts)
 import Wiki.Core.User (Login (..), User (..))
@@ -135,7 +135,10 @@ spec m = do
     -- Opened and given the focus there, row 2 starts at the master's
     -- cursor, which stays where the undo put it.
     void (query ui (H.mkTell (OpenRow 2)))
-    eventually $ unsafeIOToPageM (js_row_ready 2) `shouldReturn` True
+    -- The harness's row waits for its CodeMirror in a fork, which the
+    -- quiet program has seen in place.
+    waitQuiet
+    unsafeIOToPageM (js_row_ready 2) `shouldReturn` True
     rowContent ui 2 >>= focus
     masterSelection `shouldReturn` (head'', head'')
     rowSelection 2 `shouldReturn` (head'' - rowStart deck 2, head'' - rowStart deck 2)
@@ -188,11 +191,15 @@ spec m = do
   it "builds a master in a host hidden from the start, which rows type into and undo in, and which shows their text once shown" $ runPage $ do
     ui <- mount m harness (Harness deck True)
     unsafeIOToPageM js_watch
-    eventuallyWithin 10000 $ unsafeIOToPageM js_master_ready `shouldReturn` True
+    -- The master's module fetched and CodeMirror built, which a fork of
+    -- the harness waits for ('whileAttaching').
+    waitQuiet
+    unsafeIOToPageM js_master_ready `shouldReturn` True
     void (query ui (H.mkTell SendRows))
     unsafeIOToPageM js_master_shown `shouldReturn` False
     void (query ui (H.mkTell (OpenRow 2)))
-    eventually $ unsafeIOToPageM (js_row_ready 2) `shouldReturn` True
+    waitQuiet
+    unsafeIOToPageM (js_row_ready 2) `shouldReturn` True
     typeAt ui 2 (rowLength deck 2) " hidden"
     let typed = insertAt (rowEnd deck 2) " hidden" deck
     masterText `shouldReturn` typed
@@ -213,6 +220,10 @@ spec m = do
     -- not even one that answers nothing.
     unsafeIOToPageM js_master_watch
     typeAt ui 2 (rowLength deck 2) " :smi"
+    -- A named wait, here and below: CodeMirror asks for a list a moment
+    -- after the last key, by a timer of its own (its
+    -- activateOnTypingDelay), which no signal of the program's or the
+    -- browser's follows.
     eventually $ rowCompleting 2 `shouldReturn` "active"
     _ <- find ui ".rows-list li[data-key=\"2\"] .cm-tooltip-autocomplete"
     unsafeIOToPageM (threadDelay 300_000)
@@ -281,13 +292,19 @@ spec m = do
     eventually $ masterText `shouldReturn` typedOne
   where
     start :: forall s. Text -> [Int] -> PageM s (Mounted s Query Void m)
+    -- The harness mounted, its master and the rows asked for in place: the
+    -- harness waits for each CodeMirror in a fork ('whileAttaching'), so
+    -- the quiet program has them, the first after the editor's module is
+    -- fetched.
     start text open = do
       ui <- mount m harness (Harness text False)
-      eventuallyWithin 10000 $ unsafeIOToPageM js_master_ready `shouldReturn` True
+      waitQuiet
+      unsafeIOToPageM js_master_ready `shouldReturn` True
       void (query ui (H.mkTell SendRows))
       for_ open $ \k -> do
         void (query ui (H.mkTell (OpenRow k)))
-        eventually $ unsafeIOToPageM (js_row_ready k) `shouldReturn` True
+        waitQuiet
+        unsafeIOToPageM (js_row_ready k) `shouldReturn` True
       pure ui
 
     closeRow :: forall s. Mounted s Query Void m -> Int -> PageM s ()
@@ -460,7 +477,7 @@ harness =
         st <- get
         found <- H.getRef st.masterRef
         modify (\s -> s {masterHost = found})
-        traverse_ (\host -> H.liftEffect (attachEditor host st.text)) found
+        for_ found $ \host -> H.liftEffect (attachEditor host st.text) >>= whileAttaching
       MentionAsked i _ ->
         gets (\st -> st.masterHost) >>= traverse_ (\host -> H.liftEffect (answerMention host i (Just [ada])))
       EmojiAsked i _ ->
@@ -527,8 +544,9 @@ row =
       host <- H.getRef st.ref
       case (st.input.open, st.attached, st.input.master, host) of
         (True, False, Just master, Just h) -> do
-          H.liftEffect (attachRow master h st.input.key False)
+          attaching <- H.liftEffect (attachRow master h st.input.key False)
           modify (\s -> s {attached = True})
+          whileAttaching attaching
         (False, True, _, Just h) -> do
           H.liftEffect (detachRow h)
           modify (\s -> s {attached = False})

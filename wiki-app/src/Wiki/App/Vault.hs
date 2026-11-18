@@ -89,6 +89,7 @@ module Wiki.App.Vault
   )
 where
 
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.Aeson (FromJSON (..), ToJSON (..), eitherDecodeStrict, encode, object, withObject, (.!=), (.:?), (.=))
 import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
@@ -97,7 +98,7 @@ import Protolude
 import Wiki.Api.Account (PasswordChange (..), SignInMethods)
 import Wiki.Api.Vault (AssertionOptions (..), AssertionResponse (..), NewPublicKey (..), PublicKeyEntry (..), RegistrationOptions (..), RegistrationResponse (..), StoredVault (..), VaultChange (..))
 import Wiki.App.Account (SignInError (..), passwordErrorText)
-import Wiki.App.Assistant (KeyRef, Made (..), MonadAssistant (..), NewIdentity (..), PasskeyRefusal (..), Used (..), deviceSlotsIO, dropSlotsIfIO, vaultGenerationIO)
+import Wiki.App.Assistant (KeyRef, Made (..), MonadAssistant (..), NewIdentity (..), PasskeyRefusal (..), Used (..), deviceSlotsIO, dropSlotsIfIO, holdingDeviceRecords, vaultGenerationIO)
 import Wiki.App.Assistant.Sync (Fetched (..), MonadVault (..), Rewrap (..))
 import Wiki.App.Backend (WikiError (..))
 import Wiki.Core.Assistant.Vault (DeviceRecord (..), Stored (..), assistantItem, readStored, sealingData, wrappingData, wrappingInfo)
@@ -241,8 +242,8 @@ loadUserKeys u = runExceptT $ do
 -- | Bring this device up to date with the user's vault: find the vault key
 -- here, keep it, and with it unseal the user's private key, or make the
 -- user's key pair when the vault holds none.
-settleKeys :: (MonadAssistant m, MonadVault m) => UserId -> m (Either Text UserKeys)
-settleKeys u = runExceptT ((\s -> s.keys) <$> settleWith u Nothing)
+settleKeys :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> m (Either Text UserKeys)
+settleKeys u = holdingDeviceRecords $ runExceptT ((\s -> s.keys) <$> settleWith u Nothing)
 
 -- | 'Settled': the user's keys after a sign-in, and the key the password
 -- gave, kept for the page's offer to unlock the vault with the password
@@ -266,8 +267,8 @@ data Settled = Settled
 -- step it takes it, and lets go of it if it closes before the answer
 -- (the sign-in's view, "Wiki.App.View.SignIn"). Taken here, after a
 -- wait, a key would be held by nothing once the caller had gone.
-afterSignIn :: (MonadAssistant m, MonadVault m) => UserId -> Maybe KeyRef -> m (Either Text Settled)
-afterSignIn u key = do
+afterSignIn :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe KeyRef -> m (Either Text Settled)
+afterSignIn u key = holdingDeviceRecords $ do
   -- Where the browser offers no WebCrypto (a page over plain HTTP), there
   -- are no keys to settle: the panel says why.
   here <- sealingHere
@@ -357,8 +358,8 @@ shareWithAssistant u v =
 
 -- | Unlock the vault on this device with one of the passkeys it knows
 -- (one touch), and bring the device up to date with it.
-unlockWithPasskey :: (MonadAssistant m, MonadVault m) => UserId -> m (Either Text UserKeys)
-unlockWithPasskey u = runExceptT $ do
+unlockWithPasskey :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> m (Either Text UserKeys)
+unlockWithPasskey u = holdingDeviceRecords $ runExceptT $ do
   s <- fetched >>= maybe (throwError "You have no vault to unlock.") pure
   v <- passkeyVaultKey s False
   settleHolding u s v
@@ -366,8 +367,8 @@ unlockWithPasskey u = runExceptT $ do
 -- | Unlock the vault on this device with the password, which is proved
 -- again to the server (no new session): the key it gives unwraps the
 -- vault key.
-unlockWithPassword :: (MonadAssistant m, MonadVault m) => UserId -> Password -> m (Either Text UserKeys)
-unlockWithPassword u password = runExceptT $ do
+unlockWithPassword :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Password -> m (Either Text UserKeys)
+unlockWithPassword u password = holdingDeviceRecords $ runExceptT $ do
   s <- fetched >>= maybe (throwError "You have no vault to unlock.") pure
   w <- maybe (throwError "Your vault does not open with your password: unlock it with a passkey.") pure (wrapFor ByPassword s.vault)
   k <- provedKey password
@@ -419,8 +420,8 @@ passkeyVaultKey s exportable = do
 -- keeps, which cannot be exported), and the vault key is wrapped for the
 -- password. This device is unlocked with it too. The vault is then as
 -- strong as the password.
-addPasswordUnlock :: (MonadAssistant m, MonadVault m) => UserId -> Maybe KeyRef -> Maybe Password -> m (Either Text UserKeys)
-addPasswordUnlock u given password = runExceptT $ do
+addPasswordUnlock :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe KeyRef -> Maybe Password -> m (Either Text UserKeys)
+addPasswordUnlock u given password = holdingDeviceRecords $ runExceptT $ do
   s <- fetched >>= maybe (throwError "You have no vault.") pure
   k <- maybe (maybe (throwError "Type your password.") provedKey password) pure given
   fresh <- forgetting k $ withKey (passkeyVaultKey s True) $ \v -> do
@@ -437,8 +438,8 @@ addPasswordUnlock u given password = runExceptT $ do
 
 -- | Unlock the vault with the passkeys alone: the password's wrap goes. The
 -- last way to unlock it cannot go.
-removePasswordUnlock :: (MonadAssistant m, MonadVault m) => UserId -> m (Either Text UserKeys)
-removePasswordUnlock u = runExceptT $ do
+removePasswordUnlock :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> m (Either Text UserKeys)
+removePasswordUnlock u = holdingDeviceRecords $ runExceptT $ do
   s <- fetched >>= maybe (throwError "You have no vault.") pure
   when (Map.null (passkeyWraps s.vault)) (throwError "Your password is the only way to unlock your vault: add a passkey to it first.")
   fresh <- server (storeVaultChange (Just s.tag) VaultChange {vault = withoutWrap ByPassword s.vault, publicKey = Nothing})
@@ -449,8 +450,8 @@ removePasswordUnlock u = runExceptT $ do
 -- | Make the user's vault with their password, proved again to the server,
 -- for a user who has none yet (one who has not signed in with a password
 -- since keys were made, on this device or any).
-createWithProvedPassword :: (MonadAssistant m, MonadVault m) => UserId -> Password -> m (Either Text UserKeys)
-createWithProvedPassword u password = runExceptT $ do
+createWithProvedPassword :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Password -> m (Either Text UserKeys)
+createWithProvedPassword u password = holdingDeviceRecords $ runExceptT $ do
   existing <- fetched
   when (isJust existing) (throwError "You have a vault already.")
   device <- lift (readDevice u)
@@ -462,8 +463,8 @@ createWithProvedPassword u password = runExceptT $ do
 -- unlocks (the password proved again unwraps its key), wrapped for a
 -- passkey of the user's, or a new one. The passkey is then one more way
 -- to unlock it, and what the assistant's syncing needs.
-addPasskeyUnlock :: (MonadAssistant m, MonadVault m) => UserId -> Maybe Password -> m (Either Text UserKeys)
-addPasskeyUnlock u password = runExceptT $ do
+addPasskeyUnlock :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe Password -> m (Either Text UserKeys)
+addPasskeyUnlock u password = holdingDeviceRecords $ runExceptT $ do
   s <- fetched >>= maybe (throwError "You have no vault.") pure
   w <- maybe (throwError "Your vault does not open with your password: add a passkey to it from a device where a passkey unlocks it.") pure (wrapFor ByPassword s.vault)
   current <- maybe (throwError "Type your password.") pure password
@@ -484,8 +485,8 @@ addPasskeyUnlock u password = runExceptT $ do
 -- password to make it at a sign-in with (one who signs in with a
 -- provider): a passkey of theirs (or a new one) wraps a new vault key,
 -- which seals their new key pair.
-createWithPasskey :: (MonadAssistant m, MonadVault m) => UserId -> Maybe Password -> m (Either Text UserKeys)
-createWithPasskey u password = runExceptT $ do
+createWithPasskey :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe Password -> m (Either Text UserKeys)
+createWithPasskey u password = holdingDeviceRecords $ runExceptT $ do
   existing <- fetched
   when (isJust existing) (throwError "You have a vault already.")
   device <- lift (readDevice u)
@@ -510,8 +511,8 @@ createWithPasskey u password = runExceptT $ do
 -- | Whether this device asks for an unlock each time the wiki opens: if
 -- so, it keeps the vault key and the private key for the page's life
 -- only; if not, in IndexedDB too.
-setVaultAskEachTime :: (MonadAssistant m, MonadVault m) => UserId -> Bool -> m (Either Text UserKeys)
-setVaultAskEachTime u asking = runExceptT $ do
+setVaultAskEachTime :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Bool -> m (Either Text UserKeys)
+setVaultAskEachTime u asking = holdingDeviceRecords $ runExceptT $ do
   stored <- fetched
   device <- lift (readDevice u)
   v <- lift (vaultKeyHere u stored) >>= maybe (throwError "Unlock your vault on this device first.") pure

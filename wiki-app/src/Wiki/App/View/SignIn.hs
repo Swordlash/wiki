@@ -80,6 +80,7 @@ module Wiki.App.View.SignIn
   )
 where
 
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
 import Data.Row (type (.+), type (.==))
 import Halogen qualified as H
@@ -240,7 +241,7 @@ data Action
   | DeclineKeysOffer
   | Finalize
 
-component :: forall m. (Typeable m, MonadUUID m, MonadIO m, MonadWiki m, MonadSecurity m, MonadNotifications m, MonadAssistant m, MonadVault m) => H.Component Query (Input m) Output m
+component :: forall m. (Typeable m, MonadUUID m, MonadUnliftIO m, MonadWiki m, MonadSecurity m, MonadNotifications m, MonadAssistant m, MonadVault m) => H.Component Query (Input m) Output m
 component =
   H.mkComponent
     H.ComponentSpec

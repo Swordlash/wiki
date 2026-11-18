@@ -81,6 +81,7 @@ module Wiki.App.Assistant
   , assistantDatabase
   , readRecord
   , writeRecord
+  , holdingDeviceRecords
   )
 where
 
@@ -102,6 +103,7 @@ import Halogen.VDom.DOM.Monad (BrowserDOM)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Halogen.VDom.DOM.Monad.Mem (MemDOM)
 import Protolude hiding (wait)
+import System.IO.Unsafe (unsafePerformIO)
 import Web.DOM.Element qualified as Element
 import Web.DOM.Internal.Types (Window (..))
 import Web.Event.Event (Event (..), EventType (..))
@@ -915,6 +917,39 @@ writeRecord :: (MonadIndexedDB m) => Database -> UserId -> Maybe ByteString -> m
 writeRecord db user = \case
   Nothing -> IDB.delete db "settings" user.text
   Just bytes -> IDB.put db "settings" user.text bytes
+
+-- | 'deviceRecordsLock' is the lock a function holds, for the whole of
+-- it, when it reads what this device records for a user and may write it
+-- back ('holdingDeviceRecords'): the assistant's settings
+-- ("Wiki.App.Assistant.Keys") and the record of the user's vault
+-- ("Wiki.App.Vault"'s 'Wiki.App.Vault.VaultDevice'). Each such function
+-- reads a record, waits (on IndexedDB, on WebCrypto, on the server, on a
+-- passkey) and writes back the record it read with its own change, so two
+-- at once wrote over each other: two checks of providers, the second
+-- putting back a provider's reachability the first had changed; a
+-- sign-in's settling of the keys putting back the "Ask each time" the
+-- security panel had turned on. With the lock the second reads what the
+-- first wrote.
+--
+-- One lock covers both records, because they are read together: whether
+-- the vault key is kept on disk follows the vault's "Ask each time" and
+-- the assistant's, read from both records ('Wiki.App.Vault.keepSharedKey',
+-- 'Wiki.App.Vault.vaultKeyOnDisk'), and a function of either module may
+-- read the other's record. Two locks would have to be taken in one order
+-- everywhere. Only the two modules' exported functions take it, never a
+-- helper, which they call while they hold it; neither module's exported
+-- functions call the other's. It is one lock for every user, in this page
+-- only: another tab of the wiki has its own, and can still write over a
+-- change of this one.
+deviceRecordsLock :: MVar ()
+deviceRecordsLock = unsafePerformIO (newMVar ())
+{-# NOINLINE deviceRecordsLock #-}
+
+-- | Run a reading and writing of this device's records holding
+-- 'deviceRecordsLock'. The lock is given back however the run ends, a
+-- cancelled fork's included.
+holdingDeviceRecords :: (MonadUnliftIO m) => m a -> m a
+holdingDeviceRecords action = withRunInIO (\run -> withMVar deviceRecordsLock (const (run action)))
 
 recordIn :: (MonadIndexedDB m, MonadUnliftIO m) => UserId -> m (Either Text (Maybe ByteString))
 recordIn user = failingAs (readRecord assistantDatabase user)

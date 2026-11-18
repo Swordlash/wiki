@@ -27,6 +27,7 @@ module Wiki.App.View.Encrypted
   )
 where
 
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
 import Data.Row (Empty)
 import Data.Text qualified as T
@@ -88,7 +89,7 @@ data Action
   | ConfirmByPasskey
   | ConfirmByPassword
 
-component :: forall query m. (MonadEncryption m, MonadAssistant m, MonadVault m, MonadUUID m, MonadIO m) => H.Component query Input ViewOutput m
+component :: forall query m. (MonadEncryption m, MonadAssistant m, MonadVault m, MonadUUID m, MonadUnliftIO m) => H.Component query Input ViewOutput m
 component =
   H.mkComponent
     H.ComponentSpec
@@ -216,7 +217,7 @@ component =
 -- proved to the server again, and only once that succeeded open the
 -- space's gate in this tab ('confirmedEntry'). The one place a gate is
 -- opened.
-confirmWith :: (MonadEncryption m, MonadAssistant m, MonadVault m) => SpaceId -> UserId -> Maybe Password -> m (Either Text ())
+confirmWith :: (MonadEncryption m, MonadAssistant m, MonadVault m, MonadUnliftIO m) => SpaceId -> UserId -> Maybe Password -> m (Either Text ())
 confirmWith sid u how =
   maybe (unlockWithPasskey u) (unlockWithPassword u) how >>= \case
     Left why -> pure (Left why)

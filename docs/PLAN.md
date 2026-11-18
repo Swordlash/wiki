@@ -3357,17 +3357,20 @@ needs. Each was true when its package merged; check before relying on one.
   cursors. The check of the whole text grew by about 4% on wasm (6 ms
   on the guide, 90 ms on the 318,000-character deck, whose check
   already took 2.5 s).
-- **An example of the assistant's settings fails about half the runs
-  at eight pages, on `main`, at rest (2026-11-18): being read as a
-  lost update of the user's keys by two checks of providers
-  (`changeKeys`), a fault of the application. First seen 2026-11-17 in
-  a builder's run of the assistant's browser group.**
-  "dims a provider that cannot be reached…"
-  (`Test/Browser/Assistant.hs`, about line 536) waits up to two
-  seconds for the stored settings to say the provider is unreachable,
-  before any message is sent; it passed alone three times of three.
-  A race on the settings' store, or a wait on a clock: to be read for
-  its cause with the nightly's three findings, not re-run.
+- **The assistant's keys: one lock in the page, none between tabs
+  (#324, 2026-11-18).** "dims a provider that cannot be reached…"
+  failed about half the runs at eight pages because of a lost update,
+  a fault of the application: the editor checks each provider in a
+  fork of its own, each check keeps what it learnt with `changeKeys`
+  (read the record, wait, write it back), and the second write put
+  back the record from before the first. Every exported function of
+  `Wiki.App.Assistant.Keys` now runs holding `keysLock`. Left: another
+  tab has its own lock and can still write over a change of this one
+  (closing it needs read, compare and write in one IndexedDB
+  readwrite transaction, which `MonadIndexedDB` does not offer); the
+  vault's own device record (`readDevice`/`writeDevice` in `Vault.hs`:
+  `settleWith`, `setVaultAskEachTime` and one more) reads, waits and
+  writes in the same way and is not locked.
 - **One read of a thing in flight (#314, WP5.135).** A run of 500,000
   cases found a text going back in the comments with no push
   involved: two reads of the page out, the server handling the

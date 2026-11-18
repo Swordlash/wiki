@@ -160,6 +160,15 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     it "ends the text below the first change only at a flush line" $ do
       let (before, after) = ("1. a", "\n\n   more")
       (maybe NewLine (uncurry enter) (handedOverAt before after 5 0 "\n\nx\n\n"), enter before after) `shouldBe` (NewLine, NewLine)
+    -- The same property at 100,000 cases, seed 1649390415: a deleted
+    -- block's start lands on an empty line at the change, which ends
+    -- where the change begins, and counted as a start the check read
+    -- before the change. Below the cursor it cut the item under it off;
+    -- above the cursor it began the text inside the item above.
+    it "counts no start on an empty line where a change begins" $ do
+      let (before, after) = ("999999999. [x] 10.     Some text.\nlazy text\nSome text.\n > ", "\n\n999999999. [ ] * ")
+      (maybe NewLine (uncurry enter) (handedOverAt before after 59 0 "\n\nx\n\n"), enter before after) `shouldBe` (NewLine, NewLine)
+      (maybe NewLine (uncurry enter) (handedOverAt "- a\n\n  b" "" 4 0 "\nx\n"), enter "- a\n\n  b" "") `shouldBe` (NewLineWith "- ", NewLineWith "- ")
     -- Codex's round 6: CommonMark counts a carriage return alone as a line
     -- break, and the editor does not, so the lines differ.
     it "keeps no starts, and breaks the line alone, in a text holding a carriage return" $ do

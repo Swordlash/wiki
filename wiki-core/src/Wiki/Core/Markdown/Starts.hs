@@ -104,7 +104,8 @@ data Kept = Kept
 -- line twice and cut the block below short).
 --
 -- The text starts at the last start before the start of the cursor's
--- line whose line ends at or before the first change, or at 0. Before the
+-- line whose line ends at or before the first change and starts before
+-- it, or at 0. Before the
 -- cursor's line, not at it: on a line that starts a block, the block
 -- above comes too, since Enter may empty that line, and a block above
 -- that goes on over blank lines (a fence left open in an item) would take
@@ -132,8 +133,13 @@ data Kept = Kept
 textRange :: [Kept] -> Int -> Int -> Int -> Int -> Maybe (Int, Int)
 textRange kept firstChange lineStart lineEnd len = do
   let starts = ordNub (sort [k | k <- kept, k.at == k.lineFrom])
-      begins = fromMaybe 0 (lastMay [k.at | k <- starts, k.at < lineStart, k.lineTo <= firstChange])
-      below = ordNub [k.at | k <- starts, k.lineTo <= firstChange || k.flush]
+      -- A start the check read, on a line the changes have left: one
+      -- that ends at or before the first change, and starts before it. A
+      -- start the changes mapped onto an empty line where the first
+      -- change begins (one in a block deleted there) is none.
+      checked k = k.lineFrom < firstChange && k.lineTo <= firstChange
+      begins = fromMaybe 0 (lastMay [k.at | k <- starts, k.at < lineStart, checked k])
+      below = ordNub [k.at | k <- starts, checked k || k.flush]
       ends = case dropWhile (<= lineEnd) below of
         _ : end : _ -> end - 1
         _ -> len

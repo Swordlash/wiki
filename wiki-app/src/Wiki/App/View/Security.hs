@@ -69,6 +69,7 @@ module Wiki.App.View.Security
   )
 where
 
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
 import Data.List qualified as L
 import Data.Map.Strict qualified as Map
@@ -201,7 +202,7 @@ data Action
   | VaultAskEachTime Bool
   | Finalize
 
-component :: forall query output m. (MonadSecurity m, MonadVault m, MonadAssistant m, MonadUUID m, MonadIO m) => H.Component query (Maybe UserId) output m
+component :: forall query output m. (MonadSecurity m, MonadVault m, MonadAssistant m, MonadUUID m, MonadUnliftIO m) => H.Component query (Maybe UserId) output m
 component =
   H.mkComponent
     H.ComponentSpec

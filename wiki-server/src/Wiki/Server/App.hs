@@ -79,6 +79,7 @@ import Wiki.Core.HomePage (HomeDocument (..), HomePage (..))
 import Wiki.Core.Id (AttachmentId (..), PageId (..), SpaceId (..), UserId (..))
 import Wiki.Core.Page (Page (attachments))
 import Wiki.Server.Accounts (Resolved (..), resolveSession)
+import Wiki.Server.Address (ownOrigin, ownOrigins)
 import Wiki.Server.Api (Caller (..), Env (..), Signing (..), apiApplication, currentAssistantHosts)
 import Wiki.Server.Auth (authApplication)
 import Wiki.Server.Events (eventsApplication)
@@ -94,7 +95,7 @@ import Wiki.Server.SecondFactor (requestPending)
 import Wiki.Server.Session (CookieSettings, clearCookie, requestToken, sameOrigin, sessionCookie)
 import Wiki.Server.Static (StaticSite, servePage, serveStatic)
 import Wiki.Server.Storage (Who (..), readServerSettings, readSettings, runStoredWiki)
-import Wiki.Server.Vault (siteFor)
+import Wiki.Server.Vault (siteOf)
 
 -- | A listener's configuration.
 data Listener = Listener
@@ -158,20 +159,23 @@ listenerApp logger env site l request respond = do
 -- back if the request's cookie needs changing.
 findCaller :: Env -> Listener -> Request -> IO (Caller, [Header])
 findCaller env l request = case l.finding of
-  EveryoneAdministers -> pure (Caller {who = Administrator, address, signing = Nothing, pauseIdle}, [])
+  -- The admin listener's pages are served from its own address, never
+  -- from the public address.
+  EveryoneAdministers -> pure (Caller {who = Administrator, address, signing = Nothing, origins = ownOrigins Nothing request, pauseIdle}, [])
   BySession cookies -> do
     settings <- readServerSettings env.storage
     let token = requestToken request
-        signing = Signing {address, token, pending = requestPending request, cookies, site = siteFor settings.publicUrl request}
+        origins = ownOrigins settings.publicUrl request
+        signing = Signing {address, token, pending = requestPending request, cookies, site = siteOf (ownOrigin settings.publicUrl request)}
     case token of
-      Nothing -> pure (Caller {who = Anonymous, address, signing = Just signing, pauseIdle}, [])
+      Nothing -> pure (Caller {who = Anonymous, address, signing = Just signing, origins, pauseIdle}, [])
       Just t -> do
         now <- getCurrentTime
         resolveSession env.storage now signing.address t >>= \case
-          Nothing -> pure (Caller {who = Anonymous, address, signing = Just signing {token = Nothing}, pauseIdle}, [(hSetCookie, encodeUtf8 (clearCookie cookies))])
+          Nothing -> pure (Caller {who = Anonymous, address, signing = Just signing {token = Nothing}, origins, pauseIdle}, [(hSetCookie, encodeUtf8 (clearCookie cookies))])
           Just found ->
             pure
-              ( Caller {who = AsUser found.user, address, signing = Just signing, pauseIdle}
+              ( Caller {who = AsUser found.user, address, signing = Just signing, origins, pauseIdle}
               , [(hSetCookie, encodeUtf8 (sessionCookie cookies t)) | found.refreshed]
               )
   where
@@ -297,7 +301,7 @@ listenerRoutes logger env site l caller request respond = do
             -- The live channel, upgraded to a WebSocket on its own, outside
             -- the API's middlewares, which read and rewrite a response's
             -- status and headers ("Wiki.Server.Events").
-            | endpoint == ["events"] -> eventsApplication env.storage env.events caller.who request respond
+            | endpoint == ["events"] -> eventsApplication env.storage env.events caller.who caller.origins request respond
             | otherwise -> api request {pathInfo = rest} respond
           "auth" : provider : more -> authApplication logger env caller l.mount provider more request respond
           -- A blog's feeds and the sitemap, with what anyone may read

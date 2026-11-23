@@ -1402,7 +1402,11 @@ It must pass WebSocket upgrades on (comments and notifications arrive live at
 `Host` the browser asked for), from which the server tells its public address and
 the origin passkeys are checked against. On a port other than 443 the host
 it passes on keeps the port (`wiki.example.org:8443`; in nginx `$http_host`,
-not `$host`), or the administration's public address names it. Caddy's `reverse_proxy` does all of it;
+not `$host`), or the administration's public address names it. The live
+channel's WebSocket must come from that origin too, or from the public
+address, or comments and notifications do not arrive live: behind a proxy
+that serves HTTPS and sends no `X-Forwarded-Proto`, set the public address.
+Caddy's `reverse_proxy` does all of it;
 a whole Caddyfile, with the certificate from Let's Encrypt:
 
 ```
@@ -2926,9 +2930,11 @@ there with the compose file beside it.
   host's address it is published on (`WIKI_BIND=127.0.0.1` behind a reverse proxy
   on the same machine). A proxy has to pass WebSocket upgrades on to
   `api/v1/events` (comments arrive live there: `Upgrade` and `Connection`
-  forwarded) and keep the `Host` the browser asked for, or set
-  `X-Forwarded-Host` to it, since the server refuses an upgrade whose `Origin`
-  is not its own address.
+  forwarded), keep the `Host` the browser asked for or set
+  `X-Forwarded-Host` to it, and set `X-Forwarded-Proto` when it serves
+  HTTPS, since the server refuses an upgrade whose `Origin` is not its own
+  address. A public address set in the Server section is taken too,
+  whatever the proxy says.
 - **The admin listener** listens on the container's own loopback,
   `127.0.0.1:8081`, which is not published and which nothing outside the container
   reaches; you reach it through the container:

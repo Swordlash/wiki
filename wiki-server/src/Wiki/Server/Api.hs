@@ -136,6 +136,7 @@ import Wiki.Core.User (Email (..), Login (..), Password, User (..), parseEmail)
 import Wiki.Core.Version (VersionsQuery (VersionsQuery), versionsPageSize)
 import Wiki.Server.Accounts (endSession)
 import Wiki.Server.Accounts qualified as Accounts
+import Wiki.Server.Address (Origin)
 import Wiki.Server.Backups (BackupService, currentBackups, requestBackup, settingsChanged)
 import Wiki.Server.BasicSignIn (BasicSignIns)
 import Wiki.Server.Events (Hub, openConnections)
@@ -250,6 +251,11 @@ data Caller = Caller
   , signing :: Maybe Signing
   -- ^ What signing in and out need, on the listener where people sign in:
   -- the public one.
+  , origins :: [Origin]
+  -- ^ The wiki's own origins, as this listener serves it
+  -- ('Wiki.Server.Address.ownOrigins'): the one the request names, and on
+  -- the public listener the public address's when one is set. The live
+  -- channel's WebSocket is refused when its @Origin@ header names another.
   , pauseIdle :: IO ()
   -- ^ Let the request's connection stay silent longer than Warp's idle
   -- timeout of 30 seconds (Warp's @pauseTimeout@), for an answer that
@@ -278,7 +284,7 @@ data Signing = Signing
 -- for on the server. The server sends that page's API requests to itself,
 -- so they have no address and no cookie.
 callerAs :: Who -> Caller
-callerAs who = Caller {who, address = "", signing = Nothing, pauseIdle = pass}
+callerAs who = Caller {who, address = "", signing = Nothing, origins = [], pauseIdle = pass}
 
 -- | The API as a WAI application, answering as the given 'Caller'. Every
 -- refusal, including the routing's own, is an 'ApiError'.

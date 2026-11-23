@@ -281,6 +281,13 @@ vaultAndPasskeys backing = describe "the assistant's vault and passkeys, over HT
       siteFor Nothing (request [("X-Forwarded-Host", "wiki.example.org:443"), ("X-Forwarded-Proto", "https")])
         `shouldBe` Site {rpId = "wiki.example.org", origins = ["https://wiki.example.org"]}
       siteFor Nothing (request [("X-Forwarded-Host", "[::1]:8443"), ("X-Forwarded-Proto", "https")]) `shouldBe` Site {rpId = "::1", origins = ["https://[::1]:8443"]}
+    -- The settings take such addresses ('parsePublicUrl' does not look at
+    -- the user or the port), and passkeys made on the request's origin
+    -- keep working there.
+    it "is the request's when the public address has no origin to read" $ do
+      siteFor (Just (Url "https://user@wiki.example.org/")) (request []) `shouldBe` Site {rpId = "wiki.example.org", origins = ["http://wiki.example.org:8080"]}
+      siteFor (Just (Url "https://wiki.example.org:port/")) (request []) `shouldBe` Site {rpId = "wiki.example.org", origins = ["http://wiki.example.org:8080"]}
+      siteFor (Just (Url "https://wiki.ex%61mple.org/")) (request []) `shouldBe` Site {rpId = "wiki.example.org", origins = ["http://wiki.example.org:8080"]}
 
   describe "a wiki on another port than the scheme's own, or with the scheme's own written out" $
     for_ [("wiki.example.org:8443", "https://wiki.example.org:8443"), ("wiki.example.org:443", "https://wiki.example.org")] $ \(forwardedHost, origin) ->

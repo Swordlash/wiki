@@ -891,8 +891,8 @@ data AccountApi form mode = AccountApi
   -- which no later response shows again. A key with the right @admin@
   -- made by a user who is not an administrator is
   -- 'Wiki.Api.Error.Forbidden'. An expiry that is not in the future, a
-  -- name that is too long, or a user who has as many live keys as they may
-  -- ('Wiki.Server.ApiKeys.maxLiveKeys', 20) is 'Wiki.Api.Error.Invalid'. A
+  -- name that is too long, or a user who has as many keys that work as
+  -- they may (20) is 'Wiki.Api.Error.Invalid'. A
   -- session still waiting for its second factor is not signed in, and is
   -- 'Wiki.Api.Error.Unauthenticated'.
   , revokeApiKey :: mode :- "api-keys" :> Capture "key" ApiKeyId :> "revoke" :> Post '[JSON] [ApiKeyInfo]

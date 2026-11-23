@@ -3,9 +3,10 @@
 -- assistant, later an MCP server) reads to find the pages it then reads
 -- and writes through the API for a page's Markdown
 -- ("Wiki.Server.MarkdownApi"). Both sign in as that API does, with HTTP
--- Basic or an API key ('signedInProgram'), and answer JSON. They live at @api\/list@
--- and @api\/search@, beside the application's own API under @api\/v1\/@,
--- whose later versions are @api\/v2\/@ and so on: neither name can be one.
+-- Basic or an API key ('signedInProgram'), and answer JSON. They live at
+-- @api\/list@ and @api\/search@, beside the application's own API under
+-- @api\/v1\/@, whose later versions are @api\/v2\/@ and so on: neither
+-- name can be one.
 --
 -- = Addresses
 --
@@ -163,8 +164,8 @@ instance ToJSON Hits where
   toEncoding = genericToEncoding entryOptions
 
 -- | The listing, on a listener that serves the wiki under this path (with a
--- slash at each end), for a request from this address, whose path after
--- @api\/list@ is these segments.
+-- slash at each end), for a request the listener knows this of
+-- ('Asking'), whose path after @api\/list@ is these segments.
 listApplication :: Env -> Text -> Asking -> [Text] -> Application
 listApplication env mount asking@Asking {address} segments request respond =
   signedInProgram env asking request respond $ \u -> case requestMethod request of
@@ -241,7 +242,7 @@ newSpaceOf body
   | otherwise = first (\why -> "The body is not a space's JSON, {\"title\": \"…\"}: " <> toS why) (eitherDecode body)
 
 -- | The search, on a listener that serves the wiki under this path, for a
--- request from this address.
+-- request the listener knows this of ('Asking').
 searchApplication :: Env -> Text -> Asking -> Application
 searchApplication env mount asking@Asking {address} request respond =
   signedInProgram env asking request respond $ \u ->

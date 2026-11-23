@@ -94,7 +94,7 @@ import Data.Char (isAsciiLower)
 import Data.List (lookup)
 import Data.Text qualified as T
 import Data.Time (NominalDiffTime, UTCTime, defaultTimeLocale, diffUTCTime, formatTime)
-import Database.Beam (all_, asc_, delete, desc_, filter_, insert, insertValues, orderBy_, runDelete, runInsert, runSelectReturningList, runSelectReturningOne, runUpdate, select, update, val_, (&&.), (<-.), (==.))
+import Database.Beam (all_, asc_, delete, desc_, filter_, insert, insertValues, join_, orderBy_, runDelete, runInsert, runSelectReturningList, runSelectReturningOne, runUpdate, select, update, val_, (&&.), (<-.), (==.))
 import Network.HTTP.Types (hAuthorization, methodGet, methodHead)
 import Network.Wai (Request (..))
 import Protolude
@@ -385,12 +385,11 @@ signInByKey st limiter now address presented = do
         | Just right <- rightOf k.access -> Right (k, KeyHolder {user = UserId k.user_id, key = ApiKeyId k.id, right})
         | otherwise -> Left Malformed
 
--- | A key by its id, with whether its user's login is disabled.
+-- | A key by its id, with whether its user's login is disabled: one query,
+-- whether or not a key has the id, so that the time of the answer does
+-- not tell. A key's user always exists, since the key goes with them.
 keyAndUser :: (Backend be) => ApiKeyId -> Db be (Maybe (ApiKeys Identity, Bool))
-keyAndUser i =
-  runSelectReturningOne (select (filter_ (\k -> k.id ==. val_ i.text) (all_ wikiDb.api_keys))) >>= \case
-    Nothing -> pure Nothing
-    Just k -> do
-      disabled <- runSelectReturningOne (select ((\r -> r.disabled) <$> filter_ (\r -> r.id ==. val_ k.user_id) (all_ wikiDb.users)))
-      -- A key's user always exists: the key goes with them.
-      pure (Just (k, fromMaybe True disabled))
+keyAndUser i = runSelectReturningOne . select $ do
+  k <- filter_ (\k -> k.id ==. val_ i.text) (all_ wikiDb.api_keys)
+  u <- join_ wikiDb.users (\u -> u.id ==. k.user_id)
+  pure (k, u.disabled)

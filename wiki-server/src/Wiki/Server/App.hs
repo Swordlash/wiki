@@ -291,8 +291,8 @@ listenerRoutes logger env site l caller loggedAs request respond = do
         case drop (length mounted) segments of
           -- The path itself without its trailing slash.
           [] | not (null mounted) -> redirect (encodeUtf8 l.mount)
-          -- The API for a page's Markdown, signed in by HTTP Basic alone,
-          -- never by the cookie ("Wiki.Server.MarkdownApi"): on the
+          -- The API for a page's Markdown, signed in by HTTP Basic or an
+          -- API key, never by the cookie ("Wiki.Server.MarkdownApi"): on the
           -- public listener only, since on the admin listener everyone
           -- would be the administrator.
           -- One section of a page's Markdown, at the page's Markdown

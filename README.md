@@ -2381,7 +2381,9 @@ to the demo, keeping `data/`.
   `--off`), disables a login (`users disable LOGIN --on`, which signs them out;
   `--off` enables it), takes away a second factor its user has lost
   (`users second-factor-remove LOGIN`) and removes the account of a disabled
-  login (`users remove LOGIN`), keeping what the person wrote under the login. It is also how an installation whose
+  login (`users remove LOGIN`), keeping what the person wrote under the login.
+  `keys add|list|revoke LOGIN` makes, lists and revokes a user's API keys
+  (see "The API" below). The `users` command is also how an installation whose
   administrators are all locked out is recovered. Sign in on the public address
   with that login. Sessions last two weeks without use. Behind HTTPS the server
   must run with `--secure-cookies`, which the deploy script passes behind
@@ -2647,7 +2649,9 @@ curl -H "X-API-Key: $WIKI_TOKEN" 'https://wiki.example/api/search?q=on-call'
 - **Expiry.** A key works until the moment you chose, or until it is
   revoked if you chose none. A revoked key stays in your list as revoked and
   never works again. When you are removed from the wiki your keys go with
-  you; while your login is disabled they do not work.
+  you; while your login is disabled they do not work. A new password and
+  "Sign out everywhere" leave your keys as they are: revoke a key you no
+  longer trust.
 - **Second factor and passkeys.** A key works for an account with a second
   factor, and for one that signs in with passkeys only, which a password
   cannot sign in here: the key was made in a session the second factor or

@@ -146,8 +146,8 @@ quote v
 -- took. Who asked is the fields the given action reads when the line is
 -- written (@principal@, and @key@ for an API key), so that a handler
 -- that signs its request in itself, as the API for programs does, can
--- name its user ("Wiki.Server.MarkdownApi"). The status, and the time until the response
--- starts, are also passed to the given observer (the server's metrics)
+-- name its user ("Wiki.Server.MarkdownApi"). The status, and the time
+-- until the response starts, are also passed to the given observer (the server's metrics)
 -- before the response is sent, so that a client that has received a
 -- response finds it counted in the next scrape; counting after the send
 -- raced with the client's next request. A handler that throws is logged with its exception

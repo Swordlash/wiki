@@ -1451,8 +1451,9 @@ write-ahead log; on PostgreSQL what `pg_database_size` says),
   API for a page's Markdown checked in full, each with its stretching; a
   login it remembers is not counted again). A `route` is the pattern the request matched, read
   from the API's own router (`/api/v1/spaces/:space/name`), or
-  `/api/v1/events`, `/api/markdown/page`, `/api/markdown/reference`, `/api/list` (a listing of
-  the top level or of any space), `/api/search`, `/auth/:provider/<step>`, `/static` (the build's files),
+  `/api/v1/events`, `/api/markdown/page` (a page's Markdown read, written or created),
+  `/api/markdown/reference`, `/api/list` (a listing of the top level or of
+  any space, or a space created), `/api/search`, `/auth/:provider/<step>`, `/static` (the build's files),
   `/page` (a page the server renders), `/healthz`, `/metrics`, and
   `/api/unmatched`, `/auth/unmatched`, `/unmatched` for what matches
   nothing; never an address, so ids make no series and no secret of an

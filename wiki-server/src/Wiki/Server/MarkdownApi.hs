@@ -293,17 +293,25 @@ titleOfSlug slug = case T.uncons (T.replace "-" " " (slugText slug)) of
 
 -- | Why the address of a page or a space, as the segments of its path after
 -- the API's prefix, can name nothing: the first segment that is not a slug
--- ("Wiki.Core.Slug"), with the slug the wiki would make of it. 'Nothing'
--- when every segment is one, or for an address that is not a space's or a
--- page's. A slug that is one of the router's own words is written with a
--- @~@ in front ("Wiki.App.Route"), and is a slug.
+-- ("Wiki.Core.Slug"), with the slug the wiki would make of it, or that is
+-- one of the router's own words (@history@, @edit@, …) written bare. Such
+-- a word is a slug, written with a @~@ in front ("Wiki.App.Route"): the
+-- router reads @history@ as a page's history, and @~history@ as a page.
+-- 'Nothing' when every segment is a slug written as the router reads one,
+-- or for an address that is not a space's or a page's. The first @p@
+-- separates the space's path from the page's.
 notASlug :: [Text] -> Maybe Text
 notASlug = \case
-  "s" : rest -> head (mapMaybe refused (filter (`notElem` ["p", ""]) rest))
+  "s" : rest -> head (mapMaybe refused (withoutSeparator (filter (/= "") rest)))
   _ -> Nothing
   where
+    withoutSeparator xs = let (space, page) = break (== "p") xs in space <> drop 1 page
     refused t = case mkSlug (fromMaybe t (T.stripPrefix "~" t)) of
-      Right _ -> Nothing
+      Right s
+        | not ("~" `T.isPrefixOf` t)
+        , "~" `T.isInfixOf` Duplex.print Route.route (Route.Space [s]) ->
+            Just ("The segment " <> t <> " is one of the addresses' own words: a slug that is one is written ~" <> t <> ".")
+        | otherwise -> Nothing
       Left _ ->
         Just
           ( "The segment "

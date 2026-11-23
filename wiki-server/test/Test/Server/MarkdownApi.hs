@@ -321,6 +321,10 @@ creatingPages backing = describe "creating a page" $ do
     (q3.title, q3.kind) `shouldBe` ("Quarterly plan – Q3", Kind.Presentation)
     map (\c -> (c.title, c.kind, c.markdown)) <$> q3.children `shouldBe` Just [("Notes", Kind.Document, "/api/markdown/s/blog/p/q3/notes/")]
     (.body) <$> follow r editor "/api/markdown/s/blog/p/q3/notes/" `shouldReturn` "Notes."
+    -- A slug that is one of the router's own words, written with its ~.
+    escaped <- request r methodPut "s/blog/p/q3/~history/" [editor] "Its history."
+    (escaped.status, header "Location" escaped) `shouldBe` (201, Just "/api/markdown/s/blog/p/q3/~history/")
+    (.body) <$> follow r editor "/api/markdown/s/blog/p/q3/~history/" `shouldReturn` "Its history."
 
   it "creates only where there is no page, with If-None-Match: *" $ withPasswords backing $ \r -> do
     old <- request r methodGet "s/blog/p/hello-world/" [editor] ""
@@ -341,6 +345,8 @@ creatingPages backing = describe "creating a page" $ do
       , (404, "s/no-such-space/p/a-page/", [])
       , (404, "s/no-such-space/", [])
       , (400, "s/blog/p/Not_A_Slug/", [])
+      , -- A slug that is one of the router's words is written ~history.
+        (400, "s/blog/p/history/", [])
       , (400, "s/blog/p/blank/?title=", [])
       , (400, "s/blog/p/odd/?kind=spreadsheet", [])
       , (400, "s/blog/p/tagged/", [("If-None-Match", tag)])

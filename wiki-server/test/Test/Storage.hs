@@ -35,6 +35,7 @@ import Wiki.Core.HomePage qualified as Home
 import Wiki.Core.Id
 import Wiki.Core.Page (Page (..))
 import Wiki.Core.Page qualified as P
+import Wiki.Core.PageKind qualified as Kind
 import Wiki.Core.Permission (GlobalGrant (..), GlobalPermission (..), Grants (..), Subject (..))
 import Wiki.Core.Search (SearchHit (..), SearchQuery (..), bodyText, foldText, searchQuery)
 import Wiki.Core.Slug (mkSlug, slugText)
@@ -57,6 +58,7 @@ spec backing = describe "StoredWiki, besides the contract" $ do
   times backing
   administrator backing
   versionsAndSearchText backing
+  slugsAskedFor backing
   attachmentsOnDisk backing
   wholeWikis backing
   searching backing
@@ -225,6 +227,45 @@ administrator backing = describe "the administrator" $ do
       asking {B.homePage = anonymous.homePage} `shouldBe` anonymous
       names <- map (\s -> s.name) <$> runStoredWiki st (AsUser (UserId "no-such-user")) listSpaces
       names `shouldBe` ["Blog", "Docs"]
+
+-- | 'createPageAt' and 'createSpaceAt', what the API for programs creates
+-- at an address: the slug is the one asked for, whatever the title, and a
+-- sibling that has it already is a 'Conflict' that makes nothing, where
+-- 'createPage' and 'createSpace' would take another slug.
+slugsAskedFor :: Backing -> Spec
+slugsAskedFor backing = describe "a page or a space created with its slug given" $ do
+  it "keeps the page's slug, and refuses one a sibling has, making nothing" $
+    withDemo backing $ \st -> do
+      blog <- asAdmin st (getSpace (path "blog")) >>= ok
+      hello <- pageIn st "blog" "hello-world"
+      editor <- whoFor st (As "editor")
+      let count = length <$> (asAdmin st (listPages blog.id) >>= ok)
+      before' <- count
+      runStoredWiki st editor (createPageAt Kind.Document blog.id Nothing (slug "hello-world") "Hello again" "Over it.")
+        >>= (`shouldSatisfy` \case Left (Conflict _) -> True; _ -> False)
+        . fmap (const ())
+      count `shouldReturn` before'
+      made <- runStoredWiki st editor (createPageAt Kind.Document blog.id Nothing (slug "q3") "Quarterly plan" "Plan.") >>= ok
+      (made.slug, made.title) `shouldBe` (slug "q3", "Quarterly plan")
+      -- The same slug under another parent is another sibling's.
+      below <- runStoredWiki st editor (createPageAt Kind.Document blog.id (Just hello.id) (slug "q3") "Below" "Below.") >>= ok
+      (below.slug, below.parent) `shouldBe` (slug "q3", Just hello.id)
+      count `shouldReturn` (before' + 2)
+
+  it "keeps the space's slug, and refuses one a sibling has, making nothing" $
+    withDemo backing $ \st -> do
+      blog <- asAdmin st (getSpace (path "blog")) >>= ok
+      let count = length <$> asAdmin st listSpaces
+      before' <- count
+      asAdmin st (createSpaceAt Nothing (slug "blog") "Blog again")
+        >>= (`shouldSatisfy` \case Left (Conflict _) -> True; _ -> False)
+        . fmap (const ())
+      count `shouldReturn` before'
+      made <- asAdmin st (createSpaceAt (Just blog.id) (slug "blog") "Another blog") >>= ok
+      (made.slug, made.name, made.parent) `shouldBe` (slug "blog", "Another blog", Just blog.id)
+      count `shouldReturn` (before' + 1)
+  where
+    slug = either (panic . show) identity . mkSlug
 
 versionsAndSearchText :: Backing -> Spec
 versionsAndSearchText backing = describe "each page's versions and search text" $ do

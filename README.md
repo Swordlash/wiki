@@ -2663,7 +2663,9 @@ curl https://wiki.example/api/markdown/reference
   create only: where a page is already, it is refused with 412 and nothing
   is written. `If-Match` never creates: where there is no page, it is 404.
   A segment that is not a slug (lowercase ASCII letters, digits and single
-  dashes) is refused with 400.
+  dashes) is refused with 400, and so is a slug that is one of the
+  addresses' own words written bare: a page with the slug `history` is at
+  `…/p/~history/`, as in the browser.
 - **`GET /api/markdown/reference`** gives the wiki's Markdown reference, the
   same text the writing assistant's prompt starts with, to anyone; in a
   closed wiki it needs a sign-in, as everything else there does.

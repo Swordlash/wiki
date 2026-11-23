@@ -273,7 +273,8 @@ spaceEntry mount spaces depth s = do
     if opens depth
       then Just <$> traverse (spaceEntry mount spaces (below depth)) (subspacesOf spaces (Just s.id))
       else pure Nothing
-  let sp = map (\x -> x.slug) (spaceChain spaces s.id)
+  let chain = spaceChain spaces s.id
+      sp = map (\x -> x.slug) chain
       ps = fromMaybe [] readable
       byId = Map.fromList [(p.id, p) | p <- ps]
       pageEntry level p = do
@@ -294,7 +295,8 @@ spaceEntry mount spaces depth s = do
       , path = renderPath sp
       , list = readable $> addressUnder mount "api/list" (Route.Space sp)
       , home = (rootPage s >>= (`Map.lookup` byId)) $> addressUnder mount "api/markdown" (Route.Space sp)
-      , encrypted = isJust s.encryption
+      , -- Encrypted here or above: the server reads the pages of neither.
+        encrypted = any (\x -> isJust x.encryption) (s : chain)
       , subspaces
       , pages = guard (isJust readable && opens depth) $> pagesUnder (below depth) (rootPage s)
       }

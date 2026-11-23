@@ -2797,6 +2797,242 @@ memory than the budget is refused (401) as a wrong password is, and costs the
 server no more than one. Keys made in your own panel instead of a password,
 attachments, a page's sections and an MCP server are to come.
 
+##### From a shell, and for assistants
+
+`clients/wiki.sh` is a client of this API in one shell script, for a person
+at a terminal or an assistant that runs commands, with no build step: it
+needs `curl` and nothing else, and its MCP mode needs `jq` too. It is POSIX
+`sh`, so it runs under Linux's `sh` (dash), macOS's (bash 3.2) and any later
+bash. To install it, copy the one file to a directory on your `PATH`:
+
+```sh
+cp clients/wiki.sh ~/bin/wiki.sh && chmod +x ~/bin/wiki.sh
+```
+
+It reads where the wiki is and who signs in from the environment, `WIKI_URL`,
+`WIKI_USER` and `WIKI_PASSWORD`, or for what the environment does not set,
+from `~/.config/wiki/config` (another file with `WIKI_CONFIG`), which it
+reads only when nobody but you may read it (`chmod 600`):
+
+```text
+# ~/.config/wiki/config
+url = https://wiki.example
+user = editor
+password = my password
+```
+
+The password reaches curl through a file descriptor, never its command line,
+so the process list does not show it, and `sh -x wiki.sh ...` does not trace
+it.
+
+curl runs with `-q`, so your `~/.curlrc` is not read: a setting there (`fail`,
+`output`, `url`) cannot change the client's requests or how it reads their
+answers. curl still takes a proxy from `https_proxy`, `HTTPS_PROXY` and
+`NO_PROXY`, and a CA bundle from `CURL_CA_BUNDLE` and `SSL_CERT_FILE`; to give
+them to `wiki.sh` alone, set `WIKI_PROXY` and `WIKI_CACERT` (or `proxy =` and
+`cacert =` in the configuration file). No file of curl's own options is read,
+since some of them would break how the client reads the wiki's answers.
+
+```text
+$ wiki.sh list team
+Space: Team  /s/team/
+  On-call  /s/team/p/on-call/
+  Space: Projects  /s/team/projects/
+    The wiki  /s/team/projects/p/the-wiki/
+    Zażółć gęślą jaźń  /s/team/projects/p/zazolc-gesla-jazn/
+
+$ wiki.sh search on-call rota
+On-call  /s/team/p/on-call/  (in Team)
+    On-call Who is on call this week. The rota changes on Mondays.
+
+$ wiki.sh get /s/team/p/on-call/ --out on-call.md
+wiki.sh: wrote on-call.md; its version "2026-11-23T15:23:50.829263Z" is in on-call.md.version, for put --file on-call.md
+
+$ wiki.sh put /s/team/p/on-call/ --file on-call.md
+wiki.sh: wrote /s/team/p/on-call/; its version is now "2026-11-23T15:23:52.788599Z"
+
+$ wiki.sh get team nothing
+wiki.sh: not found (404): /s/team/p/nothing/ is not there, or you may not read it
+
+$ wiki.sh reference --sections
+Sections of the wiki's Markdown reference (609 lines); ask for one by its heading:
+- Writing pages (3 kB, the introduction)
+  - Text (under 1 kB)
+  - Emoji (3 kB)
+  ...
+  - Math (6 kB)
+    - What KaTeX sets (2 kB)
+    - Macros (3 kB)
+  ...
+```
+
+- **`wiki.sh list [SPACE] [--depth N]`** prints the tree of what you may read,
+  each line a title and its address; **`wiki.sh search WORDS... [--space
+  SPACE] [--limit N]`** the search's hits, best first, each with its address,
+  its space and the excerpt. With `--json`, both print the server's JSON as it
+  came.
+- **`wiki.sh get PAGE`** prints the page's Markdown, and its version on
+  standard error; `--out FILE` writes the Markdown to `FILE` and the version
+  to `FILE.version`, and `--version` prints the version alone (and does not
+  remember it, since nobody read the text).
+- **`wiki.sh put PAGE`** writes the page's whole Markdown, from `--file FILE`
+  or standard input, over a version, with `If-Match`: when someone has saved
+  the page since, nothing is written, and it exits with 5. The version is the
+  one given with `--if-match`, else for `--file FILE` the one `get --out` kept
+  beside it in `FILE.version` (a `FILE` without one is refused, since its text
+  may be of any version: `--if-match` or `--force` say which), else for
+  standard input the one the last `get` or `put` of that page gave. A `FILE`
+  to read may be in any directory; one with a `FILE.version` must be in a
+  directory of your own, and its text and version are read under its lock, so
+  that a `get --out` of the same file cannot change one between the two.
+  Each `get` and `put`
+  keeps the page's version in a file of its own under
+  `~/.local/state/wiki/` (`WIKI_STATE_DIR` names another directory), by the
+  wiki's address and the page's:
+  `~/.local/state/wiki/https_wiki.example/s/team/p/on-call/_version`. A
+  version is remembered only once its text was written out whole (a `get`
+  into a file it cannot write remembers nothing) or the wiki accepted the
+  write, and then in the state file and in the file's `.version` together,
+  however the version sent was chosen. `get --out FILE` writes the text and
+  its version beside `FILE` first, checks the text is whole, then takes the old
+  `FILE.version` away, moves the text into place, and the new version last: a
+  full disk or a file size limit leaves `FILE` and `FILE.version` as they
+  were, and a stop in between leaves a text with no version, which `put
+  --file` refuses, never a text beside a version that is not its own. A
+  version is used only in the shape the wiki writes it (a quoted UTC time,
+  `"2026-11-18T09:30:12.345678Z"`): a damaged `FILE.version` or state file, or
+  an `--if-match` of another shape, is refused like a missing one, and no
+  write ever goes out without `If-Match` or `If-None-Match: *`. The files beside them are made by
+  `mktemp` (nobody can name one in advance, in `/tmp` either), and each takes
+  the mode of the file it replaces, or for a new file the one your umask
+  gives; a `FILE` that is a symbolic link is refused. `FILE` must be in a
+  directory of your own: one nobody else can write, under directories nobody
+  else can swap (`/tmp` itself is refused; `mkdir -m 700 /tmp/mine` is
+  fine), judged where its path leads. Two `wiki.sh` writing one `FILE` at once
+  cannot interleave: the second fails at once and names the lock,
+  `FILE.wiki-sh-lock`, which a run that was killed may leave behind for you to
+  remove. Everything else the
+  script writes is private to you: the state files, and a directory of its
+  own under `TMPDIR` that it removes when it ends. With no version known, `put` refuses
+  to write blind; `--force` reads the page's version as it is now and writes
+  over that. A `put` writes a page that exists and never makes one: it always
+  sends `If-Match`, for which the wiki creates nothing, so at an address with
+  no page it is "not found" (exit 4), `--force` too, and says to use `create`.
+- **`wiki.sh create PAGE [--title TITLE] [--kind document|presentation]
+  [--file FILE]`** makes a new page with the Markdown of `FILE` or standard
+  input, with `If-None-Match: *`: where a page is already, nothing is written
+  and it exits with 5. The page above it, if any, must exist. Its version is
+  remembered for a later `put`. **`wiki.sh create-space SPACE [--title
+  TITLE]`** makes a space; one already there exits with 6.
+
+  ```sh
+  wiki.sh create team/projects release-notes --title 'Release notes' --file notes.md
+  wiki.sh create-space team/archive --title Archive
+  ```
+- **`wiki.sh reference`** prints the Markdown reference, `--sections` the list
+  of its sections, and `wiki.sh reference Math` one of them.
+
+`PAGE` is a page's address as the wiki writes it and `list` and `search` print
+it, `/s/team/projects/p/the-wiki/` (a space's home page, `/s/team/`; a slug
+spelled like one of the addresses' own words gets a `~`, so a subspace Edit
+is `/s/team/~edit/`), or the page's address in the browser, or its API
+address, pasted whole; or a space's path and a page's apart, as the titles
+make them, `team/projects the-wiki` or `team/edit history`. The addresses
+`list` and `search` print are the server's own, so they lead back to the same
+page under any base path. An address is read whole, by the wiki's own grammar
+for addresses: one with an empty part, a capital, a space, a query, an
+unknown `~word`, a bare `edit` outside a browser's URL, or no page after
+`/p/` is refused (exit 2) before anything is sent, and never repaired. An
+answer that is not the wiki's fails with exit 1 and says so, and changes
+nothing that is remembered: each request has one answer the wiki gives on
+success (a read 200 with its content type, a listing or a search in the
+shape the server writes it, a page with its version; a write 204 with its new
+version and no body), and anything else (a wrong `WIKI_URL`, a proxy's page,
+a JSON error with 200) is not taken for it. A failure is one line on standard error, and its exit
+code tells the kinds apart: 2 a wrong use (or no version known for a `put`),
+3 the sign-in refused, 4 not found or not yours to read, 5 the page saved
+since your version, 6 refused (not allowed, an encrypted space), 7 too many
+failed sign-ins (the line says when to try again), 8 no connection, 1
+anything else.
+
+**For an assistant that takes MCP servers**, `wiki.sh mcp` is a Model Context
+Protocol server on standard input and output, with six tools: `wiki_list`,
+`wiki_search`, `wiki_read_page` (the Markdown and its version),
+`wiki_write_page` (the version read is required, so every write is
+conditional: a page saved since comes back as an error that tells the model
+to read it again and merge; it never creates a page), `wiki_create_page`
+(a new page, its title, kind and text; it never writes over a page) and
+`wiki_markdown_reference` (the list of
+sections, or one section: the reference whole is 67 kB). It speaks the
+protocol's current revision, 2026-07-28, in which each request names its
+revision, and answers `initialize` for the earlier ones, 2025-11-25 and
+2025-06-18; a client that asks for another gets 2025-11-25. It needs `jq`
+(`apt install jq`, `brew install jq`). The configuration is
+the commands' own, so with the configuration file a client needs only the
+command. In Claude Code:
+
+```sh
+claude mcp add wiki -- /home/me/bin/wiki.sh mcp
+```
+
+or in a project's `.mcp.json`, the same shape GitHub Copilot's CLI takes in
+`~/.copilot/mcp-config.json` (with `"type": "local"` and `"tools": ["*"]`
+beside `command`); the variables in `env` are given to the script, and here
+`${WIKI_PASSWORD}` is expanded by Claude Code from its own environment:
+
+```json
+{
+  "mcpServers": {
+    "wiki": {
+      "command": "/home/me/bin/wiki.sh",
+      "args": ["mcp"],
+      "env": {
+        "WIKI_URL": "https://wiki.example",
+        "WIKI_USER": "editor",
+        "WIKI_PASSWORD": "${WIKI_PASSWORD}"
+      }
+    }
+  }
+}
+```
+
+In VS Code, `.vscode/mcp.json` names the servers `servers`, and can ask for
+the password once instead of keeping it:
+
+```json
+{
+  "inputs": [{"type": "promptString", "id": "wiki-password", "description": "The wiki's password", "password": true}],
+  "servers": {
+    "wiki": {
+      "type": "stdio",
+      "command": "/home/me/bin/wiki.sh",
+      "args": ["mcp"],
+      "env": {"WIKI_URL": "https://wiki.example", "WIKI_USER": "editor", "WIKI_PASSWORD": "${input:wiki-password}"}
+    }
+  }
+}
+```
+
+These formats are from the clients' documentation (Claude Code's, VS Code's
+and GitHub Copilot CLI's, read in November 2026); the server's exchange is
+tested through a pipe, not yet with a running client.
+
+**For an assistant without MCP**, `clients/wiki-assistant.md` tells it the
+commands, to read a page before writing it and to write over the version it
+read, and to read the Markdown reference before writing the wiki's Markdown.
+Point the assistant at the file, or copy its text into the instructions the
+assistant reads (`AGENTS.md`, `.github/copilot-instructions.md`, `CLAUDE.md`);
+its front matter is a skill's, so it can also be Claude Code's skill
+`~/.claude/skills/wiki/SKILL.md`.
+
+When API keys exist, `WIKI_TOKEN` (or `token =` in the configuration file)
+will be sent as `Authorization: Bearer` in place of the login and password;
+the script sends it already, and the wiki refuses it (401) until then. The
+wiki's own MCP endpoint is planned after the keys, for clients that take an
+MCP server by its address; this script stays for those that start one by a
+command. The commands for what the API does not do yet (a page's table of
+contents and its sections) will join it as the API gets them.
+
 #### Bringing the demo's pages into the server
 
 What you wrote in the demo lives in your browser (IndexedDB, kept per address), and
@@ -3614,6 +3850,7 @@ To run CI on a machine of your own (x86_64 Linux, Debian or Ubuntu):
 | [docs/](docs/) | | The authors' Markdown reference (`markdown.md`), the HTTP API (`api.md`), the export format (`export.md`), the plan of work (`PLAN.md`), and the README's screenshots. |
 | [web/](web/) | | The page around the application: `index.html`, `index.js` (loads `app.wasm`), CSS, and `bundle.sh`, which bundles the islands' libraries from `web/src/`; `licenses/`, the texts of TikZJax's licence and its fonts', which the bundle serves beside them. |
 | [toolchain/](toolchain/) | | Build, test and deploy scripts, adapted from haskell-halogen's, and `smoke-suite.sh`, which runs a suite of `wiki-smoke`. |
+| [clients/](clients/) | | What users copy to their own machines: `wiki.sh`, the API's client in one shell script and an MCP server for assistants, and `wiki-assistant.md`, its instructions for an assistant without MCP (the API's section above). |
 
 At the top, `Dockerfile` and `docker-compose.yml` run the server in Docker
 (above); `.dockerignore` keeps everything but the sources

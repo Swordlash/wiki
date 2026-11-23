@@ -358,7 +358,8 @@ readsDuringBackup st who space target = do
 -- it: 'tabs' tabs of 'tabUsers' users, over real WebSockets.
 commentWithTabs :: Storage -> Events.Hub -> Who -> Int -> IO ()
 commentWithTabs st hub commenter target = do
-  let app request = Events.eventsApplication st hub (whoOf request) request
+  -- The clients send no Origin, so the wiki's own origin does not matter.
+  let app request = Events.eventsApplication st hub (whoOf request) [] request
       whoOf request = maybe Anonymous (AsUser . UserId . decodeUtf8) (lookup "X-Bench-User" (requestHeaders request))
   testWithApplication (pure app) $ \port -> do
     ready <- newEmptyMVar

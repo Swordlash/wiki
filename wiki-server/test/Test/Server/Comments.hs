@@ -43,6 +43,7 @@ import Wiki.Api.Comments (CommentText (..), NewThread (..), ThreadResolution (..
 import Wiki.Api.Error (ApiError (..))
 import Wiki.Api.Events (ClientMessage (..), PageEvent (..), Readers (..), ServerMessage (..), eventsPath, noReaders)
 import Wiki.Api.Links (links)
+import Wiki.Api.ServerSettings (ServerSettingsOf (..), noServerSettings)
 import Wiki.Api.Types (PageEdit (..), PageMove (..), SpaceGrantChange (..), SpacePublic (..))
 import Wiki.Api.Version (pageVersion)
 import Wiki.App.Backend (setSpaceGrant)
@@ -54,6 +55,7 @@ import Wiki.Core.Page (Page (..))
 import Wiki.Core.Permission (SpacePermission (..), Subject (..))
 import Wiki.Core.Slug (mkSlug)
 import Wiki.Core.Space (Space (..))
+import Wiki.Core.Url (Url (..))
 import Wiki.Core.Version (Author (..))
 import Wiki.Server.Storage (Who (..), runStoredWiki, withStorageAside)
 
@@ -248,8 +250,12 @@ subscribe c p = void (answer c p)
 
 -- | How a handshake the server refused ended: its status.
 refusedUpgrade :: Running -> [Header] -> IO (Either Int ())
-refusedUpgrade r headers =
-  try (channel r headers (\_ -> pass)) <&> \case
+refusedUpgrade r = refusedUpgradeOn r.public ("/" <> toS eventsPath)
+
+-- | 'refusedUpgrade' on the listener at this root, at this path.
+refusedUpgradeOn :: Text -> [Char] -> [Header] -> IO (Either Int ())
+refusedUpgradeOn root path headers =
+  try (WS.runClientWith "127.0.0.1" (portOf root) path WS.defaultConnectionOptions headers (\_ -> pass)) <&> \case
     Left (WS.MalformedResponse response _) -> Left (WS.responseCode response)
     Left other -> panic ("another refusal: " <> show other)
     Right () -> Right ()
@@ -529,6 +535,53 @@ live backing = describe "the live channel" $ do
   it "refuses an upgrade a page of another site asks for, and takes one from this one" $ withDemoRunning backing identity $ \r -> do
     refusedUpgrade r [("Origin", "http://elsewhere.example")] `shouldReturn` Left 403
     refusedUpgrade r [("Origin", encodeUtf8 r.public)] `shouldReturn` Right ()
+
+  -- An origin is the scheme, the host in any case, and the port, the
+  -- scheme's own when none is written (443 for https). Each refusal is
+  -- next to an acceptance, so that the refusal is not the only answer.
+  it "takes an upgrade from the address a proxy passes on, a port the scheme's own or not, and nothing else" $ withDemoRunning backing identity $ \r -> do
+    let comingFrom origin host proto = refusedUpgrade r [("Origin", origin), ("X-Forwarded-Host", host), ("X-Forwarded-Proto", proto)]
+    comingFrom "https://wiki.example.org" "wiki.example.org:443" "https" `shouldReturn` Right ()
+    comingFrom "https://wiki.example.org:443" "wiki.example.org" "https" `shouldReturn` Right ()
+    comingFrom "https://wiki.example.org:8443" "wiki.example.org:8443" "https" `shouldReturn` Right ()
+    comingFrom "https://Wiki.Example.ORG" "wiki.EXAMPLE.org" "https" `shouldReturn` Right ()
+    -- Some proxies say @wss@ for a WebSocket that came over TLS.
+    comingFrom "https://wiki.example.org" "wiki.example.org" "wss" `shouldReturn` Right ()
+    comingFrom "https://elsewhere.example" "wiki.example.org" "https" `shouldReturn` Left 403
+    comingFrom "https://wiki.example.org:8443" "wiki.example.org" "https" `shouldReturn` Left 403
+    comingFrom "https://wiki.example.org" "wiki.example.org:8443" "https" `shouldReturn` Left 403
+    comingFrom "http://wiki.example.org" "wiki.example.org" "https" `shouldReturn` Left 403
+    comingFrom "https://wiki.example.org" "wiki.example.org" "http" `shouldReturn` Left 403
+    comingFrom "null" "wiki.example.org" "https" `shouldReturn` Left 403
+    comingFrom "https://wiki.example.org/" "wiki.example.org" "https" `shouldReturn` Left 403
+    comingFrom "https://user@wiki.example.org" "wiki.example.org" "https" `shouldReturn` Left 403
+    -- The proxy says where the browser is; the listener's own address is
+    -- then not the wiki's.
+    refusedUpgrade r [("Origin", encodeUtf8 r.public), ("X-Forwarded-Host", "wiki.example.org")] `shouldReturn` Left 403
+
+  -- A wiki is often reached by more than one address: the public one, and
+  -- the machine's own. A page served from either is the wiki's.
+  it "takes an upgrade from the public address, when one is set, and from the address the request names, on the public listener; from its own address only on the admin listener" $ withDemoRunning backing identity $ \r -> do
+    _ <- setServer r noServerSettings {publicUrl = Just (Url "https://wiki.example.org/team/")}
+    let comingFrom origin = refusedUpgrade r [("Origin", origin)]
+        onAdminFrom origin = refusedUpgradeOn r.admin ("/admin/" <> toS eventsPath) [("Origin", origin)]
+    -- A proxy that rewrites the Host to the listener's.
+    comingFrom "https://wiki.example.org" `shouldReturn` Right ()
+    comingFrom "https://wiki.example.org:443" `shouldReturn` Right ()
+    -- The listener reached by its own address.
+    comingFrom (encodeUtf8 r.public) `shouldReturn` Right ()
+    comingFrom "http://wiki.example.org" `shouldReturn` Left 403
+    comingFrom "https://wiki.example.org:8443" `shouldReturn` Left 403
+    comingFrom "https://elsewhere.example" `shouldReturn` Left 403
+    -- The host a proxy passes on is the wiki's too, and a page of a third
+    -- address is neither.
+    let proxied origin = refusedUpgrade r [("Origin", origin), ("X-Forwarded-Host", "docs.example.net"), ("X-Forwarded-Proto", "https")]
+    proxied "https://docs.example.net" `shouldReturn` Right ()
+    proxied "https://wiki.example.org" `shouldReturn` Right ()
+    proxied "https://elsewhere.example" `shouldReturn` Left 403
+    proxied (encodeUtf8 r.public) `shouldReturn` Left 403
+    onAdminFrom (encodeUtf8 r.admin) `shouldReturn` Right ()
+    onAdminFrom "https://wiki.example.org" `shouldReturn` Left 403
 
   it "tells a request that is no WebSocket's that it is one's address" $ withDemoRunning backing identity $ \r -> do
     reply <- getUrl r (onPublic r eventsPath)

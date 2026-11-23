@@ -424,7 +424,9 @@ hub backing = describe "the live channel" $
       users <- for ["admin", "editor", "reader"] $ \login -> whoFor st (As login)
       -- Who a connection is opened as, by a header of the test's own, so
       -- that one server has tabs of three users.
-      let app request = eventsApplication st events (whoOf request) request
+      -- The clients send no Origin, so the wiki's own origin does not
+      -- matter.
+      let app request = eventsApplication st events (whoOf request) [] request
           whoOf request = fromMaybe Anonymous (lookup "X-Test-User" (requestHeaders request) >>= (`lookup` zip [show i :: ByteString | i <- [0 :: Int ..]] users))
           tabs = 100 :: Int
       testWithApplication (pure app) $ \port -> do

@@ -112,12 +112,9 @@ where
 
 import Control.Concurrent.STM (TBQueue, TVar, isFullTBQueue, modifyTVar', newTBQueueIO, newTVar, newTVarIO, readTBQueue, readTVar, readTVarIO, writeTBQueue, writeTVar)
 import Data.Aeson (decode, encode)
-import Data.ByteString.Char8 qualified as BS8
-import Data.CaseInsensitive qualified as CI
-import Data.List (lookup)
 import Data.Map.Strict qualified as Map
 import Network.HTTP.Types (hContentType, status403, status426)
-import Network.Wai (Application, Request (..), responseLBS)
+import Network.Wai (Application, responseLBS)
 import Network.Wai.Handler.WebSockets (websocketsApp)
 import Network.WebSockets qualified as WS
 import Numeric.Natural (Natural)
@@ -126,6 +123,7 @@ import Wiki.Api.Error qualified as ApiError
 import Wiki.Api.Events (ClientMessage (..), PageEvent (..), ServerMessage (..))
 import Wiki.Core.Id (PageId, UserId)
 import Wiki.Core.Notification (Notification)
+import Wiki.Server.Address (Origin, fromOwnOrigin)
 import Wiki.Server.Presence (Key, PageReader (..), Presence, editorsFor, leave, leaveReading, nobodyEditing, readersFor, startEditing, startReading, stopEditing, stopReading)
 import Wiki.Server.Storage (Storage, Who (..), editorOf, mayReadPage, threadsThen)
 
@@ -345,24 +343,19 @@ closeAll hub = atomically $ do
 
 -- | The channel at its address, for a 'Who': the WebSocket, or a refusal
 -- of a request that is not a WebSocket upgrade (426) or comes from another
--- site (403).
-eventsApplication :: Storage -> Hub -> Who -> Application
-eventsApplication storage hub who request respond
-  | not sameSite = respond (responseLBS status403 [(hContentType, "application/json")] (encode ApiError.Forbidden))
+-- site (403). A page of another site may open a WebSocket here, and its
+-- browser sends the reader's cookie with it; only the @Origin@ header says
+-- where the page is. So the upgrade is refused unless that header names
+-- one of the wiki's own origins, as the listener serves it
+-- ('Wiki.Server.Address.ownOrigins', 'fromOwnOrigin'). A client that sends
+-- no @Origin@ is not a page.
+eventsApplication :: Storage -> Hub -> Who -> [Origin] -> Application
+eventsApplication storage hub who own request respond
+  | not (fromOwnOrigin own request) = respond (responseLBS status403 [(hContentType, "application/json")] (encode ApiError.Forbidden))
   | otherwise = case websocketsApp WS.defaultConnectionOptions (serve storage hub who) request of
       Just upgrade -> respond upgrade
       Nothing ->
         respond (responseLBS status426 [(hContentType, "application/json"), ("Upgrade", "websocket")] (encode (ApiError.Invalid "This address is a WebSocket's.")))
-  where
-    headerOf name = lookup (CI.mk name) (requestHeaders request)
-    -- The Origin a browser sends must be this server's address as the
-    -- browser requested it (the Host, or what a proxy in front says it
-    -- was); a client that sends none is not a page.
-    sameSite = case headerOf "Origin" of
-      Nothing -> True
-      Just origin ->
-        let authority = BS8.drop 2 (snd (BS8.breakSubstring "//" origin))
-         in Just authority `elem` [headerOf "Host", headerOf "X-Forwarded-Host"]
 
 -- | One connection, from the upgrade until it ends.
 serve :: Storage -> Hub -> Who -> WS.PendingConnection -> IO ()

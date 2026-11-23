@@ -423,8 +423,15 @@ tells it what happens to them as it happens (decision 23 of the plan,
 `Wiki.Api.Events`). The upgrade is a request like any other: who is asking is
 found from its session cookie, a closed wiki answers someone who has not
 signed in 401 before upgrading, an upgrade whose `Origin` is not the
-server's own address (its `Host`, or the `X-Forwarded-Host` a proxy in
-front sets) is 403, and a request to the address that is no upgrade is 426.
+wiki's own origins is 403, and a request to the address that is no
+upgrade is 426. The wiki's own origins are the one the request names (the
+host in `X-Forwarded-Host`, else `Host`, over the scheme
+`X-Forwarded-Proto` names, else the listener's) and, on the public
+listener, the public address's when the Server section sets one. Two
+origins are the same when the scheme, the host (in any case) and the port
+are, a port left out being the scheme's own (`https://wiki.example.org` is
+`https://wiki.example.org:443`). An `Origin` of `null`, or one that is not
+an origin, is 403.
 A connection stays who it was opened as: a tab that signs in or out opens
 another.
 

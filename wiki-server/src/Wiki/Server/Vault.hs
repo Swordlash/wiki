@@ -30,6 +30,7 @@ module Wiki.Server.Vault
   ( -- * The site
     Site (..)
   , siteFor
+  , siteOf
 
     -- * The vault
   , storedVault
@@ -76,7 +77,6 @@ import Data.Time (NominalDiffTime, UTCTime, addUTCTime, defaultTimeLocale, forma
 import Database.Beam (all_, asc_, current_, delete, filter_, insert, insertValues, isJust_, isNothing_, orderBy_, runDelete, runInsert, runSelectReturningList, runUpdate, select, update, val_, (&&.), (<-.), (==.))
 import Network.Wai (Request)
 import Protolude
-import Wiki.Api.ContentPolicy (originOf)
 import Wiki.Api.Opaque (PasswordWrapChange (..))
 import Wiki.Api.Vault (NewPublicKey (..), PasskeyInfo (..), PublicKeyEntry (..), StoredVault (..), VaultChange (..))
 import Wiki.App.Backend (WikiError (..))
@@ -84,7 +84,7 @@ import Wiki.Core.Assistant.Vault (assistantItem)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Url (Url (..))
 import Wiki.Core.Vault (Ciphertext (..), CredentialId (..), Item (..), ItemName (..), KeyId (..), Nonce (..), PublicKey (..), Salt (..), Sealed (..), Unlock (..), Vault (..), VaultTag (..), WrappedKey (..), identityItem, itemOf, passkeyWraps, vaultFormat, wrapFor)
-import Wiki.Server.Address (requestOrigin)
+import Wiki.Server.Address (Origin (..), ownOrigin, showOrigin)
 import Wiki.Server.Sha256 (sha256)
 import Wiki.Server.Storage (Storage, reading, writing, writingEither)
 import Wiki.Server.Storage.Backend (Backend (..))
@@ -104,32 +104,30 @@ data Site = Site
   }
   deriving stock (Eq, Show)
 
--- | The site a request reaches: that of the wiki's public address when
--- the administration has set one, or else the origin the request names
--- ('requestOrigin': the host, and the scheme a proxy in front of the
--- server says the browser used, else plain HTTP). A proxy that serves the
--- wiki over HTTPS and does not say so with @X-Forwarded-Proto@ needs the
--- public address set, or the browser's origin is refused. The same holds
--- for a wiki on a port other than the scheme's own: the public address,
--- or the host a proxy passes on, must carry that port.
---
--- The origin is written as a browser writes it in a passkey's client
--- data, because the webauthn package compares the two as text: the port
--- is left out when it is the scheme's own (443 for https, 80 for http),
--- as in a public address typed @https:\/\/wiki.example.org:443\/@, and
--- kept otherwise.
+-- | The site a request reaches: that of the wiki's own origin
+-- ('siteOf' of 'ownOrigin': the public address when the administration
+-- has set one, or else the origin the request names, the host and the
+-- scheme a proxy in front of the server says the browser used, else the
+-- listener's). A proxy that serves the wiki over HTTPS and does not say so
+-- with @X-Forwarded-Proto@ needs the public address set, or the browser's
+-- origin is refused. The same holds for a wiki on a port other than the
+-- scheme's own: the public address, or the host a proxy passes on, must
+-- carry that port.
 siteFor :: Maybe Url -> Request -> Site
-siteFor publicUrl request = Site {rpId = hostOf (T.drop 3 (snd (T.breakOn "://" origin))), origins = [origin]}
-  where
-    asked = requestOrigin request
-    origin = withoutDefaultPort (fromMaybe (T.toLower asked) ((publicUrl >>= originOf . (\u -> u.text)) <|> originOf asked))
-    withoutDefaultPort o
-      | Just short <- T.stripSuffix ":443" o, "https://" `T.isPrefixOf` o = short
-      | Just short <- T.stripSuffix ":80" o, "http://" `T.isPrefixOf` o = short
-      | otherwise = o
-    hostOf authority
-      | "[" `T.isPrefixOf` authority = T.takeWhile (/= ']') (T.drop 1 authority)
-      | otherwise = T.takeWhile (/= ':') authority
+siteFor publicUrl request = siteOf (ownOrigin publicUrl request)
+
+-- | The site of the wiki's own origin. The origin is written as a browser
+-- writes it in a passkey's client data ('showOrigin'), because the
+-- webauthn package compares the two as text: the port is left out when it
+-- is the scheme's own (443 for https, 80 for http), as in a public address
+-- typed @https:\/\/wiki.example.org:443\/@, and kept otherwise. The
+-- relying party's id is the host, without the brackets of an IPv6
+-- address. Without an origin, the site has none, and every passkey is
+-- refused.
+siteOf :: Maybe Origin -> Site
+siteOf = \case
+  Nothing -> Site {rpId = "", origins = []}
+  Just o -> Site {rpId = fromMaybe o.host (T.stripPrefix "[" o.host >>= T.stripSuffix "]"), origins = [showOrigin o]}
 
 --------------------------------------------------------------------------------
 -- The vault

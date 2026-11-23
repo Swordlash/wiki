@@ -13,15 +13,19 @@ import Data.Text qualified as T
 import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
-import Test.Browser.Mount (slugs, startChanged)
+import Test.Browser.Mount (slugs, startChanged, startChangedWith)
 import Test.Browser.Text (clearBody, completionAnswered, editorText, markdown, setMarkdown, untilListTakesKeys)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
+import Wiki.App.Backend (MonadWiki (..))
+import Wiki.App.Backend.Mem (runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState, insertUser)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
 import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Id (UserId (..))
+import Wiki.Core.Page (Page (body))
+import Wiki.Core.Space (Space (id))
 import Wiki.Core.User (Login (..), User (..))
 
 -- Which element has the focus: test/jsbits/test-focus.js. The style sheet's
@@ -225,7 +229,14 @@ spec m = readsOnce Idle $ do
     markdown ui `shouldReturn` "# Hello, world\n\n| a | b |\n|:-:|-:"
 
   it "inserts the emoji chosen in the toolbar's menu at the cursor, by a click or the keys, and closes the menu" $ runPage $ do
-    ui <- editing identity
+    (ui, wiki) <- startChangedWith m identity (Just "user-editor") helloEditor
+    waitQuiet
+    -- The page's text as the wiki stores it: what the last save wrote.
+    let stored = unsafeIOToPageM . runMemWiki wiki $ do
+          blog <- either (panic . show) identity <$> getSpace (slugs ["blog"])
+          hello <- either (panic . show) identity <$> getPage blog.id (slugs ["hello-world"])
+          pure hello.body
+    opened <- stored
     text <- editorText ui
     clearBody ui
     typeText text "Launch "
@@ -293,9 +304,9 @@ spec m = readsOnce Idle $ do
     length <$> findAll ui ".emoji-menu" `shouldReturn` 0
     markdown ui `shouldReturn` "# Hello, world\n\nLaunch :rocket::tada::tada::bug:"
     -- No save happened meanwhile: once its request would have been
-    -- answered, the notice of a save would show.
+    -- answered, the wiki would store the text typed since.
     waitQuiet
-    find ui ".editor-saved-notice" >>= (`shouldHaveText` "")
+    stored >>= (`shouldBe` opened)
 
   it "scrolls the emoji's grid to the entry the arrows reach, down to the last row and back up" $ runPage $ do
     ui <- editing identity

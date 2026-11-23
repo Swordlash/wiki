@@ -119,15 +119,17 @@ spec backing = describe "the schema's versions" $ do
       tablesOf c `shouldReturn` wikiTables
       versionsOf c `shouldReturn` [1 .. known]
 
-  -- Step 24 (the API keys) is the newest: a wiki at step 23, with its
-  -- users, is what a deploy of this program migrates.
-  it "add the API keys' table to a wiki of the step before, which keeps its users and whose users then make keys" $
+  -- Step 24 (the API keys), applied to a wiki that has users and pages
+  -- from the steps before it, as a deploy of the program that brought the
+  -- keys migrated one ('Test.Database.forgetStep': the step undone, then
+  -- applied again alone).
+  it "add the API keys' table to a wiki of the steps before, which keeps its users and whose users then make keys" $
     withEmptyPlaceIn backing $ \at -> do
       withStorage defaultConfig at $ \st -> importArchive st demoArchive >>= ok
       withConnectionTo at $ \c -> do
-        runScript c "DROP TABLE api_keys; DELETE FROM wiki_schema WHERE version = 24;"
-        schemaVersion c `shouldReturn` 23
-        migrate c `shouldReturn` [24]
+        let known = knownVersion (schemaSuffix c)
+        forgetStep 24 ["DROP TABLE api_keys;"] c
+        versionsOf c `shouldReturn` [1 .. known]
         tablesOf c `shouldReturn` wikiTables
       withStorage defaultConfig at $ \st -> do
         now <- getCurrentTime

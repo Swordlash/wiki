@@ -69,7 +69,6 @@ module Wiki.Server.ApiKeys
 
     -- * Managing keys
   , maxLiveKeys
-  , maxKeptKeys
   , maxKeyName
   , apiKeysOf
   , makeApiKey
@@ -94,7 +93,7 @@ import Data.Char (isAsciiLower)
 import Data.List (lookup)
 import Data.Text qualified as T
 import Data.Time (NominalDiffTime, UTCTime, defaultTimeLocale, diffUTCTime, formatTime)
-import Database.Beam (all_, asc_, delete, desc_, filter_, insert, insertValues, join_, orderBy_, runDelete, runInsert, runSelectReturningList, runSelectReturningOne, runUpdate, select, update, val_, (&&.), (<-.), (==.))
+import Database.Beam (all_, asc_, desc_, filter_, insert, insertValues, join_, orderBy_, runInsert, runSelectReturningList, runSelectReturningOne, runUpdate, select, update, val_, (&&.), (<-.), (==.))
 import Network.HTTP.Types (hAuthorization, methodGet, methodHead)
 import Network.Wai (Request (..))
 import Protolude
@@ -184,13 +183,6 @@ carriesKey request = isJust (lookup "X-API-Key" hs) || any bearerKey [v | (n, v)
 maxLiveKeys :: Int
 maxLiveKeys = 20
 
--- | The most keys a user's list keeps, revoked and expired ones included.
--- Making a key past it deletes the user's oldest revoked or expired keys,
--- so that making and revoking keys over and over does not grow the
--- table.
-maxKeptKeys :: Int
-maxKeptKeys = 100
-
 -- | The longest name of a key, in characters.
 maxKeyName :: Int
 maxKeyName = 100
@@ -237,11 +229,6 @@ makeApiKey st now u administrator new
           -- given an id another key has.
           | taken -> pure (Left (Conflict "The key could not be made: try again."))
           | otherwise -> do
-              -- The oldest revoked or expired keys make room past
-              -- 'maxKeptKeys'.
-              let dead = sortOn (\k -> (fromMaybe k.created_at (k.revoked_at <|> k.expires_at), k.id)) (filter (not . live now) mine)
-              for_ (take (length mine + 1 - maxKeptKeys) dead) $ \k ->
-                runDelete (delete wikiDb.api_keys (\r -> r.id ==. val_ k.id))
               let row =
                     ApiKeyRow
                       { id = i.text

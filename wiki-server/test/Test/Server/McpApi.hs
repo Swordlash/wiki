@@ -37,6 +37,7 @@ import Wiki.Api (AdminApi (..), PagesApi (..), SpacesApi (..), WikiApi (..))
 import Wiki.Api.ApiKeys (ApiKeyId (..), ApiKeyInfo (..), KeyRight (..), MadeApiKey (..), NewApiKey (..))
 import Wiki.Api.Links (links)
 import Wiki.Api.Version (PageVersion (..))
+import Wiki.App.Route qualified as Route
 import Wiki.Core.Assistant.Reference (markdownReference)
 import Wiki.Core.Id (SpaceId, UserId (..))
 import Wiki.Core.Markdown.Sections (outline, sectionRange, sectionText)
@@ -49,6 +50,7 @@ import Wiki.Server.ApiKeys (makeApiKey, revokeApiKey)
 import Wiki.Server.App (Finding (..), Listener (..), listenerApp)
 import Wiki.Server.Log (silentLogger)
 import Wiki.Server.McpApi (instructions, maxResult)
+import Wiki.Server.Render (routeOf)
 import Wiki.Server.Session (CookieSettings (..))
 import Wiki.Server.Storage (withStorageAside, writing)
 import Wiki.Server.Storage.Schema (ApiKeys (..), WikiDb (..), wikiDb)
@@ -460,25 +462,51 @@ writing' backing = describe "writing a page" $ do
 
 hidden :: Backing -> Spec
 hidden backing = describe "what the key's user may not read" $ do
-  it "is no page for an address with a query, a fragment or a user, and nothing is written" $ withPasswords backing $ \r -> do
+  it "takes a page's path or this wiki's full address, and refuses every other form, reading and writing nothing" $ withPasswords backing $ \r -> do
     k <- keyOf r "user-editor" WriteRight
-    hello <- api r k "markdown/s/blog/p/hello-world/"
-    let version = maybe "" decodeUtf8 (header "ETag" hello)
-        authority = fromMaybe r.public (T.stripPrefix "http://" r.public)
-    for_
-      [ r.public <> "?next=/s/blog/p/hello-world/"
-      , r.public <> "/#/s/blog/p/hello-world/"
-      , r.public <> "/s/blog/p/hello-world/?version=1"
-      , "/s/blog/p/hello-world/#why-a-wiki"
-      , "/?next=/s/blog/p/hello-world/"
-      , "http://evil.example@" <> authority <> "/s/blog/p/hello-world/"
-      , "http://" <> authority <> "@evil.example/s/blog/p/hello-world/"
-      ]
-      $ \address -> do
-        refused <- failedCall r k "wiki_write_page" ["path" .= address, "markdown" .= ("Not here." :: Text), "base_version" .= version]
-        refused `shouldNotSatisfy` T.isInfixOf "saved since"
-    later <- api r k "markdown/s/blog/p/hello-world/"
-    (later.body, header "ETag" later) `shouldBe` (hello.body, header "ETag" hello)
+    let authority = fromMaybe r.public (T.stripPrefix "http://" r.public)
+        page = "/s/blog/p/hello-world/"
+        -- One row per form: what it is, the argument, and whether it names
+        -- the page.
+        table :: [(Text, Text, Bool)]
+        table =
+          [ ("an absolute path", page, True)
+          , ("this wiki's full address", r.public <> page, True)
+          , ("an empty text", "", False)
+          , ("a relative path", "s/blog/p/hello-world/", False)
+          , ("a network-path reference to another host", "//elsewhere.example" <> page, False)
+          , ("a network-path reference to this host", "//" <> authority <> page, False)
+          , ("another site's full address", "https://elsewhere.example" <> page, False)
+          , ("another scheme", "ftp://" <> authority <> page, False)
+          , ("a scheme with no host", "http:" <> page, False)
+          , ("a user before this host", "http://evil.example@" <> authority <> page, False)
+          , ("this host as another host's user", "http://" <> authority <> "@evil.example" <> page, False)
+          , ("a query on this wiki's address", r.public <> "?next=" <> page, False)
+          , ("a fragment on this wiki's address", r.public <> "/#" <> page, False)
+          , ("a query on a path", page <> "?version=1", False)
+          , ("a fragment on a path", page <> "#why-a-wiki", False)
+          , ("a .. segment", "/s/blog/p/elsewhere/../hello-world/", False)
+          , ("a . segment", "/s/blog/p/./hello-world/", False)
+          , ("a percent-encoded .. segment", "/s/blog/p/elsewhere/%2E%2E/hello-world/", False)
+          , ("backslashes", "\\s\\blog\\p\\hello-world\\", False)
+          , ("a control character", "/s/blog/p/hello-world\1/", False)
+          ]
+    for_ table $ \(form, address, names) -> do
+      -- Each row reads and writes over the page's version as it is now,
+      -- so that a form taken by mistake would write.
+      current <- api r k "markdown/s/blog/p/hello-world/"
+      reading <- call r k "wiki_read_page" ["path" .= address]
+      written <- call r k "wiki_write_page" ["path" .= address, "markdown" .= (form <> ": written."), "base_version" .= maybe "" decodeUtf8 (header "ETag" current)]
+      later <- api r k "markdown/s/blog/p/hello-world/"
+      if names
+        then do
+          (form, reading.failed, drop 1 reading.texts, written.failed, later.body) `shouldBe` (form, False, [bodyText current], False, toS (encodeUtf8 (form <> ": written.")))
+          void (putApi r k "markdown/s/blog/p/hello-world/" current.body)
+        else (form, reading.failed, written.failed, later.body, header "ETag" later) `shouldBe` (form, True, True, current.body, header "ETag" current)
+    -- How the router itself reads a dot segment, which the tools refuse
+    -- before it is asked.
+    for_ ["/s/blog/p/elsewhere/../hello-world/", "/s/blog/p/./hello-world/"] $ \path ->
+      (path,) <$> routeOf "/" (encodeUtf8 path) `shouldReturn` (path, Route.Unknown)
 
   it "reads a percent-encoded path as the HTTP API reads it" $ withPasswords backing $ \r -> do
     k <- keyOf r "user-editor" ReadRight

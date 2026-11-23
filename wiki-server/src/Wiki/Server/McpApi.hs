@@ -61,7 +61,7 @@ import Data.Text qualified as T
 import Halogen.Router.Duplex qualified as Duplex
 import MCP.Server qualified as Mcp
 import Network.HTTP.Types (status400, status401)
-import Network.URI (URI (..), parseAbsoluteURI, parseRelativeReference)
+import Network.URI (URI (..), parseAbsoluteURI, parseRelativeReference, unEscapeString)
 import Network.Wai (Application, Request (..))
 import Protolude
 import Web.HttpApiData (parseHeader, parseUrlPiece, toHeader)
@@ -401,52 +401,63 @@ withTop p = \case
 pathOf :: [Slug] -> [Slug] -> Text
 pathOf sp pp = Duplex.print Route.route (Route.pageRoute sp pp)
 
--- | The path a tool is given, as the router reads it (percent-encoded, as
--- sent), with a slash at each end; or why it names no page. Both forms are
--- read by network-uri, as "Wiki.Server.Address" reads addresses, never
--- taken apart by hand.
+-- | The path a tool's argument @path@ names, as the router reads it
+-- (percent-encoded, as sent), with a slash at each end; or why it names no
+-- page, which the tool answers without reading or writing anything. The
+-- argument is read by network-uri, as "Wiki.Server.Address" reads
+-- addresses, and is exactly one of two forms:
 --
--- * A path in the wiki, without the listener's path, as the tools give
---   paths (@\/s\/team\/p\/on-call\/@): taken as it is, whatever it starts
---   with.
--- * A full address of the wiki, the one form that carries the listener's
---   path: its path component, with the listener's path taken off at a
---   segment's end. It names a page only when its origin is one of the
---   wiki's own ('ownOrigins', as the live channel checks a page's; an
---   address with a user, @https:\/\/a\@b\/@, has none) and its path is
---   under the listener's.
+-- * An absolute address, @http@ or @https@ with a host, whose origin is
+--   one of the wiki's own ('ownOrigins', as the live channel checks a
+--   page's; an address with a user, @https:\/\/a\@b\/@, has none), with no
+--   query and no fragment: its path, under the listener's path, with the
+--   listener's path taken off at a segment's end. It is the one form that
+--   carries the listener's path.
+-- * An absolute path (@\/s\/team\/p\/on-call\/@), as the tools give paths:
+--   one leading slash, no scheme, no host, no query, no fragment. It is
+--   taken as it is, without the listener's path, whatever it starts with.
 --
--- A query or a fragment is refused in either form.
+-- Everything else is refused: an empty text, another scheme, an address
+-- with no host, a network-path reference (@\/\/host\/…@, which names a
+-- host), a relative path, a query or a fragment (no page's reading address
+-- has one), a @.@ or @..@ segment, written plainly or percent-encoded, and
+-- what network-uri does not read as a reference at all (spaces,
+-- backslashes, control characters).
 localPath :: Text -> [Origin] -> Text -> Either Text Text
-localPath mount own given = case parseAbsoluteURI (toS t) of
-  -- A full address: http or https, with a host.
-  Just uri | isJust uri.uriAuthority -> do
-    unless (maybe False (`elem` own) (originOfUri uri)) $
-      Left (show t <> " is not an address of this wiki: pass the page's path, such as /s/team/p/on-call/.")
-    whole uri
-    withSlashes <$> underMount (toS uri.uriPath)
-  -- A path in the wiki, as the tools give it.
-  _ -> case parseRelativeReference (toS t) of
-    Just uri -> whole uri $> withSlashes (toS uri.uriPath)
-    Nothing -> Left (fromMaybe (show t <> " is not a page's path: a page's path is /s/<space path>/p/<page path>/, such as /s/team/p/on-call/.") (notASlug (pathSegments t)))
+localPath mount own given
+  | T.null t = Left "The path is empty: pass the page's path, such as /s/team/p/on-call/."
+  | Just uri <- parseAbsoluteURI (toS t) = absolute uri
+  | Just uri <- parseRelativeReference (toS t) = relative uri
+  | otherwise = Left (fromMaybe (show t <> " is not a page's path: a page's path is /s/<space path>/p/<page path>/, such as /s/team/p/on-call/.") (notASlug (pathSegments t)))
   where
     t = T.strip given
+    absolute uri
+      | uri.uriScheme `notElem` ["http:", "https:"] = Left (show t <> " is not an address of the web: pass the page's path, such as /s/team/p/on-call/.")
+      | isNothing uri.uriAuthority = Left (show t <> " names no host: pass the page's path, such as /s/team/p/on-call/.")
+      | not (maybe False (`elem` own) (originOfUri uri)) = Left (show t <> " is not an address of this wiki: pass the page's path, such as /s/team/p/on-call/.")
+      | otherwise = whole uri *> underMount (toS uri.uriPath) >>= plain
+    relative uri
+      | isJust uri.uriAuthority = Left (show t <> " names a host (//host/…): pass the page's path, such as /s/team/p/on-call/, or the wiki's full address.")
+      | not ("/" `T.isPrefixOf` toS uri.uriPath) = Left (show t <> " is not a path from the wiki's root: a page's path starts with /, such as /s/team/p/on-call/.")
+      | otherwise = whole uri *> plain (toS uri.uriPath)
     -- No page's reading address has a query or a fragment
-    -- ('Wiki.App.Route.Page' and 'Wiki.App.Route.Space' have none): one is
-    -- refused rather than read past, so that a tool never acts on a page
-    -- the address does not name.
+    -- ('Wiki.App.Route.Page' and 'Wiki.App.Route.Space' have none).
     whole uri =
       unless (null uri.uriQuery && null uri.uriFragment) $
         Left (show t <> " has a query or a fragment (?… or #…), which no page's address has: pass the page's address without them.")
-    -- The path of a full address, as sent (percent-encoded), under the
-    -- listener's path, which ends with a slash: @\/wiki\/s\/…@ under
-    -- @\/wiki\/@, never @\/wikis\/…@.
+    -- The path of an absolute address under the listener's path, which ends
+    -- with a slash: @\/wiki\/s\/…@ under @\/wiki\/@, never @\/wikis\/…@.
     underMount path
       | mount == "/" = Right path
       | path == T.dropWhileEnd (== '/') mount = Right "/"
       | Just rest <- T.stripPrefix mount path = Right ("/" <> rest)
       | otherwise = Left (show t <> " is not under the wiki's path, " <> mount <> ": pass the page's path, such as /s/team/p/on-call/.")
-    withSlashes p = "/" <> T.dropAround (== '/') p <> (if T.null (T.dropAround (== '/') p) then "" else "/")
+    -- A path without dot segments, plain or percent-encoded, with a slash
+    -- at each end.
+    plain path
+      | any ((`elem` [".", ".."]) . unEscapeString . T.unpack) (T.splitOn "/" path) =
+          Left (show t <> " has a . or .. segment: pass the page's own path, such as /s/team/p/on-call/.")
+      | otherwise = Right ("/" <> T.dropAround (== '/') path <> (if T.null (T.dropAround (== '/') path) then "" else "/"))
 
 -- | The segments of a path, without the empty ones.
 pathSegments :: Text -> [Text]

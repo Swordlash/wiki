@@ -1,3 +1,5 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 -- | Mounting the application for a browser test: over a fresh copy of the
 -- demo, as one of its users or nobody, at a route, with a router of its own
 -- that keeps the route in the fragment ('Router.newHashRouter'), so that a
@@ -26,6 +28,7 @@ import Control.Monad.UUID (MonadUUID)
 import Data.IORef (IORef, modifyIORef')
 import Data.NT (type (~>) (..))
 import Halogen qualified as H
+import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.Router (Router)
 import Halogen.Router qualified as Router
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
@@ -48,6 +51,13 @@ import Wiki.App.Route (route)
 import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Slug (Slug, mkSlug)
+
+-- What a click at an element's centre and corners reaches
+-- (test/jsbits/test-layout.js): empty when it is the element itself.
+$( browserJS
+     ["jsbits/test-layout.js"]
+     [("js_on_top", "wiki_test_on_top", Safe, [t|JSText -> IO JSText|])]
+ )
 
 -- | The shell, mounted over a fresh demo as someone (by user id, or nobody),
 -- at a route, with nothing in the browser's local storage.
@@ -252,10 +262,16 @@ showSection :: Mounted s q o m -> SettingsSection -> PageM s ()
 showSection ui section = find ui (".settings-nav-link[data-section=" <> settingsName section <> "]") >>= click
 
 -- | Sign out of the server's wiki, from the menu under the user's name.
+-- What else hangs under the name (the offer to unlock the keys with the
+-- password, "Wiki.App.View.SignIn") must lie under the menu once it is
+-- open: "Sign out" is checked to be what a click on it reaches, at its
+-- centre and its corners, before it is clicked.
 signOut :: Mounted s q o m -> PageM s ()
 signOut ui = do
   find ui ".account-toggle" >>= click
-  find ui ".account-menu .sign-out" >>= click
+  button <- find ui ".account-menu .sign-out"
+  unsafeIOToPageM (fromJSText <$> js_on_top (toJSText (".account-menu .sign-out" :: Text))) `shouldReturn` ""
+  click button
 
 slugs :: [Text] -> [Slug]
 slugs = map (either (panic . show) identity . mkSlug)

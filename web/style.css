@@ -326,8 +326,11 @@ select {
   position: relative;
 }
 
+/* The menu opens over what else hangs under the name: the offer to
+   unlock the keys with the password (.keys-offer) would otherwise cover
+   its "Sign out". */
 .account-menu {
-  z-index: 20;
+  z-index: 22;
 }
 
 .sign-in-form,

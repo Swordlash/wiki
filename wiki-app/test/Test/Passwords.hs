@@ -3,8 +3,8 @@
 -- for a user ("Wiki.App.View.UserDialog"), which mails a link where it can, types a
 -- password where it cannot and says why, and offers nothing to a user who
 -- signs in with a provider and has no password to set; the button in the
--- menu under a signed-in user's name ("Wiki.App.View.SignIn"), which
--- offers no "Set a password…" to such a user; and what the panel's second
+-- settings' section "Security" ("Wiki.App.View.SignInMethods"), which
+-- offers no "Set a password…" to such a user; and what the section's second
 -- factor and address say to a user without a password
 -- ("Wiki.App.View.Security"). That the views render what
 -- these say is the browser suite's (@Test.Browser.Admin@,
@@ -20,7 +20,7 @@ import Wiki.Api.Account (LinkedIdentity (..), SignInMethods (..))
 import Wiki.Api.Admin (Directory (..), summaryOf)
 import Wiki.Api.Security (AccountEmail (..), EmailState (..))
 import Wiki.App.View.Security (addressText, factorOffText, factorOnText)
-import Wiki.App.View.SignIn (passwordOffer)
+import Wiki.App.View.SignInMethods (passwordOffer)
 import Wiki.App.View.UserDialog (NoLink (..), PasswordControl (..), passwordControl)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.User (Email (..), Login (..), SignInProvider (..), User (..))
@@ -98,7 +98,7 @@ adminRow = describe "the password's control in the administration's dialog for a
     control people (uid "fay") `shouldBe` TypePassword LoginDisabled
 
 ownMenu :: Spec
-ownMenu = describe "the button in the menu under a user's name" $ do
+ownMenu = describe "the button in the security settings" $ do
   let google = SignInProvider {name = "google", label = "Google"}
       at provider = LinkedIdentity {provider, email = Nothing, name = Nothing, linkedAt = UTCTime (fromGregorian 2026 10 27) 0}
   it "changes the password of a user who has one, with a provider or without" $ do
@@ -114,7 +114,7 @@ ownMenu = describe "the button in the menu under a user's name" $ do
     passwordOffer [] SignInMethods {password = False, identities = [at "google"]} `shouldBe` Just "Set a password…"
 
 ownSafety :: Spec
-ownSafety = describe "the panel's second factor and address" $ do
+ownSafety = describe "the security settings' second factor and address" $ do
   let stateOf email verified asksPassword = EmailState {email = Email <$> email, verified, mailing = True, mailError = Nothing, asksPassword}
   it "speak of the password of a user who has one" $ do
     factorOffText True `shouldBe` "Off: your password alone signs you in."

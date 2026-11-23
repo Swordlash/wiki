@@ -1,8 +1,9 @@
 -- | Keeping an account safe, in a browser (WP4.11 of docs/PLAN.md): the
--- account panel's sessions, second factor and e-mail address; the second
--- step of signing in; "Forgot your password?"; the pages of a reset's link
--- and of an address's verification; the administration's account column;
--- and the demo's own panel, with its one session and the server's features
+-- sessions, second factor and e-mail address of the settings' section
+-- "Security", opened at its address; the second step of signing in;
+-- "Forgot your password?"; the pages of a reset's link and of an
+-- address's verification; the administration's account column; and the
+-- demo's own section, with its one session and the server's features
 -- shown disabled.
 --
 -- Over the backend over HTTP with a server in fetch's place
@@ -32,7 +33,7 @@ import Wiki.App.Backend.Mem (newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State qualified as M
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (AdminSection (..), Route (..), allUsers)
+import Wiki.App.Route (AdminSection (..), Route (..), SettingsSection (..), allUsers)
 import Wiki.App.View.Security (qrRuns)
 import Wiki.Core.Access (Access (..))
 import Wiki.Core.Id (UserId (..))
@@ -67,12 +68,10 @@ askedWith :: Text -> PageM s [(Text, Text)]
 askedWith method = map (\r -> (r.url, r.body)) . filter (\r -> r.method == method) <$> asked
 
 demo :: forall m -> (Specs m) => Spec
-demo m = describe "the demo's account panel" $
+demo m = describe "the demo's security settings" $
   it "lists the demo's one session, this browser's, and shows a second factor and mail disabled, with a note" $
     runPage $ do
-      ui <- start m (Just "user-editor") Home
-      find ui ".user-switcher-toggle" >>= click
-      find ui ".demo-account-toggle" >>= click
+      ui <- start m (Just "user-editor") (UserSettings SecuritySection)
       eventually (length <$> findAll ui ".session-item" `shouldReturn` 1)
       find ui ".session-item .session-this" >>= (`shouldHaveText` "This browser")
       length <$> findAll ui ".session-end" `shouldReturn` 0
@@ -85,7 +84,7 @@ demo m = describe "the demo's account panel" $
       unmount ui
 
 panel :: forall m -> (Specs m) => Spec
-panel m = describe "the account panel" $ do
+panel m = describe "the security settings" $ do
   let sessions =
         [ SessionSummary {id = SessionRef "here", createdAt = demoNow, lastSeenAt = demoNow, address = "100.64.0.7", current = True}
         , SessionSummary {id = SessionRef "there", createdAt = demoNow, lastSeenAt = demoNow, address = "100.64.0.9", current = False}
@@ -114,8 +113,7 @@ panel m = describe "the account panel" $ do
     opened
     answerWith "DELETE" "api/v1/account/sessions/there" 200 (take 1 sessions)
     answerWith "DELETE" "api/v1/account/sessions" 200 (take 1 sessions)
-    ui <- startServer m Home
-    find ui ".account-toggle" >>= click
+    ui <- startServer m (UserSettings SecuritySection)
     eventually (length <$> findAll ui ".session-item" `shouldReturn` 2)
     find ui ".session-current .session-this" >>= (`shouldHaveText` "This browser")
     find ui ".session-current .session-address" >>= (`shouldHaveText` "100.64.0.7")
@@ -132,8 +130,7 @@ panel m = describe "the account panel" $ do
         enrolment = TotpEnrolment {secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", uri = "otpauth://totp/Wiki:reader?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", qr}
     answerWith "POST" "api/v1/account/second-factor/totp" 200 enrolment
     answerRaw "PUT" "api/v1/account/second-factor/totp" 401 "{\"error\":\"Unauthenticated\"}"
-    ui <- startServer m Home
-    find ui ".account-toggle" >>= click
+    ui <- startServer m (UserSettings SecuritySection)
     find ui ".second-factor-off" >>= (`shouldContainText` "Off")
     -- She has a password: the second factor is hers to turn on.
     length <$> findAll ui ".second-factor-no-password" `shouldReturn` 0
@@ -167,8 +164,7 @@ panel m = describe "the account panel" $ do
 
   it "offers no second factor to a user without a password, and says why" $ runPage $ do
     withoutPassword offWithout
-    ui <- startServer m Home
-    find ui ".account-toggle" >>= click
+    ui <- startServer m (UserSettings SecuritySection)
     find ui ".second-factor-off" >>= (`shouldContainText` "asks for no code")
     start' <- find ui ".second-factor-start"
     getAttribute start' "disabled" `shouldReturn` Just ""
@@ -179,8 +175,7 @@ panel m = describe "the account panel" $ do
   it "lets a user without a password remove a second factor they turned on before" $ runPage $ do
     withoutPassword SecondFactorState {enabled = True, recoveryCodesLeft = 10, asksPassword = False}
     answerWith "POST" "api/v1/account/second-factor/remove" 200 offWithout
-    ui <- startServer m Home
-    find ui ".account-toggle" >>= click
+    ui <- startServer m (UserSettings SecuritySection)
     find ui ".second-factor-on" >>= (`shouldContainText` "no sign-in asks for it")
     find ui ".second-factor-remove-ask" >>= click
     find ui ".second-factor-remove-form input[name=code]" >>= (`typeText` "287082")
@@ -195,8 +190,7 @@ panel m = describe "the account panel" $ do
   it "gives an e-mail address, which a mailed link is to verify" $ runPage $ do
     opened
     answerWith "PUT" "api/v1/account/email" 200 EmailState {email = Just (Email "rita@example.org"), verified = False, mailing = True, mailError = Nothing, asksPassword = True}
-    ui <- startServer m Home
-    find ui ".account-toggle" >>= click
+    ui <- startServer m (UserSettings SecuritySection)
     find ui ".email-current" >>= (`shouldContainText` "None")
     find ui ".email-edit" >>= click
     find ui ".email-form input[name=email]" >>= (`typeText` "rita@example.org")

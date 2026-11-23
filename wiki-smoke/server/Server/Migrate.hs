@@ -81,7 +81,7 @@ spec smoke = describe "the demo's pages brought into the server" $ do
       visit page (address smoke "/")
       waitQuiet page
       hasText (locator page "#app .user-name") adminName
-      count (locator page "#app .sign-out") `shouldReturn` 1
+      count (locator page "#app .account-toggle") `shouldReturn` 1
       click (locator page "#app .wiki-header a.admin-link")
       click (locator page "#app .admin-nav-link[data-section=backups]")
       waitQuiet page

@@ -4,8 +4,10 @@
 -- signed in, and the way to sign in and out ("Wiki.App.Account"). Someone
 -- not signed in sees "Sign in", which opens a small form under it (login,
 -- password, and why the last attempt failed). Someone signed in sees their
--- name and "Sign out". The server's operator, who is the administrator
--- without signing in, sees only the name.
+-- name, a button that opens a short menu: "Settings", which leads to their
+-- settings ('Wiki.App.Route.UserSettings'), and "Sign out". The server's
+-- operator, who is the administrator without signing in, sees only the
+-- name.
 --
 -- In an open wiki ("Wiki.Core.Access") there is "Create account" beside
 -- "Sign in", which opens its own form (login, display name, password) and
@@ -19,30 +21,21 @@
 -- through the provider's pages, driven by the server ("Wiki.Api.Auth"),
 -- which ends back at this page's address, signed in.
 --
--- A signed-in user's name is a button, whatever the server signs in with,
--- which opens their sign-in methods. It shows their password, if any, with
--- a form to change it (or to set one, for a user who has none and whose
--- providers are gone: WP3.7 of docs/PLAN.md); the form asks for the
--- current password, the new one, and the new one again. A user who has no
--- password and signs in with one of the server's providers has none to set
--- and gets no form (WP5.6, 'passwordOffer'). It also shows the provider
--- accounts they sign in with, each of which they may disconnect unless it
--- is their last way to sign in, and a link to connect each provider they
--- have no account with yet. The server's operator has no account, and no
--- such button.
---
 -- A user with a second factor (WP4.11 of docs/PLAN.md) is asked for its
 -- code after their password, in the same form, which then has only the
 -- code's field; a sign-in left waiting too long starts over at the
 -- password. Under the sign-in form, "Forgot your password?" opens a form
 -- that requests a reset by mail with a login or an e-mail address; the
--- answer is the same whether or not that matches anyone. The account panel
--- ends with the account's security ("Wiki.App.View.Security": sessions,
--- the second factor, the e-mail address) and the switch of the user's
--- personal space ("Wiki.App.View.PersonalSpace") and the user's avatar
--- ("Wiki.App.View.Avatar"), which tell the shell when the session and the
--- spaces are to be read again ('SpacesChanged'). The header shows the
--- user's avatar beside their name.
+-- answer is the same whether or not that matches anyone.
+--
+-- The menu closes on a press outside it and on Escape
+-- ("Wiki.App.View.Popup"), as the header's other menus do. Until issue 340
+-- the name opened a long panel instead: how the user signs in, the
+-- account's security, the avatar, the personal space, the notifications
+-- and a link to the writing assistant's settings. Those are the sections
+-- of the settings page now ("Wiki.App.Shell"; "Wiki.App.View.SignInMethods"
+-- holds how the user signs in). The header shows the user's avatar beside
+-- their name.
 --
 -- Signing in or out tells the shell the new session ('AccountChanged'),
 -- which reloads everything as that user. The shell can also open the form
@@ -76,42 +69,36 @@ module Wiki.App.View.SignIn
   , Query (..)
   , Output (..)
   , component
-  , passwordOffer
   )
 where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
-import Data.Row (type (.+), type (.==))
+import Data.Row (Empty)
 import Halogen qualified as H
-import Halogen.HTML qualified as HH
 import Halogen.HTML.Events qualified as HE
 import Halogen.HTML.Properties qualified as HP
 import Halogen.Router (Follow, Router)
 import Halogen.Router qualified as Router
 import Halogen.TH (hh)
+import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (State)
-import Wiki.Api.Account (LinkedIdentity (..), NewAccount (..), PasswordChange (..), SignInMethods (..), mayDisconnect, providerOnly)
+import Wiki.Api.Account (NewAccount (..))
 import Wiki.Api.Auth (Purpose (..), startUrl)
 import Wiki.Api.Security (resetLifetime)
-import Wiki.App.Account (Accounts (..), SignInError (..), accountErrorText, codeErrorText, passkeyErrorText, passwordErrorText, signInErrorText)
+import Wiki.App.Account (Accounts (..), SignInError (..), accountErrorText, codeErrorText, passkeyErrorText, signInErrorText)
 import Wiki.App.Assistant (KeyRef, MonadAssistant (..), PasskeyRefusal (..))
 import Wiki.App.Assistant.Sync (MonadVault (takePasswordKey))
-import Wiki.App.Backend (MonadWiki, Session (..), WikiError (..))
-import Wiki.App.Backend.Notifications (MonadNotifications)
+import Wiki.App.Backend (Session (..), WikiError (..))
 import Wiki.App.Editor.Browser (focusElement)
-import Wiki.App.Route (Route (AssistantSettings))
-import Wiki.App.Security (MonadSecurity)
-import Wiki.App.Vault (Settled (..), addPasswordUnlock, afterSignIn, changeOwnPassword)
-import Wiki.App.View.Avatar qualified as AvatarView
-import Wiki.App.View.Common (AvatarSize (..), ViewOutput, ariaBool, avatar, errorMessage)
-import Wiki.App.View.NotificationSettings qualified as NotificationSettingsView
-import Wiki.App.View.PersonalSpace qualified as PersonalSpaceView
-import Wiki.App.View.Security qualified as SecurityView
+import Wiki.App.Route (Route (UserSettings), SettingsSection (..))
+import Wiki.App.Vault (Settled (..), addPasswordUnlock, afterSignIn)
+import Wiki.App.View.Common (AvatarSize (..), ariaBool, avatar)
+import Wiki.App.View.Popup (watchPopup)
 import Wiki.Core.Access (takesNewAccounts)
 import Wiki.Core.Id (UserId)
 import Wiki.Core.Permission (Grants (..))
-import Wiki.Core.User (Email (..), Password (..), SignInProvider (..), Standing (..), User (..), minimumPasswordLength)
+import Wiki.Core.User (Password (..), SignInProvider (..), Standing (..), User (..), minimumPasswordLength)
 
 data Input m = Input
   { accounts :: Accounts m
@@ -123,7 +110,11 @@ data Input m = Input
   -- ^ The page's address, as the router writes it: where signing in with
   -- a provider returns to.
   , router :: Router Route
-  -- ^ For the link to the writing assistant's settings.
+  -- ^ For the menu's link to the settings.
+  , changingPassword :: Bool
+  -- ^ Whether the shell runs a change of the user's password. Signing
+  -- out waits for it to end: a change still under way after a sign-out
+  -- would go on in the session that comes after.
   }
 
 -- | Open the form, with the reason.
@@ -133,9 +124,6 @@ data Query a = Prompt Text a
 data Output
   = -- | Someone signed in or out: the new session.
     AccountChanged Session
-  | -- | The user turned their personal space on or off, or changed their
-    -- avatar: the session and the spaces are to be read again.
-    SpacesChanged
   | -- | The user asked to sign out, before the request is sent: what is
     -- shown of encrypted spaces goes at once, whatever its answer.
     SigningOut
@@ -149,8 +137,6 @@ data Step
   | -- | Requesting a password reset by mail.
     AtReset
   deriving stock (Eq)
-
-type Slots = ("security" .== H.Slot (Const Void) Void ()) .+ ("notifications" .== H.Slot (Const Void) Void ()) .+ ("personal" .== H.Slot (Const Void) ViewOutput ()) .+ ("avatar" .== H.Slot (Const Void) ViewOutput ())
 
 data State m = State
   { input :: Input m
@@ -177,22 +163,13 @@ data State m = State
   -- closed: only one at a time).
   , typedName :: Text
   , registerField :: H.RefLabel
-  , accountOpen :: Bool
-  -- ^ Whether the panel of the user's sign-in methods is open.
-  , methods :: Maybe (Either WikiError SignInMethods)
-  -- ^ The user's sign-in methods, once fetched ('Nothing' while they are
-  -- being fetched).
-  , changingPassword :: Bool
-  -- ^ Whether the form to change their password is open.
-  , typedCurrent :: Text
-  , typedNew :: Text
-  , typedRepeat :: Text
-  , passwordProblem :: Maybe Text
-  -- ^ Why the last change of password failed.
-  , passwordTold :: Maybe Text
-  -- ^ Whether the last change was made.
-  , currentField :: H.RefLabel
-  , newField :: H.RefLabel
+  , menuOpen :: Bool
+  -- ^ Whether the menu under the signed-in user's name is open.
+  , menuHolder :: H.RefLabel
+  -- ^ The element that holds the name and the menu: a press outside it
+  -- closes the menu.
+  , menuWatch :: Maybe H.SubscriptionId
+  -- ^ The watch for a press outside the menu or Escape, while it is open.
   , keysOffer :: Maybe (UserId, KeyRef)
   -- ^ The offer, after a sign-in with a password, to unlock the user's
   -- vault with the password too ("Wiki.App.Vault"), with the key the
@@ -209,7 +186,7 @@ data State m = State
   }
 
 data Action
-  = Receive Session (Maybe Text) Text
+  = Receive Session (Maybe Text) Text Bool
   | Toggle
   | Close
   | TypedLogin Text
@@ -227,29 +204,21 @@ data Action
   | ToggleRegister
   | TypedName Text
   | Register
-  | ToggleAccount
-  | Disconnect Text
-  | AskPassword
-  | CancelPassword
-  | TypedCurrent Text
-  | TypedNew Text
-  | TypedRepeat Text
-  | SavePassword
+  | ToggleMenu
+  | CloseMenu
   | Followed (Follow Route)
-  | FromPersonal
   | AcceptKeysOffer
   | DeclineKeysOffer
   | Finalize
 
-component :: forall m. (Typeable m, MonadUUID m, MonadUnliftIO m, MonadWiki m, MonadSecurity m, MonadNotifications m, MonadAssistant m, MonadVault m) => H.Component Query (Input m) Output m
+component :: forall m. (Typeable m, MonadUUID m, MonadUnliftIO m, MonadBrowserDOM m, MonadAssistant m, MonadVault m) => H.Component Query (Input m) Output m
 component =
   H.mkComponent
     H.ComponentSpec
       { initialState = \input -> do
           loginField <- H.newRefLabel "sign-in-login"
           registerField <- H.newRefLabel "register-login"
-          currentField <- H.newRefLabel "password-current"
-          newField <- H.newRefLabel "password-new"
+          menuHolder <- H.newRefLabel "account-menu"
           codeField <- H.newRefLabel "sign-in-code"
           resetField <- H.newRefLabel "reset-login"
           pure
@@ -271,16 +240,9 @@ component =
               , registering = False
               , typedName = ""
               , registerField
-              , accountOpen = False
-              , methods = Nothing
-              , changingPassword = False
-              , typedCurrent = ""
-              , typedNew = ""
-              , typedRepeat = ""
-              , passwordProblem = Nothing
-              , passwordTold = Nothing
-              , currentField
-              , newField
+              , menuOpen = False
+              , menuHolder
+              , menuWatch = Nothing
               , keysOffer = Nothing
               , keysProblem = Nothing
               , keysInUse = []
@@ -299,18 +261,29 @@ component =
     -- The input changes when the shell's session does; the form stays as
     -- it is.
     receive :: Input m -> Action
-    receive input = Receive input.session input.avatar input.here
+    receive input = Receive input.session input.avatar input.here input.changingPassword
 
-    render :: State m -> H.ComponentHTML Action Slots m
+    render :: State m -> H.ComponentHTML Action Empty m
     render st = case st.input.session of
       Session {user = Just u, standing = SignedIn} ->
         [hh|
           <div class="account">
-            <button type="button" class="user-name account-toggle" aria-expanded={{ ariaBool st.accountOpen }} onClick={{ const ToggleAccount }}>{{ avatar SmallAvatar st.input.avatar u.displayName }}{{ u.displayName }}</button>
-            <button type="button" class="sign-out" disabled={{ st.busy }} onClick={{ const SignOut }}>Sign out</button>
-            {% if st.accountOpen %}
-              {{ accountPanel st }}
-            {% end %}
+            <div class="account-holder" {{ HP.ref st.menuHolder }}>
+              <button type="button" class="user-name account-toggle" aria-expanded={{ ariaBool st.menuOpen }} onClick={{ const ToggleMenu }}>{{ avatar SmallAvatar st.input.avatar u.displayName }}{{ u.displayName }}</button>
+              {% if st.menuOpen %}
+                <ul class="user-menu account-menu">
+                  <li>
+                    <a class="settings-entry" {{ Router.linkProps st.input.router Followed (UserSettings ProfileSection) }}>Settings</a>
+                  </li>
+                  <li>
+                    <button type="button" class="sign-out" disabled={{ st.busy || st.input.changingPassword }} onClick={{ const SignOut }}>Sign out</button>
+                    {% if st.input.changingPassword %}
+                      <p class="sign-out-note">Your password is being changed: you can sign out once that is done.</p>
+                    {% end %}
+                  </li>
+                </ul>
+              {% end %}
+            </div>
             {{ keysNotice st }}
           </div>
         |]
@@ -370,7 +343,7 @@ component =
         |]
 
     -- The second factor's code, once the password was right.
-    codeForm :: State m -> H.ComponentHTML Action Slots m
+    codeForm :: State m -> H.ComponentHTML Action Empty m
     codeForm st =
       [hh|
         <form class="sign-in-code-form" aria-label="Second factor" {{ HE.preventingDefault (HE.onSubmit (const SubmitCode)) }}>
@@ -395,7 +368,7 @@ component =
       |]
 
     -- A password reset by mail, requested with a login or an address.
-    resetForm :: State m -> H.ComponentHTML Action Slots m
+    resetForm :: State m -> H.ComponentHTML Action Empty m
     resetForm st =
       [hh|
         <form class="reset-request-form" aria-label="Forgot your password?" {{ HE.preventingDefault (HE.onSubmit (const SubmitReset)) }}>
@@ -421,7 +394,7 @@ component =
 
     -- Creating one's own account, in an open wiki: like the sign-in form,
     -- with a display name, and a new password.
-    registerForm :: State m -> H.ComponentHTML Action Slots m
+    registerForm :: State m -> H.ComponentHTML Action Empty m
     registerForm st =
       [hh|
         <form class="register-form" aria-label="Create account" {{ HE.preventingDefault (HE.onSubmit (const Register)) }}>
@@ -452,7 +425,7 @@ component =
 
     -- The providers to sign in with, if the server has any: links to the
     -- server's round trip, which returns here.
-    providerLinks :: State m -> Text -> H.ComponentHTML Action Slots m
+    providerLinks :: State m -> Text -> H.ComponentHTML Action Empty m
     providerLinks st verb =
       [hh|
         <div class="sign-in-providers">
@@ -462,139 +435,28 @@ component =
         </div>
       |]
 
-    -- The signed-in user's sign-in methods, and the ways to change them.
-    accountPanel :: State m -> H.ComponentHTML Action Slots m
-    accountPanel st =
-      [hh|
-        <section class="account-panel" aria-label="How you sign in">
-          <h2>How you sign in</h2>
-          {{ body }}
-          {{ HH.slot_ "security" () SecurityView.component ((\u -> u.id) <$> st.input.session.user) }}
-          <section class="account-avatar" aria-label="Avatar">
-            <h3>Avatar</h3>
-            <p class="account-note">A picture of you, shown round beside your name, at your comments and to the readers of a page.</p>
-            {{ HH.slot "avatar" () AvatarView.component AvatarView.Input {user = st.input.session.user} (const FromPersonal) }}
-          </section>
-          <section class="account-personal" aria-label="Personal space">
-            <h3>Personal space</h3>
-            <p class="account-note">A space of your own, under User subspaces, which you administer.</p>
-            {{ HH.slot "personal" () PersonalSpaceView.component PersonalSpaceView.Input {user = (\u -> u.id) <$> st.input.session.user} (const FromPersonal) }}
-          </section>
-          <section class="account-notifications" aria-label="Notifications">
-            <h3>Notifications</h3>
-            {{ HH.slot_ "notifications" () NotificationSettingsView.component () }}
-          </section>
-          <section class="account-assistant" aria-label="Writing assistant">
-            <h3>Writing assistant</h3>
-            <p class="account-note">Your own API keys for the editor's assistant, kept in this browser.</p>
-            <a class="assistant-settings-entry" {{ Router.linkProps st.input.router Followed AssistantSettings }}>Assistant</a>
-          </section>
-        </section>
-      |]
-      where
-        providers = st.input.session.providers
-        labelOf name = maybe name (\p -> p.label) (find (\p -> p.name == name) providers)
-        body = case st.methods of
-          Nothing -> [hh|<p class="loading">Loading…</p>|]
-          Just (Left e) -> [hh|<p class="error" role="alert">{{ errorMessage e }}</p>|]
-          Just (Right m) ->
-            [hh|
-              <div class="account-methods">
-                <p class="account-password">{{ if m.password then "With your password" else "No password: you sign in with the accounts below." :: Text }}</p>
-                {% if st.changingPassword %}
-                  {{ passwordForm st m }}
-                {% else %}
-                  {% for offered in maybeToList (passwordOffer providers m) %}
-                    <button type="button" class="password-change-toggle" disabled={{ st.busy }} onClick={{ const AskPassword }}>
-                      {{ offered }}
-                    </button>
-                  {% end %}
-                {% end %}
-                <div class="sign-in-told">
-                  {% for t in maybeToList st.passwordTold %}
-                    <p class="account-told" role="status">{{ t }}</p>
-                  {% end %}
-                </div>
-                <ul class="identities">
-                  {% for i in m.identities %}
-                    <li class="identity">
-                      <span class="identity-provider">{{ labelOf i.provider }}</span>
-                      {% for e in maybeToList i.email %}
-                        <span class="identity-email">{{ e.text }}</span>
-                      {% end %}
-                      <button
-                        type="button"
-                        class="identity-disconnect"
-                        disabled={{ st.busy || not (mayDisconnect i.provider m) }}
-                        title={{ if mayDisconnect i.provider m then "" else "Your only way to sign in" :: Text }}
-                        onClick={{ const (Disconnect i.provider) }}
-                      >
-                        Disconnect
-                      </button>
-                    </li>
-                  {% end %}
-                </ul>
-                <div class="identity-connects">
-                  {% for p in filter (\p -> p.name `notElem` map (\i -> i.provider) m.identities) providers %}
-                    <a class="identity-connect" href={{ startUrl p.name Connect st.input.here }}>{{ "Connect " <> p.label }}</a>
-                  {% end %}
-                </div>
-                <div class="sign-in-told">
-                  {% for p in maybeToList st.problem %}
-                    <p class="error account-error" role="alert">{{ p }}</p>
-                  {% end %}
-                </div>
-              </div>
-            |]
-
-    -- A new password, typed twice, and the current one where there is
-    -- one. The inputs are removed with the form when it closes, together
-    -- with what was typed in them.
-    passwordForm :: State m -> SignInMethods -> H.ComponentHTML Action Slots m
-    passwordForm st m =
-      [hh|
-        <form class="password-change" aria-label={{ verb }} {{ HE.preventingDefault (HE.onSubmit (const SavePassword)) }}>
-          {% if m.password %}
-            <label class="field">
-              <span>Current password</span>
-              <input type="password" name="current" autocomplete="current-password" required onValueInput={{ TypedCurrent }} {{ HP.ref st.currentField }}>
-            </label>
-          {% end %}
-          <label class="field">
-            <span>New password</span>
-            <input type="password" name="new" autocomplete="new-password" required minlength={{ minimumPasswordLength }} onValueInput={{ TypedNew }} {{ HP.ref st.newField }}>
-          </label>
-          <label class="field">
-            <span>New password again</span>
-            <input type="password" name="repeat" autocomplete="new-password" required onValueInput={{ TypedRepeat }}>
-          </label>
-          <div class="sign-in-told">
-            {% for p in maybeToList st.passwordProblem %}
-              <p class="error password-error" role="alert">{{ p }}</p>
-            {% end %}
-          </div>
-          <div class="actions">
-            <button type="submit" class="primary" disabled={{ st.busy }}>{{ verb }}</button>
-            <button type="button" onClick={{ const CancelPassword }}>Cancel</button>
-          </div>
-        </form>
-      |]
-      where
-        verb :: Text
-        verb = if m.password then "Change password" else "Set password"
-
-    handleAction :: Action -> H.HalogenM (State m) Action Slots Output m ()
+    handleAction :: Action -> H.HalogenM (State m) Action Empty Output m ()
     handleAction = \case
-      Receive session face here -> do
+      Receive session face here changingPassword -> do
         -- The offer to unlock the keys with the password is the signed-in
         -- user's: another session (a sign-out, another user) drops it.
         offered <- gets (\st -> fst <$> st.keysOffer)
         when (isJust offered && offered /= ((\u -> u.id) <$> session.user)) dropKeysOffer
-        modify (\st -> st {input = Input {accounts = st.input.accounts, session, avatar = face, here, router = st.input.router}})
+        -- The menu is the signed-in user's too: another session closes it.
+        before <- gets (\st -> (\u -> u.id) <$> st.input.session.user)
+        shut <- if before /= ((\u -> u.id) <$> session.user) then shutMenu else pure identity
+        modify (shut . \st -> st {input = Input {accounts = st.input.accounts, session, avatar = face, here, router = st.input.router, changingPassword}})
       Followed f -> do
-        modify (\st -> st {accountOpen = False})
+        shutMenu >>= modify
         gets (\st -> st.input.router) >>= (`Router.follow` f)
-      FromPersonal -> H.raise SpacesChanged
+      ToggleMenu ->
+        gets (\st -> st.menuOpen) >>= \case
+          True -> shutMenu >>= modify
+          False -> do
+            modify (\st -> st {menuOpen = True})
+            watch <- gets (\st -> st.menuHolder) >>= (`watchPopup` CloseMenu)
+            modify (\st -> st {menuWatch = watch})
+      CloseMenu -> whenM (gets (\st -> st.menuOpen)) (shutMenu >>= modify)
       AcceptKeysOffer -> do
         signedIn <- gets (\st -> (\u -> u.id) <$> st.input.session.user)
         gets (\st -> st.keysOffer)
@@ -753,62 +615,11 @@ component =
               modify (\x -> x {busy = False, registering = False, typedPassword = "", typedName = "", problem = Nothing})
               H.raise (AccountChanged s)
               settleAfter s
-      ToggleAccount ->
-        gets (\st -> st.accountOpen) >>= \case
-          True -> modify (\st -> (forgetPassword st) {accountOpen = False, problem = Nothing, passwordTold = Nothing})
-          False -> do
-            modify (\st -> (forgetPassword st) {accountOpen = True, methods = Nothing, problem = Nothing, passwordTold = Nothing})
-            st <- get
-            result <- H.async st.input.accounts.identities
-            modify (\x -> x {methods = Just result})
-      Disconnect provider -> do
-        st <- get
-        unless st.busy $ do
-          modify (\s -> s {busy = True, problem = Nothing})
-          H.async (st.input.accounts.unlinkIdentity provider) >>= \case
-            Left e -> modify (\s -> s {busy = False, problem = Just (errorMessage e)})
-            Right m -> modify (\s -> s {busy = False, methods = Just (Right m)})
-      AskPassword -> do
-        modify (\st -> (forgetPassword st) {changingPassword = True, passwordTold = Nothing})
-        st <- get
-        -- The current password's field, or the new one's where there is
-        -- no current one.
-        current <- H.getRef st.currentField
-        new <- H.getRef st.newField
-        traverse_ (H.liftEffect . focusElement) (current <|> new)
-      CancelPassword -> modify forgetPassword
-      TypedCurrent typedCurrent -> modify (\st -> st {typedCurrent})
-      TypedNew typedNew -> modify (\st -> st {typedNew})
-      TypedRepeat typedRepeat -> modify (\st -> st {typedRepeat})
-      SavePassword -> do
-        st <- get
-        case st.methods of
-          Just (Right m)
-            | st.busy -> pass
-            | st.typedNew /= st.typedRepeat ->
-                modify (\s -> s {passwordProblem = Just "The new password and its repetition are not the same."})
-            | otherwise -> do
-                modify (\s -> s {busy = True, passwordProblem = Nothing})
-                let change = PasswordChange {current = if m.password then Just (Password st.typedCurrent) else Nothing, new = Password st.typedNew}
-                H.async (changeOwnPassword st.input.accounts.changePassword change) >>= \case
-                  Left e -> modify (\s -> s {busy = False, passwordProblem = Just (passwordErrorText e)})
-                  Right after ->
-                    modify $ \s ->
-                      (forgetPassword s)
-                        { busy = False
-                        , methods = Just (Right after)
-                        , passwordTold =
-                            Just
-                              ( if m.password
-                                  then "Your password is changed. You stay signed in here, and anywhere else you were signed in is signed out."
-                                  else "Your password is set: you may sign in with your login and it too."
-                              )
-                        }
-          _ -> pass
       SignOut -> do
         st <- get
-        unless st.busy $ do
-          modify (\s -> s {busy = True})
+        unless (st.busy || st.input.changingPassword) $ do
+          shut <- shutMenu
+          modify (shut . \s -> s {busy = True})
           H.raise SigningOut
           result <- H.async st.input.accounts.signOut
           modify (\s -> s {busy = False})
@@ -820,7 +631,7 @@ component =
     -- After a sign-in: the user's keys brought up to date on this device
     -- with the key the password gave, if any, and the offer to unlock the
     -- vault with the password too, when there is one to make.
-    settleAfter :: Session -> H.HalogenM (State m) Action Slots Output m ()
+    settleAfter :: Session -> H.HalogenM (State m) Action Empty Output m ()
     settleAfter s = do
       -- An earlier sign-in's offer is not this one's, even when bringing
       -- this one's keys up to date fails.
@@ -833,8 +644,9 @@ component =
         key <- H.liftEffect takePasswordKey
         modify (\st -> st {keysInUse = toList key <> st.keysInUse})
         result <- H.async (afterSignIn u.id key)
-        -- Nothing waits on the keys: the security panel shows them, and
-        -- why they could not be brought up to date, when it is opened.
+        -- Nothing waits on the keys: the settings' section "Security"
+        -- shows them, and why they could not be brought up to date, when it
+        -- is opened.
         -- The answer is taken in one step: the key is no longer the
         -- step's, and the offer it makes replaces the one before, whose
         -- key goes ('afterSignIn' let go of the key it does not offer).
@@ -849,15 +661,15 @@ component =
     -- the key it holds: taken out of the state and let go of in one step
     -- ('forgetKey' does not wait). Forgotten through 'H.async' and taken out
     -- a step later, an offer made in between was taken out unforgotten.
-    dropKeysOffer :: H.HalogenM (State m) Action Slots Output m ()
+    dropKeysOffer :: H.HalogenM (State m) Action Empty Output m ()
     dropKeysOffer = do
       withdrawn <- state (\st -> (st.keysOffer, st {keysOffer = Nothing, keysProblem = Nothing}))
       traverse_ (H.liftEffect . forgetKey . snd) withdrawn
 
-    handleQuery :: Query a -> H.HalogenM (State m) Action Slots Output m (Maybe a)
+    handleQuery :: Query a -> H.HalogenM (State m) Action Empty Output m (Maybe a)
     handleQuery (Prompt why next) = openForm (Just why) $> Just next
 
-    openForm :: Maybe Text -> H.HalogenM (State m) Action Slots Output m ()
+    openForm :: Maybe Text -> H.HalogenM (State m) Action Empty Output m ()
     openForm notice = do
       opened <- gets (\st -> st.open && st.step == AtPassword)
       modify $ \st ->
@@ -872,7 +684,7 @@ component =
 
     -- Ask for the login field's offer of passkeys, in a fork of its own,
     -- since it waits for as long as the form is open.
-    offer :: H.HalogenM (State m) Action Slots Output m ()
+    offer :: H.HalogenM (State m) Action Empty Output m ()
     offer = do
       st <- get
       when (st.passkeys && st.open && st.step == AtPassword) $
@@ -891,30 +703,20 @@ component =
           modify (\x -> x {busy = False, open = False, typedPassword = "", notice = Nothing, problem = Nothing})
           H.raise (AccountChanged s)
 
-    -- Close the form to change the password, and clear what was typed in
-    -- it.
-    forgetPassword :: State m -> State m
-    forgetPassword st = st {changingPassword = False, typedCurrent = "", typedNew = "", typedRepeat = "", passwordProblem = Nothing}
+    -- The menu closed: its watch ended now, and the change to the state,
+    -- for the caller to make together with its own.
+    shutMenu :: H.HalogenM (State m) Action Empty Output m (State m -> State m)
+    shutMenu = do
+      gets (\st -> st.menuWatch) >>= traverse_ H.unsubscribe
+      pure (\st -> st {menuOpen = False, menuWatch = Nothing})
 
-    close :: H.HalogenM (State m) Action Slots Output m ()
+    close :: H.HalogenM (State m) Action Empty Output m ()
     close = H.liftEffect abortSignInPasskey *> modify (\st -> st {open = False, step = AtPassword, registering = False, notice = Nothing, problem = Nothing, typedPassword = "", typedCode = "", resetTold = Nothing})
-
--- | The button that opens the form for one's own password, if any:
--- "Change password…" for a user who has a password; "Set a password…" for
--- one who has none and no server provider to sign in with (theirs was
--- disconnected, or removed from the server); and none for one who signs in
--- with a server provider, who has no password to set (WP5.6 of
--- docs/PLAN.md). The server refuses that case the same way.
-passwordOffer :: [SignInProvider] -> SignInMethods -> Maybe Text
-passwordOffer providers m
-  | m.password = Just "Change password…"
-  | providerOnly (map (\p -> p.name) providers) m.password (map (\i -> i.provider) m.identities) = Nothing
-  | otherwise = Just "Set a password…"
 
 -- | The offer, after a sign-in with a password, to unlock the user's vault
 -- with the password too, and why the keys could not be brought up to date,
 -- if they could not.
-keysNotice :: State m -> H.ComponentHTML Action Slots m
+keysNotice :: State m -> H.ComponentHTML Action Empty m
 keysNotice st =
   [hh|
     <div class="keys-notice">

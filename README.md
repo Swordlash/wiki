@@ -615,8 +615,8 @@ It is [these nine slides](https://swordlash.github.io/wiki/s/docs/p/markdown-gui
   space without an icon of its own shows its owner's avatar.
 - **Mentions and notifications**: `@login` tells someone, under a bell in the
   header, as do comments on and changes to the pages they watch; over
-  `wiki-server`, by mail too, and as a private Atom feed whose address the
-  account panel gives.
+  `wiki-server`, by mail too, and as a private Atom feed whose address
+  **Settings**, **Notifications** gives.
 - **Search** by title and text (`/` to focus it), in every space or one.
 - **Stars**: a page's **Star** keeps it under **Starred** in the header, one
   click away from every page, for each user (kept by `wiki-server`, or in the
@@ -631,7 +631,7 @@ It is [these nine slides](https://swordlash.github.io/wiki/s/docs/p/markdown-gui
   subspace inherits the grants and the public flag of the spaces above it,
   unless it is made private from its parent ("Make private" in its
   permissions), when only its own grants count. Each user may turn on a
-  **personal space** from the account menu: "Space of" and their name,
+  **personal space** in **Settings**, **Profile**: "Space of" and their name,
   public, administered by them, listed under "User subspaces"; turned off,
   it is hidden from everyone and kept. "User subspaces" opens a finder of
   the personal spaces: the starred ones first, then any by login or name. Over
@@ -660,7 +660,7 @@ It is [these nine slides](https://swordlash.github.io/wiki/s/docs/p/markdown-gui
 ### Passkeys
 
 Over `wiki-server`, a passkey signs you in without your password or a code.
-Add one under **Passkeys** in your account panel (click your name), with a
+Add one under **Passkeys** in **Settings**, **Security** (click your name, then **Settings**), with a
 name for the device and your current password (a passkey signs you in, so
 someone at a browser you left signed in cannot add one); the list says when each was added and last used, and
 removes one. Then **Sign in with a passkey** under the sign-in form opens
@@ -676,8 +676,8 @@ syncing, passkeys need HTTPS (or the machine's own address).
 The assistant's API keys stay out of the server's sight. In the browser they
 are sealed (AES-GCM, with WebCrypto) under a vault key the browser keeps and
 cannot export, so even this browser's storage holds no key as text, in the
-demo too. Over `wiki-server` the assistant's settings page offers **Sync
-across devices**:
+demo too. Over `wiki-server` the assistant's settings (**Settings**,
+**Writing assistant**) offer **Sync across devices**:
 
 - **Turn on with a passkey.** The browser asks you to make a passkey for the
   wiki (Touch ID, Windows Hello, your phone, a security key, or the passkeys
@@ -723,7 +723,7 @@ your public key (HPKE, RFC 9180), and only your private key opens it. The
 key pair is made in your browser the first time you sign in with your
 password, and its private half is sealed in your vault, the same vault the
 assistant's keys sync in; the server keeps the vault and your public key,
-and cannot open the vault. **Keys**, in your account panel's security,
+and cannot open the vault. **Keys**, in **Settings**, **Security**,
 shows:
 
 - **Your key's fingerprint**, in groups of four. Another member's wiki
@@ -736,14 +736,14 @@ shows:
   when your password is among them. A user whose vault a passkey unlocks
   already (the assistant's syncing) is asked once, at a sign-in with the
   password, whether the password should unlock it too; the answer is no
-  unless you say yes, and the panel adds or takes it away later.
+  unless you say yes, and **Keys** adds or takes it away later.
 - **Ask for a passkey or your password each time the wiki opens**, which
   keeps no key in this browser between visits.
 
 Changing your password keeps your keys: your browser carries them over to
 the new password in the same request. A password reset cannot, since your
 old password is gone: if a passkey of yours unlocks your keys, nothing is
-lost, and the panel lets the new password unlock them too; if your password
+lost, and **Keys** lets the new password unlock them too; if your password
 was the only way, the reset deletes them (your key pair, and the
 assistant's synced settings and API keys), says so before it is done, and
 your next sign-in makes a new key pair. If you sign in with a provider
@@ -767,7 +767,7 @@ What this protects against, and what it does not:
   text.
 
 Your keys need HTTPS (or the machine's own address): the browser offers no
-encryption to a page served over plain HTTP, and the panel says so there.
+encryption to a page served over plain HTTP, and **Keys** says so there.
 
 ### Encrypted spaces
 
@@ -2389,7 +2389,8 @@ to the demo, keeping `data/`.
   must run with `--secure-cookies`, which the deploy script passes behind
   `tailscale serve` and with `--behind-proxy`; a server with `--tls-cert` needs
   none, since it speaks HTTPS itself.
-- **Keeping an account safe.** The panel under a signed-in user's name lists
+- **Keeping an account safe.** The section **Security** of a signed-in user's
+  **Settings** (the menu under their name, then **Settings**) lists
   where they are signed in (when, from which address, this browser marked),
   with "Sign out" for each other session and "Sign out everywhere"; sets up a
   second factor (a code from an authenticator application, scanned from a QR
@@ -2553,15 +2554,15 @@ to the demo, keeping `data/`.
   In an open wiki someone signing in with a provider for the first time gets an
   account (its login from their name there, which they may not choose); in a closed
   one they need an invitation, whose page offers the providers too. A user signed in
-  connects a provider's account, or disconnects one, from the menu under their name
+  connects a provider's account, or disconnects one, in **Settings**, **Security**
   (never the last way they have in); the administration shows who signs in with what
   and may disconnect an account. An account that signs in with a provider and has
   no password has none to set: neither its user nor an administrator gives it one,
   and "Forgot your password?" mails it nothing. Once its last provider is
   disconnected, or removed from the "Server" section, it has no way in, and the
   administration offers a password for it as for anyone else.
-- **One's own password.** A user signed in changes their password from the menu
-  under their name ("Change password…", giving the current one); their other
+- **One's own password.** A user signed in changes their password in
+  **Settings**, **Security** ("Change password…", giving the current one); their other
   sessions end, this one stays. Wrong current passwords count against the
   sign-in limit. A user who signs in with a provider and has no password is
   offered none to set: they sign in there. One left with no way in (no password,

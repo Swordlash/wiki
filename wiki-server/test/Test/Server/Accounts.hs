@@ -596,7 +596,8 @@ pages backing = describe "the pages the server renders" $ do
         app = fst (T.breakOn "<script" (snd (T.breakOn "<div id=\"app\">" html)))
     app `shouldSatisfy` T.isInfixOf ">Edgar Editor</button>"
     app `shouldSatisfy` T.isInfixOf "account-toggle"
-    app `shouldSatisfy` T.isInfixOf "class=\"sign-out\""
+    -- "Sign out" is in the menu under the name, closed at first.
+    app `shouldNotSatisfy` T.isInfixOf "account-menu"
     app `shouldNotSatisfy` T.isInfixOf "sign-in-toggle"
     html `shouldSatisfy` T.isInfixOf "\"standing\":\"SignedIn\""
     header "Cache-Control" reply `shouldBe` Just "private, no-cache"

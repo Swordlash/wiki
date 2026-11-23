@@ -43,7 +43,9 @@
 -- > /reset-password/<secret>/      ResetPassword (ResetToken <secret>)
 -- > /verify-email/<secret>/        VerifyEmail (VerificationToken <secret>)
 -- > /unsubscribe/<secret>/         Unsubscribe (UnsubscribeToken <secret>)
--- > /assistant/                    AssistantSettings
+-- > /settings/                     UserSettings ProfileSection (written /settings/profile/)
+-- > /settings/security/            UserSettings SecuritySection
+-- > /assistant/                    UserSettings AssistantSection (written /settings/assistant/)
 -- > /whats-new/                    WhatsNewPage
 -- > /user-spaces/                  UserSpaces
 -- > /s/docs/p/tour/?version=2026-10-24T09%3A30%3A12.5Z
@@ -82,12 +84,16 @@ module Wiki.App.Route
     Route (..)
   , Against (..)
   , AdminSection (..)
+  , SettingsSection (..)
   , UserListing (..)
   , UserFilter (..)
   , allUsers
   , adminSections
   , sectionName
   , sectionTitle
+  , settingsSections
+  , settingsName
+  , settingsTitle
   , route
   , routeOfHref
   , spaceRouteOf
@@ -209,9 +215,13 @@ data Route
   | -- | The page of the unsubscribe link in a notification mail, by its
     -- secret: it turns those mails off.
     Unsubscribe UnsubscribeToken
-  | -- | The writing assistant's settings, the signed-in user's own (WP4.19
-    -- of docs/PLAN.md): their API keys, and the provider and model to use.
-    AssistantSettings
+  | -- | The signed-in user's own settings: one of their sections. The
+    -- address @\/settings\/@ names no section and is read as the first,
+    -- 'ProfileSection'. The writing assistant's settings had the address
+    -- @\/assistant\/@ before they were a section, and it is read as
+    -- 'AssistantSection'. The shell puts the section's own address in
+    -- place of either.
+    UserSettings SettingsSection
   | -- | The page "What's new?" (WP5.66 of docs/PLAN.md): the server's
     -- version and build date, and the newest changelog entries.
     WhatsNewPage
@@ -321,6 +331,46 @@ sectionTitle = \case
   Backups -> "Backups and data"
   Activity -> "Activity"
 
+-- | 'SettingsSection' is a section of the signed-in user's settings: one
+-- page of them, with an entry in the settings' list of sections. Each
+-- section's address is its name ('settingsName') under @\/settings\/@.
+data SettingsSection
+  = -- | The user's avatar and personal space.
+    ProfileSection
+  | -- | How the user signs in (the password, the providers' accounts), the
+    -- sessions, the second factor, the passkeys, the user's keys and the
+    -- e-mail address.
+    SecuritySection
+  | -- | The notifications mailed, and the feed of them.
+    NotificationsSection
+  | -- | The writing assistant's settings (WP4.19 of docs/PLAN.md): the
+    -- user's API keys, and the provider and model to use.
+    AssistantSection
+  deriving stock (Eq, Show, Enum, Bounded)
+
+-- | The settings' sections in the order their list shows them. The first
+-- is the one @\/settings\/@ shows.
+settingsSections :: [SettingsSection]
+settingsSections = [minBound .. maxBound]
+
+-- | A settings section's name, the last segment of its address: stable,
+-- lower case.
+settingsName :: SettingsSection -> Text
+settingsName = \case
+  ProfileSection -> "profile"
+  SecuritySection -> "security"
+  NotificationsSection -> "notifications"
+  AssistantSection -> "assistant"
+
+-- | A settings section's title, as the list of sections and the page's
+-- heading show it.
+settingsTitle :: SettingsSection -> Text
+settingsTitle = \case
+  ProfileSection -> "Profile"
+  SecuritySection -> "Security"
+  NotificationsSection -> "Notifications"
+  AssistantSection -> "Writing assistant"
+
 -- | What a version in a history is compared with.
 data Against
   = -- | The version before it: what that save changed.
@@ -386,7 +436,10 @@ route =
           (\(q, s, subspaces) -> Search q s subspaces)
           (prefix "search" (directory searchParams))
       , alternative (\case Admin s -> Just s; _ -> Nothing) Admin (prefix "admin" adminSection)
-      , alternative (\case AssistantSettings -> Just (); _ -> Nothing) (const AssistantSettings) (prefix "assistant" (directory noArgs))
+      , alternative (\case UserSettings s -> Just s; _ -> Nothing) UserSettings (prefix "settings" settingsSection)
+      , -- The assistant's settings' address from before they were a
+        -- section of the settings: read, never written.
+        RouteDuplex (const mempty) (UserSettings AssistantSection <$ (prefix "assistant" (directory noArgs)).parser)
       , alternative (\case WhatsNewPage -> Just (); _ -> Nothing) (const WhatsNewPage) (prefix "whats-new" (directory noArgs))
       , alternative (\case UserSpaces -> Just (); _ -> Nothing) (const UserSpaces) (prefix "user-spaces" (directory noArgs))
       , alternative
@@ -523,6 +576,13 @@ adminSection = RouteDuplex named.printer (named.parser <|> (Overview <$ (directo
         , section Activity
         ]
     section s = alternative (\x -> if x == s then Just () else Nothing) (const s) (prefix (sectionName s) (directory noArgs))
+
+-- | The sections of the settings, each a segment under @\/settings\/@.
+-- The address with no segment is the first section's.
+settingsSection :: RouteDuplex' SettingsSection
+settingsSection = RouteDuplex named.printer (named.parser <|> (ProfileSection <$ (directory noArgs).parser))
+  where
+    named = alternatives [alternative (\x -> if x == s then Just () else Nothing) (const s) (prefix (settingsName s) (directory noArgs)) | s <- settingsSections]
 
 -- | The users section's parameters: @q@, @page@ and @show@, each left out
 -- at its first value. A @show@ that names no filter parses as everyone.

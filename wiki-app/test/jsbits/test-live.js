@@ -56,6 +56,26 @@ function wiki_test_history_go(delta) {
   history.go(delta);
 }
 
+// The browser's Back, as its button does, answered once the browser has
+// dispatched the popstate it causes: the router, which listens to it from
+// before, has heard the address by then.
+function wiki_test_history_back_heard() {
+  return new Promise((resolve) => {
+    window.addEventListener("popstate", () => resolve(), { once: true });
+    history.back();
+  });
+}
+
+// An address typed into the address bar (its fragment, which the test
+// router keeps the route in), answered once the router has heard it, as
+// above.
+function wiki_test_go_to_fragment_heard(fragment) {
+  return new Promise((resolve) => {
+    window.addEventListener("popstate", () => resolve(), { once: true });
+    window.location.hash = fragment;
+  });
+}
+
 // Put the open editor's cursor at a character.
 function wiki_test_live_cursor(at) {
   const editor = document.querySelector(".editor-cm .cm-content")?.wikiEditor;

@@ -61,7 +61,7 @@ import Wiki.App.Backend.Mem.State qualified as M
 import Wiki.App.Backend.Notifications (MonadNotifications (..))
 import Wiki.App.Backend.Stars (MonadStars (..))
 import Wiki.App.Demo (demoNow, demoState)
-import Wiki.App.Route (AdminSection (..), Against (..), Route (..), UserFilter (..), UserListing (..), adminSections)
+import Wiki.App.Route (AdminSection (..), Against (..), Route (..), UserFilter (..), UserListing (..), adminSections, settingsSections)
 import Wiki.App.Static (Rendered (..), Start (..), prerenderedRoutes, renderLoading, startLoading, startRoute, startServed)
 import Wiki.App.View.Body qualified as Body
 import Wiki.App.View.Users (pageSizeKey)
@@ -193,11 +193,11 @@ serverPage = describe "Wiki.App.Static, the server's page adopted" $ do
       , ResetPassword (ResetToken "secret")
       , VerifyEmail (VerificationToken "secret")
       , Unsubscribe (UnsubscribeToken "secret")
-      , AssistantSettings
       , UserSpaces
       , PermanentLink (PageId "no-such-page") Nothing
       ]
         <> map Admin adminSections
+        <> map UserSettings settingsSections
 
 -- | The pages a server renders, adopted by the program that starts from
 -- what they carry: every route the demo's build has a page for, an editor,
@@ -273,7 +273,6 @@ servedPages = describe "Wiki.App.Static, the pages a server renders, adopted" $
            , ResetPassword (ResetToken "secret")
            , VerifyEmail (VerificationToken "secret")
            , Unsubscribe (UnsubscribeToken "secret")
-           , AssistantSettings
            , WhatsNewPage
            , UserSpaces
            , -- The server prerenders a permanent address only for a page
@@ -282,6 +281,7 @@ servedPages = describe "Wiki.App.Static, the pages a server renders, adopted" $
            , Admin (Users (UserListing "ed" 1 Everyone))
            ]
         <> map Admin adminSections
+        <> map UserSettings settingsSections
 
 -- | The users at the page size this browser keeps (50), which the server
 -- does not know: the program adopts the page the server rendered at 25

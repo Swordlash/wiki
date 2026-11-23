@@ -1,3 +1,5 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 -- | Mounting the application for a browser test: over a fresh copy of the
 -- demo, as one of its users or nobody, at a route, with a router of its own
 -- that keeps the route in the fragment ('Router.newHashRouter'), so that a
@@ -15,6 +17,9 @@ module Test.Browser.Mount
   , startKeptWith
   , startOpened
   , clickButton
+  , openSettings
+  , showSection
+  , signOut
   , slugs
   )
 where
@@ -23,6 +28,7 @@ import Control.Monad.UUID (MonadUUID)
 import Data.IORef (IORef, modifyIORef')
 import Data.NT (type (~>) (..))
 import Halogen qualified as H
+import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.Router (Router)
 import Halogen.Router qualified as Router
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
@@ -35,7 +41,7 @@ import Wiki.App.Backend.Mem (Opened (..), newMemWiki, openMemWiki, runMemWiki, r
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Route (..))
+import Wiki.App.Route (Route (..), SettingsSection, settingsName)
 #if defined(wasm32_HOST_ARCH)
 import Halogen.VDom.DOM.Monad (runBrowserDOM)
 import Web.Storage.Storage (StorageKind (..))
@@ -45,6 +51,13 @@ import Wiki.App.Route (route)
 import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Slug (Slug, mkSlug)
+
+-- What a click at an element's centre and corners reaches
+-- (test/jsbits/test-layout.js): empty when it is the element itself.
+$( browserJS
+     ["jsbits/test-layout.js"]
+     [("js_on_top", "wiki_test_on_top", Safe, [t|JSText -> IO JSText|])]
+ )
 
 -- | The shell, mounted over a fresh demo as someone (by user id, or nobody),
 -- at a route, with nothing in the browser's local storage.
@@ -233,6 +246,32 @@ clickButton ui selector label = do
   case labelled of
     b : _ -> click b
     [] -> expectationFailure ("no " <> selector <> " says " <> label)
+
+-- | Open the signed-in user's settings at a section as a reader does:
+-- the menu under their name (the server's, or the demo's of its users),
+-- "Settings" there, and the section in the settings' list.
+openSettings :: Mounted s q o m -> SettingsSection -> PageM s ()
+openSettings ui section = do
+  find ui ".account-toggle, .user-switcher-toggle" >>= click
+  find ui ".user-menu .settings-entry" >>= click
+  showSection ui section
+
+-- | Show another section of the settings shown, from their list: the
+-- section shown before is unmounted.
+showSection :: Mounted s q o m -> SettingsSection -> PageM s ()
+showSection ui section = find ui (".settings-nav-link[data-section=" <> settingsName section <> "]") >>= click
+
+-- | Sign out of the server's wiki, from the menu under the user's name.
+-- What else hangs under the name (the offer to unlock the keys with the
+-- password, "Wiki.App.View.SignIn") must lie under the menu once it is
+-- open: "Sign out" is checked to be what a click on it reaches, at its
+-- centre and its corners, before it is clicked.
+signOut :: Mounted s q o m -> PageM s ()
+signOut ui = do
+  find ui ".account-toggle" >>= click
+  button <- find ui ".account-menu .sign-out"
+  unsafeIOToPageM (fromJSText <$> js_on_top (toJSText (".account-menu .sign-out" :: Text))) `shouldReturn` ""
+  click button
 
 slugs :: [Text] -> [Slug]
 slugs = map (either (panic . show) identity . mkSlug)

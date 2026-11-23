@@ -116,7 +116,7 @@ import Web.DOM.Internal.Types (Element)
 import Web.Event.Event (Event, EventType (..))
 import Wiki.App.Assistant (Heard (..), MonadAssistant (..), Opening (..), Talk, clockTime, closesPanel, sendsMessage)
 import Wiki.App.Editor.Browser (currentText, focusElement, focusText, proposeEdit, trackedChanges)
-import Wiki.App.Route (Route (AssistantSettings))
+import Wiki.App.Route (Route (UserSettings), SettingsSection (AssistantSection))
 import Wiki.App.View.Common (Context (..), attr)
 import Wiki.Core.Assistant
   ( AssistantError (kind)
@@ -429,7 +429,7 @@ component =
           <header class="assistant-head">
             <h2>Assistant</h2>
             <span class="assistant-using">{{ usingLine st }}</span>
-            <a class="assistant-settings-link" {{ Router.linkProps st.input.context.router Followed AssistantSettings }}>Settings</a>
+            <a class="assistant-settings-link" {{ Router.linkProps st.input.context.router Followed (UserSettings AssistantSection) }}>Settings</a>
             <button type="button" class="assistant-new" title="Start a new conversation" disabled={{ st.talking }} onClick={{ const NewConversation }}>New</button>
             <button type="button" class="assistant-close" title="Close the assistant (Escape)" onClick={{ const Close }}>Close</button>
           </header>
@@ -612,7 +612,7 @@ component =
             [hh|
               <p class="assistant-setup">
                 {{ why <> " " }}
-                <a {{ Router.linkProps st.input.context.router Followed AssistantSettings }}>Open the assistant's settings</a>
+                <a {{ Router.linkProps st.input.context.router Followed (UserSettings AssistantSection) }}>Open the assistant's settings</a>
               </p>
             |]
         Right _ -> Nothing
@@ -694,7 +694,7 @@ component =
           <div class="error assistant-error assistant-key-refused" role="alert">
             <p>
               {{ meaning <> " " }}
-              <a class="assistant-settings-open" {{ Router.linkProps st.input.context.router Followed AssistantSettings }}>Open the assistant's settings</a>
+              <a class="assistant-settings-open" {{ Router.linkProps st.input.context.router Followed (UserSettings AssistantSection) }}>Open the assistant's settings</a>
             </p>
             {% if not (T.null detail) %}
               <p class="assistant-error-detail">{{ detail }}</p>

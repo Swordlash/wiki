@@ -1,9 +1,10 @@
 {-# LANGUAGE QuasiQuotes #-}
 
 -- | The signed-in user's notification settings (WP4.13 of docs/PLAN.md),
--- in the account panel: notifications mailed never, at once, or as a daily
--- digest, and whether they watch the pages they create and the threads
--- they take part in. Each choice is saved as it is made.
+-- in the settings' section "Notifications": notifications mailed never,
+-- at once, or as a daily digest, and whether they watch the pages they
+-- create and the threads they take part in. Each choice is saved as it is
+-- made.
 --
 -- Mail needs a verified address and a server that sends mail. Without
 -- either, the mail choice is shown disabled, saying what is missing (the
@@ -14,8 +15,8 @@
 -- copies, and replaces with a new one when they want the old to stop
 -- answering. The demo has none, and says so.
 --
--- Fetched when the panel opens, like the rest of the panel: the server
--- never prerenders it.
+-- Fetched when the section is shown, like the rest of the settings: the
+-- shell mounts it in the browser only, so the server never prerenders it.
 module Wiki.App.View.NotificationSettings
   ( component
   )
@@ -47,7 +48,7 @@ data State = State
   -- ^ The field showing the address, which "Copy" copies from.
   }
 
--- | The user's feed, as the panel shows it: its address as a full URL, or
+-- | The user's feed, as the section shows it: its address as a full URL, or
 -- none made yet.
 newtype Feed = Feed (Maybe Text)
 

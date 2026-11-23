@@ -132,9 +132,9 @@ class (Monad m) => MonadVault m where
   -- the vault key, which the page holds and can export, is wrapped with
   -- the new password's key and stored with the new password, both or
   -- neither.
-  changePasswordCarrying :: PasswordChange -> Rewrap -> m (Either SignInError SignInMethods)
-  default changePasswordCarrying :: (MonadTrans t, m ~ t n, MonadVault n) => PasswordChange -> Rewrap -> m (Either SignInError SignInMethods)
-  changePasswordCarrying c = lift . changePasswordCarrying c
+  changePasswordCarrying :: UserId -> PasswordChange -> Rewrap -> m (Either SignInError SignInMethods)
+  default changePasswordCarrying :: (MonadTrans t, m ~ t n, MonadVault n) => UserId -> PasswordChange -> Rewrap -> m (Either SignInError SignInMethods)
+  changePasswordCarrying u c = lift . changePasswordCarrying u c
 
 -- | 'Rewrap': what carrying the vault over to a new password needs: the
 -- version of the vault the change is made to, its salt, and its key, held
@@ -163,7 +163,7 @@ instance (MonadVault m) => MonadVault (HalogenM st act slots output m) where
   dropPasskey = H.async . dropPasskey
   takePasswordKey = H.async takePasswordKey
   provePassword = H.async . provePassword
-  changePasswordCarrying c = H.async . changePasswordCarrying c
+  changePasswordCarrying u c = H.async . changePasswordCarrying u c
 
 instance (MonadVault m) => MonadVault (ReaderT r m)
 
@@ -184,7 +184,7 @@ instance (Monad m) => MonadVault (MemWiki m) where
   dropPasskey _ = pure (Left unavailable)
   takePasswordKey = pure Nothing
   provePassword _ = pure (Left (SignInFailed unavailable))
-  changePasswordCarrying _ _ = pure (Left (SignInFailed unavailable))
+  changePasswordCarrying _ _ _ = pure (Left (SignInFailed unavailable))
 
 -- | The browser's DOM alone has no server either: what runs in it
 -- directly (the browser tests' own reads of the settings) keeps the keys
@@ -204,7 +204,7 @@ instance MonadVault BrowserDOM where
   dropPasskey _ = pure (Left unavailable)
   takePasswordKey = pure Nothing
   provePassword _ = pure (Left (SignInFailed unavailable))
-  changePasswordCarrying _ _ = pure (Left (SignInFailed unavailable))
+  changePasswordCarrying _ _ _ = pure (Left (SignInFailed unavailable))
 
 -- | Nor has the in-memory document of the prerender and the native tests.
 instance MonadVault MemDOM where
@@ -222,7 +222,7 @@ instance MonadVault MemDOM where
   dropPasskey _ = pure (Left unavailable)
   takePasswordKey = pure Nothing
   provePassword _ = pure (Left (SignInFailed unavailable))
-  changePasswordCarrying _ _ = pure (Left (SignInFailed unavailable))
+  changePasswordCarrying _ _ _ = pure (Left (SignInFailed unavailable))
 
 -- | The demo's refusal: syncing the keys is a server's.
 unavailable :: WikiError

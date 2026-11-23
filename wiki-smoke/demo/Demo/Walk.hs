@@ -392,9 +392,9 @@ spec walk = describe "the walk" $ onOnePage demoContext (holdProgram walk.gate) 
     textContent (locator page "#app .user-switcher-toggle") >>= (`shouldSatisfy` Text.isInfixOf "Ada Admin")
     nothingWrong page
 
-  -- The user menu only switches users: the wiki's data is the
-  -- administration's, linked from the header for an administrator, under
-  -- the backups. Exporting downloads a zip file of it, edit and all, which
+  -- The user menu switches users and leads to the settings: the wiki's
+  -- data is the administration's, linked from the header for an
+  -- administrator, under the backups. Exporting downloads a zip file of it, edit and all, which
   -- is version 2 of docs/export.md: a directory per space and per page,
   -- the page's body as page.md, its comments beside it.
   step' "exports a zip file of the wiki from the administration, the edited page in it" $ \page -> do

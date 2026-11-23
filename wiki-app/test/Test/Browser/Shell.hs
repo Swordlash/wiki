@@ -13,11 +13,12 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time (addUTCTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
-import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText)
+import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
+import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.Router.Duplex (encodeComponent)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
-import Protolude hiding (find)
-import Test.Browser.Mount (clickButton, slugs, start, startChanged, startOn, startWith)
+import Protolude hiding (find, wait)
+import Test.Browser.Mount (clickButton, showSection, slugs, start, startChanged, startOn, startWith)
 import Test.Browser.Text (editorText, markdown)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
@@ -26,7 +27,7 @@ import Wiki.App.Backend.Mem (MemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Route (..))
+import Wiki.App.Route (Route (..), SettingsSection (..))
 import Wiki.App.Route qualified as R
 import Wiki.Core.Id (PageId (..))
 import Wiki.Core.Page (Page (body, id, space, title, updatedAt))
@@ -37,8 +38,18 @@ $( browserJS
      ["jsbits/test-location.js", "jsbits/test-live.js"]
      [ ("js_location_hash", "wiki_test_location_hash", Safe, [t|IO JSText|])
      , ("js_history_go", "wiki_test_history_go", Safe, [t|Int -> IO ()|])
+     , ("js_history_back_heardPromise", "wiki_test_history_back_heard", Safe, [t|IO (Promise ())|])
+     , ("js_go_to_fragment_heardPromise", "wiki_test_go_to_fragment_heard", Safe, [t|JSText -> IO (Promise ())|])
      ]
  )
+
+-- | The browser's Back, once the router has heard where it led.
+js_history_back_heard :: IO ()
+js_history_back_heard = if inBrowser then wait =<< js_history_back_heardPromise else pure inert
+
+-- | An address typed into the address bar, once the router has heard it.
+js_go_to_fragment_heard :: JSText -> IO ()
+js_go_to_fragment_heard a = if inBrowser then wait =<< js_go_to_fragment_heardPromise a else pure inert
 
 -- | A program of the demo's backend, run on the wiki a test started, as
 -- whoever is signed in there: its answer, which must be one.
@@ -51,6 +62,46 @@ demoPage t = maybe (panic ("no page " <> t)) (\p -> p.id) (List.find (\p -> p.ti
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
 spec m = do
+  -- The settings (issue 340): the menu under the user's name leads there,
+  -- a section is opened from their list, and the browser's Back returns
+  -- to the section before. The reads look once, with the program quiet.
+  readsOnce Quiet $ it "goes from the menu to the settings, opens a section from their list, and comes back with Back" $ runPage $ do
+    ui <- start m (Just "user-editor") Home
+    _ <- find ui ".directory .space-card"
+    find ui ".user-switcher-toggle" >>= click
+    find ui ".user-menu .settings-entry" >>= (`shouldHaveText` "Settings")
+    find ui ".user-menu .settings-entry" >>= click
+    find ui ".settings-view h1" >>= (`shouldHaveText` "Profile")
+    length <$> findAll ui ".user-menu" `shouldReturn` 0
+    (findAll ui ".settings-nav-link" >>= traverse textContent) `shouldReturn` ["Profile", "Security", "Notifications", "Writing assistant"]
+    _ <- find ui ".settings-page-profile .account-personal .personal-space-enable"
+    showSection ui SecuritySection
+    find ui ".settings-view h1" >>= (`shouldHaveText` "Security")
+    find ui ".settings-nav-link[aria-current=page]" >>= (`shouldHaveText` "Security")
+    _ <- find ui ".settings-page-security .account-sessions"
+    length <$> findAll ui ".account-personal" `shouldReturn` 0
+    unsafeIOToPageM js_history_back_heard
+    find ui ".settings-view h1" >>= (`shouldHaveText` "Profile")
+    find ui ".settings-nav-link[aria-current=page]" >>= (`shouldHaveText` "Profile")
+    _ <- find ui ".settings-page-profile .account-personal"
+    location `shouldReturn` "#/settings/profile/"
+    unmount ui
+
+  -- The address of the settings with no section, and the writing
+  -- assistant's from before it was a section of them: each shows its
+  -- section, whose own address takes its place.
+  readsOnce Quiet $ it "shows the first section at /settings/ and the assistant's at /assistant/, each at its own address" $ runPage $ do
+    ui <- start m (Just "user-editor") Home
+    _ <- find ui ".directory .space-card"
+    unsafeIOToPageM (js_go_to_fragment_heard (toJSText ("#/settings/" :: Text)))
+    find ui ".settings-view h1" >>= (`shouldHaveText` "Profile")
+    location `shouldReturn` "#/settings/profile/"
+    unsafeIOToPageM (js_go_to_fragment_heard (toJSText ("#/assistant/" :: Text)))
+    find ui ".settings-page-assistant .assistant-settings h1" >>= (`shouldHaveText` "Writing assistant")
+    find ui ".settings-nav-link[aria-current=page]" >>= (`shouldHaveText` "Writing assistant")
+    location `shouldReturn` "#/settings/assistant/"
+    unmount ui
+
   it "lists the public spaces on the front page for someone not signed in" $ runPage $ do
     ui <- start m Nothing Home
     _ <- find ui ".directory .space-card"

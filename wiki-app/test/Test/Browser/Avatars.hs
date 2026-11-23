@@ -2,8 +2,8 @@
 
 -- | Avatars, who wrote a page, and who reads it, in a browser (WP5.55 of
 -- docs/PLAN.md), over the demo. A user without an avatar is shown by the
--- first letter of their name; one chooses a picture in the account panel
--- (a click on the avatar's circle),
+-- first letter of their name; one chooses a picture in the settings'
+-- section "Profile" (a click on the avatar's circle),
 -- crops it in the dialog (Cropper.js, through the page's islands), a modal
 -- centred in the window with the whole picture in the cropper and the
 -- starting circle inside the picture, and uses
@@ -29,7 +29,7 @@ import Web.HTML.Window qualified as Window
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend.Mem.State (MemState (..), createPageIn, savePageIn, setAvatarIn, setPersonalSpaceIn)
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Route (..))
+import Wiki.App.Route (Route (..), SettingsSection (..))
 import Wiki.App.Web.Rect (Box (..), boxOf)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Page qualified as P
@@ -51,12 +51,10 @@ js_choose_file a1 a2 a3 a4 = if inBrowser then wait =<< js_choose_filePromise a1
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
 spec m = do
-  it "shows a user's initials, then the picture they choose and crop, in the header and the account panel" $ runPage $ do
-    ui <- start m (Just "user-editor") Home
+  it "shows a user's initials, then the picture they choose and crop, in the header and the profile settings" $ runPage $ do
+    ui <- start m (Just "user-editor") (UserSettings ProfileSection)
     initialsOf ui ".user-switcher-toggle .avatar-initials" `shouldReturn` Just "E"
     find ui ".user-switcher-toggle" >>= (`shouldHaveText` "Edgar Editor")
-    find ui ".user-switcher-toggle" >>= click
-    find ui ".demo-account-toggle" >>= click
     initialsOf ui ".account-avatar .avatar-large" `shouldReturn` Just "E"
     length <$> findAll ui ".account-avatar .avatar-remove" `shouldReturn` 0
     -- Not an image an avatar may be: refused, and no dialog.
@@ -68,7 +66,7 @@ spec m = do
     _ <- find ui ".account-avatar .avatar-crop cropper-canvas cropper-selection"
     eventually $ find ui ".account-avatar .avatar-use" >>= \b -> getProperty b "disabled" `shouldReturn` "false"
     find ui ".account-avatar .avatar-use" >>= click
-    -- Used: the header and the panel show it, the dialog is closed.
+    -- Used: the header and the section show it, the dialog is closed.
     eventually $ do
       picture <- find ui ".user-switcher-toggle img.avatar"
       getAttribute picture "src" >>= (`shouldSatisfy` maybe False (T.isPrefixOf "blob:"))
@@ -81,18 +79,17 @@ spec m = do
     eventually $ initialsOf ui ".user-switcher-toggle .avatar-initials" `shouldReturn` Just "E"
     unmount ui
 
-  it "opens the crop as a modal dialog centred in the window, outside the panel, with the whole picture in the cropper" $ runPage $ do
-    ui <- start m (Just "user-editor") Home
-    find ui ".user-switcher-toggle" >>= click
-    find ui ".demo-account-toggle" >>= click
+  it "opens the crop as a modal dialog centred in the window, outside the avatar's section, with the whole picture in the cropper" $ runPage $ do
+    ui <- start m (Just "user-editor") (UserSettings ProfileSection)
     -- A picture twice as wide as it is high.
     chooseFile ".account-avatar .avatar-change input" "wide.png" "image/png" widePng
     _ <- find ui ".account-avatar dialog.avatar-crop-dialog[open]"
     find ui ".account-avatar .avatar-crop-title" >>= (`shouldHaveText` "Crop your picture")
     _ <- find ui ".account-avatar .avatar-crop-help"
-    -- In the window, centred, and not inside the account panel's box.
+    -- In the window, centred, and not inside the box of the section that
+    -- holds it.
     Just (dialog, (width, height)) <- rect ".account-avatar .avatar-crop-dialog"
-    Just (panel, _) <- rect ".demo-account-panel"
+    Just (panel, _) <- rect ".account-avatar"
     dialog `shouldSatisfy` within (Box 0 0 width height)
     abs ((dialog.left + dialog.right) / 2 - width / 2) `shouldSatisfy` (< 2)
     abs ((dialog.top + dialog.bottom) / 2 - height / 2) `shouldSatisfy` (< 2)
@@ -120,9 +117,7 @@ spec m = do
     unmount ui
 
   it "cancels the crop without uploading anything, with Cancel and with Escape" $ runPage $ do
-    ui <- start m (Just "user-editor") Home
-    find ui ".user-switcher-toggle" >>= click
-    find ui ".demo-account-toggle" >>= click
+    ui <- start m (Just "user-editor") (UserSettings ProfileSection)
     chooseFile ".account-avatar .avatar-change input" "me.png" "image/png" dotPng
     _ <- find ui ".account-avatar .avatar-crop cropper-canvas"
     find ui ".account-avatar .avatar-cancel" >>= click
@@ -139,14 +134,14 @@ spec m = do
     eventually $ length <$> findAll ui ".account-avatar .avatar-crop cropper-canvas" `shouldReturn` 0
     initialsOf ui ".user-switcher-toggle .avatar-initials" `shouldReturn` Just "E"
     length <$> findAll ui ".account-avatar .avatar-change img.avatar-large" `shouldReturn` 0
-    -- The panel is still open, with nothing to say.
-    _ <- find ui ".demo-account-panel"
+    -- The section is still shown, with nothing to say.
+    _ <- find ui ".settings-page-profile"
     length <$> findAll ui ".account-avatar .avatar-error" `shouldReturn` 0
     unmount ui
 
   -- The cropper's module is fetched the first time a picture is chosen,
-  -- and the account's panel may close meanwhile, its dialog taken off the
-  -- page with it. The cropper then puts nothing in the dialog's element:
+  -- and the profile's section may be left meanwhile, its dialog taken off
+  -- the page with it. The cropper then puts nothing in the dialog's element:
   -- nothing would take it out again, and the picture, held by the object
   -- URL the cropper shows it through, would stay until the tab closes.
   it "puts no cropper in a dialog taken off the page while the cropper loaded" $ runPage $ do

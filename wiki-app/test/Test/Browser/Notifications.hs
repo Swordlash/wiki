@@ -2,8 +2,8 @@
 -- docs/PLAN.md). Over the demo: a mention in a comment is a link to whoever
 -- it names; the user mentioned, switched to, finds it under the header's
 -- bell, which counts it, lists it with a link to its page and marks it
--- read; a page's and a space's "Watch" button chooses; the account panel's
--- notifications, mail disabled in a demo. Over the backend over HTTP with a
+-- read; a page's and a space's "Watch" button chooses; the notification
+-- settings, mail disabled in a demo. Over the backend over HTTP with a
 -- server in fetch's place: a notification told over the live channel
 -- counted at once, with no page subscribed to.
 module Test.Browser.Notifications (spec) where
@@ -23,7 +23,7 @@ import Wiki.Api.Notifications (Notifications (..))
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Route (..))
+import Wiki.App.Route (Route (..), SettingsSection (..))
 import Wiki.Core.Id
 import Wiki.Core.Notification (Kind (..), Notification (..), PageLocation (..))
 import Wiki.Core.Page qualified as P
@@ -132,10 +132,8 @@ demo m = describe "over the demo" $ do
     eventually (find blogUi ".blog-view .watch-toggle" >>= \b -> getAttribute b "aria-pressed" >>= (`shouldNotBe` was))
     unmount blogUi
 
-  it "shows the account panel's notifications, with mail disabled in the demo" $ runPage $ do
-    ui <- start m (Just "user-editor") Home
-    find ui ".user-switcher-toggle" >>= click
-    find ui ".demo-account-toggle" >>= click
+  it "shows the notification settings, with mail disabled in the demo" $ runPage $ do
+    ui <- start m (Just "user-editor") (UserSettings NotificationsSection)
     eventually (length <$> findAll ui ".notification-settings" `shouldReturn` 1)
     fieldset <- find ui ".notification-mail"
     getAttribute fieldset "disabled" `shouldReturn` Just ""

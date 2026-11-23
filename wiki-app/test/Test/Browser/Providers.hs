@@ -1,7 +1,7 @@
 -- | Signing in with a provider, in a browser (WP3.6 of docs/PLAN.md): the
 -- links that start it, beside the forms that sign in and make an account
 -- and on an invitation's page, where the session names providers, and
--- none where it does not; a signed-in user's panel of how they sign in,
+-- none where it does not; the settings of how a signed-in user signs in,
 -- which connects and disconnects, but not the last way in; and the
 -- administration's account column, which says who signs in with what and
 -- disconnects it.
@@ -34,7 +34,7 @@ import Wiki.App.Backend.Mem (newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (AdminSection (..), Route (..), allUsers)
+import Wiki.App.Route (AdminSection (..), Route (..), SettingsSection (..), allUsers)
 import Wiki.Core.Access (Access (..))
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Permission (Grants (..))
@@ -128,7 +128,7 @@ inviting m = describe "an invitation's page" $
       serverStops
 
 ownPanel :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
-ownPanel m = describe "the panel of how a user signs in" $ do
+ownPanel m = describe "the settings of how a user signs in" $ do
   let google = LinkedIdentity {provider = "google", email = Just (Email "rita@example.org"), name = Just "Rita", linkedAt = demoNow}
       hub = LinkedIdentity {provider = "hub", email = Nothing, name = Nothing, linkedAt = demoNow}
 
@@ -138,9 +138,8 @@ ownPanel m = describe "the panel of how a user signs in" $ do
     rita <- signedInAs "user-reader"
     answerWith "GET" "api/v1/session" 200 rita
     answerWith "GET" "api/v1/account/identities" 200 SignInMethods {password = False, identities = [google]}
-    ui <- startServer m Home
+    ui <- startServer m (UserSettings SecuritySection)
     find ui ".account-toggle" >>= (`shouldHaveText` "Rita Reader")
-    find ui ".account-toggle" >>= click
     find ui ".account-password" >>= (`shouldContainText` "No password")
     find ui ".identity .identity-provider" >>= (`shouldHaveText` "Google")
     find ui ".identity .identity-email" >>= (`shouldHaveText` "rita@example.org")
@@ -161,8 +160,7 @@ ownPanel m = describe "the panel of how a user signs in" $ do
     answerWith "GET" "api/v1/session" 200 rita
     answerWith "GET" "api/v1/account/identities" 200 SignInMethods {password = True, identities = [google, hub]}
     answerWith "DELETE" "api/v1/account/identities/hub" 200 SignInMethods {password = True, identities = [google]}
-    ui <- startServer m Home
-    find ui ".account-toggle" >>= click
+    ui <- startServer m (UserSettings SecuritySection)
     eventually (length <$> findAll ui ".identity" `shouldReturn` 2)
     buttons <- findAll ui ".identity-disconnect"
     traverse (`getAttribute` "disabled") buttons `shouldReturn` [Nothing, Nothing]
@@ -182,9 +180,8 @@ ownPanel m = describe "the panel of how a user signs in" $ do
     rita <- signedInAs "user-reader"
     answerWith "GET" "api/v1/session" 200 SessionInfo {user = rita.user, groups = rita.groups, grants = rita.grants, standing = rita.standing, providers = [], exports = [], boxes = [], homePage = rita.homePage, mathMacros = Nothing, assistantServices = [], whatsNew = Nothing}
     answerWith "GET" "api/v1/account/identities" 200 SignInMethods {password = True, identities = []}
-    ui <- startServer m Home
+    ui <- startServer m (UserSettings SecuritySection)
     find ui ".account .user-name" >>= (`shouldHaveText` "Rita Reader")
-    find ui ".account-toggle" >>= click
     find ui ".account-password" >>= (`shouldHaveText` "With your password")
     _ <- find ui ".password-change-toggle"
     length <$> findAll ui ".identity" `shouldReturn` 0

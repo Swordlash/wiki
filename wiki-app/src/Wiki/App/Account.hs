@@ -74,6 +74,7 @@ import Wiki.Api.Account (InvitationInfo, InvitationToken, NewAccount, PasswordCh
 import Wiki.Api.Security (ResetToken, VerificationToken)
 import Wiki.Api.Vault (AssertionOptions, AssertionResponse)
 import Wiki.App.Backend (Session, WikiError (..))
+import Wiki.Core.Id (UserId)
 import Wiki.Core.User (Password (..))
 
 -- | Why signing in did not work.
@@ -188,9 +189,9 @@ class (Monad m) => MonadAccount m where
   -- | Change the signed-in user's password, or set one if they have none.
   -- The result is how they sign in afterwards. 'WrongCredentials' if the
   -- current password given is not theirs.
-  changePassword :: PasswordChange -> m (Either SignInError SignInMethods)
-  default changePassword :: (MonadTrans t, m ~ t n, MonadAccount n) => PasswordChange -> m (Either SignInError SignInMethods)
-  changePassword = lift . changePassword
+  changePassword :: UserId -> PasswordChange -> m (Either SignInError SignInMethods)
+  default changePassword :: (MonadTrans t, m ~ t n, MonadAccount n) => UserId -> PasswordChange -> m (Either SignInError SignInMethods)
+  changePassword u = lift . changePassword u
 
   -- | Complete a sign-in that needs a second factor, with a code from the
   -- user's authenticator application or a recovery code. The result is the
@@ -258,7 +259,7 @@ instance (MonadAccount m) => MonadAccount (HalogenM st act slots output m) where
   acceptInvitation t = H.async . acceptInvitation t
   identities = H.async identities
   unlinkIdentity = H.async . unlinkIdentity
-  changePassword = H.async . changePassword
+  changePassword u = H.async . changePassword u
   confirmSecondFactor = H.async . confirmSecondFactor
   beginPasskeySignIn = H.async beginPasskeySignIn
   finishPasskeySignIn = H.async . finishPasskeySignIn
@@ -279,7 +280,7 @@ data Accounts m = Accounts
   , acceptInvitation :: InvitationToken -> NewAccount -> m (Either SignInError Session)
   , identities :: m (Either WikiError SignInMethods)
   , unlinkIdentity :: Text -> m (Either WikiError SignInMethods)
-  , changePassword :: PasswordChange -> m (Either SignInError SignInMethods)
+  , changePassword :: UserId -> PasswordChange -> m (Either SignInError SignInMethods)
   , confirmSecondFactor :: Text -> m (Either SignInError Session)
   , beginPasskeySignIn :: m (Either SignInError AssertionOptions)
   , finishPasskeySignIn :: AssertionResponse -> m (Either SignInError Session)

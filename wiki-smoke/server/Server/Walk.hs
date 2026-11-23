@@ -113,7 +113,7 @@ administrator smoke loadsRef = do
     let page = w.page
     signInOn page adminLogin adminPassword `shouldReturn` SignedIn
     hasText (locator page "#app .user-name") adminName
-    count (locator page "#app .sign-out") `shouldReturn` 1
+    count (locator page "#app .account-toggle") `shouldReturn` 1
     count (locator page "#app .wiki-header a.admin-link") `shouldReturn` 1
     nothingWrongOnServer page
 
@@ -563,12 +563,13 @@ visitor smoke loadsRef = do
       -- with it.
       landed :: Value <- evaluate olive "(async () => (await fetch('api/v1/session')).json())()"
       landed .! "user" .! "login" `shouldBe` String "olive"
-      click (locator olive "#app .account-toggle")
-      waitQuiet olive
+      -- How she signs in: in her settings' section "Security", which the
+      -- menu under her name leads to.
+      openSecurity olive
       hasText (locator olive "#app .identity .identity-provider") "Fake"
       getAttribute (locator olive "#app .identity-disconnect") "disabled" `shouldReturn` Just ""
       -- She signs in with a provider and has no password: none to set
-      -- (WP5.6), in the panel or through the API, nor from the
+      -- (WP5.6), in her settings or through the API, nor from the
       -- administration. Asked outside her page, whose console would report
       -- the refusal.
       count (locator olive "#app .password-change-toggle") `shouldReturn` 0
@@ -616,8 +617,7 @@ visitor smoke loadsRef = do
       waitStarted olive
       signInOn olive "olive" "olive's own password" `shouldReturn` SignedIn
       hasText (locator olive "#app .account .account-toggle") "Olive Oidc"
-      click (locator olive "#app .account-toggle")
-      waitQuiet olive
+      openSecurity olive
       hasText (locator olive "#app .account-password") "With your password"
       hasText (locator olive "#app .password-change-toggle") "Change password"
       (outcome, outside) <- signInThroughTheForm w.browser smoke.origin "olive" "olive's own password"
@@ -626,9 +626,10 @@ visitor smoke loadsRef = do
       report "a user who signs in with a provider has no password to set, until the administration disconnects it and gives her one, which she signs in with"
       -- Her sessions: this browser's, marked, and the one just signed in
       -- from outside it, which "Sign out everywhere" ends while hers stays.
-      -- The panel reads them when it opens: closed and opened again.
-      click (locator olive "#app .account-toggle")
-      click (locator olive "#app .account-toggle")
+      -- The section reads them when it is shown: left and shown again.
+      click (locator olive "#app .settings-nav-link[data-section=profile]")
+      waitQuiet olive
+      click (locator olive "#app .settings-nav-link[data-section=security]")
       waitQuiet olive
       count (locator olive "#app .session-item") `shouldReturn` 2
       hasText (locator olive "#app .session-current .session-this") "This browser"
@@ -661,10 +662,19 @@ visitor smoke loadsRef = do
       issued <- readIORef smoke.provider.issued
       forM_ (smoke.provider.secret : issued) $ \secret' ->
         expect (not (secret' `Text.isInfixOf` said)) "a provider's code, token or secret is in the server's log"
-      report "her sessions are listed in the panel and signed out everywhere but here; a second factor set up there is asked for after her password"
+      report "her sessions are listed in her security settings and signed out everywhere but here; a second factor set up there is asked for after her password"
   where
     settings :: Text -> Value
     settings access = object ["access" .= access, "newAccountsCreateSpaces" .= False, "adminCreatesPasswordAccounts" .= True]
+    -- The settings' section "Security", from the menu under the name of
+    -- whoever is signed in on the page: "Settings", then the section in
+    -- the settings' list.
+    openSecurity page = do
+      click (locator page "#app .account-toggle")
+      click (locator page "#app .account-menu .settings-entry")
+      waitQuiet page
+      click (locator page "#app .settings-nav-link[data-section=security]")
+      waitQuiet page
 
 ----------------------------------------------------------------------
 -- 2 and 3: a browser that has seen nothing

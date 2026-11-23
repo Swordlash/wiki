@@ -25,7 +25,7 @@ import Test.Browser.Http (Asked (..), answerRaw, answerWith, answersTaken, asked
 import Test.Browser.Mount (adopt, clickButton, slugs, start, startChangedWith)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
-import Wiki.Api (AccountApi (..), SpacesApi (..), WikiApi (..))
+import Wiki.Api (SpacesApi (..), WikiApi (..))
 import Wiki.Api.Events (PageEvent (PageChanged), ServerMessage (Event))
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend (MonadWiki (postDetails))
@@ -49,6 +49,7 @@ import Wiki.Core.Space qualified as Core
 $( browserJS
      ["jsbits/test-focus.js", "jsbits/test-style.js", "jsbits/test-markup.js", "jsbits/test-disabled.js"]
      [ ("js_focused_matches", "wiki_test_focused_matches", Safe, [t|JSText -> IO Bool|])
+     , ("js_tell_dropped", "wiki_test_tasks_tell_dropped", Safe, [t|JSText -> IO ()|])
      , ("js_computed_style", "wiki_test_computed_style", Safe, [t|JSText -> JSText -> IO JSText|])
      , ("js_markup", "wiki_test_markup", Safe, [t|IO JSText|])
      , ("js_watch_disabled", "wiki_test_watch_disabled", Safe, [t|IO ()|])
@@ -344,17 +345,21 @@ spec m = describe "tasks ticked in a page" $ do
       either (panic . show) identity <$> runMemWiki wiki (postDetails blog.id)
     -- The blog's home page has tasks, and is shown above its posts.
     answerWith "GET" (endpointUrl (\e -> e.spaces.pageAt blog.id [])) 200 home {Core.body = "# Blog\n\n- [ ] Write the first post\n- [ ] Tell the team\n"}
-    -- Turning a personal space on, in the account's menu, reloads the wiki.
-    answerWith "GET" (endpointUrl (\e -> e.account.personalSpace)) 200 (Nothing :: Maybe Core.Space)
-    answerWith "PUT" (endpointUrl (\e -> e.account.setPersonalSpace (panic "the body is not part of the address"))) 200 blog
     ui <- startServer m (Space (slugs ["blog"]))
     eventuallyWithin 20000 (find ui ".blog-home .page-body input[data-task='0']") >>= click
     eventually $ find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     -- The blog's reload fails.
     answerRaw "GET" detailsAt 503 "<html>down for maintenance</html>"
-    find ui ".account-toggle" >>= click
-    eventually (find ui ".account-personal .personal-space-enable" >>= click)
+    -- Another tab's sign-out lets go of a key, which has this tab reload
+    -- the wiki: a reload the reader did not ask for. (The account's menu
+    -- once turned a personal space on for this; it has no such switch any
+    -- more.)
+    unsafeIOToPageM (js_tell_dropped (toJSText ("vault:user-admin" :: Text)))
     eventuallyWithin 20000 $ find ui ".blog-view .stale-reload" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "What is shown stays")
+    -- The views' revision moves on twice (the screen sealed, then the
+    -- reload), and the blog reads its posts at each: the button is drawn
+    -- again once the second read fails too.
+    waitQuiet
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     (find ui ".blog-home .page-body input[data-task='0']" >>= (`getProperty` "checked")) `shouldReturn` "true"
     -- Tried again, the reload succeeds, and the ticks are still there.

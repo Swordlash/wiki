@@ -1,6 +1,7 @@
 -- | Account security (WP4.11 of docs/PLAN.md, "Wiki.Api.Security"):
 -- 'MonadSecurity' covers one's sessions, a second factor, and an e-mail
--- address, which the account panel shows ("Wiki.App.View.Security").
+-- address, which the settings' section "Security" shows
+-- ("Wiki.App.View.Security").
 --
 -- It is a separate capability from "Wiki.App.Account"'s signing in, so
 -- that the demo has it too. The demo lists its one session (the browser it

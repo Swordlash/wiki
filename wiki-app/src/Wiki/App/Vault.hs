@@ -270,7 +270,7 @@ data Settled = Settled
 afterSignIn :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe KeyRef -> m (Either Text Settled)
 afterSignIn u key = holdingDeviceRecords $ do
   -- Where the browser offers no WebCrypto (a page over plain HTTP), there
-  -- are no keys to settle: the panel says why.
+  -- are no keys to settle: the settings' section "Security" says why.
   here <- sealingHere
   result <- if here then runExceptT (settleWith u key) else pure (Left "This browser offers no encryption to this page.")
   case result of
@@ -541,23 +541,27 @@ setVaultAskEachTime u asking = holdingDeviceRecords $ runExceptT $ do
 -- unwrapped with it, and the change sends the vault key wrapped for the
 -- new password, which the server stores with the new password, both or
 -- neither. A vault the password does not unlock needs nothing.
-changeOwnPassword :: (MonadAssistant m, MonadVault m) => (PasswordChange -> m (Either SignInError SignInMethods)) -> PasswordChange -> m (Either SignInError SignInMethods)
-changeOwnPassword plain change =
+--
+-- The change is the given user's: the new password's record is made
+-- only for them ('Wiki.App.Backend.Http.ownRecord'), so a change that
+-- finds another user signed in by then changes nothing.
+changeOwnPassword :: (MonadAssistant m, MonadVault m) => (UserId -> PasswordChange -> m (Either SignInError SignInMethods)) -> UserId -> PasswordChange -> m (Either SignInError SignInMethods)
+changeOwnPassword plain u change =
   runExceptT fetched >>= \case
     Right (Just s)
       | Just w <- wrapFor ByPassword s.vault
       , Just current <- change.current ->
           provePassword current >>= \case
             Left e -> pure (Left e)
-            Right Nothing -> plain change
+            Right Nothing -> plain u change
             Right (Just k) ->
               runExceptT (forgetting k (unwrapWith' k s w True)) >>= \case
                 Left why -> pure (Left (SignInFailed (Invalid why)))
                 Right v -> do
-                  result <- changePasswordCarrying PasswordChange {current = Nothing, new = change.new} Rewrap {tag = s.tag, salt = s.vault.salt, vaultKey = v}
+                  result <- changePasswordCarrying u PasswordChange {current = Nothing, new = change.new} Rewrap {tag = s.tag, salt = s.vault.salt, vaultKey = v}
                   forgetKey v
                   pure result
-    _ -> plain change
+    _ -> plain u change
 
 -- | The server's vault, if the user has one.
 fetched :: (MonadVault m) => Step m (Maybe StoredVault)
@@ -567,7 +571,8 @@ fetched =
     Right _ -> pure Nothing
     Left e -> throwError ("The vault could not be fetched: " <> wikiText e)
 
--- | What the panel shows, from the vault fetched and this device.
+-- | What the settings' section "Security" shows, from the vault fetched
+-- and this device.
 describe :: (MonadAssistant m, MonadVault m) => UserId -> Maybe StoredVault -> Bool -> Step m UserKeys
 describe u stored unlocked = do
   current <- either (\e -> throwError ("The directory of public keys could not be read: " <> wikiText e)) pure =<< lift (publicKeyOf u)

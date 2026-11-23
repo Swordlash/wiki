@@ -1370,12 +1370,30 @@ const completions = (host) => {
   // list's keys only once it has been shown for interactionDelay, which
   // the browser tests wait for (ready, below) before they press one.
   const shownAt = new WeakMap();
+  // The browser tests' waits for a view's completion to be answered
+  // (answered, below), by view: each resolved by the update that ends the
+  // view's "pending". The library asks its sources a moment after the last
+  // key (its activateOnTypingDelay), on a timer the program does not know
+  // of, so a test cannot wait for the answer by waiting for the program.
+  const answering = new WeakMap();
   const forgetMoves = EditorView.updateListener.of((update) => {
-    const active = completionStatus(update.state) === "active";
+    const status = completionStatus(update.state);
+    const active = status === "active";
     if (moved.has(update.view) && !active) moved.delete(update.view);
     if (!active) shownAt.delete(update.view);
     else if (!shownAt.has(update.view)) shownAt.set(update.view, Date.now());
+    if (status !== "pending" && answering.has(update.view)) {
+      const waits = answering.get(update.view);
+      answering.delete(update.view);
+      for (const resolve of waits) resolve();
+    }
   });
+  // A promise of the moment a view's completion is no longer being asked
+  // for: its sources have answered, and the list is shown or not.
+  const answered = (view) => {
+    if (completionStatus(view.state) !== "pending") return Promise.resolve();
+    return new Promise((resolve) => answering.set(view, [...(answering.get(view) ?? []), resolve]));
+  };
   // Enter chooses as the list says; when it chooses nothing, it is the
   // editor's Enter (markupEnter): a new line, or the next item of a list.
   const enter = (view) => {
@@ -1448,6 +1466,26 @@ const completions = (host) => {
     status: (state) => completionStatus(state) ?? "",
     // Whether a view's list is shown and takes its keys now.
     ready: (view) => shownAt.has(view) && Date.now() - shownAt.get(view) >= interactionDelay,
+    // For the browser tests: a promise of the moment a view's completion
+    // has its answer, and one of the moment the list then shown takes its
+    // keys (true), or of the answer when it shows no list (false). The
+    // library takes the keys interactionDelay after the list is shown, by
+    // the clock, and says so by no event: the second waits out what is
+    // left of that time.
+    answered,
+    takesKeys: (view) =>
+      answered(view).then(
+        () =>
+          new Promise((resolve) => {
+            const check = () => {
+              if (!shownAt.has(view)) return resolve(false);
+              const left = interactionDelay - (Date.now() - shownAt.get(view));
+              if (left <= 0) resolve(true);
+              else setTimeout(check, left);
+            };
+            check();
+          }),
+      ),
     stop: () => {
       people.stop();
       names.stop();
@@ -2595,6 +2633,8 @@ export function attachRow(masterHost, rowHost, key, focus) {
     },
     completing: () => completionStatus(view.state) ?? "",
     completionReady: () => master.completionReady(view),
+    completionAnswered: () => master.completionAnswered(view),
+    completionTakesKeys: () => master.completionTakesKeys(view),
     hasFocus: () => view.hasFocus,
     destroy: () => {
       if (masterHost.wikiRows?.get(key) === view) masterHost.wikiRows.delete(key);
@@ -3216,6 +3256,11 @@ export function attach(textarea, host, original, codeTokens) {
     // Whether the list of a view (this one, or a row's) is shown and takes
     // its keys, for the browser tests.
     completionReady: (of = view) => completion.ready(of),
+    // Promises of the moment the list of a view (this one, or a row's) has
+    // its answer, and of the moment the list shown takes its keys (false
+    // for no list), for the browser tests.
+    completionAnswered: (of = view) => completion.answered(of),
+    completionTakesKeys: (of = view) => completion.takesKeys(of),
     // Whether the list of a mention's or an emoji's completion is open
     // ("active"), being asked for ("pending"), or neither (""), for the
     // browser tests.

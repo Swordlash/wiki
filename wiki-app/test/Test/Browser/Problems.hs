@@ -23,13 +23,15 @@ import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
 import Test.Browser.Mount (slugs, startWith)
-import Test.Browser.Text (editorHost, editorSelection, editorText, insertText, listReady, markdown, problemsMarked, setMarkdown)
+import Test.Browser.Outside (untilFound)
+import Test.Browser.Text (completionAnswered, editorHost, editorSelection, editorText, insertText, markdown, problemsMarked, setMarkdown, untilListTakesKeys)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Editor.Browser (showProblems)
 import Wiki.App.Editor.Problems (ProblemRange (..))
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
+import Wiki.App.Shell qualified as Shell
 
 $( browserJS
      ["jsbits/test-tooltips.js"]
@@ -40,18 +42,28 @@ $( browserJS
  )
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
-spec m = do
+-- The reads look once, with the program idle. The check of the text runs
+-- after a counted pause ('H.delayCounted'), as the preview and its islands
+-- do, so a read of the problems after an edit comes after a 'waitQuiet'.
+-- The group is not read at quiet: one read is of CodeMirror's marks mapped
+-- through a keystroke before the check after it, and every read after an
+-- edit would sit out the editor's pause before it saves a draft. CodeMirror
+-- opens its hover tooltips and its completion's list on timers of its own,
+-- which the program does not know of: those are waited for by the page's
+-- change ('untilFound') and by CodeMirror's answer ('completionAnswered').
+spec m = readsOnce Idle $ do
   it "marks a diagram Mermaid cannot parse on the fence's lines, and no longer once it is fixed" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     sideBySide ui
     let broken = "# Hello, world\n\nA diagram:\n\n```mermaid\ngraph LR\n  a -->\n```\n\nAfter."
     setMarkdown ui broken
-    -- Mermaid's bundle is fetched the first time a diagram is drawn.
-    _ <- eventuallyWithin 15000 (find ui ".editor-preview .wiki-mermaid .wiki-island-error")
-    (start, end, message) <- eventuallyWithin 5000 $ do
-      marked <- problemsMarked ui
-      length marked `shouldBe` 1
-      pure (fromMaybe (0, 0, "") (head marked))
+    -- The check, the preview and its diagram, each after its pause; Mermaid's
+    -- bundle is fetched the first time a diagram is drawn.
+    waitQuiet
+    _ <- find ui ".editor-preview .wiki-mermaid .wiki-island-error"
+    marked <- problemsMarked ui
+    length marked `shouldBe` 1
+    let (start, end, message) = fromMaybe (0, 0, "") (head marked)
     (start, end) `shouldBe` linesOf broken 5 8
     message `shouldSatisfy` (not . T.null)
     -- Underlined in the text, with a mark in the gutter.
@@ -63,8 +75,9 @@ spec m = do
     -- keeps covering: the problem goes once the text is checked again, its
     -- island's source being another.
     insertText ui (snd (linesOf broken 7 7)) " b"
-    eventuallyWithin 15000 $ problemsMarked ui `shouldReturn` []
-    eventually $ length <$> findAll ui ".editor-problems" `shouldReturn` 0
+    waitQuiet
+    problemsMarked ui `shouldReturn` []
+    length <$> findAll ui ".editor-problems" `shouldReturn` 0
     length <$> findAll ui ".editor-cm .cm-lintRange-error" `shouldReturn` 0
 
   -- WP5.108: a publication of the problems computes on the page's thread
@@ -72,64 +85,68 @@ spec m = do
   -- text it read. Given to the editor after a keystroke, they are not
   -- taken, and the marks CodeMirror mapped through the typing stay.
   it "takes problems' marks only for the text it holds, keeping its own mapped through the typing for any other" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     let broken = "# Hello, world\n\n[[!nothing]]\n\nAfter."
     setMarkdown ui broken
-    marked <- eventuallyWithin 15000 $ do
-      found <- problemsMarked ui
-      length found `shouldBe` 1
-      pure found
-    -- Two characters typed before the marker: the mark moves with it.
+    waitQuiet
+    marked <- problemsMarked ui
+    length marked `shouldBe` 1
+    -- Two characters typed before the marker: the mark moves with it. Read
+    -- at once, before the check after the keystroke's pause.
     insertText ui (T.length "# Hello, world\n\n") "ab"
     let moved = [(a + 2, b + 2, message) | (a, b, message) <- marked]
     problemsMarked ui `shouldReturn` moved
     host <- editorHost ui
     let range = ProblemRange {from = 0, to = 3, kind = "marker", severity = "error", message = "Of the text before."}
     -- Ranges of the text before the keystroke: not taken.
-    unsafeIOToPageM (showProblems host broken [range]) `shouldReturn` False
+    perform (showProblems host broken [range]) `shouldReturn` False
     problemsMarked ui `shouldReturn` moved
     -- Ranges of the text the editor holds: taken. (What is marked then
     -- is not compared: the check after the keystroke's pause marks the
     -- text again.)
     now <- markdown ui
-    unsafeIOToPageM (showProblems host now [range]) `shouldReturn` True
+    perform (showProblems host now [range]) `shouldReturn` True
 
   it "marks a formula KaTeX cannot parse on its line, with KaTeX's message, and the preview still shows it in red" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     sideBySide ui
     let broken = "# Hello, world\n\nFirst line.\nHalf: $\\frac{1}$ here."
     setMarkdown ui broken
+    -- The preview and the check, each after its pause.
+    waitQuiet
     _ <- find ui ".editor-preview .wiki-math-inline .katex-error"
-    marked <- eventually $ do
-      found <- problemsMarked ui
-      length found `shouldBe` 1
-      pure found
+    marked <- problemsMarked ui
+    length marked `shouldBe` 1
     [(start, end) | (start, end, _) <- marked] `shouldBe` [linesOf broken 4 4]
     [message | (_, _, message) <- marked] `shouldSatisfy` all (T.isPrefixOf "KaTeX parse error")
     insertText ui (fst (linesOf broken 4 4) + T.length "Half: $\\frac{1}") "{2}"
-    eventually $ problemsMarked ui `shouldReturn` []
+    waitQuiet
+    problemsMarked ui `shouldReturn` []
 
   it "marks a formula's failure again once the text is undone back to what the hidden preview still shows" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     sideBySide ui
     let broken = "# Hello, world\n\nFirst line.\nHalf: $\\frac{1}$ here."
         formula = (linesOf broken 4 4, "KaTeX parse error")
         markedAs = map (\(start, end, message) -> ((start, end), T.take 17 message))
     setMarkdown ui broken
+    waitQuiet
     _ <- find ui ".editor-preview .wiki-math-inline .katex-error"
-    eventually $ markedAs <$> problemsMarked ui `shouldReturn` [formula]
+    markedAs <$> problemsMarked ui `shouldReturn` [formula]
     -- The preview hidden keeps the text it drew, the broken formula in it.
     find ui ".editor-side-by-side" >>= click
     find ui ".editor-side-by-side" >>= \b -> getAttribute b "aria-pressed" `shouldReturn` Just "false"
     -- An escaped dollar: the formula is text, and the check marks nothing.
     insertText ui (fst (linesOf broken 4 4) + T.length "Half: ") "\\"
-    eventually $ problemsMarked ui `shouldReturn` []
-    eventually $ length <$> findAll ui ".editor-problems" `shouldReturn` 0
+    waitQuiet
+    problemsMarked ui `shouldReturn` []
+    length <$> findAll ui ".editor-problems" `shouldReturn` 0
     -- Undone, the text is the one the preview shows, and the formula's
     -- failure is marked again, though its island never reported it again.
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` broken
-    eventually $ markedAs <$> problemsMarked ui `shouldReturn` [formula]
+    markdown ui `shouldReturn` broken
+    waitQuiet
+    markedAs <$> problemsMarked ui `shouldReturn` [formula]
     -- Shown again, the preview has nothing new to draw, and the mark stays.
     sideBySide ui
     find ui ".editor-preview .wiki-math-inline .katex-error" >>= (`shouldHaveText` "\\frac{1}")
@@ -137,71 +154,82 @@ spec m = do
     find ui ".editor-problems" >>= (`shouldHaveText` "1 problem")
 
   it "marks a spoiler that is not closed, without the preview, until it is closed" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     let broken = "# Hello, world\n\n[[!spoiler]]{answer}(The answer)\nForty-two."
     setMarkdown ui broken
-    eventually $ problemsMarked ui `shouldReturn` [(fst (linesOf broken 3 3), snd (linesOf broken 3 3), "Spoiler “answer” is not closed: add [[/spoiler]]{answer}")]
+    waitQuiet
+    problemsMarked ui `shouldReturn` [(fst (linesOf broken 3 3), snd (linesOf broken 3 3), "Spoiler “answer” is not closed: add [[/spoiler]]{answer}")]
     find ui ".editor-problems" >>= (`shouldHaveText` "1 problem")
     insertText ui (T.length broken) "\n[[/spoiler]]{answer}"
-    eventually $ problemsMarked ui `shouldReturn` []
+    waitQuiet
+    problemsMarked ui `shouldReturn` []
 
   it "counts the problems, and goes to the next one at each click on the count" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     let text = "# Hello, world\n\n> [!]\n> Not a box.\n\nBetween.\n\n[[!nothing]]\n\nAfter."
     setMarkdown ui text
-    eventually $ find ui ".editor-problems" >>= (`shouldHaveText` "2 problems")
-    eventually $ length <$> problemsMarked ui `shouldReturn` 2
+    waitQuiet
+    find ui ".editor-problems" >>= (`shouldHaveText` "2 problems")
+    length <$> problemsMarked ui `shouldReturn` 2
     find ui ".editor-problems" >>= click
-    eventually $ editorSelection ui `shouldReturn` linesOf text 3 3
+    editorSelection ui `shouldReturn` linesOf text 3 3
     find ui ".editor-problems" >>= click
-    eventually $ editorSelection ui `shouldReturn` linesOf text 8 8
+    editorSelection ui `shouldReturn` linesOf text 8 8
     -- After the last, the first again.
     find ui ".editor-problems" >>= click
-    eventually $ editorSelection ui `shouldReturn` linesOf text 3 3
+    editorSelection ui `shouldReturn` linesOf text 3 3
 
   it "draws the box of a warning and of an error, the completion's list and a snippet's place, in colours that can be read, in the light and the dark scheme" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     -- A marker only a presentation reads, in a document, is a warning; a
     -- spoiler not closed is an error.
     let text = "# Hello, world\n\n[[!pause]]\n\n[[!spoiler]]{answer}(The answer)\nForty-two."
     for_ [False, True] $ \dark -> do
       setMarkdown ui text
-      eventually $ length <$> problemsMarked ui `shouldReturn` 2
-      unsafeIOToPageM (js_dark_scheme dark) `shouldReturn` True
+      waitQuiet
+      length <$> problemsMarked ui `shouldReturn` 2
+      perform (js_dark_scheme dark) `shouldReturn` True
       -- The box each mark in the text opens when hovered.
       for_ ["warning", "error"] $ \severity -> do
         -- The mark, then one move over it: each move starts CodeMirror's
-        -- wait for a resting mouse again.
+        -- wait for a resting mouse again, on its own timer, after which it
+        -- opens the box.
         _ <- find ui (".editor-cm .cm-content .cm-lintRange-" <> severity)
-        unsafeIOToPageM (js_hover (toJSText (".cm-content .cm-lintRange-" <> severity))) `shouldReturn` True
-        _ <- find ui (".cm-tooltip-hover .cm-tooltip-lint .cm-diagnostic-" <> severity)
+        perform (js_hover (toJSText (".cm-content .cm-lintRange-" <> severity))) `shouldReturn` True
+        untilFound (".cm-tooltip-hover .cm-tooltip-lint .cm-diagnostic-" <> severity)
         readable (".cm-tooltip-hover .cm-tooltip-lint .cm-diagnostic-" <> severity <> " .cm-diagnosticText")
       -- The box a mark in the gutter opens, a tooltip of its own.
-      unsafeIOToPageM (js_hover (toJSText (".cm-gutter-lint .cm-lint-marker-warning" :: Text))) `shouldReturn` True
-      _ <- find ui ".cm-tooltip.cm-tooltip-lint .cm-diagnostic-warning"
+      perform (js_hover (toJSText (".cm-gutter-lint .cm-lint-marker-warning" :: Text))) `shouldReturn` True
+      untilFound ".cm-tooltip.cm-tooltip-lint .cm-diagnostic-warning"
       readable ".cm-tooltip.cm-tooltip-lint .cm-diagnostic-warning .cm-diagnosticText"
       -- The completion's list: the entry Enter would choose, and another.
       markdown ui >>= \now -> insertText ui (T.length now) "\n\n"
       editorText ui >>= (`typeText` ":ta")
+      completionAnswered ui `shouldReturn` "active"
       _ <- find ui ".cm-tooltip.cm-tooltip-autocomplete li[aria-selected] .cm-completionLabel"
       readable ".cm-tooltip-autocomplete li[aria-selected] .cm-completionLabel"
       readable ".cm-tooltip-autocomplete li:not([aria-selected]) .cm-completionLabel"
       press "Escape"
-      eventually $ length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+      length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
       -- A snippet's place to fill, the completion of a marker chosen.
       markdown ui >>= \now -> insertText ui (T.length now) "\n\n"
       editorText ui >>= (`typeText` "[[!sp")
-      listReady ui
+      untilListTakesKeys ui
       press "Enter"
       readable ".cm-snippetField"
   where
     helloEditor = EditPage (slugs ["blog"]) (slugs ["hello-world"])
+    -- Hello, world in the editor. CodeMirror's attach is waited for in a
+    -- fork, which only quiet covers: nothing is typed yet, so quiet costs
+    -- no pause of the draft.
+    editing :: PageM s (Mounted s Shell.Query Void m)
+    editing = fst <$> startWith m (Just "user-editor") helloEditor <* waitQuiet
 
 -- | That the text of the first element the selector finds in the editor
 -- has a contrast ratio of at least 4.5 against what is drawn behind it
 -- (WCAG's AA for text), as test/jsbits/test-tooltips.js computes it.
 readable :: Text -> PageM s ()
-readable selector = eventually $ do
+readable selector = do
   json <- unsafeIOToPageM (fromJSText <$> js_contrast (toJSText selector))
   case decodeStrict (encodeUtf8 json) >>= parseMaybe (withObject "Contrast" (.: "ratio")) of
     Just (ratio :: Double) | ratio >= 4.5 -> pass

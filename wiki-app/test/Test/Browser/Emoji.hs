@@ -13,14 +13,19 @@ import Data.Text qualified as T
 import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
-import Test.Browser.Mount (slugs, startChanged)
-import Test.Browser.Text (clearBody, completing, editorText, markdown, setMarkdown)
+import Test.Browser.Mount (slugs, startChanged, startChangedWith)
+import Test.Browser.Text (clearBody, completionAnswered, editorText, markdown, setMarkdown, untilListTakesKeys)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
-import Wiki.App.Backend.Mem.State (insertUser)
+import Wiki.App.Backend (MonadWiki (..))
+import Wiki.App.Backend.Mem (runMemWiki)
+import Wiki.App.Backend.Mem.State (MemState, insertUser)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
+import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Id (UserId (..))
+import Wiki.Core.Page (Page (body))
+import Wiki.Core.Space (Space (id))
 import Wiki.Core.User (Login (..), User (..))
 
 -- Which element has the focus: test/jsbits/test-focus.js. The style sheet's
@@ -42,9 +47,15 @@ $( browserJS
  )
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
-spec m = do
+-- The reads look once, with the program idle: a group that types into the
+-- editor cannot read at quiet, which would sit out the editor's pause
+-- before it saves a draft after each key. The completion's list comes on
+-- CodeMirror's own timer, which the program does not know of: a read of it
+-- waits for CodeMirror's answer first ('completionAnswered',
+-- 'untilListTakesKeys').
+spec m = readsOnce Idle $ do
   it "opens a list after a colon that starts a word, narrows it as the name is typed, and writes the shortcode chosen" $ runPage $ do
-    ui <- startChanged m identity (Just "user-editor") helloEditor
+    ui <- editing identity
     text <- editorText ui
     clearBody ui
     typeText text "Done :ta"
@@ -55,7 +66,8 @@ spec m = do
     -- Each entry shows its emoji before its name.
     (findAllIn shown ".cm-completionEmoji" >>= traverse textContent) >>= (`shouldSatisfy` elem "🎉")
     press "d"
-    eventually $ (find ui ".cm-tooltip-autocomplete" >>= \l -> findAllIn l ".cm-completionLabel" >>= traverse textContent) `shouldReturn` [":tada:"]
+    completionAnswered ui `shouldReturn` "active"
+    (find ui ".cm-tooltip-autocomplete" >>= \l -> findAllIn l ".cm-completionLabel" >>= traverse textContent) `shouldReturn` [":tada:"]
     _ <- listShown ui
     press "Enter"
     markdown ui `shouldReturn` "# Hello, world\n\nDone :tada:"
@@ -73,7 +85,7 @@ spec m = do
     markdown ui `shouldReturn` "# Hello, world\n\nDone :tada:\n:rocket: a:b at 10:30"
 
   it "takes Enter as a new line after a colon alone or one letter, closes on what no name has, and opens nowhere in code or math" $ runPage $ do
-    ui <- startChanged m identity (Just "user-editor") helloEditor
+    ui <- editing identity
     text <- editorText ui
     clearBody ui
     -- The list is open on the colon alone, with the common emoji, and
@@ -145,7 +157,7 @@ spec m = do
     noCompletion ui
 
   it "escapes the colon on Escape, as one step that undo takes back, and completes mentions beside emoji" $ runPage $ do
-    ui <- startChanged m withAnna (Just "user-editor") helloEditor
+    ui <- editing withAnna
     text <- editorText ui
     clearBody ui
     typeText text "Ship :ta"
@@ -155,7 +167,7 @@ spec m = do
     markdown ui `shouldReturn` "# Hello, world\n\nShip \\:ta"
     noCompletion ui
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` "# Hello, world\n\nShip :ta"
+    markdown ui `shouldReturn` "# Hello, world\n\nShip :ta"
     -- Mentions complete in the same editor, and Escape on their list
     -- leaves the text as typed.
     press "End"
@@ -177,7 +189,7 @@ spec m = do
     markdown ui `shouldReturn` "# Hello, world\n\nShip :ta to @anna x:roc :rocket:"
 
   it "writes a bulleted item for -: at the start of a line, and not in a table's delimiter row" $ runPage $ do
-    ui <- startChanged m identity (Just "user-editor") helloEditor
+    ui <- editing identity
     text <- editorText ui
     clearBody ui
     typeText text "-:bug"
@@ -217,44 +229,51 @@ spec m = do
     markdown ui `shouldReturn` "# Hello, world\n\n| a | b |\n|:-:|-:"
 
   it "inserts the emoji chosen in the toolbar's menu at the cursor, by a click or the keys, and closes the menu" $ runPage $ do
-    ui <- startChanged m identity (Just "user-editor") helloEditor
+    (ui, wiki) <- startChangedWith m identity (Just "user-editor") helloEditor
+    waitQuiet
+    -- The page's text as the wiki stores it: what the last save wrote.
+    let stored = unsafeIOToPageM . runMemWiki wiki $ do
+          blog <- either (panic . show) identity <$> getSpace (slugs ["blog"])
+          hello <- either (panic . show) identity <$> getPage blog.id (slugs ["hello-world"])
+          pure hello.body
+    opened <- stored
     text <- editorText ui
     clearBody ui
     typeText text "Launch "
     find ui emojiButton >>= click
-    eventually (focusedIs ".emoji-search" `shouldReturn` True)
+    focusedIs ".emoji-search" `shouldReturn` True
     -- The common ones before anything is typed, then those that match.
     (findAll ui ".emoji-choice" >>= traverse (`getAttribute` "aria-label")) >>= (`shouldSatisfy` elem (Just "tada"))
     find ui ".emoji-search" >>= (`typeText` "rocke")
-    eventually $ (findAll ui ".emoji-choice" >>= traverse (`getAttribute` "aria-label")) `shouldReturn` [Just "rocket"]
+    (findAll ui ".emoji-choice" >>= traverse (`getAttribute` "aria-label")) `shouldReturn` [Just "rocket"]
     find ui ".emoji-choice" >>= \b -> getAttribute b "title" `shouldReturn` Just ":rocket:"
     find ui ".emoji-choice" >>= click
-    eventually $ length <$> findAll ui ".emoji-menu" `shouldReturn` 0
+    length <$> findAll ui ".emoji-menu" `shouldReturn` 0
     markdown ui `shouldReturn` "# Hello, world\n\nLaunch :rocket:"
     -- Enter in the field takes the first found.
     find ui emojiButton >>= click
-    eventually (focusedIs ".emoji-search" `shouldReturn` True)
+    focusedIs ".emoji-search" `shouldReturn` True
     find ui ".emoji-search" >>= (`typeText` "tada")
-    eventually $ length <$> findAll ui ".emoji-choice" `shouldReturn` 1
+    length <$> findAll ui ".emoji-choice" `shouldReturn` 1
     press "Enter"
-    eventually $ length <$> findAll ui ".emoji-menu" `shouldReturn` 0
+    length <$> findAll ui ".emoji-menu" `shouldReturn` 0
     markdown ui `shouldReturn` "# Hello, world\n\nLaunch :rocket::tada:"
     -- The arrows move through the grid, eight to a row, and up from the
     -- first row back to the field; Enter on an emoji chooses it.
     find ui emojiButton >>= click
-    eventually (focusedIs ".emoji-search" `shouldReturn` True)
+    focusedIs ".emoji-search" `shouldReturn` True
     press "ArrowDown"
-    eventually (focusedIs ".emoji-choice[data-index='0']" `shouldReturn` True)
+    focusedIs ".emoji-choice[data-index='0']" `shouldReturn` True
     press "ArrowUp"
-    eventually (focusedIs ".emoji-search" `shouldReturn` True)
+    focusedIs ".emoji-search" `shouldReturn` True
     press "ArrowDown"
     press "ArrowDown"
-    eventually (focusedIs ".emoji-choice[data-index='8']" `shouldReturn` True)
+    focusedIs ".emoji-choice[data-index='8']" `shouldReturn` True
     press "ArrowUp"
     press "ArrowRight"
-    eventually (focusedIs ".emoji-choice[data-index='1']" `shouldReturn` True)
+    focusedIs ".emoji-choice[data-index='1']" `shouldReturn` True
     press "Enter"
-    eventually $ length <$> findAll ui ".emoji-menu" `shouldReturn` 0
+    length <$> findAll ui ".emoji-menu" `shouldReturn` 0
     markdown ui `shouldReturn` "# Hello, world\n\nLaunch :rocket::tada::tada:"
     -- A name nothing has: the menu says so.
     find ui emojiButton >>= click
@@ -270,7 +289,7 @@ spec m = do
     -- Nor with an emoji found: Shift+Enter in the field chooses nothing.
     find ui ".emoji-search" >>= clear
     find ui ".emoji-search" >>= (`typeText` "bug")
-    eventually $ length <$> findAll ui ".emoji-choice" `shouldReturn` 1
+    length <$> findAll ui ".emoji-choice" `shouldReturn` 1
     press "Shift+Enter"
     unsafeIOToPageM js_last_key_prevented >>= (`shouldBe` True)
     _ <- find ui ".emoji-menu"
@@ -280,39 +299,40 @@ spec m = do
     _ <- find ui ".emoji-menu"
     -- Shift+Enter on an emoji chooses it, as a click does.
     press "ArrowDown"
-    eventually (focusedIs ".emoji-choice[data-index='0']" `shouldReturn` True)
+    focusedIs ".emoji-choice[data-index='0']" `shouldReturn` True
     press "Shift+Enter"
-    eventually $ length <$> findAll ui ".emoji-menu" `shouldReturn` 0
+    length <$> findAll ui ".emoji-menu" `shouldReturn` 0
     markdown ui `shouldReturn` "# Hello, world\n\nLaunch :rocket::tada::tada::bug:"
-    -- No save happened meanwhile.
-    unsafeIOToPageM (threadDelay 300_000)
-    find ui ".editor-saved-notice" >>= (`shouldHaveText` "")
+    -- No save happened meanwhile: once its request would have been
+    -- answered, the wiki would store the text typed since.
+    waitQuiet
+    stored >>= (`shouldBe` opened)
 
   it "scrolls the emoji's grid to the entry the arrows reach, down to the last row and back up" $ runPage $ do
-    ui <- startChanged m identity (Just "user-editor") helloEditor
+    ui <- editing identity
     _ <- editorText ui
     find ui emojiButton >>= click
-    eventually (focusedIs ".emoji-search" `shouldReturn` True)
+    focusedIs ".emoji-search" `shouldReturn` True
     -- Fifty found, more rows than the grid shows at once.
     find ui ".emoji-search" >>= (`typeText` "s")
-    eventually $ length <$> findAll ui ".emoji-choice" `shouldReturn` 50
+    length <$> findAll ui ".emoji-choice" `shouldReturn` 50
     press "ArrowDown"
     replicateM_ 6 (press "ArrowDown")
-    eventually (focusedIs ".emoji-choice[data-index='48']" `shouldReturn` True)
-    eventually $ seen ".emoji-choice[data-index='48']" `shouldReturn` True
+    focusedIs ".emoji-choice[data-index='48']" `shouldReturn` True
+    seen ".emoji-choice[data-index='48']" `shouldReturn` True
     press "ArrowRight"
-    eventually (focusedIs ".emoji-choice[data-index='49']" `shouldReturn` True)
+    focusedIs ".emoji-choice[data-index='49']" `shouldReturn` True
     seen ".emoji-choice[data-index='49']" `shouldReturn` True
     -- Back up: the first row is seen again, then the field has the focus.
     press "ArrowLeft"
     replicateM_ 6 (press "ArrowUp")
-    eventually (focusedIs ".emoji-choice[data-index='0']" `shouldReturn` True)
-    eventually $ seen ".emoji-choice[data-index='0']" `shouldReturn` True
+    focusedIs ".emoji-choice[data-index='0']" `shouldReturn` True
+    seen ".emoji-choice[data-index='0']" `shouldReturn` True
     press "ArrowUp"
-    eventually (focusedIs ".emoji-search" `shouldReturn` True)
+    focusedIs ".emoji-search" `shouldReturn` True
 
   it "keeps the toolbar's menus inside a narrow screen, the emoji's grid moving by rows as before" $ runPage $ do
-    ui <- startChanged m identity (Just "user-editor") helloEditor
+    ui <- editing identity
     _ <- editorText ui
     -- The editor as narrow as a phone's screen (375 pixels).
     unsafeIOToPageM (js_set_style (toJSText ".editor-form") (toJSText "max-width") (toJSText "375px"))
@@ -326,13 +346,13 @@ spec m = do
       sideways <- unsafeIOToPageM js_sideways
       (name, sideways) `shouldBe` (name, 0)
       press "Escape"
-      eventually $ length <$> findAll ui ".toolbar-menu" `shouldReturn` 0
+      length <$> findAll ui ".toolbar-menu" `shouldReturn` 0
     -- The emoji's grid still has eight to a row.
     find ui emojiButton >>= click
-    eventually (focusedIs ".emoji-search" `shouldReturn` True)
+    focusedIs ".emoji-search" `shouldReturn` True
     press "ArrowDown"
     press "ArrowDown"
-    eventually (focusedIs ".emoji-choice[data-index='8']" `shouldReturn` True)
+    focusedIs ".emoji-choice[data-index='8']" `shouldReturn` True
     firstBox <- rectOf ".emoji-choice[data-index='0']"
     ninth <- rectOf ".emoji-choice[data-index='8']"
     leftOf ninth `shouldBe` leftOf firstBox
@@ -340,7 +360,7 @@ spec m = do
     unsafeIOToPageM (js_set_style (toJSText ".editor-form") (toJSText "max-width") (toJSText ""))
 
   it "shows a bulleted item that starts with an emoji with the emoji in the bullet's place, and the others with their bullets" $ runPage $ do
-    ui <- startChanged m identity (Just "user-editor") helloEditor
+    ui <- editing identity
     setMarkdown ui "# Hello, world\n\n- :tada: Launch day\n- Write it up\n\nThen:\n\n- [ ] :bug: Fix the crash"
     find ui ".editor-save-close" >>= click
     item <- find ui ".page-view .page-body li.emoji-item"
@@ -376,20 +396,24 @@ spec m = do
     -- The box of an element: left, top, right and bottom.
     rectOf :: Text -> PageM s [Double]
     rectOf selector = mapMaybe (readMaybe . T.unpack) . T.words . fromJSText <$> unsafeIOToPageM (js_rect (toJSText selector))
+    -- The editor of Hello, world as the editor, over the demo changed
+    -- first. CodeMirror's attach is waited for in a fork, which only quiet
+    -- covers: nothing is typed yet, so quiet costs no pause of the draft.
+    editing :: (MemState -> MemState) -> PageM s (Mounted s Shell.Query Void m)
+    editing change = startChanged m change (Just "user-editor") helloEditor <* waitQuiet
     -- The list, open and ready to choose from: the library takes Enter and
-    -- Tab only once the list has been open for 75 ms (its
-    -- interactionDelay), so a wait of more than that after seeing it is
-    -- always enough (Test.Browser.Editor's mentions do the same).
+    -- Tab only once the list has been open for a moment (its
+    -- interactionDelay).
     listShown ui = do
-      eventually (completing ui `shouldReturn` "active")
-      shown <- find ui ".cm-tooltip-autocomplete"
-      unsafeIOToPageM (threadDelay 100_000)
-      pure shown
+      untilListTakesKeys ui
+      find ui ".cm-tooltip-autocomplete"
     -- No list opens: the source was asked and opened nothing.
     noCompletion ui = do
-      eventually (completing ui `shouldReturn` "")
+      completionAnswered ui `shouldReturn` ""
       length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
-    closed ui = eventually $ length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    -- The list is closed, and no other asked for: what closes it (a
+    -- choice, Escape, a character no name has) may ask the sources again.
+    closed = noCompletion
     -- Type text this many characters before the end of the line.
     typeBeforeEnd n keys = do
       press "End"

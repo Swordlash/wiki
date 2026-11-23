@@ -56,6 +56,29 @@ function wiki_test_editor_completion_ready() {
   return wikiTestEditor()?.completionReady() ?? false;
 }
 
+// Wait until the open editor's completion has its answer: the library asks
+// its sources on a timer of its own after the last key, and the answer
+// ends its "pending" (web/src/editor.js's answered). Then the status, as
+// wiki_test_editor_completing gives it; "pending" still at the deadline
+// `ms`, the suite's watchdog, and "no editor" without one.
+function wiki_test_editor_completion_answered(ms) {
+  const editor = wikiTestEditor();
+  if (!editor) return Promise.resolve("no editor");
+  const answered = editor.completionAnswered().then(() => editor.completing());
+  return Promise.race([answered, new Promise((resolve) => setTimeout(() => resolve("pending"), ms))]);
+}
+
+// Wait until the open editor's completion has its answer and the list it
+// shows takes its keys (web/src/editor.js's takesKeys): "ready" then, "no
+// list" for an answer that shows none, "pending" at the deadline `ms`, the
+// suite's watchdog, and "no editor" without one.
+function wiki_test_editor_completion_takes_keys(ms) {
+  const editor = wikiTestEditor();
+  if (!editor) return Promise.resolve("no editor");
+  const ready = editor.completionTakesKeys().then((shown) => (shown ? "ready" : "no list"));
+  return Promise.race([ready, new Promise((resolve) => setTimeout(() => resolve("pending"), ms))]);
+}
+
 // Make the open editor's text this, as one edit, with the cursor at its
 // start.
 function wiki_test_editor_set(text) {

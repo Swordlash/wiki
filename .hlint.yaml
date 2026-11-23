@@ -23,7 +23,6 @@
     within:
       # The browser suite (wiki-app-browser-test): 24 uses.
       - Test.Browser.Editor
-      - Test.Browser.Emoji
       - Test.Browser.Encrypted
       - Test.Browser.Folds
       - Test.Browser.Policy

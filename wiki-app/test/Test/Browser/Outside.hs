@@ -5,7 +5,9 @@
 -- wiki's own makes when the browser tells it something (@jsbits/toc.js@
 -- marks the section being read when an @IntersectionObserver@ calls it; a
 -- code block's copy button says "Copied" when the clipboard's promise
--- settles, and goes back by a timer of its own), and a CSS transition.
+-- settles, and goes back by a timer of its own), a CSS transition, and an
+-- element a library draws on a timer of its own (CodeMirror's hover
+-- tooltips).
 --
 -- Each wait hangs on the browser's own signal (a @MutationObserver@'s
 -- records, an animation's @finished@ promise), not on a clock, and is named
@@ -16,6 +18,7 @@ module Test.Browser.Outside
   ( watchdogMs
   , untilAttribute
   , untilTransitionsDone
+  , untilFound
   )
 where
 
@@ -28,6 +31,7 @@ $( browserJS
      ["jsbits/test-outside.js"]
      [ ("js_until_attributePromise", "wiki_test_until_attribute", Safe, [t|JSText -> JSText -> Bool -> JSText -> Int -> IO (Promise Bool)|])
      , ("js_transitions_donePromise", "wiki_test_transitions_done", Safe, [t|JSText -> Int -> IO (Promise Bool)|])
+     , ("js_until_foundPromise", "wiki_test_until_found", Safe, [t|JSText -> Int -> IO (Promise Bool)|])
      ]
  )
 
@@ -36,6 +40,9 @@ js_until_attribute a1 a2 a3 a4 a5 = if inBrowser then wait =<< js_until_attribut
 
 js_transitions_done :: JSText -> Int -> IO Bool
 js_transitions_done a1 a2 = if inBrowser then wait =<< js_transitions_donePromise a1 a2 else pure inert
+
+js_until_found :: JSText -> Int -> IO Bool
+js_until_found a1 a2 = if inBrowser then wait =<< js_until_foundPromise a1 a2 else pure inert
 
 -- | The suite's watchdog, in milliseconds: how long a wait here hangs
 -- before it fails. It stands against a hang, not for how fast the page
@@ -60,3 +67,13 @@ untilTransitionsDone selector = do
   done <- unsafeIOToPageM (js_transitions_done (toJSText selector) watchdogMs)
   unless done . expectationFailure $
     "after " <> show watchdogMs <> " ms, the transitions of " <> selector <> " had not finished, or there was no such element"
+
+-- | Wait until a selector finds an element in the page: at once when it
+-- does already, else on the change of the page that adds it. For what a
+-- library draws on a timer of its own, which the program does not know of
+-- (CodeMirror's hover tooltips, once the mouse has rested).
+untilFound :: (HasCallStack) => Text -> PageM s ()
+untilFound selector = do
+  came <- unsafeIOToPageM (js_until_found (toJSText selector) watchdogMs)
+  unless came . expectationFailure $
+    "after " <> show watchdogMs <> " ms, nothing in the page matched " <> selector

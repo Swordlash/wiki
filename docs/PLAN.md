@@ -2145,17 +2145,42 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   Not exact there: `countHeld` compares counts, so a held request
   whose view is gone hides one other fiber's wait (the loop over
   views closed while their fetch is held; the grant released as the
-  reader leaves). Next, by the measure's count of retried sites:
-  `SlideEditor.hs`, `Http.hs`, `Problems.hs`, `Complete.hs`. The
+  reader leaves). **The checker's, the completion's, the emoji and
+  the persistence groups are moved (#346)**, 84 `eventually`s down to
+  none, the emoji group's two `threadDelay`s gone. The completion's
+  pause is CodeMirror's own timer: `web/src/editor.js` gives two
+  promises the tests wait on (`completionAnswered`,
+  `completionTakesKeys`; the second waits out the library's 75 ms
+  before the list takes keys, the one timed wait left). Found there:
+  the emoji group's "nothing was saved" could not fail (it read a
+  notice already taken away), and compares the stored text now. Seen
+  and left: in an `Idle` group the first read after a mount can come
+  before CodeMirror is attached (the attach is waited for in a fork,
+  which only quiet covers); the moved examples do one `waitQuiet`
+  after their start, the editor's group (#329) may still have the
+  exposure. **The slide editor's group is being moved** (branch
+  `slide-editor-reads-once`, 363 `eventually`s down to 18); found
+  there and not yet explained: "brings a slide deleted open back
+  open" read the row closed once. Not moved yet: `Http.hs`,
+  `EditorSearch.hs`, the editor's remaining `eventually`s. The
   suite got slower with these moves (about 470 to 510 s on a normal
   hosted runner; a quiet wait sits out the editor's two-second
   draft), and on a slow runner it passed the runner's limit of 600 s
   for a whole run with no example at fault: the limit is 1800 s now
   (#335, `HSPEC_HALOGEN_TIMEOUT` in the wrapper), and the two pages
-  are uneven (the second gets about 85 s more work). Then the library's
-  `quiet-under-test-clock` (two commits, local only, in the stopped
-  builder's library worktree) so that it does not.** What is left,
-  each a
+  are uneven (the second gets about 85 s more work). **Open in the
+  library: pull request 147, `quiet-under-test-clock`**: a counted
+  pause asleep on a test's clock is rest (`Activity.asleep`,
+  `sleeping`, `describeSleeping`), so a quiet wait no longer sits out
+  the editor's two-second draft; the test moves the clock
+  (`withTestClock`, `advance`). The wiki's branch
+  `editor-under-test-clock` bumps the pin and puts the editor's group
+  under the test's clock: 252.6 s down to 134.8 s at equal load, 44
+  `eventually`s down to 30. Its pull request is opened when 147 is
+  merged. Seen in the library and left: Playwright's own test "the
+  DevTools protocol slows a page's processor down" depends on the
+  machine's speed (it failed at a load of 40 on 16 cores).** What is
+  left, each a
   package or a part of one: the assistant's "keeps the text's
   selection in sight…" failed in every nightly run: **fixed (#321),
   a fault of the test**: it set no scripted provider and passed only
@@ -2195,9 +2220,21 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   said `http://` on a wiki served over `https://`; the refusal now
   names both origins and where the expected one comes from, and a
   default port written out no longer refuses every passkey (#341).
-  Left there: the WebSocket upgrade's origin check (`Events.hs`)
-  compares host and port as text, so a forwarded `host:443` or a host
-  passed on without its port refuses the live channel. #339 ("Draft
+  The same mechanism in the live channel is fixed too (#348): the
+  WebSocket upgrade compared `Origin` with `Host` as text, so a
+  forwarded `host:443`, a host in capitals or a proxy rewriting
+  `Host` lost comments and notifications live. One `Origin` (scheme,
+  lower-case host, effective port; `Wiki.Server.Address`) serves the
+  passkeys and the channel, and the upgrade takes either of the
+  wiki's own origins: the request's, or the public address's. The
+  scheme is compared now, so a proxy that ends TLS without
+  `X-Forwarded-Proto`, on a wiki with no public address set, loses
+  the live channel until one of the two is set. For the owner: whether
+  the check of requests that change something (`sameOrigin`) should
+  compare the address too; today it compares none, and doing so
+  refuses saves behind a proxy with wrong headers (branch
+  `same-origin-compares-address`, no pull request; the session's
+  advice is no). #339 ("Draft
   saved" over the search's buttons): fixed (#343), the notices hang
   under the search's panel while it is open. #340 (the user's
   settings on a page of their own, the menu under the login keeping
@@ -2235,21 +2272,47 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   sign-in in the browser, a user with passkeys only cannot use this
   cut. Seen and left: the request log's principal is the cookie's
   user, never the Basic user; a `PUT`'s body has no size limit, as
-  the editor's save has none; the wiki's front page has no address.
+  the editor's save has none; the wiki's front page has no address;
+  saving a page of 150 to 275 kB takes seconds (seen 2026-11-23, not
+  looked into).
   **Listing and search are merged too (#342):** `GET /api/list/` and
   `/api/list/s/<space…>/` give the tree the user may read (`?depth=N`
   cuts it), `GET /api/search?q=…` (`&space=`, `&limit=`) runs the
   application's search; both through the application's own domain
   calls and the same sign-in (`signedInBasic`); not under
-  `/api/markdown`, the owner's word, since they return JSON. **What
-  is left is the owner's issue #338**, in this order unless he says
-  otherwise: creating a page with a title and creating a space; a
-  page's table of contents and one section of it (his open question,
-  the text between `# title` and the first `##`: the session's
-  answer, the title's own section, to the next heading of any level,
-  with the subsections on a parameter); API keys made in the user's
-  panel, with an expiry date and rights (read, write, admin), shown
-  once, the server keeping a hash; the handlers moved to
+  `/api/markdown`, the owner's word, since they return JSON.
+  **Creating is merged (#344):** a `PUT` of Markdown to a free page
+  address creates the page there (`?title=`, `?kind=`; `If-None-Match:
+  *` only creates, `If-Match` never does; 201 with `Location` and the
+  `ETag`), and `PUT /api/list/s/<space…>/` creates a space, never
+  changes one. The caller names the address, so the storage takes an
+  asked-for slug (`createPageAt`, `createSpaceAt`), refused when a
+  sibling has it. **What is left is the owner's issue #338**, in this
+  order unless he says otherwise. **A page's table of contents and
+  one section of it: open (#347)**, `GET /api/contents/…` and
+  `?section=<anchor>` (`&own=true` without the subsections; the text
+  before the first heading by `?top=true`). **The owner's rule for
+  spoilers (2026-11-23):** a section never crosses a spoiler's edge:
+  either the whole section is inside the spoiler, where it may have
+  subsections of its own, or a spoiler in a section's text has no
+  sections in it; the headings inside a spoiler form an outline
+  confined to it. **Writing one section, after #347, a small pull
+  request, his decisions of the same day:** the server adds a final
+  newline; a write that changes the sections outside its own slice is
+  refused (422); a body may change its own heading, and the answer
+  gives the new anchor; a section inside a spoiler may be written.
+  **A shell client: open (#345)**, `clients/wiki.sh`, POSIX sh with
+  `curl` only (the owner: Copilot at his work must reach the wiki
+  locally, by a shell script rather than a compiled client); it lists,
+  searches, reads, writes and creates, remembers the version it read
+  so that every write is conditional, and with `jq` is also a local
+  MCP server over standard input (`wiki.sh mcp`); it sends
+  `WIKI_TOKEN` as a Bearer key already. `shellcheck` runs with its
+  test, and is required in CI. **API keys, the server's side: being
+  built** (branch `api-keys`): made by the user, with an expiry date
+  and rights (read, write, admin), shown
+  once, the server keeping a hash; their panel goes into the settings
+  page of #340 once both are merged. Then the handlers moved to
   servant-server, and with that an OpenAPI description of the API
   generated from its servant type (the owner, 2026-11-23:
   "servant-openapi3"), served by the wiki and checked in a test

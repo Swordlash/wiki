@@ -2871,15 +2871,23 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   keeps the page's version in a file of its own under
   `~/.local/state/wiki/` (`WIKI_STATE_DIR` names another directory), by the
   wiki's address and the page's:
-  `~/.local/state/wiki/https_wiki.example/s/team/p/on-call/_version`. With no
-  version known, `put` refuses to write blind; `--force` writes without one.
+  `~/.local/state/wiki/https_wiki.example/s/team/p/on-call/_version`. A
+  version is remembered only once its text was written out whole (a `get`
+  into a file it cannot write remembers nothing) or the wiki accepted the
+  write, and then in the state file and in the file's `.version` together,
+  however the version sent was chosen. With no version known, `put` refuses
+  to write blind; `--force` writes without one.
 - **`wiki.sh reference`** prints the Markdown reference, `--sections` the list
   of its sections, and `wiki.sh reference Math` one of them.
 
-`PAGE` is a page's address as the wiki writes it, `/s/team/projects/p/the-wiki/`
-(a space's home page, `/s/team/`), or a space's path and a page's apart,
-`team/projects the-wiki`, or the page's address in the browser, or its API
-address, pasted whole. A failure is one line on standard error, and its exit
+`PAGE` is a page's address as the wiki writes it and `list` and `search` print
+it, `/s/team/projects/p/the-wiki/` (a space's home page, `/s/team/`; a slug
+spelled like one of the addresses' own words gets a `~`, so a subspace Edit
+is `/s/team/~edit/`), or the page's address in the browser, or its API
+address, pasted whole; or a space's path and a page's apart, as the titles
+make them, `team/projects the-wiki` or `team/edit history`. The addresses
+`list` and `search` print are the server's own, so they lead back to the same
+page under any base path. A failure is one line on standard error, and its exit
 code tells the kinds apart: 2 a wrong use (or no version known for a `put`),
 3 the sign-in refused, 4 not found or not yours to read, 5 the page saved
 since your version, 6 refused (not allowed, an encrypted space), 7 too many

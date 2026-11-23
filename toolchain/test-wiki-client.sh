@@ -28,7 +28,9 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 root=$(pwd)
-client=$root/clients/wiki.sh
+# WIKI_CLIENT names another copy of the client, such as an older one, to
+# see which checks it fails.
+client=${WIKI_CLIENT:-$root/clients/wiki.sh}
 
 server=${WIKI_SERVER:-}
 [ -n "$server" ] || server=$(cabal list-bin -v0 --builddir=dist-newstyle/native wiki-server:exe:wiki-server)
@@ -46,11 +48,12 @@ real_curl=$(command -v curl) || {
 }
 
 work=$(mktemp -d)
-pid='' drain=''
+pids='' drains=''
+# The servers stopped, and their logs' drains waited for, as the script
+# ends.
 cleanup() {
-  [ -z "$pid" ] || kill "$pid" 2>/dev/null
-  [ -z "$pid" ] || wait "$pid" 2>/dev/null
-  [ -z "$drain" ] || wait "$drain" 2>/dev/null
+  for p in $pids; do kill "$p" 2>/dev/null; done
+  for p in $pids $drains; do wait "$p" 2>/dev/null; done
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -86,58 +89,92 @@ fi
 # The passwords: a space, quotes, a backslash, a colon and a letter outside
 # ASCII, each a way to break quoting. "wörd" is in each, and is looked for
 # wherever a password must not be.
-editor_password='Editor "wörd" \ one:two'
-reader_password='Reader "wörd" \ three'
-data=$work/data
-mkdir -p "$data" "$work/home"
-# The third argument is an option or nothing, split on purpose.
-# shellcheck disable=SC2086
+dq='"'
+bs=$(printf '\\')
+editor_password="Editor ${dq}wörd${dq} $bs one:two"
+reader_password="Reader ${dq}wörd${dq} $bs three"
+locked_password="Locked ${dq}wörd${dq} password"
+mkdir -p "$work/home"
+
+# A user of the wiki in DATA: login, password, then --admin or nothing.
 add_user() {
-  printf '%s\n' "$2" | "$server" users add --data "$data" --sqlite "$data/wiki.sqlite" "$1" $3 >/dev/null ||
-    die "wiki-server users add $1 failed"
+  if [ "$#" -ge 4 ]; then
+    printf '%s\n' "$3" | "$server" users add --data "$1" --sqlite "$1/wiki.sqlite" "$2" "$4" >/dev/null
+  else
+    printf '%s\n' "$3" | "$server" users add --data "$1" --sqlite "$1/wiki.sqlite" "$2" >/dev/null
+  fi || die "wiki-server users add $2 failed"
 }
-add_user editor "$editor_password" --admin
-add_user reader "$reader_password" ''
-# One login per shell for the limiter's test: five failed sign-ins lock a
-# login out for fifteen minutes.
-add_user locked-sh 'Locked "wörd" password' ''
-add_user locked-bash 'Locked "wörd" password' ''
 
-# The server, its log read through a pipe until both listeners have said
-# where they listen; then the rest of the log is drained into a file.
-mkfifo "$work/log.pipe"
-"$server" serve --data "$data" --sqlite "$data/wiki.sqlite" --listen 127.0.0.1:0 --admin-listen 127.0.0.1:0 >"$work/log.pipe" 2>&1 &
-pid=$!
-exec 3<"$work/log.pipe"
-public='' admin=''
-while [ -z "$public" ] || [ -z "$admin" ]; do
-  IFS= read -r line <&3 || die "the server stopped before it listened"
-  printf '%s\n' "$line" >>"$work/server.log"
-  address=$(printf '%s\n' "$line" | sed -n 's|.*event=listening listener=\([a-z]*\) address="\{0,1\}\(http://[^ "]*\)"\{0,1\}.*|\1 \2|p')
-  case $address in
-    'public '*) public=${address#public } ;;
-    'admin '*) admin=${address#admin } ;;
-  esac
-done
-cat <&3 >>"$work/server.log" &
-drain=$!
-exec 3<&-
-public=${public%/}
-api=${admin%/}/api/v1
-pass "the server listens at $public"
-
-# The content, through the administration's API.
-post() {
-  "$real_curl" -fsS -X POST -H 'Content-Type: application/json' -H 'X-Wiki-Request: 1' --data "$2" "$api/$1"
+# A server on DATA, under the base path BASE, its log read through a pipe
+# until both listeners have said where they listen; then the rest of the
+# log is drained into a file. Its addresses are in public and admin.
+start_server() {
+  mkfifo "$1.pipe"
+  "$server" serve --data "$1" --sqlite "$1/wiki.sqlite" --base-path "$2" --listen 127.0.0.1:0 --admin-listen 127.0.0.1:0 >"$1.pipe" 2>&1 &
+  pids="$pids $!"
+  exec 3<"$1.pipe"
+  public='' admin=''
+  while [ -z "$public" ] || [ -z "$admin" ]; do
+    IFS= read -r line <&3 || die "the server stopped before it listened"
+    printf '%s\n' "$line" >>"$work/server.log"
+    address=$(printf '%s\n' "$line" | sed -n 's|.*event=listening listener=\([a-z]*\) address="\{0,1\}\(http://[^ "]*\)"\{0,1\}.*|\1 \2|p')
+    case $address in
+      'public '*) public=${address#public } ;;
+      'admin '*) admin=${address#admin } ;;
+    esac
+  done
+  cat <&3 >>"$work/server.log" &
+  drains="$drains $!"
+  exec 3<&-
+  public=${public%/}
+  admin=${admin%/}
 }
-team=$(post spaces '{"parent":null,"name":"Team"}' | "$real_jq" -r .id) || die "no space Team"
-projects=$(post spaces "{\"parent\":\"$team\",\"name\":\"Projects\"}" | "$real_jq" -r .id) || die "no space Projects"
+
+# The content, through the administration's API at ADMIN: a space Team
+# with a subspace Projects and two pages there, and a subspace whose slug
+# is one of the router's words, Edit, with a page History (the router
+# writes them /s/team/~edit/p/~history/).
 wiki_body='# The wiki
 
 A page about the wiki, with "quotes", a back\slash and the letters ż and ó.
 '
-post "spaces/$projects/pages" "$("$real_jq" -nc --arg body "$wiki_body" '{parent: null, title: "The wiki", body: $body}')" >/dev/null || die "no page The wiki"
-post "spaces/$projects/pages" '{"parent":null,"title":"Zażółć gęślą jaźń","body":"Pchnąć w tę łódź jeża lub ośm skrzyń fig: gęślą."}' >/dev/null || die "no second page"
+post() {
+  "$real_curl" -fsS -X POST -H 'Content-Type: application/json' -H 'X-Wiki-Request: 1' --data "$3" "$1/api/v1/$2"
+}
+make_content() {
+  team=$(post "$1" spaces '{"parent":null,"name":"Team"}' | "$real_jq" -r .id) || die "no space Team"
+  projects=$(post "$1" spaces "{\"parent\":\"$team\",\"name\":\"Projects\"}" | "$real_jq" -r .id) || die "no space Projects"
+  post "$1" "spaces/$projects/pages" "$("$real_jq" -nc --arg body "$wiki_body" '{parent: null, title: "The wiki", body: $body}')" >/dev/null || die "no page The wiki"
+  post "$1" "spaces/$projects/pages" '{"parent":null,"title":"Zażółć gęślą jaźń","body":"Pchnąć w tę łódź jeża lub ośm skrzyń fig: gęślą."}' >/dev/null || die "no second page"
+  edit=$(post "$1" spaces "{\"parent\":\"$team\",\"name\":\"Edit\"}" | "$real_jq" -r .id) || die "no space Edit"
+  post "$1" "spaces/$edit/pages" '{"parent":null,"title":"History","body":"The history page of the space Edit."}' >/dev/null || die "no page History"
+}
+
+# The server at the root, with every user the tests sign in as; one login
+# per shell for the limiter's test, since five failed sign-ins lock a login
+# out for fifteen minutes.
+data=$work/data
+mkdir -p "$data"
+add_user "$data" editor "$editor_password" --admin
+add_user "$data" reader "$reader_password"
+add_user "$data" locked-sh "$locked_password"
+add_user "$data" locked-bash "$locked_password"
+start_server "$data" /
+public_root=$public
+make_content "$admin"
+pass "the server at the root listens at $public_root"
+
+# The same wiki under a base path, as a server behind a prefix serves it.
+data=$work/data-wiki
+mkdir -p "$data"
+add_user "$data" editor "$editor_password" --admin
+start_server "$data" /wiki/
+public_wiki=$public
+make_content "$admin"
+case $public_wiki in
+  */wiki) pass "the server under /wiki/ listens at $public_wiki" ;;
+  *) die "the server under /wiki/ logged $public_wiki" ;;
+esac
 
 # Fakes: a curl that records its arguments, then runs the real one; a jq
 # that records that it was called, and fails.
@@ -166,20 +203,14 @@ check "the recorder sees a password given to curl -u" grep -qF "wörd" "$work/cu
 sh -x -c 'password=$1; : "$password"' sh "$editor_password" 2>"$work/trace" >/dev/null
 check "a trace shows a password in a variable" grep -qF "wörd" "$work/trace"
 
-# The client, run in a subshell with the identity of the variables below;
+# The client, with an environment of only the variables below (env -i):
 # its status in status, its output in $work/out and $work/err. jq is the
 # failing fake unless with_jq is set.
-url=$public user=editor password=$editor_password state=$work/state-a input=/dev/null shell=sh with_jq=''
+url=$public_root user=editor password=$editor_password state=$work/state-a input=/dev/null shell=sh with_jq=''
 client() {
-  (
-    unset WIKI_TOKEN WIKI_CONFIG XDG_CONFIG_HOME XDG_STATE_HOME
-    export HOME="$work/home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state"
-    if [ -n "$with_jq" ]; then
-      exec env PATH="$curl_path" "$shell" "$client" "$@"
-    else
-      exec env PATH="$nojq_path" "$shell" "$client" "$@"
-    fi
-  ) <"$input" >"$work/out" 2>"$work/err"
+  if [ -n "$with_jq" ]; then client_path=$curl_path; else client_path=$nojq_path; fi
+  env -i PATH="$client_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" \
+    "$shell" "$client" "$@" <"$input" >"$work/out" 2>"$work/err"
   status=$?
 }
 
@@ -218,7 +249,7 @@ big_text() {
 
 suite() {
   shell=$1 locked=locked-$1
-  url=$public user=editor password=$editor_password state=$work/state-$1-a input=/dev/null with_jq=''
+  url=$public_root user=editor password=$editor_password state=$work/state-$1-a input=/dev/null with_jq=''
   printf -- '--- the commands under %s\n' "$shell"
 
   client help
@@ -243,7 +274,7 @@ suite() {
   client list /s/team/projects/ --json
   expect 0 "list --json"
   if "$real_jq" -e '.path == "team/projects" and (.pages | length) == 2' "$work/out" >/dev/null; then pass "list --json gives the server's JSON"; else fail "list --json gives the server's JSON"; fi
-  client list team/projects/p/the-wiki
+  client list "$page"
   expect 2 "list of a page is a wrong use"
   client list --depth 0
   expect 2 "list --depth 0 is a wrong use"
@@ -272,7 +303,7 @@ suite() {
   check "get gives the Markdown byte for byte" cmp -s "$work/out" "$work/expected"
   has err "version \"" "get shows the version on standard error"
   check "get remembers the version in the state directory" is_file "$state"/*/s/team/projects/p/the-wiki/_version
-  for form in "$page" "team/projects/p/the-wiki" "$public$page" "$public${page}edit/" "$public/api/markdown$page" "/api/markdown$page"; do
+  for form in "$page" "/s/team/projects/p/the-wiki" "$url$page" "$url${page}edit/" "$url/api/markdown$page" "/api/markdown$page"; do
     client get "$form"
     expect 0 "get $form"
   done
@@ -349,6 +380,7 @@ suite() {
   has err "no version of $page is known here" "the refusal says how to get one"
   client put "$page" --force --if-match "$version"
   expect 2 "--force and --if-match together are a wrong use"
+  versions_follow_delivery
   state=$work/state-$1-a
   input=/dev/null
   client put "$page"
@@ -375,7 +407,7 @@ suite() {
   client get team/projects "the wiki"
   expect 4 "a page's path with a space is sent, encoded, and not found"
   check "the space is percent-encoded" grep -qF "/api/markdown/s/team/projects/p/the%20wiki/" "$work/curl.args"
-  client get "team/projects/p/zażółć"
+  client get team/projects zażółć
   expect 4 "a page's path outside ASCII is sent, encoded, and not found"
   check "the letters outside ASCII are percent-encoded" grep -qF "/p/za%C5%BC%C3%B3%C5%82%C4%87/" "$work/curl.args"
   user=$locked password='a wrong "wörd" password'
@@ -407,15 +439,12 @@ suite() {
   url=''
   client list
   expect 2 "no WIKI_URL is a wrong use"
-  url=$public
+  url=$public_root
 
   # A key in WIKI_TOKEN is sent as Bearer, which the server does not take
   # yet; under -x, the trace does not show it.
-  (
-    unset WIKI_USER WIKI_PASSWORD WIKI_CONFIG
-    export HOME="$work/home" WIKI_URL="$url" WIKI_TOKEN='a key "wörd"'
-    exec env PATH="$nojq_path" "$shell" -x "$client" list
-  ) >"$work/out" 2>"$work/err"
+  env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_TOKEN="a key ${dq}wörd${dq}" \
+    "$shell" -x "$client" list >"$work/out" 2>"$work/err"
   status=$?
   expect 3 "a key is refused, as the server takes none yet"
   has err "does not take API keys" "the refusal says keys are to come"
@@ -425,14 +454,11 @@ suite() {
   # a symbolic link too.
   mkdir -p "$work/home/.config/wiki"
   config=$work/home/.config/wiki/config
-  printf '# The wiki\nurl = %s\nuser = editor\npassword = %s\n' "$public" "$editor_password" >"$work/config"
+  printf '# The wiki\nurl = %s\nuser = editor\npassword = %s\n' "$public_root" "$editor_password" >"$work/config"
   ln -sf "$work/config" "$config"
   from_config() {
-    (
-      unset WIKI_URL WIKI_USER WIKI_PASSWORD WIKI_TOKEN WIKI_CONFIG XDG_CONFIG_HOME
-      export HOME="$work/home" WIKI_STATE_DIR="$work/state-$shell-config"
-      exec env PATH="$nojq_path" "$shell" "$client" list
-    ) >"$work/out" 2>"$work/err"
+    env -i PATH="$nojq_path" HOME="$work/home" WIKI_STATE_DIR="$work/state-$shell-config" \
+      "$shell" "$client" list >"$work/out" 2>"$work/err"
     status=$?
   }
   chmod 644 "$work/config"
@@ -463,11 +489,8 @@ suite() {
   # Nothing of the password on curl's command line, nor in a trace.
   if grep -qF "wörd" "$work/curl.args"; then fail "a password on curl's command line"; else pass "no password on curl's command line"; fi
   check "curl reads the sign-in from a descriptor" grep -q 'config /dev/fd/3' "$work/curl.args"
-  (
-    unset WIKI_TOKEN WIKI_CONFIG
-    export HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$1-trace"
-    exec env PATH="$nojq_path" "$shell" -x "$client" get "$page"
-  ) >"$work/out" 2>"$work/err"
+  env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$1-trace" \
+    "$shell" -x "$client" get "$page" >"$work/out" 2>"$work/err"
   status=$?
   expect 0 "get under -x"
   lacks err "wörd" "no password in the trace"
@@ -480,7 +503,135 @@ suite() {
   check "the failing jq records that it was called" [ -s "$work/jq.calls" ]
   rm -f "$work/jq.calls"
 
+  round_trip "$public_root" root
+  round_trip "$public_wiki" base-path
+  url=$public_root user=editor password=$editor_password state=$work/state-$1-a input=/dev/null
+
   mcp_exchange
+}
+
+# Another client saves the page at PAGE, with its own state: what the
+# client under test remembered has moved on.
+another_client_saves() {
+  saved_state=$state saved_input=$input
+  state=$work/state-$shell-another input=$work/another
+  printf 'Saved by another client: %s.\n' "$2" >"$work/another"
+  client get "$1"
+  client put "$1"
+  expect 0 "another client saves the page ($2)"
+  state=$saved_state input=$saved_input
+}
+
+# What is remembered of a version changes only once a text is delivered
+# whole or a write accepted, and then in every record of the page (the
+# table in clients/wiki.sh, above record_version).
+versions_follow_delivery() {
+  state=$work/state-$shell-delivery
+  printf 'An older text of the page.\n' >"$work/older"
+  # A get --out that cannot write its file remembers nothing: the next put
+  # still sends the version last delivered, and is refused.
+  client get "$page"
+  another_client_saves "$page" "after a delivered get"
+  client get "$page" --out "$work/no such directory/page.md"
+  expect 1 "get --out into a missing directory fails"
+  input=$work/older
+  client put "$page"
+  expect 5 "after a get --out that wrote nothing, a put of older text is refused"
+  input=/dev/null
+  # A get whose standard output fails (a full disk) remembers nothing.
+  if [ -w /dev/full ]; then
+    client get "$page"
+    another_client_saves "$page" "before a get to a full disk"
+    env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" \
+      "$shell" "$client" get "$page" >/dev/full 2>"$work/err"
+    status=$?
+    expect 1 "get to a full standard output fails"
+    input=$work/older
+    client put "$page"
+    expect 5 "after a get whose output failed, a put of older text is refused"
+    input=/dev/null
+  else
+    printf 'skipped: no /dev/full here, for a get to a full output\n'
+  fi
+  # A put --file with --if-match, or --force, moves the file's sidecar
+  # with the state file: the next ordinary put --file goes through.
+  client get "$page" --out "$work/sidecar.md"
+  printf 'An edit, written with --if-match.\n' >>"$work/sidecar.md"
+  client put "$page" --file "$work/sidecar.md" --if-match "$(head -n 1 "$work/sidecar.md.version")"
+  expect 0 "put --file --if-match"
+  printf 'An edit, written as usual.\n' >>"$work/sidecar.md"
+  client put "$page" --file "$work/sidecar.md"
+  expect 0 "the next put --file, with the sidecar that put --if-match moved on"
+  printf 'An edit, written with --force.\n' >>"$work/sidecar.md"
+  client put "$page" --file "$work/sidecar.md" --force
+  expect 0 "put --file --force"
+  printf 'Another edit, written as usual.\n' >>"$work/sidecar.md"
+  client put "$page" --file "$work/sidecar.md"
+  expect 0 "the next put --file, with the sidecar that put --force moved on"
+  client get "$page" --version
+  printf '%s\n%s\n' "$(cat "$work/out")" "$page" >"$work/expected-version"
+  check "the sidecar names the page's version now" cmp -s "$work/sidecar.md.version" "$work/expected-version"
+}
+
+# Every address list and search print reaches what it names, on the wiki at
+# URL (NAME says which): a subspace and a page whose slugs are words of the
+# router, Edit and History, which it writes /s/team/~edit/p/~history/, at
+# the root and under a base path. A write to one leaves the space above it
+# as it was.
+round_trip() {
+  url=$1 state=$work/state-$shell-$2 input=/dev/null
+  client get /s/team/
+  cp "$work/out" "$work/team-home"
+  client list team
+  expect 0 "list team ($2)"
+  has out "Space: Edit  /s/team/~edit/" "the listing prints the subspace Edit's own address ($2)"
+  has out "History  /s/team/~edit/p/~history/" "the listing prints the page History's own address ($2)"
+  lacks out "/api/" "the listing prints no API address ($2)"
+  edit_address=$(sed -n 's/^ *Space: Edit  \([^ ]*\).*/\1/p' "$work/out")
+  history_address=$(sed -n 's/^ *History  \([^ ]*\).*/\1/p' "$work/out")
+  wiki_address=$(sed -n 's/^ *The wiki  \([^ ]*\).*/\1/p' "$work/out")
+  client get "$wiki_address"
+  expect 0 "get of the listed address of The wiki ($2)"
+  # The subspace's home page, through its listed address.
+  printf 'The home page of Edit, written %s under %s.\n' "$2" "$shell" >"$work/edit-home"
+  client get "$edit_address"
+  input=$work/edit-home
+  client put "$edit_address"
+  expect 0 "put to the listed address of the subspace Edit ($2)"
+  input=/dev/null
+  client get "$edit_address"
+  check "the subspace Edit's home page has the text put ($2)" cmp -s "$work/out" "$work/edit-home"
+  client get /s/team/
+  check "Team's home page is as it was ($2)" cmp -s "$work/out" "$work/team-home"
+  # The page History, through its listed address.
+  word=kumquat$shell$2
+  word=$(printf '%s' "$word" | tr -d -c 'a-z')
+  printf 'History, written %s: %s.\n' "$2" "$word" >"$work/history"
+  client get "$history_address"
+  expect 0 "get of the listed address of History ($2)"
+  input=$work/history
+  client put "$history_address"
+  expect 0 "put to the listed address of History ($2)"
+  input=/dev/null
+  client get "$history_address"
+  check "History has the text put ($2)" cmp -s "$work/out" "$work/history"
+  client get "$edit_address"
+  check "Edit's home page is as it was ($2)" cmp -s "$work/out" "$work/edit-home"
+  # The search, kept to the space by its listed address and by its path.
+  client search "$word" --space "$edit_address"
+  expect 0 "search --space the listed address of Edit ($2)"
+  has out "History  $history_address  (in Edit)" "the search finds History there, with its own address ($2)"
+  client search "$word" --space /s/team/~edit/
+  expect 0 "search --space Edit's address as the wiki writes it ($2)"
+  has out "History  $history_address" "the search by the address finds History ($2)"
+  client search "$word" --space team/edit
+  expect 0 "search --space Edit's path ($2)"
+  has out "History  $history_address" "the search by the path finds History ($2)"
+  # The paths as the titles make them, and the browser's URL of the editor.
+  client get team/edit history
+  check "get of Edit's path and History's reaches History ($2)" cmp -s "$work/out" "$work/history"
+  client get "$url${history_address}edit/"
+  check "get of the URL of History's editor reaches History ($2)" cmp -s "$work/out" "$work/history"
 }
 
 # The MCP server through a pipe: requests of both the current revision
@@ -518,7 +669,7 @@ Written through MCP: "quoted", back\slash, ż.
     call 13 no_such_tool '{}'
     call 14 wiki_read_page '{}'
     printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"server/discover\",\"params\":{\"_meta\":$meta}}"
-    printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"wiki_read_page\",\"arguments\":{\"page\":\"team/projects/p/the-wiki\"},\"_meta\":$meta}}"
+    printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"wiki_read_page\",\"arguments\":{\"page\":\"/s/team/projects/p/the-wiki\"},\"_meta\":$meta}}"
     printf '%s\n' '{"jsonrpc":"2.0","id":17,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"1900-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}'
     printf '%s\n' '{"jsonrpc":"2.0","id":18,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}'
     printf '%s\n' '[{"jsonrpc":"2.0","id":19,"method":"ping"}]'
@@ -532,11 +683,8 @@ Written through MCP: "quoted", back\slash, ż.
   printf -- '--- the MCP server under %s\n' "$shell"
   # Through a pipe, as a client starts it.
   # shellcheck disable=SC2002
-  cat "$work/mcp.in" | (
-    unset WIKI_TOKEN WIKI_CONFIG
-    export HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-mcp"
-    exec env PATH="$curl_path" "$shell" "$client" mcp
-  ) >"$work/mcp.out" 2>"$work/mcp.err"
+  cat "$work/mcp.in" | env -i PATH="$curl_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-mcp" \
+    "$shell" "$client" mcp >"$work/mcp.out" 2>"$work/mcp.err"
   status=$?
   expect 0 "mcp ends when its input ends"
   bad_lines=0

@@ -708,7 +708,8 @@ jobs:
     # the Build wiki-server step made, on SQLite and loopback ports the
     # system gives: every command under sh and bash, and its MCP server
     # through a pipe. shellcheck, which the hosted runners have, checks the
-    # script and the test first. About two minutes.
+    # script and the test first. Two servers, one at the root and one under
+    # a base path. About three minutes.
     - name: Test the shell client (clients/wiki.sh)
       if: matrix.group == 'deploy'
       run: sh toolchain/test-wiki-client.sh

@@ -40,6 +40,8 @@ tab=$(printf '\t')
 # The temporary directory of this run: answers, headers and bodies go there,
 # never into a variable that would hold a page's text. Removed on exit.
 work=''
+# Run by the trap below, which shellcheck does not count as a call.
+# shellcheck disable=SC2329
 cleanup() {
   [ -z "$work" ] || rm -rf "$work"
 }
@@ -127,7 +129,7 @@ percent_encode() {
 # not give, from the configuration file (WIKI_CONFIG, by default
 # ~/.config/wiki/config), lines of "key = value" with the keys url, user,
 # password and token. The file is read only when nobody else may read it.
-wiki_url='' wiki_user='' wiki_password='' wiki_token='' wiki_base='' signing_in=nobody
+wiki_url='' wiki_user='' wiki_password='' wiki_token='' wiki_base='' wiki_mount='' signing_in=nobody
 config_loaded=''
 load_config() {
   [ -z "$config_loaded" ] || return 0
@@ -154,6 +156,14 @@ load_config() {
       *) break ;;
     esac
   done
+  # The path the wiki is served under, from WIKI_URL: /wiki for
+  # https://example.org/wiki, empty for a wiki at the root. The server's
+  # addresses start with it.
+  wiki_mount=${wiki_base#*://}
+  case $wiki_mount in
+    */*) wiki_mount=/${wiki_mount#*/} ;;
+    *) wiki_mount='' ;;
+  esac
   case $wiki_base in
     http://localhost | http://localhost[:/]* | http://127.* | http://\[::1\]*) ;;
     http://*) [ "$signing_in" = nobody ] || note "WIKI_URL is plain http: the password crosses the network unencrypted; use https" ;;
@@ -442,6 +452,16 @@ function str(   out, c, e, h, l) {
 }
 function one_line(x) { gsub(/[\r\n\t]+/, " ", x); return x }
 function indent(d,   r) { r = ""; while (d-- > 0) r = r "  "; return r }
+# An address the server gave (a listing'"'"'s list, home and markdown, a hit'"'"'s
+# markdown) as this script prints it: the server'"'"'s own, with the path of
+# WIKI_URL (mount, empty for a wiki at the root) and the API'"'"'s prefix taken
+# off, so /wiki/api/markdown/s/team/~edit/ is /s/team/~edit/. The one place
+# that takes a server'"'"'s address apart.
+function shown(a) {
+  if (index(a, mount "/api/markdown/") == 1) return substr(a, length(mount "/api/markdown") + 1)
+  if (index(a, mount "/api/list/") == 1) return substr(a, length(mount "/api/list") + 1)
+  return a
+}
 { s = s (NR > 1 ? "\n" : "") $0 }
 END {
   n = length(s); i = 1
@@ -459,21 +479,27 @@ json_field() {
 }
 
 # The listing as an indented tree: each space and each page with the address
-# `wiki.sh get` takes.
+# `wiki.sh get` takes, the server's own (shown). A space's is its home
+# page's, or its listing's when its home page is not readable (an encrypted
+# space). A space listed only for the spaces under it has neither, and is
+# printed without an address: the server gives none, and one put together
+# from its path could be another page's.
 render_list() {
-  awk "$json_reader"'
-    function space(p, d,   k, note) {
+  awk -v mount="$wiki_mount" "$json_reader"'
+    function space(p, d,   k, a, note) {
       note = ""
+      a = ""
+      if ((p "/home") in t) a = shown(v[p "/home"])
+      else if ((p "/list") in t) a = shown(v[p "/list"])
       if (v[p "/encrypted"] == "true") note = "  (encrypted: its pages are not listed)"
-      else if (!((p "/home") in t)) note = "  (listed for the spaces under it)"
+      else if (!((p "/list") in t)) note = "  (listed for the spaces under it)"
       else if (!((p "/pages") in t)) note = "  (more below: list this space)"
-      print indent(d) "Space: " one_line(v[p "/title"]) "  /s/" v[p "/path"] "/" note
+      print indent(d) "Space: " one_line(v[p "/title"]) (a == "" ? "" : "  " a) note
       for (k = 0; k < len[p "/pages"] + 0; k++) page(p "/pages/" k, d + 1)
       for (k = 0; k < len[p "/subspaces"] + 0; k++) space(p "/subspaces/" k, d + 1)
     }
     function page(p, d,   k, a, note) {
-      a = v[p "/markdown"]
-      sub(/^\/api\/markdown/, "", a)
+      a = shown(v[p "/markdown"])
       note = ""
       if (v[p "/kind"] != "" && v[p "/kind"] != "document") note = note ", " v[p "/kind"]
       if (v[p "/template"] == "true") note = note ", template"
@@ -501,13 +527,12 @@ render_failed() {
 
 # The search's hits, best first: title, address and space, then the excerpt.
 render_search() {
-  awk "$json_reader"'
+  awk -v mount="$wiki_mount" "$json_reader"'
     END {
       if (len["/hits"] + 0 == 0) print "No pages found."
       for (k = 0; k < len["/hits"] + 0; k++) {
         h = "/hits/" k
-        a = v[h "/markdown"]
-        sub(/^\/api\/markdown/, "", a)
+        a = shown(v[h "/markdown"])
         print one_line(v[h "/title"]) "  " a "  (in " one_line(v[h "/space/title"]) ")"
         if (v[h "/excerpt"] != "") print "    " one_line(v[h "/excerpt"])
       }
@@ -517,28 +542,98 @@ render_search() {
 # ---------------------------------------------------------------------------
 # Addresses
 
-# The words of the browser's addresses that follow a page or a space (its
-# editor, its history, ...). A slug spelled like one is written with a ~ in
-# front, so a bare one is never a slug.
-route_words=' edit source live-preview history slides pages new-page '
+# The router's own words (Wiki.App.Route's slugSegment): a slug spelled
+# like one is written with a ~ in front in an address (a subspace edit is
+# /s/team/~edit/), so a bare one in an address is never a slug.
+route_words=' p edit source live-preview history slides pages new-page '
+# The words that follow a page's or a space's address in the browser (its
+# editor, its history, ...).
+trailing_words=' edit source live-preview history slides pages new-page '
 
-# A page's address from what the caller gave: a space's path and a page's
-# path apart (team/projects the-wiki), or one of: /s/team/projects/p/the-wiki/,
-# team/projects/p/the-wiki, the page's URL in the browser, or its API address
-# (/api/markdown/s/...), whole or as a path. A space alone is its home page.
-# Sets addr (the API's path after api/markdown/, encoded), addr_shown (as
-# the browser writes it) and addr_space (the space's path, not encoded).
+# A path of raw slugs (team/edit, as the caller types a space's or a page's
+# path) written as the router writes it, in escaped: team/~edit. The one
+# place that puts an address together from a path.
+escape_path() {
+  escaped=''
+  rest=$1
+  while :; do
+    segment=${rest%%/*}
+    case $route_words in
+      *" $segment "*) segment="~$segment" ;;
+    esac
+    escaped="${escaped:+$escaped/}$segment"
+    case $rest in
+      */*) rest=${rest#*/} ;;
+      *) break ;;
+    esac
+  done
+}
+
+# A space's path in an address (team/~edit) as raw slugs (team/edit), for
+# the search's space=, which takes a path, not an address. The one place
+# that takes an address back to a path.
+raw_path() {
+  raw=''
+  rest=$1
+  while :; do
+    segment=${rest%%/*}
+    case $segment in
+      '~'*)
+        case $route_words in
+          *" ${segment#\~} "*) segment=${segment#\~} ;;
+        esac
+        ;;
+    esac
+    raw="${raw:+$raw/}$segment"
+    case $rest in
+      */*) rest=${rest#*/} ;;
+      *) break ;;
+    esac
+  done
+}
+
+# A page's address from what the caller gave, in one of two forms.
+#
+# An address, as the wiki writes it and as list and search print it:
+# /s/team/~edit/p/the-wiki/ (a space's home page: /s/team/), its API
+# address (/api/markdown/s/..., also with the path of WIKI_URL in front, as
+# the server's JSON has it), or a URL under WIKI_URL. It goes back to the
+# server as it came, segment by segment: only bytes a URL cannot hold are
+# percent-encoded. Only a URL a browser shows loses a last word of the
+# browser's own (/edit/, /history/), and only a bare one: an escaped ~edit
+# is a slug.
+#
+# A path: a space's path and, as a second argument, a page's path, raw
+# slugs as the wiki's titles make them (team/edit history), which
+# escape_path writes as an address.
+#
+# Sets addr (the address after api/markdown/ or api/list/, without its
+# leading slash), addr_shown (as the browser writes it, with the slash),
+# pg (the page's part, empty for a space) and addr_space (the space's path
+# as raw slugs).
 page_address() {
-  a=$1
+  a=$1 from_url='' form=address
+  case $a in
+    *://*)
+      case $a in
+        "$wiki_base" | "$wiki_base"/*) a=${a#"$wiki_base"} from_url=1 ;;
+        *)
+          fail "$EX_USAGE" "$1 is not an address of the wiki at $wiki_base (WIKI_URL): give the page's address, or set WIKI_URL to that wiki"
+          return
+          ;;
+      esac
+      ;;
+    /*)
+      if [ -n "$wiki_mount" ]; then
+        case $a in
+          "$wiki_mount"/api/*) a=${a#"$wiki_mount"} ;;
+        esac
+      fi
+      ;;
+    *) form=path ;;
+  esac
   a=${a%%#*}
   a=${a%%\?*}
-  case $a in
-    "$wiki_base" | "$wiki_base"/*) a=${a#"$wiki_base"} ;;
-    *://*)
-      fail "$EX_USAGE" "$1 is not an address of the wiki at $wiki_base (WIKI_URL): give the page's path, or set WIKI_URL to that wiki"
-      return
-      ;;
-  esac
   while :; do
     case $a in
       /*) a=${a#/} ;;
@@ -546,26 +641,34 @@ page_address() {
       *) break ;;
     esac
   done
-  a=${a#api/markdown/}
-  a=${a#api/list/}
-  case $a in
-    s) a='' ;;
-    s/*) a=${a#s/} ;;
-  esac
-  # A route word at the end (the editor's address, the history's) is not
-  # part of the page's path.
-  last=${a##*/}
-  case $route_words in
-    *" $last "*) [ "$last" = "$a" ] || a=${a%/*} ;;
-  esac
-  case $a in
-    */p) a=${a%/p} ;;
-  esac
-  case $a in
-    p/* | p) sp='' pg='' ;;
-    */p/*) sp=${a%%/p/*} pg=${a#*/p/} ;;
-    *) sp=$a pg='' ;;
-  esac
+  if [ "$form" = path ]; then
+    escape_path "$a"
+    sp=$escaped pg=''
+  else
+    api=''
+    case $a in
+      api/markdown/* | api/list/*) api=1 a=${a#api/*/} ;;
+    esac
+    case $a in
+      s/*) a=${a#s/} ;;
+      *)
+        fail "$EX_USAGE" "$1 is not an address of the wiki: an address starts with /s/, as /s/team/p/the-wiki/ (or give a space's path, team/projects, and a page's, the-wiki)"
+        return
+        ;;
+    esac
+    if [ -n "$from_url" ] && [ -z "$api" ]; then
+      last=${a##*/}
+      case $trailing_words in
+        *" $last "*) [ "$last" = "$a" ] || a=${a%/*} ;;
+      esac
+    fi
+    case $a in
+      p | p/*) sp='' pg='' ;;
+      */p) sp=${a%/p} pg='' ;;
+      */p/*) sp=${a%%/p/*} pg=${a#*/p/} ;;
+      *) sp=$a pg='' ;;
+    esac
+  fi
   if [ $# -ge 2 ] && [ -n "$2" ]; then
     if [ -n "$pg" ]; then
       fail "$EX_USAGE" "$1 is a page's address already: give it alone, or a space's path and a page's path"
@@ -576,25 +679,27 @@ page_address() {
       case $pg in
         /*) pg=${pg#/} ;;
         */) pg=${pg%/} ;;
-        p/*) pg=${pg#p/} ;;
         *) break ;;
       esac
     done
+    escape_path "$pg"
+    pg=$escaped
   fi
   if [ -z "$sp" ]; then
     fail "$EX_USAGE" "no space in \"$1\": a page's address is /s/<space path>/p/<page path>/, for example /s/team/projects/p/the-wiki/"
     return
   fi
   for part in "$sp" "$pg"; do
+    [ -n "$part" ] || continue
     case /$part/ in
-      *//* | */./* | */../*)
-        [ -z "$part" ] && continue
+      *//* | */./* | */../* | */~./* | */~../*)
         fail "$EX_USAGE" "\"$part\" is not a path of the wiki: empty, . and .. are not names of spaces or pages"
         return
         ;;
     esac
   done
-  addr_space=$sp
+  raw_path "$sp"
+  addr_space=$raw
   addr="s/$(percent_encode "$sp" /%)/"
   [ -z "$pg" ] || addr="${addr}p/$(percent_encode "$pg" /%)/"
   addr_shown=/$addr
@@ -602,9 +707,51 @@ page_address() {
 
 # ---------------------------------------------------------------------------
 # Versions remembered between a get and a put
+#
+# A page's remembered version says: the text this script last delivered
+# whole, or sent whole and saw accepted, was this version. It is kept in
+# two records: the state file (version_file), one per page and wiki, and
+# the sidecar FILE.version that get --out FILE writes beside the text
+# (the version, then the page's address). A put takes the version from
+# --if-match, else from the sidecar of its --file when the sidecar names
+# this page, else from the state file; with none, it refuses to write
+# unless --force.
+#
+# Every path that reads or writes a version, and what it changes:
+#
+#   get PAGE (to standard output)  the state file, once the text is written
+#                                  out without an error; a closed or full
+#                                  output changes nothing
+#   get PAGE --out FILE            FILE, then FILE.version, then the state
+#                                  file, each only once the one before it is
+#                                  written; a FILE that cannot be written
+#                                  changes nothing
+#   get PAGE --version             nothing: no text was delivered
+#   put PAGE (standard input)      the state file, once the wiki accepted the
+#                                  write (204), whatever version was sent:
+#                                  remembered, --if-match or none (--force)
+#   put PAGE --file FILE           the state file and, when FILE.version
+#                                  names this page, FILE.version, together,
+#                                  once the wiki accepted the write, however
+#                                  the version sent was chosen; FILE.version
+#                                  is never made by a put
+#   a write accepted with no ETag  both records of the page are removed: the
+#                                  text sent is newer than what they say, so
+#                                  the next put must not go out blind
+#   a refused or failed request    nothing (412, 4xx, 5xx, no connection)
+#   an interrupted run             nothing before the answer; between an
+#                                  accepted write and the records, they keep
+#                                  the older version, and the next put is
+#                                  refused (412), never written over an edit
+#   wiki_read_page (MCP)           nothing: the model keeps the version it
+#                                  was given and passes it back
+#   wiki_write_page (MCP)          the state file, once the wiki accepted
+#                                  the write
+#
+# Each record is written to a temporary file and moved into place, so an
+# interrupted write leaves the record whole, old or new.
 
-# Each page's version, as its last get or put here gave it, is kept in a
-# file of its own under the state directory: WIKI_STATE_DIR, by default
+# The state file of the page at addr: under WIKI_STATE_DIR, by default
 # ~/.local/state/wiki, then the wiki's address and the page's, ending in
 # _version (an underscore is in no slug, so the name is no page's):
 # ~/.local/state/wiki/https_wiki.example/s/team/p/on-call/_version.
@@ -614,11 +761,40 @@ version_file() {
   printf '%s/%s/%s_version' "$state" "$site" "$addr"
 }
 
-remember_version() {
+# Write a record whole: CONTENT into FILE, through a temporary file beside
+# it.
+write_record() {
+  { printf '%s' "$2" >"$1.$$" && mv -f "$1.$$" "$1"; } 2>/dev/null || {
+    rm -f "$1.$$"
+    return 1
+  }
+}
+
+# The sidecar of FILE, when it is this page's: FILE.version, else nothing.
+sidecar_of() {
+  if [ -n "$1" ] && [ -f "$1.version" ] && [ "$(sed -n 2p "$1.version")" = "$addr_shown" ]; then
+    printf '%s' "$1.version"
+  fi
+}
+
+# The page at addr is at VERSION, by a text delivered or a write accepted:
+# its state file says so, and the sidecar of FILE (if given, and if it is
+# this page's).
+record_version() {
   vf=$(version_file)
-  if ! { mkdir -p "${vf%/*}" && printf '%s\n' "$1" >"$vf"; }; then
+  if ! { mkdir -p "${vf%/*}" && write_record "$vf" "$1$nl"; }; then
     note "cannot keep the version in $vf"
   fi
+  sidecar=$(sidecar_of "${2:-}")
+  if [ -n "$sidecar" ] && ! write_record "$sidecar" "$1$nl$addr_shown$nl"; then
+    note "cannot keep the version in $sidecar"
+  fi
+}
+
+# The page at addr is at a version not known: its records go.
+forget_version() {
+  sidecar=$(sidecar_of "${1:-}")
+  rm -f "$(version_file)" ${sidecar:+"$sidecar"}
 }
 
 remembered_version() {
@@ -639,9 +815,8 @@ quoted_version() {
 # What the commands and the MCP tools do
 
 # The page at addr: its Markdown in $work/body, its version in page_version.
-# With "remember", the version is remembered for a later put: only when the
-# text goes to someone, since a put of older text over a version nobody
-# read would write over that version's changes unseen.
+# Nothing is remembered here: the caller records the version once the text
+# is delivered.
 fetch_page() {
   wiki_request GET "api/markdown/$addr" || return
   check_answer "$addr_shown" || return
@@ -650,22 +825,21 @@ fetch_page() {
     fail "$EX_ERROR" "the wiki gave no version (ETag) for $addr_shown"
     return
   fi
-  [ "$1" != remember ] || remember_version "$page_version"
 }
 
 # The file's text written over the page at addr, conditional on the version
-# given (none: unconditional). The new version is in page_version.
+# given (none: unconditional). The new version is in page_version, empty
+# when the wiki gave none; the caller records it.
 store_page() {
-  file=$1 if_match=$2
-  if [ -n "$if_match" ]; then
-    set -- -H "If-Match: $if_match"
+  store_body=$1 store_if_match=$2
+  if [ -n "$store_if_match" ]; then
+    set -- -H "If-Match: $store_if_match"
   else
     set --
   fi
-  wiki_request PUT "api/markdown/$addr" -H 'Content-Type: text/markdown; charset=utf-8' --data-binary "@$file" "$@" || return
+  wiki_request PUT "api/markdown/$addr" -H 'Content-Type: text/markdown; charset=utf-8' --data-binary "@$store_body" "$@" || return
   check_answer "$addr_shown" || return
   page_version=$(header_value etag)
-  [ -z "$page_version" ] || remember_version "$page_version"
 }
 
 # The listing of SPACE (empty: the whole wiki), DEPTH levels deep (empty:
@@ -873,19 +1047,28 @@ cmd_get() {
   [ -n "$first" ] || { usage "get needs a page's address"; return; }
   load_config || return
   page_address "$first" "$second" || return
-  if [ -n "$version_only" ]; then
-    fetch_page only || return
-  else
-    fetch_page remember || return
-  fi
+  fetch_page || return
+  # The version is recorded only once the text is delivered whole (the
+  # table above record_version).
   if [ -n "$version_only" ]; then
     printf '%s\n' "$page_version"
   elif [ -n "$out" ]; then
-    cat "$work/body" >"$out" || { fail "$EX_ERROR" "cannot write $out"; return; }
-    printf '%s\n%s\n' "$page_version" "$addr_shown" >"$out.version" || { fail "$EX_ERROR" "cannot write $out.version"; return; }
+    if ! { cat "$work/body" >"$out"; } 2>/dev/null; then
+      fail "$EX_ERROR" "cannot write $out: nothing was written, and no version remembered"
+      return
+    fi
+    if ! write_record "$out.version" "$page_version$nl$addr_shown$nl"; then
+      fail "$EX_ERROR" "cannot write $out.version: the page is in $out, but its version is not remembered"
+      return
+    fi
+    record_version "$page_version"
     note "wrote $out; its version $page_version is in $out.version, for put --file $out"
   else
-    cat "$work/body"
+    if ! cat "$work/body"; then
+      fail "$EX_ERROR" "the page could not be written out whole: its version is not remembered"
+      return
+    fi
+    record_version "$page_version"
     note "version $page_version of $addr_shown (put remembers it)"
   fi
 }
@@ -931,13 +1114,12 @@ cmd_put() {
   # The version to write over: --if-match, else the one kept beside the file
   # by get --out when it is this page's, else the one remembered for the
   # page.
-  sidecar=''
   version=''
   if [ -n "$if_match" ]; then
     version=$(quoted_version "$if_match")
   elif [ -z "$force" ]; then
-    if [ -n "$file" ] && [ -r "$file.version" ] && [ "$(sed -n 2p "$file.version")" = "$addr_shown" ]; then
-      sidecar=$file.version
+    sidecar=$(sidecar_of "$file")
+    if [ -n "$sidecar" ]; then
       version=$(head -n 1 "$sidecar")
     else
       version=$(remembered_version)
@@ -948,8 +1130,15 @@ cmd_put() {
     fi
   fi
   store_page "$work/put-body" "$version" || return
-  [ -z "$sidecar" ] || [ -z "$page_version" ] || printf '%s\n%s\n' "$page_version" "$addr_shown" >"$sidecar"
-  note "wrote $addr_shown; its version is now $page_version"
+  # Accepted: every record of the page follows, however the version sent
+  # was chosen (the table above record_version).
+  if [ -n "$page_version" ]; then
+    record_version "$page_version" "$file"
+    note "wrote $addr_shown; its version is now $page_version"
+  else
+    forget_version "$file"
+    note "wrote $addr_shown; the wiki gave no new version, so none is remembered: get the page before the next put"
+  fi
 }
 
 cmd_reference() {
@@ -1004,10 +1193,12 @@ wiki.sh: the wiki from a shell, through its API for programs.
       server on standard input and output (needs jq).
   wiki.sh help
 
-PAGE is a page's address as the wiki writes it, /s/team/projects/p/the-wiki/
-(a space's home page: /s/team/), or a space's path and a page's path apart
-(team/projects the-wiki), or the page's URL in the browser, or its API
-address (/api/markdown/s/...), as list and search print them.
+PAGE is a page's address as the wiki writes it and list and search print
+it, /s/team/projects/p/the-wiki/ (a space's home page: /s/team/; a slug
+spelled like a word of the addresses gets a ~, as /s/team/~edit/), or the
+page's URL in the browser, or its API address (/api/markdown/s/...); or a
+space's path and a page's path apart, as the titles make them
+(team/projects the-wiki, team/edit history).
 
 Planned, once the server has them: creating pages and spaces, a page's table
 of contents, and one section of a page.
@@ -1232,7 +1423,7 @@ mcp_call_tool() {
       ;;
     wiki_read_page)
       short_argument page string required || return
-      if page_address "$arg" && fetch_page remember; then
+      if page_address "$arg" && fetch_page; then
         printf 'The page %s, version %s. To change it, call wiki_write_page with this version and the whole new text. Its Markdown follows, in the next block.' "$addr_shown" "$page_version" >"$work/tool-text"
         tool_answer false "$work/tool-text" "$work/body"
       else
@@ -1254,6 +1445,7 @@ mcp_call_tool() {
       mv "$work/arg" "$work/content"
       page_address "$page" || { tool_failed "$fail_message"; return; }
       if store_page "$work/content" "$(quoted_version "$version")"; then
+        if [ -n "$page_version" ]; then record_version "$page_version"; else forget_version; fi
         printf 'Wrote %s. Its version is now %s.' "$addr_shown" "$page_version" >"$work/tool-text"
         tool_answer false "$work/tool-text"
       elif [ $? = "$EX_MOVED" ]; then

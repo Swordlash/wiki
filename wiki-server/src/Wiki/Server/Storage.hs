@@ -162,6 +162,8 @@ module Wiki.Server.Storage
   , threadsThen
   , uploadAttachmentFile
   , uploadSpaceIconFile
+  , createPageAt
+  , createSpaceAt
 
     -- * Encrypted spaces
   , spaceEncryption
@@ -1556,7 +1558,7 @@ instance (MonadIO m) => MonadWiki (StoredWiki m) where
     (,) <$> shown space <*> withWriters page
   listSpaces = answer [] (listSpacesTx >>= traverse shown)
   getSpace = run Reads . (shown <=< getSpaceTx)
-  createSpace parent = run Writes . (shown <=< createSpaceTx parent)
+  createSpace parent = run Writes . (shown <=< createSpaceTx parent Nothing)
   renameSpace sid = run Writes . (shown <=< renameSpaceTx sid)
   setSpacePublic sid = run Writes . (shown <=< setSpacePublicTx sid)
   setSpaceSealed sid = run Writes . (shown <=< setSpaceSealedTx sid)
@@ -1593,8 +1595,8 @@ instance (MonadIO m) => MonadWiki (StoredWiki m) where
   getPage sid = run Reads . (withWriters <=< getPageTx sid)
   pageLocation = run Reads . pageLocationTx
   pageBacklinks = run Reads . backlinksTx
-  createPage sid parent title = run Writes . (withWriters <=< createPageTx Document sid parent title)
-  createPageOf kind sid parent title = run Writes . (withWriters <=< createPageTx kind sid parent title)
+  createPage sid parent title = run Writes . (withWriters <=< createPageTx Document sid parent Nothing title)
+  createPageOf kind sid parent title = run Writes . (withWriters <=< createPageTx kind sid parent Nothing title)
   savePage pid base title = saving . (withWriters <=< savePageTx pid base title)
   movePage pid sid = run Writes . (withWriters <=< movePageTx pid sid)
   setPageTemplate pid = run Writes . (withWriters <=< setPageTemplateTx pid)
@@ -1888,6 +1890,22 @@ spaceEncryption = run Reads . spaceEncryptionTx
 -- | Turn a private space with nothing written in it encrypted.
 encryptSpace :: (MonadIO m) => SpaceId -> EncryptSpace -> StoredWiki m (Either WikiError Space)
 encryptSpace sid = run Writes . (shown <=< encryptSpaceTx sid)
+
+-- | 'createPageOf' with the new page's slug given, rather than made from
+-- its title: what the API for programs creates at a page's address
+-- ("Wiki.Server.MarkdownApi"). A sibling with that slug is a 'Conflict'.
+-- The checks, the first version and the notifications are those of
+-- 'createPageOf'.
+createPageAt :: (MonadIO m) => PageKind -> SpaceId -> Maybe PageId -> Slug -> Text -> Text -> StoredWiki m (Either WikiError Page)
+createPageAt kind sid parent slug title = run Writes . (withWriters <=< createPageTx kind sid parent (Just slug) title)
+
+-- | 'createSpace' with the new space's slug given, rather than made from
+-- its name: what the API for programs creates at a space's address
+-- ("Wiki.Server.ListApi"). A sibling with that slug is a 'Conflict'. The
+-- checks, the grant to its creator and the home page are those of
+-- 'createSpace'.
+createSpaceAt :: (MonadIO m) => Maybe SpaceId -> Slug -> Text -> StoredWiki m (Either WikiError Space)
+createSpaceAt parent slug = run Writes . (shown <=< createSpaceTx parent (Just slug))
 
 -- | A subspace of an encrypted space, made encrypted.
 createEncryptedSubspace :: (MonadIO m) => SpaceId -> NewEncryptedSubspace -> StoredWiki m (Either WikiError Space)
@@ -2473,19 +2491,30 @@ withAncestors = go mempty
 --------------------------------------------------------------------------------
 -- Spaces
 
-createSpaceTx :: Maybe SpaceId -> Text -> Tx Space
-createSpaceTx parent name = do
+-- | A new space under a parent, or at the top level. Its slug is the one
+-- asked for, or, for 'Nothing', one made from its name, as the
+-- application's "New space" makes it. A slug asked for that a sibling has
+-- already is a 'Conflict', checked after the right to create the space; a
+-- slug made from the name takes a number instead ('freshSlug').
+createSpaceTx :: Maybe SpaceId -> Maybe Slug -> Text -> Tx Space
+createSpaceTx parent asked name = do
   ctx <- ask
   _ <- requireCreateSpace parent
   n <- nonBlank "A space's name" name
+  let others = Map.elems ctx.spaces
+      taken = isJust . findChild others parent
+  slug <- case asked of
+    Just a
+      | taken a -> failWith (Conflict ("There is a space with the slug " <> slugText a <> " there already."))
+      | otherwise -> pure a
+    Nothing -> pure (freshSlug taken (fromMaybe (fallbackSlug "space") (slugify n)))
   i <- newId
   time <- now
-  let others = Map.elems ctx.spaces
-      space =
+  let space =
         Space
           { id = SpaceId i
           , name = n
-          , slug = freshSlug (isJust . findChild others parent) (fromMaybe (fallbackSlug "space") (slugify n))
+          , slug
           , parent
           , public = False
           , sealed = False
@@ -3041,9 +3070,13 @@ shiftPageTx pid how = do
 
 -- | A new page of a kind. With no parent, it goes under the space's home
 -- page ('Wiki.Core.Space.parentOrRoot'), since nothing but the home page
--- has no parent. Only a kind this program knows can be chosen.
-createPageTx :: PageKind -> SpaceId -> Maybe PageId -> Text -> Text -> Tx Page
-createPageTx kind sid asked title body = do
+-- has no parent. Only a kind this program knows can be chosen. Its slug is
+-- the one asked for, or, for 'Nothing', one made from its title, as the
+-- application's "New page" makes it. A slug asked for that a sibling has
+-- already is a 'Conflict', the only one this transaction gives; a slug made
+-- from the title takes a number instead ('freshSlug').
+createPageTx :: PageKind -> SpaceId -> Maybe PageId -> Maybe Slug -> Text -> Text -> Tx Page
+createPageTx kind sid asked askedSlug title body = do
   requireKnownKind kind
   (s, c) <- findSpace sid
   let parent = parentOrRoot s asked
@@ -3055,6 +3088,12 @@ createPageTx kind sid asked title body = do
   t <- nonBlank "A page's title" title
   -- Its siblings to be: what its slug and position are chosen among.
   nodes <- db (childPages sid parent)
+  let taken = isJust . findChild nodes parent
+  slug <- case askedSlug of
+    Just a
+      | taken a -> failWith (Conflict ("There is a page with the slug " <> slugText a <> " there already."))
+      | otherwise -> pure a
+    Nothing -> pure (freshSlug taken (fromMaybe (fallbackSlug "page") (slugify t)))
   i <- newId
   time <- now
   let page =
@@ -3063,7 +3102,7 @@ createPageTx kind sid asked title body = do
           , space = sid
           , parent
           , title = t
-          , slug = freshSlug (isJust . findChild nodes parent) (fromMaybe (fallbackSlug "page") (slugify t))
+          , slug
           , body
           , attachments = []
           , createdAt = time

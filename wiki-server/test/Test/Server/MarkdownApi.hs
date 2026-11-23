@@ -1,8 +1,8 @@
 -- | The API for a page's Markdown (WP5.138 of docs/PLAN.md), over real
 -- HTTP, as @curl -u login:password@ drives it: signing in with HTTP Basic
--- alone, a page's Markdown read and written whole, the Markdown reference
--- the writing assistant is given, and the listing and the search that find
--- the pages to read.
+-- alone, a page's Markdown read and written whole, pages and spaces
+-- created at their addresses, the Markdown reference the writing assistant
+-- is given, and the listing and the search that find the pages to read.
 --
 -- Every request goes through 'sendBare', without the application's marker
 -- header, since a program's request has none. The demo's wiki is the
@@ -60,8 +60,10 @@ spec :: Backing -> Spec
 spec backing = describe "the API for a page's Markdown" $ do
   signingIn backing
   pages backing
+  creatingPages backing
   reference backing
   listing backing
+  creatingSpaces backing
   search backing
 
 -- | The demo with passwords for the editor, the reader and the admin.
@@ -268,6 +270,103 @@ pages backing = describe "a page's Markdown" $ do
       ok200 (getUrlWith r (r.public <> "/" <> links.pages.versions page.id Nothing Nothing) [session])
     slugs = either (panic . show) identity . parsePath
 
+-- | How many pages each space has, as the administrator's session reads
+-- the counts from the application's API: every space, encrypted ones too,
+-- so that a page created anywhere changes them.
+pageCounts :: Running -> IO (Map SpaceId Int)
+pageCounts r = do
+  token <- signInAs r "admin" "admin's password"
+  ok200 (getUrlWith r (r.public <> "/" <> links.spaces.pageCounts) [cookie token])
+
+-- | A page as the editor's session reads it from the application's API, by
+-- its space's path and its own, with the page's history, newest first.
+editorsPage :: Running -> Text -> Text -> IO (P.Page, [VersionInfo])
+editorsPage r space path = do
+  session <- cookie <$> signInAs r "editor" "editor's password"
+  sid :: SpaceId <- (\(s :: S.Space) -> s.id) <$> ok200 (getUrlWith r (r.public <> "/" <> links.spaces.atPath (slugsOf space)) [session])
+  page :: P.Page <- ok200 (getUrlWith r (r.public <> "/" <> links.spaces.pageAt sid (slugsOf path)) [session])
+  (page,) <$> ok200 (getUrlWith r (r.public <> "/" <> links.pages.versions page.id Nothing Nothing) [session])
+  where
+    slugsOf = either (panic . show) identity . parsePath
+
+creatingPages :: Backing -> Spec
+creatingPages backing = describe "creating a page" $ do
+  it "creates a page at a free address, titled from its slug, with one version by its author" $ withPasswords backing $ \r -> do
+    (.status) <$> request r methodGet "s/blog/p/release-notes/" [editor] "" `shouldReturn` 404
+    -- The counts see a page created: the other tests' "nothing was made".
+    counts <- pageCounts r
+    let text = toS (encodeUtf8 ("Written by a program: ünïcode too.\n" :: Text)) :: LByteString
+    made <- request r methodPut "s/blog/p/release-notes/" [editor] text
+    (made.status, header "Location" made) `shouldBe` (201, Just "/api/markdown/s/blog/p/release-notes/")
+    pageCounts r >>= (`shouldNotBe` counts)
+    tag <- maybe (expectationFailure "no ETag" >> pure "") pure (header "ETag" made)
+    again <- follow r editor "/api/markdown/s/blog/p/release-notes/"
+    (again.status, again.body, header "ETag" again) `shouldBe` (200, text, Just tag)
+    blog :: Listed <- follow r editor "/api/list/s/blog/" >>= answerOf 200
+    listed <- only "new page" (filter (\p -> p.markdown == "/api/markdown/s/blog/p/release-notes/") (fromMaybe [] blog.pages))
+    (listed.title, listed.kind) `shouldBe` ("Release notes", Kind.Document)
+    (page, history) <- editorsPage r "blog" "release-notes"
+    page.title `shouldBe` "Release notes"
+    map (\v -> (toHeader (PageVersion v.updatedAt), (\a -> a.id) <$> v.author)) history `shouldBe` [(tag, Just (UserId "user-editor"))]
+    -- The page is there now: a PUT writes over it, as over any page.
+    (.status) <$> request r methodPut "s/blog/p/release-notes/" [editor] "Second." `shouldReturn` 204
+
+  it "takes the title and the kind from the query, and creates a page under a page" $ withPasswords backing $ \r -> do
+    made <- request r methodPut "s/blog/p/q3/?title=Quarterly%20plan%20%E2%80%93%20Q3&kind=presentation" [editor] "# Plan\n"
+    (made.status, header "Location" made) `shouldBe` (201, Just "/api/markdown/s/blog/p/q3/")
+    nested <- request r methodPut "s/blog/p/q3/notes/" [editor] "Notes."
+    (nested.status, header "Location" nested) `shouldBe` (201, Just "/api/markdown/s/blog/p/q3/notes/")
+    blog :: Listed <- follow r editor "/api/list/s/blog/" >>= answerOf 200
+    q3 <- only "q3" (filter (\p -> p.markdown == "/api/markdown/s/blog/p/q3/") (fromMaybe [] blog.pages))
+    (q3.title, q3.kind) `shouldBe` ("Quarterly plan – Q3", Kind.Presentation)
+    map (\c -> (c.title, c.kind, c.markdown)) <$> q3.children `shouldBe` Just [("Notes", Kind.Document, "/api/markdown/s/blog/p/q3/notes/")]
+    (.body) <$> follow r editor "/api/markdown/s/blog/p/q3/notes/" `shouldReturn` "Notes."
+
+  it "creates only where there is no page, with If-None-Match: *" $ withPasswords backing $ \r -> do
+    old <- request r methodGet "s/blog/p/hello-world/" [editor] ""
+    refused <- request r methodPut "s/blog/p/hello-world/" [editor, ("If-None-Match", "*")] "Over it."
+    (refused.status, errorName refused) `shouldBe` (412, Just "Conflict")
+    (.body) <$> request r methodGet "s/blog/p/hello-world/" [editor] "" `shouldReturn` old.body
+    (.status) <$> request r methodPut "s/blog/p/fresh/" [editor, ("If-None-Match", "*")] "New." `shouldReturn` 201
+    (.status) <$> request r methodPut "s/blog/p/fresh/" [editor, ("If-None-Match", "*")] "Again." `shouldReturn` 412
+    (.body) <$> request r methodGet "s/blog/p/fresh/" [editor] "" `shouldReturn` "New."
+
+  it "creates nothing with If-Match, under a page or in a space not there, or with a bad slug, title, kind or If-None-Match" $ withPasswords backing $ \r -> do
+    counts <- pageCounts r
+    counts `shouldNotBe` mempty
+    tag <- fromMaybe "" . header "ETag" <$> request r methodGet "s/blog/p/hello-world/" [editor] ""
+    for_
+      [ (404, "s/blog/p/not-yet/", [("If-Match", tag)])
+      , (404, "s/blog/p/no-such-page/below/", [])
+      , (404, "s/no-such-space/p/a-page/", [])
+      , (404, "s/no-such-space/", [])
+      , (400, "s/blog/p/Not_A_Slug/", [])
+      , (400, "s/blog/p/blank/?title=", [])
+      , (400, "s/blog/p/odd/?kind=spreadsheet", [])
+      , (400, "s/blog/p/tagged/", [("If-None-Match", tag)])
+      ]
+      $ \(code, path, headers) -> do
+        reply <- request r methodPut path (editor : headers) "Nothing."
+        (path, reply.status) `shouldBe` (path, code)
+    pageCounts r `shouldReturn` counts
+    (.status) <$> request r methodGet "s/blog/p/not-yet/" [editor] "" `shouldReturn` 404
+
+  it "is refused to a user who may not create a page there, and makes none" $ withPasswords backing $ \r -> do
+    counts <- pageCounts r
+    -- The editor reads Docs and may not edit it; the reader views Projects.
+    (.status) <$> request r methodPut "s/docs/p/not-mine/" [editor] "Not mine." `shouldReturn` 403
+    (.status) <$> request r methodPut "s/team/projects/p/not-mine/" [rita] "Not mine." `shouldReturn` 403
+    -- Team is hidden from the editor, as a space that is not there.
+    (.status) <$> request r methodPut "s/team/p/not-mine/" [editor] "Not mine." `shouldReturn` 404
+    pageCounts r `shouldReturn` counts
+
+  it "is refused in an encrypted space, and makes no page there" $ withPasswords backing $ \r -> do
+    slug <- encryptedSpace r
+    counts <- pageCounts r
+    reply <- request r methodPut ("s/" <> slug <> "/p/plain/") [ada] "Plain text."
+    (reply.status, errorName reply) `shouldBe` (409, Just "Stale")
+    pageCounts r `shouldReturn` counts
+
 reference :: Backing -> Spec
 reference backing = describe "the Markdown reference" $
   it "is the text the writing assistant's prompt starts with, for anyone" $
@@ -462,7 +561,7 @@ listing backing = describe "the listing" $ do
     -- A page's address is not a space's listing.
     (.status) <$> follow r ada "/api/list/s/team/p/on-call/" `shouldReturn` 404
 
-  it "signs in as the Markdown does, and only reads" $ withPasswords backing $ \r -> do
+  it "signs in as the Markdown does, and takes a PUT only at a space" $ withPasswords backing $ \r -> do
     token <- signInAs r "editor" "editor's password"
     for_ ["/api/list/", "/api/list/s/blog/", "/api/search?q=wiki"] $ \address -> do
       bare <- sendBare r methodGet (r.public <> address) [] ""
@@ -471,8 +570,65 @@ listing backing = describe "the listing" $ do
       (.status) <$> sendBare r methodGet (r.public <> address) [cookie token] "" `shouldReturn` 401
       (.status) <$> sendBare r methodGet (r.public <> address) [basic "editor" "wrong"] "" `shouldReturn` 401
       posted <- sendBare r methodPost (r.public <> address) [editor] ""
-      (posted.status, header "Allow" posted) `shouldBe` (405, Just "GET, HEAD")
+      -- A space's listing takes a PUT too, which creates the space.
+      (posted.status, header "Allow" posted) `shouldBe` (405, Just (if address == "/api/list/s/blog/" then "GET, HEAD, PUT" else "GET, HEAD"))
       (.status) <$> follow r editor address `shouldReturn` 200
+    -- The top level has no slug to create a space at.
+    put' <- sendBare r methodPut (r.public <> "/api/list/") [editor] "{}"
+    (put'.status, header "Allow" put') `shouldBe` (405, Just "GET, HEAD")
+
+-- | A PUT to a space's listing, as a program sends it, with this body.
+putSpace :: Running -> Header -> Text -> LByteString -> IO Reply
+putSpace r who path = sendBare r methodPut (r.public <> "/api/list/s/" <> path) [who]
+
+creatingSpaces :: Backing -> Spec
+creatingSpaces backing = describe "creating a space" $ do
+  it "creates a space at a free path, listed, with a home page that reads" $ withPasswords backing $ \r -> do
+    made <- putSpace r editor "handbooks/" "{\"title\": \"Hand books\"}"
+    header "Location" made `shouldBe` Just "/api/list/s/handbooks/"
+    entry :: Listed <- answerOf 201 made
+    (entry.title, entry.path, entry.list, entry.home, entry.encrypted) `shouldBe` ("Hand books", "handbooks", Just "/api/list/s/handbooks/", Just "/api/markdown/s/handbooks/", False)
+    top :: TopLevel <- follow r editor "/api/list/" >>= answerOf 200
+    map (\s -> s.path) top.spaces `shouldSatisfy` elem "handbooks"
+    (.status) <$> follow r editor "/api/markdown/s/handbooks/" `shouldReturn` 200
+    -- A subspace with an empty body, titled from its slug, and a page in it.
+    sub :: Listed <- putSpace r editor "handbooks/on-call/" "" >>= answerOf 201
+    (sub.title, sub.path) `shouldBe` ("On call", "handbooks/on-call")
+    (.status) <$> request r methodPut "s/handbooks/on-call/p/rota/" [editor] "The rota." `shouldReturn` 201
+    again :: Listed <- follow r editor "/api/list/s/handbooks/" >>= answerOf 200
+    map (\s -> s.path) <$> again.subspaces `shouldBe` Just ["handbooks/on-call"]
+
+  it "refuses a path taken, a parent not there, a user who may not, and a body it cannot read, and makes nothing" $ withPasswords backing $ \r -> do
+    let paths = map (\s -> s.path) . everySpace . (\t -> t.spaces) <$> (follow r ada "/api/list/" >>= answerOf @TopLevel 200)
+    listed <- paths
+    for_
+      [ (409, editor, "blog/", "{\"title\": \"Blog again\"}")
+      , (404, editor, "no-such-space/child/", "")
+      , -- Team is hidden from the editor, as a space that is not there.
+        (404, editor, "team/child/", "")
+      , -- The reader may not create a space at the top, nor under Projects,
+        -- which they view and do not administer.
+        (403, rita, "readers-room/", "")
+      , (403, rita, "team/projects/below/", "")
+      , (400, editor, "notes/", "not JSON")
+      , (400, editor, "notes/", "[]")
+      , (400, editor, "notes/", "{\"title\": 3}")
+      , (400, editor, "notes/", "{\"name\": \"Notes\"}")
+      , (400, editor, "notes/", "{\"title\": \"Notes\", \"encrypted\": true}")
+      , (400, editor, "Not_A_Slug/", "")
+      ]
+      $ \(code, who, path, body) -> do
+        reply <- putSpace r who path body
+        (path, body, reply.status) `shouldBe` (path, body, code)
+    paths `shouldReturn` listed
+    blog :: Listed <- follow r editor "/api/list/s/blog/" >>= answerOf 200
+    blog.title `shouldBe` "Blog"
+
+  it "refuses a plain space inside an encrypted one" $ withPasswords backing $ \r -> do
+    slug <- encryptedSpace r
+    reply <- putSpace r ada (slug <> "/inside/") ""
+    reply.status `shouldBe` 409
+    (.status) <$> follow r ada ("/api/list/s/" <> slug <> "/inside/") `shouldReturn` 404
 
 search :: Backing -> Spec
 search backing = describe "the search" $ do

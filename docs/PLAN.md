@@ -2250,7 +2250,12 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   with the subsections on a parameter); API keys made in the user's
   panel, with an expiry date and rights (read, write, admin), shown
   once, the server keeping a hash; the handlers moved to
-  servant-server; an MCP client or server (to find out whether the
+  servant-server, and with that an OpenAPI description of the API
+  generated from its servant type (the owner, 2026-11-23:
+  "servant-openapi3"), served by the wiki and checked in a test
+  against the routes, so that it cannot drift; if `servant-openapi3`
+  does not build on GHC 9.14, another maintained package, said in the
+  report; an MCP client or server (to find out whether the
   wiki's server can be the MCP server; Hackage's `mcp`), with clients
   in Haskell, Python and `curl`. Attachments are his earlier list's
   and not in the issue.

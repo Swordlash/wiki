@@ -104,16 +104,24 @@ fitRelease :: PageM s ()
 fitRelease = unsafeIOToPageM js_fit_release >> waitQuiet
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
-spec m = do
+-- The reads look once, with the program idle. Idle and not quiet: every
+-- change of the text starts the draft's counted pause of two seconds
+-- ("Wiki.App.View.Editor"'s draftDelay), which a quiet read would wait
+-- for. What needs more than idle waits for quiet where it is read
+-- ('waitQuiet'): a row's CodeMirror, which comes in a fork the program
+-- waits for ('Wiki.App.Editor.Browser.whileAttaching'); the rows cut
+-- again, the problems and the preview, which follow the check's and the
+-- preview's counted pauses after the typing.
+spec m = readsOnce Idle $ do
   it "lists the slides as rows, the cursor's open as the editor opens, each opened and closed by its header, several at once" $ runPage $ do
     -- The slides measured late, as on a slow machine: the headers found
     -- before are the ones there after.
     unsafeIOToPageM (js_fit_hold True)
     (ui, _) <- openDeck deck
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     (findAll ui ".editor-slides .slide-row-number" >>= traverse textContent) `shouldReturn` ["1.", "2.", "3.", "4."]
     -- The cursor starts under the title line, in the title slide's row.
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     headers <- findAll ui ".editor-slides .slide-row-toggle"
     editorFits `shouldReturn` replicate 4 "unmeasured"
     fitRelease
@@ -121,10 +129,12 @@ spec m = do
     traverse isAttached headers `shouldReturn` replicate 4 True
     watchEditor ui
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     rowHeader ui "Two" >>= (`getAttribute` "aria-expanded") >>= (`shouldBe` Just "true")
     rowHeader ui "Deck" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Two"]
+    openTitles ui `shouldReturn` ["Two"]
+    -- Two's CodeMirror comes once the program is quiet.
+    waitQuiet
     length <$> findAll ui ".editor-slides .cm-editor" `shouldReturn` 1
     rowHeader ui "Deck" >>= (`getAttribute` "aria-expanded") >>= (`shouldBe` Just "false")
     -- Rows change what is shown, never the text.
@@ -133,12 +143,12 @@ spec m = do
 
   it "switches to the raw Markdown and back, which the browser keeps, changing no byte and opening the rows open before, of a text with carriage returns too" $ runPage $ do
     (ui, wiki) <- openDeck deck
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     watchEditor ui
     modeButton ui "Raw" >>= click
-    eventually $ length <$> findAll ui ".editor-slides" `shouldReturn` 0
+    length <$> findAll ui ".editor-slides" `shouldReturn` 0
     editorText ui >>= shouldBeVisible
     modeButton ui "Raw" >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "true")
     inputsSeen ui `shouldReturn` 0
@@ -151,45 +161,47 @@ spec m = do
     unmount again
     -- Back slide by slide: the rows open before open again.
     modeButton ui "Slides" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     markdown ui `shouldReturn` deck
     -- A text with carriage returns is cut into rows too, and either mode
     -- leaves every byte of it as it is.
     let returns = T.replace "\n" "\r\n" deck
     setMarkdown ui returns
     watchEditor ui
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     modeButton ui "Raw" >>= click
     modeButton ui "Slides" >>= click
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     inputsSeen ui `shouldReturn` 0
     markdown ui `shouldReturn` returns
 
   it "completes in the raw Markdown after a visit to the rows, and in a row slide by slide, one list in each mode" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     modeButton ui "Raw" >>= click
     editorText ui >>= shouldBeVisible
     selectText ui (lineEnd deck 7) (lineEnd deck 7)
     editorText ui >>= (`typeText` " :smi")
+    -- CodeMirror opens its list after a delay of its own, on its own clock.
     eventually $ completing ui `shouldReturn` "active"
     length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 1
     press "Escape"
     modeButton ui "Slides" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     text <- markdown ui
     rowSelect 1 (T.length (rowTextOf text 1)) (T.length (rowTextOf text 1))
     rowContent ui "One" >>= (`typeText` " :smi")
+    -- CodeMirror opens its list after a delay of its own, on its own clock.
     eventually $ length <$> findAll ui ".editor-slides .cm-tooltip-autocomplete" `shouldReturn` 1
     length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 1
     completing ui `shouldReturn` ""
 
   it "has one history: Ctrl+Z in a row takes back a change in another, which opens, and the row left closes; the others stay" $ runPage $ do
     (ui, _) <- openDeck deck
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     -- Typed at the end of "First.".
     rowSelect 1 14 14
     rowContent ui "One" >>= (`typeText` "x")
@@ -198,74 +210,85 @@ spec m = do
     -- From row "Three", Ctrl+Z: the change in "One" is undone there, which
     -- takes the focus, "Three" closes, and "Deck" stays open.
     rowHeader ui "Three" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One", "Three"]
+    openTitles ui `shouldReturn` ["Deck", "One", "Three"]
     rowSelect 3 2 2
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
-    eventually $ rowFocused 1 `shouldReturn` True
+    markdown ui `shouldReturn` deck
+    openTitles ui `shouldReturn` ["Deck", "One"]
+    rowFocused 1 `shouldReturn` True
     -- An undo inside the row with the focus closes nothing.
     rowContent ui "One" >>= (`typeText` "y")
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
+    markdown ui `shouldReturn` deck
     openTitles ui `shouldReturn` ["Deck", "One"]
     -- To a row that is closed: it opens, with the focus and the cursor at
     -- the change.
     rowSelect 1 14 14
     rowContent ui "One" >>= (`typeText` "z")
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     rowSelect 0 2 2
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
-    eventually $ openTitles ui `shouldReturn` ["One"]
-    eventually $ rowFocused 0 `shouldReturn` False
+    markdown ui `shouldReturn` deck
+    openTitles ui `shouldReturn` ["One"]
+    -- One's CodeMirror, the row opened again by the undo, comes once the
+    -- program is quiet.
+    waitQuiet
+    rowFocused 0 `shouldReturn` False
     rowSelection 1 `shouldReturn` (14, 14)
     -- The assistant writing in another row opens it, and closes none.
     proposeText ui (lineStart deck 15) (lineStart deck 15) "Proposed. "
-    eventually $ openTitles ui `shouldReturn` ["One", "Three"]
+    openTitles ui `shouldReturn` ["One", "Three"]
     rowFocused 1 `shouldReturn` True
     -- Ctrl+Z on a header is the history's too.
     rowHeader ui "One" >>= focus
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
+    markdown ui `shouldReturn` deck
 
   it "splits a row where a heading is typed and joins it again when the heading goes, after a pause, the editor with the focus kept, past an emoji" $ runPage $ do
     let titled = T.replace "# Deck" "# Deck 😀" deck
     (ui, _) <- openDeck titled
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One"]
+    openTitles ui `shouldReturn` ["Deck 😀", "One"]
+    -- One's CodeMirror comes once the program is quiet.
+    waitQuiet
     editor <- find ui ".editor-slides > li:nth-child(2) .cm-editor"
     rowSelect 1 14 14
     rowContent ui "One" >>= (`typeText` "\n## Mid")
     let split = T.replace "First." "First.\n## Mid" titled
     markdown ui `shouldReturn` split
-    eventually $ rowTitles ui `shouldReturn` ["Deck 😀", "One", "Mid", "Two", "Three"]
+    -- The rows are cut again after the check's pause.
+    waitQuiet
+    rowTitles ui `shouldReturn` ["Deck 😀", "One", "Mid", "Two", "Three"]
     -- The part above the cursor is a new row, open; the cursor's part has
     -- the editor it was typed in, still with the focus.
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One", "Mid"]
+    openTitles ui `shouldReturn` ["Deck 😀", "One", "Mid"]
     find ui ".editor-slides > li:nth-child(3) .cm-editor" >>= (`shouldBeSameElement` editor)
     rowFocused 2 `shouldReturn` True
     rowText 2 `shouldReturn` "## Mid\n"
     -- Undone: the heading goes, and the rows join, in the same editor.
     replicateM_ 4 (press "Control+z")
-    eventually $ markdown ui `shouldReturn` titled
-    eventually $ rowTitles ui `shouldReturn` ["Deck 😀", "One", "Two", "Three"]
+    markdown ui `shouldReturn` titled
+    rowTitles ui `shouldReturn` ["Deck 😀", "One", "Two", "Three"]
     find ui ".editor-slides > li:nth-child(2) .cm-editor" >>= (`shouldBeSameElement` editor)
     -- The row above went from the list: the editor kept the focus.
-    eventually $ rowFocused 1 `shouldReturn` True
+    rowFocused 1 `shouldReturn` True
 
   it "keeps the rows below a row that leaves a code block, a spoiler or an HTML comment open, their editors and cursors, and says the presentation takes them in" $ runPage $ do
     (ui, _) <- openDeck deck
     for_ ["One", "Two", "Three"] $ \title -> rowHeader ui title >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    openTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    -- The rows' CodeMirrors come once the program is quiet.
+    waitQuiet
     two <- find ui ".editor-slides > li:nth-child(3) .cm-editor"
     three <- find ui ".editor-slides > li:nth-child(4) .cm-editor"
     rowSelect 3 3 5
     for_ ["```", "[[!spoiler]]{x}(Q)", "<!--"] $ \block -> do
       rowSelect 1 14 14
       rowContent ui "One" >>= (`typeText` ("\n\n" <> block))
-      eventually $ (findAll ui ".editor-slides .slide-row-part" >>= traverse textContent) `shouldReturn` ["part of slide 2", "part of slide 2"]
+      -- The rows' notes follow the check's pause.
+      waitQuiet
+      (findAll ui ".editor-slides .slide-row-part" >>= traverse textContent) `shouldReturn` ["part of slide 2", "part of slide 2"]
       rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
       find ui ".editor-slides > li:nth-child(3) .cm-editor" >>= (`shouldBeSameElement` two)
       find ui ".editor-slides > li:nth-child(4) .cm-editor" >>= (`shouldBeSameElement` three)
@@ -277,17 +300,18 @@ spec m = do
       let typed = T.replace "First." ("First.\n\n" <> block) deck
           opening = T.length (fst (T.breakOn block typed))
           openingEnd = opening + T.length (T.takeWhile (/= '\n') block)
-      eventually $ do
-        marked <- problemsMarked ui
-        [(a, b) | (a, b, message) <- marked, "A code block, a box or an HTML block on this slide is not closed" `T.isPrefixOf` message] `shouldBe` [(opening, openingEnd)]
+      marked <- problemsMarked ui
+      [(a, b) | (a, b, message) <- marked, "A code block, a box or an HTML block on this slide is not closed" `T.isPrefixOf` message] `shouldBe` [(opening, openingEnd)]
       replicateM_ 3 (press "Control+z")
-      eventually $ markdown ui `shouldReturn` deck
-      eventually $ length <$> findAll ui ".editor-slides .slide-row-part" `shouldReturn` 0
+      markdown ui `shouldReturn` deck
+      -- The notes go after the check's pause.
+      waitQuiet
+      length <$> findAll ui ".editor-slides .slide-row-part" `shouldReturn` 0
 
   it "has one history in both modes: Ctrl+Z in the raw Markdown takes back a change made in a row, and in a row one made in the raw Markdown" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     rowSelect 1 14 14
     rowContent ui "One" >>= (`typeText` "x")
     markdown ui `shouldReturn` T.replace "First." "First.x" deck
@@ -295,39 +319,44 @@ spec m = do
     editorText ui >>= shouldBeVisible
     selectText ui 0 0
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
+    markdown ui `shouldReturn` deck
     selectText ui (lineEnd deck 11) (lineEnd deck 11)
     editorText ui >>= (`typeText` "y")
     markdown ui `shouldReturn` T.replace "Second." "Second.y" deck
     modeButton ui "Slides" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     rowSelect 1 3 3
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
+    markdown ui `shouldReturn` deck
 
   it "drops a cut of an older text and keeps the typing, the next cut coming after it" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     rowSelect 1 14 14
     rowContent ui "One" >>= (`typeText` "x")
     -- A cut of the text before the keystroke, arriving late: not taken.
-    unsafeIOToPageM (fromJSText <$> js_stale_rows (toJSText deck)) `shouldReturn` "[false,false]"
+    perform (fromJSText <$> js_stale_rows (toJSText deck)) `shouldReturn` "[false,false]"
     let typed = T.replace "First." "First.x" deck
     markdown ui `shouldReturn` typed
     rowContent ui "One" >>= (`typeText` "\n## Late")
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Late", "Two", "Three"]
+    -- The rows are cut again after the check's pause.
+    waitQuiet
+    rowTitles ui `shouldReturn` ["Deck", "One", "Late", "Two", "Three"]
     markdown ui `shouldReturn` T.replace "First." "First.x\n## Late" deck
 
   it "counts a row's problems on its header, and takes the cursor to a problem in a closed row, which opens, past an emoji" $ runPage $ do
     let broken = T.intercalate "\n" ["# Deck 😀", "", "## One", "", "Fine.", "", "## Two", "", "Half: $\\frac{1}$ here.", "", "## Three", "", "Fine."]
     (ui, _) <- openDeck broken
-    eventually $ (findAll ui ".editor-slides .slide-row-problems" >>= traverse textContent) `shouldReturn` ["1 problem"]
+    (findAll ui ".editor-slides .slide-row-problems" >>= traverse textContent) `shouldReturn` ["1 problem"]
     -- The cursor starts in "One", under the title line.
-    eventually $ openTitles ui `shouldReturn` ["One"]
+    openTitles ui `shouldReturn` ["One"]
     find ui ".editor-problems" >>= click
-    eventually $ openTitles ui `shouldReturn` ["One", "Two"]
-    eventually $ rowFocused 2 `shouldReturn` True
+    openTitles ui `shouldReturn` ["One", "Two"]
+    -- Two's CodeMirror, the row opened, takes the focus once the program is
+    -- quiet.
+    waitQuiet
+    rowFocused 2 `shouldReturn` True
     (a, b) <- rowSelection 2
     shown <- rowText 2
     T.take (b - a) (T.drop a shown) `shouldSatisfy` T.isInfixOf "frac"
@@ -336,32 +365,34 @@ spec m = do
     let quiz = T.intercalate "\n" ["# Deck", "", "## Quiz", "", "### [[!spoiler]] Question", "", "Hidden answer.", "", "[[!spoiler]]{a}(The answer)", "Forty-two.", "[[/spoiler]]{a}", "", "## Next", "", "Text."]
     (ui, _) <- openDeck quiz
     -- The cursor starts in "Quiz", which is open.
-    eventually $ openTitles ui `shouldReturn` ["Quiz"]
-    let markers = eventually $ do
+    openTitles ui `shouldReturn` ["Quiz"]
+    let markers = do
           found <- findAll ui ".editor-slides .cm-foldGutter .cm-wiki-fold-open"
           length found `shouldBe` 2
           pure found
     -- The block spoiler, by its marker, and open again by its mark.
     markers >>= traverse_ click . (`atMay` 1)
-    eventually $ length <$> findAll ui ".editor-slides .cm-wiki-folded" `shouldReturn` 1
-    eventually $ rowContent ui "Quiz" >>= textContent >>= (`shouldSatisfy` (not . T.isInfixOf "Forty-two."))
+    length <$> findAll ui ".editor-slides .cm-wiki-folded" `shouldReturn` 1
+    rowContent ui "Quiz" >>= textContent >>= (`shouldSatisfy` (not . T.isInfixOf "Forty-two."))
     find ui ".editor-slides .cm-wiki-folded" >>= click
-    eventually $ length <$> findAll ui ".editor-slides .cm-wiki-folded" `shouldReturn` 0
+    length <$> findAll ui ".editor-slides .cm-wiki-folded" `shouldReturn` 0
     -- The heading spoiler's section.
     markers >>= traverse_ click . head
-    eventually $ rowContent ui "Quiz" >>= textContent >>= (`shouldSatisfy` (not . T.isInfixOf "Hidden answer."))
+    rowContent ui "Quiz" >>= textContent >>= (`shouldSatisfy` (not . T.isInfixOf "Hidden answer."))
     find ui ".editor-slides .cm-wiki-folded" >>= click
-    eventually $ rowContent ui "Quiz" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Hidden answer.")
+    rowContent ui "Quiz" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Hidden answer.")
     markdown ui `shouldReturn` quiz
 
   it "draws the rows' headers before CodeMirror is there, not to be opened, and without the editor's script shows the Markdown with a note" $ runPage $ do
     unsafeIOToPageM (js_editor_script (toJSText "hold"))
     (ui, wiki) <- openDeckWith False deck
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     (findAll ui ".editor-slides .slide-row-toggle" >>= traverse (`getProperty` "disabled")) `shouldReturn` replicate 4 "true"
-    unsafeIOToPageM (js_editor_script (toJSText "as-is"))
+    perform (js_editor_script (toJSText "as-is"))
+    -- The test let the held editor through: its arrival, which the program was
+    -- given no promise of, is told to it by an event.
     eventually $ (findAll ui ".editor-slides .slide-row-toggle" >>= traverse (`getProperty` "disabled")) `shouldReturn` replicate 4 "false"
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     unmount ui
     unsafeIOToPageM (js_editor_script (toJSText "absent"))
     bare <- startOn m wiki helloEditor
@@ -372,200 +403,216 @@ spec m = do
 
   it "shows the cursor's slide in the preview, and in the raw Markdown the whole deck or one slide" $ runPage $ do
     (ui, _) <- openDeck deck
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     find ui ".editor-side-by-side" >>= click
-    eventually $ cardTitles ui `shouldReturn` ["Deck"]
+    -- The preview follows.
+    waitQuiet
+    cardTitles ui `shouldReturn` ["Deck"]
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     rowSelect 2 1 1
-    eventually $ cardTitles ui `shouldReturn` ["Two"]
+    waitQuiet
+    cardTitles ui `shouldReturn` ["Two"]
     find ui ".editor-preview .slide-frame:not(.slide-offstage) .slide-number" >>= (`shouldHaveText` "3 / 4")
     modeButton ui "Raw" >>= click
-    eventually $ cardTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    waitQuiet
+    cardTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     find ui ".editor-one-slide" >>= click
-    eventually $ cardTitles ui `shouldReturn` ["Two"]
+    waitQuiet
+    cardTitles ui `shouldReturn` ["Two"]
 
   it "disables the toolbar's commands while no row is open, and runs them in the row with the cursor" $ runPage $ do
     (ui, _) <- openDeck deck
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     rowHeader ui "Deck" >>= click
-    eventually $ openTitles ui `shouldReturn` []
+    openTitles ui `shouldReturn` []
     bold <- find ui ".editor-toolbar button.tool[aria-label=\"Bold\"]"
     getProperty bold "disabled" `shouldReturn` "true"
     rowHeader ui "Two" >>= click
-    eventually $ getProperty bold "disabled" `shouldReturn` "false"
+    getProperty bold "disabled" `shouldReturn` "false"
     rowSelect 2 8 15
     click bold
-    eventually $ markdown ui `shouldReturn` T.replace "Second." "**Second.**" deck
+    markdown ui `shouldReturn` T.replace "Second." "**Second.**" deck
     rowText 2 `shouldReturn` "## Two\n\n**Second.**\n"
 
   it "moves a slide with Alt+Up and Alt+Down from its header and from its text, one step each that one undo takes back, the editors, cursors and focus kept, the title slide staying first" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     -- From the header.
     rowHeader ui "Two" >>= focus
     press "Alt+ArrowUp"
     let up = moveSlide 2 1 deck
-    eventually $ markdown ui `shouldReturn` up
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "Two", "One", "Three"]
+    markdown ui `shouldReturn` up
+    rowTitles ui `shouldReturn` ["Deck", "Two", "One", "Three"]
     openTitles ui `shouldReturn` ["Deck", "Two"]
-    eventually $ status ui `shouldReturn` "Slide 2, 'Two' moved to 2 of 4"
+    status ui `shouldReturn` "Slide 2, 'Two' moved to 2 of 4"
     -- Up again would put it above the title slide: no move.
     press "Alt+ArrowUp"
     markdown ui `shouldReturn` up
     press "Alt+ArrowDown"
-    eventually $ markdown ui `shouldReturn` deck
+    markdown ui `shouldReturn` deck
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` up
+    markdown ui `shouldReturn` up
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    markdown ui `shouldReturn` deck
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     -- From the text, with "Three" open below: the moved row keeps its
     -- editor, its cursor and the focus, and so does the other.
     rowHeader ui "Three" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two", "Three"]
+    openTitles ui `shouldReturn` ["Deck", "Two", "Three"]
+    -- Three's CodeMirror comes once the program is quiet.
+    waitQuiet
     two <- find ui ".editor-slides > li:nth-child(3) .cm-editor"
     three <- find ui ".editor-slides > li:nth-child(4) .cm-editor"
     rowSelect 3 2 4
     rowSelect 2 3 5
     press "Alt+ArrowDown"
     let down = moveSlide 2 3 deck
-    eventually $ markdown ui `shouldReturn` down
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Three", "Two"]
+    markdown ui `shouldReturn` down
+    rowTitles ui `shouldReturn` ["Deck", "One", "Three", "Two"]
     find ui ".editor-slides > li:nth-child(4) .cm-editor" >>= (`shouldBeSameElement` two)
     find ui ".editor-slides > li:nth-child(3) .cm-editor" >>= (`shouldBeSameElement` three)
-    eventually $ rowFocused 3 `shouldReturn` True
+    rowFocused 3 `shouldReturn` True
     rowSelection 3 `shouldReturn` (3, 5)
     rowSelection 2 `shouldReturn` (2, 4)
     -- Undone in the row: back, the same editors.
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    markdown ui `shouldReturn` deck
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     find ui ".editor-slides > li:nth-child(3) .cm-editor" >>= (`shouldBeSameElement` two)
     -- And redone from the raw Markdown's history.
     modeButton ui "Raw" >>= click
     selectText ui 0 0
     press "Control+y"
-    eventually $ markdown ui `shouldReturn` down
+    markdown ui `shouldReturn` down
     modeButton ui "Slides" >>= click
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Three", "Two"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Three", "Two"]
 
   it "moves a slide dragged by its handle before or after the row it is dropped on, and gives no handle to the title slide" $ runPage $ do
     (ui, _) <- openDeck deck
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
-    handles <- eventually $ do
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    handles <- do
       found <- findAll ui ".editor-slides .slide-row-handle"
       length found `shouldBe` 3
       pure found
     -- Dropped on the upper half of a header: before that row.
     target <- rowHeader ui "Three"
     traverse_ (`dragTo` target) (head handles)
-    eventually $ markdown ui `shouldReturn` moveSlide 1 2 deck
+    markdown ui `shouldReturn` moveSlide 1 2 deck
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    markdown ui `shouldReturn` deck
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     -- Dropped low on a row: after it.
     below <- find ui ".editor-slides > li:nth-child(4) .slide-row-add"
     findAll ui ".editor-slides .slide-row-handle" >>= traverse_ (`dragTo` below) . head
-    eventually $ markdown ui `shouldReturn` moveSlide 1 3 deck
+    markdown ui `shouldReturn` moveSlide 1 3 deck
     length <$> findAll ui ".editor-slides .drop-before, .editor-slides .drop-after" `shouldReturn` 0
 
   it "deletes a slide without asking, one step: the next row's header takes the focus, and Ctrl+Z brings the row back, open as it was" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     rowDelete ui "Two" >>= click
     let cut = fst (cutRows (RowKey 0) deck)
         deleted = maybe deck (assemble . fst) (deleteRow 2 cut)
-    eventually $ markdown ui `shouldReturn` deleted
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
-    eventually $ status ui `shouldReturn` "Slide 3, 'Two' deleted. Ctrl+Z brings it back."
+    markdown ui `shouldReturn` deleted
+    rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
+    status ui `shouldReturn` "Slide 3, 'Two' deleted. Ctrl+Z brings it back."
     -- The focus on "Three"'s header: Ctrl+Z there.
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    markdown ui `shouldReturn` deck
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     -- The title slide has no delete button.
     length <$> findAll ui ".editor-slides .slide-row-delete" `shouldReturn` 3
 
   it "adds a slide after the row last typed in, and at the end by a row's +, open with its title selected and the focus in it" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     rowSelect 1 3 3
     find ui ".editor-new-slide" >>= click
     let cut = fst (cutRows (RowKey 0) deck)
         added = assemble (fst (newRow (RowKey 9) "New slide" 2 cut))
-    eventually $ markdown ui `shouldReturn` added
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "New slide", "Two", "Three"]
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One", "New slide"]
-    eventually $ rowFocused 2 `shouldReturn` True
-    eventually $ status ui `shouldReturn` "Slide 3, 'New slide' added."
+    markdown ui `shouldReturn` added
+    rowTitles ui `shouldReturn` ["Deck", "One", "New slide", "Two", "Three"]
+    openTitles ui `shouldReturn` ["Deck", "One", "New slide"]
+    -- The new row's CodeMirror takes the focus once the program is quiet.
+    waitQuiet
+    rowFocused 2 `shouldReturn` True
+    status ui `shouldReturn` "Slide 3, 'New slide' added."
     openRowContent ui >>= (`typeText` "Mine")
     markdown ui `shouldReturn` T.replace "## New slide" "## Mine" added
     press "Control+z"
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    markdown ui `shouldReturn` deck
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     -- At the end, by the last row's "+".
     find ui ".editor-slides > li:nth-child(4) .slide-row-add" >>= click
-    eventually $ markdown ui `shouldReturn` assemble (fst (newRow (RowKey 9) "New slide" 4 cut))
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three", "New slide"]
+    markdown ui `shouldReturn` assemble (fst (newRow (RowKey 9) "New slide" 4 cut))
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three", "New slide"]
 
   it "says in its live region where an undo took the cursor" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     rowSelect 1 14 14
     rowContent ui "One" >>= (`typeText` "x")
     rowSelect 0 2 2
     press "Control+z"
-    eventually $ status ui `shouldReturn` "Undo in slide 2, 'One'"
+    status ui `shouldReturn` "Undo in slide 2, 'One'"
 
   it "keeps a draft through a reopened editor in either mode" $ runPage $ do
     (ui, wiki) <- openDeck deck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     rowSelect 1 14 14
     rowContent ui "One" >>= (`typeText` "x")
     let typed = T.replace "First." "First.x" deck
     keepDraft ui
     again <- startOn m wiki helloEditor
-    eventually $ markdown again `shouldReturn` typed
-    eventually $ rowTitles again `shouldReturn` ["Deck", "One", "Two", "Three"]
+    -- CodeMirror comes in a fork the program waits for.
+    waitQuiet
+    markdown again `shouldReturn` typed
+    rowTitles again `shouldReturn` ["Deck", "One", "Two", "Three"]
     modeButton again "Raw" >>= click
     selectText again (lineEnd typed 11) (lineEnd typed 11)
     editorText again >>= (`typeText` "y")
     let both = T.replace "Second." "Second.y" typed
     keepDraft again
     third <- startOn m wiki helloEditor
-    eventually $ markdown third `shouldReturn` both
+    waitQuiet
+    markdown third `shouldReturn` both
     modeButton third "Slides" >>= click
-    eventually $ rowTitles third `shouldReturn` ["Deck", "One", "Two", "Three"]
+    rowTitles third `shouldReturn` ["Deck", "One", "Two", "Three"]
     rowHeader third "Two" >>= click
-    eventually $ rowText 2 `shouldReturn` "## Two\n\nSecond.y\n"
+    -- Two's CodeMirror comes once the program is quiet.
+    waitQuiet
+    rowText 2 `shouldReturn` "## Two\n\nSecond.y\n"
 
   it "mounts no row's editor for sixty slides but the one the cursor starts in, and one more for each header clicked" $ runPage $ do
     let sixty = T.intercalate "\n\n" ("# Sixty" : concat [["## Slide " <> show n, "Text " <> show n <> "."] | n <- [1 .. 59 :: Int]])
     (ui, _) <- openDeck sixty
-    eventually $ length <$> rowTitles ui `shouldReturn` 60
-    eventually $ openTitles ui `shouldReturn` ["Slide 1"]
+    length <$> rowTitles ui `shouldReturn` 60
+    openTitles ui `shouldReturn` ["Slide 1"]
     length <$> findAll ui ".editor-slides .cm-editor" `shouldReturn` 1
     length <$> findAll ui ".editor-form .cm-editor" `shouldReturn` 2
     rowHeader ui "Slide 1" >>= click
-    eventually $ length <$> findAll ui ".editor-slides .cm-editor" `shouldReturn` 0
+    length <$> findAll ui ".editor-slides .cm-editor" `shouldReturn` 0
     rowHeader ui "Slide 40" >>= click
-    eventually $ length <$> findAll ui ".editor-slides .cm-editor" `shouldReturn` 1
+    -- Slide 40's CodeMirror comes once the program is quiet.
+    waitQuiet
+    length <$> findAll ui ".editor-slides .cm-editor" `shouldReturn` 1
 
   it "keeps the title line's mark in the first row" $ runPage $ do
     (ui, _) <- openDeck deck
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     rowSelect 0 0 0
     press "Backspace"
     press "Delete"
     press "Delete"
-    eventually $ markdown ui >>= (`shouldSatisfy` T.isPrefixOf "# ")
+    markdown ui >>= (`shouldSatisfy` T.isPrefixOf "# ")
     rowText 0 >>= (`shouldSatisfy` T.isPrefixOf "# ")
 
   it "keeps the title line's mark in the row that starts the text, whichever row that is after a split or a join, and nowhere else" $ runPage $ do
@@ -573,15 +620,17 @@ spec m = do
     -- open before its CodeMirror is there to select in.
     unsafeIOToPageM (js_rows_late 300)
     (ui, _) <- openDeck deck
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     -- A heading typed under the title: after the pause the editor it was
     -- typed in holds the new slide, which no longer starts the text.
     rowSelect 0 14 14
     rowContent ui "Deck" >>= (`typeText` "\n## New")
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "New", "One", "Two", "Three"]
-    eventually $ rowFocused 1 `shouldReturn` True
+    -- The rows are cut again after the check's pause.
+    waitQuiet
+    rowTitles ui `shouldReturn` ["Deck", "New", "One", "Two", "Three"]
+    rowFocused 1 `shouldReturn` True
     openRowContent ui >>= (`typeText` "s")
-    eventually $ markdown ui `shouldReturn` T.replace "By me." "By me.\n## News" deck
+    markdown ui `shouldReturn` T.replace "By me." "By me.\n## News" deck
     unsafeIOToPageM (js_rows_late 0)
     unmount ui
     -- "One" joined to the title slide, its heading taken away in its own
@@ -589,35 +638,42 @@ spec m = do
     (joined, _) <- openDeck deck
     rowHeader joined "Deck" >>= click
     rowHeader joined "One" >>= click
-    eventually $ openTitles joined `shouldReturn` ["One"]
+    openTitles joined `shouldReturn` ["One"]
+    -- One's CodeMirror comes once the program is quiet.
+    waitQuiet
     editor <- find joined ".editor-slides > li:nth-child(2) .cm-editor"
     rowSelect 1 0 7
     press "Backspace"
-    eventually $ rowTitles joined `shouldReturn` ["Deck", "Two", "Three"]
+    -- The rows are joined after the check's pause.
+    waitQuiet
+    rowTitles joined `shouldReturn` ["Deck", "Two", "Three"]
     find joined ".editor-slides > li:nth-child(1) .cm-editor" >>= (`shouldBeSameElement` editor)
     rowSelect 0 0 0
     press "Backspace"
     press "Delete"
     press "Delete"
-    eventually $ markdown joined >>= (`shouldSatisfy` T.isPrefixOf "# ")
+    markdown joined >>= (`shouldSatisfy` T.isPrefixOf "# ")
     rowText 0 >>= (`shouldSatisfy` T.isPrefixOf "# ")
 
   it "leaves a file dropped or pasted in a row to the editor, which attaches it at the cursor, and puts in neither the file's text nor its name; names the row's text by its slide's title" $ runPage $ do
     (ui, _) <- openDeck deck
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     rowSelect 0 14 14
     -- CodeMirror would read the dropped file, put its text where it was
     -- dropped and select it, and the editor's link would take its place
     -- there, not at the cursor.
-    unsafeIOToPageM (dropFile ".editor-slides .slide-row.open .cm-content" "notes.txt" "text/plain" "aGVsbG8K")
+    perform (dropFile ".editor-slides .slide-row.open .cm-content" "notes.txt" "text/plain" "aGVsbG8K")
     let dropped = T.replace "By me." "By me.[notes.txt](attachment:notes.txt)" deck
-    eventually $ markdown ui `shouldReturn` dropped
+    -- The file stored, and its link written.
+    waitQuiet
+    markdown ui `shouldReturn` dropped
     settle
     markdown ui `shouldReturn` dropped
-    prevented <- unsafeIOToPageM (pasteFile ".editor-slides .slide-row.open .cm-content" "pasted.txt" "pasted.txt" "text/plain" "aGVsbG8K")
+    prevented <- perform (pasteFile ".editor-slides .slide-row.open .cm-content" "pasted.txt" "pasted.txt" "text/plain" "aGVsbG8K")
     prevented `shouldBe` True
     let pasted = T.replace "By me." "By me.[notes.txt](attachment:notes.txt)[pasted.txt](attachment:pasted.txt)" deck
-    eventually $ markdown ui `shouldReturn` pasted
+    waitQuiet
+    markdown ui `shouldReturn` pasted
     settle
     markdown ui `shouldReturn` pasted
     named <- find ui ".editor-slides .slide-row.open .cm-content" >>= (`getAttribute` "aria-labelledby")
@@ -626,10 +682,11 @@ spec m = do
   it "marks in a row without the focus the editor's selection, the one the assistant is given, and not a selection the row kept from before" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     let kept = T.concat <$> (findAll ui ".editor-slides .cm-wiki-kept-selection" >>= traverse textContent)
     rowSelect 0 2 6
     find ui ".editor-new-slide" >>= focus
+    -- The marks follow the focus by CodeMirror's own timer (below).
     eventually $ kept `shouldReturn` "Deck"
     -- Selected in "One" since: "Deck" keeps its own selection, which is
     -- no longer the editor's.
@@ -645,13 +702,13 @@ spec m = do
 
   it "takes back a selection with Ctrl+U in a row, from the one history, and indents with Tab" $ runPage $ do
     (ui, _) <- openDeck deck
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     rowSelect 0 8 8
     rowSelect 0 10 12
     press "Control+u"
-    eventually $ rowSelection 0 `shouldReturn` (8, 8)
+    rowSelection 0 `shouldReturn` (8, 8)
     press "Tab"
-    eventually $ markdown ui `shouldReturn` T.replace "By me." "  By me." deck
+    markdown ui `shouldReturn` T.replace "By me." "  By me." deck
     rowFocused 0 `shouldReturn` True
 
   -- The completion of the wiki's own markers is Test.Browser.Complete's,
@@ -661,11 +718,13 @@ spec m = do
     (ui, _) <- openDeck deck
     -- A row below the first, whose lines are not the master's.
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     rowSelect 1 14 14
     row <- openRowContent ui
     typeText row "\n\n[[!no"
+    -- CodeMirror opens its list after a delay of its own, on its own clock.
     eventually $ (findAll ui ".editor-slides .cm-tooltip-autocomplete .cm-completionLabel" >>= traverse textContent) `shouldReturn` ["[[!notes]]"]
+    -- The list takes keys once shown a moment (CodeMirror's interactionDelay).
     eventually $ unsafeIOToPageM (js_row_completion_ready 1) `shouldReturn` True
     press "Enter"
     typeText row "Say hello."
@@ -674,11 +733,13 @@ spec m = do
   it "completes a link to a page in a row, as in the raw Markdown" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     rowSelect 1 14 14
     row <- openRowContent ui
     typeText row " See [[not"
+    -- CodeMirror opens its list after a delay of its own, on its own clock.
     eventually $ (findAll ui ".editor-slides .cm-tooltip-autocomplete .cm-completionLabel" >>= traverse textContent) `shouldReturn` ["Notes on Haskell"]
+    -- The list takes keys once shown a moment (CodeMirror's interactionDelay).
     eventually $ unsafeIOToPageM (js_row_completion_ready 1) `shouldReturn` True
     press "Enter"
     typeText row " too."
@@ -688,7 +749,7 @@ spec m = do
   -- the raw Markdown; a row binds the same Enter.
   it "continues a list on Enter in a row, and leaves it on Enter on an empty item" $ runPage $ do
     (ui, _) <- openDeck deck
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     rowSelect 0 14 14
     row <- openRowContent ui
     typeText row "\n\n- one"
@@ -704,10 +765,12 @@ spec m = do
     let quoted = T.intercalate "\n" ["# Deck", "", "By me.", "", "## One", "", "First.", "", "## Two", "", "> ", "", "- code"]
     (ui, _) <- openDeck quoted
     for_ ["One", "Two"] $ \title -> rowHeader ui title >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "One", "Two"]
     rowSelect 1 14 14
     rowContent ui "One" >>= (`typeText` "\n\n```")
-    eventually $ (findAll ui ".editor-slides .slide-row-part" >>= traverse textContent) `shouldReturn` ["part of slide 2"]
+    -- The rows' notes follow the check's pause.
+    waitQuiet
+    (findAll ui ".editor-slides .slide-row-part" >>= traverse textContent) `shouldReturn` ["part of slide 2"]
     -- At the end of "> ", and after "- code", in "Two".
     rowSelect 2 10 10
     press "Enter"
@@ -719,94 +782,108 @@ spec m = do
     let long = T.intercalate "\n\n" ("# Long" : concat [["## S" <> show i, T.intercalate "\n\n" (replicate 8 "A paragraph of its own.")] | i <- [1 .. 30 :: Int]])
     (ui, _) <- openDeck long
     rowHeader ui "S30" >>= click
-    eventually $ openTitles ui `shouldReturn` ["S1", "S30"]
-    end <- T.length <$> eventually (rowText 30 >>= \t -> t <$ (t `shouldSatisfy` (not . T.null)))
+    openTitles ui `shouldReturn` ["S1", "S30"]
+    -- S30's CodeMirror comes once the program is quiet.
+    waitQuiet
+    end <- T.length <$> (rowText 30 >>= \t -> t <$ (t `shouldSatisfy` (not . T.null)))
     rowSelect 30 end end
     openRowContent ui >>= (`typeText` "x")
-    eventually $ markdown ui `shouldReturn` long <> "x"
+    markdown ui `shouldReturn` long <> "x"
     rowContent ui "S1" >>= click
-    eventually $ rowCursorSeen 30 `shouldReturn` False
+    rowCursorSeen 30 `shouldReturn` False
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` long
-    eventually $ rowCursorSeen 30 `shouldReturn` True
+    markdown ui `shouldReturn` long
+    rowCursorSeen 30 `shouldReturn` True
 
   it "gives the focus to the row an undo or a redo takes the cursor to when it takes away the row the focus was in, opening it when it is closed" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
+    openTitles ui `shouldReturn` ["Deck", "One"]
     rowSelect 1 3 3
     find ui ".editor-new-slide" >>= click
     let added = ["Deck", "One", "New slide", "Two", "Three"]
-    eventually $ rowTitles ui `shouldReturn` added
-    eventually $ slideFocus `shouldReturn` "text 2"
+    rowTitles ui `shouldReturn` added
+    -- The new row's CodeMirror takes the focus once the program is quiet.
+    waitQuiet
+    slideFocus `shouldReturn` "text 2"
     -- From the keyboard alone: each key reaches the history.
     press "Control+z"
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
-    eventually $ slideFocus `shouldReturn` "text 1"
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    slideFocus `shouldReturn` "text 1"
     press "Control+y"
-    eventually $ rowTitles ui `shouldReturn` added
+    rowTitles ui `shouldReturn` added
+    -- The new row back, which takes the focus once its CodeMirror is there.
+    waitQuiet
     slideFocus >>= (`shouldSatisfy` T.isPrefixOf "text ")
     press "Control+z"
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
-    eventually $ markdown ui `shouldReturn` deck
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    markdown ui `shouldReturn` deck
     slideFocus >>= (`shouldSatisfy` T.isPrefixOf "text ")
     -- The redo of a delete, with the focus in the deleted row's text: the
     -- row the cursor goes to is closed, and opens with the focus.
     rowHeader ui "One" >>= click
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     rowDelete ui "Two" >>= click
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
     -- The undo takes the cursor back to "One", where it was before the
     -- delete: that row opens with the focus, and "Two" comes back open.
     press "Control+z"
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One", "Two"]
-    eventually $ slideFocus `shouldReturn` "text 1"
+    openTitles ui `shouldReturn` ["Deck", "One", "Two"]
+    -- One's CodeMirror, the row opened by the undo, takes the focus once the
+    -- program is quiet.
+    waitQuiet
+    slideFocus `shouldReturn` "text 1"
     rowContent ui "Two" >>= click
     press "Control+y"
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
-    eventually $ slideFocus >>= (`shouldSatisfy` T.isPrefixOf "text ")
+    rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
+    waitQuiet
+    slideFocus >>= (`shouldSatisfy` T.isPrefixOf "text ")
     press "Control+z"
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
 
   it "brings a slide deleted open back open through any number of undos and redos, and back closed when it was closed as it went" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     rowDelete ui "Two" >>= click
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
     for_ [1 :: Int, 2, 3] $ \_ -> do
       press "Control+z"
-      eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+      openTitles ui `shouldReturn` ["Deck", "Two"]
       press "Control+y"
-      eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
+      rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
     press "Control+z"
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     -- Closed, then taken away by the redo: it comes back closed.
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     press "Control+y"
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
     press "Control+z"
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     openTitles ui `shouldReturn` ["Deck"]
 
   it "shows the textarea until CodeMirror is in place, the typing there cut into rows, and the Markdown with the note when CodeMirror's module fails to load" $ runPage $ do
     unsafeIOToPageM (js_editor_script (toJSText "hold"))
     (ui, wiki) <- openDeckWith False deck
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     area <- find ui ".editor-text"
     shouldBeVisible area
     focus area
     press "Control+End"
     typeText area "\n\n## Four"
-    unsafeIOToPageM (js_editor_script (toJSText "as-is"))
+    perform (js_editor_script (toJSText "as-is"))
+    -- The test let the held editor through: its arrival, which the program was
+    -- given no promise of, is told to it by an event.
     eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three", "Four"]
     markdown ui `shouldReturn` deck <> "\n\n## Four"
     unmount ui
     unsafeIOToPageM (js_editor_script (toJSText "fail"))
     failed <- startOn m wiki helloEditor
-    eventually $ find failed ".editor-slides-note" >>= (`shouldHaveText` "Slide by slide needs the editor's script, which this page has not loaded: the presentation is shown as its Markdown.")
+    -- The editor's module fails to load, which the program waits for.
+    waitQuiet
+    find failed ".editor-slides-note" >>= (`shouldHaveText` "Slide by slide needs the editor's script, which this page has not loaded: the presentation is shown as its Markdown.")
     length <$> findAll failed ".editor-slides" `shouldReturn` 0
     find failed ".editor-text" >>= shouldBeVisible
     unsafeIOToPageM (js_editor_script (toJSText "as-is"))
@@ -814,56 +891,67 @@ spec m = do
   it "opens a closed row that an undo or a toolbar command takes the cursor to, though its text had the focus last" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     rowSelect 2 15 15
     openRowContent ui >>= (`typeText` "x")
-    eventually $ markdown ui `shouldReturn` T.replace "Second." "Second.x" deck
+    markdown ui `shouldReturn` T.replace "Second." "Second.x" deck
     -- Closed by its header, which keeps the focus: Ctrl+Z there.
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
-    eventually $ rowFocused 2 `shouldReturn` True
+    markdown ui `shouldReturn` deck
+    openTitles ui `shouldReturn` ["Deck", "Two"]
+    -- Two's CodeMirror, the row opened by the undo, takes the focus once the
+    -- program is quiet.
+    waitQuiet
+    rowFocused 2 `shouldReturn` True
     -- Selected, closed, and made bold from the toolbar.
     rowSelect 2 8 15
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     find ui ".editor-toolbar button.tool[aria-label=\"Bold\"]" >>= click
-    eventually $ markdown ui `shouldReturn` T.replace "Second." "**Second.**" deck
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    markdown ui `shouldReturn` T.replace "Second." "**Second.**" deck
+    openTitles ui `shouldReturn` ["Deck", "Two"]
 
   it "opens a closed row that the next problem is in, though its text had the focus last" $ runPage $ do
     let broken = T.intercalate "\n" ["# Deck", "", "## One", "", "Fine.", "", "## Two", "", "Half: $\\frac{1}$ here.", "", "## Three", "", "Fine."]
     (ui, _) <- openDeck broken
-    eventually $ openTitles ui `shouldReturn` ["One"]
-    eventually $ find ui ".editor-problems" >>= (`shouldHaveText` "1 problem")
+    openTitles ui `shouldReturn` ["One"]
+    find ui ".editor-problems" >>= (`shouldHaveText` "1 problem")
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["One", "Two"]
+    openTitles ui `shouldReturn` ["One", "Two"]
     rowSelect 2 0 0
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["One"]
+    openTitles ui `shouldReturn` ["One"]
     find ui ".editor-problems" >>= click
-    eventually $ openTitles ui `shouldReturn` ["One", "Two"]
-    eventually $ rowFocused 2 `shouldReturn` True
+    openTitles ui `shouldReturn` ["One", "Two"]
+    -- Two's CodeMirror, the row opened, takes the focus once the program is
+    -- quiet.
+    waitQuiet
+    rowFocused 2 `shouldReturn` True
 
   it "counts on its row a diagram's failure that comes after the slides were measured, and no longer once the diagram is fixed" $ runPage $ do
     let drawn = T.intercalate "\n" ["# Deck", "", "## One", "", "```mermaid", "graph LR", "  a -->", "```", "", "## Two", "", "Second."]
         rowProblems ui = findAll ui ".editor-slides .slide-row-problems" >>= traverse textContent
     unsafeIOToPageM (js_mermaid (toJSText "hold"))
     (ui, _) <- openDeck drawn
-    eventually $ editorFits >>= (`shouldSatisfy` \fits -> length fits == 3 && all (/= "unmeasured") fits)
+    editorFits >>= (`shouldSatisfy` \fits -> length fits == 3 && all (/= "unmeasured") fits)
     rowProblems ui `shouldReturn` []
     unsafeIOToPageM (js_mermaid (toJSText "as-is"))
     -- Mermaid's bundle is fetched the first time a diagram is drawn.
+    -- The diagram held is drawn by the test's own call, which the program does
+    -- not wait for.
     eventuallyWithin 15000 $ find ui ".editor-problems" >>= (`shouldHaveText` "1 problem")
-    eventually $ rowProblems ui `shouldReturn` ["1 problem"]
+    rowProblems ui `shouldReturn` ["1 problem"]
     -- Fixed in its row.
-    eventually $ openTitles ui `shouldReturn` ["One"]
+    openTitles ui `shouldReturn` ["One"]
     rowSelect 1 35 35
     openRowContent ui >>= (`typeText` " b")
-    eventually $ markdown ui `shouldReturn` T.replace "  a -->" "  a --> b" drawn
-    eventuallyWithin 15000 $ rowProblems ui `shouldReturn` []
+    markdown ui `shouldReturn` T.replace "  a -->" "  a --> b" drawn
+    -- The diagram drawn again, which the program waits for, and the check
+    -- after the typing.
+    waitQuiet
+    rowProblems ui `shouldReturn` []
     length <$> findAll ui ".editor-problems" `shouldReturn` 0
 
   it "measures a slide again when its diagram draws after the slides were measured, with nothing else changing" $ runPage $ do
@@ -873,23 +961,27 @@ spec m = do
     unsafeIOToPageM js_fit_log_start
     unsafeIOToPageM (js_mermaid (toJSText "hold"))
     (ui, _) <- openDeck tall
-    eventually $ previewFits ui `shouldReturn` ["fits", "fits"]
-    eventually $ editorFits `shouldReturn` ["fits", "fits"]
+    previewFits ui `shouldReturn` ["fits", "fits"]
+    editorFits `shouldReturn` ["fits", "fits"]
     before <- fitLog
     [d.drawn | d <- before, d.diagrams > 0] `shouldSatisfy` (\drawn -> not (null drawn) && all (== 0) drawn)
     -- The diagram drawn, and nothing else: no keystroke, no other slide
     -- shown. The watch of the cards measures again by itself.
     unsafeIOToPageM (js_mermaid (toJSText "as-is"))
+    -- The diagram held is drawn by the test's own call, which the program does
+    -- not wait for.
     eventuallyWithin 15000 $ length <$> findAll ui ".editor-preview .wiki-mermaid svg" `shouldReturn` 1
-    eventuallyWithin 15000 $ do
-      after <- fitLog
-      lastMay [d.drawn | d <- after, d.diagrams > 0] `shouldBe` Just 1
-    eventuallyWithin 15000 $ previewFits ui `shouldReturn` ["fits", "overflowing"]
-    eventuallyWithin 15000 $ editorFits `shouldReturn` ["fits", "overflowing"]
+    -- The slides measured again: the measure is taken in a frame and told to
+    -- the program.
+    waitQuiet
+    after <- fitLog
+    lastMay [d.drawn | d <- after, d.diagrams > 0] `shouldBe` Just 1
+    previewFits ui `shouldReturn` ["fits", "overflowing"]
+    editorFits `shouldReturn` ["fits", "overflowing"]
 
   it "puts every key typed through a split and a join where the caret is, keys coming as the rows are cut again" $ runPage $ do
     (ui, _) <- openDeck deck
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     rowSelect 0 14 14
     -- Each key after a pause about as long as the one after which the
     -- rows are cut again, so that some arrive while a cut is on its way.
@@ -898,52 +990,57 @@ spec m = do
           press key
     paced ["Enter", "#", "#", " ", "M", "i", "d", "a", "b", "c", "d", "e", "f"]
     let split = T.replace "By me." "By me.\n## Midabcdef" deck
-    eventually $ markdown ui `shouldReturn` split
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "Midabcdef", "One", "Two", "Three"]
+    markdown ui `shouldReturn` split
+    -- The rows are cut again after the check's pause.
+    waitQuiet
+    rowTitles ui `shouldReturn` ["Deck", "Midabcdef", "One", "Two", "Three"]
     -- Taken away again, key by key: the rows join. The last Backspace
     -- comes at the start of the row before the rows have joined, and
     -- takes the line break above it all the same.
     paced (replicate 13 "Backspace")
-    eventually $ markdown ui `shouldReturn` deck
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    markdown ui `shouldReturn` deck
+    waitQuiet
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     -- Delete at a row's end takes the line break after it.
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "One"]
-    end <- T.length <$> eventually (rowText 1 >>= \t -> t <$ (t `shouldSatisfy` (not . T.null)))
+    openTitles ui `shouldReturn` ["Deck", "One"]
+    -- One's CodeMirror comes once the program is quiet.
+    waitQuiet
+    end <- T.length <$> (rowText 1 >>= \t -> t <$ (t `shouldSatisfy` (not . T.null)))
     rowSelect 1 end end
     press "Delete"
-    eventually $ markdown ui `shouldReturn` T.replace "First.\n\n## Two" "First.\n## Two" deck
+    markdown ui `shouldReturn` T.replace "First.\n\n## Two" "First.\n## Two" deck
 
   it "changes nothing when the mode already chosen is chosen again, and makes two slides of a double click on New slide" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     modeButton ui "Slides" >>= click
     settle
     openTitles ui `shouldReturn` ["Deck", "Two"]
     modeButton ui "Raw" >>= click
-    eventually $ length <$> findAll ui ".editor-slides" `shouldReturn` 0
+    length <$> findAll ui ".editor-slides" `shouldReturn` 0
     modeButton ui "Raw" >>= click
     settle
     modeButton ui "Slides" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     -- Two slides, each with a key of its own.
     newSlide <- find ui ".editor-new-slide"
     click newSlide
     click newSlide
-    eventually $ length <$> findAll ui ".editor-slides .slide-row" `shouldReturn` 6
+    length <$> findAll ui ".editor-slides .slide-row" `shouldReturn` 6
     keys <- findAll ui ".editor-slides .slide-row" >>= traverse (`getAttribute` "data-row-key")
     length (ordNub keys) `shouldBe` 6
 
   it "writes nothing at the cursor while no row is open: the toolbar's buttons and menus disabled, saying why, and the shortcuts on a header" $ runPage $ do
     (ui, _) <- openDeck deck
-    eventually $ openTitles ui `shouldReturn` ["Deck"]
+    openTitles ui `shouldReturn` ["Deck"]
     rowHeader ui "Deck" >>= click
-    eventually $ openTitles ui `shouldReturn` []
+    openTitles ui `shouldReturn` []
     let writing = ["Bold", "Italic", "Link to a page", "Image or attachment", "Colour", "Emoji", "Box", "HTML"]
     for_ writing $ \label -> do
       control <- find ui (".editor-toolbar button.tool[aria-label=\"" <> label <> "\"]")
-      eventually $ getProperty control "disabled" `shouldReturn` "true"
+      getProperty control "disabled" `shouldReturn` "true"
       getAttribute control "title" >>= (`shouldSatisfy` maybe False (T.isSuffixOf "open a slide to write in it"))
     -- The math macros write the page's block, at its own place: not
     -- disabled.
@@ -957,18 +1054,19 @@ spec m = do
     openTitles ui `shouldReturn` []
     -- A row open again: the menus write in it.
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Two"]
+    openTitles ui `shouldReturn` ["Two"]
     rowSelect 2 8 15
     find ui ".editor-toolbar button.tool[aria-label=\"HTML\"]" >>= click
     find ui ".toolbar-menu [role=menuitem]" >>= click
-    eventually $ markdown ui >>= (`shouldSatisfy` (/= deck))
+    markdown ui >>= (`shouldSatisfy` (/= deck))
 
   it "stays responsive while a row leaves a fence open with 500 lines after it" $ runPage $ do
     let code = T.intercalate "\n" (["# Deck", "", "## Code", "", "```haskell"] <> ["x = " <> show k | k <- [1 .. 500 :: Int]] <> ["```", "", "## After", "", "Text."])
     (ui, _) <- openDeck code
     -- The cursor starts in "Code", under the title line.
-    eventually $ openTitles ui `shouldReturn` ["Code"]
-    shown <- eventually (rowText 1 >>= \t -> t <$ (t `shouldSatisfy` T.isInfixOf "x = 500"))
+    openTitles ui `shouldReturn` ["Code"]
+    shown <- rowText 1
+    shown `shouldSatisfy` T.isInfixOf "x = 500"
     -- The closing fence taken away: the fence is left open, and takes in
     -- "After".
     let (before, _) = T.breakOnEnd "\n```" shown
@@ -980,7 +1078,14 @@ spec m = do
     -- it); here, that the page takes the key and the next one, and says
     -- what is wrong, each action waited for by the driver, as any other.
     press "Backspace"
-    eventually $ (findAll ui ".editor-slides .slide-row-problems" >>= traverse textContent) `shouldReturn` ["1 problem"]
+    -- The check after the pause, and the slide measured again. Its row
+    -- counts two problems: the block left open, and the slide cut, its
+    -- 500 lines too many for it. (Read again and again, the count was
+    -- taken at one problem, before the program had come to rest.)
+    waitQuiet
+    (findAll ui ".editor-slides .slide-row-problems" >>= traverse textContent) `shouldReturn` ["2 problems"]
+    marked <- problemsMarked ui
+    [message | (_, _, message) <- marked, any (`T.isPrefixOf` message) ["A code block, a box or an HTML block on this slide is not closed", "This slide is cut when presented"]] `shouldSatisfy` ((== 2) . length)
     -- A keystroke in the open fence, and the pause after it.
     openRowContent ui >>= (`typeText` "y")
     waitQuiet
@@ -998,21 +1103,22 @@ spec m = do
     -- its first character goes: a problem the check finds in the new text.
     let typing = T.intercalate "\n" [if n == shortSlideLine 10 + 2 then "x[[!nothing]]" else l | (n, l) <- zip [1 :: Int ..] (T.splitOn "\n" shortDeck)]
     (ui, _) <- openDeckWith False typing
+    -- Settled: CodeMirror in place, the rows cut and every slide measured.
+    waitQuiet
     _ <- editorText ui
     let problemsOf10 = findAll ui ".editor-slides .slide-row" >>= \rows -> maybe (pure "") (\r -> findAllIn r ".slide-row-problems" >>= fmap T.concat . traverse textContent) (atMay rows 10)
-    -- Settled: the rows cut and every slide measured.
-    eventually $ length <$> rowTitles ui `shouldReturn` 13
-    eventually $ (fromJSText <$> unsafeIOToPageM js_slide_fits) >>= (`shouldSatisfy` (not . T.isInfixOf "unmeasured"))
-    waitQuiet
+    length <$> rowTitles ui `shouldReturn` 13
+    (fromJSText <$> unsafeIOToPageM js_slide_fits) >>= (`shouldSatisfy` (not . T.isInfixOf "unmeasured"))
     -- The master's selection set in a slide, as a search's step or the
     -- next problem sets it: the slide's row opens and the preview shows
     -- its card.
     let jumpTo n = do
           let at = lineStart typing (shortSlideLine n + 2)
           selectText ui at at
-          eventually $ cardTitles ui `shouldReturn` ["Slide " <> show n]
-          eventually $ openTitles ui >>= (`shouldSatisfy` elem ("Slide " <> show n))
+          -- The preview follows, and the row's CodeMirror comes.
           waitQuiet
+          cardTitles ui `shouldReturn` ["Slide " <> show n]
+          openTitles ui >>= (`shouldSatisfy` elem ("Slide " <> show n))
     -- Another slide shown is only another card in sight: the cards, laid
     -- out the same, are not measured again (c6f0ae82 measured them, and
     -- parsed the deck, at each move).
@@ -1024,8 +1130,8 @@ spec m = do
     -- Slide 10", a blank line, then the line).
     rowHeader ui "Slide 10" >>= click
     rowSelect 10 14 14
-    eventually $ cardTitles ui `shouldReturn` ["Slide 10"]
     waitQuiet
+    cardTitles ui `shouldReturn` ["Slide 10"]
     -- One keystroke, and the pause after it: the text checked, and the
     -- rows' headers and the problems published for the new text once, by
     -- the check after its re-cut; then once more when the new text's
@@ -1035,8 +1141,8 @@ spec m = do
     -- parsing the whole text again.
     unsafeIOToPageM (js_fit_hold True >> js_publications_start)
     press "Backspace"
-    eventually $ problemsOf10 `shouldReturn` "1 problem"
     waitQuiet
+    problemsOf10 `shouldReturn` "1 problem"
     unsafeIOToPageM js_publications `shouldReturn` 1
     fitRelease
     unsafeIOToPageM js_publications `shouldReturn` 2
@@ -1044,22 +1150,22 @@ spec m = do
   it "takes the emoji or the mention chosen with the arrows in a row, though the hidden editor changes before Enter, with another row open" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     let chooseIn typed = do
           rowSelect 0 14 14
           openRowContent ui >>= (`typeText` ("\n\n" <> typed))
+          -- CodeMirror opens its list after a delay of its own, on its own
+          -- clock.
           eventually $ length <$> findAll ui ".editor-slides .cm-tooltip-autocomplete" `shouldReturn` 1
           -- The list takes keys only once it has been shown a moment (the
           -- library's interactionDelay).
           unsafeIOToPageM (threadDelay 200_000)
           press "ArrowDown"
-          eventually $ (findAll ui ".editor-slides .cm-tooltip-autocomplete li[aria-selected]" >>= traverse (`getAttribute` "id")) >>= (`shouldSatisfy` ((== 1) . length))
-          settle
+          (findAll ui ".editor-slides .cm-tooltip-autocomplete li[aria-selected]" >>= traverse (`getAttribute` "id")) >>= (`shouldSatisfy` ((== 1) . length))
           -- The check's problems, told to the hidden editor after a pause.
-          unsafeIOToPageM js_master_problems
-          settle
+          perform js_master_problems
           press "Enter"
-          eventually $ length <$> findAll ui ".editor-slides .cm-tooltip-autocomplete" `shouldReturn` 0
+          length <$> findAll ui ".editor-slides .cm-tooltip-autocomplete" `shouldReturn` 0
           T.takeWhile (/= '\n') . snd . T.breakOnEnd "By me.\n\n" <$> markdown ui
     -- One letter: Enter chooses an emoji only once the arrows moved.
     emoji <- chooseIn ":s"
@@ -1072,14 +1178,14 @@ spec m = do
     let linked = T.intercalate "\n" ["# Deck", "", "## One", "", "First.", "", "[ref]: https://example.com", "", "## Two", "", "[x][ref] and [y][ref] here."]
     (ui, _) <- openDeck linked
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["One", "Two"]
+    openTitles ui `shouldReturn` ["One", "Two"]
     -- In the row: after the bracket of [x][ref].
     rowSelect 2 9 9
     openRowContent ui >>= (`typeText` "@ad")
     unsafeIOToPageM (threadDelay 1_000_000)
     length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
     press "Enter"
-    eventually $ markdown ui `shouldReturn` T.replace "[x]" "[@ad\nx]" linked
+    markdown ui `shouldReturn` T.replace "[x]" "[@ad\nx]" linked
     -- In the raw Markdown: after the bracket of [y][ref].
     modeButton ui "Raw" >>= click
     editorText ui >>= shouldBeVisible
@@ -1090,25 +1196,28 @@ spec m = do
     unsafeIOToPageM (threadDelay 1_000_000)
     length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
     press "Enter"
-    eventually $ markdown ui `shouldReturn` T.replace "[y]" "[@ad\ny]" typedRow
+    markdown ui `shouldReturn` T.replace "[y]" "[@ad\ny]" typedRow
     -- A list does open there where no slide defines the label.
     modeButton ui "Slides" >>= click
-    eventually $ openTitles ui `shouldReturn` ["One", "Two"]
+    openTitles ui `shouldReturn` ["One", "Two"]
     rowSelect 2 0 0
     rowText 2 >>= \t -> rowSelect 2 (T.length t) (T.length t)
     openRowContent ui >>= (`typeText` " [@ad][nowhere]")
     rowText 2 >>= \t -> rowSelect 2 (T.length t - 10) (T.length t - 10)
     unsafeIOToPageM (threadDelay 300_000)
     openRowContent ui >>= (`typeText` "m")
+    -- CodeMirror opens its list after a delay of its own, on its own clock.
     eventually $ length <$> findAll ui ".editor-slides .cm-tooltip-autocomplete" `shouldReturn` 1
 
   it "opens no mention's list in a row that a fence left open above takes into its code" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     rowSelect 0 14 14
     openRowContent ui >>= (`typeText` "\n\n```")
-    eventually $ (findAll ui ".editor-slides .slide-row-part" >>= traverse textContent) >>= (`shouldSatisfy` (not . null))
+    -- The rows' notes follow the check's pause.
+    waitQuiet
+    (findAll ui ".editor-slides .slide-row-part" >>= traverse textContent) >>= (`shouldSatisfy` (not . null))
     end <- T.length <$> rowText 2
     rowSelect 2 end end
     openRowContent ui >>= (`typeText` " @ad")
@@ -1118,7 +1227,7 @@ spec m = do
   it "hands the focus from the textarea to the cursor's row when CodeMirror arrives, nothing typed lost, the caret after it" $ runPage $ do
     unsafeIOToPageM (js_editor_script (toJSText "hold"))
     (ui, _) <- openDeckWith False deck
-    eventually $ rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
+    rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     area <- find ui ".editor-text"
     focus area
     press "Control+End"
@@ -1127,12 +1236,16 @@ spec m = do
     -- Typing on at once, as the editor arrives.
     traverse_ press ["d", "e", "f"]
     let typed = deck <> "\n\nAbcdef"
+    -- The test let the held editor through: its arrival, which the program was
+    -- given no promise of, is told to it by an event.
     eventually $ markdown ui `shouldReturn` typed
-    eventually $ slideFocus `shouldReturn` "text 3"
+    -- The cursor's row takes the focus once its CodeMirror is in place.
+    waitQuiet
+    slideFocus `shouldReturn` "text 3"
     let end = T.length (rowTextOf typed 3)
     rowSelection 3 `shouldReturn` (end, end)
     press "g"
-    eventually $ markdown ui `shouldReturn` typed <> "g"
+    markdown ui `shouldReturn` typed <> "g"
 
   -- The same hand-off with a key typed in the middle of it, in that order
   -- every time. CodeMirror takes the textarea's place and tells the
@@ -1172,39 +1285,42 @@ spec m = do
   -- The editor's search over the whole text (WP5.103b), slide by slide.
   it "searches the whole presentation from a row with Ctrl+F: the closed rows' headers count their matches, Enter opens the closed row of the next with it selected and in sight, the rows open before stay open, and Escape gives the focus to the match, past an emoji" $ runPage $ do
     (ui, _) <- openDeck searchDeck
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀"]
+    openTitles ui `shouldReturn` ["Deck 😀"]
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One"]
+    openTitles ui `shouldReturn` ["Deck 😀", "One"]
     rowSelect 1 10 16
     press "Control+f"
     find ui ".editor-search-find" >>= (`getProperty` "value") >>= (`shouldBe` "needle")
     searchFocus `shouldReturn` "find"
-    eventually $ said ui `shouldReturn` "1 of 3"
+    said ui `shouldReturn` "1 of 3"
     -- A closed row's header counts its matches; an open row marks them.
-    eventually $ headerCounts ui `shouldReturn` [("Three", "2 matches")]
-    eventually $ searchMarks `shouldReturn` [(1, "needle", True)]
+    headerCounts ui `shouldReturn` [("Three", "2 matches")]
+    searchMarks `shouldReturn` [(1, "needle", True)]
     -- The next match is in "Three", closed: it opens, the match selected
     -- and in sight. "One" stays open: a step closes no row. The focus stays
     -- in the field, where Enter goes on stepping.
     press "Enter"
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One", "Three"]
-    eventually $ rowSelection 3 `shouldReturn` (10, 16)
-    eventually $ rowCursorSeen 3 `shouldReturn` True
+    openTitles ui `shouldReturn` ["Deck 😀", "One", "Three"]
+    -- Three's CodeMirror, the row opened by the step, comes once the program
+    -- is quiet.
+    waitQuiet
+    rowSelection 3 `shouldReturn` (10, 16)
+    rowCursorSeen 3 `shouldReturn` True
     searchFocus `shouldReturn` "find"
-    eventually $ said ui `shouldReturn` "2 of 3"
-    eventually $ searchMarks `shouldReturn` [(1, "needle", False), (3, "Needle", True), (3, "needle", False)]
+    said ui `shouldReturn` "2 of 3"
+    searchMarks `shouldReturn` [(1, "needle", False), (3, "Needle", True), (3, "needle", False)]
     headerCounts ui `shouldReturn` []
     press "Enter"
-    eventually $ rowSelection 3 `shouldReturn` (21, 27)
+    rowSelection 3 `shouldReturn` (21, 27)
     -- Past the end, back to "One": still no row closes.
     press "Enter"
-    eventually $ said ui `shouldReturn` "1 of 3, from the start"
-    eventually $ rowSelection 1 `shouldReturn` (10, 16)
+    said ui `shouldReturn` "1 of 3, from the start"
+    rowSelection 1 `shouldReturn` (10, 16)
     openTitles ui `shouldReturn` ["Deck 😀", "One", "Three"]
     -- Escape: the focus in "One", at the match.
     press "Escape"
-    eventually $ length <$> findAll ui ".editor-search" `shouldReturn` 0
-    eventually $ searchFocus `shouldReturn` "text 1"
+    length <$> findAll ui ".editor-search" `shouldReturn` 0
+    searchFocus `shouldReturn` "text 1"
     rowSelection 1 `shouldReturn` (10, 16)
     searchMarks `shouldReturn` []
     markdown ui `shouldReturn` searchDeck
@@ -1213,163 +1329,177 @@ spec m = do
   it "keeps the search's field in sight while a step opens a row far down sixty slides" $ runPage $ do
     let sixty = T.intercalate "\n\n" ("# Sixty" : concat [["## Slide " <> show n, T.intercalate "\n\n" (replicate 6 ("Text " <> show n <> "."))] | n <- [1 .. 59 :: Int]] <> ["The end."])
     (ui, _) <- openDeck sixty
-    eventually $ openTitles ui `shouldReturn` ["Slide 1"]
+    openTitles ui `shouldReturn` ["Slide 1"]
     rowHeader ui "Slide 1" >>= focus
     press "Control+f"
     find ui ".editor-search-find" >>= (`typeText` "the end")
-    eventually $ said ui `shouldReturn` "1 match"
+    said ui `shouldReturn` "1 match"
     press "Enter"
-    eventually $ openTitles ui `shouldReturn` ["Slide 1", "Slide 59"]
-    eventually $ rowCursorSeen 59 `shouldReturn` True
+    openTitles ui `shouldReturn` ["Slide 1", "Slide 59"]
+    -- Slide 59's CodeMirror, the row opened by the step, comes once the
+    -- program is quiet.
+    waitQuiet
+    rowCursorSeen 59 `shouldReturn` True
     unsafeIOToPageM js_search_panel_seen `shouldReturn` True
     searchFocus `shouldReturn` "find"
 
   it "replaces a match in a closed row, opening it first, and every match as one step of the history that one Ctrl+Z takes back in every row" $ runPage $ do
     (ui, _) <- openDeck searchDeck
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀"]
+    openTitles ui `shouldReturn` ["Deck 😀"]
     -- Ctrl+F on a header: nothing is selected, and the text to find is
     -- typed.
     rowHeader ui "Two" >>= focus
     press "Control+f"
     find ui ".editor-search-find" >>= (`typeText` "needle")
     find ui ".editor-search-replacement" >>= (`typeText` "pin")
-    eventually $ said ui `shouldReturn` "3 matches"
+    said ui `shouldReturn` "3 matches"
     -- Next selects the match in "One", which opens. Closed again by its
     -- header, Replace opens it before it writes there, and goes on to
     -- "Three", which opens.
     find ui ".editor-search-next" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One"]
+    openTitles ui `shouldReturn` ["Deck 😀", "One"]
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀"]
+    openTitles ui `shouldReturn` ["Deck 😀"]
     find ui ".editor-search-replace" >>= click
     let once = T.replace "A needle" "A pin" searchDeck
     markdown ui `shouldReturn` once
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One", "Three"]
-    eventually $ rowText 1 `shouldReturn` "## One\n\nA pin here.\n"
-    eventually $ said ui `shouldReturn` "1 of 2"
+    openTitles ui `shouldReturn` ["Deck 😀", "One", "Three"]
+    -- One's CodeMirror, the row opened by the replacement, comes once the
+    -- program is quiet.
+    waitQuiet
+    rowText 1 `shouldReturn` "## One\n\nA pin here.\n"
+    said ui `shouldReturn` "1 of 2"
     -- Replace all: in every slide, in one step.
     find ui ".editor-search-replace-all" >>= click
     let every = T.replace "Needle and needle" "pin and pin" once
     markdown ui `shouldReturn` every
-    eventually $ rowText 3 `shouldReturn` "## Three\n\npin and pin."
-    eventually $ said ui `shouldReturn` "No matches, 2 replaced"
+    rowText 3 `shouldReturn` "## Three\n\npin and pin."
+    said ui `shouldReturn` "No matches, 2 replaced"
     -- Escape after a step: the focus at the match, in "Three". One Ctrl+Z
     -- takes Replace all back, in "Three" and in the text; one more takes
     -- back the replacement in "One".
     press "Escape"
-    eventually $ searchFocus `shouldReturn` "text 3"
+    searchFocus `shouldReturn` "text 3"
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` once
-    eventually $ rowText 3 `shouldReturn` "## Three\n\nNeedle and needle."
+    markdown ui `shouldReturn` once
+    rowText 3 `shouldReturn` "## Three\n\nNeedle and needle."
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` searchDeck
-    eventually $ rowText 1 `shouldReturn` "## One\n\nA needle here.\n"
+    markdown ui `shouldReturn` searchDeck
+    rowText 1 `shouldReturn` "## One\n\nA needle here.\n"
     unsafeIOToPageM (fromJSText <$> js_slide_invariants) `shouldReturn` ""
 
   it "marks the matches in an open row through its typing, and counts them again after a pause" $ runPage $ do
     (ui, _) <- openDeck searchDeck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One"]
+    openTitles ui `shouldReturn` ["Deck 😀", "One"]
     rowSelect 1 10 16
     press "Control+f"
-    eventually $ said ui `shouldReturn` "1 of 3"
+    said ui `shouldReturn` "1 of 3"
     -- Typed in the row before its match: the mark stays on its word, and
     -- the word typed is marked too.
     rowSelect 1 8 8
     openRowContent ui >>= (`typeText` "One more needle. ")
-    eventually $ searchMarks `shouldReturn` [(1, "needle", False), (1, "needle", False)]
+    searchMarks `shouldReturn` [(1, "needle", False), (1, "needle", False)]
+    -- The count after typing follows a pause of the editor's script's own
+    -- (editor.js's countSoon), which the program does not know of.
     eventually $ said ui `shouldReturn` "4 matches"
     headerCounts ui `shouldReturn` [("Three", "2 matches")]
 
   it "moves the focus with the match on F3 in a row's text, the row left staying open, and keeps the marks of a row Replace all writes in" $ runPage $ do
     (ui, _) <- openDeck searchDeck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One"]
+    openTitles ui `shouldReturn` ["Deck 😀", "One"]
     rowSelect 1 10 16
     press "Control+f"
-    eventually $ said ui `shouldReturn` "1 of 3"
+    said ui `shouldReturn` "1 of 3"
     -- Back in the row's text, F3: the match's row opens with the focus and
     -- the match, which the editor's selection is.
     rowSelect 1 10 16
     press "F3"
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One", "Three"]
-    eventually $ searchFocus `shouldReturn` "text 3"
+    openTitles ui `shouldReturn` ["Deck 😀", "One", "Three"]
+    -- Three's CodeMirror, the row opened by F3, takes the focus once the
+    -- program is quiet.
+    waitQuiet
+    searchFocus `shouldReturn` "text 3"
     rowSelection 3 `shouldReturn` (10, 16)
-    eventually $ said ui `shouldReturn` "2 of 3"
+    said ui `shouldReturn` "2 of 3"
     unsafeIOToPageM (fromJSText <$> js_slide_invariants) `shouldReturn` ""
     -- Replace all in an open row: its marks are those of the text written.
     find ui ".editor-search-replacement" >>= (`typeText` "NEEDLE")
     find ui ".editor-search-replace-all" >>= click
-    eventually $ rowText 3 `shouldReturn` "## Three\n\nNEEDLE and NEEDLE."
-    eventually $ map (\(i, t, _) -> (i, t)) <$> searchMarks `shouldReturn` [(1, "NEEDLE"), (3, "NEEDLE"), (3, "NEEDLE")]
+    rowText 3 `shouldReturn` "## Three\n\nNEEDLE and NEEDLE."
+    map (\(i, t, _) -> (i, t)) <$> searchMarks `shouldReturn` [(1, "NEEDLE"), (3, "NEEDLE"), (3, "NEEDLE")]
     -- A replacement that makes a heading: the rows are cut again.
     find ui ".editor-search-find" >>= clear
     find ui ".editor-search-find" >>= (`typeText` "Nothing.")
     find ui ".editor-search-replacement" >>= clear
     find ui ".editor-search-replacement" >>= (`typeText` "## Four")
     find ui ".editor-search-replace-all" >>= click
-    eventually $ rowTitles ui `shouldReturn` ["Deck 😀", "One", "Two", "Four", "Three"]
+    rowTitles ui `shouldReturn` ["Deck 😀", "One", "Two", "Four", "Three"]
     -- And with the search open, the raw Markdown marks its matches.
     find ui ".editor-search-find" >>= clear
     find ui ".editor-search-find" >>= (`typeText` "needle")
     modeButton ui "Raw" >>= click
-    eventually $ map (\(i, t, _) -> (i, t)) <$> searchMarks `shouldReturn` [(-1, "NEEDLE"), (-1, "NEEDLE"), (-1, "NEEDLE")]
+    map (\(i, t, _) -> (i, t)) <$> searchMarks `shouldReturn` [(-1, "NEEDLE"), (-1, "NEEDLE"), (-1, "NEEDLE")]
     unsafeIOToPageM (fromJSText <$> js_slide_invariants) `shouldReturn` ""
 
   it "keeps a match across two rows whole when F3 gives its row the focus, the row showing its part of it, and Replace replaces it whole" $ runPage $ do
     (ui, _) <- openDeck searchDeck
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀"]
+    openTitles ui `shouldReturn` ["Deck 😀"]
     rowSelect 0 2 2
     press "Control+f"
     find ui ".editor-search-regexp" >>= click
     find ui ".editor-search-find" >>= (`typeText` "needle here\\.(\\s+## Two)")
     find ui ".editor-search-replacement" >>= (`typeText` "pin.$1")
-    eventually $ said ui `shouldReturn` "1 match"
+    said ui `shouldReturn` "1 match"
     -- F3 in the text of "Deck": "One", where the match starts, opens with
     -- the focus, showing the match's part in it.
     rowSelect 0 2 2
     press "F3"
-    eventually $ searchFocus `shouldReturn` "text 1"
+    -- One's CodeMirror, the row opened by F3, takes the focus once the program
+    -- is quiet.
+    waitQuiet
+    searchFocus `shouldReturn` "text 1"
     rowSelection 1 `shouldReturn` (10, 23)
     -- The editor keeps the whole match: the count names it, and the rows'
     -- invariant holds by its one exception.
-    eventually $ said ui `shouldReturn` "1 of 1"
+    said ui `shouldReturn` "1 of 1"
     unsafeIOToPageM (fromJSText <$> js_slide_invariants) `shouldReturn` ""
     find ui ".editor-search-replace" >>= click
     markdown ui `shouldReturn` T.replace "A needle here." "A pin." searchDeck
     -- Escape, after Replace: the focus in "One".
     press "Escape"
-    eventually $ searchFocus `shouldReturn` "text 1"
+    searchFocus `shouldReturn` "text 1"
     unsafeIOToPageM (fromJSText <$> js_slide_invariants) `shouldReturn` ""
 
   it "says on a closed row's header that its matches were not counted when the count stopped before its end" $ runPage $ do
     let crowded = T.intercalate "\n" ["# Deck", "", "## A", "", "x", "", "## B", "", T.unwords (replicate 1100 "x"), "", "## C", "", "x"]
     (ui, _) <- openDeck crowded
-    eventually $ openTitles ui `shouldReturn` ["A"]
+    openTitles ui `shouldReturn` ["A"]
     rowHeader ui "Deck" >>= focus
     press "Control+f"
     find ui ".editor-search-find" >>= (`typeText` "x")
-    eventually $ said ui `shouldReturn` "1000+ matches"
-    eventually $ headerCounts ui `shouldReturn` [("B", "matches not counted"), ("C", "matches not counted")]
+    said ui `shouldReturn` "1000+ matches"
+    headerCounts ui `shouldReturn` [("B", "matches not counted"), ("C", "matches not counted")]
 
   it "counts no match in the title line's guarded \"# \" in the first row, and finds and replaces the title's own text there" $ runPage $ do
     (ui, _) <- openDeck searchDeck
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀"]
+    openTitles ui `shouldReturn` ["Deck 😀"]
     rowSelect 0 2 2
     press "Control+f"
     find ui ".editor-search-regexp" >>= click
     find ui ".editor-search-find" >>= (`typeText` "^# Deck")
-    eventually $ said ui `shouldReturn` "No matches"
+    said ui `shouldReturn` "No matches"
     press "Enter"
     rowSelection 0 `shouldReturn` (2, 2)
     find ui ".editor-search-replace-all" >>= click
     markdown ui `shouldReturn` searchDeck
     find ui ".editor-search-find" >>= clear
     find ui ".editor-search-find" >>= (`typeText` "Deck")
-    eventually $ said ui `shouldReturn` "1 match"
+    said ui `shouldReturn` "1 match"
     press "Enter"
-    eventually $ rowSelection 0 `shouldReturn` (2, 6)
-    eventually $ said ui `shouldReturn` "1 of 1"
+    rowSelection 0 `shouldReturn` (2, 6)
+    said ui `shouldReturn` "1 of 1"
     find ui ".editor-search-replacement" >>= (`typeText` "Card")
     find ui ".editor-search-replace" >>= click
     markdown ui `shouldReturn` T.replace "# Deck" "# Card" searchDeck
@@ -1378,11 +1508,11 @@ spec m = do
   it "closes the search on Escape in a row's text and on a row's header, after F3 with the focus at the match" $ runPage $ do
     (ui, _) <- openDeck searchDeck
     rowHeader ui "One" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One"]
+    openTitles ui `shouldReturn` ["Deck 😀", "One"]
     let opened = do
           press "Control+f"
-          eventually $ length <$> findAll ui ".editor-search" `shouldReturn` 1
-        closed = eventually $ length <$> findAll ui ".editor-search" `shouldReturn` 0
+          length <$> findAll ui ".editor-search" `shouldReturn` 1
+        closed = length <$> findAll ui ".editor-search" `shouldReturn` 0
     rowSelect 1 10 16
     opened
     -- In a row's text.
@@ -1399,7 +1529,10 @@ spec m = do
     opened
     rowSelect 1 10 16
     press "F3"
-    eventually $ searchFocus `shouldReturn` "text 3"
+    -- Three's CodeMirror, the row opened by F3, takes the focus once the
+    -- program is quiet.
+    waitQuiet
+    searchFocus `shouldReturn` "text 3"
     press "Escape"
     closed
     searchFocus `shouldReturn` "text 3"
@@ -1407,50 +1540,59 @@ spec m = do
 
   it "marks a match across rows as the current one in every open row it runs through, and in no other after a step" $ runPage $ do
     (ui, _) <- openDeck searchDeck
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀"]
+    openTitles ui `shouldReturn` ["Deck 😀"]
     for_ ["One", "Two", "Three"] $ \title -> rowHeader ui title >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One", "Two", "Three"]
+    openTitles ui `shouldReturn` ["Deck 😀", "One", "Two", "Three"]
     rowHeader ui "Two" >>= focus
     press "Control+f"
     find ui ".editor-search-regexp" >>= click
     -- A slide's last line, ended by a full stop, and the next slide's
     -- heading: three matches, each across two rows.
     find ui ".editor-search-find" >>= (`typeText` "\\.\\s+## ")
-    eventually $ said ui `shouldReturn` "3 matches"
+    said ui `shouldReturn` "3 matches"
     let currentRows = ordNub . sort . map (\(i, _, _) -> i) . filter (\(_, _, c) -> c) <$> searchMarks
     find ui ".editor-search-next" >>= click
-    eventually $ currentRows `shouldReturn` [0, 1]
+    -- The rows' CodeMirrors, which mark the matches, come once the program is
+    -- quiet.
+    waitQuiet
+    currentRows `shouldReturn` [0, 1]
     -- The replacement edited: every mark found again.
     find ui ".editor-search-replacement" >>= (`typeText` "x")
     find ui ".editor-search-next" >>= click
-    eventually $ currentRows `shouldReturn` [1, 2]
+    currentRows `shouldReturn` [1, 2]
     find ui ".editor-search-next" >>= click
-    eventually $ currentRows `shouldReturn` [2, 3]
+    currentRows `shouldReturn` [2, 3]
 
   it "selects a regular expression's match across two slides in the row it starts in" $ runPage $ do
     (ui, _) <- openDeck searchDeck
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀"]
+    openTitles ui `shouldReturn` ["Deck 😀"]
     rowHeader ui "Two" >>= focus
     press "Control+f"
     find ui ".editor-search-regexp" >>= click
     find ui ".editor-search-find" >>= (`typeText` "here\\.\\s+## Two")
-    eventually $ said ui `shouldReturn` "1 match"
+    said ui `shouldReturn` "1 match"
     press "Enter"
-    eventually $ openTitles ui `shouldReturn` ["Deck 😀", "One"]
+    openTitles ui `shouldReturn` ["Deck 😀", "One"]
     -- The part in "One": from "here." to the row's end.
-    eventually $ rowSelection 1 `shouldReturn` (17, 23)
-    eventually $ said ui `shouldReturn` "1 of 1"
+    -- One's CodeMirror, the row opened by the step, comes once the program is
+    -- quiet.
+    waitQuiet
+    rowSelection 1 `shouldReturn` (17, 23)
+    said ui `shouldReturn` "1 of 1"
 
   it "marks the fits of a presentation with carriage returns, and its preview follows the cursor's slide" $ runPage $ do
     let returns = T.replace "\n" "\r\n" deck
     (ui, _) <- openDeck returns
-    eventually $ editorFits `shouldReturn` replicate 4 "fits"
+    editorFits `shouldReturn` replicate 4 "fits"
     find ui ".editor-side-by-side" >>= click
-    eventually $ cardTitles ui `shouldReturn` ["Deck"]
+    -- The preview follows.
+    waitQuiet
+    cardTitles ui `shouldReturn` ["Deck"]
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     rowSelect 2 1 1
-    eventually $ cardTitles ui `shouldReturn` ["Two"]
+    waitQuiet
+    cardTitles ui `shouldReturn` ["Two"]
     markdown ui `shouldReturn` returns
 
   -- A random walk over the slide mode, seeded: after every step, once the
@@ -1460,121 +1602,124 @@ spec m = do
   for_ [11 :: Int, 23, 47] $ \seed ->
     it ("holds the rows' invariants through a random walk of typing, splits, joins, moves, deletes, new slides, undos, redos, jumps, search steps and replacements (seed " <> show seed <> ")") $ runPage $ do
       (ui, _) <- openDeck walkDeck
-      eventually $ openTitles ui `shouldReturn` ["One"]
+      openTitles ui `shouldReturn` ["One"]
       randomWalk ui seed 50
 
   it "moves selected text dragged from one row to another as one step of the history, copies it with the copy key, and leaves a drag in one row to CodeMirror" $ runPage $ do
     (ui, _) <- openDeck deck
     rowHeader ui "Two" >>= click
-    eventually $ openTitles ui `shouldReturn` ["Deck", "Two"]
+    openTitles ui `shouldReturn` ["Deck", "Two"]
     -- "me" of "By me." dropped after "Second".
     _ <- rowDrag 0 11 13 2 14 False
-    eventually $ markdown ui `shouldReturn` T.replace "Second." "Secondme." (T.replace "By me." "By ." deck)
+    markdown ui `shouldReturn` T.replace "Second." "Secondme." (T.replace "By me." "By ." deck)
     rowFocused 2 `shouldReturn` True
     rowSelection 2 `shouldReturn` (14, 16)
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
+    markdown ui `shouldReturn` deck
     -- With the copy key, the source stays.
     _ <- rowDrag 0 11 13 2 14 True
-    eventually $ markdown ui `shouldReturn` T.replace "Second." "Secondme." deck
+    markdown ui `shouldReturn` T.replace "Second." "Secondme." deck
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` deck
+    markdown ui `shouldReturn` deck
     -- In one row, CodeMirror's own move.
     _ <- rowDrag 2 8 14 2 15 False
-    eventually $ markdown ui `shouldReturn` T.replace "Second." ".Second" deck
+    markdown ui `shouldReturn` T.replace "Second." ".Second" deck
 
   it "renders the deck whole for one slide's preview: a macro of an earlier slide, a footnote's number, the same slide in every view" $ runPage $ do
     (ui, wiki) <- openDeck macros
     find ui ".editor-side-by-side" >>= click
     -- The cursor on "Use", which uses the macro "Define" defines.
     selectText ui (lineStart macros 9) (lineStart macros 9)
-    eventually $ cardTitles ui `shouldReturn` ["Use"]
-    eventually $ length <$> findAll ui ".editor-preview .slide-frame:not(.slide-offstage) .wiki-math .katex" `shouldReturn` 1
+    -- The preview follows.
+    waitQuiet
+    cardTitles ui `shouldReturn` ["Use"]
+    length <$> findAll ui ".editor-preview .slide-frame:not(.slide-offstage) .wiki-math .katex" `shouldReturn` 1
     length <$> findAll ui ".editor-preview .slide-frame:not(.slide-offstage) .katex-error" `shouldReturn` 0
     problemsMarked ui `shouldReturn` []
     oneUse <- bodyText ui "Use"
     selectText ui (lineStart macros 13) (lineStart macros 13)
-    eventually $ cardTitles ui `shouldReturn` ["Later"]
+    waitQuiet
+    cardTitles ui `shouldReturn` ["Later"]
     oneLater <- bodyText ui "Later"
     -- The second footnote is the second wherever its slide is shown.
     oneLater `shouldSatisfy` T.isInfixOf "2"
     modeButton ui "Raw" >>= click
-    eventually $ cardTitles ui `shouldReturn` ["Macros", "Define", "Use", "Later"]
+    waitQuiet
+    cardTitles ui `shouldReturn` ["Macros", "Define", "Use", "Later"]
     bodyText ui "Use" `shouldReturn` oneUse
     bodyText ui "Later" `shouldReturn` oneLater
     unmount ui
     shown <- startOn m wiki (PageSlides (slugs ["blog"]) (slugs ["hello-world"]) 4 1)
-    eventually $ find shown ".slides-view .slide-frame.current .slide-body" >>= textContent >>= (`shouldBe` oneLater)
+    -- The slides view draws its islands, which the program waits for.
+    waitQuiet
+    find shown ".slides-view .slide-frame.current .slide-body" >>= textContent >>= (`shouldBe` oneLater)
 
   it "marks a formula KaTeX cannot read on a slide the preview does not show, with the preview hidden" $ runPage $ do
     let broken = T.intercalate "\n" ["# Deck", "", "## One", "", "Fine.", "", "## Two", "", "Half: $\\frac{1}$ here.", "", "## Three", "", "Fine."]
     (ui, _) <- openDeck broken
-    eventually $ do
-      marked <- problemsMarked ui
-      [a >= lineStart broken 9 && b <= lineStart broken 10 | (a, b, _) <- marked] `shouldBe` [True]
+    marked <- problemsMarked ui
+    [a >= lineStart broken 9 && b <= lineStart broken 10 | (a, b, _) <- marked] `shouldBe` [True]
 
   it "marks whether each slide fits, grey until measured, on its row, on its card and among the problems" $ runPage $ do
     let fitting = T.intercalate "\n\n" (["# Deck", "## Short", "One line."] <> ["## Long"] <> replicate 30 "A paragraph of its own, one line long.")
     (ui, _) <- openDeck fitting
-    eventually $ editorFits `shouldReturn` ["fits", "fits", "overflowing"]
+    editorFits `shouldReturn` ["fits", "fits", "overflowing"]
     length <$> findAll ui ".editor-slides .slide-row-fit.slide-fit-overflowing" `shouldReturn` 1
     length <$> findAll ui ".editor-preview .slide-frame.slide-fit-overflowing" `shouldReturn` 1
-    eventually $ do
-      marked <- problemsMarked ui
-      [(a, message) | (a, _, message) <- marked] `shouldSatisfy` \case
-        [(a, message)] -> a == lineStart fitting 7 && "This slide is cut when presented" `T.isPrefixOf` message
-        _ -> False
+    problems <- problemsMarked ui
+    [(a, message) | (a, _, message) <- problems] `shouldSatisfy` \case
+      [(a, message)] -> a == lineStart fitting 7 && "This slide is cut when presented" `T.isPrefixOf` message
+      _ -> False
     -- A slide changed is grey until it is measured again; the others keep
     -- their marks.
     selectText ui (lineStart fitting 5) (lineStart fitting 5)
     openRowContent ui >>= (`typeText` "Still ")
-    eventually $ editorFits `shouldReturn` ["fits", "fits", "overflowing"]
+    -- The slide changed is measured again after the preview's pause.
+    waitQuiet
+    editorFits `shouldReturn` ["fits", "fits", "overflowing"]
     -- A change that leaves every card laid out as it was (a blank line in
     -- a slide, the look's line naming the default theme) is measured
     -- again too: the marks come back, and the problem with them.
     -- Each edit moves the long slide down: its problem is marked on its
     -- new lines once the edit is measured.
     let longAt text = maybe [] (\n -> [lineStart text n]) (head [n | (n, l) <- zip [1 ..] (T.splitOn "\n" text), l == "## Long"])
+        -- After the preview's pause, and the slides measured again.
         measuredAgain = do
+          waitQuiet
           text <- markdown ui
-          eventually $ do
-            marked <- problemsMarked ui
-            [a | (a, _, _) <- marked] `shouldBe` longAt text
-            editorFits `shouldReturn` ["fits", "fits", "overflowing"]
+          marked <- problemsMarked ui
+          [a | (a, _, _) <- marked] `shouldBe` longAt text
+          editorFits `shouldReturn` ["fits", "fits", "overflowing"]
     before <- markdown ui
     insertText ui (lineStart before 4) "\n"
     measuredAgain
     -- A look, then the theme changed from light to dark: the same layout,
     -- the cards' classes changed.
     insertText ui (lineStart before 2) "\n[[!style]]{theme=light}\n"
+    measuredAgain
     _ <- find ui ".editor-preview .slides-theme-light"
-    measuredAgain
     markdown ui >>= setMarkdown ui . T.replace "theme=light" "theme=dark"
-    _ <- find ui ".editor-preview .slides-theme-dark"
     measuredAgain
+    _ <- find ui ".editor-preview .slides-theme-dark"
+    pure ()
 
   it "never shows a slide as fitting that the slides view cuts at 1024, 1280 or 1920 pixels wide, a measure taken before a diagram draws followed by the right one" $ runPage $ do
     for_ [("beamer", "16:9"), ("light", "4:3"), ("dark", "16:9"), ("beamer", "4:3"), ("light", "16:9"), ("dark", "4:3")] $ \(theme, aspect) -> do
       unsafeIOToPageM js_fit_log_start
       let text = fitDeck theme aspect
       (ui, wiki) <- openDeck text
-      -- Every slide measured, with its diagram drawn. Mermaid's bundle is
-      -- fetched and the diagram drawn up to 2.6 s after the editor opens
-      -- on a loaded machine, and its measure follows a frame to a few
-      -- hundred milliseconds later: a wait of two seconds failed there,
-      -- the diagram drawn and its measure not yet taken.
-      fits <- eventuallyWithin 15000 $ do
-        found <- previewFits ui
-        length found `shouldBe` 24
-        found `shouldSatisfy` notElem "unmeasured"
-        length <$> findAll ui ".editor-preview .wiki-mermaid svg" `shouldReturn` 1
-        log' <- fitLog
-        -- The last measure of the diagram's slide is with the diagram.
-        [d.drawn | d <- log', d.diagrams > 0] `shouldSatisfy` maybe False (> 0) . lastMay
-        pure found
+      -- Every slide measured, with its diagram drawn: Mermaid's bundle
+      -- fetched and the diagram drawn are the program's work, which
+      -- 'openDeck' waits for, and so is the measure the drawing sets off.
+      fits <- previewFits ui
+      length fits `shouldBe` 24
+      fits `shouldSatisfy` notElem "unmeasured"
+      length <$> findAll ui ".editor-preview .wiki-mermaid svg" `shouldReturn` 1
+      log' <- fitLog
+      -- The last measure of the diagram's slide is with the diagram.
+      [d.drawn | d <- log', d.diagrams > 0] `shouldSatisfy` maybe False (> 0) . lastMay
       -- A measure was taken before the diagram was drawn, and the slide
       -- is marked as the drawn diagram makes it.
-      log' <- fitLog
       [() | d <- log', d.diagrams > 0, d.drawn == 0] `shouldSatisfy` (not . null)
       lastMay fits `shouldBe` Just "overflowing"
       -- A title slide whose title runs below the slide, and a slide whose
@@ -1594,19 +1739,19 @@ spec m = do
     -- directions of the marks.
     let guideDeck = slugs ["markdown-guide", "presentations"]
     (ui, wiki) <- startWith m (Just "user-admin") (EditPage (slugs ["docs"]) guideDeck)
+    -- Every slide measured, with its diagram and its formulas drawn:
+    -- CodeMirror, the islands and the measures are the program's work.
+    waitQuiet
     _ <- editorText ui
-    fits <- eventually $ do
-      -- Every slide measured, with its diagram and its formulas drawn.
-      _ <- find ui ".editor-preview .wiki-mermaid svg"
-      _ <- find ui ".editor-preview .wiki-math-display .katex"
-      found <- previewFits ui
-      found `shouldSatisfy` (\f -> length f >= 9 && notElem "unmeasured" f)
-      -- Measured with the diagram drawn: no slide is marked, in the
-      -- preview or among the problems.
-      found `shouldSatisfy` all (== "fits")
-      marked <- problemsMarked ui
-      [message | (_, _, message) <- marked, "This slide" `T.isPrefixOf` message] `shouldBe` []
-      pure found
+    _ <- find ui ".editor-preview .wiki-mermaid svg"
+    _ <- find ui ".editor-preview .wiki-math-display .katex"
+    fits <- previewFits ui
+    fits `shouldSatisfy` (\f -> length f >= 9 && notElem "unmeasured" f)
+    -- Measured with the diagram drawn: no slide is marked, in the
+    -- preview or among the problems.
+    fits `shouldSatisfy` all (== "fits")
+    marked <- problemsMarked ui
+    [message | (_, _, message) <- marked, "This slide" `T.isPrefixOf` message] `shouldBe` []
     unmount ui
     shown <- startOn m wiki (PageSlides (slugs ["docs"]) guideDeck 1 1)
     againstSlidesView "the guide" True fits
@@ -1615,31 +1760,30 @@ spec m = do
   it "leaves out a slide's speaker notes, however long, from whether the slide fits" $ runPage $ do
     let noted = T.intercalate "\n\n" ["# Deck", "## Noted", "One line.", "[[!notes]]\n" <> T.intercalate "\n\n" (replicate 40 "A paragraph of the notes, one line long.") <> "\n[[/notes]]"]
     (ui, _) <- openDeck noted
-    eventually $ previewFits ui `shouldReturn` ["fits", "fits"]
-    eventually $ problemsMarked ui `shouldReturn` []
+    previewFits ui `shouldReturn` ["fits", "fits"]
+    problemsMarked ui `shouldReturn` []
 
   it "measures a slide whose image fails to load: it is not left unmeasured" $ runPage $ do
     let failing = T.intercalate "\n\n" ["# Deck", "## Lost", "Above it.", "![Lost](data:image/png;base64,AAAA){width=600 height=600}"]
     (_, _) <- openDeck failing
-    eventually $ do
-      found <- editorFits
-      length found `shouldBe` 2
-      found `shouldSatisfy` notElem "unmeasured"
+    found <- editorFits
+    length found `shouldBe` 2
+    found `shouldSatisfy` notElem "unmeasured"
 
   it "measures a deck of fifty slides, and a slide again after a keystroke" $ runPage $ do
     let fifty = T.intercalate "\n\n" ("# Fifty" : concat [["## Slide " <> show n, "A first paragraph.", "A second one.", "$x^" <> show n <> "$"] | n <- [1 .. 49 :: Int]])
     unsafeIOToPageM js_fit_log_start
     (ui, _) <- openDeck fifty
-    eventually $ do
-      found <- editorFits
-      length found `shouldBe` 50
-      found `shouldSatisfy` notElem "unmeasured"
+    found <- editorFits
+    length found `shouldBe` 50
+    found `shouldSatisfy` notElem "unmeasured"
     -- A keystroke on the second slide: its card shows it, measured again.
     selectText ui (lineStart fifty 5) (lineStart fifty 5)
     openRowContent ui >>= (`typeText` "x")
-    eventually $ do
-      findAll ui ".editor-preview .slide-frame[data-slide='2'].slide-fit-fits .slide-body" >>= traverse textContent >>= (`shouldSatisfy` any (T.isInfixOf "xA first paragraph."))
-      editorFits >>= (`shouldSatisfy` notElem "unmeasured")
+    -- The preview's pause, and the slide measured again.
+    waitQuiet
+    findAll ui ".editor-preview .slide-frame[data-slide='2'].slide-fit-fits .slide-body" >>= traverse textContent >>= (`shouldSatisfy` any (T.isInfixOf "xA first paragraph."))
+    editorFits >>= (`shouldSatisfy` notElem "unmeasured")
     -- How long the measures took, said for whoever reads the log: a slow
     -- machine makes them slower, which is no fault.
     times <- fitTimes
@@ -1655,9 +1799,11 @@ spec m = do
   it "starts with the slide the cursor starts on open and in the preview, when the first slide follows the title line" $ runPage $ do
     let early = T.intercalate "\n" ["# Deck", "", "## One", "", "First.", "", "## Two", "", "Second."]
     (ui, _) <- openDeck early
-    eventually $ openTitles ui `shouldReturn` ["One"]
+    openTitles ui `shouldReturn` ["One"]
     find ui ".editor-side-by-side" >>= click
-    eventually $ cardTitles ui `shouldReturn` ["One"]
+    -- The preview follows.
+    waitQuiet
+    cardTitles ui `shouldReturn` ["One"]
   where
     helloEditor = EditPage (slugs ["blog"]) (slugs ["hello-world"])
 
@@ -1670,10 +1816,10 @@ spec m = do
     againstSlidesView deckName bothWays fits = do
       for_ (zip [1 :: Int ..] fits) $ \(n, fit) -> do
         for_ [1024, 1280, 1920 :: Int] $ \width -> do
-          seen <- eventually $ do
-            c <- slideCut width
-            (c.ready, c.slide) `shouldBe` (True, n)
-            pure c
+          -- The slide's islands drawn, which the program waits for.
+          waitQuiet
+          seen <- slideCut width
+          (seen.ready, seen.slide) `shouldBe` (True, n)
           seen.width `shouldSatisfy` (>= fromIntegral width - 0.5)
           -- Cut there: never shown as fitting.
           when seen.cut $ (deckName, n, width, fit) `shouldSatisfy` (\(_, _, _, f) -> f /= "fits")
@@ -1728,7 +1874,7 @@ spec m = do
               let typing = any (`T.isPrefixOf` label) ["type", "split", "Backspace"]
               settle
               stepped <- unsafeIOToPageM getCurrentTime
-              rowsSettled 30000
+              rowsSettled
               waited <- unsafeIOToPageM ((`diffUTCTime` stepped) <$> getCurrentTime)
               when (typing && waited < 0.6) (unsafeIOToPageM (threadDelay (ceiling ((0.6 - waited) * 1_000_000))))
               broken <- unsafeIOToPageM (fromJSText <$> js_slide_invariants)
@@ -2173,7 +2319,7 @@ slideCut width = do
 
 -- | The text of the body of the preview's card with this title.
 bodyText :: Mounted s q o m -> Text -> PageM s Text
-bodyText ui title = eventually $ do
+bodyText ui title = do
   frames <- findAll ui ".editor-preview .slide-frame:not(.slide-offstage)"
   titled <- filterM (\f -> (== title) <$> (findIn f ".slide-title" >>= textContent)) frames
   maybe (expectationFailure ("no card " <> title)) (\f -> findIn f ".slide-body" >>= textContent) (head titled)
@@ -2184,7 +2330,7 @@ status ui = find ui ".editor-slides-status" >>= textContent
 
 -- | The delete button of the row with this title.
 rowDelete :: Mounted s q o m -> Text -> PageM s (Element s)
-rowDelete ui title = eventually $ do
+rowDelete ui title = do
   rows <- findAll ui ".editor-slides .slide-row"
   named <- filterM (\r -> (== title) <$> (findIn r ".slide-row-title" >>= textContent)) rows
   maybe (expectationFailure ("no row " <> title)) (`findIn` ".slide-row-delete") (head named)
@@ -2193,10 +2339,12 @@ rowDelete ui title = eventually $ do
 keepDraft :: Mounted s q o m -> PageM s ()
 keepDraft ui = do
   find ui ".editor-cancel" >>= click
-  buttons <- eventually (findAll ui ".editor-cancel-confirm button")
+  buttons <- findAll ui ".editor-cancel-confirm button"
   named <- filterM (fmap (T.isInfixOf "Keep the draft") . textContent) buttons
   maybe (expectationFailure "no Keep the draft") click (head named)
-  eventually $ length <$> findAll ui ".editor-form" `shouldReturn` 0
+  -- The draft is stored before the editor goes.
+  waitQuiet
+  length <$> findAll ui ".editor-form" `shouldReturn` 0
 
 -- | The rows' titles, in the order of the rows; and the open rows'.
 rowTitles :: Mounted s q o m -> PageM s [Text]
@@ -2207,14 +2355,16 @@ openTitles ui = findAll ui ".editor-slides .slide-row.open .slide-row-title" >>=
 
 -- | The header of the row with this title.
 rowHeader :: Mounted s q o m -> Text -> PageM s (Element s)
-rowHeader ui title = eventually $ do
+rowHeader ui title = do
   rows <- findAll ui ".editor-slides .slide-row"
   named <- filterM (\r -> (== title) <$> (findIn r ".slide-row-title" >>= textContent)) rows
   maybe (expectationFailure ("no row " <> title)) (`findIn` ".slide-row-toggle") (head named)
 
--- | What one types into in the open row with this title.
+-- | What one types into in the open row with this title. A row opened
+-- gets its CodeMirror once the program is quiet ('openRowContent'): read
+-- after 'rowSelect', or a 'waitQuiet', in that row.
 rowContent :: Mounted s q o m -> Text -> PageM s (Element s)
-rowContent ui title = eventually $ do
+rowContent ui title = do
   rows <- findAll ui ".editor-slides .slide-row.open"
   named <- filterM (\r -> (== title) <$> (findIn r ".slide-row-title" >>= textContent)) rows
   maybe (expectationFailure ("no open row " <> title)) (`findIn` ".cm-content") (head named)
@@ -2237,14 +2387,15 @@ openRowContent ui = do
 rowText :: Int -> PageM s Text
 rowText i = unsafeIOToPageM (fromJSText <$> js_row_text i)
 
--- A row shown open gets its CodeMirror a moment later: the selection waits
--- until the row's editor is there to take it, so that what is typed next
--- goes where the test means. (The editor may move it: the title line's
--- guard keeps it out of the "# ".)
+-- A row shown open gets its CodeMirror in a fork the program waits for
+-- ('Wiki.App.Editor.Browser.whileAttaching'): the selection waits until
+-- the program is quiet, when the row's editor is there to take it, so that
+-- what is typed next goes where the test means. (The editor may move it:
+-- the title line's guard keeps it out of the "# ".)
 rowSelect :: Int -> Int -> Int -> PageM s ()
 rowSelect i anchor h = do
-  eventually $ unsafeIOToPageM (js_row_select i anchor h) `shouldReturn` True
-  settle
+  waitQuiet
+  perform (js_row_select i anchor h) >>= (`shouldBe` True)
 
 rowSelection :: Int -> PageM s (Int, Int)
 rowSelection i = do
@@ -2262,10 +2413,11 @@ rowFocused i = unsafeIOToPageM (js_row_focused i)
 -- drop landed.
 rowDrag :: Int -> Int -> Int -> Int -> Int -> Bool -> PageM s Int
 rowDrag source a b target at copy = do
-  eventually $ (rowText source >>= (`shouldSatisfy` (not . T.null))) >> (rowText target >>= (`shouldSatisfy` (not . T.null)))
-  landed <- unsafeIOToPageM (js_slide_drag source a b target at copy)
-  settle
-  pure landed
+  -- Both rows' CodeMirrors in place: they come once the program is quiet.
+  waitQuiet
+  rowText source >>= (`shouldSatisfy` (not . T.null))
+  rowText target >>= (`shouldSatisfy` (not . T.null))
+  perform (js_slide_drag source a b target at copy)
 
 -- | Whether the cursor of the row at an index can be seen.
 rowCursorSeen :: Int -> PageM s Bool
@@ -2295,7 +2447,7 @@ lineEnd text n = lineStart text n + maybe 0 T.length (atMay (T.splitOn "\n" text
 -- | One of the two buttons of the switch between slide by slide and the
 -- raw Markdown, by its text.
 modeButton :: Mounted s q o m -> Text -> PageM s (Element s)
-modeButton ui label = eventually $ do
+modeButton ui label = do
   buttons <- findAll ui ".editor-slides-mode button"
   named <- filterM (fmap (== label) . textContent) buttons
   maybe (expectationFailure ("no button " <> label)) pure (head named)
@@ -2309,29 +2461,25 @@ cardTitles ui = findAll ui ".editor-preview .slides-preview .slide-frame:not(.sl
 lineStart :: Text -> Int -> Int
 lineStart text n = sum (map ((+ 1) . T.length) (take (n - 1) (T.splitOn "\n" text)))
 
--- | Wait until the slides' rows are settled: the page settled with the
--- program idle (hspec-halogen's 'settle': no tree has work running or
--- queued), the master's layout one that a re-cut of every row leaves as it
--- is ("Wiki.Core.SlideRows.recut"), and the list showing as many rows. A step
--- that changed a row's text leaves the rows as they were until the re-cut
--- after the check's pause (Editor's 'recutRows'); a walk that reads the
--- layout and the rows' list before it reads two different cuts. It waited
--- 300 or 600 ms instead, which a loaded machine did not always give: with
--- a busy loop on every core and two pages side by side, seed 11 failed 6
--- runs in 30 and seed 47 3, each a step that typed or dragged where the
--- layout, read before its re-cut, had fewer rows than the list. Measured
--- on that load, 4500 steps settled in 0.09 s on average and 1.3 s at
--- most. Within the given milliseconds.
-rowsSettled :: Int -> PageM s ()
-rowsSettled within =
-  eventuallyWithin within $ do
-    settle
-    lay <- walkLayout
-    shown <- unsafeIOToPageM js_row_count
-    case SlideRows.fromLayout lay.text lay.starts of
-      Nothing -> expectationFailure ("no rows in the layout: " <> show lay.starts)
-      Just rows -> do
-        let everyRow = [r.key | r <- rows.rows]
-            again = fst (SlideRows.recut (RowKey 0) Nothing everyRow rows)
-        unless (SlideRows.rowStarts again == SlideRows.rowStarts rows) (expectationFailure ("the rows are not cut again yet: " <> show (SlideRows.rowStarts rows)))
-        unless (shown == length rows.rows) (expectationFailure ("the list shows " <> show shown <> " rows, the layout has " <> show (length rows.rows)))
+-- | Wait until the slides' rows are settled, and check that they are: the
+-- program quiet ('waitQuiet'), so that the re-cut after the check's
+-- counted pause has run (Editor's 'recutRows'), then the master's layout
+-- one that a re-cut of every row leaves as it is
+-- ("Wiki.Core.SlideRows.recut"), and the list showing as many rows. A
+-- step that changed a row's text leaves the rows as they were until that
+-- re-cut; a walk that reads the layout and the rows' list before it reads
+-- two different cuts. It waited 300 or 600 ms first, which a loaded
+-- machine did not always give, then retried a settle and the reads until
+-- they agreed.
+rowsSettled :: PageM s ()
+rowsSettled = do
+  waitQuiet
+  lay <- walkLayout
+  shown <- unsafeIOToPageM js_row_count
+  case SlideRows.fromLayout lay.text lay.starts of
+    Nothing -> expectationFailure ("no rows in the layout: " <> show lay.starts)
+    Just rows -> do
+      let everyRow = [r.key | r <- rows.rows]
+          again = fst (SlideRows.recut (RowKey 0) Nothing everyRow rows)
+      unless (SlideRows.rowStarts again == SlideRows.rowStarts rows) (expectationFailure ("the rows are not cut again: " <> show (SlideRows.rowStarts rows)))
+      unless (shown == length rows.rows) (expectationFailure ("the list shows " <> show shown <> " rows, the layout has " <> show (length rows.rows)))

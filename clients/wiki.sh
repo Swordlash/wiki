@@ -677,8 +677,8 @@ expect_answer() {
   esac
   case $kind in
     page | written | created)
-      if [ -z "$(header_value etag)" ]; then
-        wrong_answer "it has no version (ETag)"
+      if ! is_version "$(header_value etag)"; then
+        wrong_answer "it has no version (ETag) of the wiki's shape"
         return
       fi
       ;;
@@ -1105,6 +1105,52 @@ owner_and_mode() {
 # nothing is written beside it. A file whose pair is written (write, or
 # update with FILE.version there) must be in a directory of the user's own
 # (check_own_directory).
+#
+# What is on disk if a run stops (is killed, or a step fails) at each step,
+# and what the next commands do with it. "Lock left" is only for a run
+# killed outright: on a failure or a signal the exit trap removes the lock.
+#
+#   get --out FILE
+#   1 lock taken             FILE, FILE.version as they were (lock left):
+#                            the next get --out or put --file of FILE fails,
+#                            naming the lock, until the user removes it
+#   2 request, staging       as in 1, and staged .wiki-sh.XXXXXX files beside
+#                            FILE when killed (hidden; nothing reads them)
+#   3 FILE.version removed   FILE's old text, no version: put --file is
+#                            refused (no version) unless --if-match or
+#                            --force; get --out writes both again
+#   4 text moved in          the new text, no version: as in 3
+#   5 version moved in       the new text and its version, whole: put
+#                            --file sends it over that version
+#   6 state file written     the state file says the new version; until
+#                            then it says the one before, and put from
+#                            standard input, the only one that reads it, is
+#                            refused (412) if the page moved on
+#
+#   put --file FILE (with FILE.version)
+#   1 lock taken, text       FILE and FILE.version unchanged
+#     copied
+#   2 request sent           unchanged; whether the wiki wrote is unknown: if
+#                            it did, the next put --file sends the old
+#                            version and is refused (412); get --out again
+#   3 state file written     the state file has the new version, FILE.version
+#                            the old: as in 2
+#   4 FILE.version moved on  FILE.version names the new version beside the
+#                            text that was sent, which is still FILE's (the
+#                            text does not change, so a put needs nothing
+#                            taken away first: the old and the new version
+#                            are both of this text's page, and the record is
+#                            replaced whole by a rename)
+#
+#   create (--file FILE or standard input)
+#   1 request sent           nothing on disk changes; if the wiki made the
+#                            page, the next create is refused (412: a page is
+#                            there) and put needs the page's version: get it
+#   2 state file written     the state file has the new version
+#
+#   get to standard output, put from standard input: only the state file
+#   is written, last, whole, by a rename; a stop before leaves the one
+#   before, which a put refuses (412) if the page moved on.
 
 # FILE's path with its directory resolved (cd -P, pwd -P: every link in it
 # followed), in file_path, and that directory in resolved_dir.
@@ -1231,18 +1277,22 @@ stage() {
   staged=$(mktemp "$(directory_of "$1")/.wiki-sh.XXXXXX" 2>/dev/null) || return 1
 }
 
-# The staged file moved over FILE. Its mode is FILE's when FILE is a
-# regular file of the user's own (not a link, not someone else's), the
-# mode the caller's umask gives a new file otherwise, and 600 with PRIVATE
-# (the state files).
-place_staged() {
-  if [ "${3:-}" != private ]; then
-    mode=$(printf '%s' "$user_umask" | sed 's/x//g')
-    if [ -f "$2" ] && [ ! -L "$2" ] && owner_and_mode "$2" && [ "$owner" = "$(id -u)" ]; then
-      mode=$(mode_of "$2")
-    fi
-    chmod "$mode" "$1" 2>/dev/null || return 1
+# The staged file given the mode it will have as FILE: FILE's when FILE is
+# a regular file of the user's own (not a link, not someone else's), the
+# mode the caller's umask gives a new file otherwise, and 600 (as mktemp
+# made it) with PRIVATE (the state files).
+give_mode() {
+  [ "${3:-}" != private ] || return 0
+  mode=$(printf '%s' "$user_umask" | sed 's/x//g')
+  if [ -f "$2" ] && [ ! -L "$2" ] && owner_and_mode "$2" && [ "$owner" = "$(id -u)" ]; then
+    mode=$(mode_of "$2")
   fi
+  chmod "$mode" "$1" 2>/dev/null
+}
+
+# The staged file moved over FILE, with its mode (give_mode).
+place_staged() {
+  give_mode "$1" "$2" "${3:-}" || return 1
   mv -f "$1" "$2" 2>/dev/null
 }
 
@@ -1343,18 +1393,72 @@ record_version() {
   [ -z "$taken_here" ] || release_lock file_lock
 }
 
-remembered_version() {
-  vf=$(version_file)
-  [ -r "$vf" ] && head -n 1 "$vf"
+# Whether the text is a version as the wiki writes it in an ETag
+# (Wiki.Api.Version's PageVersion: a UTC time in ISO 8601, iso8601Show's
+# form, in double quotes: "2026-11-18T09:30:12.345678Z"). Every version
+# this script reads (an ETag, a sidecar, a state file, --if-match, the MCP
+# tool's argument) is checked by it before it is used; one that fails is no
+# version.
+is_version() {
+  case $1 in
+    \"*\") ;;
+    *) return 1 ;;
+  esac
+  inner=${1#\"}
+  inner=${inner%\"}
+  case $inner in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) return 0 ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].*Z)
+      fraction=${inner#*.}
+      fraction=${fraction%Z}
+      case $fraction in
+        '' | *[!0-9]*) return 1 ;;
+      esac
+      return 0
+      ;;
+  esac
+  return 1
 }
 
-# A version as the API wants it in If-Match: the ETag, quotes included. One
-# given without its quotes gets them.
-quoted_version() {
+# The page's version from its state file, if the file holds one; a damaged
+# state file is said and counts as none.
+remembered_version() {
+  vf=$(version_file)
+  [ -r "$vf" ] || return 0
+  remembered=$(head -n 1 "$vf")
+  if is_version "$remembered"; then
+    printf '%s' "$remembered"
+  else
+    note "the version remembered in $vf is damaged; it is not used"
+  fi
+}
+
+# FILE.version as a record of this page, in sidecar_state: none (no
+# file), other (another page's), damaged (this page's, with no version in
+# the shape the wiki writes), or ok, with the version in sidecar_version.
+read_sidecar() {
+  sidecar_state=none sidecar_version=''
+  [ -n "$1" ] && [ -f "$1.version" ] && [ ! -L "$1.version" ] || return 0
+  if [ "$(sed -n 2p "$1.version")" != "$addr_shown" ]; then
+    sidecar_state=other
+    return 0
+  fi
+  sidecar_version=$(head -n 1 "$1.version")
+  if is_version "$sidecar_version"; then
+    sidecar_state=ok
+  else
+    sidecar_state=damaged sidecar_version=''
+  fi
+}
+
+# A version given by the caller (--if-match, the MCP tool's version), its
+# quotes added when left out, checked; empty when it is not a version.
+given_version() {
   case $1 in
-    \"*\") printf '%s' "$1" ;;
-    *) printf '"%s"' "$1" ;;
+    \"*\") candidate=$1 ;;
+    *) candidate="\"$1\"" ;;
   esac
+  if is_version "$candidate"; then printf '%s' "$candidate"; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1370,18 +1474,37 @@ fetch_page() {
   page_version=$(header_value etag)
 }
 
-# The file's text written over the page at addr, conditional on the version
-# given (none: unconditional). The new version is in page_version; the
-# caller records it. An answer that is not the wiki's 204 with an ETag
-# fails, and nothing is recorded.
+# The one function that sends a page's Markdown (a PUT): the file's text
+# to the page at addr, with exactly one condition, If-Match with a version
+# (CONDITION if-match, VERSION checked by is_version) or If-None-Match: *
+# (CONDITION create), and QUERY for a creation. The wiki writes over a page
+# and even creates one for a PUT with neither, so none ever goes out
+# without one: reached without a valid condition, it fails (exit 1) and
+# sends nothing, whatever branch led there.
+send_page_text() {
+  case $2 in
+    if-match)
+      if ! is_version "$3"; then
+        fail "$EX_ERROR" "internal error: a write of $addr_shown was about to go out without a version to match (\"$3\"); nothing was sent"
+        return
+      fi
+      set -- "$1" -H "If-Match: $3" "$4"
+      ;;
+    create) set -- "$1" -H 'If-None-Match: *' "$4" ;;
+    *)
+      fail "$EX_ERROR" "internal error: a write of $addr_shown was about to go out with no condition; nothing was sent"
+      return
+      ;;
+  esac
+  wiki_request PUT "api/markdown/$addr${4:+?$4}" -H 'Content-Type: text/markdown; charset=utf-8' --data-binary "@$1" "$2" "$3"
+}
+
+# The file's text written over the page at addr, conditional on VERSION
+# (If-Match). The new version is in page_version; the caller records it.
+# An answer that is not the wiki's 204 with an ETag fails, and nothing is
+# recorded.
 store_page() {
-  store_body=$1 store_if_match=$2
-  if [ -n "$store_if_match" ]; then
-    set -- -H "If-Match: $store_if_match"
-  else
-    set --
-  fi
-  wiki_request PUT "api/markdown/$addr" -H 'Content-Type: text/markdown; charset=utf-8' --data-binary "@$store_body" "$@" || return
+  send_page_text "$1" if-match "$2" '' || return
   check_answer "$addr_shown" || return
   expect_answer written || return
   page_version=$(header_value etag)
@@ -1409,7 +1532,7 @@ create_page() {
   query=''
   [ -z "$2" ] || query="title=$(query_encode "$2")"
   [ -z "$3" ] || query="${query:+$query&}kind=$3"
-  wiki_request PUT "api/markdown/$addr${query:+?$query}" -H 'Content-Type: text/markdown; charset=utf-8' -H 'If-None-Match: *' --data-binary "@$1" || return
+  send_page_text "$1" create '' "$query" || return
   if [ "$http_status" = 412 ]; then
     fail "$EX_MOVED" "there is a page at $addr_shown already (412): nothing was written; read it with get, and write it with put"
     return
@@ -1693,16 +1816,27 @@ cmd_get() {
       return
     fi
     version_tmp=$staged
+    # The old FILE.version goes first: a stop or a failure after it leaves
+    # a text with no version beside it (the old text, or the new), which a
+    # put --file refuses without --if-match or --force, never a text beside
+    # a version of another page or of another time. The new version takes
+    # the old one's mode, read before it goes.
+    if ! give_mode "$version_tmp" "$out_path.version" || ! rm -f "$out_path.version"; then
+      rm -f "$text_tmp" "$version_tmp"
+      release_lock file_lock
+      fail "$EX_ERROR" "cannot replace $out.version: $out and its version are as they were"
+      return
+    fi
     if ! place_staged "$text_tmp" "$out_path"; then
       rm -f "$text_tmp" "$version_tmp"
       release_lock file_lock
-      fail "$EX_ERROR" "cannot move the text into $out: $out and its version are as they were"
+      fail "$EX_ERROR" "cannot move the text into $out: $out has its old text and no version now, so a put --file $out is refused until you get the page again"
       return
     fi
-    if ! place_staged "$version_tmp" "$out_path.version"; then
+    if ! mv -f "$version_tmp" "$out_path.version" 2>/dev/null; then
       rm -f "$version_tmp"
       release_lock file_lock
-      fail "$EX_ERROR" "$out has the page's new text, but $out.version could not be written: a put --file $out will be refused; get the page again"
+      fail "$EX_ERROR" "$out has the page's new text, but $out.version could not be written: $out has no version now, so a put --file $out is refused until you get the page again"
       return
     fi
     release_lock file_lock
@@ -1743,6 +1877,14 @@ cmd_put() {
     usage "--force writes over the page's version as it is now, and --if-match over the one given: give one of them"
     return
   fi
+  if_version=''
+  if [ -n "$if_match" ]; then
+    if_version=$(given_version "$if_match")
+    if [ -z "$if_version" ]; then
+      usage "--if-match takes a version as the wiki writes it, as \"2026-11-18T09:30:12.345678Z\" (get --version prints it), not $if_match"
+      return
+    fi
+  fi
   load_config || return
   page_address "$first" "$second" || return
   if [ -z "$file" ] && [ -t 0 ]; then
@@ -1778,7 +1920,7 @@ cmd_put() {
   sidecar_file=''
   [ -z "$file_lock" ] || sidecar_file=$file_path
   if [ -n "$if_match" ]; then
-    version=$(quoted_version "$if_match")
+    version=$if_version
   elif [ -n "$force" ]; then
     fetch_page
     put_status=$?
@@ -1788,12 +1930,18 @@ cmd_put() {
     fi
     version=$page_version
   elif [ -n "$file" ]; then
-    sidecar=$(sidecar_of "$sidecar_file")
-    if [ -z "$sidecar" ]; then
-      fail "$EX_USAGE" "$file.version does not name $addr_shown, so the text of $file may be of any version of it: get the page into it (wiki.sh get $addr_shown --out $file), or give --if-match VERSION, or --force"
-      return
-    fi
-    version=$(head -n 1 "$sidecar")
+    read_sidecar "$sidecar_file"
+    case $sidecar_state in
+      ok) version=$sidecar_version ;;
+      damaged)
+        fail "$EX_USAGE" "$file.version names $addr_shown but holds no version of the wiki's shape (damaged, or edited by hand), so the text of $file may be of any version: get the page into it again (wiki.sh get $addr_shown --out $file), or give --if-match VERSION, or --force"
+        return
+        ;;
+      *)
+        fail "$EX_USAGE" "$file.version does not name $addr_shown, so the text of $file may be of any version of it: get the page into it (wiki.sh get $addr_shown --out $file), or give --if-match VERSION, or --force"
+        return
+        ;;
+    esac
   else
     version=$(remembered_version)
     if [ -z "$version" ]; then
@@ -2247,7 +2395,12 @@ mcp_call_tool() {
       esac
       mv "$work/arg" "$work/content"
       page_address "$page" || { tool_failed "$fail_message"; return; }
-      if store_page "$work/content" "$(quoted_version "$version")"; then
+      checked_version=$(given_version "$version")
+      if [ -z "$checked_version" ]; then
+        tool_failed "version is not a version of the wiki ($version): give the one wiki_read_page returned, as \"2026-11-18T09:30:12.345678Z\"."
+        return
+      fi
+      if store_page "$work/content" "$checked_version"; then
         # The state file is the commands' convenience; the model has the
         # version in the answer, so a lock held elsewhere is only noted.
         record_version "$page_version" || note "$fail_message"
@@ -2386,8 +2539,6 @@ mcp_handle() {
       '"initialize"')
         requested=$(jq -r '.params.protocolVersion // "" | strings' "$work/msg")
         chosen=${mcp_legacy%% *}
-        # The revisions, split into words on purpose.
-        # shellcheck disable=SC2086
         for known in $mcp_legacy; do
           [ "$requested" != "$known" ] || chosen=$known
         done

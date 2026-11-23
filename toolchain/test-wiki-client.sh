@@ -87,15 +87,27 @@ die() {
   exit 1
 }
 
-if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck "$client" "$0" >"$work/shellcheck.out" 2>&1; then
-    pass "shellcheck finds nothing"
+# The client is checked by shellcheck as POSIX sh (what it must run as),
+# and so is this script. Missing here, it is said and the tests go on; missing in CI (CI
+# set, as GitHub's runners set it, whose images have shellcheck), it is a
+# failure.
+shellcheck_one() {
+  description=$1
+  shift
+  if shellcheck "$@" >"$work/shellcheck.out" 2>&1; then
+    pass "$description finds nothing"
   else
-    fail "shellcheck finds this:"
+    fail "$description finds this:"
     sed 's/^/  /' "$work/shellcheck.out" >&2
   fi
+}
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck_one "shellcheck -s sh clients/wiki.sh" -s sh "$client"
+  shellcheck_one "shellcheck toolchain/test-wiki-client.sh" "$0"
+elif [ -n "${CI:-}" ]; then
+  fail "shellcheck not found, and CI must run it"
 else
-  printf 'skipped: shellcheck is not installed\n'
+  printf 'shellcheck not found, not run\n'
 fi
 
 # The passwords: a space, quotes, a backslash, a colon and a letter outside
@@ -257,7 +269,16 @@ if [ -n "\${PAUSE_DIR:-}" ] && mkdir "\$PAUSE_DIR/paused" 2>/dev/null; then
 fi
 exec "$real_cp" "\$@"
 EOF
-chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv" "$work/fakes/pausecp/cp"
+# And an mv whose call number FAIL_AT fails, counted in FAIL_DIR.
+mkdir -p "$work/fakes/failmv"
+cat >"$work/fakes/failmv/mv" <<EOF
+#!/bin/sh
+n=1
+while ! mkdir "\$FAIL_DIR/call-\$n" 2>/dev/null; do n=\$((n + 1)); done
+[ "\$n" != "\$FAIL_AT" ] || exit 1
+exec "$real_mv" "\$@"
+EOF
+chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv" "$work/fakes/pausecp/cp" "$work/fakes/failmv/mv"
 # The PATH the client runs with: the recording curl, and the failing jq
 # unless the MCP server is under test.
 curl_path=$work/fakes/curl:$PATH
@@ -604,6 +625,7 @@ suite() {
   own_directories
   one_writer_at_a_time
   one_file_one_path
+  incomplete_pairs
   creating
   round_trip "$public_root" root
   round_trip "$public_wiki" base-path
@@ -670,6 +692,8 @@ EOF
   done
   while IFS='|' read -r given expected; do
     : >"$work/curl.args"
+    # A row is one argument or two (a space's path and a page's), split
+    # into words on purpose.
     # shellcheck disable=SC2086
     client get $given
     expect 0 "the address $given is read"
@@ -867,8 +891,8 @@ answers_by_kind() {
   fake_location='' fake_status=200
   # Through the MCP tools: each answer as above, one tool call each.
   for call in \
-    "$html|text/html|200|$v|wiki_write_page|{\"page\":\"/s/team/p/x/\",\"version\":\"v\",\"content\":\"x\"}" \
-    "|text/plain|200|$v|wiki_write_page|{\"page\":\"/s/team/p/x/\",\"version\":\"v\",\"content\":\"x\"}" \
+    "$html|text/html|200|$v|wiki_write_page|{\"page\":\"/s/team/p/x/\",\"version\":\"2026-11-23T00:00:00Z\",\"content\":\"x\"}" \
+    "|text/plain|200|$v|wiki_write_page|{\"page\":\"/s/team/p/x/\",\"version\":\"2026-11-23T00:00:00Z\",\"content\":\"x\"}" \
     "$page_text|text/markdown|200|none|wiki_read_page|{\"page\":\"/s/team/p/x/\"}" \
     "$login|application/json|200|none|wiki_list|{}" \
     "{\"hits\":{}}|application/json|200|none|wiki_search|{\"query\":\"x\"}" \
@@ -1109,6 +1133,82 @@ resume() {
   status=$(cat "$pause/status")
 }
 
+# The client, as client runs it, with the mv whose call number $1 fails.
+client_failing_mv() {
+  at=$1
+  shift
+  rm -rf "$work/fail-$shell"
+  mkdir -p "$work/fail-$shell"
+  env -i PATH="$work/fakes/failmv:$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" \
+    FAIL_DIR="$work/fail-$shell" FAIL_AT="$at" "$shell" "$client" "$@" <"$input" >"$work/out" 2>"$work/err"
+  status=$?
+}
+
+# Versions are only ever of the wiki's shape, and a pair is whole or has
+# no version: a FILE.version that names the page with no version in it, a
+# damaged state file and an --if-match that is no version are refused with
+# nothing sent; a get --out of another page whose version's move fails, or
+# whose text's move fails, leaves a text with no version beside it, which
+# put --file refuses.
+incomplete_pairs() {
+  url=$public_root user=editor password=$editor_password state=$work/state-$shell-pairs input=/dev/null
+  pairs=$work/pairs-$shell
+  mkdir -p "$pairs"
+  f=$pairs/page.md
+  client get "$page"
+  cp "$work/out" "$work/pairs-a-text"
+  client get "$page" --out "$f"
+  expect 0 "get --out of the page, for the pairs"
+  for damaged in '' '"not a time"' 'yesterday' '"2026-11-18T09:30:12.Z"'; do
+    printf '%s\n%s\n' "$damaged" "$page" >"$f.version"
+    : >"$work/curl.args"
+    client put "$page" --file "$f"
+    expect 2 "a FILE.version naming the page with the version '$damaged' is refused"
+    has err "damaged" "the refusal says FILE.version is damaged ('$damaged')"
+    check "nothing was sent for it ('$damaged')" [ ! -s "$work/curl.args" ]
+  done
+  : >"$work/curl.args"
+  client put "$page" --file "$f" --if-match yesterday
+  expect 2 "an --if-match that is no version is refused"
+  check "nothing was sent for it" [ ! -s "$work/curl.args" ]
+  vf=$(find "$state" -name _version -path '*/s/team/projects/p/the-wiki/*')
+  printf 'garbage\n' >"$vf"
+  input=$work/pairs-a-text
+  : >"$work/curl.args"
+  client put "$page"
+  expect 2 "a put from standard input with a damaged state file is refused"
+  has err "damaged" "it says the remembered version is damaged"
+  check "nothing was sent for it" [ ! -s "$work/curl.args" ]
+  input=/dev/null
+  # A get --out of another page over FILE, whose version's move (the
+  # second mv) fails: B's text, and no version.
+  client get "$page" --out "$f"
+  client_failing_mv 2 get "$second" --out "$f"
+  expect 1 "get --out of another page whose version's move fails fails"
+  has err "has no version now" "it says FILE has no version now"
+  check "FILE has no version beside it" [ ! -e "$f.version" ]
+  client put "$page" --file "$f"
+  expect 2 "put --file of the first page with that FILE is refused"
+  client get "$page"
+  check "the first page is as it was" cmp -s "$work/out" "$work/pairs-a-text"
+  # The same, whose text's move (the first mv) fails: the old text, and no
+  # version.
+  client get "$page" --out "$f"
+  cp "$f" "$work/pairs-before"
+  client_failing_mv 1 get "$second" --out "$f"
+  expect 1 "get --out of another page whose text's move fails fails"
+  has err "has its old text and no version" "it says FILE has its old text and no version"
+  check "FILE has its old text" cmp -s "$f" "$work/pairs-before"
+  check "and no version beside it" [ ! -e "$f.version" ]
+  client put "$page" --file "$f"
+  expect 2 "put --file of it is refused"
+  check "no lock is left" [ ! -e "$f.wiki-sh-lock" ]
+  check "nothing is left beside it" [ -z "$(find "$pairs" -name '.wiki-sh.*')" ]
+  client get "$page" --out "$f"
+  client put "$page" --file "$f"
+  expect 0 "after a get --out that completes, put --file goes through again"
+}
+
 # One local file, one path, one lock (local_file): put --file reads its
 # text and its version, under its lock, from the path as it resolved; a file
 # with no version of its own is refused, unless --if-match or --force say
@@ -1328,8 +1428,6 @@ versions_follow_delivery() {
     cp "$work/limited.md" "$work/limited.before"
     cp "$work/limited.md.version" "$work/limited.version.before"
     (
-      # Guarded by the test above.
-      # shellcheck disable=SC3045
       ulimit -S -f 1
       exec env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" \
         "$shell" "$client" get "$second" --out "$work/limited.md"
@@ -1479,7 +1577,6 @@ Written through MCP: "quoted", back\slash, ż.
   } >"$work/mcp.in"
   printf -- '--- the MCP server under %s\n' "$shell"
   # Through a pipe, as a client starts it.
-  # shellcheck disable=SC2002
   cat "$work/mcp.in" | env -i PATH="$curl_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-mcp" \
     "$shell" "$client" mcp >"$work/mcp.out" 2>"$work/mcp.err"
   status=$?

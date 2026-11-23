@@ -2890,9 +2890,15 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   into a file it cannot write remembers nothing) or the wiki accepted the
   write, and then in the state file and in the file's `.version` together,
   however the version sent was chosen. `get --out FILE` writes the text and
-  its version beside `FILE` first, checks the text is whole, and moves the text
-  into place before the version: a full disk or a file size limit leaves
-  `FILE` and `FILE.version` as they were. The files beside them are made by
+  its version beside `FILE` first, checks the text is whole, then takes the old
+  `FILE.version` away, moves the text into place, and the new version last: a
+  full disk or a file size limit leaves `FILE` and `FILE.version` as they
+  were, and a stop in between leaves a text with no version, which `put
+  --file` refuses, never a text beside a version that is not its own. A
+  version is used only in the shape the wiki writes it (a quoted UTC time,
+  `"2026-11-18T09:30:12.345678Z"`): a damaged `FILE.version` or state file, or
+  an `--if-match` of another shape, is refused like a missing one, and no
+  write ever goes out without `If-Match` or `If-None-Match: *`. The files beside them are made by
   `mktemp` (nobody can name one in advance, in `/tmp` either), and each takes
   the mode of the file it replaces, or for a new file the one your umask
   gives; a `FILE` that is a symbolic link is refused. `FILE` must be in a

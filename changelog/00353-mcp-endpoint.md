@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 353
 title: Assistants such as Claude Code and Codex can read and write the wiki
 ---
 

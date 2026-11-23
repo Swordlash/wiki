@@ -188,6 +188,7 @@ library
         http-client-tls,
         http-types,
         ki >= 1.0.1.2 && < 1.1,
+        mcp-server >= 0.3.0.1 && < 0.4,
         mime-mail,
         network,
         network-uri,

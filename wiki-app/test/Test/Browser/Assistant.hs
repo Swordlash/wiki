@@ -52,7 +52,7 @@ import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, replace)
 import Test.Browser.Http (answerWith, serveDemo, serverStarts, serverStops, startServer)
 import Test.Browser.Mount (slugs, startOn, startWith)
-import Test.Browser.Text (editorText, markdown)
+import Test.Browser.Text (editorText, markdown, untilFocusTaken)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
 import Wiki.Api.ServerSettings (AssistantApi (..), AssistantService (..))
@@ -262,13 +262,19 @@ spec m = readsOnce Quiet $ do
     script []
     ui <- openAssistant m
     _ <- perform (js_select 16 38)
+    -- The marks follow the focus when CodeMirror tells its plugins of the
+    -- change, on a timer of its own that the program does not know of:
+    -- each read waits for that first ('untilFocusTaken').
     find ui ".assistant-input" >>= focus
+    untilFocusTaken ui False
     find ui ".cm-wiki-kept-selection" >>= (`shouldHaveText` "This is the first post")
     find ui ".assistant-scope .assistant-chip" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "line 3")
     -- Back in the text, the browser shows the selection itself.
     editorText ui >>= focus
+    untilFocusTaken ui True
     length <$> findAll ui ".cm-wiki-kept-selection" `shouldReturn` 0
     find ui ".assistant-input" >>= focus
+    untilFocusTaken ui False
     length <$> findAll ui ".cm-wiki-kept-selection" `shouldReturn` 1
 
   it "answers a replacement of text the page does not have with why, and the model goes on" $ runFresh $ do

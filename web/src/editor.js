@@ -648,6 +648,39 @@ const keptSelection = ViewPlugin.fromClass(
   { decorations: (plugin) => plugin.decorations },
 );
 
+// For the browser tests: the focus each view's plugins were last told of,
+// and the tests' waits for it. CodeMirror tells its plugins of a change of
+// the focus on a timer of its own, ten milliseconds after the browser's
+// focus or blur, and keptSelection redraws then. The program does not know
+// of that timer, and view.hasFocus reads the browser's focus at once, so a
+// test waits here instead (focusTaken, below). `focusTold` holds, by view,
+// whether the last update that told of the focus found the view focused;
+// `focusWaits` holds the waits, each with the focus it waits for.
+const focusTold = new WeakMap();
+const focusWaits = new WeakMap();
+
+const focusTelling = ViewPlugin.fromClass(
+  class {
+    constructor(view) {
+      focusTold.set(view, view.hasFocus);
+    }
+    update(update) {
+      if (!update.focusChanged) return;
+      const focused = update.view.hasFocus;
+      focusTold.set(update.view, focused);
+      const waits = focusWaits.get(update.view) ?? [];
+      focusWaits.set(update.view, waits.filter((wait) => wait.focused !== focused));
+      for (const wait of waits) if (wait.focused === focused) wait.resolve();
+    }
+  },
+);
+
+// A promise of the moment a view's plugins have been told that it has the
+// focus (`focused` true) or has lost it (false): at once when the last
+// change they were told of says so already.
+const focusTaken = (view, focused) =>
+  focusTold.get(view) === focused ? Promise.resolve() : new Promise((resolve) => focusWaits.set(view, [...(focusWaits.get(view) ?? []), { focused, resolve }]));
+
 // The same in a row of the slide mode (attachRow): the selection marked is
 // the master's, the one the assistant has, where it lies in the row, and
 // not the row's own. A row keeps its own selection when the focus goes to
@@ -3008,6 +3041,7 @@ export function attach(textarea, host, original, codeTokens) {
       decorations(codeTokens),
       unclosedMath,
       keptSelection,
+      focusTelling,
       lintGutter(),
       folding,
       rowsLayout,
@@ -3261,6 +3295,10 @@ export function attach(textarea, host, original, codeTokens) {
     // for no list), for the browser tests.
     completionAnswered: (of = view) => completion.answered(of),
     completionTakesKeys: (of = view) => completion.takesKeys(of),
+    // A promise of the moment this editor's plugins have been told that
+    // the text has the focus (true) or has lost it (false), for the browser
+    // tests: the selection kept in sight follows then (focusTaken).
+    focusTaken: (focused) => focusTaken(view, focused),
     // Whether the list of a mention's or an emoji's completion is open
     // ("active"), being asked for ("pending"), or neither (""), for the
     // browser tests.

@@ -16,20 +16,25 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Network.HTTP.Types (Header, Method, hContentType, methodGet, methodPost, methodPut)
+import Network.HTTP.Types (Header, Method, hContentType, methodDelete, methodGet, methodPost, methodPut)
 import Protolude
 import Test.Database (Backing)
 import Test.Hspec
 import Test.Server.Fixture
+import Wiki.Api (PagesApi (..), SpacesApi (..), WikiApi (..))
 import Wiki.Api.Encrypted (EncryptSpace (..), NewGrant (..), NewSealedPage (..))
+import Wiki.Api.Links (links)
 import Wiki.Api.Types qualified as Api
 import Wiki.Api.Vault (NewPublicKey (..), VaultChange (..))
 import Wiki.Core.Encrypted (Encapsulated (..), PageKey (..), SealedContent (..), VersionTag (..), firstChain)
 import Wiki.Core.Id (PageId (..), SpaceId (..), UserId (..))
+import Wiki.Core.Page qualified as P
 import Wiki.Core.PageKind qualified as Kind
+import Wiki.Core.Path (parsePath)
 import Wiki.Core.Slug (slugText)
 import Wiki.Core.Space qualified as S
 import Wiki.Core.Vault
+import Wiki.Core.Version (VersionInfo)
 import Wiki.Server.Vault (keyIdOf)
 import Wiki.Server.WebAuthn (toBase64Url)
 
@@ -37,6 +42,7 @@ spec :: Backing -> Spec
 spec backing = describe "a page's contents and sections, for programs" $ do
   contents backing
   sections backing
+  writing backing
   refusals backing
 
 -- | A page's table of contents, read back from its JSON. A key left out is
@@ -245,19 +251,111 @@ refusals backing = describe "refusals" $ do
       reply.status `shouldBe` 409
       errorName reply `shouldBe` Just "Stale"
 
-  it "only reads: 405 to another method, and a section's PUT writes nothing" $ withPasswords backing $ \r -> do
+  it "takes only the methods it names, and never makes a page with a section's PUT" $ withPasswords backing $ \r -> do
     posted <- request r methodPost "api/contents/s/blog/p/hello-world/" [edgar] ""
     (posted.status, header "Allow" posted) `shouldBe` (405, Just "GET, HEAD")
     unchanged <- request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] ""
-    written <- request r methodPut "api/markdown/s/blog/p/hello-world/?section=why-a-wiki" [edgar] "## Why a wiki\n\nReplaced.\n"
-    (written.status, header "Allow" written) `shouldBe` (405, Just "GET, HEAD")
+    deleted <- request r methodDelete "api/markdown/s/blog/p/hello-world/?section=why-a-wiki" [edgar] ""
+    (deleted.status, header "Allow" deleted) `shouldBe` (405, Just "GET, HEAD, PUT")
     (.body) <$> request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] "" `shouldReturn` unchanged.body
     -- A PUT to a free address creates a page there, but not with ?section=.
-    nowhere <- request r methodPut "api/markdown/s/blog/p/new-page/?section=x" [edgar] "# New page\n"
-    (nowhere.status, header "Allow" nowhere) `shouldBe` (405, Just "GET, HEAD")
-    (.status) <$> request r methodGet "api/markdown/s/blog/p/new-page/" [edgar] "" `shouldReturn` 404
-    (.status) <$> request r methodPut "api/markdown/s/blog/p/new-page/?top=true" [edgar] "# New page\n" `shouldReturn` 405
-    (.status) <$> request r methodGet "api/markdown/s/blog/p/new-page/" [edgar] "" `shouldReturn` 404
+    for_ ["api/markdown/s/blog/p/new-page/?section=x", "api/markdown/s/blog/p/new-page/?top=true"] $ \path -> do
+      nowhere <- request r methodPut path [edgar] "# New page\n"
+      (nowhere.status, errorName nowhere) `shouldBe` (404, Just "NotFound")
+      (.status) <$> request r methodGet "api/markdown/s/blog/p/new-page/" [edgar] "" `shouldReturn` 404
+
+-- | The answer to a section written, read back from its JSON.
+data Written = Written
+  { anchor :: Maybe Text
+  , section :: Maybe Text
+  , top :: Maybe Text
+  , version :: Text
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance FromJSON Written
+
+writing :: Backing -> Spec
+writing backing = describe "writing a section" $ do
+  it "writes a section, its own part or the top, the page's other sections untouched, each a new version" $ withPasswords backing $ \r -> do
+    start r
+    versions <- length <$> versionsOf r
+    written <- write r "?section=install" [] "## Install\n\nOther steps."
+    written.status `shouldBe` 200
+    answer <- decoded written
+    answer `shouldBe` Written {anchor = Just "install", section = Just (hello <> "?section=install"), top = Nothing, version = decodeUtf8 (fromMaybe "" (header "ETag" written))}
+    pageText r `shouldReturn` "Intro.\n\n# Hello\n\nText.\n\n## Install\n\nOther steps.\n\n## Use\n\nRun it.\n"
+    (bodyText <$> follow r edgar (fromMaybe "" answer.section)) `shouldReturn` "## Install\n\nOther steps.\n\n"
+    (header "ETag" <$> request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] "") `shouldReturn` header "ETag" written
+    (length <$> versionsOf r) `shouldReturn` versions + 1
+    -- Its own part, the subsections staying; then the top, taken out.
+    (.status) <$> write r "?section=hello&own=true" [] "# Hello\n\nNew lead.\n" `shouldReturn` 200
+    top <- write r "?top=true" [] ""
+    top.status `shouldBe` 200
+    decoded top `shouldReturn` Written {anchor = Nothing, section = Nothing, top = Just (hello <> "?top=true"), version = decodeUtf8 (fromMaybe "" (header "ETag" top))}
+    pageText r `shouldReturn` "# Hello\n\nNew lead.\n\n## Install\n\nOther steps.\n\n## Use\n\nRun it.\n"
+    (length <$> versionsOf r) `shouldReturn` versions + 3
+
+  it "answers the new anchor of a heading the body renames, an address that reads the section" $ withPasswords backing $ \r -> do
+    start r
+    answer <- write r "?section=install" [] "## Setup\n\nSteps.\n" >>= decoded
+    (answer.anchor, answer.section) `shouldBe` (Just "setup", Just (hello <> "?section=setup"))
+    (bodyText <$> follow r edgar (fromMaybe "" answer.section)) `shouldReturn` "## Setup\n\nSteps.\n\n"
+    (.status) <$> request r methodGet "api/markdown/s/blog/p/hello-world/?section=install" [edgar] "" `shouldReturn` 404
+
+  it "is not written over a version saved since, with If-Match" $ withPasswords backing $ \r -> do
+    start r
+    tag <- fromMaybe "" . header "ETag" <$> request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] ""
+    (.status) <$> write r "?section=use" [("If-Match", tag)] "## Use\n\nFirst.\n" `shouldReturn` 200
+    stale <- write r "?section=install" [("If-Match", tag)] "## Install\n\nSecond.\n"
+    (stale.status, errorName stale) `shouldBe` (412, Just "Conflict")
+    pageText r `shouldReturn` "Intro.\n\n# Hello\n\nText.\n\n## Install\n\nSteps.\n\n## Use\n\nFirst.\n"
+
+  it "refuses a body that would change the page outside its section with 422, and saves nothing" $ withPasswords backing $ \r -> do
+    start r
+    versions <- length <$> versionsOf r
+    open <- write r "?section=install" [] "## Install\n\n```\nmake\n"
+    (open.status, errorName open) `shouldBe` (422, Just "Invalid")
+    bodyText open `shouldSatisfy` T.isInfixOf "the section 'use' that follows: check for a code fence or a spoiler left open"
+    deeper <- write r "?section=install" [] "### Install\n"
+    (deeper.status, bodyText deeper) `shouldSatisfy` (\(s, t) -> s == 422 && "must start with a level 2 heading" `T.isInfixOf` t)
+    (.status) <$> write r "?section=install" [] "" `shouldReturn` 422
+    missing <- write r "?section=nowhere" [] "## Nowhere\n"
+    (missing.status, errorName missing) `shouldBe` (404, Just "NotFound")
+    pageText r `shouldReturn` source
+    (length <$> versionsOf r) `shouldReturn` versions
+
+  it "is refused as a whole page's PUT is: to a user who may not edit, a hidden page, an encrypted space, and with If-None-Match" $ withPasswords backing $ \r -> do
+    tour <- request r methodGet "api/markdown/s/docs/p/tour/?top=true" [edgar] ""
+    tour.status `shouldBe` 200
+    refused <- request r methodPut "api/markdown/s/docs/p/tour/?top=true" [edgar] "Not mine to write.\n"
+    (refused.status, errorName refused) `shouldBe` (403, Just "Forbidden")
+    (.body) <$> request r methodGet "api/markdown/s/docs/p/tour/?top=true" [edgar] "" `shouldReturn` tour.body
+    (.status) <$> request r methodPut "api/markdown/s/team/p/team-handbook/?top=true" [edgar] "Hidden.\n" `shouldReturn` 404
+    slug <- encryptedSpace r
+    sealed <- request r methodPut ("api/markdown/s/" <> slug <> "/?top=true") [ada] "Plain text.\n"
+    (sealed.status, errorName sealed) `shouldBe` (409, Just "Stale")
+    start r
+    (.status) <$> write r "?section=install" [("If-None-Match", "*")] "## Install\n\nOther.\n" `shouldReturn` 400
+    pageText r `shouldReturn` source
+  where
+    source = "Intro.\n\n# Hello\n\nText.\n\n## Install\n\nSteps.\n\n## Use\n\nRun it.\n" :: Text
+    hello = "/api/markdown/s/blog/p/hello-world/"
+    -- The editor's page, Blog's Hello world, written whole with 'source'.
+    start r = (.status) <$> request r methodPut "api/markdown/s/blog/p/hello-world/" [edgar] (toS (encodeUtf8 source)) `shouldReturn` 204
+    write r query hs = request r methodPut ("api/markdown/s/blog/p/hello-world/" <> query) (edgar : hs)
+    pageText r = bodyText <$> request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] ""
+    decoded :: Reply -> IO Written
+    decoded reply = either (\e -> expectationFailure e >> panic "unreachable") pure (eitherDecode reply.body)
+    -- The page's history, newest first, as the application lists it to the
+    -- editor's session.
+    versionsOf :: Running -> IO [VersionInfo]
+    versionsOf r = do
+      session <- cookie <$> signInAs r "editor" "editor's password"
+      blog :: SpaceId <- (\(s :: S.Space) -> s.id) <$> ok200 (getUrlWith r (r.public <> "/" <> links.spaces.atPath (slugs "blog")) [session])
+      page :: P.Page <- ok200 (getUrlWith r (r.public <> "/" <> links.spaces.pageAt blog (slugs "hello-world")) [session])
+      ok200 (getUrlWith r (r.public <> "/" <> links.pages.versions page.id Nothing Nothing) [session])
+    slugs = either (panic . show) identity . parsePath
 
 -- | A space the admin has encrypted, with its home page, as the browser
 -- encrypts one (the ciphertexts are bytes of no meaning): its slug. The

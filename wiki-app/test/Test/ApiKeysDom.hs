@@ -9,6 +9,7 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Control.Monad.UUID (MonadUUID (..))
+import Data.Char (isAsciiLower)
 import Data.IORef (IORef)
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
@@ -16,16 +17,17 @@ import Halogen.VDom.DOM.Monad (MemDOM)
 import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
 import Halogen.VDom.DOM.Monad.Native qualified as N
 import Protolude hiding (find)
-import Test.Harness.MemDom (Gate, Held (..), PropScalar (..), View, answer, click, clickNode, find, findAll, held, hold, holds, newGate, property, settleHolding, textOf, typeInto, withView)
+import Test.Harness.MemDom (Gate, Held (..), PropScalar (..), View, answer, click, clickNode, find, findAll, held, hold, holds, newGate, property, settle, settleHolding, textOf, typeInto, withView)
 import Test.Hspec
 import Wiki.Api.ApiKeys (ApiKeyId (..), ApiKeyInfo (..), KeyRight (..), MadeApiKey (..), NewApiKey (..))
 import Wiki.Api.Security (SecondFactorState (..))
 import Wiki.App.Account (SignInError (..))
 import Wiki.App.Backend (WikiError (..))
-import Wiki.App.Backend.Mem (MemState, MemWiki, newMemWiki, runMemWiki)
+import Wiki.App.Backend.Mem (MemState, MemWiki, newMemWiki, runMemWiki, switchUser)
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Security (MonadSecurity (..))
 import Wiki.App.View.ApiKeys (Input (..), component)
+import Wiki.Core.Id (UserId (..))
 import Wiki.Core.User (Password (..))
 
 -- | What the panel asks of the backend.
@@ -195,9 +197,14 @@ spec = describe "Wiki.App.View.ApiKeys, mounted on the in-memory DOM" $ do
       answer gate h (Minted (Left WrongCredentials))
       quiet
       textOf view ".api-key-refusal" `shouldReturn` "Your current password is not right."
+      -- The field is required, as for a passkey: empty, nothing is sent.
       click view "form.api-key-make button[type=submit]"
       quiet
-      answerAll gate (\case AskMake new | isNothing new.password -> Just (Minted (Left (SignInFailed (Invalid "You have 20 keys that work already: revoke one first.")))); _ -> Nothing)
+      length <$> held gate `shouldReturn` 0
+      typeInto view "input[name=api-key-password]" "correct horse"
+      click view "form.api-key-make button[type=submit]"
+      quiet
+      answerAll gate (\case AskMake _ -> Just (Minted (Left (SignInFailed (Invalid "You have 20 keys that work already: revoke one first.")))); _ -> Nothing)
       quiet
       textOf view ".api-key-refusal" `shouldReturn` "You have 20 keys that work already: revoke one first."
       length <$> held gate `shouldReturn` 0
@@ -227,6 +234,12 @@ spec = describe "Wiki.App.View.ApiKeys, mounted on the in-memory DOM" $ do
         `shouldReturn` [ "curl -H 'Authorization: Bearer " <> secret <> "' 'https://wiki.example/wiki/api/list/'"
                        , "WIKI_TOKEN='" <> secret <> "' WIKI_URL='https://wiki.example/wiki' sh wiki.sh list"
                        ]
+      -- Copy: natively there is no clipboard, so the field is selected for
+      -- the keyboard, and the button says so.
+      textOf view ".api-key-copy" `shouldReturn` "Copy"
+      click view ".api-key-copy"
+      quiet
+      textOf view ".api-key-copy" `shouldReturn` "Select and copy"
       -- Listed at once by its id; a read follows.
       rows view `shouldReturn` [("laptop", "api-key api-key-works")]
       answerAll gate (\case AskList -> Just (Keys (Right [info])); _ -> Nothing)
@@ -248,5 +261,32 @@ spec = describe "Wiki.App.View.ApiKeys, mounted on the in-memory DOM" $ do
       quiet
       rows view `shouldReturn` [("laptop", "api-key api-key-revoked")]
       isJust <$> find view ".api-key-revoke" `shouldReturn` False
+
+  it "makes, lists and revokes a key over the in-memory backend, as the demo does, asking no password" $ do
+    wiki <- newMemWiki (demoState demoNow)
+    runMemWiki wiki (switchUser (Just (UserId "user-editor")))
+    withView (runMemWiki wiki) component editor {demo = True} $ \view -> do
+      settle view
+      textOf view ".api-keys-demo" >>= (`shouldSatisfy` T.isInfixOf "sign in nowhere")
+      textOf view ".api-keys-empty" `shouldReturn` "You have no keys yet."
+      isJust <$> find view "input[name=api-key-password]" `shouldReturn` False
+      typeInto view "input[name=api-key-name]" "laptop"
+      click view "form.api-key-make button[type=submit]"
+      settle view
+      key <- valueOf view ".api-key-text"
+      let base32 c = isAsciiLower c || (c >= '2' && c <= '7')
+      case T.splitOn "_" key of
+        ["wiki", i, secret] -> (T.length i, T.length secret, T.all base32 (i <> secret)) `shouldBe` (16, 52, True)
+        _ -> expectationFailure ("not a key of the server's form: " <> toS key)
+      click view ".api-key-made-close"
+      settle view
+      [(i, cls)] <- rows view
+      cls `shouldBe` "api-key api-key-works"
+      textOf view ".api-key-name" `shouldReturn` "laptop"
+      click view ".api-key-revoke"
+      settle view
+      click view ".api-key-revoke-yes"
+      settle view
+      rows view `shouldReturn` [(i, "api-key api-key-revoked")]
   where
     textOfAll view = find view ".api-keys" >>= maybe (pure "") N.textContent

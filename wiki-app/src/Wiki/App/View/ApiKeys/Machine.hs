@@ -189,7 +189,8 @@ data Event
   | RightChosen KeyRight
   | ChoiceMade Choice
   | DayTyped Text
-  | PasswordTyped Text
+  | -- | The current password typed; its 'Show' hides it.
+    PasswordTyped Password
   | -- | The user submitted the form.
     MakeClicked
   | -- | The answer to the make sent under this ticket, with when it came.
@@ -289,7 +290,7 @@ step event m
         | otherwise -> (m, [])
       ChoiceMade c -> (m {form = m.form {choice = c}, badDay = False}, [])
       DayTyped t -> (m {form = m.form {day = t}, badDay = False}, [])
-      PasswordTyped t -> (m {form = m.form {typed = Password t}}, [])
+      PasswordTyped p -> (m {form = m.form {typed = p}}, [])
       MakeClicked
         | m.making -> (m, [])
         | otherwise -> case expiryOf m.form of

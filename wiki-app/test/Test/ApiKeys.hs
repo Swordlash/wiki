@@ -19,8 +19,15 @@
 -- wrong ones in a row the answer "too many attempts" (the server's limit
 -- is its sign-in form's; the number is the model's, and the view reads
 -- none). A key's last use is written by programs, not by the view: the
--- model's server marks one used at any time ('Use'). Time goes forward
--- in steps ('Tick'), so keys expire while the panel shows them.
+-- model's server marks one used at any time ('Use'). Keys are also made
+-- and revoked outside the panel, by the console or in another tab
+-- ('MakeElsewhere', which can reach the 20 keys that work, and
+-- 'RevokeElsewhere'), and sign-ins fail elsewhere up to the limit
+-- ('FailElsewhere'). Time goes forward in steps ('Tick'), so keys expire
+-- while the panel shows them. Not modelled: a user removed, whose keys
+-- go with them (the panel is then not shown to anybody), and a user who
+-- stops being an administrator (the panel's input changes, and nothing
+-- of the list does).
 --
 -- Each ask has three moments: the panel sends it, the server handles it
 -- (a read takes the list as it is then; a make or a revoke changes it and
@@ -216,8 +223,12 @@ data Step
   | TypeDay Int
   | -- | The reader types their password, or a wrong one.
     TypePassword Bool
-  | ClickMake
+  | -- | The reader submits the form, having typed their password, or a
+    -- wrong one, first, or nothing.
+    ClickMake (Maybe Bool)
   | ClickRevoke Int
+  | -- | The reader clicks Revoke on the key at this place and confirms.
+    RevokeNow Int
   | Confirm
   | Cancel
   | ClickCopy
@@ -229,6 +240,12 @@ data Step
     Deliver Int
   | -- | A program uses the key at this place on the server.
     Use Int
+  | -- | The console makes this many keys for the reader signed in.
+    MakeElsewhere Int
+  | -- | Another tab revokes the reader's key at this place.
+    RevokeElsewhere Int
+  | -- | The reader's sign-in fails elsewhere until the limit is reached.
+    FailElsewhere
   | -- | Time goes on, by this many days.
     Tick Int
   | -- | Another reader signs in, in another tab.
@@ -236,33 +253,49 @@ data Step
   | Finish
   deriving stock (Eq, Show)
 
+-- | A run's steps. A revoke answered takes a make, its answer, the read
+-- after it, and the revoke's ask and answer: runs are three times
+-- QuickCheck's usual length, so that enough of them get there.
 genRun :: Gen [Step]
 genRun =
-  listOf . frequency $
-    [ (1, TypeName <$> chooseInt (0, 2))
+  QC.scale (* 3) . listOf . frequency $
+    [ (1, TypeName <$> frequency [(4, chooseInt (0, 1)), (1, pure 2)])
     , (1, ChooseRight <$> elements [minBound .. maxBound])
     , (1, Choose <$> elements [minBound .. maxBound])
     , (1, TypeDay <$> chooseInt (-2, 40))
     , (2, TypePassword <$> frequency [(4, pure True), (1, pure False)])
-    , (5, pure ClickMake)
-    , (3, ClickRevoke <$> chooseInt (0, 3))
+    , (6, ClickMake <$> frequency [(6, pure (Just True)), (1, pure (Just False)), (1, pure Nothing)])
+    , (2, ClickRevoke <$> place)
+    , (5, RevokeNow <$> place)
     , (3, pure Confirm)
     , (1, pure Cancel)
     , (1, pure ClickCopy)
     , (1, CopyAnswered <$> elements [True, False])
     , (1, pure CloseKey)
     , (8, pure Handle)
-    , (8, Deliver <$> chooseInt (0, 2))
+    , -- Mostly the oldest answer: with one flight there is mostly one.
+      (8, Deliver <$> frequency [(6, pure 0), (1, pure 1), (1, pure 2)])
     , (1, Use <$> chooseInt (0, 3))
+    , (1, MakeElsewhere <$> elements [1, 19])
+    , (1, RevokeElsewhere <$> chooseInt (0, 3))
+    , (1, pure FailElsewhere)
     , (1, Tick <$> elements [1, 30, 100])
     , (1, pure SwitchUser)
     , (1, pure Finish)
     ]
 
+-- | A place in a list, mostly the first: a run's lists are short.
+place :: Gen Int
+place = frequency [(4, pure 0), (1, chooseInt (1, 3))]
+
 shrinkRun :: [Step] -> [[Step]]
 shrinkRun = shrinkList $ \case
   Deliver i -> Deliver <$> [0 .. i - 1]
   ClickRevoke i -> ClickRevoke <$> [0 .. i - 1]
+  RevokeNow i -> ClickRevoke i : (RevokeNow <$> [0 .. i - 1])
+  ClickMake typed -> ClickMake <$> [Nothing | isJust typed]
+  RevokeElsewhere i -> RevokeElsewhere <$> [0 .. i - 1]
+  MakeElsewhere n -> MakeElsewhere <$> [1 | n > 1]
   _ -> []
 
 -- | An ask the panel made: the effect, the reader whose cookie it went
@@ -288,14 +321,17 @@ data World = World
   , revokedHeard :: Map ApiKeyId Int
   -- ^ The keys whose revoke the panel has had an answer to, with the
   -- session it was in.
-  , mintedHeard :: [Int]
-  -- ^ The sessions in which an answer that made a key came.
+  , expectShown :: Bool
+  -- ^ Whether the panel should hold a key's text: an answer that made a
+  -- key came in this session, and its box was not closed since.
+  , seen :: [Text]
+  -- ^ What the run reached, for the coverage of the runs.
   , trace :: [Text]
   , faults :: [Text]
   }
 
 start :: World
-start = afterEvent "mounted" Started World {panel = initial 0 False, backend = newServer, outs = [], turn = 0, finished = False, copies = [], revokedHeard = mempty, mintedHeard = [], trace = [], faults = []}
+start = afterEvent "mounted" Started World {panel = initial 0 False, backend = newServer, outs = [], turn = 0, finished = False, copies = [], revokedHeard = mempty, expectShown = False, seen = [], trace = [], faults = []}
 
 -- | The world after a step.
 play :: World -> Step -> World
@@ -304,12 +340,17 @@ play w = \case
   ChooseRight r -> afterEvent ("chooses " <> show r) (RightChosen r) w
   Choose c -> afterEvent ("chooses " <> show c) (ChoiceMade c) w
   TypeDay d -> afterEvent "types a day" (DayTyped (if d < 0 then "someday" else show (addDays (fromIntegral (w.backend.clock `div` 86400 + d)) (fromGregorian 2026 11 20)))) w
-  TypePassword right -> afterEvent "types a password" (PasswordTyped (if right then "correct horse" else "battery staple")) w
-  ClickMake
+  TypePassword right -> afterEvent "types a password" (PasswordTyped (Password (if right then "correct horse" else "battery staple"))) w
+  ClickMake typed
     | w.finished -> w
-    | otherwise -> afterEvent "makes a key" MakeClicked w
+    | otherwise ->
+        let w1 = maybe w (play w . TypePassword) typed
+         in afterEvent "makes a key" MakeClicked w1
   ClickRevoke i -> case atMay [k | k <- ordered w.panel, keyState w.panel.now k == Works] i of
     Just k | not w.finished -> afterEvent ("revokes " <> k.id.text) (RevokeClicked k.id) w
+    _ -> w
+  RevokeNow i -> case play w (ClickRevoke i) of
+    w1 | w1.panel.confirming /= w.panel.confirming -> play w1 Confirm
     _ -> w
   Confirm -> afterEvent "confirms" RevokeConfirmed w
   Cancel -> afterEvent "cancels" RevokeCancelled w
@@ -317,7 +358,7 @@ play w = \case
   CopyAnswered ok -> case w.copies of
     i : rest -> afterEvent "copy answered" (Copied i ok) w {copies = rest}
     [] -> w
-  CloseKey -> afterEvent "closes the key" KeyClosed w
+  CloseKey -> afterEvent "closes the key" KeyClosed w {expectShown = False}
   Handle -> case break (isNothing . (\o -> o.answer)) w.outs of
     (earlier, o : later') ->
       let (backend, a) = handled o.reader o.effect w.backend
@@ -330,8 +371,16 @@ play w = \case
        in case (o.effect, a) of
             (Load t, Listed r) -> afterEvent "a list comes back" (Loaded t now r) w'
             (Revoke t i', Listed r) ->
-              afterEvent "a revoke comes back" (Revoked t i' now r) w' {revokedHeard = if isRight r && o.inSession == w.turn then Map.insert i' w.turn w.revokedHeard else w.revokedHeard}
-            (Make t _, Minted r) -> afterEvent "a make comes back" (Made t now r) w' {mintedHeard = [w.turn | isRight r, o.inSession == w.turn] <> w.mintedHeard}
+              afterEvent "a revoke comes back" (Revoked t i' now r) w' {revokedHeard = if isRight r && o.inSession == w.turn then Map.insert i' w.turn w.revokedHeard else w.revokedHeard, seen = ["a revoke answered" | isRight r, o.inSession == w.turn] <> w.seen}
+            (Make t _, Minted r) ->
+              let ours = o.inSession == w.turn
+                  tag = case r of
+                    Right _ -> "a key made"
+                    Left WrongCredentials -> "refused: a wrong password"
+                    Left (TooManyAttempts _) -> "refused: too many attempts"
+                    Left (SignInFailed (Invalid why)) | "20 keys" `T.isInfixOf` why -> "refused: 20 keys"
+                    Left _ -> "refused: another rule"
+               in afterEvent "a make comes back" (Made t now r) w' {expectShown = w.expectShown || (ours && isRight r && not w.finished), seen = [tag | ours] <> w.seen}
             _ -> w'
     Nothing -> w
   Use i -> case atMay (keysOf (readerOf w.turn) w.backend) i of
@@ -340,13 +389,28 @@ play w = \case
           st = w.backend.state
        in noted ("a program uses " <> k.id.text) w {backend = w.backend {state = st {apiKeys = Map.adjust (map (\x -> if x.id == k.id then used else x)) (UserId ("user-" <> readerOf w.turn)) st.apiKeys}}}
     Nothing -> w
+  MakeElsewhere n ->
+    let u = UserId ("user-" <> readerOf w.turn)
+        makeOne srv k = case makeApiKeyIn (at srv.clock) (ApiKeyId ("c" <> show (srv.minted + k))) (laptop "console" ReadRight) srv.state {current = Just u} of
+          Right (st', _) -> srv {state = st'}
+          Left _ -> srv
+        made' = foldl' makeOne w.backend [1 .. n]
+     in noted ("the console makes " <> show n) w {backend = made' {minted = w.backend.minted + n}}
+  RevokeElsewhere i -> case atMay (keysOf (readerOf w.turn) w.backend) i of
+    Just k ->
+      let u = UserId ("user-" <> readerOf w.turn)
+       in case revokeApiKeyIn (at w.backend.clock) k.id w.backend.state {current = Just u} of
+            Right (st', _) -> noted ("another tab revokes " <> k.id.text) w {backend = w.backend {state = st'}}
+            Left _ -> w
+    Nothing -> w
+  FailElsewhere -> noted "sign-ins fail elsewhere" w {backend = w.backend {wrong = Map.insert (readerOf w.turn) limit w.backend.wrong}}
   Tick d -> noted ("time goes on " <> show d <> " days") w {backend = w.backend {clock = w.backend.clock + d * 86400}}
   SwitchUser
     | w.finished -> w
     | otherwise ->
         let next = w.turn + 1
-         in afterEvent ("reader " <> readerOf next <> " signs in") (Given next (readerOf next == "admin")) w {turn = next}
-  Finish -> afterEvent "goes away" Finished w {finished = True}
+         in afterEvent ("reader " <> readerOf next <> " signs in") (Given next (readerOf next == "admin")) w {turn = next, expectShown = False, seen = ["a switch with an ask out" | any (\o -> o.inSession == w.turn) w.outs] <> w.seen}
+  Finish -> afterEvent "goes away" Finished w {finished = True, expectShown = False}
   where
     at' xs k = fromMaybe "" (atMay xs k)
 
@@ -376,8 +440,12 @@ afterEvent what event w =
 
 -- | The rules, checked after every step.
 checked :: World -> World
-checked w = w {faults = w.faults <> if w.finished then [] else concat rule}
+checked w = w {faults = w.faults <> shownRule <> if w.finished then [] else concat rule}
   where
+    shownRule =
+      [ "holds a key's text: " <> show (isJust w.panel.shown) <> ", where it should: " <> show w.expectShown
+      | isJust w.panel.shown /= w.expectShown
+      ]
     rule =
       [ [ "shows " <> k.id.text <> ", which the server does not have for " <> me
         | k <- listed w.panel
@@ -389,10 +457,6 @@ checked w = w {faults = w.faults <> if w.finished then [] else concat rule}
         , s == w.turn
         , keyState w.panel.now k == Works
         ]
-      , [ "holds a key's text with no make answered in this session"
-        | isJust w.panel.shown
-        , w.turn `notElem` w.mintedHeard
-        ]
       ]
     me = readerOf w.turn
 
@@ -403,27 +467,34 @@ runOf = foldl' play start
 machine :: Spec
 machine = describe "the panel's machine, on generated runs" $ do
   it "keeps every rule on any run" $
-    QC.property . withNumTests 20000 $
+    QC.property . QC.checkCoverage . withNumTests 20000 $
       forAllShrinkShow genRun shrinkRun show $ \run ->
         let w = runOf run
-         in counterexample (toS (T.unlines (reverse w.trace) <> "\n" <> T.unlines w.faults)) (null w.faults)
+            reached tag = tag `elem` w.seen
+         in QC.cover 15 (reached "a key made") "a key made"
+              . QC.cover 3 (reached "a revoke answered") "a revoke answered"
+              . QC.cover 3 (reached "refused: a wrong password") "a wrong password"
+              . QC.cover 0.5 (reached "refused: 20 keys") "20 keys"
+              . QC.cover 8 (reached "refused: too many attempts") "too many attempts"
+              . QC.cover 20 (reached "a switch with an ask out") "a switch with an ask out"
+              $ counterexample (toS (T.unlines (reverse w.trace) <> "\n" <> T.unlines w.faults)) (null w.faults)
 
   it "holds the key's text only from the make's answer to the box's close" $ do
-    let w = runOf [TypePassword True, Handle, Deliver 0, ClickMake, Handle, Deliver 0]
+    let w = runOf [TypePassword True, Handle, Deliver 0, ClickMake Nothing, Handle, Deliver 0]
     isJust w.panel.shown `shouldBe` True
     let closed = play w CloseKey
     closed.panel.shown `shouldBe` Nothing
     (play w Finish).panel.shown `shouldBe` Nothing
 
   it "shows nobody's key after another reader signs in, and never the key the earlier one made" $ do
-    let w = runOf [TypePassword True, Handle, Deliver 0, ClickMake, Handle, SwitchUser, Deliver 0, Deliver 0]
+    let w = runOf [TypePassword True, Handle, Deliver 0, ClickMake Nothing, Handle, SwitchUser, Deliver 0, Deliver 0]
     w.panel.shown `shouldBe` Nothing
     listed w.panel `shouldBe` []
 
   it "sends one ask at a time: a revoke clicked while the list is read waits for its answer" $ do
-    let w = runOf [Handle, Deliver 0, TypePassword True, ClickMake, ClickMake]
+    let w = runOf [Handle, Deliver 0, TypePassword True, ClickMake Nothing, ClickMake Nothing]
     map (\o -> o.effect) w.outs `shouldSatisfy` ((== 1) . length)
-    let w2 = runOf [TypePassword True, Handle, Deliver 0, ClickMake, Handle, Deliver 0, ClickRevoke 0, Confirm]
+    let w2 = runOf [TypePassword True, Handle, Deliver 0, ClickMake Nothing, Handle, Deliver 0, ClickRevoke 0, Confirm]
     -- The read that follows the make is out: the revoke waits.
     length w2.outs `shouldBe` 1
     length w2.panel.queued `shouldBe` 1
@@ -431,6 +502,6 @@ machine = describe "the panel's machine, on generated runs" $ do
   it "is shown able to fail: a panel that forgets what was revoked breaks the rule" $ do
     -- The rule that a revoked key is never shown working, checked against
     -- a list older than the revoke put over it by hand.
-    let w = runOf [TypePassword True, Handle, Deliver 0, ClickMake, Handle, Deliver 0, Handle, Deliver 0, ClickRevoke 0, Confirm, Handle, Deliver 0]
+    let w = runOf [TypePassword True, Handle, Deliver 0, ClickMake Nothing, Handle, Deliver 0, Handle, Deliver 0, ClickRevoke 0, Confirm, Handle, Deliver 0]
         stale = w {panel = w.panel {known = mempty, keys = fmap (map (\k -> k {revokedAt = Nothing})) <$> w.panel.keys}}
     (checked stale).faults `shouldSatisfy` (not . null)

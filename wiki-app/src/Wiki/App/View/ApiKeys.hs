@@ -235,7 +235,7 @@ component =
           {% if m.asksPassword /= Just False %}
             <label class="field">
               <span>Current password</span>
-              <input type="password" name="api-key-password" autocomplete="current-password" value={{ m.form.typed.text }} onValueInput={{ Happen . PasswordTyped }}>
+              <input type="password" name="api-key-password" autocomplete="current-password" required value={{ m.form.typed.text }} onValueInput={{ Happen . PasswordTyped . Password }}>
             </label>
           {% end %}
           <button type="submit" class="primary" disabled={{ busy m }}>Make a key</button>

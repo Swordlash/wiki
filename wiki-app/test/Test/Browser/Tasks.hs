@@ -49,6 +49,7 @@ import Wiki.Core.Space qualified as Core
 $( browserJS
      ["jsbits/test-focus.js", "jsbits/test-style.js", "jsbits/test-markup.js", "jsbits/test-disabled.js"]
      [ ("js_focused_matches", "wiki_test_focused_matches", Safe, [t|JSText -> IO Bool|])
+     , ("js_tell_dropped", "wiki_test_tasks_tell_dropped", Safe, [t|JSText -> IO ()|])
      , ("js_computed_style", "wiki_test_computed_style", Safe, [t|JSText -> JSText -> IO JSText|])
      , ("js_markup", "wiki_test_markup", Safe, [t|IO JSText|])
      , ("js_watch_disabled", "wiki_test_watch_disabled", Safe, [t|IO ()|])
@@ -343,28 +344,22 @@ spec m = describe "tasks ticked in a page" $ do
       wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-admin")})
       either (panic . show) identity <$> runMemWiki wiki (postDetails blog.id)
     -- The blog's home page has tasks, and is shown above its posts.
-    let tasks = "# Blog\n\n- [ ] Write the first post\n- [ ] Tell the team\n"
-        saveAt = "api/v1/pages/" <> home.id.text
-    answerWith "GET" (endpointUrl (\e -> e.spaces.pageAt blog.id [])) 200 home {Core.body = tasks}
-    answerWith "PUT" saveAt 200 home {Core.body = T.replace "- [ ] Tell" "- [x] Tell" tasks, updatedAt = addUTCTime 60 home.updatedAt}
-    holdAt "PUT" saveAt
+    answerWith "GET" (endpointUrl (\e -> e.spaces.pageAt blog.id [])) 200 home {Core.body = "# Blog\n\n- [ ] Write the first post\n- [ ] Tell the team\n"}
     ui <- startServer m (Space (slugs ["blog"]))
-    -- A save of other ticks lands once the reader has left and come back
-    -- and ticked again: the shell reloads the wiki, which the reader did
-    -- not ask for. (The account's menu once turned a personal space on for
-    -- this; it holds no such switch any more.)
-    eventuallyWithin 20000 (find ui ".blog-home .page-body input[data-task='1']") >>= click
-    eventually $ find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
-    find ui ".page-ticks-save" >>= click
-    find ui ".wiki-brand" >>= click
-    find ui ".leave-confirm button.danger" >>= click
-    eventually (find ui ".wiki-sidebar a[href$='#/s/blog/']") >>= click
     eventuallyWithin 20000 (find ui ".blog-home .page-body input[data-task='0']") >>= click
     eventually $ find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     -- The blog's reload fails.
     answerRaw "GET" detailsAt 503 "<html>down for maintenance</html>"
-    release
+    -- Another tab's sign-out lets go of a key, which has this tab reload
+    -- the wiki: a reload the reader did not ask for. (The account's menu
+    -- once turned a personal space on for this; it has no such switch any
+    -- more.)
+    unsafeIOToPageM (js_tell_dropped (toJSText ("vault:user-admin" :: Text)))
     eventuallyWithin 20000 $ find ui ".blog-view .stale-reload" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "What is shown stays")
+    -- The views' revision moves on twice (the screen sealed, then the
+    -- reload), and the blog reads its posts at each: the button is drawn
+    -- again once the second read fails too.
+    waitQuiet
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     (find ui ".blog-home .page-body input[data-task='0']" >>= (`getProperty` "checked")) `shouldReturn` "true"
     -- Tried again, the reload succeeds, and the ticks are still there.

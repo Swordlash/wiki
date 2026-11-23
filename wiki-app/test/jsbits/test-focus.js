@@ -34,3 +34,11 @@ function wiki_test_drag_out(from, to) {
 function wiki_test_press_outside() {
   document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
 }
+
+// Tell the wiki's tabs that a key was let go, as another tab's sign-out
+// does: the tab reloads the wiki (Test.Browser.Tasks).
+function wiki_test_tasks_tell_dropped(slot) {
+  const other = new BroadcastChannel("wiki-assistant-keys");
+  other.postMessage({ dropped: String(slot) });
+  other.close();
+}

@@ -29,6 +29,7 @@ module Wiki.App.View.PagePicker
   , Query (..)
   , Output (..)
   , component
+  , pause
   )
 where
 

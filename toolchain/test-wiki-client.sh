@@ -206,10 +206,10 @@ check "a trace shows a password in a variable" grep -qF "wörd" "$work/trace"
 # The client, with an environment of only the variables below (env -i):
 # its status in status, its output in $work/out and $work/err. jq is the
 # failing fake unless with_jq is set.
-url=$public_root user=editor password=$editor_password state=$work/state-a input=/dev/null shell=sh with_jq=''
+url=$public_root user=editor password=$editor_password state=$work/state-a input=/dev/null shell=sh with_jq='' home=$work/home
 client() {
   if [ -n "$with_jq" ]; then client_path=$curl_path; else client_path=$nojq_path; fi
-  env -i PATH="$client_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" \
+  env -i PATH="$client_path" HOME="$home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" \
     "$shell" "$client" "$@" <"$input" >"$work/out" 2>"$work/err"
   status=$?
 }
@@ -450,6 +450,39 @@ suite() {
   has err "does not take API keys" "the refusal says keys are to come"
   lacks err "wörd" "no key in the trace"
 
+  # A ~/.curlrc that would change curl's requests and their answers: it
+  # fails on an HTTP error, writes the answer elsewhere, prints its progress
+  # and adds a URL. The client does not read it.
+  mkdir -p "$work/curlrc-home"
+  printf 'fail\noutput = "%s"\nno-silent\nurl = "http://127.0.0.1:1/"\nwrite-out = "%%{http_code}"\n' "$work/curlrc-output" >"$work/curlrc-home/.curlrc"
+  env -i PATH="$nojq_path" HOME="$work/curlrc-home" WIKI_URL="$url" WIKI_TOKEN="a key" \
+    "$shell" "$client" list >"$work/out" 2>"$work/err"
+  status=$?
+  expect 3 "with a ~/.curlrc that says fail, a refused sign-in is still exit 3"
+  has err "does not take API keys" "with that ~/.curlrc, the refusal is still the wiki's"
+  home=$work/curlrc-home state=$work/state-$1-curlrc
+  client get "$page"
+  expect 0 "with that ~/.curlrc, get reads the page"
+  cp "$work/out" "$work/curlrc-older"
+  another_client_saves "$page" "under a ~/.curlrc"
+  input=$work/curlrc-older
+  client put "$page"
+  expect 5 "with that ~/.curlrc, a put over a version that moved on is still exit 5"
+  has err "412" "with that ~/.curlrc, the refusal still says the page moved on"
+  check "nothing was written where that ~/.curlrc says" [ ! -e "$work/curlrc-output" ]
+  home=$work/home state=$work/state-$1-a input=$work/restore
+  client put "$page" --force
+  expect 0 "the page's text back after the ~/.curlrc's checks"
+  input=/dev/null
+  # WIKI_PROXY reaches curl, in its config, not on its command line: a proxy
+  # where nothing listens is no connection.
+  : >"$work/curl.args"
+  env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY=http://127.0.0.1:1 \
+    "$shell" "$client" list >"$work/out" 2>"$work/err"
+  status=$?
+  expect 8 "WIKI_PROXY is the proxy curl goes through"
+  lacks curl.args "127.0.0.1:1" "the proxy is not on curl's command line"
+
   # The configuration file, read only when nobody else may read it, through
   # a symbolic link too.
   mkdir -p "$work/home/.config/wiki"
@@ -513,13 +546,13 @@ suite() {
 # Another client saves the page at PAGE, with its own state: what the
 # client under test remembered has moved on.
 another_client_saves() {
-  saved_state=$state saved_input=$input
-  state=$work/state-$shell-another input=$work/another
+  saved_state=$state saved_input=$input saved_home=$home
+  state=$work/state-$shell-another input=$work/another home=$work/home
   printf 'Saved by another client: %s.\n' "$2" >"$work/another"
   client get "$1"
   client put "$1"
   expect 0 "another client saves the page ($2)"
-  state=$saved_state input=$saved_input
+  state=$saved_state input=$saved_input home=$saved_home
 }
 
 # What is remembered of a version changes only once a text is delivered

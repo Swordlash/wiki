@@ -124,12 +124,14 @@ percent_encode() {
 # ---------------------------------------------------------------------------
 # Configuration
 
-# Where the wiki is and who signs in, from the environment (WIKI_URL,
-# WIKI_USER, WIKI_PASSWORD, WIKI_TOKEN), and for what the environment does
+# Where the wiki is, who signs in and through what (WIKI_URL, WIKI_USER,
+# WIKI_PASSWORD, WIKI_TOKEN, and for a workplace's network WIKI_PROXY and
+# WIKI_CACERT), from the environment, and for what the environment does
 # not give, from the configuration file (WIKI_CONFIG, by default
 # ~/.config/wiki/config), lines of "key = value" with the keys url, user,
-# password and token. The file is read only when nobody else may read it.
-wiki_url='' wiki_user='' wiki_password='' wiki_token='' wiki_base='' wiki_mount='' signing_in=nobody
+# password, token, proxy and cacert. The file is read only when nobody else
+# may read it.
+wiki_url='' wiki_user='' wiki_password='' wiki_token='' wiki_proxy='' wiki_cacert='' wiki_base='' wiki_mount='' signing_in=nobody
 config_loaded=''
 load_config() {
   [ -z "$config_loaded" ] || return 0
@@ -176,6 +178,8 @@ load_config_quietly() {
   wiki_user=${WIKI_USER:-}
   wiki_password=${WIKI_PASSWORD:-}
   wiki_token=${WIKI_TOKEN:-}
+  wiki_proxy=${WIKI_PROXY:-}
+  wiki_cacert=${WIKI_CACERT:-}
   config_file=${WIKI_CONFIG:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/wiki/config}
   if [ -e "$config_file" ]; then
     if [ ! -f "$config_file" ]; then
@@ -215,16 +219,18 @@ load_config_quietly() {
         user) [ -n "${WIKI_USER:-}" ] || wiki_user=$trimmed ;;
         password) [ -n "${WIKI_PASSWORD:-}" ] || wiki_password=$trimmed ;;
         token) [ -n "${WIKI_TOKEN:-}" ] || wiki_token=$trimmed ;;
+        proxy) [ -n "${WIKI_PROXY:-}" ] || wiki_proxy=$trimmed ;;
+        cacert) [ -n "${WIKI_CACERT:-}" ] || wiki_cacert=$trimmed ;;
         *)
-          fail "$EX_USAGE" "$config_file, line $config_line: unknown key $key (url, user, password, token)"
+          fail "$EX_USAGE" "$config_file, line $config_line: unknown key $key (url, user, password, token, proxy, cacert)"
           return
           ;;
       esac
     done <"$config_file"
   fi
-  case $wiki_password$wiki_user$wiki_token in
+  case $wiki_password$wiki_user$wiki_token$wiki_proxy$wiki_cacert in
     *"$nl"* | *"$cr"*)
-      fail "$EX_USAGE" "the login, the password or the token has a line break in it"
+      fail "$EX_USAGE" "the login, the password, the token, the proxy or the CA bundle has a line break in it"
       return
       ;;
   esac
@@ -250,21 +256,33 @@ curl_quote() {
   printf '%s' "$1" | sed 's/[\\"]/\\&/g'
 }
 
-# curl, signed in. The sign-in is a curl config read from descriptor 3, a
-# here-document: "user" for a login and password (HTTP Basic), or an
-# Authorization header for a key (WIKI_TOKEN). Nothing of it is on curl's
-# command line.
+# curl, signed in: the one place this script runs curl. -q comes first, so
+# that the user's ~/.curlrc is not read: a "fail", an "output" or a "url"
+# there would change the requests and how their answers are read. curl
+# still takes a proxy (https_proxy, HTTPS_PROXY, NO_PROXY) and a CA bundle
+# (CURL_CA_BUNDLE, SSL_CERT_FILE) from the environment, and WIKI_PROXY and
+# WIKI_CACERT name them for this script alone. No file of curl's options
+# is read: one could turn on "fail" or change the output, which the
+# client's own options cannot all undo.
+#
+# The sign-in, the proxy and the CA bundle are a curl config read from
+# descriptor 3, a here-document: "user" for a login and password (HTTP
+# Basic), or an Authorization header for a key (WIKI_TOKEN), each value
+# quoted, so none of it is on curl's command line (a proxy's address may
+# hold a password too), and no value can add an option.
 wiki_curl() {
   quiet_begin
-  auth=''
+  settings=''
   if [ -n "$wiki_token" ]; then
-    auth="header = \"Authorization: Bearer $(curl_quote "$wiki_token")\""
+    settings="header = \"Authorization: Bearer $(curl_quote "$wiki_token")\""
   elif [ -n "$wiki_user" ]; then
-    auth="user = \"$(curl_quote "$wiki_user:$wiki_password")\""
+    settings="user = \"$(curl_quote "$wiki_user:$wiki_password")\""
   fi
+  [ -z "$wiki_proxy" ] || settings="$settings${nl}proxy = \"$(curl_quote "$wiki_proxy")\""
+  [ -z "$wiki_cacert" ] || settings="$settings${nl}cacert = \"$(curl_quote "$wiki_cacert")\""
   quiet_end
-  curl --config /dev/fd/3 "$@" 3<<EOF
-$auth
+  curl -q --config /dev/fd/3 "$@" 3<<EOF
+$settings
 EOF
 }
 
@@ -1211,6 +1229,13 @@ file with WIKI_CONFIG), which must be readable by you alone (chmod 600):
   WIKI_PASSWORD  your password                   password = my password
   WIKI_TOKEN     an API key, sent as Authorization: Bearer   token = ...
                  (the wiki does not accept keys yet: they are to come)
+  WIKI_PROXY     a proxy, as curl's --proxy takes it      proxy = http://proxy:3128
+  WIKI_CACERT    a CA bundle, as curl's --cacert takes it  cacert = /etc/ssl/work.pem
+
+curl runs with -q, so ~/.curlrc is not read: a setting there cannot change
+the requests or how their answers are read. curl still takes a proxy from
+https_proxy, HTTPS_PROXY and NO_PROXY, and a CA bundle from CURL_CA_BUNDLE
+and SSL_CERT_FILE; WIKI_PROXY and WIKI_CACERT name them for wiki.sh alone.
 
 The password is given to curl through a file descriptor, never on its
 command line. Versions are remembered under WIKI_STATE_DIR (by default

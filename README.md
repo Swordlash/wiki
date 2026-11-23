@@ -2821,6 +2821,14 @@ The password reaches curl through a file descriptor, never its command line,
 so the process list does not show it, and `sh -x wiki.sh ...` does not trace
 it.
 
+curl runs with `-q`, so your `~/.curlrc` is not read: a setting there (`fail`,
+`output`, `url`) cannot change the client's requests or how it reads their
+answers. curl still takes a proxy from `https_proxy`, `HTTPS_PROXY` and
+`NO_PROXY`, and a CA bundle from `CURL_CA_BUNDLE` and `SSL_CERT_FILE`; to give
+them to `wiki.sh` alone, set `WIKI_PROXY` and `WIKI_CACERT` (or `proxy =` and
+`cacert =` in the configuration file). No file of curl's own options is read,
+since some of them would break how the client reads the wiki's answers.
+
 ```text
 $ wiki.sh list team
 Space: Team  /s/team/

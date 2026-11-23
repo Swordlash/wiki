@@ -16,6 +16,17 @@
 --   as one that is not there. @?depth=N@ cuts the tree N levels below the
 --   space listed (or the top level): 1 is the space's own subspaces and the
 --   pages under its home page, without what is under them.
+-- * @PUT api\/list\/s\/\<space path>\/@ creates the space at that path:
+--   the path's last slug is its slug, and the slugs before it name its
+--   parent, which has to exist. The body is JSON, @{"title": "…"}@, and may
+--   be empty: the title is then made from the slug ('titleOfSlug'). It goes
+--   through 'createSpaceAt', the application's "New space" with the slug
+--   given: the same checks, the same private space with its home page, the
+--   same grant to its creator. A space already at the path is 409, and the
+--   answer to a new one is 201, with its listing's address as @Location@
+--   and its listing as the body. A @PUT@ here only creates: it never
+--   changes a space. An encrypted space is refused: its keys are made in
+--   the browser.
 -- * @GET api\/search?q=\<words>@: the application's own search
 --   ('searchPages', as the search box asks it, 'searchFor'), with
 --   @&space=\<space path>@ to keep to a space and its subspaces and
@@ -38,15 +49,14 @@ module Wiki.Server.ListApi
   )
 where
 
-import Data.Aeson (Options (..), ToJSON (..), defaultOptions, encode, genericToEncoding, genericToJSON)
+import Data.Aeson (FromJSON (..), Options (..), ToJSON (..), defaultOptions, eitherDecode, encode, genericParseJSON, genericToEncoding, genericToJSON)
 import Data.ByteString qualified as BS
-import Data.List (lookup)
+import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time (UTCTime)
-import Halogen.Router.Duplex qualified as Duplex
-import Network.HTTP.Types (hCacheControl, hContentType, methodGet, methodHead, status200, status400, status404)
-import Network.Wai (Application, Request (..), Response, responseLBS)
+import Network.HTTP.Types (hCacheControl, hContentType, hLocation, methodGet, methodHead, methodPut, status200, status201, status400, status404)
+import Network.Wai (Application, Request (..), Response, responseLBS, strictRequestBody)
 import Protolude
 import Wiki.App.Backend (MonadWiki (getSpace, listPages, listSpaces, searchPages), WikiError (..))
 import Wiki.App.Route qualified as Route
@@ -58,8 +68,9 @@ import Wiki.Core.Search (SearchHit (..), Snippet, queryWords, snippetText)
 import Wiki.Core.Slug (Slug)
 import Wiki.Core.Space (Space (..), pagePath, rootPage, subspacesOf)
 import Wiki.Server.Api (Env, searchFor)
-import Wiki.Server.MarkdownApi (notAllowed, refusal, runAs, signedInBasic, wikiRefusal)
+import Wiki.Server.MarkdownApi (addressUnder, notASlug, notAllowed, parameter, refusal, runAs, signedInBasic, titleOfSlug, wikiRefusal)
 import Wiki.Server.Render (routeOf)
+import Wiki.Server.Storage (createSpaceAt)
 
 -- | A space as the listing gives it. A field that is 'Nothing' is left out
 -- of the JSON: @list@, @home@ and @pages@ for a space the user may not
@@ -156,26 +167,78 @@ instance ToJSON Hits where
 -- @api\/list@ is these segments.
 listApplication :: Env -> Text -> Text -> [Text] -> Application
 listApplication env mount address segments request respond =
-  signedInBasic env address request respond $ \u ->
-    if requestMethod request `notElem` [methodGet, methodHead]
-      then respond (notAllowed [methodGet, methodHead])
-      else case depthOf request of
-        Left why -> respond (refusal status400 "Invalid" (Just why))
-        Right depth -> do
-          target <-
-            if segments `elem` [[], [""]]
-              then pure (Just Nothing)
-              else
-                routeOf "/" spacePath <&> \case
-                  Route.Space sp -> Just (Just sp)
-                  _ -> Nothing
-          case target of
-            Nothing -> respond (refusal status404 "NotFound" Nothing)
-            Just at -> runAs env address u (runExceptT (listing mount depth at)) >>= either (respond . wikiRefusal) (respond . either (answer . TopLevel) answer)
+  signedInBasic env address request respond $ \u -> case requestMethod request of
+    method
+      | method `elem` [methodGet, methodHead] -> case depthOf request of
+          Left why -> respond (refusal status400 "Invalid" (Just why))
+          Right depth -> do
+            target <-
+              if top
+                then pure (Just Nothing)
+                else
+                  routeOf "/" spacePath <&> \case
+                    Route.Space sp -> Just (Just sp)
+                    _ -> Nothing
+            case target of
+              Nothing -> respond (refusal status404 "NotFound" Nothing)
+              Just at -> runAs env address u (runExceptT (listing mount depth at)) >>= either (respond . wikiRefusal) (respond . either (answer . TopLevel) answer)
+      | method == methodPut
+      , not top ->
+          routeOf "/" spacePath >>= \case
+            Route.Space sp | Just slug <- lastMay sp -> do
+              given <- strictRequestBody request
+              case newSpaceOf given of
+                Left why -> respond (refusal status400 "Invalid" (Just why))
+                Right new
+                  | new.encrypted == Just True -> respond (refusal status400 "Invalid" (Just "An encrypted space is made in the browser, where its keys are made: the server has none, and this API cannot make one."))
+                  | otherwise -> create u sp slug (fromMaybe (titleOfSlug slug) new.title)
+            _ -> respond (maybe (refusal status404 "NotFound" Nothing) (refusal status400 "Invalid" . Just) (notASlug segments))
+      | top -> respond (notAllowed [methodGet, methodHead])
+      | otherwise -> respond (notAllowed [methodGet, methodHead, methodPut])
   where
+    top = segments `elem` [[], [""]]
     -- The path after the prefix, as sent (percent-encoded), without the
     -- query: what the application's router reads as a space's address.
     spacePath = fromMaybe "/" (BS.stripPrefix (encodeUtf8 mount <> "api/list") (rawPathInfo request))
+    -- Create the space at its path, under the space that the slugs before
+    -- its own slug name, and answer with its listing.
+    create u sp slug title =
+      parentOf u sp >>= \case
+        Left refused -> respond refused
+        Right parent ->
+          runAs env address u (createSpaceAt parent slug title) >>= \case
+            Left e -> respond (wikiRefusal e)
+            Right _ ->
+              runAs env address u (runExceptT (spaceListing mount Nothing sp)) >>= \case
+                Left e -> respond (wikiRefusal e)
+                Right entry -> respond (responseLBS status201 [(hContentType, "application/json"), (hCacheControl, "private, no-store"), (hLocation, encodeUtf8 (addressUnder mount "api/list" (Route.Space sp)))] (encode entry))
+    -- The space above a new space's path: 'Nothing' for a space at the top
+    -- level.
+    parentOf u sp = case initMay sp of
+      Just above@(_ : _) ->
+        runAs env address u (getSpace above) <&> \case
+          Right p -> Right (Just p.id)
+          Left NotFound -> Left (refusal status404 "NotFound" (Just ("The space above it, " <> renderPath above <> ", is not there: create that space first.")))
+          Left e -> Left (wikiRefusal e)
+      _ -> pure (Right Nothing)
+
+-- | What a @PUT@ that creates a space may say of it: its title, and whether
+-- it is encrypted, which this API refuses. Each is optional; a field of
+-- another name is refused, so that a field misspelled is not ignored.
+data NewSpace = NewSpace
+  { title :: Maybe Text
+  , encrypted :: Maybe Bool
+  }
+  deriving stock (Generic)
+
+instance FromJSON NewSpace where
+  parseJSON = genericParseJSON defaultOptions {rejectUnknownFields = True}
+
+-- | The 'NewSpace' of a request's body: an empty body asks for nothing.
+newSpaceOf :: LByteString -> Either Text NewSpace
+newSpaceOf body
+  | BSL.all (`elem` [9, 10, 13, 32]) body = Right NewSpace {title = Nothing, encrypted = Nothing}
+  | otherwise = first (\why -> "The body is not a space's JSON, {\"title\": \"…\"}: " <> toS why) (eitherDecode body)
 
 -- | The search, on a listener that serves the wiki under this path, for a
 -- request from this address.
@@ -211,12 +274,6 @@ searchApplication env mount address request respond =
 answer :: (ToJSON a) => a -> Response
 answer = responseLBS status200 [(hContentType, "application/json"), (hCacheControl, "private, no-store")] . encode
 
--- | The value of a parameter of the request's query, as UTF-8 text.
-parameter :: Request -> ByteString -> Either Text (Maybe Text)
-parameter request name = case join (lookup name (queryString request)) of
-  Nothing -> Right Nothing
-  Just bytes -> bimap (const ("The parameter " <> decodeUtf8 name <> " is not UTF-8 text.")) Just (decodeUtf8' bytes)
-
 -- | The listing's @depth@, if the request gives one: a number from 1 up.
 depthOf :: Request -> Either Text (Maybe Int)
 depthOf request =
@@ -225,13 +282,6 @@ depthOf request =
     Just t -> case readMaybe t of
       Just n | n >= 1 -> Right (Just n)
       _ -> Left "The depth is not a number from 1 up."
-
--- | The address of a route of the application under the API's prefix
--- (@api\/list@, @api\/markdown@), on a listener that serves the wiki under
--- this path: the route's address as the application writes it, with the
--- prefix in front.
-addressUnder :: Text -> Text -> Route.Route -> Text
-addressUnder mount prefix r = mount <> prefix <> Duplex.print Route.route r
 
 -- | The listing: of the top level ('Nothing'), its spaces ('Left'), or of
 -- the space at a path ('Right'), @depth@ levels down (all of them for
@@ -242,10 +292,14 @@ listing mount depth = \case
     spaces <- lift listSpaces
     listed <- traverse (spaceEntry mount spaces (below depth)) (subspacesOf spaces Nothing)
     pure (Left listed)
-  Just sp -> do
-    s <- ExceptT (getSpace sp)
-    spaces <- lift listSpaces
-    Right <$> spaceEntry mount spaces depth s
+  Just sp -> Right <$> spaceListing mount depth sp
+
+-- | The listing of the space at a path, @depth@ levels down.
+spaceListing :: (MonadWiki m) => Text -> Maybe Int -> [Slug] -> ExceptT WikiError m SpaceEntry
+spaceListing mount depth sp = do
+  s <- ExceptT (getSpace sp)
+  spaces <- lift listSpaces
+  spaceEntry mount spaces depth s
 
 -- | How many levels a tree is still to go down, one level below; 'Nothing'
 -- for all of them.

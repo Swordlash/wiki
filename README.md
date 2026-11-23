@@ -2632,6 +2632,11 @@ curl -u editor:'my password' -X PUT --data-binary @hello.md \
   -H 'If-Match: "2026-11-18T09:30:12.345678Z"' \
   https://wiki.example/api/markdown/s/blog/p/hello-world/
 
+# Create a page: a PUT to an address where there is none. Here a page
+# titled "Release notes – November" under the page Hello, world.
+curl -u editor:'my password' -X PUT --data-binary @notes.md -H 'If-None-Match: *' \
+  'https://wiki.example/api/markdown/s/blog/p/hello-world/november/?title=Release%20notes%20%E2%80%93%20November'
+
 # What the writing assistant is told about the wiki's Markdown.
 curl https://wiki.example/api/markdown/reference
 ```
@@ -2645,13 +2650,30 @@ curl https://wiki.example/api/markdown/reference
   `If-Match` set to the `ETag` read, a page saved by someone else since is
   refused with 412 and nothing is written, so a program does not write over
   someone's edit; without `If-Match` the write goes through.
+- **`PUT` where there is no page** creates one, as the wiki's "New page"
+  does: the same rights (editing the space), a first version under your
+  name, the same notifications. The address's last slug is the new page's
+  slug, and the slugs before it are the page it goes under, which has to
+  exist (404 otherwise; nothing is created on the way); a page right after
+  `/p/` goes under the space's home page. The title is `?title=`, or else
+  made from the slug (`release-notes` is titled "Release notes"), and
+  `?kind=presentation` makes a presentation instead of a document. Both
+  count only when the page is created. It answers 201, with the page's
+  address as `Location` and its `ETag`. `If-None-Match: *` makes the `PUT`
+  create only: where a page is already, it is refused with 412 and nothing
+  is written. `If-Match` never creates: where there is no page, it is 404.
+  A segment that is not a slug (lowercase ASCII letters, digits and single
+  dashes) is refused with 400, and so is a slug that is one of the
+  addresses' own words written bare: a page with the slug `history` is at
+  `…/p/~history/`, as in the browser.
 - **`GET /api/markdown/reference`** gives the wiki's Markdown reference, the
   same text the writing assistant's prompt starts with, to anyone; in a
   closed wiki it needs a sign-in, as everything else there does.
 
 To find the pages, a program lists the spaces or searches, at `/api/list` and
 `/api/search`, signed in in the same way. Both answer JSON, with what you may
-read and nothing else, and take only `GET`.
+read and nothing else. A space's listing also takes a `PUT`, which creates
+the space; the rest takes only `GET`.
 
 ```sh
 # Every space you may read, from the top level down, with its pages.
@@ -2659,6 +2681,10 @@ curl -u editor:'my password' https://wiki.example/api/list/
 
 # One space and what is under it, two levels down.
 curl -u editor:'my password' 'https://wiki.example/api/list/s/team/?depth=2'
+
+# Create the space Retrospectives under Team, at team/retros.
+curl -u editor:'my password' -X PUT -H 'Content-Type: application/json' \
+  -d '{"title": "Retrospectives"}' https://wiki.example/api/list/s/team/retros/
 
 # The search of the search box; space= keeps to a space and its subspaces.
 curl -u editor:'my password' 'https://wiki.example/api/search?q=on-call+rota&space=team&limit=10'
@@ -2696,6 +2722,20 @@ curl -u editor:'my password' 'https://wiki.example/api/search?q=on-call+rota&spa
   the wiki's sidebar, with its title, its path and its subspaces only. An
   encrypted space is listed with `"encrypted": true` and no pages and no
   `home`: the server cannot read their titles.
+- **`PUT /api/list/s/<space path>/`** creates the space at that path, as the
+  wiki's "New space" does: the same rights (creating spaces, or
+  administering the space it goes under), a private space with its home
+  page, and you its administrator. The path's last slug is the new space's
+  slug, and the slugs before it are the space it goes under, which has to
+  exist (404 otherwise). The body is JSON, `{"title": "…"}`, or empty: the
+  title is then made from the slug, as for a page. It answers 201, with the
+  space's listing as `Location` and as the body. A space already at the
+  path is refused with 409: the `PUT` only creates, and never changes a
+  space. So is a space inside an encrypted one. A path can be taken by a
+  space you may not see: the `PUT` then answers 404, as reading that path
+  does, and creates nothing. An encrypted space cannot be
+  made here (`"encrypted": true` is refused with 400): its keys are made in
+  the browser, and the server has none.
 - **`GET /api/search?q=<words>`** runs the wiki's own search, the one behind
   the search box, with the same rules: what you may read, and no encrypted
   space. `space=<space path>` keeps to that space and its subspaces (a space
@@ -2730,12 +2770,15 @@ uses (`{"error": "…", "message": "…"}`):
   Failed sign-ins count toward the same limit as the sign-in form's: after
   five for a login from an address, both refuse it (429) for fifteen minutes.
 - 403 for an account with a second factor, which a password alone does not
-  sign in, and for a write to a page you may read but not edit.
-- 404 for a page that is not there or that you may not read, alike; and, in
-  this first version, for a page that does not exist yet: the API does not
-  create pages.
+  sign in, for a write to a page you may read but not edit, and for a page
+  or a space you may not create there.
+- 404 for a page or a space that is not there or that you may not read,
+  alike: for a page read, for one created in such a space or under such a
+  page, and for a space created under such a space.
 - 409 for a page of an encrypted space: its text is encrypted in its members'
-  browsers, and the server can neither read nor write it.
+  browsers, and the server can neither read nor write it. The same for a
+  page or a space created in one, and for a space created where there is
+  one.
 
 A right password is checked in full once, and remembered by the server for
 five minutes, until a change of password or account. Requests that carry the
@@ -2748,7 +2791,7 @@ browser that registered the password, so the server runs at most a budget,
 Argon2id over 128 MiB). An account whose record asks for more passes or more
 memory than the budget is refused (401) as a wrong password is, and costs the
 server no more than one. Keys made in your own panel instead of a password,
-attachments, a page's sections, creating pages and an MCP server are to come.
+attachments, a page's sections and an MCP server are to come.
 
 #### Bringing the demo's pages into the server
 

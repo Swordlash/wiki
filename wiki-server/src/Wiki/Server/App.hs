@@ -321,7 +321,7 @@ listenerRoutes logger env site l caller loggedAs request respond = do
           -- ("Wiki.Server.McpApi"): on the public listener only, as the
           -- API for programs is.
           ["mcp"] -> case l.finding of
-            BySession _ -> mcpApplication env l.mount asking request respond
+            BySession _ -> mcpApplication env l.mount caller.origins asking request respond
             EveryoneAdministers -> notFound
           rest@("api" : "v1" : endpoint)
             -- An API key signs in only to the API for programs: here the

@@ -351,6 +351,9 @@ tools backing = describe "each tool gives what the HTTP API gives" $ do
       other -> expectationFailure ("not a page: " <> show other)
     -- A full address of the wiki names the same page.
     drop 1 <$> okCall r k "wiki_read_page" ["path" .= (r.public <> "/s/blog/p/hello-world/")] `shouldReturn` [bodyText page]
+    -- Another site's address is not this wiki's, whatever its path.
+    elsewhere <- failedCall r k "wiki_read_page" ["path" .= ("https://elsewhere.example/s/blog/p/hello-world/" :: Text)]
+    elsewhere `shouldSatisfy` T.isInfixOf "is not an address of this wiki"
     outline' <- okCall r k "wiki_page_outline" ["path" .= ("/s/blog/p/hello-world/" :: Text)] >>= traverse jsonOf
     contents <- api r k "contents/s/blog/p/hello-world/" >>= jsonAs 200
     outline' `shouldBe` [asTools (without "markdown" contents)]
@@ -502,7 +505,7 @@ underBasePath backing = describe "under a base path" $ do
     let posted (hs, body) = do
           chunks <- newIORef [BSL.toStrict (encode body)]
           answered <- newIORef (0, "")
-          let request' = setRequestBodyChunks (atomicModifyIORef' chunks (\case c : cs -> (cs, c); [] -> ([], ""))) defaultRequest {requestMethod = methodPost, rawPathInfo = "/wiki/mcp", pathInfo = ["wiki", "mcp"], requestHeaders = bearer made : ("Content-Type", "application/json") : hs}
+          let request' = setRequestBodyChunks (atomicModifyIORef' chunks (\case c : cs -> (cs, c); [] -> ([], ""))) defaultRequest {requestMethod = methodPost, rawPathInfo = "/wiki/mcp", pathInfo = ["wiki", "mcp"], requestHeaderHost = Just "wiki.example", requestHeaders = ("Host", "wiki.example") : bearer made : ("Content-Type", "application/json") : hs}
           _ <- app request' $ \response -> do
             let (status, _, withBody) = responseToStream response
             bytes <- newIORef mempty
@@ -511,7 +514,7 @@ underBasePath backing = describe "under a base path" $ do
             writeIORef answered (statusCode status, toLazyByteString written)
             pure ResponseReceived
           readIORef answered
-    for_ ["/s/blog/p/hello-world/", "/wiki/s/blog/p/hello-world/", "https://wiki.example/wiki/s/blog/p/hello-world/"] $ \path -> do
+    for_ ["/s/blog/p/hello-world/", "/wiki/s/blog/p/hello-world/", "http://wiki.example/wiki/s/blog/p/hello-world/"] $ \path -> do
       (status, reply) <- posted (modern "tools/call" (Just "wiki_read_page") ["name" .= ("wiki_read_page" :: Text), "arguments" .= object ["path" .= (path :: Text)]])
       called <- calledOf Reply {status, headers = [], body = reply}
       (called.failed, length called.texts) `shouldBe` (False, 2)

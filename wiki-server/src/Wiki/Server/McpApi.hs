@@ -73,6 +73,7 @@ import Wiki.Core.Page (Page (..))
 import Wiki.Core.PageKind (PageKind (..))
 import Wiki.Core.Path (renderPath)
 import Wiki.Core.Slug (Slug)
+import Wiki.Server.Address (Origin, addressOrigin)
 import Wiki.Server.Api (Env (..))
 import Wiki.Server.ApiKeys (KeyHolder (..))
 import Wiki.Server.ContentsApi (contentsOf, sectionOf)
@@ -82,15 +83,17 @@ import Wiki.Server.Render (routeOf)
 
 -- | The MCP server, on a listener that serves the wiki under this path
 -- (with a slash at each end), for a request the listener knows this of
--- ('Asking'). The listener routes @mcp@ under its path here.
-mcpApplication :: Env -> Text -> Asking -> Application
-mcpApplication env mount asking request respond = case bearerOf request of
+-- ('Asking'), whose own origins are these ('Wiki.Server.Address.ownOrigins'):
+-- a full address in a tool's argument names a page only at one of them.
+-- The listener routes @mcp@ under its path here.
+mcpApplication :: Env -> Text -> [Origin] -> Asking -> Application
+mcpApplication env mount own asking request respond = case bearerOf request of
   Nothing -> respond noKey
   Just presented ->
     signInWithKey env asking presented >>= \case
       Left refused -> respond refused
       Right holder -> do
-        app <- Mcp.mcpApplication config serverInfo Mcp.noHandlers {Mcp.tools = Just (toolHandlers env mount asking.address holder)}
+        app <- Mcp.mcpApplication config serverInfo Mcp.noHandlers {Mcp.tools = Just (toolHandlers env mount own asking.address holder)}
         app request respond
   where
     config =
@@ -155,17 +158,18 @@ data Tool = Tool
 type Arguments = Map Text Value
 
 -- | The tools, for a key's user, for a request from this address, on a
--- listener that serves the wiki under this path: what @tools\/list@ lists
+-- listener that serves the wiki under this path with these origins: what
+-- @tools\/list@ lists
 -- and what @tools\/call@ calls. A key with the right @read@ is listed the
 -- tools that only read, and is refused the others.
-toolHandlers :: Env -> Text -> Text -> KeyHolder -> (Mcp.ToolListHandler, Mcp.ToolCallHandler)
-toolHandlers env mount address holder = (listed, call)
+toolHandlers :: Env -> Text -> [Origin] -> Text -> KeyHolder -> (Mcp.ToolListHandler, Mcp.ToolCallHandler)
+toolHandlers env mount own address holder = (listed, call)
   where
     -- @write@ and @admin@ write; @read@ only reads.
     mayWrite = holder.right >= WriteRight
-    available = [t | t <- tools env mount address holder, mayWrite || not t.writes]
+    available = [t | t <- tools env mount own address holder, mayWrite || not t.writes]
     listed _ = pure (map definition available)
-    call _ named args = case find (\t -> t.name == named) (tools env mount address holder) of
+    call _ named args = case find (\t -> t.name == named) (tools env mount own address holder) of
       Nothing -> pure (Left (Mcp.UnknownTool named))
       Just t -> Right . Mcp.Complete <$> answer t args
     answer t args
@@ -198,9 +202,9 @@ definition t =
     }
 
 -- | Every tool, for a key's user, for a request from this address, on a
--- listener that serves the wiki under this path.
-tools :: Env -> Text -> Text -> KeyHolder -> [Tool]
-tools env mount address holder =
+-- listener that serves the wiki under this path with these origins.
+tools :: Env -> Text -> [Origin] -> Text -> KeyHolder -> [Tool]
+tools env mount own address holder =
   [ Tool
       { name = "wiki_list"
       , description = "List the spaces and pages the user may read, as a tree: each space with its title, its path, its subspaces and its pages, each page with its title, its kind and its path in the field markdown, to pass to the other tools as path. A space's home page is its field home. Without space, the whole wiki; with it, one space. depth cuts the tree: 1 is the space's own subspaces and top pages."
@@ -267,11 +271,11 @@ tools env mount address holder =
       , required = ["path", "section"]
       , writes = False
       , tooLong = \n -> "The section has " <> show n <> " characters, more than one answer holds: read its own text (own true), then its subsections, whose anchors the outline (wiki_page_outline) gives."
-      , run = \args -> withArguments ((,) <$> requiredArgument "section" (textArgument "section" args) <*> (fromMaybe False <$> boolArgument "own" args)) $ \(anchor, own) ->
+      , run = \args -> withArguments ((,) <$> requiredArgument "section" (textArgument "section" args) <*> (fromMaybe False <$> boolArgument "own" args)) $ \(anchor, ownOnly) ->
           withPage args $ \at sp pp ->
             findPage env address holder.user sp pp <&> \case
               Left e -> Mcp.toolError (refusalText at e)
-              Right p -> case sectionOf p.body (Just anchor) own of
+              Right p -> case sectionOf p.body (Just anchor) ownOnly of
                 Nothing ->
                   let anchors = outlineAnchors (outline p.body)
                    in Mcp.toolError ("The page at " <> at <> " has no section with the anchor " <> show anchor <> ". Its anchors: " <> (if null anchors then "none" else T.intercalate ", " anchors) <> ".")
@@ -351,11 +355,11 @@ tools env mount address holder =
       d -> Right d
     -- The page a call's argument path names, read as the browser's
     -- router reads it, with the path as the tools write it.
-    withPage args continue = withArguments (requiredArgument "path" (textArgument "path" args)) $ \given ->
-      routeOf "/" (encodeUtf8 (localPath mount given)) >>= \case
+    withPage args continue = withArguments (requiredArgument "path" (textArgument "path" args) >>= localPath mount own) $ \given ->
+      routeOf "/" (encodeUtf8 given) >>= \case
         Route.Page sp pp -> continue (pathOf sp pp) sp pp
         Route.Space sp -> continue (pathOf sp []) sp []
-        _ -> pure (Mcp.toolError (fromMaybe (show given <> " is not a page's path: a page's path is /s/<space path>/p/<page path>/, such as /s/team/p/on-call/, and a space's home page is /s/<space path>/.") (notASlug (pathSegments (localPath mount given)))))
+        _ -> pure (Mcp.toolError (fromMaybe (show given <> " is not a page's path: a page's path is /s/<space path>/p/<page path>/, such as /s/team/p/on-call/, and a space's home page is /s/<space path>/.") (notASlug (pathSegments given))))
 
 -- | The path of the page at a space's path and a page's path, as the
 -- browser's address bar shows it under the wiki's own part.
@@ -364,13 +368,18 @@ pathOf sp pp = Duplex.print Route.route (Route.pageRoute sp pp)
 
 -- | The path a tool is given, as the router reads it under the listener's
 -- path: a full address's scheme and host taken off, then the listener's
--- path, then a query or a fragment; with a slash at each end.
-localPath :: Text -> Text -> Text
-localPath mount given = withSlashes (T.takeWhile (`notElem` ['?', '#']) (underMount (withoutOrigin (T.strip given))))
+-- path, then a query or a fragment; with a slash at each end. A full
+-- address names a page only when its origin is one of the wiki's own
+-- ('ownOrigins', as the live channel checks a page's); for another, the
+-- result is why it names nothing here.
+localPath :: Text -> [Origin] -> Text -> Either Text Text
+localPath mount own given = withSlashes . T.takeWhile (`notElem` ['?', '#']) . underMount <$> withoutOrigin (T.strip given)
   where
     withoutOrigin t = case T.breakOn "://" t of
-      (_, rest) | not (T.null rest) -> T.dropWhile (/= '/') (T.drop 3 rest)
-      _ -> t
+      (_, rest)
+        | T.null rest -> Right t
+        | maybe False (`elem` own) (addressOrigin t) -> Right (T.dropWhile (/= '/') (T.drop 3 rest))
+        | otherwise -> Left (show t <> " is not an address of this wiki: pass the page's path, such as /s/team/p/on-call/.")
     underMount t
       | mount /= "/", Just rest <- T.stripPrefix (T.dropWhileEnd (== '/') mount) t = rest
       | otherwise = t

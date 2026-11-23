@@ -49,7 +49,10 @@ js_choose_file :: JSText -> JSText -> JSText -> JSText -> IO ()
 js_choose_file a1 a2 a3 a4 = if inBrowser then wait =<< js_choose_filePromise a1 a2 a3 a4 else pure inert
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
-spec m = do
+-- The reads look once, with the program quiet: the database's reads and
+-- writes in IndexedDB have answered, and the editor's pause before it saves
+-- a draft ('H.delayCounted') has run out and the draft is written.
+spec m = readsOnce Quiet $ do
   it "finds a page saved in one mounted application in the next one" $ runPage $ do
     db <- fresh m "saved"
     ui <- startKept m db (Just "user-editor") (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
@@ -72,15 +75,15 @@ spec m = do
     clearBody ui
     typeText text "Not saved, but kept."
     -- Quietly, a few seconds after the typing stops.
-    eventuallyWithin 10000 $ find ui ".editor-draft-status" >>= (`shouldHaveText` "Draft saved")
+    find ui ".editor-draft-status" >>= (`shouldHaveText` "Draft saved")
     unmount ui
     again <- startKept m db (Just "user-editor") (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
     find again ".editor-draft-found" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Restored your unsaved draft from")
     markdown again `shouldReturn` "# Hello, world\n\nNot saved, but kept."
     -- Discarded, the page is as it was saved.
     find again ".editor-draft-discard" >>= click
-    eventually $ length <$> findAll again ".editor-draft-found" `shouldReturn` 0
-    eventually (markdown again `shouldReturn` original)
+    length <$> findAll again ".editor-draft-found" `shouldReturn` 0
+    markdown again `shouldReturn` original
     unmount again
     third <- startKept m db (Just "user-editor") (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
     markdown third `shouldReturn` original
@@ -132,7 +135,7 @@ spec m = do
     saved <- unsafeIOToPageM downloads
     drop (length before) saved `shouldBe` [T.dropEnd 1 (T.drop (T.length "Exported the wiki as ") told)]
     -- A comment, which the export carries and the import brings back.
-    unsafeIOToPageM . runMemWiki opened.wiki $ do
+    perform . runMemWiki opened.wiki $ do
       blog <- either (panic . show) pure =<< getSpace (slugs ["blog"])
       hello <- either (panic . show) pure =<< getPage blog.id (slugs ["hello-world"])
       either (panic . show) (const pass) =<< openThread hello.id Nothing "Carried by the export."
@@ -143,21 +146,21 @@ spec m = do
     clickButton ui ".demo-reset-confirm button" "Reset"
     find ui ".admin-view .demo-told" >>= (`shouldHaveText` "The demo's content is back as it was at the start.")
     -- A file that is not an export is refused, saying why.
-    unsafeIOToPageM (choose "notes.txt" "text/plain" "just some text")
+    perform (choose "notes.txt" "text/plain" "just some text")
     find ui ".admin-view .demo-refused" >>= textContent >>= (`shouldSatisfy` ("Not imported: notes.txt." `T.isPrefixOf`))
     -- The export is read, and asked about before anything changes; Cancel
     -- leaves the wiki as it is.
-    unsafeIOToPageM (choose "wiki-export.zip" "application/zip" zipped)
+    perform (choose "wiki-export.zip" "application/zip" zipped)
     find ui ".demo-import-confirm p" >>= textContent >>= (`shouldSatisfy` ("Replace everything in this wiki with wiki-export.zip" `T.isPrefixOf`))
     clickButton ui ".demo-import-confirm button" "Cancel"
     length <$> findAll ui ".demo-import-confirm" `shouldReturn` 0
-    unsafeIOToPageM (choose "wiki-export.zip" "application/zip" zipped)
+    perform (choose "wiki-export.zip" "application/zip" zipped)
     _ <- find ui ".demo-import-confirm p"
     clickButton ui ".demo-import-confirm button" "Replace"
     find ui ".admin-view .demo-told" >>= textContent >>= (`shouldSatisfy` ("Imported wiki-export.zip: 3 users, 4 spaces" `T.isPrefixOf`))
     helloWorld ui
     find ui ".page-view .page-body p" >>= (`shouldHaveText` "Exported, and brought back.")
-    eventually $ (traverse textContent =<< findAll ui ".page-comments .comment-body") >>= (`shouldSatisfy` elem "Carried by the export.")
+    (traverse textContent =<< findAll ui ".page-comments .comment-body") >>= (`shouldSatisfy` elem "Carried by the export.")
     -- And kept: the next visit finds it too.
     unmount ui
     again <- startKept m db Nothing (Page (slugs ["blog"]) (slugs ["hello-world"]))
@@ -188,7 +191,7 @@ spec m = do
     unsafeIOToPageM (writeIORef calls [])
     clearBody ui
     typeText text "Kept as a draft only."
-    eventuallyWithin 10000 $ find ui ".editor-draft-status" >>= (`shouldHaveText` "Draft saved")
+    find ui ".editor-draft-status" >>= (`shouldHaveText` "Draft saved")
     written <- unsafeIOToPageM (readIORef calls)
     [stores | Wrote stores <- written] `shouldSatisfy` (\ws -> not (null ws) && all (all (\(store, _) -> store == draftsStore)) ws)
     unmount ui

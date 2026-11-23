@@ -73,6 +73,11 @@ module Wiki.Server.ContentsApi
   ( contentsApplication
   , sectionApplication
   , asksForSection
+
+    -- * A page's contents and sections
+  , Contents
+  , contentsOf
+  , sectionOf
   )
 where
 
@@ -86,26 +91,27 @@ import Network.Wai (Application, Request (..), Response, responseLBS, strictRequ
 import Protolude
 import Web.HttpApiData (parseHeader, toHeader)
 import Wiki.Api.Version (PageVersion, pageVersion)
-import Wiki.App.Backend (MonadWiki (getPage, getSpace, savePage), WikiError (..))
+import Wiki.App.Backend (MonadWiki (savePage), WikiError (..))
 import Wiki.App.Route qualified as Route
 import Wiki.Core.Id (UserId)
 import Wiki.Core.Markdown.Sections (Outline (..), Refusal (..), Replaced (..), Section (..), SpoilerBody (..), Target (..), outline, outlineAnchors, replaceSection, sectionRange, sectionText, topRange)
 import Wiki.Core.Page (Page (..))
-import Wiki.Core.Slug (Slug)
-import Wiki.Core.Space (Space (id))
 import Wiki.Server.Api (Env (..))
-import Wiki.Server.MarkdownApi (Asking (..), addressUnder, markdownMediaType, notAllowed, parameter, refusal, runAs, signedInProgram, wikiRefusal)
+import Wiki.Server.MarkdownApi (Asking (..), addressUnder, findPage, markdownMediaType, notAllowed, parameter, refusal, runAs, signedInProgram, wikiRefusal)
 import Wiki.Server.Render (routeOf)
 import Wiki.Server.Storage (Who (..), editingAs)
 
 -- | A page's table of contents, as the API gives it. @top@ is left out of
--- the JSON for a page whose text before its first heading is blank.
+-- the JSON for a page whose text before its first heading is blank. The
+-- addresses (@markdown@, @top@ and each heading's @section@) are the HTTP
+-- API's, and are left out of the MCP server's ("Wiki.Server.McpApi"),
+-- whose tools name a page by its path and a section by its anchor.
 data Contents = Contents
   { title :: Text
   , version :: Text
   -- ^ The page's version: the value of its Markdown's @ETag@, quotes
   -- included, to send back as @If-Match@.
-  , markdown :: Text
+  , markdown :: Maybe Text
   -- ^ The address of the page's Markdown.
   , top :: Maybe Text
   -- ^ The address of the text before the first heading.
@@ -123,7 +129,7 @@ data Heading = Heading
   , inSpoiler :: Bool
   -- ^ Whether the heading is inside a block spoiler, its section within
   -- the spoiler's body.
-  , section :: Text
+  , section :: Maybe Text
   -- ^ The address of the heading's section.
   , children :: [Heading]
   }
@@ -158,24 +164,43 @@ contentsApplication env mount asking@Asking {address} request respond =
       else
         pageAt env address u "api/contents" mount request >>= \case
           Left refused -> respond refused
-          Right (r, p) ->
-            let o = outline p.body
-                markdown = addressUnder mount "api/markdown" r
-                -- A section's heading, with the headings of the spoilers
-                -- in its own part, then those of its subsections.
-                heading hidden s = Heading {level = s.level, text = s.text, anchor = s.id, inSpoiler = hidden, section = sectionAt markdown s.id, children = concatMap spoilerHeadings s.spoilers <> map (heading hidden) s.below}
-                -- The headings of a spoiler's body: those of the spoilers
-                -- in its top, then its sections'.
-                spoilerHeadings sb = concatMap spoilerHeadings sb.outline.spoilers <> map (heading True) sb.outline.sections
-                contents =
-                  Contents
-                    { title = p.title
-                    , version = versionOf p
-                    , markdown
-                    , top = guard (T.any (not . isSpace) (sectionText p.body (topRange o))) $> topAt markdown
-                    , headings = concatMap spoilerHeadings o.spoilers <> map (heading False) o.sections
-                    }
-             in respond (responseLBS status200 [(hContentType, "application/json"), etag p, private] (encode contents))
+          Right (r, p) -> respond (responseLBS status200 [(hContentType, "application/json"), etag p, private] (encode (contentsOf (Just (addressUnder mount "api/markdown" r)) p)))
+
+-- | 'contentsOf' is a page's table of contents: its title, its version,
+-- and its headings as a tree. The HTTP API ('contentsApplication') and the
+-- MCP server ("Wiki.Server.McpApi") both give it, so that a heading has
+-- the same anchor in both. With the address of the page's Markdown, each
+-- part has the address it is read at; without it, none has.
+contentsOf :: Maybe Text -> Page -> Contents
+contentsOf markdown p =
+  Contents
+    { title = p.title
+    , version = versionOf p
+    , markdown
+    , top = guard (T.any (not . isSpace) (sectionText p.body (topRange o))) *> (topAt <$> markdown)
+    , headings = concatMap spoilerHeadings o.spoilers <> map (heading False) o.sections
+    }
+  where
+    o = outline p.body
+    -- A section's heading, with the headings of the spoilers in its own
+    -- part, then those of its subsections.
+    heading hidden s = Heading {level = s.level, text = s.text, anchor = s.id, inSpoiler = hidden, section = (`sectionAt` s.id) <$> markdown, children = concatMap spoilerHeadings s.spoilers <> map (heading hidden) s.below}
+    -- The headings of a spoiler's body: those of the spoilers in its top,
+    -- then its sections'.
+    spoilerHeadings sb = concatMap spoilerHeadings sb.outline.spoilers <> map (heading True) sb.outline.sections
+
+-- | 'sectionOf' is the source text of one part of a page's Markdown, a
+-- slice of it character for character: the section whose heading has
+-- this anchor, or the text before the first heading ('Nothing'). A section
+-- runs to the next heading of the same or a higher level, its subsections
+-- included, or with only its own part ('True') to the next heading of any
+-- level. 'Nothing' when the page has no section with the anchor. The HTTP
+-- API ('sectionApplication') and the MCP server ("Wiki.Server.McpApi")
+-- both read a section through it.
+sectionOf :: Text -> Maybe Text -> Bool -> Maybe Text
+sectionOf body asked ownOnly = sectionText body <$> maybe (Just (topRange o)) (\anchor -> sectionRange o anchor ownOnly) asked
+  where
+    o = outline body
 
 -- | One section of a page, for a request to the API for a page's Markdown
 -- that asks for one ('asksForSection'), on a listener that serves the wiki
@@ -193,11 +218,9 @@ sectionApplication env mount asking@Asking {address} request respond =
           | otherwise ->
               pageAt env address u "api/markdown" mount request >>= \case
                 Left refused -> respond refused
-                Right (_, p) ->
-                  let o = outline p.body
-                   in case maybe (Just (topRange o)) (\anchor -> sectionRange o anchor ownOnly) asked of
-                        Nothing -> respond (refusal status404 "NotFound" (Just (noSection (fromMaybe "" asked) o)))
-                        Just bounds -> respond (responseLBS status200 [(hContentType, markdownMediaType), etag p, private] (toS (encodeUtf8 (sectionText p.body bounds))))
+                Right (_, p) -> case sectionOf p.body asked ownOnly of
+                  Nothing -> respond (refusal status404 "NotFound" (Just (noSection (fromMaybe "" asked) (outline p.body))))
+                  Just part -> respond (responseLBS status200 [(hContentType, markdownMediaType), etag p, private] (toS (encodeUtf8 part)))
   where
     -- A PUT: the request's headers and body read, then the part written.
     write u target
@@ -293,13 +316,11 @@ pageAt :: Env -> Text -> UserId -> Text -> Text -> Request -> IO (Either Respons
 pageAt env address u prefix mount request = do
   r <- routeOf "/" (fromMaybe "/" (BS.stripPrefix (encodeUtf8 (mount <> prefix)) (rawPathInfo request)))
   case r of
-    Route.Page sp pp -> found r <$> pageOf sp pp
-    Route.Space sp -> found r <$> pageOf sp []
+    Route.Page sp pp -> found r <$> findPage env address u sp pp
+    Route.Space sp -> found r <$> findPage env address u sp []
     _ -> pure (Left (refusal status404 "NotFound" Nothing))
   where
     found r = bimap wikiRefusal (r,)
-    pageOf :: [Slug] -> [Slug] -> IO (Either WikiError Page)
-    pageOf sp pp = runAs env address u (getSpace sp) >>= either (pure . Left) (\s -> runAs env address u (getPage s.id pp))
 
 -- | The answer to a section written: the section's anchor and address, or
 -- the address of the top, and the page's new version. Fields that are

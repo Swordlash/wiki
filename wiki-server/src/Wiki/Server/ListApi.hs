@@ -47,6 +47,18 @@
 module Wiki.Server.ListApi
   ( listApplication
   , searchApplication
+
+    -- * The listing and the search
+  , Addresses (..)
+  , SpaceEntry
+  , TopLevel (..)
+  , HitEntry (..)
+  , HitSpace (..)
+  , Hits (..)
+  , listing
+  , searching
+  , hasSearchWords
+  , searchSpace
   )
 where
 
@@ -182,7 +194,7 @@ listApplication env mount asking@Asking {address} segments request respond =
                     _ -> Nothing
             case target of
               Nothing -> respond (refusal status404 "NotFound" Nothing)
-              Just at -> runAs env address u (runExceptT (listing mount depth at)) >>= either (respond . wikiRefusal) (respond . either (answer . TopLevel) answer)
+              Just at -> runAs env address u (runExceptT (listing (apiAddresses mount) depth at)) >>= either (respond . wikiRefusal) (respond . either (answer . TopLevel) answer)
       | method == methodPut
       , not top ->
           routeOf "/" spacePath >>= \case
@@ -210,7 +222,7 @@ listApplication env mount asking@Asking {address} segments request respond =
           runAs env address u (createSpaceAt parent slug title) >>= \case
             Left e -> respond (wikiRefusal e)
             Right _ ->
-              runAs env address u (runExceptT (spaceListing mount Nothing sp)) >>= \case
+              runAs env address u (runExceptT (spaceListing (apiAddresses mount) Nothing sp)) >>= \case
                 Left e -> respond (wikiRefusal e)
                 Right entry -> respond (responseLBS status201 [(hContentType, "application/json"), (hCacheControl, "private, no-store"), (hLocation, encodeUtf8 (addressUnder mount "api/list" (Route.Space sp)))] (encode entry))
     -- The space above a new space's path: 'Nothing' for a space at the top
@@ -253,22 +265,46 @@ searchApplication env mount asking@Asking {address} request respond =
         (_, Left why, _) -> respond (refusal status400 "Invalid" (Just why))
         (_, _, Left why) -> respond (refusal status400 "Invalid" (Just why))
         (Right q, Right sp, Right limit) ->
-          runAs env address u (Right <$> searching mount q sp limit) >>= either (respond . wikiRefusal) (respond . answer . Hits)
+          runAs env address u (Right <$> searching (apiAddresses mount) q sp limit) >>= either (respond . wikiRefusal) (respond . answer . Hits)
   where
     words' = case parameter request "q" of
-      Right (Just q) | not (null (queryWords (searchFor (Just q) Nothing False Nothing False))) -> Right q
+      Right (Just q) | hasSearchWords q -> Right q
       Right _ -> Left "Give the words to search for: ?q=words."
       Left why -> Left why
-    within =
-      parameter request "space" >>= \case
-        Nothing -> Right Nothing
-        Just t
-          | T.null (T.strip t) || t == "/" -> Right Nothing
-          | otherwise -> bimap (const "The space is not a space's path, such as team/projects.") Just (parsePath t)
+    within = parameter request "space" >>= searchSpace
     limitOf =
       parameter request "limit" >>= \case
         Nothing -> Right Nothing
         Just t -> maybe (Left "The limit is not a number.") (Right . Just) (readMaybe t)
+
+-- | Whether a search's text has words the search looks for: not only
+-- spaces and punctuation.
+hasSearchWords :: Text -> Bool
+hasSearchWords q = not (null (queryWords (searchFor (Just q) Nothing False Nothing False)))
+
+-- | The space a search keeps to, from its path as given (@team\/projects@):
+-- 'Nothing', every space, for no path, a blank one or @\/@.
+searchSpace :: Maybe Text -> Either Text (Maybe [Slug])
+searchSpace = \case
+  Nothing -> Right Nothing
+  Just t
+    | T.null (T.strip t) || t == "/" -> Right Nothing
+    | otherwise -> bimap (const "The space is not a space's path, such as team/projects.") Just (parsePath t)
+
+-- | 'Addresses' is how the listing and the search write where things are:
+-- the address of a space's listing, and the address of a page's Markdown,
+-- each from the application's route of the space or the page. The HTTP
+-- API gives its own addresses ('apiAddresses'); the MCP server
+-- ("Wiki.Server.McpApi") gives the paths its tools take.
+data Addresses = Addresses
+  { list :: Route.Route -> Text
+  , markdown :: Route.Route -> Text
+  }
+
+-- | The HTTP API's addresses, on a listener that serves the wiki under
+-- this path: @api\/list\/…@ and @api\/markdown\/…@.
+apiAddresses :: Text -> Addresses
+apiAddresses mount = Addresses {list = addressUnder mount "api/list", markdown = addressUnder mount "api/markdown"}
 
 -- | The answer of a listing or a search: JSON, never kept by a cache, since
 -- it is what one user may read.
@@ -287,20 +323,20 @@ depthOf request =
 -- | The listing: of the top level ('Nothing'), its spaces ('Left'), or of
 -- the space at a path ('Right'), @depth@ levels down (all of them for
 -- 'Nothing').
-listing :: (MonadWiki m) => Text -> Maybe Int -> Maybe [Slug] -> ExceptT WikiError m (Either [SpaceEntry] SpaceEntry)
-listing mount depth = \case
+listing :: (MonadWiki m) => Addresses -> Maybe Int -> Maybe [Slug] -> ExceptT WikiError m (Either [SpaceEntry] SpaceEntry)
+listing addresses depth = \case
   Nothing -> do
     spaces <- lift listSpaces
-    listed <- traverse (spaceEntry mount spaces (below depth)) (subspacesOf spaces Nothing)
+    listed <- traverse (spaceEntry addresses spaces (below depth)) (subspacesOf spaces Nothing)
     pure (Left listed)
-  Just sp -> Right <$> spaceListing mount depth sp
+  Just sp -> Right <$> spaceListing addresses depth sp
 
 -- | The listing of the space at a path, @depth@ levels down.
-spaceListing :: (MonadWiki m) => Text -> Maybe Int -> [Slug] -> ExceptT WikiError m SpaceEntry
-spaceListing mount depth sp = do
+spaceListing :: (MonadWiki m) => Addresses -> Maybe Int -> [Slug] -> ExceptT WikiError m SpaceEntry
+spaceListing addresses depth sp = do
   s <- ExceptT (getSpace sp)
   spaces <- lift listSpaces
-  spaceEntry mount spaces depth s
+  spaceEntry addresses spaces depth s
 
 -- | How many levels a tree is still to go down, one level below; 'Nothing'
 -- for all of them.
@@ -313,8 +349,8 @@ opens = maybe True (> 0)
 
 -- | A space of the listing, among the spaces 'listSpaces' gave, with this
 -- many levels below it.
-spaceEntry :: (MonadWiki m) => Text -> [Space] -> Maybe Int -> Space -> ExceptT WikiError m SpaceEntry
-spaceEntry mount spaces depth s = do
+spaceEntry :: (MonadWiki m) => Addresses -> [Space] -> Maybe Int -> Space -> ExceptT WikiError m SpaceEntry
+spaceEntry addresses spaces depth s = do
   -- The pages of the space, if the user may read it: 'NotFound' for a space
   -- listed only for a space under it, and 'Stale' for an encrypted space,
   -- whose pages' titles the server cannot read.
@@ -326,7 +362,7 @@ spaceEntry mount spaces depth s = do
       Left e -> ExceptT (pure (Left e))
   subspaces <-
     if opens depth
-      then Just <$> traverse (spaceEntry mount spaces (below depth)) (subspacesOf spaces (Just s.id))
+      then Just <$> traverse (spaceEntry addresses spaces (below depth)) (subspacesOf spaces (Just s.id))
       else pure Nothing
   let chain = spaceChain spaces s.id
       sp = map (\x -> x.slug) chain
@@ -338,7 +374,7 @@ spaceEntry mount spaces depth s = do
           PageEntry
             { title = p.title
             , kind = p.kind
-            , markdown = addressUnder mount "api/markdown" (Route.pageRoute sp at)
+            , markdown = addresses.markdown (Route.pageRoute sp at)
             , updated = p.updatedAt
             , template = p.template
             , children = guard (opens level) $> pagesUnder (below level) (Just p.id)
@@ -348,8 +384,8 @@ spaceEntry mount spaces depth s = do
     SpaceEntry
       { title = s.name
       , path = renderPath sp
-      , list = readable $> addressUnder mount "api/list" (Route.Space sp)
-      , home = (rootPage s >>= (`Map.lookup` byId)) $> addressUnder mount "api/markdown" (Route.Space sp)
+      , list = readable $> addresses.list (Route.Space sp)
+      , home = (rootPage s >>= (`Map.lookup` byId)) $> addresses.markdown (Route.Space sp)
       , -- Encrypted here or above: the server reads the pages of neither.
         encrypted = any (\x -> isJust x.encryption) (s : chain)
       , subspaces
@@ -359,8 +395,8 @@ spaceEntry mount spaces depth s = do
 -- | The search's hits for these words, in this space and its subspaces or
 -- everywhere, in the search's order. A space path that names no space the
 -- user may see finds nothing, as the search box finds nothing there.
-searching :: (MonadWiki m) => Text -> Text -> Maybe [Slug] -> Maybe Int -> m [HitEntry]
-searching mount q within limit = do
+searching :: (MonadWiki m) => Addresses -> Text -> Maybe [Slug] -> Maybe Int -> m [HitEntry]
+searching addresses q within limit = do
   spaces <- listSpaces
   let search sid = map (hitEntry spaces) <$> searchPages (searchFor (Just q) sid False limit False)
   case within of
@@ -374,7 +410,7 @@ searching mount q within limit = do
         { title = snippetText h.title
         , titleMarked = h.title
         , space = HitSpace {path = renderPath h.spacePath, title = maybe "" (\s -> s.name) (find (\s -> s.id == h.space) spaces)}
-        , markdown = addressUnder mount "api/markdown" (Route.pageRoute h.spacePath h.pagePath)
+        , markdown = addresses.markdown (Route.pageRoute h.spacePath h.pagePath)
         , excerpt = snippetText h.snippet
         , excerptMarked = h.snippet
         }

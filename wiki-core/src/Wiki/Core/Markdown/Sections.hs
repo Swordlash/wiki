@@ -305,15 +305,15 @@ data Refusal
 -- new text of the page, or why the body is refused.
 --
 -- The body is ended with a line break when it has none. When text follows
--- the part in the page and the body does not end with an empty line, one
--- empty line is added, so that the block after the body stays apart: a
--- paragraph line directly before a title underlined with @===@ would
--- become that title's first line. Nothing else of the body changes. So a
--- part written back as it was read gives the same page, unless the part
--- did not end so (a heading or a spoiler's end marker on the line right
--- after its last line, a page without a final line break): it gains that
--- line break. An empty body is refused, but for the top, where it removes
--- the top.
+-- the part in the page and the body does not end with an empty line, and
+-- the body is refused as it is, one empty line is added and the body tried
+-- again: a paragraph line directly before a title underlined with @===@
+-- would become that title's first line, and the empty line keeps the two
+-- apart. The empty line is added only when the body is then taken.
+-- Nothing else of the body changes. So a part written back as it was read
+-- gives the same page, but at the end of a page without a final line
+-- break, which gains one. An empty body is refused, but for the top, where
+-- it removes the top.
 --
 -- The new page's outline is then compared with the old one. Outside the
 -- part, every section stays as it was: its anchor, its level, its text,
@@ -347,76 +347,23 @@ replaceSection target page body = do
     Top -> Right (0, old.top, Nothing)
     WholeSection anchor -> (\p -> (p.section.start, p.section.end, Just p)) <$> named anchor
     OwnPart anchor -> (\p -> (p.section.start, p.section.ownEnd, Just p)) <$> named anchor
-  written <- ending (b < T.length page)
-  let new = T.take a page <> written <> T.drop b page
-      a' = a + T.length written
-      o' = outline new
-      newPlaced = placedIn o'
-      -- Offsets of each page as if the part had no width: before the part
-      -- as they are, after it moved back by its length, inside it none.
-      atOld p = if p <= a then At p else if p >= b then At (p - (b - a)) else Within
-      atNew p = if p <= a then At p else if p >= a' then At (p - (a' - a)) else Within
-      (oldSeen, oldBoxes, oldPage) = view atOld (\p -> p >= a && p < b) old
-      (newSeen, newBoxes, newPage) = view atNew (\p -> p >= a && p < a') o'
-      headingAt p = find (\x -> x.section.start == p) newPlaced
-      own = case target of
-        OwnPart _ -> True
-        _ -> False
-      -- The section the body starts with ('Nothing' for the top), or why
-      -- there is none; and whether the body is that section and nothing
-      -- more, or for the top, no section.
-      (opening, inside) = case wanted of
-        Nothing
-          | o'.top == a' -> (Right Nothing, True)
-          | otherwise -> (maybe (Right Nothing) (\x -> Left (SectionInTop x.section.text)) (headingAt o'.top), False)
-        Just w -> case headingAt a of
-          Just t
-            | t.section.level == w.section.level ->
-                let stop = if own then t.section.ownEnd else t.section.end
-                    beyond x = if own then Subsection x.section.text else AnotherSection x.section.text x.section.level
-                 in if stop == a' && map atNew t.spoilers == map atOld w.spoilers
-                      then (Right (Just t), True)
-                      else (maybe (Right (Just t)) (Left . beyond) (guard (stop < a') *> headingAt stop), False)
-          _ -> (Left (NotAHeading w.section.level), False)
-      -- Why the outside differs: the first section of the old page that
-      -- changed, then the first new one, then the spoilers.
-      outsideRefusal =
-        head
-          ( mapMaybe (\(raw, s) -> differs raw s (lookup s.shape.start [(n.shape.start, n) | (_, n) <- newSeen])) oldSeen
-              <> [SectionAppears n.shape.text (raw >= a') | (raw, n) <- newSeen, n.shape.start `notElem` map (\(_, s) -> s.shape.start) oldSeen]
-              <> [SpoilerChanges (raw >= b) | (raw, x) <- oldBoxes, x `notElem` map snd newBoxes]
-              <> [SpoilerChanges (raw >= a') | (raw, x) <- newBoxes, x `notElem` map snd oldBoxes]
-          )
-      differs raw s = \case
-        Nothing -> Just (SectionChanges s.anchor (raw >= b))
-        Just n
-          | sameAs n s -> Nothing
-          | n.shape == s.shape -> Just (AnchorChanges s.anchor n.anchor)
-          | otherwise -> Just (SectionChanges s.anchor (raw >= b))
-      sameAs n s = n.anchor == s.anchor && n.shape == s.shape
-      -- The sections outside whose anchor named them and would name an
-      -- earlier section, one in the part, with the same id written out. A
-      -- section whose anchor named an earlier one may come to be named by
-      -- it: that mends a link, and breaks none.
-      unnamed = [s.anchor | ((_, s), (_, n)) <- zip oldSeen newSeen, s.named, not n.named]
-  section <- opening
-  unless (inside && and (zipWith (\(_, s) (_, n) -> sameAs n s) oldSeen newSeen) && length oldSeen == length newSeen && map snd oldBoxes == map snd newBoxes && oldPage == newPage) $
-    Left (fromMaybe OutsideChanges outsideRefusal)
-  for_ (head unnamed) (Left . AnchorMoves)
-  case section of
-    Just t
-      | Just leading <- find (\x -> x.section.id == t.section.id) newPlaced
-      , leading.section.start /= a ->
-          Left (AnchorTaken t.section.id)
-    _ -> Right Replaced {text = new, anchor = (\t -> t.section.id) <$> section}
+  ended <- ending
+  case writeIn a b wanted ended of
+    Left why
+      | b < T.length page
+      , not (T.null ended)
+      , not (endsEmpty ended) ->
+          writeIn a b wanted (ended <> breakAfter ended)
+      | otherwise -> Left why
+    accepted -> accepted
   where
     old = outline page
     named anchor = maybeToRight NoSuchAnchor (find (\p -> p.section.id == anchor) (placedIn old))
-    ending follows
+    -- The body ended with a line break, or refused when it is empty.
+    ending
       | T.null body = if target == Top then Right "" else Left EmptyBody
-      | otherwise =
-          let ended = if lineBreak (T.last body) then body else body <> "\n"
-           in Right (if follows && not (endsEmpty ended) then ended <> breakAfter ended else ended)
+      | lineBreak (T.last body) = Right body
+      | otherwise = Right (body <> "\n")
     -- Whether a text that ends with a line break ends with an empty line:
     -- its last line, before that break, has nothing but spaces and tabs.
     endsEmpty t =
@@ -427,6 +374,70 @@ replaceSection target page body = do
     -- return, since a line feed there would make one line break of the two.
     breakAfter t = if T.last t == '\r' then "\r" else "\n"
     lineBreak c = c == '\n' || c == '\r'
+    -- The page with this text in the place of the part from @a@ to @b@,
+    -- the section @wanted@ (or the top), or why it is refused.
+    writeIn a b wanted written = do
+      let new = T.take a page <> written <> T.drop b page
+          a' = a + T.length written
+          o' = outline new
+          newPlaced = placedIn o'
+          -- Offsets of each page as if the part had no width: before the part
+          -- as they are, after it moved back by its length, inside it none.
+          atOld p = if p <= a then At p else if p >= b then At (p - (b - a)) else Within
+          atNew p = if p <= a then At p else if p >= a' then At (p - (a' - a)) else Within
+          (oldSeen, oldBoxes, oldPage) = view atOld (\p -> p >= a && p < b) old
+          (newSeen, newBoxes, newPage) = view atNew (\p -> p >= a && p < a') o'
+          headingAt p = find (\x -> x.section.start == p) newPlaced
+          own = case target of
+            OwnPart _ -> True
+            _ -> False
+          -- The section the body starts with ('Nothing' for the top), or why
+          -- there is none; and whether the body is that section and nothing
+          -- more, or for the top, no section.
+          (opening, inside) = case wanted of
+            Nothing
+              | o'.top == a' -> (Right Nothing, True)
+              | otherwise -> (maybe (Right Nothing) (\x -> Left (SectionInTop x.section.text)) (headingAt o'.top), False)
+            Just w -> case headingAt a of
+              Just t
+                | t.section.level == w.section.level ->
+                    let stop = if own then t.section.ownEnd else t.section.end
+                        beyond x = if own then Subsection x.section.text else AnotherSection x.section.text x.section.level
+                     in if stop == a' && map atNew t.spoilers == map atOld w.spoilers
+                          then (Right (Just t), True)
+                          else (maybe (Right (Just t)) (Left . beyond) (guard (stop < a') *> headingAt stop), False)
+              _ -> (Left (NotAHeading w.section.level), False)
+          -- Why the outside differs: the first section of the old page that
+          -- changed, then the first new one, then the spoilers.
+          outsideRefusal =
+            head
+              ( mapMaybe (\(raw, s) -> differs raw s (lookup s.shape.start [(n.shape.start, n) | (_, n) <- newSeen])) oldSeen
+                  <> [SectionAppears n.shape.text (raw >= a') | (raw, n) <- newSeen, n.shape.start `notElem` map (\(_, s) -> s.shape.start) oldSeen]
+                  <> [SpoilerChanges (raw >= b) | (raw, x) <- oldBoxes, x `notElem` map snd newBoxes]
+                  <> [SpoilerChanges (raw >= a') | (raw, x) <- newBoxes, x `notElem` map snd oldBoxes]
+              )
+          differs raw s = \case
+            Nothing -> Just (SectionChanges s.anchor (raw >= b))
+            Just n
+              | sameAs n s -> Nothing
+              | n.shape == s.shape -> Just (AnchorChanges s.anchor n.anchor)
+              | otherwise -> Just (SectionChanges s.anchor (raw >= b))
+          sameAs n s = n.anchor == s.anchor && n.shape == s.shape
+          -- The sections outside whose anchor named them and would name an
+          -- earlier section, one in the part, with the same id written out. A
+          -- section whose anchor named an earlier one may come to be named by
+          -- it: that mends a link, and breaks none.
+          unnamed = [s.anchor | ((_, s), (_, n)) <- zip oldSeen newSeen, s.named, not n.named]
+      section <- opening
+      unless (inside && and (zipWith (\(_, s) (_, n) -> sameAs n s) oldSeen newSeen) && length oldSeen == length newSeen && map snd oldBoxes == map snd newBoxes && oldPage == newPage) $
+        Left (fromMaybe OutsideChanges outsideRefusal)
+      for_ (head unnamed) (Left . AnchorMoves)
+      case section of
+        Just t
+          | Just leading <- find (\x -> x.section.id == t.section.id) newPlaced
+          , leading.section.start /= a ->
+              Left (AnchorTaken t.section.id)
+        _ -> Right Replaced {text = new, anchor = (\t -> t.section.id) <$> section}
 
 -- | 'Placed' is a section of an outline with where it is: the start of the
 -- section it is under ('Nothing' at the top level of its outline, the

@@ -2827,7 +2827,8 @@ A long page can be read and written a part at a time: its table of contents
 at `/api/contents/` followed by the page's address, and one section at the
 page's Markdown address with `?section=` and the section's anchor, read with
 `GET` and written with `PUT`. Both are signed in in the same way, with the
-permissions of reading the page, and of editing it for a write.
+permissions of reading the page, and of editing it for a write (an API key
+with the right `write`).
 
 ```sh
 # The page's headings as a tree, each with the address of its section.
@@ -2904,13 +2905,14 @@ curl -u editor:'my password' -X PUT -H 'If-Match: "2026-11-23T10:15:00.123456Z"'
   goes in the page as it is when the request comes, and a save that comes in
   between is never written over. `If-None-Match` is refused (400): a section
   is written in a page that is there, never created, and a page not there is
-  404. The server ends the body with a line break when it has none, and when
-  more of the page follows and the body does not end with an empty line, it
-  adds one, so that the next heading stays apart; nothing else of the body
-  changes. So a part read and written back as it was gives the same page,
-  but where it ended right before a heading or a spoiler's end marker, or
-  at the end of a page without a final line break. An
-  empty body is refused (422), but for the top, which it takes out. The
+  404. The server ends the body with a line break when it has none. When
+  more of the page follows, the body does not end with an empty line, and
+  it would be refused as it is, the server adds an empty line and tries
+  again: a last line of text right before a title underlined with `===`
+  would otherwise run into that title. Nothing else of the body changes. So
+  a part read and written back as it was gives the same page, but at the
+  end of a page without a final line break, which gains one. An empty body
+  is refused (422), but for the top, which it takes out. The
   answer is 200 with the page's new version as the `ETag` and as JSON:
   `{"anchor": "the-week", "section": "/api/markdown/s/team/p/team-handbook/?section=the-week", "version": "…"}`
   for a section, `{"top": "/api/markdown/…/?top=true", "version": "…"}` for
@@ -2949,8 +2951,8 @@ uses (`{"error": "…", "message": "…"}`):
   or two different keys.
 - 403 for an account with a second factor, which a password alone does not
   sign in (a key does), for a request a key's right does not allow, for a
-  write to a page you may read but not edit, and for a page or a space you
-  may not create there.
+  write to a page you may read but not edit (a section's too, whatever its
+  body), and for a page or a space you may not create there.
 - 404 for a page or a space that is not there or that you may not read,
   alike: for a page read, for one created in such a space or under such a
   page, and for a space created under such a space.
@@ -2970,8 +2972,7 @@ browser that registered the password, so the server runs at most a budget,
 Argon2id over 128 MiB). An account whose record asks for more passes or more
 memory than the budget is refused (401) as a wrong password is, and costs the
 server no more than one. A key costs a lookup and a SHA-256, and nothing is
-remembered of it. Attachments and an MCP server are to come; writing a single
-section of a page is not offered yet (write the page whole).
+remembered of it. Attachments and an MCP server are to come.
 
 ##### From a shell, and for assistants
 

@@ -9,9 +9,9 @@ technical: false
 - A program on your own machine, such as a local assistant or a script, can
   now change one section of a long page without sending the whole page
   back. It sends the section's new Markdown to the address it reads the
-  section from, signing in with your login and password; the rest of the
-  page stays as it is, and the page gets a new version in its history, as
-  when you save it in the editor:
+  section from, signing in with your login and password or with an API key
+  that may write; the rest of the page stays as it is, and the page gets a
+  new version in its history, as when you save it in the editor:
 
   ```sh
   curl -u editor:'my password' -X PUT --data-binary @the-week.md \

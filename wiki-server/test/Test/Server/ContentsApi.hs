@@ -284,8 +284,8 @@ writing backing = describe "writing a section" $ do
     written.status `shouldBe` 200
     answer <- decoded written
     answer `shouldBe` Written {anchor = Just "install", section = Just (hello <> "?section=install"), top = Nothing, version = decodeUtf8 (fromMaybe "" (header "ETag" written))}
-    pageText r `shouldReturn` "Intro.\n\n# Hello\n\nText.\n\n## Install\n\nOther steps.\n\n## Use\n\nRun it.\n"
-    (bodyText <$> follow r edgar (fromMaybe "" answer.section)) `shouldReturn` "## Install\n\nOther steps.\n\n"
+    pageText r `shouldReturn` "Intro.\n\n# Hello\n\nText.\n\n## Install\n\nOther steps.\n## Use\n\nRun it.\n"
+    (bodyText <$> follow r edgar (fromMaybe "" answer.section)) `shouldReturn` "## Install\n\nOther steps.\n"
     (header "ETag" <$> request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] "") `shouldReturn` header "ETag" written
     (length <$> versionsOf r) `shouldReturn` versions + 1
     -- Its own part, the subsections staying; then the top, taken out.
@@ -293,14 +293,14 @@ writing backing = describe "writing a section" $ do
     top <- write r "?top=true" [] ""
     top.status `shouldBe` 200
     decoded top `shouldReturn` Written {anchor = Nothing, section = Nothing, top = Just (hello <> "?top=true"), version = decodeUtf8 (fromMaybe "" (header "ETag" top))}
-    pageText r `shouldReturn` "# Hello\n\nNew lead.\n\n## Install\n\nOther steps.\n\n## Use\n\nRun it.\n"
+    pageText r `shouldReturn` "# Hello\n\nNew lead.\n## Install\n\nOther steps.\n## Use\n\nRun it.\n"
     (length <$> versionsOf r) `shouldReturn` versions + 3
 
   it "answers the new anchor of a heading the body renames, an address that reads the section" $ withPasswords backing $ \r -> do
     start r
     answer <- write r "?section=install" [] "## Setup\n\nSteps.\n" >>= decoded
     (answer.anchor, answer.section) `shouldBe` (Just "setup", Just (hello <> "?section=setup"))
-    (bodyText <$> follow r edgar (fromMaybe "" answer.section)) `shouldReturn` "## Setup\n\nSteps.\n\n"
+    (bodyText <$> follow r edgar (fromMaybe "" answer.section)) `shouldReturn` "## Setup\n\nSteps.\n"
     (.status) <$> request r methodGet "api/markdown/s/blog/p/hello-world/?section=install" [edgar] "" `shouldReturn` 404
 
   it "is not written over a version saved since, with If-Match" $ withPasswords backing $ \r -> do
@@ -330,6 +330,10 @@ writing backing = describe "writing a section" $ do
     tour.status `shouldBe` 200
     refused <- request r methodPut "api/markdown/s/docs/p/tour/?top=true" [edgar] "Not mine to write.\n"
     (refused.status, errorName refused) `shouldBe` (403, Just "Forbidden")
+    -- The right to edit is asked first: a body that would be refused, or an
+    -- anchor not there, is 403 all the same.
+    (.status) <$> request r methodPut "api/markdown/s/docs/p/tour/?top=true" [edgar] "# A heading in the top\n" `shouldReturn` 403
+    (.status) <$> request r methodPut "api/markdown/s/docs/p/tour/?section=nowhere" [edgar] "" `shouldReturn` 403
     (.body) <$> request r methodGet "api/markdown/s/docs/p/tour/?top=true" [edgar] "" `shouldReturn` tour.body
     (.status) <$> request r methodPut "api/markdown/s/team/p/team-handbook/?top=true" [edgar] "Hidden.\n" `shouldReturn` 404
     slug <- encryptedSpace r

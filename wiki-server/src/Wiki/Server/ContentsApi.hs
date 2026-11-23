@@ -65,7 +65,8 @@
 -- = Refusals
 --
 -- As the Markdown's: a page the user may not read is 404, as one that is
--- not there, a write to a page the user may not edit is 403, and a page of
+-- not there, a write to a page the user may not edit is 403 whatever its
+-- body (the right is asked before the body is judged), and a page of
 -- an encrypted space is 409 @Stale@. An anchor that names no section is
 -- 404, with the page's anchors in the message.
 module Wiki.Server.ContentsApi
@@ -92,9 +93,10 @@ import Wiki.Core.Markdown.Sections (Outline (..), Refusal (..), Replaced (..), S
 import Wiki.Core.Page (Page (..))
 import Wiki.Core.Slug (Slug)
 import Wiki.Core.Space (Space (id))
-import Wiki.Server.Api (Env)
+import Wiki.Server.Api (Env (..))
 import Wiki.Server.MarkdownApi (Asking (..), addressUnder, markdownMediaType, notAllowed, parameter, refusal, runAs, signedInProgram, wikiRefusal)
 import Wiki.Server.Render (routeOf)
+import Wiki.Server.Storage (Who (..), editorOf)
 
 -- | A page's table of contents, as the API gives it. @top@ is left out of
 -- the JSON for a page whose text before its first heading is blank.
@@ -218,25 +220,33 @@ sectionApplication env mount asking@Asking {address} request respond =
         Left refused -> respond refused
         Right (r, p)
           | Just v <- expected, v /= pageVersion p -> respond moved
-          | otherwise -> case replaceSection target p.body body of
-              Left NoSuchAnchor -> respond (refusal status404 "NotFound" (Just (noSection (anchorOf target) (outline p.body))))
-              Left why -> respond (refusal status422 "Invalid" (Just (refusalText why)))
-              Right done ->
-                runAs env address u (savePage p.id p.updatedAt p.title done.text) >>= \case
-                  Right saved ->
-                    let markdown = addressUnder mount "api/markdown" r
-                        answer =
-                          Written
-                            { anchor = done.anchor
-                            , section = sectionAt markdown <$> done.anchor
-                            , top = guard (target == Top) $> topAt markdown
-                            , version = versionOf saved
-                            }
-                     in respond (responseLBS status200 [(hContentType, "application/json"), etag saved, (hCacheControl, "no-store")] (encode answer))
-                  Left (Conflict _)
-                    | isJust expected -> respond moved
-                    | tries > 1 -> save u target expected body (tries - 1)
-                  Left e -> respond (wikiRefusal e)
+          | otherwise ->
+              -- The right to edit the page is asked before the body is
+              -- judged, so that a user who may not edit it is refused as a
+              -- whole page's PUT refuses them, whatever the body. The
+              -- question is the live channel's, who may be shown editing
+              -- the page ('editorOf'); the save asks it again.
+              editorOf env.storage (AsUser u) p.id >>= \case
+                Nothing -> respond (wikiRefusal Forbidden)
+                Just _ -> case replaceSection target p.body body of
+                  Left NoSuchAnchor -> respond (refusal status404 "NotFound" (Just (noSection (anchorOf target) (outline p.body))))
+                  Left why -> respond (refusal status422 "Invalid" (Just (refusalText why)))
+                  Right done ->
+                    runAs env address u (savePage p.id p.updatedAt p.title done.text) >>= \case
+                      Right saved ->
+                        let markdown = addressUnder mount "api/markdown" r
+                            answer =
+                              Written
+                                { anchor = done.anchor
+                                , section = sectionAt markdown <$> done.anchor
+                                , top = guard (target == Top) $> topAt markdown
+                                , version = versionOf saved
+                                }
+                         in respond (responseLBS status200 [(hContentType, "application/json"), etag saved, (hCacheControl, "no-store")] (encode answer))
+                      Left (Conflict _)
+                        | isJust expected -> respond moved
+                        | tries > 1 -> save u target expected body (tries - 1)
+                      Left e -> respond (wikiRefusal e)
     moved = refusal status412 "Conflict" (Just "The page has been saved since the version in If-Match: read it again, and write over that version.")
     anchorOf = \case
       WholeSection a -> a

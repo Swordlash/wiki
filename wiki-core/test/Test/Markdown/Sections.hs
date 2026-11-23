@@ -192,13 +192,13 @@ spec = describe "Markdown.Sections" $ do
 
   describe "replaceSection" $ do
     let page = "# A\n\nLead.\n\n## Install\n\nSteps.\n\n## Use\n\nRun it.\n"
-    it "ends a body with a line break, and with an empty line where text follows" $ do
+    it "ends a body with a line break, and adds no empty line where none is needed" $ do
       replaceSection (WholeSection "use") page "## Use\n\nRun it twice."
         `shouldBe` Right Replaced {text = "# A\n\nLead.\n\n## Install\n\nSteps.\n\n## Use\n\nRun it twice.\n", anchor = Just "use"}
       replaceSection (WholeSection "install") page "## Install\n\nOther steps."
-        `shouldBe` Right Replaced {text = "# A\n\nLead.\n\n## Install\n\nOther steps.\n\n## Use\n\nRun it.\n", anchor = Just "install"}
+        `shouldBe` Right Replaced {text = "# A\n\nLead.\n\n## Install\n\nOther steps.\n## Use\n\nRun it.\n", anchor = Just "install"}
 
-    it "keeps a body's last paragraph apart from a title underlined after it" $ do
+    it "adds an empty line where the body's last paragraph would run into a title underlined after it" $ do
       let source = "## One\n\nA.\n\nTitle\n---\n\nB.\n"
       -- Without the empty line, the paragraph's line would be the title's
       -- first line: one heading, "New text Title".
@@ -209,7 +209,7 @@ spec = describe "Markdown.Sections" $ do
     it "takes a new text for the section's heading, and answers its new anchor" $ do
       let written = replaceSection (WholeSection "install") page "## Setup\n\nSteps.\n"
       (\done -> done.anchor) <$> written `shouldBe` Right (Just "setup")
-      (\done -> part done.text "setup" False) <$> written `shouldBe` Right (Just "## Setup\n\nSteps.\n\n")
+      (\done -> part done.text "setup" False) <$> written `shouldBe` Right (Just "## Setup\n\nSteps.\n")
       (\done -> outlineAnchors (outline done.text)) <$> written `shouldBe` Right ["a", "setup", "use"]
 
     it "refuses a heading's new text that changes the anchor of another heading" $ do
@@ -223,7 +223,7 @@ spec = describe "Markdown.Sections" $ do
           both = "# A {#x}\n\nOne.\n\n# B {#x}\n\nTwo.\n"
       replaceSection (WholeSection "b") onFirst "# B {#x}\n\nTwo.\n" `shouldBe` Left (AnchorTaken "x")
       replaceSection (WholeSection "a") onSecond "# A {#x}\n\nOne.\n" `shouldBe` Left (AnchorMoves "x")
-      replaceSection (WholeSection "x") both "# A\n\nOne.\n" `shouldBe` Right Replaced {text = onSecond, anchor = Just "a"}
+      replaceSection (WholeSection "x") both "# A\n\nOne.\n\n" `shouldBe` Right Replaced {text = onSecond, anchor = Just "a"}
 
     it "refuses a code fence left open, which takes in the sections after it" $
       replaceSection (WholeSection "install") page "## Install\n\n```\nmake\n" `shouldBe` Left (SectionChanges "use" True)
@@ -238,12 +238,12 @@ spec = describe "Markdown.Sections" $ do
     it "refuses a subsection in a section's own part" $ do
       replaceSection (OwnPart "a") page "# A\n\nLead.\n\n### Sub\n\nMore.\n" `shouldBe` Left (Subsection "Sub")
       replaceSection (OwnPart "a") page "# A\n\nOther lead.\n"
-        `shouldBe` Right Replaced {text = "# A\n\nOther lead.\n\n## Install\n\nSteps.\n\n## Use\n\nRun it.\n", anchor = Just "a"}
+        `shouldBe` Right Replaced {text = "# A\n\nOther lead.\n## Install\n\nSteps.\n\n## Use\n\nRun it.\n", anchor = Just "a"}
 
     let spoiled = "# A\n\n[[!spoiler]]{s}(More)\n## Hidden\n\nInside.\n[[/spoiler]]{s}\n\n## Next\n\nText.\n"
     it "writes a section inside a spoiler, within the spoiler" $
       replaceSection (WholeSection "hidden") spoiled "## Hidden\n\nChanged."
-        `shouldBe` Right Replaced {text = "# A\n\n[[!spoiler]]{s}(More)\n## Hidden\n\nChanged.\n\n[[/spoiler]]{s}\n\n## Next\n\nText.\n", anchor = Just "hidden"}
+        `shouldBe` Right Replaced {text = "# A\n\n[[!spoiler]]{s}(More)\n## Hidden\n\nChanged.\n[[/spoiler]]{s}\n\n## Next\n\nText.\n", anchor = Just "hidden"}
 
     it "refuses a body that closes the spoiler the section is in" $
       replaceSection (WholeSection "hidden") spoiled "## Hidden\n\nInside.\n[[/spoiler]]{s}\n\nOutside.\n" `shouldBe` Left (SpoilerChanges False)
@@ -251,7 +251,7 @@ spec = describe "Markdown.Sections" $ do
     it "refuses an empty body for a section, and takes one for the top" $ do
       replaceSection (WholeSection "install") page "" `shouldBe` Left EmptyBody
       replaceSection Top ("Intro.\n\n" <> page) "" `shouldBe` Right Replaced {text = page, anchor = Nothing}
-      replaceSection Top page "Intro." `shouldBe` Right Replaced {text = "Intro.\n\n" <> page, anchor = Nothing}
+      replaceSection Top page "Intro." `shouldBe` Right Replaced {text = "Intro.\n" <> page, anchor = Nothing}
       replaceSection Top page "Intro.\n\n# B\n" `shouldBe` Left (SectionInTop "B")
 
     it "knows no section by an anchor the page does not have" $
@@ -264,7 +264,7 @@ spec = describe "Markdown.Sections" $ do
         let parts = targets source
             unchanged = [t | t <- parts, Just (a, b) <- [rangeOf source t], normalised source (a, b) == sectionText source (a, b)]
          in cover 5 (length unchanged == length parts) "every part the same page"
-              . cover 5 (length unchanged < length parts) "a part given an empty line or a line break"
+              . cover 2 (length unchanged < length parts) "a last part given a final line break"
               . cover 5 (any inSpoiler parts) "a section inside a spoiler"
               $ conjoin (map (writesBack source) parts)
     prop "changes nothing outside the part written" $
@@ -297,19 +297,15 @@ spec = describe "Markdown.Sections" $ do
       Top -> Just (topRange (outline source))
       WholeSection i -> sectionRange (outline source) i False
       OwnPart i -> sectionRange (outline source) i True
-    -- A part's text as a write ends it: with a line break, and with an
-    -- empty line where text follows. After a carriage return alone, the
-    -- empty line is one more carriage return, since a line feed would make
-    -- one line break of the two.
+    -- A part's text as a write ends it: with a line break. Only the last
+    -- part of a page without a final line break does not end so.
     normalised :: Text -> (Int, Int) -> Text
     normalised source (a, b) =
       let t = sectionText source (a, b)
-          broken = if T.null t || T.last t `elem` ['\n', '\r'] then t else t <> "\n"
-          lastLine = T.takeWhileEnd (`notElem` ['\n', '\r']) (fromMaybe (T.dropEnd 1 broken) (T.stripSuffix "\r\n" broken))
-       in if T.null t || b >= T.length source || T.all (`elem` [' ', '\t']) lastLine then broken else broken <> (if T.last broken == '\r' then "\r" else "\n")
+       in if T.null t || T.last t `elem` ['\n', '\r'] then t else t <> "\n"
     -- A part written back as it was read is taken, and the page is the
-    -- same, but for the ending of the part ('normalised'); the part read
-    -- again and written back gives the same page.
+    -- same, but for a final line break at the page's end ('normalised');
+    -- the part read again and written back gives the same page.
     writesBack :: Text -> Target -> Property
     writesBack source target = case rangeOf source target of
       Nothing -> counterexample (show target <> " names nothing") False

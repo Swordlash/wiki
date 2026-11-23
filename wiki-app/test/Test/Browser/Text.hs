@@ -16,6 +16,7 @@ module Test.Browser.Text
   , listReady
   , completionAnswered
   , untilListTakesKeys
+  , untilFocusTaken
   , setMarkdown
   , insertText
   , clearBody
@@ -47,6 +48,7 @@ $( browserJS
      , ("js_completion_ready", "wiki_test_editor_completion_ready", Safe, [t|IO Bool|])
      , ("js_completion_answeredPromise", "wiki_test_editor_completion_answered", Safe, [t|Int -> IO (Promise JSText)|])
      , ("js_completion_takes_keysPromise", "wiki_test_editor_completion_takes_keys", Safe, [t|Int -> IO (Promise JSText)|])
+     , ("js_focus_takenPromise", "wiki_test_editor_focus_taken", Safe, [t|Bool -> Int -> IO (Promise JSText)|])
      , ("js_set", "wiki_test_editor_set", Safe, [t|JSText -> IO ()|])
      , ("js_insert", "wiki_test_editor_insert", Safe, [t|Int -> JSText -> IO ()|])
      , ("js_clear_body", "wiki_test_editor_clear_body", Safe, [t|IO ()|])
@@ -116,6 +118,9 @@ js_completion_answered ms = if inBrowser then wait =<< js_completion_answeredPro
 js_completion_takes_keys :: Int -> IO JSText
 js_completion_takes_keys ms = if inBrowser then wait =<< js_completion_takes_keysPromise ms else pure inert
 
+js_focus_taken :: Bool -> Int -> IO JSText
+js_focus_taken focused ms = if inBrowser then wait =<< js_focus_takenPromise focused ms else pure inert
+
 -- | Wait until the editor's completion has its answer, and give where it is
 -- then ('completing'): @"active"@ with a list shown, or @""@ for none. The
 -- library asks for the list on a timer of its own a moment after the last
@@ -147,6 +152,23 @@ untilListTakesKeys ui = do
   unless (status == "ready") . expectationFailure $ case status of
     "no list" -> "the editor's completion answered with no list"
     _ -> "after " <> show watchdogMs <> " ms, the editor's completion showed no list that takes its keys: " <> status
+
+-- | Wait until CodeMirror has told the editor's plugins that the text has
+-- the focus ('True') or has lost it ('False'). The browser moves the focus
+-- at once, but CodeMirror tells its plugins on a timer of its own, ten
+-- milliseconds later, which the program does not know of. What follows
+-- the focus in the editor's text (the selection kept in sight while the
+-- text does not have the focus, @.cm-wiki-kept-selection@) is drawn then,
+-- so a test that moves the focus in or out of the text waits here before
+-- it reads. It returns at once when the plugins were told so already, and
+-- fails at the suite's watchdog ('watchdogMs').
+untilFocusTaken :: (HasCallStack) => Mounted s q o m -> Bool -> PageM s ()
+untilFocusTaken ui focused = do
+  _ <- editorText ui
+  status <- fromJSText <$> perform (js_focus_taken focused watchdogMs)
+  unless (status == "taken") . expectationFailure $ case status of
+    "no editor" -> "no editor to wait for the focus in"
+    _ -> "after " <> show watchdogMs <> " ms, CodeMirror had not told the editor's plugins that the text " <> (if focused then "has the focus" else "lost the focus")
 
 -- | Make the editor's text this, as one edit.
 setMarkdown :: Mounted s q o m -> Text -> PageM s ()

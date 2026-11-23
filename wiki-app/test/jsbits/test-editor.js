@@ -79,6 +79,21 @@ function wiki_test_editor_completion_takes_keys(ms) {
   return Promise.race([ready, new Promise((resolve) => setTimeout(() => resolve("pending"), ms))]);
 }
 
+// Wait until the open editor's plugins have been told that its text has
+// the focus (`focused` true) or has lost it (false): CodeMirror tells them
+// on a timer of its own, ten milliseconds after the browser moves the
+// focus, and the selection kept in sight follows then (web/src/editor.js's
+// focusTaken). "taken" then, at once when it is so already; "pending" at
+// the deadline `ms`, the suite's watchdog, and "no editor" without one.
+// `focused` comes from a Haskell Bool, which is not a JavaScript boolean,
+// and focusTaken compares with ===: it is made one here.
+function wiki_test_editor_focus_taken(focused, ms) {
+  const editor = wikiTestEditor();
+  if (!editor) return Promise.resolve("no editor");
+  const taken = editor.focusTaken(Boolean(focused)).then(() => "taken");
+  return Promise.race([taken, new Promise((resolve) => setTimeout(() => resolve("pending"), ms))]);
+}
+
 // Make the open editor's text this, as one edit, with the cursor at its
 // start.
 function wiki_test_editor_set(text) {

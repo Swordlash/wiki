@@ -22,16 +22,30 @@
 -- The inputs are uncontrolled, as the sign-in form's are: the state
 -- records what is typed as it is typed, and the inputs are removed with
 -- the form, together with what was typed in them.
+--
+-- The change of password is not run here but by the shell, which asks
+-- the server and tells the section the answer ('ChangePassword',
+-- 'Answered'). The section is unmounted when the reader leaves it, and
+-- that cancels its programs and kills their workers. A change killed
+-- half-way would leave in the page the vault key it unwrapped to carry
+-- the vault over (one that can be exported), and other keys besides:
+-- the key is forgotten only after the server's answer, and a key the
+-- browser makes while the wait is killed reaches no one who could forget
+-- it. So the change runs in the shell, which lasts as long as the page,
+-- to its end, and the section shows the answer if it is still there.
 module Wiki.App.View.SignInMethods
   ( Input (..)
+  , Query (..)
+  , Output (..)
+  , Ticket (..)
   , component
   , passwordOffer
   )
 where
 
-import Control.Monad.IO.Unlift (MonadUnliftIO)
-import Control.Monad.UUID (MonadUUID)
+import Control.Monad.UUID (MonadUUID (..))
 import Data.Row (Empty)
+import Data.UUID.Types (UUID)
 import Halogen qualified as H
 import Halogen.HTML.Events qualified as HE
 import Halogen.HTML.Properties qualified as HP
@@ -39,12 +53,9 @@ import Halogen.TH (hh)
 import Protolude hiding (State)
 import Wiki.Api.Account (LinkedIdentity (..), PasswordChange (..), SignInMethods (..), mayDisconnect, providerOnly)
 import Wiki.Api.Auth (Purpose (..), startUrl)
-import Wiki.App.Account (Accounts (..), passwordErrorText)
-import Wiki.App.Assistant (MonadAssistant)
-import Wiki.App.Assistant.Sync (MonadVault)
+import Wiki.App.Account (Accounts (..), SignInError, passwordErrorText)
 import Wiki.App.Backend (Session (..), WikiError (..))
 import Wiki.App.Editor.Browser (focusElement)
-import Wiki.App.Vault (changeOwnPassword)
 import Wiki.App.View.Common (errorMessage)
 import Wiki.Core.User (Email (..), Password (..), SignInProvider (..), minimumPasswordLength)
 
@@ -56,10 +67,32 @@ data Input m = Input
   , here :: Text
   -- ^ The page's address, as the router writes it: where connecting a
   -- provider's account returns to.
+  , changing :: Bool
+  -- ^ Whether the shell runs a change of this user's password: asked for
+  -- by this section, or by one the reader left before its answer. No
+  -- other change is offered meanwhile.
   }
+
+-- | 'Ticket' names one mount of the section, so that the shell's answer
+-- to a change goes to the mount that asked for it. A section mounted
+-- again has another ticket.
+newtype Ticket = Ticket UUID
+  deriving stock (Eq, Show)
+
+-- | What the shell tells the section: the answer to a change of password
+-- that the mount with this ticket asked for.
+data Query a = Answered Ticket (Either SignInError SignInMethods) a
+
+-- | What the section asks the shell: to change the password ('Ticket'
+-- names the asking mount).
+data Output = ChangePassword Ticket PasswordChange
 
 data State m = State
   { input :: Input m
+  , self :: Ticket
+  , asked :: Maybe Bool
+  -- ^ The change of password this mount asked the shell for, while its
+  -- answer is awaited: whether the user had a password then.
   , methods :: Maybe (Either WikiError SignInMethods)
   -- ^ The user's sign-in methods, once fetched ('Nothing' while they are
   -- being fetched).
@@ -90,16 +123,19 @@ data Action m
   | TypedRepeat Text
   | SavePassword
 
-component :: forall query output m. (Typeable m, MonadUUID m, MonadUnliftIO m, MonadAssistant m, MonadVault m) => H.Component query (Input m) output m
+component :: forall m. (Typeable m, MonadUUID m, MonadIO m) => H.Component Query (Input m) Output m
 component =
   H.mkComponent
     H.ComponentSpec
       { initialState = \input -> do
           currentField <- H.newRefLabel "password-current"
           newField <- H.newRefLabel "password-new"
+          self <- Ticket <$> generateV4
           pure
             State
               { input
+              , self
+              , asked = Nothing
               , methods = Nothing
               , changingPassword = False
               , typedCurrent = ""
@@ -117,6 +153,7 @@ component =
           H.mkEval
             H.defaultEval
               { H.handleAction = handleAction
+              , H.handleQuery = handleQuery
               , H.initialize = Just Initialize
               , H.receive = Just . Receive
               }
@@ -145,7 +182,7 @@ component =
                   {{ passwordForm st m }}
                 {% else %}
                   {% for offered in maybeToList (passwordOffer providers m) %}
-                    <button type="button" class="password-change-toggle" disabled={{ st.busy }} onClick={{ const AskPassword }}>
+                    <button type="button" class="password-change-toggle" disabled={{ st.busy || st.input.changing }} onClick={{ const AskPassword }}>
                       {{ offered }}
                     </button>
                   {% end %}
@@ -214,7 +251,7 @@ component =
             {% end %}
           </div>
           <div class="actions">
-            <button type="submit" class="primary" disabled={{ st.busy }}>{{ verb }}</button>
+            <button type="submit" class="primary" disabled={{ st.busy || st.input.changing }}>{{ verb }}</button>
             <button type="button" onClick={{ const CancelPassword }}>Cancel</button>
           </div>
         </form>
@@ -223,7 +260,7 @@ component =
         verb :: Text
         verb = if m.password then "Change password" else "Set password"
 
-    handleAction :: Action m -> H.HalogenM (State m) (Action m) Empty output m ()
+    handleAction :: Action m -> H.HalogenM (State m) (Action m) Empty Output m ()
     handleAction = \case
       Initialize -> do
         accounts <- gets (\st -> st.input.accounts)
@@ -255,27 +292,38 @@ component =
         st <- get
         case st.methods of
           Just (Right m)
-            | st.busy -> pass
+            | st.busy || st.input.changing -> pass
             | st.typedNew /= st.typedRepeat ->
                 modify (\s -> s {passwordProblem = Just "The new password and its repetition are not the same."})
             | otherwise -> do
-                modify (\s -> s {busy = True, passwordProblem = Nothing})
-                let change = PasswordChange {current = if m.password then Just (Password st.typedCurrent) else Nothing, new = Password st.typedNew}
-                H.async (changeOwnPassword st.input.accounts.changePassword change) >>= \case
-                  Left e -> modify (\s -> s {busy = False, passwordProblem = Just (passwordErrorText e)})
-                  Right after ->
-                    modify $ \s ->
-                      (forgetPassword s)
-                        { busy = False
-                        , methods = Just (Right after)
-                        , passwordTold =
-                            Just
-                              ( if m.password
-                                  then "Your password is changed. You stay signed in here, and anywhere else you were signed in is signed out."
-                                  else "Your password is set: you may sign in with your login and it too."
-                              )
-                        }
+                modify (\s -> s {busy = True, asked = Just m.password, passwordProblem = Nothing})
+                H.raise (ChangePassword st.self PasswordChange {current = if m.password then Just (Password st.typedCurrent) else Nothing, new = Password st.typedNew})
           _ -> pass
+
+    -- The shell's answer to a change of password. An answer to another
+    -- mount's change (one the reader left) shows only the sign-in methods
+    -- it gives.
+    handleQuery :: Query a -> H.HalogenM (State m) (Action m) Empty Output m (Maybe a)
+    handleQuery (Answered ticket result next) = do
+      st <- get
+      case (ticket == st.self, st.asked, result) of
+        (True, Just _, Left e) -> modify (\s -> s {busy = False, asked = Nothing, passwordProblem = Just (passwordErrorText e)})
+        (True, Just had, Right after) ->
+          modify $ \s ->
+            (forgetPassword s)
+              { busy = False
+              , asked = Nothing
+              , methods = Just (Right after)
+              , passwordTold =
+                  Just
+                    ( if had
+                        then "Your password is changed. You stay signed in here, and anywhere else you were signed in is signed out."
+                        else "Your password is set: you may sign in with your login and it too."
+                    )
+              }
+        (False, _, Right after) -> modify (\s -> s {methods = Just (Right after)})
+        _ -> pass
+      pure (Just next)
 
     -- Close the form to change the password, and clear what was typed in
     -- it.

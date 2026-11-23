@@ -10,7 +10,10 @@
 -- mounted alone with a backend that signs nobody in: the menu asks the
 -- server nothing. Natively the settings' sections are not mounted (they
 -- read what they show in the browser only), so the page says that it is
--- reading them; the sections themselves are the browser suite's.
+-- reading them; the sections themselves are the browser suite's. Only
+-- the section "How you sign in" ("Wiki.App.View.SignInMethods") is
+-- mounted here, alone: it asks the shell to change the password, and
+-- shows the shell's answer.
 module Test.SettingsDom (spec) where
 
 import Data.Map.Strict qualified as Map
@@ -19,8 +22,10 @@ import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Halogen.VDom.DOM.Monad.Native qualified as N
 import Protolude hiding (find)
-import Test.Harness.MemDom (View, click, clickOutside, find, findAll, settle, textOf, withView)
+import Test.Harness.MemDom (View, click, clickOutside, find, findAll, outputs, settle, tell, textOf, typeInto, withView)
 import Test.Hspec
+import Wiki.Api.Account (SignInMethods (..))
+import Wiki.Api.Account qualified as Account (PasswordChange (..))
 import Wiki.App (component, input)
 import Wiki.App.Account (Accounts (..), SignInError (..))
 import Wiki.App.Backend (Session, WikiError (..), anonymousIn, session)
@@ -30,8 +35,10 @@ import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Route (Route (..), SettingsSection (..), route)
 import Wiki.App.Shell qualified as Shell
 import Wiki.App.View.SignIn qualified as SignIn
+import Wiki.App.View.SignInMethods qualified as SignInMethods
 import Wiki.Core.Access (Access (..))
 import Wiki.Core.Id (UserId (..))
+import Wiki.Core.User (Password (..))
 
 spec :: Spec
 spec = describe "Wiki.App.View.SignIn and Wiki.App.Shell, the way to the settings" $ do
@@ -91,7 +98,55 @@ spec = describe "Wiki.App.View.SignIn and Wiki.App.Shell, the way to the setting
         (length <$> findAll view ".account-toggle, .settings-entry, .sign-out") `shouldReturn` 0
       withSignIn (anonymousIn Closed) $ \view ->
         (findAll view ".account > button" >>= traverse N.textContent) `shouldReturn` ["Sign in"]
+
+  describe "the section \"How you sign in\", whose change of password the shell runs" $ do
+    it "asks the shell for the change, and shows the shell's answer to it" $ do
+      editor <- signedIn "user-editor"
+      withMethods editor False $ \view -> do
+        asked <- askChange view
+        case asked of
+          [SignInMethods.ChangePassword ticket change] -> do
+            (change.current, change.new) `shouldBe` (Just (Password "the old one"), Password "a new password")
+            -- Asked once: a second submit while the answer is awaited
+            -- asks nothing more.
+            click view ".password-change button[type=submit]"
+            settle view
+            length <$> outputs view `shouldReturn` 1
+            tell view (SignInMethods.Answered ticket (Right withPassword))
+            settle view
+            textOf view ".account-told" `shouldReturn` "Your password is changed. You stay signed in here, and anywhere else you were signed in is signed out."
+            length <$> findAll view ".password-change" `shouldReturn` 0
+          _ -> expectationFailure ("one change asked for, not " <> show (length asked))
+
+    it "offers no change while the shell runs one asked for by a section left since, and takes from its answer the methods only" $ do
+      editor <- signedIn "user-editor"
+      -- The ticket of a mount left since: the section mounted before.
+      left <- withMethods editor False askChange
+      withMethods editor True $ \view -> do
+        textOf view ".account-password" `shouldReturn` "No password: you sign in with the accounts below."
+        click view ".password-change-toggle"
+        settle view
+        length <$> findAll view ".password-change" `shouldReturn` 0
+        case left of
+          [SignInMethods.ChangePassword ticket _] -> do
+            tell view (SignInMethods.Answered ticket (Right withPassword))
+            settle view
+            textOf view ".account-password" `shouldReturn` "With your password"
+            length <$> findAll view ".account-told" `shouldReturn` 0
+          _ -> expectationFailure ("one change asked for, not " <> show (length left))
   where
+    withPassword = SignInMethods {password = True, identities = []}
+    -- Open the form, type a change, and submit it: what the section asked
+    -- the shell for.
+    askChange view = do
+      click view ".password-change-toggle"
+      settle view
+      typeInto view ".password-change input[name=current]" "the old one"
+      typeInto view ".password-change input[name=new]" "a new password"
+      typeInto view ".password-change input[name=repeat]" "a new password"
+      click view ".password-change button[type=submit]"
+      settle view
+      outputs view
     demoUsers = Map.elems (demoState demoNow).users
     -- The class of each entry of the menu of users, in order.
     entries view = findAll view ".user-menu > li > *" >>= traverse (N.attribute "class")
@@ -128,9 +183,26 @@ withSignIn s body = do
     settle view
     body view
 
+-- | The section "How you sign in" alone, for this session, and whether
+-- the shell runs a change of password for the user already. The user
+-- has a password, except while the shell runs a change: then they have
+-- none at first, so that the answer's methods are seen to be taken.
+withMethods :: Session -> Bool -> (View SignInMethods.Query (SignInMethods.Input MemDOM) SignInMethods.Output -> IO a) -> IO a
+withMethods s changing body =
+  withView identity SignInMethods.component SignInMethods.Input {accounts, session = s, here = "/", changing} $ \view -> do
+    settle view
+    body view
+  where
+    accounts = answering (Right SignInMethods {password = not changing, identities = []})
+
 -- | Sign-in methods that refuse everything: the menu needs none of them.
 refusing :: (Applicative m) => Accounts m
-refusing =
+refusing = answering (Left (Invalid "This test signs nobody in."))
+
+-- | Sign-in methods that refuse everything but the user's sign-in
+-- methods, which are these.
+answering :: (Applicative m) => Either WikiError SignInMethods -> Accounts m
+answering methods =
   Accounts
     { signIn = \_ _ -> pure (Left refused)
     , signOut = pure (Left no)
@@ -138,7 +210,7 @@ refusing =
     , register = \_ -> pure (Left refused)
     , invitationFor = \_ -> pure (Left no)
     , acceptInvitation = \_ _ -> pure (Left refused)
-    , identities = pure (Left no)
+    , identities = pure methods
     , unlinkIdentity = \_ -> pure (Left no)
     , changePassword = \_ -> pure (Left refused)
     , confirmSecondFactor = \_ -> pure (Left refused)

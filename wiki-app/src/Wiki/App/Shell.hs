@@ -176,7 +176,7 @@ import Wiki.App.Recent (rememberVisit)
 import Wiki.App.Route (AdminSection, Route (..), SettingsSection (..), adminSections, locationRoute, sectionName, sectionTitle, settingsName, settingsSections, settingsTitle, settledRoute)
 import Wiki.App.Route qualified as R
 import Wiki.App.Security (MonadSecurity)
-import Wiki.App.Vault (forgetEveryUsersKeys, forgetUserKeys)
+import Wiki.App.Vault (changeOwnPassword, forgetEveryUsersKeys, forgetUserKeys)
 import Wiki.App.View.Access qualified as AccessView
 import Wiki.App.View.Activity qualified as ActivityView
 import Wiki.App.View.AssistantSettings qualified as AssistantSettingsView
@@ -282,6 +282,7 @@ type Slots =
      , "part" :-> H.Slot (Const Void) Void PartSlot
      , "reset" :-> H.Slot (Const Void) ResetView.Output ()
      , "signIn" :-> H.Slot SignInView.Query SignInView.Output ()
+     , "signInMethods" :-> H.Slot SignInMethodsView.Query SignInMethodsView.Output (Maybe UserId)
      , "view" :-> H.Slot ViewQuery ViewOutput ViewSlot
      ]
 
@@ -328,8 +329,7 @@ data PartSlot
   | VerifyEmailSlot
   | UnsubscribeSlot
   | -- | Keyed by the user, as the settings' other views ('PersonalSpaceSlot').
-    SignInMethodsSlot (Maybe UserId)
-  | SecuritySlot (Maybe UserId)
+    SecuritySlot (Maybe UserId)
   | NotificationsSlot (Maybe UserId)
   | AssistantSettingsSlot (Maybe UserId)
   | WhatsNewSlot
@@ -417,6 +417,10 @@ data State m = State
   -- first render. Each reads what it shows as it starts, from the server
   -- and from this browser, so a page the server prerenders shows none of
   -- them, and the program adopts that page unchanged.
+  , passwordChange :: Maybe UserId
+  -- ^ The user whose change of password the shell runs, until the server
+  -- has answered and the page has let go of the keys it held for it
+  -- ('ChangePassword').
   , panel :: Panel
   -- ^ What the administration's section on the wiki's data shows.
   , kept :: Bool
@@ -528,6 +532,7 @@ data Action
   | DismissDropped
   | SigningOut
   | FromAccount SignInView.Output
+  | ChangePassword (Maybe UserId) SignInMethodsView.Output
   | SessionChanged Session
   | OpenSignIn
   | FromInvite InviteView.Output
@@ -596,6 +601,7 @@ component =
                   , menuHolder
                   , menuWatch = Nothing
                   , settingsShown = False
+                  , passwordChange = Nothing
                   , panel = Actions Nothing
                   , kept
                   , settled = False
@@ -983,7 +989,7 @@ component =
         [hh|
           <div class="settings-sections">
             {% for a in maybeToList st.accounts %}
-              {{ HH.slot_ "part" (SignInMethodsSlot who) SignInMethodsView.component SignInMethodsView.Input {accounts = a, session = st.session, here = Router.href st.router st.route} }}
+              {{ HH.slot "signInMethods" who SignInMethodsView.component SignInMethodsView.Input {accounts = a, session = st.session, here = Router.href st.router st.route, changing = isJust who && st.passwordChange == who} (ChangePassword who) }}
             {% end %}
             {% if isJust st.demo %}
               <p class="account-note">The demo has no passwords: you switch between its users at the top right.</p>
@@ -1719,6 +1725,23 @@ component =
               False -> sessionEnded s
         | otherwise -> sessionEnded s
       OpenSignIn -> H.tell "signIn" () (SignInView.Prompt "Sign in with your login and password.")
+      -- A change of password, asked for in the settings' section "How you
+      -- sign in", runs here and not in the section: leaving the section
+      -- unmounts it and kills its workers, and a change killed half-way
+      -- would leave in the page the vault key it unwrapped, which can be
+      -- exported ('Wiki.App.Vault.changeOwnPassword' forgets it after the
+      -- server's answer). The shell lasts as long as the page, so the
+      -- change runs to its end, and the answer goes to the section if it
+      -- is still mounted for the same user.
+      ChangePassword who (SignInMethodsView.ChangePassword ticket change) ->
+        gets (\st -> st.accounts)
+          >>= traverse_
+            ( \a -> do
+                modify (\st -> st {passwordChange = who})
+                result <- H.async (changeOwnPassword a.changePassword change)
+                modify (\st -> st {passwordChange = if st.passwordChange == who then Nothing else st.passwordChange})
+                H.tell "signInMethods" who (SignInMethodsView.Answered ticket result)
+            )
       -- An invitation created its account and signed the new user in: the
       -- wiki as them, from its front page.
       FromInvite (InviteView.Accepted s) -> do

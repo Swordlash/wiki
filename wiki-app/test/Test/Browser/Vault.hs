@@ -940,6 +940,41 @@ userKeys m = describe "the user's keys" $ do
     field ["publicKey", "keyId"] <$> vaultState `shouldReturn` field ["publicKey", "keyId"] made
     closed again
 
+  -- The change of password holds the vault key, unwrapped so that it can
+  -- be exported, until the server has answered. The section that asks for
+  -- the change is unmounted when the reader leaves it, which kills its
+  -- workers. The change runs in the shell instead, so it ends: the
+  -- request is not aborted, the page lets go of the key, and the server
+  -- has the new password with the new wrap.
+  it "ends a change of password asked for in the settings left before the server's answer: no key left, and the new password unlocks the keys" $ runOwn $ do
+    ui <- signedOut "editor's password"
+    signIn ui "editor's password"
+    made <- madeKeys
+    openSettings ui SecuritySection
+    find ui ".password-change-toggle" >>= click
+    find ui ".password-change input[name=current]" >>= (`typeText` "editor's password")
+    find ui ".password-change input[name=new]" >>= (`typeText` "a password of the editor's")
+    find ui ".password-change input[name=repeat]" >>= (`typeText` "a password of the editor's")
+    holdAt "PUT" "api/v1/account/password"
+    find ui ".password-change button[type=submit]" >>= click
+    -- Quiet once the server holds the request, which it counts as held.
+    waitQuiet
+    showSection ui ProfileSection
+    _ <- find ui ".account-avatar"
+    release
+    waitQuiet
+    unsafeIOToPageM (evaluate =<< js_exportable) `shouldReturn` 0
+    map (\r -> r.aborted) . filter (\r -> r.method == "PUT" && r.url == "api/v1/account/password") <$> asked `shouldReturn` [False]
+    changed <- vaultState
+    (field ["vault", "password"] changed /= field ["vault", "password"] made, field ["publicKey", "keyId"] changed == field ["publicKey", "keyId"] made)
+      `shouldBe` (True, True)
+    unmount ui
+    unsafeIOToPageM (evaluate =<< js_new_device)
+    again <- restarted
+    signIn again "a password of the editor's"
+    identityExport `shouldReturn` "refused"
+    closed again
+
   it "makes a new key pair after a reset of the password that alone unlocked the keys, after saying what is lost" $ runOwn $ do
     ui <- signedOut "editor's password"
     signIn ui "editor's password"

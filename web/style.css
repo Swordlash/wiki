@@ -3406,8 +3406,9 @@ body:has(.slides-view) {
    While the search's panel is open over the text, the panel sticks under
    the top, and the notices are the last child of the panel's holder
    instead (.editor-search-holder): they hang under the panel's bottom
-   right corner by the same rules, so that they never cover its buttons
-   (issue #339). */
+   right corner, so that they never cover its buttons (issue #339). The
+   panel is always over the text, so there they always keep clear of the
+   bubbles, with two panes too. */
 .editor-corner {
   position: absolute;
   top: calc(100% + 0.4rem);
@@ -3425,8 +3426,8 @@ body:has(.slides-view) {
 }
 
 @media (min-width: 961px) {
-  .editor-form.side-by-side .editor-corner,
-  .editor-form.conflicting .editor-corner {
+  .editor-form.side-by-side .editor-top > .editor-corner,
+  .editor-form.conflicting .editor-top > .editor-corner {
     right: 0;
   }
 }

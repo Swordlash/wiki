@@ -113,6 +113,9 @@ fromArchive a =
         , -- Nor a page "What's new?": that is the application's, not the
           -- archive's ('replaceFromArchive' keeps the one the wiki had).
           whatsNew = Nothing
+        , -- Nor API keys: an export has none, and a key belongs to its
+          -- user.
+          apiKeys = mempty
         }
 
 -- | Replace user content while importing the root into its existing identity.

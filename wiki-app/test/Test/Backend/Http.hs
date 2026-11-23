@@ -16,6 +16,7 @@ import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (lookup)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import Data.Time (UTCTime (..), fromGregorian)
 import GHC.Generics (C, D, S)
 import GHC.Generics qualified as Generics
 import Halogen.Net.Fetch qualified as Fetch
@@ -33,6 +34,7 @@ import Test.Opaque (fakeChallengeMade, fakeRegistrationMade)
 import Test.Scripted (bodyOf, formOf, headersOf, jsonResponse, methodOf, responseWith)
 import Wiki.Api (EncryptedApi, NotificationsApi (..), PagesApi, SpacesApi (..), WikiApi (..))
 import Wiki.Api.Account (PasswordChange (..), SignInMethods (..))
+import Wiki.Api.ApiKeys (ApiKeyId (..), ApiKeyInfo (..), KeyRight (..), MadeApiKey (..), NewApiKey (..))
 import Wiki.Api.Comments (CommentsApi)
 import Wiki.Api.Error qualified as ApiError
 import Wiki.Api.Events (PageEvent (..))
@@ -58,6 +60,7 @@ import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Backend.Notifications (MonadNotifications (..))
 import Wiki.App.Backend.Stars (MonadStars (..))
 import Wiki.App.Demo (demoNow, demoState)
+import Wiki.App.Security (MonadSecurity (..))
 import Wiki.App.Vault (changeOwnPassword)
 import Wiki.Core.Assistant.Vault (Sealed (..), Vault (..), VaultTag (..), vaultFormat, withSealed)
 import Wiki.Core.Attachment (Attachment (..), FileName (..), MimeType (..), Source (..))
@@ -126,6 +129,7 @@ spec = describe "Wiki.App.Backend.Http" $ do
   browserFetch
   caching
   accounts
+  apiKeys
   preload
   exports
 
@@ -1066,3 +1070,57 @@ instance (FieldNames f, FieldNames g) => FieldNames (f :*: g) where
 
 instance (Generics.Selector s) => FieldNames (M1 S s (K1 i a)) where
   fieldNames _ = [toS (selName (M1 (K1 (panic "never read")) :: M1 S s (K1 i a) ()))]
+
+-- | The user's API keys ("Wiki.Api.ApiKeys"): listed, made with the
+-- current password proved first as for a passkey, and revoked, at the
+-- account's addresses.
+apiKeys :: Spec
+apiKeys = describe "the user's API keys" $ do
+  let laptop =
+        ApiKeyInfo
+          { id = ApiKeyId "m3k7q2xa9dwn4zrt"
+          , name = "laptop"
+          , right = WriteRight
+          , createdAt = UTCTime (fromGregorian 2026 11 20) 0
+          , expiresAt = Nothing
+          , lastUsedAt = Nothing
+          , revokedAt = Nothing
+          }
+      revoked = laptop {revokedAt = Just (UTCTime (fromGregorian 2026 11 21) 0)}
+      made = MadeApiKey {key = "wiki_m3k7q2xa9dwn4zrt_" <> T.replicate 52 "a", info = laptop}
+      newWith password = NewApiKey {name = "laptop", right = WriteRight, expiresAt = Nothing, password}
+      new = newWith (Just (Password "correct horse"))
+      keysAt r = (methodOf r, requestUrl r) == ("POST", "api/v1/account/api-keys")
+
+  it "lists them with GET, and revokes one with POST, taking the keys after it" $ do
+    (env, asked) <- backend $ \r -> if methodOf r == "GET" then ok [laptop] else ok [revoked]
+    runHttpWiki env ownApiKeys `shouldReturn` Right [laptop]
+    runHttpWiki env (revokeApiKey laptop.id) `shouldReturn` Right [revoked]
+    map (\r -> (methodOf r, requestUrl r)) . reverse <$> readIORef asked
+      `shouldReturn` [("GET", "api/v1/account/api-keys"), ("POST", "api/v1/account/api-keys/m3k7q2xa9dwn4zrt/revoke")]
+
+  it "makes one with the current password proved through OPAQUE first, which no request carries, and takes the 201 with the key" $ do
+    (env, asked) <- backend (opaqueServer False signedIn (\r -> if keysAt r then Right (jsonResponse 201 (encode made)) else status 500 ""))
+    runHttpWiki env (makeApiKey new) >>= (`shouldSatisfy` \case Right m -> m.key == made.key && m.info == laptop; Left _ -> False)
+    rs <- reverse <$> readIORef asked
+    map (\r -> (methodOf r, requestUrl r)) rs
+      `shouldBe` [("POST", "api/v1/account/password/proof"), ("PUT", "api/v1/account/password/proof"), ("POST", "api/v1/account/api-keys")]
+    noPassword rs "correct horse"
+    [r | r <- rs, keysAt r] `shouldSatisfy` all (\r -> maybe False (("\"password\":null" `BS.isInfixOf`) . snd) (bodyOf r))
+
+  it "makes one with no proof for an account with no password" $ do
+    (env, asked) <- backend (\r -> if keysAt r then Right (jsonResponse 201 (encode made)) else status 500 "")
+    isRight <$> runHttpWiki env (makeApiKey (newWith Nothing)) `shouldReturn` True
+    map requestUrl <$> readIORef asked `shouldReturn` ["api/v1/account/api-keys"]
+
+  it "says why a key was not made: a wrong password, too many attempts, the right to administer, the server's rules" $ do
+    let failing n body = backend (\r -> if keysAt r then status n body else status 500 "") >>= \(e, _) -> runHttpWiki e (makeApiKey (newWith Nothing))
+    failing 401 "{\"error\":\"Unauthenticated\"}" `shouldReturn` Left WrongCredentials
+    failing 429 "{\"error\":\"TooManyRequests\",\"message\":\"Wait 15 minutes.\"}" `shouldReturn` Left (TooManyAttempts "Wait 15 minutes.")
+    failing 403 "{\"error\":\"Forbidden\"}" `shouldReturn` Left (SignInFailed Forbidden)
+    failing 400 "{\"error\":\"Invalid\",\"message\":\"You have 20 keys that work already: revoke one first.\"}"
+      `shouldReturn` Left (SignInFailed (Invalid "You have 20 keys that work already: revoke one first."))
+    -- A wrong password at the proof is told before any key is asked for.
+    (env, asked) <- backend (opaqueServer False signedIn (const (status 500 "")))
+    runHttpWiki env (makeApiKey (newWith (Just (Password "battery staple")))) `shouldReturn` Left WrongCredentials
+    readIORef asked >>= (`shouldSatisfy` all (not . keysAt))

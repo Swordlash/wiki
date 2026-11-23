@@ -159,6 +159,13 @@ module Wiki.App.Backend.Mem.State
     -- * Stars
   , starredIn
   , setStarredIn
+
+    -- * API keys
+  , maxLiveKeys
+  , maxKeyName
+  , apiKeysIn
+  , makeApiKeyIn
+  , revokeApiKeyIn
   )
 where
 
@@ -166,7 +173,7 @@ import Data.ByteString qualified as BS
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Data.Time (UTCTime, addUTCTime)
+import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime)
 import Numeric.Natural (Natural)
 import Protolude
 import Wiki.Api.Account (Account (Account), NewAccount)
@@ -188,6 +195,8 @@ import Wiki.Api.Admin
   , pageOfDirectory
   )
 import Wiki.Api.Admin qualified as A
+import Wiki.Api.ApiKeys (ApiKeyId, ApiKeyInfo (ApiKeyInfo), KeyRight (AdminRight), NewApiKey)
+import Wiki.Api.ApiKeys qualified as Key
 import Wiki.Api.Backups (Backups (..), defaultBackupSettings)
 import Wiki.Api.Notifications (NotificationSettings (NotificationSettings), NotificationSettingsChange, Notifications (Notifications), ReadMark)
 import Wiki.Api.Notifications qualified as N
@@ -342,6 +351,11 @@ data MemState = MemState
   -- ^ The page "What's new?" this wiki answers, or 'Nothing' for none. The
   -- demo's is the changelog compiled into the application
   -- ("Wiki.App.Demo.WhatsNew"); the tab never changes it or stores it.
+  , apiKeys :: Map UserId [ApiKeyInfo]
+  -- ^ Each user's API keys ("Wiki.Api.ApiKeys"), the newest first, as
+  -- the list shows them: no secret, since a key made in the demo signs in
+  -- nowhere. They live as long as the tab, like 'server', and are not
+  -- saved in IndexedDB or exported.
   }
   deriving stock (Eq, Show)
 
@@ -377,6 +391,7 @@ emptyState =
     , current = Nothing
     , counter = 1
     , whatsNew = Nothing
+    , apiKeys = mempty
     }
 
 -- | A version of a page as the state stores it, under the page and its
@@ -1805,6 +1820,7 @@ removeUserIn uid st = do
         , watches = Map.delete uid st0.watches
         , choices = Map.delete uid st0.choices
         , stars = Map.delete uid st0.stars
+        , apiKeys = Map.delete uid st0.apiKeys
         , threads = Map.map (map (\t -> t {C.comments = map keptComment t.comments})) st0.threads
         }
     , ()
@@ -2368,3 +2384,67 @@ setStarredIn pid wanted st = do
     Left (Invalid ("You have starred " <> show maxStars <> " pages, the most there can be: take the star from one first."))
   let st' = st {stars = if null after then Map.delete u st.stars else Map.insert u after st.stars}
   (st',) <$> starredIn st'
+
+--------------------------------------------------------------------------------
+-- API keys
+
+-- | The most keys a user may have that work (neither revoked nor expired):
+-- the server's @maxLiveKeys@ ("Wiki.Server.ApiKeys").
+maxLiveKeys :: Int
+maxLiveKeys = 20
+
+-- | The longest name of a key, in characters: the server's @maxKeyName@.
+maxKeyName :: Int
+maxKeyName = 100
+
+-- | The signed-in user's API keys, the newest first, revoked and expired
+-- ones too, as the server's @apiKeysOf@ lists them. Nobody signed in is
+-- 'Forbidden'.
+apiKeysIn :: MemState -> Either WikiError [ApiKeyInfo]
+apiKeysIn st = (\u -> Map.findWithDefault [] u st.apiKeys) <$> signedIn st
+
+-- | Make a key for the signed-in user at a time, with this id, by the
+-- server's rules and in the server's order of checks (@makeApiKey@ in
+-- "Wiki.Server.ApiKeys"): the right @admin@ for a user who is not an
+-- administrator is 'Forbidden'; an expiry that is not after this time, a
+-- name longer than 'maxKeyName' once stripped, and a user with
+-- 'maxLiveKeys' keys that work already are 'Invalid', in the server's
+-- words; a blank name is replaced by the moment the key is made. The
+-- password is not checked: the demo has none. An id another key has is a
+-- 'Conflict', as on the server.
+makeApiKeyIn :: UTCTime -> ApiKeyId -> NewApiKey -> Write ApiKeyInfo
+makeApiKeyIn now i new st = do
+  u <- signedIn st
+  when (new.right == AdminRight && not (hasGlobalPermission (currentPrincipal st) st.grants Administer)) (Left Forbidden)
+  for_ new.expiresAt $ \e -> when (e <= now) (Left (Invalid "A key's expiry has to be in the future: choose a later day, or none."))
+  when (T.length (T.strip new.name) > maxKeyName) (Left (Invalid ("A key's name has at most " <> show maxKeyName <> " characters.")))
+  let mine = Map.findWithDefault [] u st.apiKeys
+      works k = isNothing k.revokedAt && maybe True (> now) k.expiresAt
+  when (length (filter works mine) >= maxLiveKeys) (Left (Invalid ("You have " <> show maxLiveKeys <> " keys that work already: revoke one first.")))
+  when (any (\k -> k.id == i) (concat (Map.elems st.apiKeys))) (Left (Conflict "The key could not be made: try again."))
+  let info =
+        ApiKeyInfo
+          { Key.id = i
+          , Key.name = case T.strip new.name of
+              named' | not (T.null named') -> named'
+              _ -> "Made on " <> toS (formatTime defaultTimeLocale "%Y-%m-%d at %H:%M UTC" now)
+          , Key.right = new.right
+          , Key.createdAt = now
+          , Key.expiresAt = new.expiresAt
+          , Key.lastUsedAt = Nothing
+          , Key.revokedAt = Nothing
+          }
+      newestFirst = sortOn (\k -> (Down k.createdAt, k.id)) (info : mine)
+  pure (st {apiKeys = Map.insert u newestFirst st.apiKeys}, info)
+
+-- | Revoke one of the signed-in user's keys at a time, as the server's
+-- @revokeApiKey@ does: it stays listed, revoked; a key revoked already
+-- keeps its time. The result is the user's keys after it. A key that is
+-- not the user's is 'NotFound'.
+revokeApiKeyIn :: UTCTime -> ApiKeyId -> Write [ApiKeyInfo]
+revokeApiKeyIn now i st = do
+  u <- signedIn st
+  let mine = Map.findWithDefault [] u st.apiKeys
+  unless (any (\k -> k.id == i) mine) (Left NotFound)
+  let after = [if k.id == i && isNothing k.revokedAt then k {Key.revokedAt = Just now} else k | k <- mine]
+  pure (st {apiKeys = Map.insert u after st.apiKeys}, after)

@@ -269,6 +269,8 @@ spec m = readsOnce Idle $ do
     -- Undone: the heading goes, and the rows join, in the same editor.
     replicateM_ 4 (press "Control+z")
     markdown ui `shouldReturn` titled
+    -- The rows are joined after the check's pause.
+    waitQuiet
     rowTitles ui `shouldReturn` ["Deck 😀", "One", "Two", "Three"]
     find ui ".editor-slides > li:nth-child(2) .cm-editor" >>= (`shouldBeSameElement` editor)
     -- The row above went from the list: the editor kept the focus.
@@ -836,10 +838,10 @@ spec m = readsOnce Idle $ do
     -- The undo takes the cursor back to "One", where it was before the
     -- delete: that row opens with the focus, and "Two" comes back open.
     press "Control+z"
-    openTitles ui `shouldReturn` ["Deck", "One", "Two"]
-    -- One's CodeMirror, the row opened by the undo, takes the focus once the
-    -- program is quiet.
+    -- The rows come back, and One's CodeMirror, the row opened by the
+    -- undo, takes the focus once the program is quiet.
     waitQuiet
+    openTitles ui `shouldReturn` ["Deck", "One", "Two"]
     slideFocus `shouldReturn` "text 1"
     rowContent ui "Two" >>= click
     press "Control+y"
@@ -855,19 +857,26 @@ spec m = readsOnce Idle $ do
     openTitles ui `shouldReturn` ["Deck", "Two"]
     rowDelete ui "Two" >>= click
     rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
+    -- Each step's rows as the program has them once it is quiet: the
+    -- check after a step's pause cuts the rows again too.
     for_ [1 :: Int, 2, 3] $ \_ -> do
       press "Control+z"
+      waitQuiet
       openTitles ui `shouldReturn` ["Deck", "Two"]
       press "Control+y"
+      waitQuiet
       rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
     press "Control+z"
+    waitQuiet
     openTitles ui `shouldReturn` ["Deck", "Two"]
     -- Closed, then taken away by the redo: it comes back closed.
     rowHeader ui "Two" >>= click
     openTitles ui `shouldReturn` ["Deck"]
     press "Control+y"
+    waitQuiet
     rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
     press "Control+z"
+    waitQuiet
     rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     openTitles ui `shouldReturn` ["Deck"]
 

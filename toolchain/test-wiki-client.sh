@@ -239,7 +239,25 @@ if [ -n "\${PAUSE_DIR:-}" ] && ! mkdir "\$PAUSE_DIR/first" 2>/dev/null && mkdir 
 fi
 exec "$real_mv" "\$@"
 EOF
-chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv"
+# And a cp that does the same at its first call (put --file's copy of the
+# text): before it copies, or after when PAUSE_DIR/after is there.
+mkdir -p "$work/fakes/pausecp"
+real_cp=$(command -v cp)
+cat >"$work/fakes/pausecp/cp" <<EOF
+#!/bin/sh
+if [ -n "\${PAUSE_DIR:-}" ] && mkdir "\$PAUSE_DIR/paused" 2>/dev/null; then
+  copied=''
+  if [ -e "\$PAUSE_DIR/after" ]; then
+    "$real_cp" "\$@" || exit
+    copied=1
+  fi
+  printf 'paused\n' >"\$PAUSE_DIR/ready"
+  read -r go <"\$PAUSE_DIR/go"
+  [ -z "\$copied" ] || exit 0
+fi
+exec "$real_cp" "\$@"
+EOF
+chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv" "$work/fakes/pausecp/cp"
 # The PATH the client runs with: the recording curl, and the failing jq
 # unless the MCP server is under test.
 curl_path=$work/fakes/curl:$PATH
@@ -585,6 +603,7 @@ suite() {
   files_written
   own_directories
   one_writer_at_a_time
+  one_file_one_path
   creating
   round_trip "$public_root" root
   round_trip "$public_wiki" base-path
@@ -1053,6 +1072,109 @@ one_writer_at_a_time() {
   client put "$page" --force
   expect 0 "the page's text back after the locks' checks"
   input=/dev/null
+}
+
+# Run the client in the background, as editor, with the fake directory
+# FAKES (a pausing cp or mv) first on its PATH and PAUSE_DIR set: NAME, then
+# FAKES, then before or after (the copy, for the cp), then the client's
+# arguments. It says "paused" on $pause/ready when
+# the fake stops, and "end" when the client ends (its status in
+# $pause/status), so that a client that never reaches the fake cannot leave
+# the test waiting. resume lets a paused one go on and waits for its end.
+start_paused() {
+  pause=$work/pause-$shell-$1
+  rm -rf "$pause"
+  mkdir -p "$pause"
+  mkfifo "$pause/ready" "$pause/go"
+  fakes=$2
+  [ "$3" != after ] || : >"$pause/after"
+  shift 3
+  sh -c '
+    pause=$1 path=$2 home=$3 url=$4 password=$5 state=$6 shell=$7 client=$8
+    shift 8
+    env -i PATH="$path" HOME="$home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" PAUSE_DIR="$pause" \
+      "$shell" "$client" "$@" </dev/null >"$pause/out" 2>"$pause/err"
+    echo "$?" >"$pause/status"
+    printf "end\n" >"$pause/ready"
+  ' sh "$pause" "$work/fakes/$fakes:$nojq_path" "$work/home" "$url" "$editor_password" "$state" "$shell" "$client" "$@" &
+  paused_client=$!
+  read -r said <"$pause/ready"
+}
+resume() {
+  if [ "$said" = paused ]; then
+    printf 'go\n' >"$pause/go"
+    read -r said <"$pause/ready"
+  fi
+  wait "$paused_client"
+  status=$(cat "$pause/status")
+}
+
+# One local file, one path, one lock (local_file): put --file reads its
+# text and its version, under its lock, from the path as it resolved; a file
+# with no version of its own is refused, unless --if-match or --force say
+# which; a file to read may be in a directory others can write.
+one_file_one_path() {
+  url=$public_root user=editor password=$editor_password state=$work/state-$shell-onefile input=/dev/null
+  one=$work/onefile-$shell
+  mkdir -p "$one/a" "$one/b" "$one/shared"
+  chmod 775 "$one/shared"
+  # A file with no version: refused, before anything is sent.
+  printf 'Text of no known version.\n' >"$one/a/loose.md"
+  : >"$work/curl.args"
+  client put "$page" --file "$one/a/loose.md"
+  expect 2 "put --file of a file with no version is refused"
+  has err "has no $one/a/loose.md.version" "the refusal says the file has no version"
+  check "nothing was sent for it" [ ! -s "$work/curl.args" ]
+  # Read from a directory others can write: allowed, as nothing is written
+  # there.
+  printf '%s' "$wiki_body" >"$one/shared/draft.md"
+  client put "$page" --file "$one/shared/draft.md" --force
+  expect 0 "put --file --force of a draft in a directory others can write"
+  client create team/projects "from-shared-$shell" --file "$one/shared/draft.md"
+  expect 0 "create --file of a draft in a directory others can write"
+  check "nothing was written beside the draft" [ "$(find "$one/shared" -type f | wc -l)" -eq 1 ]
+  # The first interleaving: a put --file of a file with no version, stopped
+  # after it copied the text, while a get --out of the same file publishes
+  # newer text and moves the remembered version on. The upload must not go
+  # out under the newer version.
+  client get "$page"
+  another_client_saves "$page" "before the upload of a loose file"
+  client get "$page"
+  cp "$work/out" "$work/newer"
+  printf 'An older copy, of no known version.\n' >"$one/a/loose.md"
+  start_paused loose pausecp after put "$page" --file "$one/a/loose.md"
+  [ "$said" != paused ] || pass "the upload stopped after copying the text (the old way)"
+  client get "$page" --out "$one/a/loose.md"
+  resume
+  check "the upload of a file with no version fails" [ "$status" != 0 ]
+  client get "$page"
+  check "the page is still the newer text, not the older copy" cmp -s "$work/out" "$work/newer"
+  # The second interleaving: a put --file through a link to a directory,
+  # stopped before it copies the text, while the link is turned to another
+  # directory with other Markdown. The upload must send the file it
+  # checked and locked, not the other.
+  client get "$page" --out "$one/a/page.md"
+  printf 'An edit to the file the link led to.\n' >>"$one/a/page.md"
+  printf '# Other Markdown\n' >"$one/b/page.md"
+  ln -s "$one/a" "$one/link"
+  start_paused link pausecp before put "$page" --file "$one/link/page.md"
+  if [ "$said" = paused ]; then
+    pass "the upload stopped before copying the text"
+    rm "$one/link"
+    ln -s "$one/b" "$one/link"
+  else
+    fail "the upload stopped before copying the text: it ended first ($(cat "$pause/err"))"
+  fi
+  resume
+  check "the upload through the link succeeds" [ "$status" = 0 ]
+  client get "$page"
+  check "the page has the text of the file checked and locked" cmp -s "$work/out" "$one/a/page.md"
+  check "no lock is left" [ ! -e "$one/a/page.md.wiki-sh-lock" ]
+  input=$work/restore
+  client put "$page" --force
+  expect 0 "the page's text back after the uploads' checks"
+  input=/dev/null
+  chmod 755 "$one/shared"
 }
 
 # What get --out writes, where and with which mode: never through a name

@@ -2874,8 +2874,14 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
 - **`wiki.sh put PAGE`** writes the page's whole Markdown, from `--file FILE`
   or standard input, over a version, with `If-Match`: when someone has saved
   the page since, nothing is written, and it exits with 5. The version is the
-  one given with `--if-match`, else the one `get --out` kept beside the file,
-  else the one the last `get` or `put` of that page gave. Each `get` and `put`
+  one given with `--if-match`, else for `--file FILE` the one `get --out` kept
+  beside it in `FILE.version` (a `FILE` without one is refused, since its text
+  may be of any version: `--if-match` or `--force` say which), else for
+  standard input the one the last `get` or `put` of that page gave. A `FILE`
+  to read may be in any directory; one with a `FILE.version` must be in a
+  directory of your own, and its text and version are read under its lock, so
+  that a `get --out` of the same file cannot change one between the two.
+  Each `get` and `put`
   keeps the page's version in a file of its own under
   `~/.local/state/wiki/` (`WIKI_STATE_DIR` names another directory), by the
   wiki's address and the page's:

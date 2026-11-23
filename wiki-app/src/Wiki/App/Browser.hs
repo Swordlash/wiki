@@ -38,6 +38,7 @@ module Wiki.App.Browser
   , download
   , openInTab
   , localTime
+  , endOfDay
   , consoleWarn
   , keepHeights
   , keepContents
@@ -61,8 +62,8 @@ import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.MediaType (MediaType (..))
 import Data.Text qualified as T
-import Data.Time (UTCTime, defaultTimeLocale, formatTime)
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import Data.Time (Day, UTCTime (..), addDays, defaultTimeLocale, formatTime, toGregorian)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Halogen.JSBits (Inert, JSText, JSVal, Safety (..), browserJS, fromJSBytes, fromJSText, inBrowser, isNull, jsValText, toJSBytes, toJSText)
 import Halogen.JSBits.Fields (Member (..), inlineJS, jsFields)
 import Halogen.JSBits.Promise (JSError, waitCatch)
@@ -599,6 +600,21 @@ localTime :: (MonadIO m) => UTCTime -> m Text
 localTime t
   | inBrowser = liftIO (fromJSText <$> js_local_time (realToFrac (utcTimeToPOSIXSeconds t) * 1000))
   | otherwise = pure (toS (formatTime defaultTimeLocale "%-d %B %Y, %H:%M UTC" t))
+
+-- The moment a day ends in the reader's time zone, in milliseconds since
+-- 1970: the start of the next day as the browser's 'Date' makes it, which
+-- counts a change of summer time on the way.
+$(inlineJS "js_end_of_day" "new Date($1, $2 - 1, $3 + 1).getTime()" [t|Int -> Int -> Int -> IO Double|])
+
+-- | The moment a day ends in the reader's time zone: when a key chosen to
+-- work until that day stops. Natively there is no time zone, and the day
+-- ends in UTC.
+endOfDay :: (MonadIO m) => Day -> m UTCTime
+endOfDay day
+  | inBrowser = liftIO (posixSecondsToUTCTime . (/ 1000) . realToFrac <$> js_end_of_day (fromInteger y) m d)
+  | otherwise = pure (UTCTime (addDays 1 day) 0)
+  where
+    (y, m, d) = toGregorian day
 
 -- | A warning on the browser's console, for whoever looks there, about
 -- something the program carried on without. Natively nothing.

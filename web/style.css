@@ -6444,6 +6444,135 @@ div.server-secret > span:first-child {
   align-self: flex-start;
 }
 
+/* The user's API keys (Wiki.App.View.ApiKeys): the list, a key that no
+   longer works dimmed after those that work, the form, and the key just
+   made, shown once. */
+.api-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.api-key-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.api-key {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.1rem 0.5rem;
+  align-items: center;
+}
+
+.api-key-expired,
+.api-key-revoked {
+  opacity: 0.55;
+}
+
+.api-key-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.api-key-right,
+.api-key-times,
+.api-key-state {
+  grid-column: 1;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.api-key-revoke,
+.api-key-confirm {
+  grid-column: 2;
+  grid-row: 1 / span 4;
+}
+
+.api-key-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  max-width: 18rem;
+  font-size: 0.85rem;
+}
+
+.api-key-make {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 30rem;
+}
+
+.api-key-make h4 {
+  margin: 0;
+}
+
+.api-key-rights {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.api-key-right-choice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 0.4rem;
+}
+
+.api-key-right-choice .account-note {
+  grid-column: 2;
+}
+
+.api-key-make button[type="submit"] {
+  align-self: flex-start;
+}
+
+.api-key-made {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.api-key-made p {
+  margin: 0;
+}
+
+.api-key-made-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.api-key-text {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.api-key-example {
+  margin: 0;
+  overflow-x: auto;
+  font-size: 0.8rem;
+}
+
+.api-key-made-close {
+  align-self: flex-start;
+}
+
 /* The pages of a password reset's link and of an address's verification,
    as an invitation's. */
 .password-reset,

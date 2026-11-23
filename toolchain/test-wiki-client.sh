@@ -21,8 +21,12 @@
 # arguments before it runs the real one, and with a jq that fails, so that
 # the password is shown to be on no command line and the commands to need
 # curl alone. shellcheck checks the script when it is installed.
+#
+# The jq filters and the shell snippets in single quotes are not to be
+# expanded here.
+# shellcheck disable=SC2016
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 root=$(pwd)
 client=$root/clients/wiki.sh
 
@@ -58,6 +62,14 @@ fail() {
   printf 'FAILED: %s\n' "$1" >&2
   failures=$((failures + 1))
 }
+# A check: its description, then the command that holds when it passes.
+check() {
+  description=$1
+  shift
+  if "$@"; then pass "$description"; else fail "$description"; fi
+}
+is_file() { [ -f "$1" ]; }
+first_line_matches() { head -n 1 "$1" | grep -q -- "$2"; }
 # Stop at once: what follows depends on it.
 die() {
   printf 'test-wiki-client: %s\n' "$1" >&2
@@ -141,14 +153,18 @@ printf 'jq %s\n' "\$*" >>"$work/jq.calls"
 exit 99
 EOF
 chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq"
+# The PATH the client runs with: the recording curl, and the failing jq
+# unless the MCP server is under test.
+curl_path=$work/fakes/curl:$PATH
+nojq_path=$work/fakes/curl:$work/fakes/nojq:$PATH
 
 # The checks that a password is absent can fail: the recorder sees one on
 # curl's command line, and a trace shows one in a variable.
-PATH=$work/fakes/curl:$PATH curl -s -u "editor:$editor_password" http://127.0.0.1:1/ >/dev/null 2>&1
-grep -qF "wörd" "$work/curl.args" && pass "the recorder sees a password given to curl -u" || fail "the recorder sees a password given to curl -u"
+env PATH="$curl_path" curl -s -u "editor:$editor_password" http://127.0.0.1:1/ >/dev/null 2>&1
+check "the recorder sees a password given to curl -u" grep -qF "wörd" "$work/curl.args"
 : >"$work/curl.args"
 sh -x -c 'password=$1; : "$password"' sh "$editor_password" 2>"$work/trace" >/dev/null
-grep -qF "wörd" "$work/trace" && pass "a trace shows a password in a variable" || fail "a trace shows a password in a variable"
+check "a trace shows a password in a variable" grep -qF "wörd" "$work/trace"
 
 # The client, run in a subshell with the identity of the variables below;
 # its status in status, its output in $work/out and $work/err. jq is the
@@ -159,12 +175,10 @@ client() {
     unset WIKI_TOKEN WIKI_CONFIG XDG_CONFIG_HOME XDG_STATE_HOME
     export HOME="$work/home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state"
     if [ -n "$with_jq" ]; then
-      PATH=$work/fakes/curl:$PATH
+      exec env PATH="$curl_path" "$shell" "$client" "$@"
     else
-      PATH=$work/fakes/curl:$work/fakes/nojq:$PATH
+      exec env PATH="$nojq_path" "$shell" "$client" "$@"
     fi
-    export PATH
-    exec "$shell" "$client" "$@"
   ) <"$input" >"$work/out" 2>"$work/err"
   status=$?
 }
@@ -190,6 +204,17 @@ lacks() {
 }
 
 page=/s/team/projects/p/the-wiki/
+second=/s/team/projects/p/zazolc-gesla-jazn/
+
+# A page's text of about 150 kB, first the line the search finds, then
+# lines with letters outside ASCII, quotes and backslashes, each saying
+# where it was written from.
+big_text() {
+  awk -v from="$1" 'BEGIN {
+    print "Pchnąć w tę łódź jeża lub ośm skrzyń fig: gęślą."
+    for (k = 1; k <= 1650; k++) printf "Line %d, written %s: zażółć gęślą jaźń, \"quoted\", back\\slash.\n", k, from
+  }'
+}
 
 suite() {
   shell=$1 locked=locked-$1
@@ -227,10 +252,10 @@ suite() {
   client search gęślą jaźń
   expect 0 "search for words outside ASCII"
   has out "Zażółć gęślą jaźń  /s/team/projects/p/zazolc-gesla-jazn/  (in Projects)" "search shows the hit's title, address and space"
-  grep -q '^    .*gęślą' "$work/out" && pass "search shows the excerpt, indented" || fail "search shows the excerpt, indented"
+  check "search shows the excerpt, indented" grep -q '^    .*gęślą' "$work/out"
   client search wiki --space team --limit 1
   expect 0 "search in a space, with a limit"
-  [ "$(grep -c '^[^ ]' "$work/out")" = 1 ] && pass "search --limit 1 gives one hit" || fail "search --limit 1 gives one hit"
+  check "search --limit 1 gives one hit" [ "$(grep -c '^[^ ]' "$work/out")" = 1 ]
   client search wiki --space team --json
   expect 0 "search --json"
   if "$real_jq" -e '.hits | length > 0' "$work/out" >/dev/null; then pass "search --json gives the server's JSON"; else fail "search --json gives the server's JSON"; fi
@@ -244,9 +269,9 @@ suite() {
   client get team/projects the-wiki
   expect 0 "get by a space's path and a page's path"
   printf '%s' "$wiki_body" >"$work/expected"
-  cmp -s "$work/out" "$work/expected" && pass "get gives the Markdown byte for byte" || fail "get gives the Markdown byte for byte"
+  check "get gives the Markdown byte for byte" cmp -s "$work/out" "$work/expected"
   has err "version \"" "get shows the version on standard error"
-  ls "$state"/*/s/team/projects/p/the-wiki/_version >/dev/null 2>&1 && pass "get remembers the version in the state directory" || fail "get remembers the version in the state directory"
+  check "get remembers the version in the state directory" is_file "$state"/*/s/team/projects/p/the-wiki/_version
   for form in "$page" "team/projects/p/the-wiki" "$public$page" "$public${page}edit/" "$public/api/markdown$page" "/api/markdown$page"; do
     client get "$form"
     expect 0 "get $form"
@@ -263,9 +288,9 @@ suite() {
   mkdir -p "$work/a dir"
   client get "$page" --out "$work/a dir/the wiki.md"
   expect 0 "get --out a file whose name has spaces"
-  cmp -s "$work/a dir/the wiki.md" "$work/expected" && pass "get --out writes the Markdown" || fail "get --out writes the Markdown"
-  { [ "$(head -n 1 "$work/a dir/the wiki.md.version")" = "$version" ] && [ "$(sed -n 2p "$work/a dir/the wiki.md.version")" = "$page" ]; } &&
-    pass "get --out keeps the version and the page beside the file" || fail "get --out keeps the version and the page beside the file"
+  check "get --out writes the Markdown" cmp -s "$work/a dir/the wiki.md" "$work/expected"
+  printf '%s\n%s\n' "$version" "$page" >"$work/expected-version"
+  check "get --out keeps the version and the page beside the file" cmp -s "$work/a dir/the wiki.md.version" "$work/expected-version"
 
   # put, with the version remembered
   printf '# The wiki\n\nWritten from %s.\n' "$shell" >"$work/input"
@@ -277,7 +302,7 @@ suite() {
   expect 0 "a second put in a row, with the version the first gave"
   input=/dev/null
   client get "$page"
-  cmp -s "$work/out" "$work/input" && pass "the page has the text put" || fail "the page has the text put"
+  check "the page has the text put" cmp -s "$work/out" "$work/input"
   # put --file, with the version beside the file
   client get "$page" --out "$work/a dir/the wiki.md"
   printf 'An edit made in the file.\n' >>"$work/a dir/the wiki.md"
@@ -285,7 +310,7 @@ suite() {
   client put "$page" --file "$work/a dir/the wiki.md"
   expect 0 "put --file, with the version from get --out"
   after=$(head -n 1 "$work/a dir/the wiki.md.version")
-  [ "$before" != "$after" ] && pass "put --file keeps the new version beside the file" || fail "put --file keeps the new version beside the file"
+  check "put --file keeps the new version beside the file" [ "$before" != "$after" ]
 
   # Two clients: the second writes over the first's version.
   client get "$page"
@@ -303,7 +328,7 @@ suite() {
   has err "412" "the refusal says the page moved on"
   input=/dev/null
   client get "$page"
-  cmp -s "$work/out" "$work/second" && pass "the refused write wrote nothing" || fail "the refused write wrote nothing"
+  check "the refused write wrote nothing" cmp -s "$work/out" "$work/second"
   input=$work/first
   client put "$page" --force
   expect 0 "put --force writes without a version"
@@ -318,8 +343,9 @@ suite() {
   client put "$page" --if-match "${stripped%\"}"
   expect 0 "put --if-match with the current version, without its quotes"
   state=$work/state-$1-new
+  client get "$page" --version
   client put "$page"
-  expect 2 "put with no version known refuses to write blind"
+  expect 2 "put with no version known (get --version remembers none) refuses to write blind"
   has err "no version of $page is known here" "the refusal says how to get one"
   client put "$page" --force --if-match "$version"
   expect 2 "--force and --if-match together are a wrong use"
@@ -331,7 +357,15 @@ suite() {
   input=$work/restore
   client put "$page" --force
   expect 0 "the page's text back"
+  # A page over 128 kB, the most one argument of a command may hold on
+  # Linux: the text goes through files, never a command line.
+  big_text "from the command line" >"$work/big"
+  input=$work/big
+  client put "$second" --force
+  expect 0 "put of a page of $(wc -c <"$work/big") bytes"
   input=/dev/null
+  client get "$second"
+  check "get gives the long page back byte for byte" cmp -s "$work/out" "$work/big"
 
   # Refusals, and their exit codes.
   client get team/projects nothing-here
@@ -340,10 +374,10 @@ suite() {
   : >"$work/curl.args"
   client get team/projects "the wiki"
   expect 4 "a page's path with a space is sent, encoded, and not found"
-  grep -qF "/api/markdown/s/team/projects/p/the%20wiki/" "$work/curl.args" && pass "the space is percent-encoded" || fail "the space is percent-encoded"
+  check "the space is percent-encoded" grep -qF "/api/markdown/s/team/projects/p/the%20wiki/" "$work/curl.args"
   client get "team/projects/p/zażółć"
   expect 4 "a page's path outside ASCII is sent, encoded, and not found"
-  grep -qF "/p/za%C5%BC%C3%B3%C5%82%C4%87/" "$work/curl.args" && pass "the letters outside ASCII are percent-encoded" || fail "the letters outside ASCII are percent-encoded"
+  check "the letters outside ASCII are percent-encoded" grep -qF "/p/za%C5%BC%C3%B3%C5%82%C4%87/" "$work/curl.args"
   user=$locked password='a wrong "wörd" password'
   tries=1
   while [ "$tries" -le 5 ]; do
@@ -375,62 +409,64 @@ suite() {
   expect 2 "no WIKI_URL is a wrong use"
   url=$public
 
-  # A key in WIKI_TOKEN is sent as Bearer, which the server does not take yet.
+  # A key in WIKI_TOKEN is sent as Bearer, which the server does not take
+  # yet; under -x, the trace does not show it.
   (
-    unset WIKI_USER WIKI_PASSWORD
-    export HOME="$work/home" WIKI_URL="$url" WIKI_TOKEN="a key" PATH="$work/fakes/curl:$work/fakes/nojq:$PATH"
-    exec "$shell" "$client" list
+    unset WIKI_USER WIKI_PASSWORD WIKI_CONFIG
+    export HOME="$work/home" WIKI_URL="$url" WIKI_TOKEN='a key "wörd"'
+    exec env PATH="$nojq_path" "$shell" -x "$client" list
   ) >"$work/out" 2>"$work/err"
   status=$?
   expect 3 "a key is refused, as the server takes none yet"
   has err "does not take API keys" "the refusal says keys are to come"
+  lacks err "wörd" "no key in the trace"
 
-  # The configuration file, read only when nobody else may read it.
+  # The configuration file, read only when nobody else may read it, through
+  # a symbolic link too.
   mkdir -p "$work/home/.config/wiki"
   config=$work/home/.config/wiki/config
-  printf '# The wiki\nurl = %s\nuser = editor\npassword = %s\n' "$public" "$editor_password" >"$config"
-  chmod 644 "$config"
-  (
-    unset WIKI_URL WIKI_USER WIKI_PASSWORD WIKI_TOKEN WIKI_CONFIG XDG_CONFIG_HOME
-    export HOME="$work/home" WIKI_STATE_DIR="$work/state-$1-config" PATH="$work/fakes/curl:$work/fakes/nojq:$PATH"
-    exec "$shell" "$client" list
-  ) >"$work/out" 2>"$work/err"
-  status=$?
+  printf '# The wiki\nurl = %s\nuser = editor\npassword = %s\n' "$public" "$editor_password" >"$work/config"
+  ln -sf "$work/config" "$config"
+  from_config() {
+    (
+      unset WIKI_URL WIKI_USER WIKI_PASSWORD WIKI_TOKEN WIKI_CONFIG XDG_CONFIG_HOME
+      export HOME="$work/home" WIKI_STATE_DIR="$work/state-$shell-config"
+      exec env PATH="$nojq_path" "$shell" "$client" list
+    ) >"$work/out" 2>"$work/err"
+    status=$?
+  }
+  chmod 644 "$work/config"
+  from_config
   expect 2 "a configuration file others may read is refused"
   has err "chmod 600" "the refusal says how to fix it"
-  chmod 600 "$config"
-  (
-    unset WIKI_URL WIKI_USER WIKI_PASSWORD WIKI_TOKEN WIKI_CONFIG XDG_CONFIG_HOME
-    export HOME="$work/home" WIKI_STATE_DIR="$work/state-$1-config" PATH="$work/fakes/curl:$work/fakes/nojq:$PATH"
-    exec "$shell" "$client" list
-  ) >"$work/out" 2>"$work/err"
-  status=$?
+  chmod 600 "$work/config"
+  from_config
   expect 0 "the configuration file, mode 600, signs in"
   has out "Space: Team" "the configuration file's sign-in lists the wiki"
-  rm -f "$config"
+  rm -f "$config" "$work/config"
 
   # The reference.
   client reference
   expect 0 "reference"
-  head -n 1 "$work/out" | grep -q '^# ' && pass "the reference starts with its title" || fail "the reference starts with its title"
-  [ "$(wc -c <"$work/out")" -gt 30000 ] && pass "the reference is whole" || fail "the reference is whole"
+  check "the reference starts with its title" first_line_matches "$work/out" '^# '
+  check "the reference is whole" [ "$(wc -c <"$work/out")" -gt 30000 ]
   client reference --sections
   expect 0 "reference --sections"
   has out "- Math (" "the sections list Math with its size"
   client reference math
   expect 0 "reference of one section"
-  head -n 1 "$work/out" | grep -q '^## Math$' && pass "the section starts at its heading" || fail "the section starts at its heading"
+  check "the section starts at its heading" first_line_matches "$work/out" '^## Math$'
   lacks out "## Diagrams" "the section ends before the next one"
   client reference no such section
   expect 4 "a section that is not there"
 
   # Nothing of the password on curl's command line, nor in a trace.
   if grep -qF "wörd" "$work/curl.args"; then fail "a password on curl's command line"; else pass "no password on curl's command line"; fi
-  grep -q 'config /dev/fd/3' "$work/curl.args" && pass "curl reads the sign-in from a descriptor" || fail "curl reads the sign-in from a descriptor"
+  check "curl reads the sign-in from a descriptor" grep -q 'config /dev/fd/3' "$work/curl.args"
   (
     unset WIKI_TOKEN WIKI_CONFIG
     export HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$1-trace"
-    exec "$shell" -x "$client" get "$page"
+    exec env PATH="$nojq_path" "$shell" -x "$client" get "$page"
   ) >"$work/out" 2>"$work/err"
   status=$?
   expect 0 "get under -x"
@@ -441,7 +477,7 @@ suite() {
   client mcp
   expect 1 "mcp without jq"
   has err "needs jq" "mcp says jq is needed"
-  [ -s "$work/jq.calls" ] && pass "the failing jq records that it was called" || fail "the failing jq records that it was called"
+  check "the failing jq records that it was called" [ -s "$work/jq.calls" ]
   rm -f "$work/jq.calls"
 
   mcp_exchange
@@ -454,6 +490,9 @@ mcp_exchange() {
   with_jq=1
   client get "$page" --version
   version=$(cat "$work/out")
+  client get "$second" --version
+  second_version=$(cat "$work/out")
+  big_text "through MCP" >"$work/big-mcp"
   meta='{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"}}'
   call() {
     "$real_jq" -nc --argjson id "$1" --arg name "$2" --argjson arguments "$3" '{jsonrpc: "2.0", id: $id, method: "tools/call", params: {name: $name, arguments: $arguments}}'
@@ -486,14 +525,17 @@ Written through MCP: "quoted", back\slash, ż.
     printf '%s\n' '{"jsonrpc":"2.0","id":20,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"old","version":"1"}}}'
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3}}'
     printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/list\",\"params\":{\"_meta\":$meta}}"
+    "$real_jq" -nc --arg page "$second" --arg version "$second_version" --rawfile content "$work/big-mcp" \
+      '{jsonrpc: "2.0", id: 22, method: "tools/call", params: {name: "wiki_write_page", arguments: {page: $page, version: $version, content: $content}}}'
+    call 23 wiki_read_page "{\"page\":\"$second\"}"
   } >"$work/mcp.in"
   printf -- '--- the MCP server under %s\n' "$shell"
   # Through a pipe, as a client starts it.
   # shellcheck disable=SC2002
   cat "$work/mcp.in" | (
     unset WIKI_TOKEN WIKI_CONFIG
-    export HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-mcp" PATH="$work/fakes/curl:$PATH"
-    exec "$shell" "$client" mcp
+    export HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-mcp"
+    exec env PATH="$curl_path" "$shell" "$client" mcp
   ) >"$work/mcp.out" 2>"$work/mcp.err"
   status=$?
   expect 0 "mcp ends when its input ends"
@@ -501,8 +543,8 @@ Written through MCP: "quoted", back\slash, ż.
   while IFS= read -r reply; do
     printf '%s' "$reply" | "$real_jq" -e 'type == "object" and .jsonrpc == "2.0"' >/dev/null 2>&1 || bad_lines=$((bad_lines + 1))
   done <"$work/mcp.out"
-  [ "$bad_lines" = 0 ] && pass "every line on standard output is a JSON-RPC message" || fail "$bad_lines lines on standard output are not JSON-RPC messages"
-  [ "$(wc -l <"$work/mcp.out")" -eq 21 ] && pass "one reply per request, none for the notifications" || fail "$(wc -l <"$work/mcp.out") replies, not 21"
+  check "every line on standard output is a JSON-RPC message ($bad_lines are not)" [ "$bad_lines" = 0 ]
+  check "one reply per request, none for the notifications ($(wc -l <"$work/mcp.out") replies)" [ "$(wc -l <"$work/mcp.out")" -eq 23 ]
   # A check of the replies, read as one array: jq's options, then the
   # filter.
   reply() {
@@ -535,6 +577,11 @@ Written through MCP: "quoted", back\slash, ż.
   reply "a batch is -32600" 'map(select(.error.code == -32600)) | length == 1'
   reply "initialize with a revision it does not speak answers its latest, 2025-11-25" 'map(select(.id == 20))[0].result.protocolVersion == "2025-11-25"'
   reply "tools/list of the current revision carries its cache hints" 'map(select(.id == 21))[0].result | .resultType == "complete" and .ttlMs >= 0 and .cacheScope == "public" and (.tools | length) == 5'
+  reply "wiki_write_page writes a page of 150 kB" 'map(select(.id == 22))[0].result.isError == false'
+  reply "wiki_read_page reads it back byte for byte" --rawfile expected "$work/big-mcp" 'map(select(.id == 23))[0].result.content[1].text == $expected'
+  with_jq=''
+  client get "$second"
+  check "the wiki holds the long page byte for byte" cmp -s "$work/out" "$work/big-mcp"
   if grep -qF "wörd" "$work/curl.args"; then fail "a password on curl's command line under mcp"; else pass "no password on curl's command line under mcp"; fi
   # The page's text back, for what runs next.
   input=$work/restore

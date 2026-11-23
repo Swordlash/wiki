@@ -14,6 +14,10 @@
 # The password never reaches a command line: curl reads the sign-in from a
 # config given on descriptor 3 (a here-document), so the process list never
 # shows it, and the code that handles it runs with tracing (set -x) off.
+#
+# The awk and jq programs in single quotes are not to be expanded by the
+# shell.
+# shellcheck disable=SC2016
 
 set -u
 LC_ALL=C
@@ -123,7 +127,7 @@ percent_encode() {
 # not give, from the configuration file (WIKI_CONFIG, by default
 # ~/.config/wiki/config), lines of "key = value" with the keys url, user,
 # password and token. The file is read only when nobody else may read it.
-wiki_url='' wiki_user='' wiki_password='' wiki_token='' wiki_base=''
+wiki_url='' wiki_user='' wiki_password='' wiki_token='' wiki_base='' signing_in=nobody
 config_loaded=''
 load_config() {
   [ -z "$config_loaded" ] || return 0
@@ -152,7 +156,7 @@ load_config() {
   done
   case $wiki_base in
     http://localhost | http://localhost[:/]* | http://127.* | http://\[::1\]*) ;;
-    http://*) [ -z "$wiki_user$wiki_token" ] || note "WIKI_URL is plain http: the password crosses the network unencrypted; use https" ;;
+    http://*) [ "$signing_in" = nobody ] || note "WIKI_URL is plain http: the password crosses the network unencrypted; use https" ;;
   esac
   config_loaded=1
 }
@@ -168,9 +172,9 @@ load_config_quietly() {
       fail "$EX_USAGE" "$config_file is not a file"
       return
     fi
-    # The mode from ls, the one way stock Linux and macOS agree on:
-    # -rw------- is the file's owner alone.
-    mode=$(ls -ld -- "$config_file") || {
+    # The mode from ls, the one way stock Linux and macOS agree on, of the
+    # file a symbolic link leads to: -rw------- is the file's owner alone.
+    mode=$(ls -ldL -- "$config_file") || {
       fail "$EX_USAGE" "cannot read the mode of $config_file"
       return
     }
@@ -214,6 +218,15 @@ load_config_quietly() {
       return
       ;;
   esac
+  # How the requests sign in, for the code that runs traced: it never
+  # reads the token or the password itself.
+  if [ -n "$wiki_token" ]; then
+    signing_in=token
+  elif [ -n "$wiki_user" ]; then
+    signing_in=password
+  else
+    signing_in=nobody
+  fi
   return 0
 }
 
@@ -308,9 +321,9 @@ check_answer() {
   [ -z "$said" ] || said=": $said"
   case $http_status in
     401)
-      if [ -n "$wiki_token" ]; then
+      if [ "$signing_in" = token ]; then
         fail "$EX_SIGNIN" "sign-in refused (401): this wiki does not take API keys (WIKI_TOKEN) yet; sign in with WIKI_USER and WIKI_PASSWORD"
-      elif [ -z "$wiki_user" ]; then
+      elif [ "$signing_in" = nobody ]; then
         fail "$EX_SIGNIN" "sign-in needed (401): set WIKI_USER and WIKI_PASSWORD, or user and password in $config_file"
       else
         fail "$EX_SIGNIN" "sign-in refused (401)$said"
@@ -476,6 +489,16 @@ render_list() {
     }' "$work/body"
 }
 
+# A rendering that failed, with awk's status: 3 when the answer was not
+# JSON, anything else when the output was closed (a reader such as head
+# that stopped early), which needs no message.
+render_failed() {
+  case $1 in
+    3) fail "$EX_ERROR" "the answer of $wiki_base is not the wiki's JSON: is WIKI_URL the wiki's address?" ;;
+    *) fail "$1" '' ;;
+  esac
+}
+
 # The search's hits, best first: title, address and space, then the excerpt.
 render_search() {
   awk "$json_reader"'
@@ -593,7 +616,9 @@ version_file() {
 
 remember_version() {
   vf=$(version_file)
-  mkdir -p "${vf%/*}" && printf '%s\n' "$1" >"$vf" || note "cannot keep the version in $vf"
+  if ! { mkdir -p "${vf%/*}" && printf '%s\n' "$1" >"$vf"; }; then
+    note "cannot keep the version in $vf"
+  fi
 }
 
 remembered_version() {
@@ -614,6 +639,9 @@ quoted_version() {
 # What the commands and the MCP tools do
 
 # The page at addr: its Markdown in $work/body, its version in page_version.
+# With "remember", the version is remembered for a later put: only when the
+# text goes to someone, since a put of older text over a version nobody
+# read would write over that version's changes unseen.
 fetch_page() {
   wiki_request GET "api/markdown/$addr" || return
   check_answer "$addr_shown" || return
@@ -622,7 +650,7 @@ fetch_page() {
     fail "$EX_ERROR" "the wiki gave no version (ETag) for $addr_shown"
     return
   fi
-  remember_version "$page_version"
+  [ "$1" != remember ] || remember_version "$page_version"
 }
 
 # The file's text written over the page at addr, conditional on the version
@@ -780,7 +808,11 @@ cmd_list() {
   [ -z "$depth" ] || is_count "$depth" || { usage "--depth needs a whole number above 0"; return; }
   load_config || return
   fetch_list "$space" "$depth" || return
-  if [ -n "$json" ]; then cat "$work/body"; else render_list; fi
+  if [ -n "$json" ]; then
+    cat "$work/body"
+  else
+    render_list || render_failed $?
+  fi
 }
 
 cmd_search() {
@@ -806,7 +838,11 @@ cmd_search() {
   [ -z "$limit" ] || is_count "$limit" || { usage "--limit needs a whole number above 0"; return; }
   load_config || return
   fetch_search "$words" "$space" "$limit" || return
-  if [ -n "$json" ]; then cat "$work/body"; else render_search; fi
+  if [ -n "$json" ]; then
+    cat "$work/body"
+  else
+    render_search || render_failed $?
+  fi
 }
 
 # The page's arguments of get and put: one or two words, in first and
@@ -837,7 +873,11 @@ cmd_get() {
   [ -n "$first" ] || { usage "get needs a page's address"; return; }
   load_config || return
   page_address "$first" "$second" || return
-  fetch_page || return
+  if [ -n "$version_only" ]; then
+    fetch_page only || return
+  else
+    fetch_page remember || return
+  fi
   if [ -n "$version_only" ]; then
     printf '%s\n' "$page_version"
   elif [ -n "$out" ]; then
@@ -873,7 +913,10 @@ cmd_put() {
   page_address "$first" "$second" || return
   make_work
   if [ -n "$file" ]; then
-    [ -f "$file" ] && [ -r "$file" ] || { fail "$EX_USAGE" "cannot read $file"; return; }
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+      fail "$EX_USAGE" "cannot read $file"
+      return
+    fi
     cp "$file" "$work/put-body" || { fail "$EX_ERROR" "cannot read $file"; return; }
   elif [ -t 0 ]; then
     usage "put reads the page's new text from --file or standard input (wiki.sh put PAGE < text.md)"
@@ -944,7 +987,8 @@ wiki.sh: the wiki from a shell, through its API for programs.
   wiki.sh get PAGE [--out FILE] [--version]
       The page's Markdown on standard output, and its version on standard
       error. --out FILE writes the Markdown to FILE and the version to
-      FILE.version; --version prints the version alone.
+      FILE.version; --version prints the version alone (and does not
+      remember it, since no text was read).
   wiki.sh put PAGE [--file FILE] [--if-match VERSION | --force]
       Write the page's whole Markdown, from FILE or standard input. The write
       is conditional: it is refused (exit 5) when someone saved the page
@@ -1156,8 +1200,12 @@ mcp_call_tool() {
       depth=$arg
       [ -z "$depth" ] || is_count "$depth" || { tool_failed "depth must be 1 or more."; return; }
       if fetch_list "$space" "$depth"; then
-        render_list >"$work/tool-text"
-        tool_answer false "$work/tool-text"
+        if render_list >"$work/tool-text"; then
+          tool_answer false "$work/tool-text"
+        else
+          render_failed $?
+          tool_failed "$fail_message"
+        fi
       else
         tool_failed "$fail_message"
       fi
@@ -1172,15 +1220,19 @@ mcp_call_tool() {
       [ -n "$query" ] || { tool_failed "query is empty: give words to look for."; return; }
       [ -z "$limit" ] || is_count "$limit" || { tool_failed "limit must be 1 or more."; return; }
       if fetch_search "$query" "$space" "$limit"; then
-        render_search >"$work/tool-text"
-        tool_answer false "$work/tool-text"
+        if render_search >"$work/tool-text"; then
+          tool_answer false "$work/tool-text"
+        else
+          render_failed $?
+          tool_failed "$fail_message"
+        fi
       else
         tool_failed "$fail_message"
       fi
       ;;
     wiki_read_page)
       short_argument page string required || return
-      if page_address "$arg" && fetch_page; then
+      if page_address "$arg" && fetch_page remember; then
         printf 'The page %s, version %s. To change it, call wiki_write_page with this version and the whole new text. Its Markdown follows, in the next block.' "$addr_shown" "$page_version" >"$work/tool-text"
         tool_answer false "$work/tool-text" "$work/body"
       else
@@ -1227,7 +1279,7 @@ mcp_call_tool() {
 mcp_handle() {
   msg_id=null
   msg_modern=''
-  if ! jq -e . "$work/msg" >/dev/null 2>&1; then
+  if ! jq . "$work/msg" >/dev/null 2>&1; then
     mcp_error -32700 "Parse error: the line is not JSON"
     return
   fi
@@ -1301,6 +1353,8 @@ mcp_handle() {
       '"initialize"')
         requested=$(jq -r '.params.protocolVersion // "" | strings' "$work/msg")
         chosen=${mcp_legacy%% *}
+        # The revisions, split into words on purpose.
+        # shellcheck disable=SC2086
         for known in $mcp_legacy; do
           [ "$requested" != "$known" ] || chosen=$known
         done
@@ -1408,7 +1462,7 @@ main() {
     *) usage "no command $command" ;;
   esac
   status=$?
-  [ "$status" = 0 ] || printf 'wiki.sh: %s\n' "$fail_message" >&2
+  [ "$status" = 0 ] || [ -z "$fail_message" ] || printf 'wiki.sh: %s\n' "$fail_message" >&2
   exit "$status"
 }
 

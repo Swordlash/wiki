@@ -2861,7 +2861,8 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   came.
 - **`wiki.sh get PAGE`** prints the page's Markdown, and its version on
   standard error; `--out FILE` writes the Markdown to `FILE` and the version
-  to `FILE.version`, and `--version` prints the version alone.
+  to `FILE.version`, and `--version` prints the version alone (and does not
+  remember it, since nobody read the text).
 - **`wiki.sh put PAGE`** writes the page's whole Markdown, from `--file FILE`
   or standard input, over a version, with `If-Match`: when someone has saved
   the page since, nothing is written, and it exits with 5. The version is the
@@ -2895,7 +2896,7 @@ sections, or one section: the reference whole is 67 kB). It speaks the
 protocol's current revision, 2026-07-28, in which each request names its
 revision, and answers `initialize` for the earlier ones, 2025-11-25 and
 2025-06-18; a client that asks for another gets 2025-11-25. It needs `jq`
-(`apt install jq`, `brew install jq`; macOS 15 has it). The configuration is
+(`apt install jq`, `brew install jq`). The configuration is
 the commands' own, so with the configuration file a client needs only the
 command. In Claude Code:
 

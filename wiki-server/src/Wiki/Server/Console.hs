@@ -49,6 +49,12 @@ module Wiki.Server.Console
   , runUsers
   , listing
 
+    -- * API keys
+  , Keys (..)
+  , KeysCommand (..)
+  , keysParser
+  , runKeys
+
     -- * Passwords
   , readPassword
 
@@ -80,10 +86,12 @@ where
 
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
+import Data.Time (Day, UTCTime (..), addDays, defaultTimeLocale, formatTime, getCurrentTime, parseTimeM)
 import Options.Applicative
 import Protolude
 import System.IO (hFlush, hGetEcho, hIsTerminalDevice, hSetEcho)
 import Wiki.Api.Account (Account (..))
+import Wiki.Api.ApiKeys (ApiKeyId (..), ApiKeyInfo (..), KeyRight (..), MadeApiKey (..), NewApiKey (..), rightName, rightOf)
 import Wiki.Api.Import (ImportSummary (..))
 import Wiki.Api.ServerSettings (ProviderSettingsOf (..), ServerSettingsOf (..), kindName, providerLabel, providerProblems, redirectUri)
 import Wiki.App.Backend (WikiError (..))
@@ -91,6 +99,7 @@ import Wiki.App.Backend.Admin (MonadAdmin (removeSecondFactor, removeUser))
 import Wiki.Core.Url (Url (..))
 import Wiki.Core.User (Login (..), Password (..), User (..))
 import Wiki.Server.Accounts (accountByLogin, createAccount, listAccounts, setAdministrator, setDisabled, setPassword)
+import Wiki.Server.ApiKeys (apiKeysOf, isAdministrator, makeApiKey, revokeApiKey)
 import Wiki.Server.Guide (installGuide, updateGuide, updateLines)
 import Wiki.Server.Oidc (Endpoints (..), endpointsOf, freshProvider, newProviderCache, optionOf)
 import Wiki.Server.Options (PlaceOptions (..), placeOptions, resolvePlace)
@@ -288,6 +297,110 @@ readPassword login = do
       line <- bracket_ (hSetEcho stdin False) (hSetEcho stdin echo) (TIO.hGetLine stdin)
       TIO.hPutStrLn stderr ""
       pure line
+
+--------------------------------------------------------------------------------
+-- API keys
+
+-- | A @wiki-server keys@ command, on a data directory: a user's API keys
+-- ("Wiki.Server.ApiKeys") from the machine the wiki runs on, as the
+-- user's settings make, list and revoke them.
+--
+-- > wiki-server keys list   --data DIR LOGIN
+-- > wiki-server keys add    --data DIR LOGIN [--name NAME] [--right read|write|admin] [--expires YYYY-MM-DD]
+-- > wiki-server keys revoke --data DIR LOGIN ID
+--
+-- @add@ prints the whole key once, as the settings show it once; the
+-- server keeps only its hash. A key's right is @read@ unless given.
+-- @--expires@ names the last day the key works: it stops at the end of
+-- that day, in UTC.
+data Keys = Keys
+  { place :: PlaceOptions
+  , login :: Text
+  , command :: KeysCommand
+  }
+  deriving stock (Eq, Show)
+
+data KeysCommand
+  = -- | The user's keys, the newest first.
+    ListKeys
+  | -- | Make a key: its name, its right, and the last day it works.
+    AddKey Text KeyRight (Maybe Day)
+  | -- | Revoke a key, by its id.
+    RevokeKey ApiKeyId
+  deriving stock (Eq, Show)
+
+-- | The options of @wiki-server keys@.
+keysParser :: Parser Keys
+keysParser =
+  hsubparser
+    ( command "list" (info (keys (pure ListKeys)) (progDesc "List a user's API keys, without their secrets"))
+        <> command "add" (info (keys add) (progDesc "Make an API key for a user, and print it, this once"))
+        <> command "revoke" (info (keys (RevokeKey . ApiKeyId <$> strArgument (metavar "ID" <> help "The key's id, as the list shows it"))) (progDesc "Revoke one of a user's API keys"))
+    )
+  where
+    keys c = Keys <$> placeOptions <*> strArgument (metavar "LOGIN" <> help "The user's login") <*> c
+    add = do
+      name <- strOption (long "name" <> metavar "NAME" <> value "" <> help "What the key is called in the list (the day it is made if not given)")
+      right <- option (maybeReader (rightOf . toS)) (long "right" <> metavar "RIGHT" <> value ReadRight <> help "read (the default), write, or admin (for an administrator's key only)")
+      expires <- optional (option (maybeReader (parseTimeM False defaultTimeLocale "%Y-%m-%d")) (long "expires" <> metavar "YYYY-MM-DD" <> help "The last day the key works, until its end in UTC (never expires if not given)"))
+      pure (AddKey name right expires)
+
+-- | Run a keys command. The result is the lines to show, or why it could
+-- not be done.
+runKeys :: Keys -> IO (Either Text [Text])
+runKeys k = (`onPlace` k.place) $ \at -> withStorageAside at $ \st -> runExceptT $ do
+  a <- found st k.login
+  case k.command of
+    ListKeys -> do
+      mine <- liftIO (apiKeysOf st a.user.id)
+      now <- liftIO getCurrentTime
+      pure $
+        if null mine
+          then [describe a.user <> " has no API keys."]
+          else keyListing now mine
+    AddKey name right expires -> do
+      now <- liftIO getCurrentTime
+      administrator <- liftIO (isAdministrator st consoleAddress a.user.id)
+      let until' = (\d -> UTCTime (addDays 1 d) 0) <$> expires
+      made <- withExceptT explainKey (ExceptT (makeApiKey st now a.user.id administrator NewApiKey {name, right, expiresAt = until'}))
+      pure
+        [ "Made the key " <> made.info.id.text <> " (" <> made.info.name <> ", " <> rightName made.info.right <> ") for " <> describe a.user <> ". It is shown this once:"
+        , made.key
+        ]
+    RevokeKey i -> do
+      now <- liftIO getCurrentTime
+      _ <- withExceptT explainKey (ExceptT (revokeApiKey st now a.user.id i))
+      pure ["Revoked the key " <> i.text <> " of " <> describe a.user <> "."]
+  where
+    explainKey = \case
+      NotFound -> "There is no such key among the user's."
+      Forbidden -> "Only an administrator may have a key with the right admin."
+      Conflict why -> why
+      Stale _ why -> why
+      Invalid why -> why
+      Unreachable why -> why
+
+-- | A user's keys as a table: the heading, then a key a line, with its id,
+-- its right, whether it works, when it expires and was last used, and its
+-- name last.
+keyListing :: UTCTime -> [ApiKeyInfo] -> [Text]
+keyListing now mine = map row (heading : map cells mine)
+  where
+    heading = ["ID", "RIGHT", "STATE", "EXPIRES", "LAST USED", "NAME"]
+    cells i =
+      [ i.id.text
+      , rightName i.right
+      , case (i.revokedAt, i.expiresAt) of
+          (Just _, _) -> "revoked"
+          (_, Just e) | e <= now -> "expired"
+          _ -> "works"
+      , maybe "never" day i.expiresAt
+      , maybe "never" day i.lastUsedAt
+      , i.name
+      ]
+    day = toS . formatTime defaultTimeLocale "%Y-%m-%d %H:%M"
+    widths = map (\n -> maximum (map (T.length . fromMaybe "" . (`atMay` n)) (heading : map cells mine))) [0 .. length heading - 1]
+    row cs = T.stripEnd (T.intercalate "  " (zipWith (\w c -> T.justifyLeft w ' ' c) widths cs))
 
 --------------------------------------------------------------------------------
 -- Providers

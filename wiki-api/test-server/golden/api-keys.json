@@ -1,0 +1,20 @@
+[
+  {
+    "createdAt": "2026-10-24T09:30:12.345678Z",
+    "expiresAt": "2027-01-01T00:00:00Z",
+    "id": "m3k7q2xa9dwn4zrt",
+    "lastUsedAt": "2026-10-25T00:00:00Z",
+    "name": "Laptop assistant",
+    "revokedAt": null,
+    "right": "write"
+  },
+  {
+    "createdAt": "2026-10-24T09:30:12.345678Z",
+    "expiresAt": null,
+    "id": "b5c2t7yq4nx3wa6e",
+    "lastUsedAt": null,
+    "name": "Made on 2026-10-24 at 09:30 UTC",
+    "revokedAt": "2026-10-25T00:00:00Z",
+    "right": "read"
+  }
+]

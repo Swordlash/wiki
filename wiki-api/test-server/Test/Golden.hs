@@ -19,6 +19,7 @@ import Test.Hspec
 import Test.Sample qualified as Sample
 import Wiki.Api.Account (AccountDisabled (..), Credentials (..), InvitationToken (..))
 import Wiki.Api.Admin (AdministratorFlag (..), CreateSpacesFlag (..), GroupName (..), NewInvitation (..), TexEngine (..), TexStatus (..))
+import Wiki.Api.ApiKeys (KeyRight (..), NewApiKey (..))
 import Wiki.Api.Backups (BackupRecord (..), Backups (..), Trigger (..))
 import Wiki.Api.Comments (CommentText (..), NewThread (..), ThreadResolution (..))
 import Wiki.Api.Error (ApiError (..))
@@ -67,6 +68,8 @@ spec = describe "golden JSON" $ do
     golden "registration-challenge" RegistrationChallenge {credential = "6f1c1f2e-3b5a-4c4e-9a8e-2d6b0f6a7c11", response = Message "cmVzcG9uc2U", stretch = Stretch {opsLimit = 2, memLimit = 67108864}}
     golden "stored-vault" Sample.storedVault
     golden "passkeys" [Sample.passkeyInfo]
+    golden "api-keys" [Sample.apiKeyInfo, Sample.revokedKeyInfo]
+    golden "made-api-key" Sample.madeApiKey
     golden "registration-options" Sample.registrationOptions
     golden "assertion-options" Sample.assertionOptions
     golden "health" Health {status = "ok", schemaVersion = 9, lastBackupAgeSeconds = Just 3600}
@@ -147,6 +150,7 @@ spec = describe "golden JSON" $ do
     golden "error-second-factor-required" SecondFactorRequired
   describe "requests" $ do
     golden "new-space" NewSpace {parent = Just (SpaceId "s1"), name = "Guides"}
+    golden "new-api-key" NewApiKey {name = "Laptop assistant", right = WriteRight, expiresAt = Nothing}
     golden "space-name" SpaceName {name = "Guides"}
     golden "space-public" SpacePublic {public = True}
     golden "space-sealed" SpaceSealed {sealed = True}

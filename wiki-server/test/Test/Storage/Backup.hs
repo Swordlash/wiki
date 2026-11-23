@@ -7,6 +7,7 @@
 module Test.Storage.Backup (spec) where
 
 import Data.ByteString qualified as BS
+import Data.List (lookup)
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
@@ -17,14 +18,17 @@ import System.IO.Temp (withSystemTempDirectory)
 import Test.Database (Backing (..))
 import Test.Hspec
 import Test.Storage.Fixture
+import Wiki.Api.ApiKeys (KeyRight (..), NewApiKey (..))
 import Wiki.Api.Backups (BackupSettingsOf (..), Backups (..), DestinationOf (..), Retention (..), Schedule (..), defaultBackupSettings)
 import Wiki.Api.ServerSettings (SecretState (..))
 import Wiki.App.Backend
 import Wiki.App.Backend.Admin (MonadAdmin (..))
 import Wiki.Core.Attachment (Attachment (..), Source (..))
 import Wiki.Core.Export (Archive (..))
+import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Page (Page (..))
 import Wiki.Core.Space (Space (..))
+import Wiki.Server.ApiKeys (makeApiKey)
 import Wiki.Server.Secret (Secret (..), revealed)
 import Wiki.Server.Storage
 import Wiki.Server.Storage.Backup
@@ -101,6 +105,7 @@ copies backing = describe "backup" $ do
       page <- runStoredWiki st admin (createPage blog.id Nothing "Kept" "In the backup.") >>= ok
       _ <- runStoredWiki st admin (uploadAttachment page.id "a.txt" "text/plain" "bytes") >>= ok
       _ <- runStoredWiki st admin (saveDraft page.id page.updatedAt "Kept" "A draft") >>= ok
+      _ <- makeApiKey st (UTCTime (fromGregorian 2026 11 23) 0) (UserId "user-editor") False NewApiKey {name = "Kept", right = ReadRight, expiresAt = Nothing} >>= ok
       file <- backupOf at
       takeDirectory file `shouldBe` backupsDir at.dataDir
       live <- tableRows st
@@ -110,6 +115,8 @@ copies backing = describe "backup" $ do
         withStorageAside fresh tableRows
       copied `shouldBe` live
       map fst live `shouldContain` ["pages"]
+      -- The API keys, a table the copy is made of like any other.
+      length <$> lookup "api_keys" live `shouldBe` Just 1
       sum (map (length . snd) live) `shouldSatisfy` (> 20)
 
   it "keeps the last few, the newest" $

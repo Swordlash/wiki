@@ -15,6 +15,7 @@ import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 import Wiki.Core.Id (BlobId (..))
 import Wiki.Core.Vault (KeyId (..), PublicKey (..))
+import Wiki.Server.ApiKeys (secretHash)
 import Wiki.Server.Guide (writtenHash)
 import Wiki.Server.Oidc (challengeOf)
 import Wiki.Server.Password (tokenHash)
@@ -41,6 +42,11 @@ spec = describe "SHA-256" $ do
 
     it "a vault key's id, the start of its public key's digest" $
       fmap (\k -> k.text) (keyIdOf (PublicKey "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")) `shouldBe` Just "Yw3NKWbEM2aRElRIu7JbTw"
+
+    -- Computed by sha256sum when the keys were made, not by the earlier
+    -- library: an API key's secret is kept only as this hash.
+    it "an API key's secret's hash, in hex" $
+      secretHash "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst" `shouldBe` "96903127e4208e76fe38bb5ea22b27b889d7882dc7ab987027d8ce6514a4f1e4"
 
     it "the guide's record of a page's title and text" $
       writtenHash "Getting started" "# Welcome\n\nThis is the guide. Zażółć gęślą jaźń." `shouldBe` "7b11c67c09e40919bb5b9cd9223f43ad649fab692dfaa425286f8ccfb2797336"

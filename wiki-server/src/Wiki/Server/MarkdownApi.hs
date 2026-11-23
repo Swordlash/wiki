@@ -1,3 +1,5 @@
+{-# LANGUAGE MultiWayIf #-}
+
 -- | The API for a page's Markdown (WP5.138 of docs/PLAN.md, its first
 -- cut): what programs on a user's own machine (a local assistant, later an
 -- MCP server) use to read a page's Markdown and write it back. It lives
@@ -40,8 +42,10 @@
 --
 -- = Signing in
 --
--- Only HTTP Basic, with the user's login and password
--- ("Wiki.Server.BasicSignIn"). The session cookie is never read here, so a
+-- HTTP Basic, with the user's login and password
+-- ("Wiki.Server.BasicSignIn"), or an API key ("Wiki.Server.ApiKeys"), one
+-- of them in each request ('signedInProgram'). The session cookie is never
+-- read here, so a
 -- page in a browser cannot drive these addresses with its reader's
 -- session; and the application's marker header is not asked for
 -- ("Wiki.Server.Session"'s 'Wiki.Server.Session.sameOrigin'), since no
@@ -61,7 +65,10 @@ module Wiki.Server.MarkdownApi
   , markdownMediaType
 
     -- * What the API for programs shares
-  , signedInBasic
+  , Asking (..)
+  , Credential (..)
+  , credentialOf
+  , signedInProgram
   , runAs
   , refusal
   , refusalWith
@@ -85,20 +92,23 @@ import Network.Wai (Application, Request (..), Response, ResponseReceived, respo
 import Protolude
 import Web.HttpApiData (parseHeader, toHeader)
 import Wiki.Api.Admin (WikiSettings (..))
+import Wiki.Api.ApiKeys (ApiKeyId (..), KeyRight (..), rightName)
 import Wiki.Api.Error (ApiError, errorStatus)
 import Wiki.Api.Version (PageVersion (..), pageVersion)
 import Wiki.App.Backend (MonadWiki (getPage, getSpace, savePage), WikiError (..))
 import Wiki.App.Route qualified as Route
 import Wiki.Core.Access (Access (..))
 import Wiki.Core.Assistant.Reference (markdownReference)
-import Wiki.Core.Id (UserId)
+import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Page (Page (..))
 import Wiki.Core.PageKind (PageKind (..), pageKindOf)
 import Wiki.Core.Path (renderPath)
 import Wiki.Core.Slug (Slug, mkSlug, slugText, slugify)
 import Wiki.Core.Space (Space (id))
 import Wiki.Server.Api (Env (..), toApiError)
+import Wiki.Server.ApiKeys (KeyHolder (..), KeyOutcome (..), allows, isAdministrator, refusalName, signInByKey)
 import Wiki.Server.BasicSignIn (Outcome (..), credentialsOf, signInBasic)
+import Wiki.Server.Log (Level (..), logWith)
 import Wiki.Server.Render (routeOf)
 import Wiki.Server.Storage (StoredWiki, Who (..), createPageAt, readSettings, runStoredWikiFrom)
 
@@ -109,8 +119,8 @@ markdownMediaType = "text/markdown; charset=utf-8"
 -- | The API for a page's Markdown, on a listener that serves the wiki
 -- under this path (with a slash at each end), for a request from this
 -- address, whose path after @api\/markdown@ is these segments.
-markdownApplication :: Env -> Text -> Text -> [Text] -> Application
-markdownApplication env mount address segments request respond = case segments of
+markdownApplication :: Env -> Text -> Asking -> [Text] -> Application
+markdownApplication env mount asking@Asking {address} segments request respond = case segments of
   ["reference"]
     | readOnly -> do
         closed <- (\s -> s.access == Closed) <$> readSettings env.storage
@@ -130,7 +140,7 @@ markdownApplication env mount address segments request respond = case segments o
     -- what the application's router reads.
     prefix = encodeUtf8 mount <> "api/markdown"
     pagePath = fromMaybe "/" (BS.stripPrefix prefix (rawPathInfo request)) <> rawQueryString request
-    signedIn = signedInBasic env address request respond
+    signedIn = signedInProgram env asking request respond
     run :: UserId -> StoredWiki IO a -> IO a
     run = runAs env address
     -- The page a space's path and the page's path under its home page name,
@@ -218,29 +228,122 @@ markdownApplication env mount address segments request respond = case segments o
     moved = refusal status412 "Conflict" (Just "The page has been saved since the version in If-Match: read it again, and write over that version.")
     etag p = ("ETag", toHeader (pageVersion p))
 
--- | 'signedInBasic' signs a request in by its HTTP Basic credentials, the
--- user's login and password ("Wiki.Server.BasicSignIn"), and goes on as the
--- user they sign in. Every address of the API for programs signs in through
--- it: this module's, and the listing and the search of "Wiki.Server.ListApi".
--- Without credentials, or with wrong ones, the answer is 401; a login with
--- too many failed attempts is 429, and an account with a second factor 403.
--- The session's cookie is never read.
-signedInBasic :: Env -> Text -> Request -> (Response -> IO ResponseReceived) -> (UserId -> IO ResponseReceived) -> IO ResponseReceived
-signedInBasic env address request respond continue = case lookup hAuthorization (requestHeaders request) >>= credentialsOf of
-  Nothing -> unauthenticated
-  Just (login, password) -> do
+-- | 'Asking' is what the listener knows of a request to the API for
+-- programs before it is signed in: the address it came from, and how to
+-- name in the request's log line who it signed in ("Wiki.Server.Log").
+data Asking = Asking
+  { address :: Text
+  , loggedAs :: [(Text, Text)] -> IO ()
+  }
+
+-- | 'Credential' is what a request to the API for programs signs in with
+-- ('credentialOf').
+data Credential
+  = -- | No @Authorization@ header and no @X-API-Key@.
+    NoCredential
+  | -- | An @Authorization@ header that is neither a Basic one that decodes
+    -- nor a bearer token.
+    Unreadable
+  | -- | HTTP Basic: a login and a password.
+    LoginPassword Text Text
+  | -- | An API key, from @Authorization: Bearer@ or @X-API-Key@, as sent.
+    Key Text
+
+-- | The one credential a request carries, or why it carries more than one:
+-- an API key beside a login and a password, two different keys, or a
+-- header twice. One credential is one way the request was meant to sign
+-- in; with two, whichever the server took, it could take the wrong one.
+-- The same key in both @Authorization: Bearer@ and @X-API-Key@ is one
+-- credential.
+credentialOf :: Request -> Either Text Credential
+credentialOf request = case (named hAuthorization, named "X-API-Key") of
+  (_ : _ : _, _) -> Left "The request has more than one Authorization header: send one credential."
+  (_, _ : _ : _) -> Left "The request has more than one X-API-Key header: send one key."
+  ([], []) -> Right NoCredential
+  ([], [k]) -> Right (Key (text k))
+  ([a], given) -> case (T.toCaseFold (T.takeWhile (/= ' ') (text a)), given) of
+    ("bearer", []) -> Right (Key (bearer a))
+    ("bearer", [k]) | text k == bearer a -> Right (Key (bearer a))
+    ("bearer", _) -> Left "The request has two different keys, in Authorization and in X-API-Key: send one."
+    (_, _ : _) -> Left "The request has an API key in X-API-Key and another credential in Authorization: send one of them."
+    ("basic", []) -> Right (maybe Unreadable (uncurry LoginPassword) (credentialsOf a))
+    _ -> Right Unreadable
+  where
+    named n = [v | (n', v) <- requestHeaders request, n' == n]
+    -- A header that is not UTF-8 is no key: it is read as the empty text,
+    -- which no key is.
+    text = T.strip . either (const "") identity . decodeUtf8'
+    bearer = T.strip . T.dropWhile (/= ' ') . text
+
+-- | 'signedInProgram' signs a request in to the API for programs, and goes
+-- on as the user it signs in. Every address of that API signs in through
+-- it: this module's, and the listing and the search of
+-- "Wiki.Server.ListApi", so that none takes one credential and not the
+-- other. A request signs in with the user's login and password (HTTP
+-- Basic, "Wiki.Server.BasicSignIn") or with an API key
+-- ("Wiki.Server.ApiKeys"), and with one of them only: a request with two
+-- credentials is 400 ('credentialOf'). The session's cookie is never read.
+--
+-- Without credentials, or with wrong ones, the answer is 401. A login with
+-- too many failed attempts from the address is 429, and so is an address
+-- with too many failed keys. An account with a second factor is 403 with
+-- a password, and signs in with a key: the key was made in a session the
+-- second factor let in. A key whose right does not allow the request's
+-- method is 403, and so is a key with the right @admin@ whose user is no
+-- longer an administrator. Then the request goes on as the key's user,
+-- with what the user may do at that moment.
+--
+-- The request's log line names the user signed in, and the key's id for
+-- a key ('Asking'). A refused key is logged with why, and with its id
+-- when the key was well formed; never the key itself.
+signedInProgram :: Env -> Asking -> Request -> (Response -> IO ResponseReceived) -> (UserId -> IO ResponseReceived) -> IO ResponseReceived
+signedInProgram env asking request respond continue = case credentialOf request of
+  Left why -> respond (refusal status400 "Invalid" (Just why))
+  Right NoCredential -> unauthenticated
+  Right Unreadable -> unauthenticated
+  Right (LoginPassword login password) -> do
     now <- getCurrentTime
-    signInBasic env.storage env.limiter env.basicSignIns now address login password >>= \case
-      SignedIn u -> continue u
+    signInBasic env.storage env.limiter env.basicSignIns now asking.address login password >>= \case
+      SignedIn u -> do
+        asking.loggedAs [("principal", "user:" <> u.text)]
+        continue u
       Refused -> unauthenticated
       Limited seconds ->
         respond (refusalWith status429 [("Retry-After", show seconds)] "TooManyRequests" (Just ("Too many failed attempts to sign in as " <> T.strip login <> ": try again in " <> show seconds <> " seconds.")))
       SecondFactorOn ->
-        respond (refusal status403 "Forbidden" (Just "This account signs in with a second factor, which this API cannot take yet: a password alone does not sign it in."))
+        respond (refusal status403 "Forbidden" (Just "This account signs in with a second factor, which a password alone cannot give: use an API key, which the account makes in its settings."))
+  Right (Key presented) -> do
+    now <- getCurrentTime
+    signInByKey env.storage env.keyFailures now asking.address presented >>= \case
+      KeySignedIn holder -> do
+        asking.loggedAs [("principal", "user:" <> holder.user.text), ("key", holder.key.text)]
+        lapsed <- case holder.right of
+          AdminRight -> not <$> isAdministrator env.storage asking.address holder.user
+          _ -> pure False
+        if
+          | lapsed ->
+              respond (refusal status403 "Forbidden" (Just "This key has the right admin, which only an administrator's key has, and its user is not an administrator any more: make another key."))
+          | not (allows holder.right (requestMethod request)) ->
+              respond . refusal status403 "Forbidden" . Just $
+                "This key has the right " <> rightName holder.right <> ", which only reads: a " <> decodeUtf8With lenientDecode (requestMethod request) <> " needs a key with the right write."
+          | otherwise -> continue holder.user
+      KeyRefused i why -> do
+        refusedKey i why
+        keyUnauthenticated
+      KeyLimited i why seconds -> do
+        refusedKey i why
+        respond (refusalWith status429 [("Retry-After", show seconds)] "TooManyRequests" (Just ("Too many requests with a wrong API key from this address: try again in " <> show seconds <> " seconds.")))
   where
     unauthenticated = do
       respond . refusalWith status401 [("WWW-Authenticate", "Basic realm=\"wiki\", charset=\"UTF-8\"")] "Unauthenticated" $
-        Just "Sign in with your login and password (HTTP Basic). They are wrong, or the account cannot sign in with a password: an account with passkeys only, or one that has not signed in since the wiki moved to its present passwords (sign in once in the browser)."
+        Just "Sign in with your login and password (HTTP Basic), or with an API key (Authorization: Bearer, or X-API-Key). The login and password are wrong, or the account cannot sign in with a password: an account with passkeys only, or one that has not signed in since the wiki moved to its present passwords (sign in once in the browser)."
+    -- One answer for every refused key: the caller is not told whether
+    -- the key is unknown, wrong, expired or revoked, or its user disabled.
+    keyUnauthenticated =
+      respond . refusalWith status401 [("WWW-Authenticate", "Bearer realm=\"wiki\", error=\"invalid_token\"")] "Unauthenticated" $
+        Just "This API key does not sign in: it is not a key of this wiki, or it has expired or been revoked, or its user cannot sign in."
+    refusedKey i why =
+      logWith env.logger Warning ([("event", "api-key-refused"), ("why", refusalName why)] <> [("key", k.text) | Just k <- [i]] <> [("from", asking.address)])
 
 -- | 'runAs' runs a program of the wiki's domain as a signed-in user, for a
 -- request from this address, against the server's storage: the same

@@ -1,0 +1,12 @@
+{
+  "info": {
+    "createdAt": "2026-10-24T09:30:12.345678Z",
+    "expiresAt": "2027-01-01T00:00:00Z",
+    "id": "m3k7q2xa9dwn4zrt",
+    "lastUsedAt": "2026-10-25T00:00:00Z",
+    "name": "Laptop assistant",
+    "revokedAt": null,
+    "right": "write"
+  },
+  "key": "wiki_m3k7q2xa9dwn4zrt_abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst"
+}

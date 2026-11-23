@@ -136,6 +136,9 @@ withServerUsing given raw sendMail action = do
   registrations <- newLimiter defaultLimits {perLogin = 5, perAddress = 5}
   -- Ten password resets requested from an address in fifteen minutes.
   resets <- newLimiter defaultLimits {perLogin = 10, perAddress = 10}
+  -- Thirty failed API keys from an address in fifteen minutes, counted
+  -- apart from the sign-in form's failures ("Wiki.Server.ApiKeys").
+  keyFailures <- newLimiter defaultLimits
   pending <- newPendingSignIns
   attempts <- newAttempts
   proofs <- newProofs
@@ -183,6 +186,7 @@ withServerUsing given raw sendMail action = do
               , texEngine
               , backups
               , resets
+              , keyFailures
               , resetTasks
               , pending
               , attempts

@@ -34,6 +34,7 @@ module Wiki.Server.Limiter
   , reserve
   , failed
   , failedAt
+  , countFailureAt
   , succeeded
   , succeededAfter
   )
@@ -131,6 +132,21 @@ addressVerdict l now address = atomicModifyIORef' l.failures $ \m ->
         Just oldest | length recent >= l.limits.perAddress -> Refused (max 1 (ceiling (diffUTCTime (addUTCTime l.limits.window oldest) now)))
         _ -> Allowed
    in (pruned, answer)
+
+-- | 'addressVerdict' and 'failedAt' in one step, for an attempt already
+-- known to have failed and that names no login: the address's verdict
+-- before this attempt, and the failure counted when the address was
+-- allowed. A refused attempt is not counted, so that a guesser who keeps
+-- going does not push the end of the wait further. The API keys' sign-in
+-- ("Wiki.Server.ApiKeys") uses it: a key is checked before the limit, and
+-- only a key that failed meets it.
+countFailureAt :: Limiter -> UTCTime -> Text -> IO Verdict
+countFailureAt l now address = atomicModifyIORef' l.failures $ \m ->
+  let pruned = prune l.limits now m
+      recent = Map.findWithDefault [] (Address address) pruned
+   in case lastMay (take l.limits.perAddress recent) of
+        Just oldest | length recent >= l.limits.perAddress -> (pruned, Refused (max 1 (ceiling (diffUTCTime (addUTCTime l.limits.window oldest) now))))
+        _ -> (Map.insertWith (<>) (Address address) [now] pruned, Allowed)
 
 -- | Count a failed attempt that named no login, against its address.
 failedAt :: Limiter -> UTCTime -> Text -> IO ()

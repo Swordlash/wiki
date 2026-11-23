@@ -3,7 +3,7 @@
 -- assistant, later an MCP server) reads to find the pages it then reads
 -- and writes through the API for a page's Markdown
 -- ("Wiki.Server.MarkdownApi"). Both sign in as that API does, with HTTP
--- Basic alone ('signedInBasic'), and answer JSON. They live at @api\/list@
+-- Basic or an API key ('signedInProgram'), and answer JSON. They live at @api\/list@
 -- and @api\/search@, beside the application's own API under @api\/v1\/@,
 -- whose later versions are @api\/v2\/@ and so on: neither name can be one.
 --
@@ -68,7 +68,7 @@ import Wiki.Core.Search (SearchHit (..), Snippet, queryWords, snippetText)
 import Wiki.Core.Slug (Slug)
 import Wiki.Core.Space (Space (..), pagePath, rootPage, subspacesOf)
 import Wiki.Server.Api (Env, searchFor)
-import Wiki.Server.MarkdownApi (addressUnder, notASlug, notAllowed, parameter, refusal, runAs, signedInBasic, titleOfSlug, wikiRefusal)
+import Wiki.Server.MarkdownApi (Asking (..), addressUnder, notASlug, notAllowed, parameter, refusal, runAs, signedInProgram, titleOfSlug, wikiRefusal)
 import Wiki.Server.Render (routeOf)
 import Wiki.Server.Storage (createSpaceAt)
 
@@ -165,9 +165,9 @@ instance ToJSON Hits where
 -- | The listing, on a listener that serves the wiki under this path (with a
 -- slash at each end), for a request from this address, whose path after
 -- @api\/list@ is these segments.
-listApplication :: Env -> Text -> Text -> [Text] -> Application
-listApplication env mount address segments request respond =
-  signedInBasic env address request respond $ \u -> case requestMethod request of
+listApplication :: Env -> Text -> Asking -> [Text] -> Application
+listApplication env mount asking@Asking {address} segments request respond =
+  signedInProgram env asking request respond $ \u -> case requestMethod request of
     method
       | method `elem` [methodGet, methodHead] -> case depthOf request of
           Left why -> respond (refusal status400 "Invalid" (Just why))
@@ -242,9 +242,9 @@ newSpaceOf body
 
 -- | The search, on a listener that serves the wiki under this path, for a
 -- request from this address.
-searchApplication :: Env -> Text -> Text -> Application
-searchApplication env mount address request respond =
-  signedInBasic env address request respond $ \u ->
+searchApplication :: Env -> Text -> Asking -> Application
+searchApplication env mount asking@Asking {address} request respond =
+  signedInProgram env asking request respond $ \u ->
     if requestMethod request `notElem` [methodGet, methodHead]
       then respond (notAllowed [methodGet, methodHead])
       else case (words', within, limitOf) of

@@ -8,7 +8,7 @@
 --
 -- The demo's wiki is the server's, as in "Test.Server.Accounts"; the
 -- editor signs in with a password the operator gives them.
-module Test.Server.Hygiene (spec, setUp) where
+module Test.Server.Hygiene (spec, setUp, halfSignedIn, pendingCookie) where
 
 import Control.Monad.Fail (fail)
 import Data.Aeson (encode)

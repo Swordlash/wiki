@@ -62,6 +62,7 @@ module Wiki.Server.App
   )
 where
 
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text qualified as T
 import Data.Time (getCurrentTime)
 import Network.HTTP.Types (Header, hCacheControl, hContentType, hLocation, hSetCookie, hVary, methodGet, methodHead, status302, status401, status404)
@@ -81,6 +82,7 @@ import Wiki.Core.Page (Page (attachments))
 import Wiki.Server.Accounts (Resolved (..), resolveSession)
 import Wiki.Server.Address (ownOrigin, ownOrigins)
 import Wiki.Server.Api (Caller (..), Env (..), Signing (..), apiApplication, currentAssistantHosts)
+import Wiki.Server.ApiKeys (carriesKey)
 import Wiki.Server.Auth (authApplication)
 import Wiki.Server.ContentsApi (asksForSection, contentsApplication, sectionApplication)
 import Wiki.Server.Events (eventsApplication)
@@ -88,7 +90,7 @@ import Wiki.Server.Feed (FeedKind (..), feedApplication, notificationFeedApplica
 import Wiki.Server.Health (healthApplication, metricsApplication)
 import Wiki.Server.ListApi (listApplication, searchApplication)
 import Wiki.Server.Log (Logger, logRequests)
-import Wiki.Server.MarkdownApi (markdownApplication)
+import Wiki.Server.MarkdownApi (Asking (..), markdownApplication, refusal)
 import Wiki.Server.Metrics (observe)
 import Wiki.Server.Render (renderPage, routeAddress, routeOf)
 import Wiki.Server.Routes (routePattern)
@@ -138,6 +140,9 @@ pathSegments = filter (not . T.null) . T.splitOn "/"
 listenerApp :: Logger -> Env -> Maybe StaticSite -> Listener -> Application
 listenerApp logger env site l request respond = do
   (caller, cookie) <- findCaller env l request
+  -- Who the request is logged as: the listener's caller, until the API for
+  -- programs signs the request in itself and names its user.
+  whoAsked <- newIORef [("principal", principalName caller.who)]
   let route = routePattern (pathSegments l.mount) (pathInfo request)
       -- A method as the metrics count it: one of HTTP's own, or @OTHER@,
       -- so that an invented verb does not create a series of its own.
@@ -147,7 +152,7 @@ listenerApp logger env site l request respond = do
       -- The live channel stays open as long as its tab does: it is
       -- counted, not timed.
       observed status took = observe env.metrics l.name route method status (if route == "/api/v1/events" then Nothing else Just took)
-  logRequests logger l.name (principalName caller.who) route observed (routes caller) request (respond . mapResponseHeaders (withCookie cookie))
+  logRequests logger l.name (readIORef whoAsked) route observed (routes caller (writeIORef whoAsked)) request (respond . mapResponseHeaders (withCookie cookie))
   where
     routes caller = listenerRoutes logger env site l caller
     -- The handler's own cookie (signing in or out) takes precedence over
@@ -243,8 +248,8 @@ data Permanent
   | NotPermanent
 
 -- | The routes of a listener, for the given caller.
-listenerRoutes :: Logger -> Env -> Maybe StaticSite -> Listener -> Caller -> Application
-listenerRoutes logger env site l caller request respond = do
+listenerRoutes :: Logger -> Env -> Maybe StaticSite -> Listener -> Caller -> ([(Text, Text)] -> IO ()) -> Application
+listenerRoutes logger env site l caller loggedAs request respond = do
   shut <- case caller.who of
     Anonymous -> (\s -> s.access == Closed) <$> readSettings env.storage
     _ -> pure False
@@ -274,6 +279,10 @@ listenerRoutes logger env site l caller request respond = do
       redirect target = respond (responseLBS status302 [(hLocation, target <> query)] "")
       unauthenticated =
         respond (responseLBS status401 [(hContentType, "application/json"), (hCacheControl, "private, no-cache"), (hVary, "Cookie")] "{\"error\":\"Unauthenticated\"}")
+      keyRefused =
+        respond . refusal status401 "Unauthenticated" $
+          Just "An API key signs in only to the API for programs (api/markdown, api/list and api/search). The application's API, api/v1, takes the browser's session."
+      asking = Asking {address = caller.address, loggedAs}
   if
     -- What a listener reports about the server to a machine, at its root.
     | segments == ["healthz"] -> healthApplication env request respond
@@ -293,7 +302,7 @@ listenerRoutes logger env site l caller request respond = do
             BySession _ -> sectionApplication env l.mount caller.address request respond
             EveryoneAdministers -> notFound
           "api" : "markdown" : endpoint -> case l.finding of
-            BySession _ -> markdownApplication env l.mount caller.address endpoint request respond
+            BySession _ -> markdownApplication env l.mount asking endpoint request respond
             EveryoneAdministers -> notFound
           -- A page's table of contents, signed in as the Markdown's is.
           "api" : "contents" : _ -> case l.finding of
@@ -302,12 +311,16 @@ listenerRoutes logger env site l caller request respond = do
           -- The listing and the search of the same API, signed in as it
           -- is ("Wiki.Server.ListApi").
           "api" : "list" : endpoint -> case l.finding of
-            BySession _ -> listApplication env l.mount caller.address endpoint request respond
+            BySession _ -> listApplication env l.mount asking endpoint request respond
             EveryoneAdministers -> notFound
           "api" : "search" : endpoint | endpoint `elem` [[], [""]] -> case l.finding of
-            BySession _ -> searchApplication env l.mount caller.address request respond
+            BySession _ -> searchApplication env l.mount asking request respond
             EveryoneAdministers -> notFound
           rest@("api" : "v1" : endpoint)
+            -- An API key signs in only to the API for programs: here the
+            -- request is refused, rather than answered as nobody's
+            -- ("Wiki.Server.ApiKeys"' 'carriesKey').
+            | carriesKey request -> keyRefused
             | shut, take 1 endpoint `notElem` map pure openToAnyone, not homeRead -> unauthenticated
             -- The live channel, upgraded to a WebSocket on its own, outside
             -- the API's middlewares, which read and rewrite a response's

@@ -141,9 +141,12 @@ quote v
       c | isControl c -> T.pack (printf "\\u%04x" (ord c))
       c -> T.singleton c
 
--- | Log every request a listener answers, as the given user: what was
--- requested, by whom, the route pattern it matched, the response's status
--- and how long it took. The status, and the time until the response
+-- | Log every request a listener answers: what was requested, by whom,
+-- the route pattern it matched, the response's status and how long it
+-- took. Who asked is the fields the given action reads when the line is
+-- written (@principal@, and @key@ for an API key), so that a handler
+-- that signs its request in itself, as the API for programs does, can
+-- name its user ("Wiki.Server.MarkdownApi"). The status, and the time until the response
 -- starts, are also passed to the given observer (the server's metrics)
 -- before the response is sent, so that a client that has received a
 -- response finds it counted in the next scrape; counting after the send
@@ -151,8 +154,8 @@ quote v
 -- and, if nothing was sent yet, answered with a 500 (servant's own answer
 -- to an exception would be the same, but without logging what went wrong).
 -- A response with a 5xx is logged as an error.
-logRequests :: Logger -> Text -> Text -> Text -> (Int -> Double -> IO ()) -> Middleware
-logRequests logger listener principal route observe app request respond = do
+logRequests :: Logger -> Text -> IO [(Text, Text)] -> Text -> (Int -> Double -> IO ()) -> Middleware
+logRequests logger listener whoAsked route observe app request respond = do
   started <- getMonotonicTime
   sent <- newIORef Nothing
   let respond' response = do
@@ -160,15 +163,16 @@ logRequests logger listener principal route observe app request respond = do
         answering <- getMonotonicTime
         observe (statusOf response) (answering - started)
         respond response
-      context =
-        [ ("listener", listener)
-        , ("principal", principal)
-        , ("from", show (remoteHost request))
-        , ("method", decodeUtf8 (requestMethod request))
-        , ("path", redactedPath (decodeUtf8With lenientDecode (rawPathInfo request)))
-        , ("route", route)
-        ]
+      contextOf who =
+        [("listener", listener)]
+          <> who
+          <> [ ("from", show (remoteHost request))
+             , ("method", decodeUtf8 (requestMethod request))
+             , ("path", redactedPath (decodeUtf8With lenientDecode (rawPathInfo request)))
+             , ("route", route)
+             ]
       done status = do
+        context <- contextOf <$> whoAsked
         finished <- getMonotonicTime
         let timing = [("status", show status), ("ms", T.pack (printf "%.1f" ((finished - started) * 1000)))]
         if status >= 500
@@ -181,6 +185,7 @@ logRequests logger listener principal route observe app request respond = do
     Left (e :: SomeException)
       | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
       | otherwise -> do
+          context <- contextOf <$> whoAsked
           logWith logger Error (context <> [("error", show e)])
           readIORef sent >>= \case
             Just _ -> throwIO e

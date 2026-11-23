@@ -28,6 +28,7 @@ import Wiki.Api
 import Wiki.Api.Account (Account (..), AccountDisabled (..), Credentials (..), InvitationToken (..), SignInMethods (..), withoutIdentity)
 import Wiki.Api.Activity (Activity (..))
 import Wiki.Api.Admin (AdministratorFlag (..), CreateSpacesFlag (..), GroupName (..), Invitation (..), Invited (..), MacroUse, NewInvitation (..), TexEngine (..), TexStatus (..), UserQuery (..), defaultSettings, pageOfDirectory, userQueryOf)
+import Wiki.Api.ApiKeys (ApiKeyId (..), ApiKeyInfo (..), KeyRight (..), NewApiKey (..))
 import Wiki.Api.Auth (Purpose (..), callbackPath, startUrl)
 import Wiki.Api.Backups (Backups (..))
 import Wiki.Api.Comments (CommentText (..), NewThread (..), ThreadResolution (..))
@@ -161,6 +162,9 @@ stubs =
           , beginRegistration = \body -> if body.password == Just (Password "secret") then pure Sample.registrationOptions else refuse Unauthenticated
           , finishRegistration = \_ -> pure Sample.passkeyInfo
           , removePasskey = \i -> if i == Sample.passkeyInfo.id then pure [] else refuse NotFound
+          , apiKeys = pure [Sample.apiKeyInfo, Sample.revokedKeyInfo]
+          , makeApiKey = \new -> if new.right == AdminRight then refuse Forbidden else pure Sample.madeApiKey
+          , revokeApiKey = \i -> if i == Sample.apiKeyInfo.id then pure [Sample.apiKeyInfo {revokedAt = Just Sample.later}, Sample.revokedKeyInfo] else refuse NotFound
           , secondFactorState = pure Sample.secondFactor
           , enrolTotp = \body -> if body.password == Just (Password "the current one") then pure Sample.enrolment else refuse Unauthenticated
           , confirmTotp = \body -> if body.code == "287082" then pure RecoveryCodes {codes = ["abcd-efgh-ijkl-mnop"]} else refuse Unauthenticated
@@ -648,6 +652,15 @@ spec = describe "a server of the API's type" $ do
       answers (getAt k.passkeys) 200 [Sample.passkeyInfo]
       answers (request methodDelete (k.removePasskey Sample.passkeyInfo.id) [] "") 200 ([] :: [PasskeyInfo])
       answers (request methodDelete (k.removePasskey (CredentialId "other")) [] "") 404 NotFound
+    it "lists, makes and revokes the account's API keys, the whole key only in the answer that makes it" $ do
+      let k = links.account
+      (k.apiKeys, k.makeApiKey, k.revokeApiKey Sample.apiKeyInfo.id)
+        `shouldBe` ("api/v1/account/api-keys", "api/v1/account/api-keys", "api/v1/account/api-keys/m3k7q2xa9dwn4zrt/revoke")
+      answers (getAt k.apiKeys) 200 [Sample.apiKeyInfo, Sample.revokedKeyInfo]
+      answers (sendJson methodPost k.makeApiKey NewApiKey {name = "Laptop assistant", right = WriteRight, expiresAt = Nothing}) 201 Sample.madeApiKey
+      answers (sendJson methodPost k.makeApiKey NewApiKey {name = "", right = AdminRight, expiresAt = Nothing}) 403 Forbidden
+      answers (request methodPost (k.revokeApiKey Sample.apiKeyInfo.id) [] "") 200 [Sample.apiKeyInfo {revokedAt = Just Sample.later}, Sample.revokedKeyInfo]
+      answers (request methodPost (k.revokeApiKey (ApiKeyId "other")) [] "") 404 NotFound
     it "signs in with a passkey, alone or as the second step, in two steps each" $ do
       (links.beginPasskeySignIn, links.beginSecondFactorPasskey) `shouldBe` ("api/v1/session/passkey", "api/v1/session/second-factor/passkey")
       answers (request methodPost links.beginPasskeySignIn [] "") 200 anyPasskey

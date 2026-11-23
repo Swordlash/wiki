@@ -332,6 +332,11 @@ everyTable = do
   row wikiDb.reset_tokens [ResetTokenRow {token_hash = "copy-reset", user_id = "copy-u2", created_at = time 0, expires_at = time 1, used_at = Just (time 1)}]
   row wikiDb.email_verifications [EmailVerificationRow {token_hash = "copy-verify", user_id = "copy-u1", email = "one@example.org", created_at = time 0, expires_at = time 24}]
   row wikiDb.passkeys [PasskeyRow {credential_id = "copy-credential", user_id = "copy-u1", public_key = "copy-public-key", algorithm = -7, sign_count = 4294967296, name = "Laptop", created_at = time 0, last_used_at = Just (time 2), wrapped_nonce = Just "nonce", wrapped_key = Just "wrapped"}]
+  row
+    wikiDb.api_keys
+    [ ApiKeyRow {id = "copy-key-1", user_id = "copy-u1", secret_hash = "copy-hash-1", name = "Laptop ünïcode", access = "write", created_at = time 0, expires_at = Just (time 72), last_used_at = Just (time 2), revoked_at = Nothing}
+    , ApiKeyRow {id = "copy-key-2", user_id = "copy-u1", secret_hash = "copy-hash-2", name = "Old", access = "read", created_at = time 0, expires_at = Nothing, last_used_at = Nothing, revoked_at = Just (time 1)}
+    ]
   row wikiDb.vaults [VaultRow {user_id = "copy-u1", salt = "salt", password_nonce = Just "nonce", password_key = Just "key", revision = 7, updated_at = time 2}]
   row wikiDb.vault_items [VaultItemRow {user_id = "copy-u1", name = "identity", key_id = Just "copy-key", nonce = "nonce", ciphertext = "ciphertext"}]
   row
@@ -415,6 +420,7 @@ comparedTables =
   , ("reset_tokens", rowsIn wikiDb.reset_tokens)
   , ("email_verifications", rowsIn wikiDb.email_verifications)
   , ("passkeys", rowsIn wikiDb.passkeys)
+  , ("api_keys", rowsIn wikiDb.api_keys)
   , ("vaults", rowsIn wikiDb.vaults)
   , ("vault_items", rowsIn wikiDb.vault_items)
   , ("public_keys", rowsIn wikiDb.public_keys)

@@ -415,6 +415,8 @@ instance Copyable EmailVerifications
 
 instance Copyable Passkeys
 
+instance Copyable ApiKeys
+
 instance Copyable Vaults
 
 instance Copyable VaultItems
@@ -531,6 +533,7 @@ copiedTables =
   , plain wikiDb.reset_tokens
   , plain wikiDb.email_verifications
   , plain wikiDb.passkeys
+  , plain wikiDb.api_keys
   , plain wikiDb.vaults
   , plain wikiDb.vault_items
   , plain wikiDb.public_keys

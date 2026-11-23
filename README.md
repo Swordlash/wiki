@@ -2889,7 +2889,13 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   `FILE` and `FILE.version` as they were. The files beside them are made by
   `mktemp` (nobody can name one in advance, in `/tmp` either), and each takes
   the mode of the file it replaces, or for a new file the one your umask
-  gives; a `FILE` that is a symbolic link is refused. Everything else the
+  gives; a `FILE` that is a symbolic link is refused. `FILE` must be in a
+  directory of your own: one nobody else can write, under directories nobody
+  else can swap (`/tmp` itself is refused; `mkdir -m 700 /tmp/mine` is
+  fine), judged where its path leads. Two `wiki.sh` writing one `FILE` at once
+  cannot interleave: the second fails at once and names the lock,
+  `FILE.wiki-sh-lock`, which a run that was killed may leave behind for you to
+  remove. Everything else the
   script writes is private to you: the state files, and a directory of its
   own under `TMPDIR` that it removes when it ends. With no version known, `put` refuses
   to write blind; `--force` reads the page's version as it is now and writes

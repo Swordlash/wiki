@@ -44,16 +44,21 @@ tab=$(printf '\t')
 #                            whose directories mkdir -p makes under umask
 #                            077: each written to a file mktemp makes beside
 #                            it (mode 600), then moved over it
-#   get --out FILE           FILE and FILE.version, each written to a file
-#                            mktemp makes in FILE's directory (mode 600,
-#                            never a name this script composes), given the
-#                            mode of the file it replaces (or, for a new
-#                            one, the mode the caller's umask gives a new
-#                            file), then moved over it; a FILE or
+#   get --out FILE           FILE and FILE.version, only in a directory of
+#                            the user's own (own_directory: nobody else
+#                            can write it, nor swap it), each written to a
+#                            file mktemp makes there (mode 600, never a name
+#                            this script composes), given the mode of the
+#                            regular file of the user's it replaces (or the
+#                            mode the caller's umask gives a new file), then
+#                            moved over it under FILE's lock; a FILE or
 #                            FILE.version that is a symbolic link is
 #                            refused, so nothing is written through one
 #   put --file FILE          FILE.version, as get --out writes it, when it
 #                            names the page written
+#   the locks                FILE.wiki-sh-lock beside FILE, and one beside
+#                            each state file (take_lock): directories made
+#                            by mkdir, removed when the run ends
 #   curl's config            a here-document on descriptor 3: a pipe, or on
 #                            bash 3.2 a file the shell itself makes and
 #                            removes
@@ -69,10 +74,14 @@ umask 077
 # The temporary directory of this run: answers, headers and bodies go there,
 # never into a variable that would hold a page's text. Removed on exit.
 work=''
-# Run by the trap below, which shellcheck does not count as a call.
+# Run by the trap below, which shellcheck does not count as a call: the
+# run's directory goes, and the locks this process holds (take_lock) are
+# released, on a signal too.
 # shellcheck disable=SC2329
 cleanup() {
   [ -z "$work" ] || rm -rf "$work"
+  [ -z "${file_lock:-}" ] || rm -rf "$file_lock"
+  [ -z "${state_lock:-}" ] || rm -rf "$state_lock"
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -1051,6 +1060,74 @@ directory_of() {
   esac
 }
 
+# The numeric owner and the mode of a path, from ls -ldn (field 3 and
+# field 1 on stock Linux and macOS alike), in owner and mode_text.
+owner_and_mode() {
+  listing=$(ls -ldn -- "$1" 2>/dev/null) || return 1
+  mode_text=${listing%% *}
+  owner=$(printf '%s\n' "$listing" | awk '{ print $3 }')
+}
+
+# Whether FILE's directory is the user's own, where nobody else can put a
+# link or a file at a name this script writes: the directory, with every
+# link in its path followed (cd -P, pwd -P), is owned by the user and
+# writable by nobody else; and each directory above it is owned by the
+# user or by root and, if others can write it, has the sticky bit, so that
+# nobody else can rename the directory away and put one of theirs in its
+# place. Every path is checked, and then used, as it resolved: a link on
+# the way, even one someone else may change, is no longer read. Sets
+# own_path, FILE in the resolved directory; a refusal is exit 2, before
+# any request.
+own_directory() {
+  me=$(id -u)
+  resolved=$(cd -P -- "$(directory_of "$1")" 2>/dev/null && pwd -P) || {
+    fail "$EX_USAGE" "cannot find the directory of $1"
+    return
+  }
+  case ${1##*/} in
+    '' | . | ..)
+      fail "$EX_USAGE" "$1 names a directory: give a file"
+      return
+      ;;
+  esac
+  owner_and_mode "$resolved" || {
+    fail "$EX_USAGE" "cannot read the mode of $resolved"
+    return
+  }
+  if [ "$owner" != "$me" ]; then
+    fail "$EX_USAGE" "$1 is in $resolved, a directory of another user's: wiki.sh writes beside the file (its version, files on the way), so give a file in a directory of your own (in your home, or one made with mkdir -m 700)"
+    return
+  fi
+  case $mode_text in
+    ?????w* | ????????w*)
+      fail "$EX_USAGE" "$1 is in $resolved, which others can write ($mode_text): one of them could put a link where wiki.sh writes, so give a file in a directory of your own (in your home, or one made with mkdir -m 700)"
+      return
+      ;;
+  esac
+  above=$resolved
+  while [ "$above" != / ]; do
+    above=${above%/*}
+    [ -n "$above" ] || above=/
+    owner_and_mode "$above" || {
+      fail "$EX_USAGE" "cannot read the mode of $above"
+      return
+    }
+    if [ "$owner" != "$me" ] && [ "$owner" != 0 ]; then
+      fail "$EX_USAGE" "$1 is under $above, a directory of another user's, who could swap the directories below it: give a file in a directory of your own"
+      return
+    fi
+    case $mode_text in
+      ?????????[tT]*) ;;
+      ?????w* | ????????w*)
+        fail "$EX_USAGE" "$1 is under $above, which others can write without the sticky bit ($mode_text): one of them could swap the directories below it, so give a file in a directory of your own"
+        return
+        ;;
+    esac
+  done
+  own_path=$resolved/${1##*/}
+  [ "$resolved" != / ] || own_path=/${1##*/}
+}
+
 # The mode of an existing file in chmod's symbolic form, from ls (the one
 # way stock Linux and macOS agree on): -rw-r----- is u=rw,g=r,o=. Set-id
 # and sticky bits count as x.
@@ -1078,15 +1155,15 @@ stage() {
   staged=$(mktemp "$(directory_of "$1")/.wiki-sh.XXXXXX" 2>/dev/null) || return 1
 }
 
-# The staged file moved over FILE, with FILE's mode when FILE exists and
-# PRIVATE is not given, the mode the caller's umask gives a new file when
-# it does not, and 600 with PRIVATE (the state files).
+# The staged file moved over FILE. Its mode is FILE's when FILE is a
+# regular file of the user's own (not a link, not someone else's), the
+# mode the caller's umask gives a new file otherwise, and 600 with PRIVATE
+# (the state files).
 place_staged() {
   if [ "${3:-}" != private ]; then
-    if [ -e "$2" ]; then
+    mode=$(printf '%s' "$user_umask" | sed 's/x//g')
+    if [ -f "$2" ] && [ ! -L "$2" ] && owner_and_mode "$2" && [ "$owner" = "$(id -u)" ]; then
       mode=$(mode_of "$2")
-    else
-      mode=$(printf '%s' "$user_umask" | sed 's/x//g')
     fi
     chmod "$mode" "$1" 2>/dev/null || return 1
   fi
@@ -1103,6 +1180,56 @@ write_record() {
   fi
 }
 
+# Locks: one writer at a time of a file and its sidecar, and of a page's
+# state file. A lock is a directory made by mkdir beside what it guards,
+# FILE.wiki-sh-lock (mkdir either makes it or fails, at once and
+# everywhere), with a file owner inside: the process's id and when it took
+# the lock. A second writer neither waits nor takes the lock over: it fails
+# and names the lock. The locks this process holds are released when it
+# ends, by the exit trap, on a signal too; a lock left by a run that was
+# killed (kill -9, a power cut) stays until the user removes it.
+#
+#   what is written                       its lock
+#   FILE and FILE.version (get --out)     FILE.wiki-sh-lock, from before the
+#                                         text's move to after the version's
+#   FILE.version (put --file)             FILE.wiki-sh-lock, from before FILE
+#                                         and FILE.version are read to after
+#                                         the version is moved on
+#   a page's state file (every get,       the state file's own lock,
+#   put, create, MCP write)               STATE.wiki-sh-lock, around its write
+#   the run's own directory               none: it is the run's alone
+file_lock='' state_lock=''
+
+# Take the lock of PATH, into the variable named by the second argument
+# (file_lock or state_lock); a lock held by another process fails (exit 1)
+# with what to do.
+take_lock() {
+  lock=$1.wiki-sh-lock
+  if mkdir "$lock" 2>/dev/null; then
+    case $2 in
+      file_lock) file_lock=$lock ;;
+      state_lock) state_lock=$lock ;;
+    esac
+    printf '%s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$lock/owner" 2>/dev/null
+    return 0
+  fi
+  held_by=$(cat "$lock/owner" 2>/dev/null)
+  fail "$EX_ERROR" "another wiki.sh is writing $1 (its lock $lock was taken${held_by:+ by process ${held_by%% *} at ${held_by#* }}); try again when it is done. If no wiki.sh is running, the lock was left by one that was killed: remove it with rm -r '$lock'"
+}
+
+release_lock() {
+  case $1 in
+    file_lock)
+      if [ -n "$file_lock" ]; then rm -rf "$file_lock"; fi
+      file_lock=''
+      ;;
+    state_lock)
+      if [ -n "$state_lock" ]; then rm -rf "$state_lock"; fi
+      state_lock=''
+      ;;
+  esac
+}
+
 # The sidecar of FILE, when it is this page's: FILE.version, else nothing.
 # A sidecar that is a symbolic link is never this page's: nothing is
 # written through one.
@@ -1113,17 +1240,31 @@ sidecar_of() {
 }
 
 # The page at addr is at VERSION, by a text delivered or a write accepted:
-# its state file says so, and the sidecar of FILE (if given, and if it is
-# this page's).
+# its state file says so, and the sidecar of FILE (if given, a path in a
+# directory own_directory has checked, and if the sidecar is this page's).
+# Each is written under its lock; the status is 1 (with the failure's
+# message) when a lock is held by another wiki.sh, and nothing of that
+# record is written.
 record_version() {
   vf=$(version_file)
-  if ! { mkdir -p "${vf%/*}" && write_record "$vf" "$1$nl" private; }; then
+  mkdir -p "${vf%/*}" 2>/dev/null
+  take_lock "$vf" state_lock || return
+  if ! write_record "$vf" "$1$nl" private; then
     note "cannot keep the version in $vf"
   fi
+  release_lock state_lock
   sidecar=$(sidecar_of "${2:-}")
-  if [ -n "$sidecar" ] && ! write_record "$sidecar" "$1$nl$addr_shown$nl"; then
+  [ -n "$sidecar" ] || return 0
+  if [ -z "$file_lock" ]; then
+    take_lock "$2" file_lock || return
+    taken_here=1
+  else
+    taken_here=''
+  fi
+  if ! write_record "$sidecar" "$1$nl$addr_shown$nl"; then
     note "cannot keep the version in $sidecar"
   fi
+  [ -z "$taken_here" ] || release_lock file_lock
 }
 
 remembered_version() {
@@ -1436,8 +1577,11 @@ cmd_get() {
   load_config || return
   page_address "$first" "$second" || return
   if [ -n "$out" ]; then
-    # Nothing is written through a symbolic link, nor into a directory.
-    for target in "$out" "$out.version"; do
+    # Only into a directory of the user's own, as it resolves, and nothing
+    # through a symbolic link or into a directory (own_directory).
+    own_directory "$out" || return
+    out_path=$own_path
+    for target in "$out_path" "$out_path.version"; do
       if [ -L "$target" ] || [ -d "$target" ]; then
         fail "$EX_USAGE" "$target is a symbolic link or a directory: give --out a plain file"
         return
@@ -1456,10 +1600,12 @@ cmd_get() {
     # Between the two moves, new text sits beside the old version, and a
     # put of it is refused (412) unless nobody saved since; the other
     # order would leave the new version beside the old text, which a put
-    # would write over the new version's changes unseen.
+    # would write over the new version's changes unseen. FILE's lock is
+    # held from before the first move to after the last, so that two
+    # writers cannot interleave their moves.
     # Each is staged in a file mktemp makes beside it (stage), and gets the
     # mode of the file it replaces as it is moved in (place_staged).
-    if ! stage "$out"; then
+    if ! stage "$out_path"; then
       fail "$EX_ERROR" "cannot make a file in the directory of $out: $out and its version are as they were"
       return
     fi
@@ -1470,30 +1616,43 @@ cmd_get() {
       fail "$EX_ERROR" "cannot write $out whole (is the disk full, or a file size limit reached?): $out and its version are as they were"
       return
     fi
-    if ! stage "$out.version" || ! { printf '%s\n%s\n' "$page_version" "$addr_shown" >"$staged"; } 2>/dev/null; then
+    if ! stage "$out_path.version" || ! { printf '%s\n%s\n' "$page_version" "$addr_shown" >"$staged"; } 2>/dev/null; then
       rm -f "$text_tmp" ${staged:+"$staged"}
       fail "$EX_ERROR" "cannot write $out.version: $out and its version are as they were"
       return
     fi
     version_tmp=$staged
-    if ! place_staged "$text_tmp" "$out"; then
+    if ! take_lock "$out_path" file_lock; then
       rm -f "$text_tmp" "$version_tmp"
+      return "$EX_ERROR"
+    fi
+    if ! place_staged "$text_tmp" "$out_path"; then
+      rm -f "$text_tmp" "$version_tmp"
+      release_lock file_lock
       fail "$EX_ERROR" "cannot move the text into $out: $out and its version are as they were"
       return
     fi
-    if ! place_staged "$version_tmp" "$out.version"; then
+    if ! place_staged "$version_tmp" "$out_path.version"; then
       rm -f "$version_tmp"
+      release_lock file_lock
       fail "$EX_ERROR" "$out has the page's new text, but $out.version could not be written: a put --file $out will be refused; get the page again"
       return
     fi
-    record_version "$page_version"
+    release_lock file_lock
+    if ! record_version "$page_version"; then
+      fail "$EX_ERROR" "wrote $out and $out.version, but not the version remembered for $addr_shown: $fail_message"
+      return
+    fi
     note "wrote $out; its version $page_version is in $out.version, for put --file $out"
   else
     if ! cat "$work/body"; then
       fail "$EX_ERROR" "the page could not be written out whole: its version is not remembered"
       return
     fi
-    record_version "$page_version"
+    if ! record_version "$page_version"; then
+      fail "$EX_ERROR" "the page is written out, but its version is not remembered: $fail_message"
+      return
+    fi
     note "version $page_version of $addr_shown (put remembers it)"
   fi
 }
@@ -1523,6 +1682,19 @@ cmd_put() {
     usage "put reads the page's new text from --file or standard input (wiki.sh put PAGE < text.md)"
     return
   fi
+  # The file whose sidecar the put moves on: only one in a directory of the
+  # user's own (own_directory), checked before anything is sent. Its lock
+  # is held from before the text and the version are read until the
+  # version is moved on, so that a get --out of the same file cannot put
+  # newer text beside an older version, or the other way round, while the
+  # put reads them or writes. (The lock is released by the exit trap on
+  # every way out.)
+  sidecar_file=''
+  if [ -n "$(sidecar_of "$file")" ]; then
+    own_directory "$file" || return
+    sidecar_file=$own_path
+    take_lock "$sidecar_file" file_lock || return
+  fi
   read_text || return
   if [ ! -s "$work/put-body" ] && [ -z "$force" ]; then
     fail "$EX_USAGE" "the new text is empty: put --force writes an empty page"
@@ -1548,7 +1720,7 @@ cmd_put() {
     fi
     version=$page_version
   else
-    sidecar=$(sidecar_of "$file")
+    sidecar=$(sidecar_of "$sidecar_file")
     if [ -n "$sidecar" ]; then
       version=$(head -n 1 "$sidecar")
     else
@@ -1567,7 +1739,11 @@ cmd_put() {
   fi
   # Accepted: every record of the page follows, however the version sent
   # was chosen (the table above record_version).
-  record_version "$page_version" "$file"
+  if ! record_version "$page_version" "$sidecar_file"; then
+    fail "$EX_ERROR" "wrote $addr_shown (its version is now $page_version), but did not remember that version: $fail_message"
+    return
+  fi
+  release_lock file_lock
   note "wrote $addr_shown; its version is now $page_version"
 }
 
@@ -1622,7 +1798,10 @@ cmd_create() {
   fi
   read_text || return
   create_page "$work/put-body" "$title" "$kind" || return
-  record_version "$page_version"
+  if ! record_version "$page_version"; then
+    fail "$EX_ERROR" "created $addr_shown (its version is $page_version), but did not remember that version: $fail_message"
+    return
+  fi
   note "created $addr_shown; its version is $page_version"
 }
 
@@ -1684,7 +1863,10 @@ wiki.sh: the wiki from a shell, through its API for programs.
       The page's Markdown on standard output, and its version on standard
       error. --out FILE writes the Markdown to FILE and the version to
       FILE.version; --version prints the version alone (and does not
-      remember it, since no text was read).
+      remember it, since no text was read). FILE must be in a directory of
+      your own, which nobody else can write (not /tmp itself: make one with
+      mkdir -m 700); so must a FILE whose FILE.version a put moves on. Two
+      wiki.sh writing one FILE at once: the second fails, naming the lock.
   wiki.sh put PAGE [--file FILE] [--if-match VERSION | --force]
       Write the page's whole Markdown, from FILE or standard input. The write
       is conditional: it is refused (exit 5) when someone saved the page
@@ -1989,7 +2171,9 @@ mcp_call_tool() {
       mv "$work/arg" "$work/content"
       page_address "$page" || { tool_failed "$fail_message"; return; }
       if store_page "$work/content" "$(quoted_version "$version")"; then
-        record_version "$page_version"
+        # The state file is the commands' convenience; the model has the
+        # version in the answer, so a lock held elsewhere is only noted.
+        record_version "$page_version" || note "$fail_message"
         printf 'Wrote %s. Its version is now %s.' "$addr_shown" "$page_version" >"$work/tool-text"
         tool_answer false "$work/tool-text"
       else
@@ -2024,7 +2208,7 @@ mcp_call_tool() {
         return
       fi
       if create_page "$work/content" "$title" "$kind"; then
-        record_version "$page_version"
+        record_version "$page_version" || note "$fail_message"
         printf 'Created %s. Its version is %s.' "$addr_shown" "$page_version" >"$work/tool-text"
         tool_answer false "$work/tool-text"
       else

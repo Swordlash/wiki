@@ -26,6 +26,9 @@
 # expanded here.
 # shellcheck disable=SC2016
 set -u
+# The directories the test makes are writable by the user alone, as the
+# client asks of a directory it writes in, whatever the caller's umask.
+umask 022
 cd "$(dirname "$0")/.." || exit 1
 root=$(pwd)
 # WIKI_CLIENT names another copy of the client, such as an older one, to
@@ -213,7 +216,21 @@ cat "$FAKE_BODY" >"$out"
 } >"$headers"
 printf '%s %s' "$FAKE_STATUS" "$(($(wc -c <"$FAKE_BODY")))"
 EOF
-chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl"
+# And an mv that, for a run with PAUSE_DIR set, stops at its second call
+# (get --out's, between the text's move and the version's): it says
+# "paused" on the pipe PAUSE_DIR/ready and waits for a line on
+# PAUSE_DIR/go (mkdir makes the second call the only one that stops).
+mkdir -p "$work/fakes/pausemv"
+real_mv=$(command -v mv)
+cat >"$work/fakes/pausemv/mv" <<EOF
+#!/bin/sh
+if [ -n "\${PAUSE_DIR:-}" ] && ! mkdir "\$PAUSE_DIR/first" 2>/dev/null && mkdir "\$PAUSE_DIR/paused" 2>/dev/null; then
+  printf 'paused\n' >"\$PAUSE_DIR/ready"
+  read -r go <"\$PAUSE_DIR/go"
+fi
+exec "$real_mv" "\$@"
+EOF
+chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv"
 # The PATH the client runs with: the recording curl, and the failing jq
 # unless the MCP server is under test.
 curl_path=$work/fakes/curl:$PATH
@@ -557,6 +574,8 @@ suite() {
   wrong_answers
   answers_by_kind
   files_written
+  own_directories
+  one_writer_at_a_time
   creating
   round_trip "$public_root" root
   round_trip "$public_wiki" base-path
@@ -910,6 +929,123 @@ creating() {
   state=$work/state-$shell-a
 }
 
+# get --out and put --file write only in a directory of the user's own:
+# one others can write (1777, 775) is refused before any request, as is one
+# under a directory others can write without the sticky bit; 700 and 755
+# work; a path through a linked directory is judged where it leads.
+own_directories() {
+  url=$public_root user=editor password=$editor_password state=$work/state-$shell-dirs input=/dev/null
+  dirs=$work/dirs-$shell
+  mkdir -p "$dirs/d1777" "$dirs/d775" "$dirs/d700" "$dirs/d755" "$dirs/open/inner"
+  chmod 1777 "$dirs/d1777"
+  chmod 775 "$dirs/d775"
+  chmod 700 "$dirs/d700"
+  chmod 755 "$dirs/d755"
+  chmod 777 "$dirs/open"
+  chmod 755 "$dirs/open/inner"
+  ln -s "$dirs/d1777" "$dirs/to-shared"
+  ln -s "$dirs/d700" "$dirs/to-own"
+  for refused in d1777 d775 open/inner to-shared; do
+    : >"$work/curl.args"
+    client get "$page" --out "$dirs/$refused/page.md"
+    expect 2 "get --out into $refused is refused"
+    has err "directory of your own" "the refusal of $refused says to use a directory of one's own"
+    check "nothing was sent for get --out into $refused" [ ! -s "$work/curl.args" ]
+    check "nothing was written in $refused" [ ! -e "$dirs/$refused/page.md" ]
+  done
+  for allowed in d700 d755 to-own; do
+    client get "$page" --out "$dirs/$allowed/page.md"
+    expect 0 "get --out into $allowed works"
+  done
+  # put --file of a file whose version it would move on, in a shared
+  # directory: refused before the request.
+  cp "$dirs/d700/page.md" "$dirs/d700/page.md.version" "$dirs/d775/"
+  chmod 775 "$dirs/d775"
+  : >"$work/curl.args"
+  client put "$page" --file "$dirs/d775/page.md"
+  expect 2 "put --file with its version in a shared directory is refused"
+  check "nothing was sent for it" [ ! -s "$work/curl.args" ]
+  chmod 755 "$dirs/open"
+}
+
+# One writer at a time of a file and its version, and of a page's state:
+# a lock left in place makes the next writer fail at once, naming it; and
+# two get --out of one file, the first paused between its moves by an mv
+# that waits on a pipe, leave the first one's text and version, both.
+one_writer_at_a_time() {
+  url=$public_root user=editor password=$editor_password state=$work/state-$shell-locks input=/dev/null
+  locks=$work/locks-$shell
+  mkdir -p "$locks"
+  out=$locks/page.md
+  client get "$page" --out "$out"
+  expect 0 "get --out, before the locks"
+  cp "$out" "$work/lock-text.before"
+  cp "$out.version" "$work/lock-version.before"
+  mkdir "$out.wiki-sh-lock"
+  printf '12345 2026-11-23T00:00:00Z\n' >"$out.wiki-sh-lock/owner"
+  another_client_saves "$page" "while a lock is held"
+  client get "$page" --out "$out"
+  expect 1 "get --out while FILE's lock is held fails"
+  has err "another wiki.sh is writing $out" "it says another wiki.sh is writing the file"
+  has err "process 12345 at 2026-11-23T00:00:00Z" "it says which process took the lock, and when"
+  has err "rm -r '$out.wiki-sh-lock'" "it says how to remove a lock left behind"
+  check "the file is as it was" cmp -s "$out" "$work/lock-text.before"
+  check "its version is as it was" cmp -s "$out.version" "$work/lock-version.before"
+  check "the lock is left as it was" [ -e "$out.wiki-sh-lock/owner" ]
+  check "nothing is left beside the file" [ -z "$(find "$locks" -name '.wiki-sh.*')" ]
+  : >"$work/curl.args"
+  client put "$page" --file "$out"
+  expect 1 "put --file while FILE's lock is held fails"
+  check "nothing was sent for it" [ ! -s "$work/curl.args" ]
+  rm -r "$out.wiki-sh-lock"
+  # The state file's lock.
+  vf=$(find "$state" -name _version -path '*/s/team/projects/p/the-wiki/*')
+  mkdir "$vf.wiki-sh-lock"
+  client get "$page"
+  expect 1 "get while the page's state lock is held fails"
+  has err "its version is not remembered" "it says the version is not remembered"
+  rm -r "$vf.wiki-sh-lock"
+  # Two writers at once. The first, A, stops between its two moves (the text moved, the version not), with FILE's
+  # lock held; it says so on the pipe ready, and goes on when go is
+  # written. A wrapper writes "end" to ready when A ends, so that a
+  # failure before the mv cannot leave the test waiting.
+  client get "$page"
+  cp "$work/out" "$work/text-a"
+  client get "$page" --version
+  version_a=$(cat "$work/out")
+  pause=$work/pause-$shell
+  mkdir -p "$pause"
+  mkfifo "$pause/ready" "$pause/go"
+  sh -c '
+    env -i PATH="$1" HOME="$2" WIKI_URL="$3" WIKI_USER=editor WIKI_PASSWORD="$4" WIKI_STATE_DIR="$5" PAUSE_DIR="$6" \
+      "$7" "$8" get "$9" --out "${10}" >"$6/out" 2>"$6/err"
+    echo "$?" >"$6/status"
+    printf "end\n" >"$6/ready"
+  ' sh "$work/fakes/pausemv:$nojq_path" "$work/home" "$url" "$editor_password" "$state-a" "$pause" "$shell" "$client" "$page" "$out" &
+  writer=$!
+  read -r said <"$pause/ready"
+  if [ "$said" = paused ]; then
+    pass "the first writer stops between its moves, holding the lock"
+    another_client_saves "$page" "while the first writer is paused"
+    client get "$page" --out "$out"
+    expect 1 "the second writer fails, as the first holds the lock"
+    has err "another wiki.sh is writing $out" "the second writer names the lock"
+    printf 'go\n' >"$pause/go"
+    read -r said <"$pause/ready"
+  else
+    fail "the first writer stops between its moves: it ended first ($(cat "$pause/err" 2>/dev/null))"
+  fi
+  wait "$writer"
+  check "the first writer succeeds" [ "$(cat "$pause/status")" = 0 ]
+  check "the file is the first writer's text" cmp -s "$out" "$work/text-a"
+  check "its version is the first writer's" [ "$(head -n 1 "$out.version")" = "$version_a" ]
+  check "no lock is left" [ ! -e "$out.wiki-sh-lock" ]
+  input=$work/restore
+  client put "$page" --force
+  expect 0 "the page's text back after the locks' checks"
+  input=/dev/null
+}
+
 # What get --out writes, where and with which mode: never through a name
 # another user could make first, a symbolic link, with the mode of the file
 # it replaces (or the caller's umask's for a new one), and nothing left
@@ -1024,7 +1160,7 @@ versions_follow_delivery() {
   client get "$page"
   another_client_saves "$page" "after a delivered get"
   client get "$page" --out "$work/no such directory/page.md"
-  expect 1 "get --out into a missing directory fails"
+  expect 2 "get --out into a missing directory is refused"
   input=$work/older
   client put "$page"
   expect 5 "after a get --out that wrote nothing, a put of older text is refused"

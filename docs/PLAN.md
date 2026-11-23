@@ -2190,6 +2190,19 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   focus. The first time (#316) the wait was only made longer, on the
   guess that the browser was slow. To look at one day, for a reader:
   the page does not keep its scroll when an island above grows.
+- **The owner's issues of 2026-11-21.** #337 (a passkey refused on a
+  wiki not on 443): closed; the public address in the Server section
+  said `http://` on a wiki served over `https://`; the refusal now
+  names both origins and where the expected one comes from, and a
+  default port written out no longer refuses every passkey (#341).
+  Left there: the WebSocket upgrade's origin check (`Events.hs`)
+  compares host and port as text, so a forwarded `host:443` or a host
+  passed on without its port refuses the live channel. #339 ("Draft
+  saved" over the search's buttons): fixed (#343), the notices hang
+  under the search's panel while it is open. #340 (the user's
+  settings on a page of their own, the menu under the login keeping
+  only Settings, the demo's switch of users and Sign out; confirmed
+  with him): being built on `user-settings-page`.
 - **WP5.138 An API for a page's Markdown (the owner, 2026-11-18:
   "robię to z myślą o lokalnych asystentach i MCP").** **The first
   cut is merged (#334), server only.** `GET` and `PUT` of a page's
@@ -2223,12 +2236,24 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   cut. Seen and left: the request log's principal is the cookie's
   user, never the Basic user; a `PUT`'s body has no size limit, as
   the editor's save has none; the wiki's front page has no address.
-  **Later cuts, his list:** a key made in the user's panel (shown
-  once, revoked only, never expiring at first; `Authorization:
-  Bearer` or `X-API-Key`, the server keeping its hash), creating
-  pages, attachments, a listing of a space's contents, an address for
-  one section of a page, and an MCP server over the API as a package
-  of its own.
+  **Listing and search are merged too (#342):** `GET /api/list/` and
+  `/api/list/s/<space…>/` give the tree the user may read (`?depth=N`
+  cuts it), `GET /api/search?q=…` (`&space=`, `&limit=`) runs the
+  application's search; both through the application's own domain
+  calls and the same sign-in (`signedInBasic`); not under
+  `/api/markdown`, the owner's word, since they return JSON. **What
+  is left is the owner's issue #338**, in this order unless he says
+  otherwise: creating a page with a title and creating a space; a
+  page's table of contents and one section of it (his open question,
+  the text between `# title` and the first `##`: the session's
+  answer, the title's own section, to the next heading of any level,
+  with the subsections on a parameter); API keys made in the user's
+  panel, with an expiry date and rights (read, write, admin), shown
+  once, the server keeping a hash; the handlers moved to
+  servant-server; an MCP client or server (to find out whether the
+  wiki's server can be the MCP server; Hackage's `mcp`), with clients
+  in Haskell, Python and `curl`. Attachments are his earlier list's
+  and not in the issue.
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto
   przed pluginami").** One builder, in this order, each its own pull

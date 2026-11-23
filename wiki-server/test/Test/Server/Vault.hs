@@ -21,6 +21,7 @@ import Network.HTTP.Types (Header, methodDelete, methodGet, methodPost, methodPu
 import Network.Wai (Request (..), defaultRequest)
 import Protolude
 import Test.Database (Backing)
+import Test.HUnit (assertFailure)
 import Test.Hspec
 import Test.Server.Fixture
 import Test.Server.WebAuthn (Authenticator (..), assertion, assertionFlagged, authenticator, registration)
@@ -29,12 +30,14 @@ import Wiki.Api.Account (Account (..), AccountDisabled (..))
 import Wiki.Api.Error (ApiError (..))
 import Wiki.Api.Links (links)
 import Wiki.Api.Security (CurrentPassword (..), OneTimeCode (..), RecoveryCodes (..), TotpEnrolment (..))
+import Wiki.Api.ServerSettings (parsePublicUrl)
 import Wiki.Api.Types (SessionInfo (..))
 import Wiki.Api.Vault
 import Wiki.Core.Assistant.Vault
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Url (Url (..))
 import Wiki.Core.User (Login (..), Password (..), Standing (..), User (..))
+import Wiki.Server.Address (ownOrigins, showOrigin)
 import Wiki.Server.Totp (codeAt, secretFromText)
 import Wiki.Server.Vault (Site (..), keyIdOf, siteFor)
 import Wiki.Server.WebAuthn (fromBase64Url, toBase64Url)
@@ -288,6 +291,24 @@ vaultAndPasskeys backing = describe "the assistant's vault and passkeys, over HT
       siteFor (Just (Url "https://user@wiki.example.org/")) (request []) `shouldBe` Site {rpId = "wiki.example.org", origins = ["http://wiki.example.org:8080"]}
       siteFor (Just (Url "https://wiki.example.org:port/")) (request []) `shouldBe` Site {rpId = "wiki.example.org", origins = ["http://wiki.example.org:8080"]}
       siteFor (Just (Url "https://wiki.ex%61mple.org/")) (request []) `shouldBe` Site {rpId = "wiki.example.org", origins = ["http://wiki.example.org:8080"]}
+    -- The origin is the scheme and the authority: what the path holds,
+    -- which the settings let have characters an address may not, does not
+    -- decide it. Each address goes through the settings' own check first
+    -- (which refuses a query, a fragment and a space).
+    it "is the scheme and the authority of a public address, whatever its path holds, for the passkeys and the live channel"
+      $ for_
+        [ ("https://wiki.example.org/[team]/", "https://wiki.example.org")
+        , ("https://wiki.example.org/a|b{c}^d`e/", "https://wiki.example.org")
+        , ("https://wiki.example.org/zespół/", "https://wiki.example.org")
+        , ("https://wiki.example.org/%zz/", "https://wiki.example.org")
+        , ("https://Wiki.Example.ORG/a@b/", "https://wiki.example.org")
+        , ("https://wiki.example.org:8443/[x]/", "https://wiki.example.org:8443")
+        , ("http://wiki.example.org", "http://wiki.example.org")
+        ]
+      $ \(typed, origin) -> do
+        public <- either (\why -> assertFailure (toS why)) pure (parsePublicUrl typed)
+        (typed, siteFor (Just public) (request [])) `shouldBe` (typed, Site {rpId = "wiki.example.org", origins = [origin]})
+        (typed, map showOrigin (ownOrigins (Just public) (request []))) `shouldBe` (typed, ["http://wiki.example.org:8080", origin])
 
   describe "a wiki on another port than the scheme's own, or with the scheme's own written out" $
     for_ [("wiki.example.org:8443", "https://wiki.example.org:8443"), ("wiki.example.org:443", "https://wiki.example.org")] $ \(forwardedHost, origin) ->

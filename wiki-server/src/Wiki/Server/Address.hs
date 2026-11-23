@@ -36,7 +36,7 @@ import Data.CaseInsensitive qualified as CI
 import Data.List (lookup)
 import Data.Text qualified as T
 import Network.HTTP.Types (hOrigin)
-import Network.URI (URI (..), URIAuth (..), escapeURIString, isAllowedInURI, parseAbsoluteURI)
+import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
 import Network.Wai (Request (..))
 import Protolude
 import Wiki.Api.ServerSettings (ServerSettingsOf (..))
@@ -116,7 +116,9 @@ data Origin = Origin
 -- | The origin an @Origin@ header names, as a browser writes it:
 -- @scheme:\/\/host@ with an optional port, and nothing else (no user, no
 -- path, no query). Anything else is 'Nothing', which a check refuses: the
--- @null@ a sandboxed frame sends, too.
+-- @null@ a sandboxed frame sends, too. A header with a path is refused
+-- rather than cut, because a browser never sends one: it is not a
+-- browser's origin. (A stored address is cut instead: 'addressOrigin'.)
 parseOrigin :: Text -> Maybe Origin
 parseOrigin text = do
   uri <- parseAbsoluteURI (toS text)
@@ -124,12 +126,17 @@ parseOrigin text = do
   originOfUri uri
 
 -- | The origin of an address that may go on with a path, such as the
--- public address (@https:\/\/wiki.example.org\/team\/@). Characters
--- that an address may not hold unescaped, which the settings let a path
--- have, are escaped first, so that they do not make the address
--- unreadable.
+-- public address (@https:\/\/wiki.example.org\/team\/@). The origin is
+-- the scheme and the authority only, so the address is cut where the
+-- authority ends (at the first @\/@, @?@ or @#@ after @:\/\/@) and only
+-- that part is parsed: a character the settings let a path have, and an
+-- address may not (@[@, a letter outside ASCII), must not make the address
+-- lose its origin.
 addressOrigin :: Text -> Maybe Origin
-addressOrigin text = parseAbsoluteURI (escapeURIString isAllowedInURI (toS text)) >>= originOfUri
+addressOrigin text = do
+  let (scheme, rest) = T.breakOn "://" text
+  authority <- T.takeWhile (`notElem` ("/?#" :: [Char])) <$> T.stripPrefix "://" rest
+  parseAbsoluteURI (toS (scheme <> "://" <> authority)) >>= originOfUri
 
 -- | The origin of an absolute address: its scheme, which must be @http@ or
 -- @https@, and its host and port. An address with a user (@user\@host@),

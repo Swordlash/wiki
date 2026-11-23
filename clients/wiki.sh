@@ -103,24 +103,6 @@ is_count() {
   return 0
 }
 
-# Text percent-encoded for a URL: every byte but the unreserved characters
-# and those named in the second argument (a path keeps its slashes, and the
-# %XX of an address pasted already encoded).
-percent_encode() {
-  printf '%s' "$1" | od -An -v -tu1 | awk -v keep="$2" '
-    BEGIN { for (k = 1; k <= length(keep); k++) kept[substr(keep, k, 1)] = 1 }
-    {
-      for (f = 1; f <= NF; f++) {
-        b = $f + 0
-        c = b < 128 ? sprintf("%c", b) : ""
-        if ((b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || c == "-" || c == "." || c == "_" || c == "~" || (c != "" && (c in kept)))
-          printf "%s", c
-        else
-          printf "%%%02X", b
-      }
-    }'
-}
-
 # ---------------------------------------------------------------------------
 # Configuration
 
@@ -289,7 +271,8 @@ EOF
 # One request to the wiki: METHOD, the path under WIKI_URL, then curl's
 # options. The answer's body is in $work/body, its headers in
 # $work/headers, its status in http_status. The status is 0 when an answer
-# came, whatever its HTTP status; otherwise the failure says what to check.
+# came, whatever its HTTP status, and the body is kept whole (its size is
+# what curl received); otherwise the failure says what to check.
 wiki_request() {
   method=$1 path=$2
   shift 2
@@ -297,12 +280,19 @@ wiki_request() {
   rm -f "$work/body" "$work/headers" "$work/curl-error"
   : >"$work/body"
   [ "$method" = GET ] || set -- -X "$method" "$@"
-  http_status=$(wiki_curl -sS -g --proto =http,https --connect-timeout 20 \
+  received=$(wiki_curl -sS -g --proto =http,https --connect-timeout 20 \
     -A "wiki.sh/$WIKI_SH_VERSION" -H 'Expect:' \
-    -o "$work/body" -D "$work/headers" -w '%{http_code}' \
+    -o "$work/body" -D "$work/headers" -w '%{http_code} %{size_download}' \
     "$@" "$wiki_base/$path" </dev/null 2>"$work/curl-error")
   curl_status=$?
-  [ "$curl_status" = 0 ] && return 0
+  http_status=${received%% *}
+  if [ "$curl_status" = 0 ]; then
+    if [ "$(($(wc -c <"$work/body")))" != "${received#* }" ]; then
+      fail "$EX_ERROR" "the answer could not be kept whole: is the disk full, or a file size limit (ulimit -f) reached?"
+      return
+    fi
+    return 0
+  fi
   curl_said=$(head -n 1 "$work/curl-error" 2>/dev/null)
   curl_said=${curl_said#curl: }
   curl_said=${curl_said#\(*\) }
@@ -314,6 +304,7 @@ wiki_request() {
     52 | 55 | 56) fail "$EX_CONNECTION" "the connection to $wiki_base broke: try again ($curl_said)" ;;
     1 | 3) fail "$EX_USAGE" "WIKI_URL is not an address curl can use: $wiki_base ($curl_said)" ;;
     26) fail "$EX_ERROR" "cannot read the text to send ($curl_said)" ;;
+    23) fail "$EX_ERROR" "the answer could not be kept: is the disk full, or a file size limit (ulimit -f) reached? ($curl_said)" ;;
     127) fail "$EX_ERROR" "curl is not installed: install it (apt install curl, brew install curl)" ;;
     *) fail "$EX_ERROR" "curl failed with status $curl_status: $curl_said" ;;
   esac
@@ -379,24 +370,37 @@ check_answer() {
 # A small reader of JSON in awk, so that the commands need curl alone. It
 # reads the whole answer into v[path] (a value), t[path] (its type: o, a,
 # s, num, bool, null) and len[path] (an array's length); a path is the keys
-# and indices from the top, each after a slash: /hits/0/title. The program
-# that uses it is appended after it: its END rule reads those arrays.
+# and indices from the top, each after a slash: /hits/0/title. It takes
+# only JSON by its grammar (RFC 8259): the literals true, false and null,
+# numbers as the grammar writes them, strings with its escapes and no raw
+# control characters, and nothing after the top value. Anything else, an
+# empty answer too, ends it with status 3. The program that uses it is
+# appended after it: its END rule reads those arrays.
 json_reader='
 function skip() { while (i <= n && index(" \t\r\n", substr(s, i, 1)) > 0) i++ }
 function broken() { bad = 1; i = n + 1 }
-function value(p,   c, lit) {
+function literal(p, word, kind) {
+  if (substr(s, i, length(word)) != word) { broken(); return }
+  i += length(word)
+  v[p] = word
+  t[p] = kind
+}
+function value(p,   c) {
   skip()
   c = substr(s, i, 1)
   if (c == "{") object(p)
   else if (c == "[") array(p)
   else if (c == "\"") { v[p] = str(); t[p] = "s" }
-  else {
-    lit = ""
-    while (i <= n && index(",]} \t\r\n", substr(s, i, 1)) == 0) { lit = lit substr(s, i, 1); i++ }
-    if (lit == "") { broken(); return }
-    v[p] = lit
-    t[p] = lit == "null" ? "null" : (lit == "true" || lit == "false") ? "bool" : "num"
+  else if (c == "t") literal(p, "true", "bool")
+  else if (c == "f") literal(p, "false", "bool")
+  else if (c == "n") literal(p, "null", "null")
+  else if (c != "" && index("-0123456789", c) > 0) {
+    if (!match(substr(s, i), /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?/)) { broken(); return }
+    v[p] = substr(s, i, RLENGTH)
+    t[p] = "num"
+    i += RLENGTH
   }
+  else broken()
 }
 function object(p,   k, c) {
   t[p] = "o"; i++; skip()
@@ -430,7 +434,7 @@ function hex(x,   k, d, r) {
   r = 0; x = tolower(x)
   for (k = 1; k <= 4; k++) {
     d = index("0123456789abcdef", substr(x, k, 1))
-    if (d == 0) return 65533
+    if (d == 0) return -1
     r = r * 16 + d - 1
   }
   return r
@@ -446,21 +450,24 @@ function str(   out, c, e, h, l) {
   while (i <= n) {
     c = substr(s, i, 1)
     if (c == "\"") { i++; return out }
+    if (c < " ") { broken(); return out }
     if (c == "\\") {
       e = substr(s, i + 1, 1); i += 2
       if (e == "n") out = out "\n"
       else if (e == "t") out = out "\t"
       else if (e == "r") out = out "\r"
       else if (e == "b" || e == "f") out = out " "
+      else if (e == "\"" || e == "\\" || e == "/") out = out e
       else if (e == "u") {
         h = hex(substr(s, i, 4)); i += 4
+        if (h < 0) { broken(); return out }
         if (h >= 55296 && h < 56320 && substr(s, i, 2) == "\\u") {
           l = hex(substr(s, i + 2, 4))
           if (l >= 56320 && l < 57344) { h = 65536 + (h - 55296) * 1024 + (l - 56320); i += 6 }
         }
         out = out utf8(h)
       }
-      else out = out e
+      else { broken(); return out }
       continue
     }
     out = out c; i++
@@ -526,7 +533,8 @@ render_list() {
       for (k = 0; k < len[p "/children"] + 0; k++) page(p "/children/" k, d + 1)
     }
     END {
-      if (t[""] == "o" && ("/spaces" in t)) {
+      if (t[""] != "o") exit 3
+      if ("/spaces" in t) {
         if (len["/spaces"] + 0 == 0) print "No spaces you may read."
         for (k = 0; k < len["/spaces"] + 0; k++) space("/spaces/" k, 0)
       } else space("", 0)
@@ -538,8 +546,42 @@ render_list() {
 # that stopped early), which needs no message.
 render_failed() {
   case $1 in
-    3) fail "$EX_ERROR" "the answer of $wiki_base is not the wiki's JSON: is WIKI_URL the wiki's address?" ;;
+    3) wrong_answer "it is not the JSON of a listing or a search" ;;
     *) fail "$1" '' ;;
+  esac
+}
+
+# An answer that is not the wiki's: a WIKI_URL that names another site, or
+# a proxy's own page (a sign-in, a block). WHY says what it is instead.
+wrong_answer() {
+  fail "$EX_ERROR" "the answer of $wiki_base is not the wiki's ($1): is WIKI_URL the wiki's address, or did a proxy answer?"
+}
+
+# A successful answer checked to be what the wiki sends before it is read:
+# KIND json (Content-Type application/json, and JSON by its grammar) or
+# markdown (text/markdown). A proxy's page fails at once.
+expect_answer() {
+  media=$(header_value content-type | tr 'A-Z' 'a-z')
+  media=${media%%;*}
+  trim "$media"
+  media=$trimmed
+  case $1 in
+    json)
+      if [ "$media" != application/json ]; then
+        wrong_answer "it is ${media:-of no type}, not JSON"
+        return
+      fi
+      if ! awk "$json_reader" "$work/body" >/dev/null 2>&1; then
+        wrong_answer "it says it is JSON, but is not"
+        return
+      fi
+      ;;
+    markdown)
+      if [ "$media" != text/markdown ]; then
+        wrong_answer "it is ${media:-of no type}, not Markdown"
+        return
+      fi
+      ;;
   esac
 }
 
@@ -547,6 +589,7 @@ render_failed() {
 render_search() {
   awk -v mount="$wiki_mount" "$json_reader"'
     END {
+      if (t["/hits"] != "a") exit 3
       if (len["/hits"] + 0 == 0) print "No pages found."
       for (k = 0; k < len["/hits"] + 0; k++) {
         h = "/hits/" k
@@ -568,14 +611,50 @@ route_words=' p edit source live-preview history slides pages new-page '
 # editor, its history, ...).
 trailing_words=' edit source live-preview history slides pages new-page '
 
+# Whether the text is a slug by the server's rule (Wiki.Core.Slug.mkSlug):
+# lower-case ASCII letters, digits and single dashes, no dash at either end.
+is_slug() {
+  case $1 in
+    '' | *[!a-z0-9-]* | -* | *- | *--*) return 1 ;;
+  esac
+  return 0
+}
+
+# Whether the text is one of the browser's words after an address.
+is_trailing_word() {
+  case $trailing_words in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
+# Whether the text is a segment of an address: a slug that is not one of
+# the router's words, or one of them with its ~.
+is_address_segment() {
+  case $1 in
+    '~'*)
+      case $route_words in
+        *" ${1#\~} "*) return 0 ;;
+      esac
+      return 1
+      ;;
+  esac
+  case $route_words in
+    *" $1 "*) return 1 ;;
+  esac
+  is_slug "$1"
+}
+
 # A path of raw slugs (team/edit, as the caller types a space's or a page's
 # path) written as the router writes it, in escaped: team/~edit. The one
-# place that puts an address together from a path.
+# place that puts an address together from a path. Its status is 1 when a
+# part is not a slug.
 escape_path() {
   escaped=''
-  rest=$1
+  rest=${1%/}
   while :; do
     segment=${rest%%/*}
+    is_slug "$segment" || return 1
     case $route_words in
       *" $segment "*) segment="~$segment" ;;
     esac
@@ -595,14 +674,7 @@ raw_path() {
   rest=$1
   while :; do
     segment=${rest%%/*}
-    case $segment in
-      '~'*)
-        case $route_words in
-          *" ${segment#\~} "*) segment=${segment#\~} ;;
-        esac
-        ;;
-    esac
-    raw="${raw:+$raw/}$segment"
+    raw="${raw:+$raw/}${segment#\~}"
     case $rest in
       */*) rest=${rest#*/} ;;
       *) break ;;
@@ -610,16 +682,28 @@ raw_path() {
   done
 }
 
-# A page's address from what the caller gave, in one of two forms.
+# A refusal of what the caller gave as an address: nothing is sent.
+not_an_address() {
+  fail "$EX_USAGE" "\"$address_given\" is not an address of the wiki: $1"
+}
+
+# A page's address from what the caller gave, in one of two forms, read
+# whole against the router's grammar or refused (exit 2) before anything is
+# sent. Nothing is dropped, repaired or guessed.
 #
 # An address, as the wiki writes it and as list and search print it:
-# /s/team/~edit/p/the-wiki/ (a space's home page: /s/team/), its API
-# address (/api/markdown/s/..., also with the path of WIKI_URL in front, as
-# the server's JSON has it), or a URL under WIKI_URL. It goes back to the
-# server as it came, segment by segment: only bytes a URL cannot hold are
-# percent-encoded. Only a URL a browser shows loses a last word of the
-# browser's own (/edit/, /history/), and only a bare one: an escaped ~edit
-# is a slug.
+#
+#   /s/SEGMENT(/SEGMENT)*/                     a space (its home page)
+#   /s/SEGMENT(/SEGMENT)*/p/SEGMENT(/SEGMENT)*/  a page
+#
+# where a SEGMENT is a slug (is_slug) that is not one of the router's
+# words, or such a word with a ~ in front, and the last slash may be left
+# out. In front of it may stand api/markdown or api/list (the API's
+# address), the path of WIKI_URL with them (as the server's JSON has it),
+# or WIKI_URL itself (a URL), whose last segment alone may be one of the
+# browser's words, bare (the editor's address: /edit/). A query, a
+# fragment, an empty segment, a %, a space, a capital, a letter outside
+# ASCII or a URL of another site is refused.
 #
 # A path: a space's path and, as a second argument, a page's path, raw
 # slugs as the wiki's titles make them (team/edit history), which
@@ -630,96 +714,114 @@ raw_path() {
 # pg (the page's part, empty for a space) and addr_space (the space's path
 # as raw slugs).
 page_address() {
-  a=$1 from_url='' form=address
+  address_given=$1
+  a=$1 from_url='' api=''
+  case $a in
+    '')
+      fail "$EX_USAGE" "an empty address is not an address of the wiki"
+      return
+      ;;
+    *'?'* | *'#'*)
+      not_an_address "an address has no query (?) or fragment (#)"
+      return
+      ;;
+  esac
   case $a in
     *://*)
       case $a in
-        "$wiki_base" | "$wiki_base"/*) a=${a#"$wiki_base"} from_url=1 ;;
+        "$wiki_base"/*) a=${a#"$wiki_base"} from_url=1 ;;
         *)
-          fail "$EX_USAGE" "$1 is not an address of the wiki at $wiki_base (WIKI_URL): give the page's address, or set WIKI_URL to that wiki"
+          not_an_address "it is not under the wiki at $wiki_base (WIKI_URL)"
           return
           ;;
       esac
       ;;
-    /*)
-      if [ -n "$wiki_mount" ]; then
-        case $a in
-          "$wiki_mount"/api/*) a=${a#"$wiki_mount"} ;;
-        esac
-      fi
-      ;;
-    *) form=path ;;
-  esac
-  a=${a%%#*}
-  a=${a%%\?*}
-  while :; do
-    case $a in
-      /*) a=${a#/} ;;
-      */) a=${a%/} ;;
-      *) break ;;
-    esac
-  done
-  if [ "$form" = path ]; then
-    escape_path "$a"
-    sp=$escaped pg=''
-  else
-    api=''
-    case $a in
-      api/markdown/* | api/list/*) api=1 a=${a#api/*/} ;;
-    esac
-    case $a in
-      s/*) a=${a#s/} ;;
-      *)
-        fail "$EX_USAGE" "$1 is not an address of the wiki: an address starts with /s/, as /s/team/p/the-wiki/ (or give a space's path, team/projects, and a page's, the-wiki)"
+    /*) ;;
+    *)
+      # A path, and perhaps a page's path after it.
+      escape_path "$a" || {
+        not_an_address "a space's path is slugs (lower-case letters, digits and dashes) between slashes, as team/projects, or an address starts with /s/"
         return
-        ;;
-    esac
-    if [ -n "$from_url" ] && [ -z "$api" ]; then
-      last=${a##*/}
-      case $trailing_words in
-        *" $last "*) [ "$last" = "$a" ] || a=${a%/*} ;;
-      esac
-    fi
+      }
+      sp=$escaped pg=''
+      if [ $# -ge 2 ] && [ -n "$2" ]; then
+        escape_path "$2" || {
+          address_given=$2
+          not_an_address "a page's path is slugs (lower-case letters, digits and dashes) between slashes, as the-wiki"
+          return
+        }
+        pg=$escaped
+      fi
+      page_address_found
+      return
+      ;;
+  esac
+  if [ -n "$wiki_mount" ]; then
     case $a in
-      p | p/*) sp='' pg='' ;;
-      */p) sp=${a%/p} pg='' ;;
-      */p/*) sp=${a%%/p/*} pg=${a#*/p/} ;;
-      *) sp=$a pg='' ;;
+      "$wiki_mount"/api/*) a=${a#"$wiki_mount"} ;;
     esac
   fi
-  if [ $# -ge 2 ] && [ -n "$2" ]; then
-    if [ -n "$pg" ]; then
-      fail "$EX_USAGE" "$1 is a page's address already: give it alone, or a space's path and a page's path"
+  case $a in
+    /api/markdown/* | /api/list/*) api=1 a=/${a#/api/*/} ;;
+  esac
+  case $a in
+    /s/*) a=${a#/s/} ;;
+    *)
+      not_an_address "an address starts with /s/, as /s/team/p/the-wiki/"
+      return
+      ;;
+  esac
+  a=${a%/}
+  sp='' pg='' part=space
+  rest=$a
+  while :; do
+    segment=${rest%%/*}
+    case $rest in
+      */*) last='' ;;
+      *) last=1 ;;
+    esac
+    if [ "$segment" = p ] && [ "$part" = space ] && [ -n "$sp" ]; then
+      part=page
+    elif is_address_segment "$segment"; then
+      if [ "$part" = space ]; then sp="${sp:+$sp/}$segment"; else pg="${pg:+$pg/}$segment"; fi
+    elif [ -n "$from_url" ] && [ -z "$api" ] && [ -n "$last" ] && [ -n "$sp" ] && is_trailing_word "$segment" && { [ "$part" = space ] || [ -n "$pg" ]; }; then
+      : # The browser's own word after a space or a page: its editor, its history.
+    elif [ -z "$segment" ]; then
+      not_an_address "it has an empty part (//), or no space after /s/"
+      return
+    else
+      not_an_address "\"$segment\" is not a slug (lower-case letters, digits and dashes), or is a word of the addresses without its ~"
       return
     fi
-    pg=$2
-    while :; do
-      case $pg in
-        /*) pg=${pg#/} ;;
-        */) pg=${pg%/} ;;
-        *) break ;;
-      esac
-    done
-    escape_path "$pg"
-    pg=$escaped
-  fi
-  if [ -z "$sp" ]; then
-    fail "$EX_USAGE" "no space in \"$1\": a page's address is /s/<space path>/p/<page path>/, for example /s/team/projects/p/the-wiki/"
+    [ -z "$last" ] || break
+    rest=${rest#*/}
+  done
+  if [ "$part" = page ] && [ -z "$pg" ]; then
+    not_an_address "it has no page after /p/"
     return
   fi
-  for part in "$sp" "$pg"; do
-    [ -n "$part" ] || continue
-    case /$part/ in
-      *//* | */./* | */../* | */~./* | */~../*)
-        fail "$EX_USAGE" "\"$part\" is not a path of the wiki: empty, . and .. are not names of spaces or pages"
-        return
-        ;;
-    esac
-  done
+  if [ $# -ge 2 ] && [ -n "$2" ]; then
+    if [ "$part" = page ]; then
+      not_an_address "it is a page's address already: give it alone, or a space's address and a page's path"
+      return
+    fi
+    escape_path "$2" || {
+      address_given=$2
+      not_an_address "a page's path is slugs (lower-case letters, digits and dashes) between slashes, as the-wiki"
+      return
+    }
+    pg=$escaped
+  fi
+  page_address_found
+}
+
+# The address of the space sp and the page pg (none for the space's home
+# page), already checked, in addr, addr_shown and addr_space.
+page_address_found() {
   raw_path "$sp"
   addr_space=$raw
-  addr="s/$(percent_encode "$sp" /%)/"
-  [ -z "$pg" ] || addr="${addr}p/$(percent_encode "$pg" /%)/"
+  addr="s/$sp/"
+  [ -z "$pg" ] || addr="${addr}p/$pg/"
   addr_shown=/$addr
 }
 
@@ -740,10 +842,22 @@ page_address() {
 #   get PAGE (to standard output)  the state file, once the text is written
 #                                  out without an error; a closed or full
 #                                  output changes nothing
-#   get PAGE --out FILE            FILE, then FILE.version, then the state
-#                                  file, each only once the one before it is
-#                                  written; a FILE that cannot be written
-#                                  changes nothing
+#   get PAGE --out FILE            FILE and FILE.version, written beside
+#                                  them and the text checked whole, then
+#                                  moved: the text first, the sidecar last;
+#                                  then the state file
+#   ... a FILE that cannot be      nothing: FILE and FILE.version stay as
+#   written whole (a full disk,    they were (the text goes to a file
+#   ulimit -f, a missing           beside FILE, which is removed)
+#   directory)
+#   ... a sidecar that cannot      nothing: the text's file beside FILE is
+#   be written                     removed, FILE stays
+#   ... a crash between the        FILE has the new text, FILE.version the
+#   two moves                      old version: a put --file is refused
+#                                  (412) unless nobody saved since, never
+#                                  sent under a version newer than its text
+#   an answer not kept whole       nothing: its size is checked against what
+#   (a full disk under $TMPDIR)    curl received, and the command fails
 #   get PAGE --version             nothing: no text was delivered
 #   put PAGE (standard input)      the state file, once the wiki accepted the
 #                                  write (204), whatever version was sent:
@@ -838,6 +952,7 @@ quoted_version() {
 fetch_page() {
   wiki_request GET "api/markdown/$addr" || return
   check_answer "$addr_shown" || return
+  expect_answer markdown || return
   page_version=$(header_value etag)
   if [ -z "$page_version" ]; then
     fail "$EX_ERROR" "the wiki gave no version (ETag) for $addr_shown"
@@ -878,7 +993,8 @@ fetch_list() {
     set --
   fi
   wiki_request GET "$list_path" "$@" || return
-  check_answer "the space ${list_path#api/list/}"
+  check_answer "the space ${list_path#api/list/}" || return
+  expect_answer json
 }
 
 # The search for WORDS in SPACE (empty: everywhere), LIMIT hits (empty: the
@@ -896,7 +1012,8 @@ fetch_search() {
   fi
   [ -z "$limit" ] || set -- "$@" --data-urlencode "limit=$limit"
   wiki_request GET api/search "$@" || return
-  check_answer "the search"
+  check_answer "the search" || return
+  expect_answer json
 }
 
 # The Markdown reference: the whole of it (no argument), the list of its
@@ -905,6 +1022,7 @@ fetch_search() {
 show_reference() {
   wiki_request GET api/markdown/reference || return
   check_answer "the Markdown reference" || return
+  expect_answer markdown || return
   if [ $# = 0 ]; then
     cat "$work/body"
     return
@@ -1071,12 +1189,33 @@ cmd_get() {
   if [ -n "$version_only" ]; then
     printf '%s\n' "$page_version"
   elif [ -n "$out" ]; then
-    if ! { cat "$work/body" >"$out"; } 2>/dev/null; then
-      fail "$EX_ERROR" "cannot write $out: nothing was written, and no version remembered"
+    # FILE and FILE.version change together or not at all: both are
+    # written beside them first, the text checked whole against what curl
+    # received, then the text is moved into place, and the sidecar last.
+    # Between the two moves, new text sits beside the old version, and a
+    # put of it is refused (412) unless nobody saved since; the other
+    # order would leave the new version beside the old text, which a put
+    # would write over the new version's changes unseen.
+    text_tmp=$out.wiki-sh-$$ version_tmp=$out.version.wiki-sh-$$
+    if ! { cat "$work/body" >"$text_tmp"; } 2>/dev/null ||
+      [ "$(($(wc -c <"$text_tmp")))" != "$(($(wc -c <"$work/body")))" ]; then
+      rm -f "$text_tmp"
+      fail "$EX_ERROR" "cannot write $out whole (is the disk full, or a file size limit reached?): $out and its version are as they were"
       return
     fi
-    if ! write_record "$out.version" "$page_version$nl$addr_shown$nl"; then
-      fail "$EX_ERROR" "cannot write $out.version: the page is in $out, but its version is not remembered"
+    if ! { printf '%s\n%s\n' "$page_version" "$addr_shown" >"$version_tmp"; } 2>/dev/null; then
+      rm -f "$text_tmp" "$version_tmp"
+      fail "$EX_ERROR" "cannot write $out.version: $out and its version are as they were"
+      return
+    fi
+    if ! mv -f "$text_tmp" "$out"; then
+      rm -f "$text_tmp" "$version_tmp"
+      fail "$EX_ERROR" "cannot move the text into $out: $out and its version are as they were"
+      return
+    fi
+    if ! mv -f "$version_tmp" "$out.version"; then
+      rm -f "$version_tmp"
+      fail "$EX_ERROR" "$out has the page's new text, but $out.version could not be written: a put --file $out will be refused; get the page again"
       return
     fi
     record_version "$page_version"

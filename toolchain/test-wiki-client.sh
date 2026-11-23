@@ -176,11 +176,15 @@ case $public_wiki in
   *) die "the server under /wiki/ logged $public_wiki" ;;
 esac
 
-# Fakes: a curl that records its arguments, then runs the real one; a jq
-# that records that it was called, and fails.
-mkdir -p "$work/fakes/curl" "$work/fakes/nojq"
+# Fakes: a curl that records its arguments, then runs the real one (with
+# no file size limit: a test of one sets it for the client alone); a jq
+# that records that it was called, and fails; and a curl that answers
+# every request with 200, the body in the file FAKE_BODY and the
+# Content-Type FAKE_TYPE, as a wrong WIKI_URL or a proxy would.
+mkdir -p "$work/fakes/curl" "$work/fakes/nojq" "$work/fakes/answer"
 cat >"$work/fakes/curl/curl" <<EOF
 #!/bin/sh
+ulimit -S -f unlimited
 printf '%s\n' "\$*" >>"$work/curl.args"
 exec "$real_curl" "\$@"
 EOF
@@ -189,7 +193,21 @@ cat >"$work/fakes/nojq/jq" <<EOF
 printf 'jq %s\n' "\$*" >>"$work/jq.calls"
 exit 99
 EOF
-chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq"
+cat >"$work/fakes/answer/curl" <<'EOF'
+#!/bin/sh
+out='' headers=''
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    -o) out=$2 && shift ;;
+    -D) headers=$2 && shift ;;
+  esac
+  shift
+done
+cat "$FAKE_BODY" >"$out"
+printf 'HTTP/1.1 200 OK\r\nContent-Type: %s\r\nETag: "2026-11-23T00:00:00Z"\r\n\r\n' "$FAKE_TYPE" >"$headers"
+printf '200 %s' "$(($(wc -c <"$FAKE_BODY")))"
+EOF
+chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl"
 # The PATH the client runs with: the recording curl, and the failing jq
 # unless the MCP server is under test.
 curl_path=$work/fakes/curl:$PATH
@@ -403,13 +421,7 @@ suite() {
   client get team/projects nothing-here
   expect 4 "a missing page"
   has err "not found (404)" "a missing page says so"
-  : >"$work/curl.args"
-  client get team/projects "the wiki"
-  expect 4 "a page's path with a space is sent, encoded, and not found"
-  check "the space is percent-encoded" grep -qF "/api/markdown/s/team/projects/p/the%20wiki/" "$work/curl.args"
-  client get team/projects zażółć
-  expect 4 "a page's path outside ASCII is sent, encoded, and not found"
-  check "the letters outside ASCII are percent-encoded" grep -qF "/p/za%C5%BC%C3%B3%C5%82%C4%87/" "$work/curl.args"
+  address_table
   user=$locked password='a wrong "wörd" password'
   tries=1
   while [ "$tries" -le 5 ]; do
@@ -536,11 +548,201 @@ suite() {
   check "the failing jq records that it was called" [ -s "$work/jq.calls" ]
   rm -f "$work/jq.calls"
 
+  wrong_answers
   round_trip "$public_root" root
   round_trip "$public_wiki" base-path
   url=$public_root user=editor password=$editor_password state=$work/state-$1-a input=/dev/null
 
   mcp_exchange
+}
+
+# What the client takes as an address, as a table: each malformed one is
+# refused with exit 2 and a message naming it, before any request (the
+# recording curl is never run); each well-formed one reaches exactly the
+# address expected. The same tables go through the MCP tools' arguments.
+address_table() {
+  : >"$work/curl.args"
+  client get ''
+  expect 2 "an empty address is refused"
+  while IFS= read -r given; do
+    : >"$work/curl.args"
+    client get "$given"
+    expect 2 "the malformed address $given is refused"
+    has err "\"$given\"" "the refusal names $given"
+    check "nothing was sent for $given" [ ! -s "$work/curl.args" ]
+  done <<EOF
+/s/team/p/
+/s//p/x/
+/s/team/p//
+/p/x/
+/s/
+/s
+/s/team/p/x/extra?y
+/s/Team/
+/s/team/p/the wiki/
+/s/team/p/zażółć/
+/s/team/p/fifty%25/
+/s/team/~notreserved/
+/s/team/edit/
+/s/team/p/the-wiki/edit/
+/s/team/p/x/p/y/
+/s/p/x/
+/s/-team/
+/s/team--x/
+/s/team/p/x-/
+/s/team/./
+/api/markdown/reference
+$url/s/team/projects/p/the-wiki/?q=1
+$url/s/team/projects/p/the-wiki/#top
+$url/api/markdown/s/team/projects/p/the-wiki/edit/
+$url/s/edit/
+$url
+http://wiki.example/s/team/
+Team
+team//projects
+~edit
+team/Projects
+team/p x
+EOF
+  # A page's path given apart, malformed, and a page's address given with
+  # a page's path after it.
+  for pair in "team/projects|the wiki" "team/projects|zażółć" "team/projects|~p" "/s/team/projects/p/the-wiki/|more"; do
+    : >"$work/curl.args"
+    client get "${pair%%|*}" "${pair#*|}"
+    expect 2 "the malformed address ${pair%%|*} ${pair#*|} is refused"
+    check "nothing was sent for ${pair%%|*} ${pair#*|}" [ ! -s "$work/curl.args" ]
+  done
+  while IFS='|' read -r given expected; do
+    : >"$work/curl.args"
+    # shellcheck disable=SC2086
+    client get $given
+    expect 0 "the address $given is read"
+    sent=$(tail -n 1 "$work/curl.args")
+    case $sent in
+      *" $url$expected") pass "$given reaches $expected" ;;
+      *) fail "$given reaches $expected: curl was given $sent" ;;
+    esac
+  done <<EOF
+/s/team/projects/p/the-wiki/|/api/markdown/s/team/projects/p/the-wiki/
+/s/team/projects/p/the-wiki|/api/markdown/s/team/projects/p/the-wiki/
+$url/s/team/projects/p/the-wiki/|/api/markdown/s/team/projects/p/the-wiki/
+$url/s/team/projects/p/the-wiki/edit/|/api/markdown/s/team/projects/p/the-wiki/
+$url/api/markdown/s/team/projects/p/the-wiki/|/api/markdown/s/team/projects/p/the-wiki/
+/api/markdown/s/team/projects/p/the-wiki/|/api/markdown/s/team/projects/p/the-wiki/
+/s/team/projects/ the-wiki|/api/markdown/s/team/projects/p/the-wiki/
+team/projects the-wiki|/api/markdown/s/team/projects/p/the-wiki/
+/s/team/~edit/p/~history/|/api/markdown/s/team/~edit/p/~history/
+$url/s/team/~edit/p/~history/history/|/api/markdown/s/team/~edit/p/~history/
+team/edit history|/api/markdown/s/team/~edit/p/~history/
+/s/team/|/api/markdown/s/team/
+/s/team|/api/markdown/s/team/
+team|/api/markdown/s/team/
+team/|/api/markdown/s/team/
+$url/s/team/edit/|/api/markdown/s/team/
+/s/team/~edit|/api/markdown/s/team/~edit/
+team/edit|/api/markdown/s/team/~edit/
+EOF
+
+  # The same through the MCP tools: wiki_read_page's page and wiki_list's
+  # space.
+  {
+    printf '%s\n' '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+    id=0
+    while IFS= read -r given; do
+      id=$((id + 1))
+      "$real_jq" -nc --argjson id "$id" --arg page "$given" '{jsonrpc: "2.0", id: $id, method: "tools/call", params: {name: "wiki_read_page", arguments: {page: $page}}}'
+    done <<EOF
+/s/team/p/
+/s//p/x/
+/p/x/
+
+/s/team/p/x/extra?y
+/s/Team/
+/s/team/~notreserved/
+/s/team/edit/
+$url/s/team/projects/p/the-wiki/#top
+http://wiki.example/s/team/
+EOF
+    "$real_jq" -nc '{jsonrpc: "2.0", id: 100, method: "tools/call", params: {name: "wiki_list", arguments: {space: "/s/team/p/"}}}'
+    "$real_jq" -nc '{jsonrpc: "2.0", id: 101, method: "tools/call", params: {name: "wiki_search", arguments: {query: "x", space: "/s/Team/"}}}'
+    "$real_jq" -nc '{jsonrpc: "2.0", id: 200, method: "tools/call", params: {name: "wiki_read_page", arguments: {page: "/s/team/~edit/p/~history/"}}}'
+    "$real_jq" -nc --arg page "$url/s/team/projects/p/the-wiki/edit/" '{jsonrpc: "2.0", id: 201, method: "tools/call", params: {name: "wiki_read_page", arguments: {page: $page}}}'
+    "$real_jq" -nc '{jsonrpc: "2.0", id: 202, method: "tools/call", params: {name: "wiki_list", arguments: {space: "team/edit"}}}'
+  } >"$work/mcp-addresses.in"
+  : >"$work/curl.args"
+  env -i PATH="$curl_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$state" \
+    "$shell" "$client" mcp <"$work/mcp-addresses.in" >"$work/mcp-addresses.out" 2>"$work/mcp-addresses.err"
+  if "$real_jq" -e -s 'map(select(.id >= 1 and .id < 200)) | length == 12 and all(.result.isError == true and (.result.content[0].text | test("is not an address of the wiki")))' "$work/mcp-addresses.out" >/dev/null; then
+    pass "the MCP tools refuse each malformed address, as the tool's error"
+  else
+    fail "the MCP tools refuse each malformed address, as the tool's error"
+    sed 's/^/  reply: /' "$work/mcp-addresses.out" | cut -c1-200 >&2
+  fi
+  if "$real_jq" -e -s 'map(select(.id >= 200)) | length == 3 and all(.result.isError == false)' "$work/mcp-addresses.out" >/dev/null; then
+    pass "the MCP tools read each well-formed address"
+  else
+    fail "the MCP tools read each well-formed address"
+    sed 's/^/  reply: /' "$work/mcp-addresses.out" | cut -c1-200 >&2
+  fi
+  printf '%s\n' "$url/api/markdown/s/team/~edit/p/~history/" "$url/api/markdown/s/team/projects/p/the-wiki/" "$url/api/list/s/team/~edit/" >"$work/expected-sent"
+  sed 's/.* //' "$work/curl.args" >"$work/sent"
+  check "the MCP tools sent nothing for the malformed addresses, and exactly the well-formed ones" cmp -s "$work/sent" "$work/expected-sent"
+}
+
+# Answers that are not the wiki's, as a wrong WIKI_URL or a proxy gives
+# them with 200, from the answering fake curl: each command and each MCP
+# tool fails with the wrong-answer message, and a right answer passes.
+fake_answer() {
+  printf '%s' "$1" >"$work/fake-body"
+  fake_type=$2
+  shift 2
+  env -i PATH="$work/fakes/answer:$work/fakes/nojq:$PATH" HOME="$work/home" WIKI_URL=http://wiki.invalid WIKI_USER=editor WIKI_PASSWORD=x \
+    WIKI_STATE_DIR="$work/state-$shell-fake" FAKE_BODY="$work/fake-body" FAKE_TYPE="$fake_type" \
+    "$shell" "$client" "$@" </dev/null >"$work/out" 2>"$work/err"
+  status=$?
+}
+wrong_answers() {
+  for answer in 'ok|application/json' '<html></html>|text/html' '|application/json' '{"hits":[]} trailing|application/json' \
+    '{"hits":[{"title":"a"|application/json' '{"hits":[]}|text/html' '"a string"|application/json' '{"hits":1e}|application/json' \
+    '{"hits":[], "x": tru}|application/json' '{"hits":["\q"]}|application/json' '{"spaces":[]}|'; do
+    body=${answer%|*} type=${answer##*|}
+    for command in list search; do
+      if [ "$command" = search ]; then set -- search x; else set -- list; fi
+      fake_answer "$body" "$type" "$@"
+      expect 1 "$command, answered $body as ${type:-no type}, fails"
+      has err "is not the wiki's" "$command, answered $body, says the answer is not the wiki's"
+    done
+  done
+  fake_answer '{"hits":[]}' 'application/json; charset=utf-8' search x
+  expect 0 "search, answered the wiki's own JSON, succeeds"
+  for answer in '<html></html>|text/html' '# A page|text/plain' '# A page|'; do
+    body=${answer%|*} type=${answer##*|}
+    fake_answer "$body" "$type" get /s/team/p/x/
+    expect 1 "get, answered $body as ${type:-no type}, fails"
+    has err "is not the wiki's" "get, answered $body, says the answer is not the wiki's"
+    fake_answer "$body" "$type" reference
+    expect 1 "reference, answered $body as ${type:-no type}, fails"
+  done
+  fake_answer '# A page' 'text/markdown; charset=utf-8' get /s/team/p/x/
+  expect 0 "get, answered Markdown, succeeds"
+  for answer in 'ok|application/json' '<html></html>|text/html' '{"hits":[]} trailing|application/json' '{"hits":[]}|text/html'; do
+    printf '%s' "${answer%|*}" >"$work/fake-body"
+    {
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"wiki_search","arguments":{"query":"x"}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"wiki_list","arguments":{}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"wiki_read_page","arguments":{"page":"/s/team/p/x/"}}}'
+    } >"$work/mcp-wrong.in"
+    env -i PATH="$work/fakes/answer:$PATH" HOME="$work/home" WIKI_URL=http://wiki.invalid WIKI_USER=editor WIKI_PASSWORD=x \
+      WIKI_STATE_DIR="$work/state-$shell-fake" FAKE_BODY="$work/fake-body" FAKE_TYPE="${answer##*|}" \
+      "$shell" "$client" mcp <"$work/mcp-wrong.in" >"$work/mcp-wrong.out" 2>/dev/null
+    if "$real_jq" -e -s 'map(select(.id >= 2)) | length == 3 and all(.result.isError == true and (.result.content[0].text | test("is not the wiki")))' "$work/mcp-wrong.out" >/dev/null; then
+      pass "the MCP tools, answered ${answer%|*}, report the wrong answer as an error"
+    else
+      fail "the MCP tools, answered ${answer%|*}, report the wrong answer as an error"
+      sed 's/^/  reply: /' "$work/mcp-wrong.out" | cut -c1-200 >&2
+    fi
+  done
 }
 
 # Another client saves the page at PAGE, with its own state: what the
@@ -586,6 +788,33 @@ versions_follow_delivery() {
   else
     printf 'skipped: no /dev/full here, for a get to a full output\n'
   fi
+  # A get --out that meets a file size limit (ulimit -f, for the client
+  # alone: the recording curl lifts it for itself) leaves FILE and
+  # FILE.version as they were, and no file beside them.
+  big_text "for the file size limit" >"$work/limited-text"
+  input=$work/limited-text
+  client put "$second" --force
+  expect 0 "a page longer than the file size limit"
+  input=/dev/null
+  client get "$second" --out "$work/limited.md"
+  printf 'An edit made in the file, before the next get.\n' >>"$work/limited.md"
+  cp "$work/limited.md" "$work/limited.before"
+  cp "$work/limited.md.version" "$work/limited.version.before"
+  (
+    ulimit -S -f 1
+    exec env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" \
+      "$shell" "$client" get "$second" --out "$work/limited.md"
+  ) </dev/null >"$work/out" 2>"$work/err"
+  status=$?
+  expect 1 "get --out under a file size limit fails"
+  has err "cannot write $work/limited.md whole" "it fails at the file, after the answer came whole"
+  check "the file is as it was" cmp -s "$work/limited.md" "$work/limited.before"
+  check "its version beside it is as it was" cmp -s "$work/limited.md.version" "$work/limited.version.before"
+  check "no file is left beside it" [ -z "$(find "$work" -maxdepth 1 -name 'limited.md*wiki-sh*')" ]
+  client put "$second" --file "$work/limited.md"
+  expect 0 "its put goes over the version beside it"
+  client get "$second"
+  check "the page has the file's whole text, the edit included" cmp -s "$work/out" "$work/limited.before"
   # A put --file with --if-match, or --force, moves the file's sidecar
   # with the state file: the next ordinary put --file goes through.
   client get "$page" --out "$work/sidecar.md"

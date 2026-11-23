@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 349
 title: Your settings have a page of their own, and the menu under your name is short
 ---
 

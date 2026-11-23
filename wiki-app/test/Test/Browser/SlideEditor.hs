@@ -267,8 +267,7 @@ spec m = readsOnce Idle $ do
     rowFocused 2 `shouldReturn` True
     rowText 2 `shouldReturn` "## Mid\n"
     -- Undone: the heading goes, and the rows join, in the same editor.
-    replicateM_ 4 (press "Control+z")
-    markdown ui `shouldReturn` titled
+    undoUntil ui titled
     -- The rows are joined after the check's pause.
     waitQuiet
     rowTitles ui `shouldReturn` ["Deck 😀", "One", "Two", "Three"]
@@ -304,15 +303,9 @@ spec m = readsOnce Idle $ do
           openingEnd = opening + T.length (T.takeWhile (/= '\n') block)
       marked <- problemsMarked ui
       [(a, b) | (a, b, message) <- marked, "A code block, a box or an HTML block on this slide is not closed" `T.isPrefixOf` message] `shouldBe` [(opening, openingEnd)]
-      -- Undone, one Ctrl+Z at a time until the text is back. CodeMirror
-      -- cuts the typing into entries of its history by its own clock (a
-      -- pause of half a second starts another), so a loaded machine can
-      -- make four entries of what is three on a fast one.
-      let undone k = do
-            press "Control+z"
-            now <- markdown ui
-            when (now /= deck) $ if k >= 6 then now `shouldBe` deck else undone (k + 1)
-      undone (1 :: Int)
+      -- Undone ('undoUntil': a loaded machine made four entries of the
+      -- history of what is three on a fast one).
+      undoUntil ui deck
       -- The notes go after the check's pause.
       waitQuiet
       length <$> findAll ui ".editor-slides .slide-row-part" `shouldReturn` 0
@@ -528,9 +521,12 @@ spec m = readsOnce Idle $ do
     markdown ui `shouldReturn` deleted
     rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
     status ui `shouldReturn` "Slide 3, 'Two' deleted. Ctrl+Z brings it back."
-    -- The focus on "Three"'s header: Ctrl+Z there.
+    -- The focus on "Three"'s header: Ctrl+Z there. The rows read once the
+    -- program is quiet, as in the example below that brings a slide back
+    -- through many undos.
     press "Control+z"
     markdown ui `shouldReturn` deck
+    waitQuiet
     rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     openTitles ui `shouldReturn` ["Deck", "Two"]
     -- The title slide has no delete button.
@@ -553,9 +549,8 @@ spec m = readsOnce Idle $ do
     status ui `shouldReturn` "Slide 3, 'New slide' added."
     openRowContent ui >>= (`typeText` "Mine")
     markdown ui `shouldReturn` T.replace "## New slide" "## Mine" added
-    press "Control+z"
-    press "Control+z"
-    markdown ui `shouldReturn` deck
+    -- The typing taken back, then the new slide.
+    undoUntil ui deck
     rowTitles ui `shouldReturn` ["Deck", "One", "Two", "Three"]
     -- At the end, by the last row's "+".
     find ui ".editor-slides > li:nth-child(4) .slide-row-add" >>= click
@@ -857,8 +852,12 @@ spec m = readsOnce Idle $ do
     openTitles ui `shouldReturn` ["Deck", "Two"]
     rowDelete ui "Two" >>= click
     rowTitles ui `shouldReturn` ["Deck", "One", "Three"]
-    -- Each step's rows as the program has them once it is quiet: the
-    -- check after a step's pause cuts the rows again too.
+    -- Each step's rows read once the program is quiet. Read at idle right
+    -- after Ctrl+Z, on a loaded machine, "Two" was once back in the list
+    -- but closed, with three fibers waiting. The cause is not known: a
+    -- row's open state is the editor's ('openRows'), not its CodeMirror's
+    -- attach, so it was not a row on its way to open. Thirty undos and
+    -- redos back to back, read at idle, did not show it again.
     for_ [1 :: Int, 2, 3] $ \_ -> do
       press "Control+z"
       waitQuiet
@@ -2413,6 +2412,20 @@ rowSelect :: Int -> Int -> Int -> PageM s ()
 rowSelect i anchor h = do
   waitQuiet
   perform (js_row_select i anchor h) >>= (`shouldBe` True)
+
+-- | Press Ctrl+Z until the editor's text is this one, at most ten times.
+-- CodeMirror cuts typing into entries of its history by its own clock (a
+-- pause of half a second between two keys starts another entry), so how
+-- many undos take back what a test typed key by key depends on the
+-- machine's speed. An example whose subject is not that count undoes this
+-- way.
+undoUntil :: Mounted s q o m -> Text -> PageM s ()
+undoUntil ui wanted = go (1 :: Int)
+  where
+    go k = do
+      press "Control+z"
+      now <- markdown ui
+      when (now /= wanted) $ if k >= 10 then now `shouldBe` wanted else go (k + 1)
 
 rowSelection :: Int -> PageM s (Int, Int)
 rowSelection i = do

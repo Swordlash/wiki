@@ -111,7 +111,9 @@ spec m = do
 
   it "takes back from a row the last change, made in another row, with the master's cursor in that row, open or closed" $ runPage $ do
     ui <- start deck [1, 2]
-    typeAt ui 2 (rowLength deck 2) " more"
+    -- Each word typed from one call ('typeFast'), so that one undo takes
+    -- it back whole however fast the machine is.
+    typeFast 2 (rowLength deck 2) " more"
     let typed = insertAt (rowEnd deck 2) " more" deck
     masterText `shouldReturn` typed
     -- The focus in row 1, Ctrl+Z there.
@@ -124,7 +126,7 @@ spec m = do
     head' `shouldSatisfy` within (rowRange deck 2)
     -- Row 2 closed, the same: the change is undone in the master alone,
     -- the cursor where row 2 is.
-    typeAt ui 2 (rowLength deck 2) " more"
+    typeFast 2 (rowLength deck 2) " more"
     masterText `shouldReturn` typed
     closeRow ui 2
     selectIn 1 3 3
@@ -200,7 +202,8 @@ spec m = do
     void (query ui (H.mkTell (OpenRow 2)))
     waitQuiet
     unsafeIOToPageM (js_row_ready 2) `shouldReturn` True
-    typeAt ui 2 (rowLength deck 2) " hidden"
+    -- Typed from one call ('typeFast'): one undo takes it back whole.
+    typeFast 2 (rowLength deck 2) " hidden"
     let typed = insertAt (rowEnd deck 2) " hidden" deck
     masterText `shouldReturn` typed
     press "Control+z"

@@ -46,6 +46,13 @@
 module Wiki.Server.MarkdownApi
   ( markdownApplication
   , markdownMediaType
+
+    -- * What the API for programs shares
+  , signedInBasic
+  , runAs
+  , refusal
+  , wikiRefusal
+  , notAllowed
   )
 where
 
@@ -100,24 +107,9 @@ markdownApplication env mount address segments request respond = case segments o
     -- what the application's router reads.
     prefix = encodeUtf8 mount <> "api/markdown"
     pagePath = fromMaybe "/" (BS.stripPrefix prefix (rawPathInfo request)) <> rawQueryString request
-    -- The user the request's Basic credentials sign in, or the refusal.
-    signedIn :: (UserId -> IO ResponseReceived) -> IO ResponseReceived
-    signedIn continue = case lookup hAuthorization (requestHeaders request) >>= credentialsOf of
-      Nothing -> unauthenticated
-      Just (login, password) -> do
-        now <- getCurrentTime
-        signInBasic env.storage env.limiter env.basicSignIns now address login password >>= \case
-          SignedIn u -> continue u
-          Refused -> unauthenticated
-          Limited seconds ->
-            respond (refusalWith status429 [("Retry-After", show seconds)] "TooManyRequests" (Just ("Too many failed attempts to sign in as " <> T.strip login <> ": try again in " <> show seconds <> " seconds.")))
-          SecondFactorOn ->
-            respond (refusal status403 "Forbidden" (Just "This account signs in with a second factor, which this API cannot take yet: a password alone does not sign it in."))
-    unauthenticated = do
-      respond . refusalWith status401 [("WWW-Authenticate", "Basic realm=\"wiki\", charset=\"UTF-8\"")] "Unauthenticated" $
-        Just "Sign in with your login and password (HTTP Basic). They are wrong, or the account cannot sign in with a password: an account with passkeys only, or one that has not signed in since the wiki moved to its present passwords (sign in once in the browser)."
+    signedIn = signedInBasic env address request respond
     run :: UserId -> (forall m. (MonadWiki m) => m (Either WikiError a)) -> IO (Either WikiError a)
-    run u program = runStoredWikiFrom env.storage (AsUser u) address program
+    run = runAs env address
     -- The page a space's path and the page's path under its home page name,
     -- as the user may see it.
     pageOf :: UserId -> [Slug] -> [Slug] -> IO (Either WikiError Page)
@@ -153,6 +145,36 @@ markdownApplication env mount address segments request respond = case segments o
                 Left e -> respond (wikiRefusal e)
     moved = refusal status412 "Conflict" (Just "The page has been saved since the version in If-Match: read it again, and write over that version.")
     etag p = ("ETag", toHeader (pageVersion p))
+
+-- | 'signedInBasic' signs a request in by its HTTP Basic credentials, the
+-- user's login and password ("Wiki.Server.BasicSignIn"), and goes on as the
+-- user they sign in. Every address of the API for programs signs in through
+-- it: this module's, and the listing and the search of "Wiki.Server.ListApi".
+-- Without credentials, or with wrong ones, the answer is 401; a login with
+-- too many failed attempts is 429, and an account with a second factor 403.
+-- The session's cookie is never read.
+signedInBasic :: Env -> Text -> Request -> (Response -> IO ResponseReceived) -> (UserId -> IO ResponseReceived) -> IO ResponseReceived
+signedInBasic env address request respond continue = case lookup hAuthorization (requestHeaders request) >>= credentialsOf of
+  Nothing -> unauthenticated
+  Just (login, password) -> do
+    now <- getCurrentTime
+    signInBasic env.storage env.limiter env.basicSignIns now address login password >>= \case
+      SignedIn u -> continue u
+      Refused -> unauthenticated
+      Limited seconds ->
+        respond (refusalWith status429 [("Retry-After", show seconds)] "TooManyRequests" (Just ("Too many failed attempts to sign in as " <> T.strip login <> ": try again in " <> show seconds <> " seconds.")))
+      SecondFactorOn ->
+        respond (refusal status403 "Forbidden" (Just "This account signs in with a second factor, which this API cannot take yet: a password alone does not sign it in."))
+  where
+    unauthenticated = do
+      respond . refusalWith status401 [("WWW-Authenticate", "Basic realm=\"wiki\", charset=\"UTF-8\"")] "Unauthenticated" $
+        Just "Sign in with your login and password (HTTP Basic). They are wrong, or the account cannot sign in with a password: an account with passkeys only, or one that has not signed in since the wiki moved to its present passwords (sign in once in the browser)."
+
+-- | 'runAs' runs a program of the wiki's domain as a signed-in user, for a
+-- request from this address, against the server's storage: the same
+-- permissions as the user's requests from the browser.
+runAs :: Env -> Text -> UserId -> (forall m. (MonadWiki m) => m (Either WikiError a)) -> IO (Either WikiError a)
+runAs env address u program = runStoredWikiFrom env.storage (AsUser u) address program
 
 -- | A refusal: the error's name, and why, as the application's API writes
 -- an 'ApiError'.

@@ -107,6 +107,7 @@ library
         Wiki.Server.Import
         Wiki.Server.HomePage
         Wiki.Server.Limiter
+        Wiki.Server.ListApi
         Wiki.Server.Log
         Wiki.Server.Mail
         Wiki.Server.MarkdownApi

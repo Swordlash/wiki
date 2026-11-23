@@ -100,6 +100,7 @@ patterns = describe "routePattern" $ do
     onAdmin "healthz" `shouldBe` "/healthz"
     onPublic "api/v1/events" `shouldBe` "/api/v1/events"
     onPublic "api/v1/no/such/thing" `shouldBe` "/api/unmatched"
+    onPublic "api/contents/s/team/projects/p/the-wiki/" `shouldBe` "/api/contents"
     onPublic "api/list" `shouldBe` "/api/list"
     onPublic "api/list/s/team/projects/" `shouldBe` "/api/list"
     onPublic "api/search" `shouldBe` "/api/search"

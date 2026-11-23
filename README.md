@@ -2765,6 +2765,67 @@ curl -u editor:'my password' 'https://wiki.example/api/search?q=on-call+rota&spa
                                {"match": false, "text": "…"}]}]}
   ```
 
+A long page can be read a part at a time: its table of contents at
+`/api/contents/` followed by the page's address, and one section at the
+page's Markdown address with `?section=` and the section's anchor. Both are
+signed in in the same way, with the permissions of reading the page, and take
+only `GET`.
+
+```sh
+# The page's headings as a tree, each with the address of its section.
+curl -u editor:'my password' https://wiki.example/api/contents/s/team/p/team-handbook/
+
+# One section with its subsections: to the next heading of its level or higher.
+curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-handbook/?section=the-week'
+
+# The title's own text, from its heading to the first subsection.
+curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-handbook/?section=team-handbook&own=true'
+
+# The text before the first heading.
+curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-handbook/?section=~top'
+```
+
+- **`GET /api/contents/s/<space path>/p/<page path>/`** (a space's home page
+  at `/api/contents/s/<space path>/`) answers JSON: the page's `title`, its
+  `version` (the value of the Markdown's `ETag`, quotes included, to send as
+  `If-Match`), the address of its `markdown`, the address of its `top` when
+  the page has text before its first heading, and its `headings` in the
+  page's order, nested by level, each with its `level`, its `text` without
+  markup, its `anchor`, the address of its `section` and the headings under it
+  (`children`). The headings are those of the page's "Contents" list, found by
+  the wiki's own Markdown parser: a `#` in a code block is no heading, a title
+  with `===` or `---` under it is one, a heading in a spoiler is one, and a
+  heading inside a quotation, a list or a box is part of that block, not a
+  section of the page. The anchor is the heading's id in the rendered page, so
+  a link to `#the-week` goes to it; two headings with the same text are
+  `the-week` and `the-week-2`, as there.
+
+  ```json
+  {"title": "Team handbook", "version": "\"2026-11-23T10:15:00.123456Z\"",
+   "markdown": "/api/markdown/s/team/p/team-handbook/",
+   "headings": [{"level": 1, "text": "Team handbook", "anchor": "team-handbook",
+                 "section": "/api/markdown/s/team/p/team-handbook/?section=team-handbook",
+                 "children": [{"level": 2, "text": "The week", "anchor": "the-week",
+                               "section": "/api/markdown/s/team/p/team-handbook/?section=the-week",
+                               "children": []}]}]}
+  ```
+- **`GET /api/markdown/…/?section=<anchor>`** answers that section's Markdown
+  as `text/markdown`, exactly as it is in the page, character for character:
+  from the start of its heading's line to the start of the next heading of the
+  same or a higher level, its subsections and its blank lines at the end
+  included. With `&own=true` it stops at the next heading of any level. The
+  anchor `~top` is the text before the first heading, empty when the page
+  starts with one; no heading's anchor can be `~top`. So `~top` and every
+  section with `own=true`, in order, are the whole page. The `ETag` is the
+  page's: a section has no version of its own. An anchor the page does not
+  have is 404, with the page's anchors in the message. A section is only
+  read: a `PUT` with `?section=` is refused (405) and writes nothing; write
+  the page whole.
+
+The text between a page's `# Title` and its first `##` is the title's own
+section, `?section=<the title's anchor>&own=true`. Without `own`, a section
+takes its subsections in, so the title's is the page from its heading on.
+
 What is refused, each as a small JSON body in the shape the rest of the API
 uses (`{"error": "…", "message": "…"}`):
 

@@ -30,6 +30,7 @@ import Test.Markdown.Link qualified as Link
 import Test.Markdown.Markers qualified as Markers
 import Test.Markdown.Mention qualified as Mention
 import Test.Markdown.Problems qualified as Problems
+import Test.Markdown.Sections qualified as Sections
 import Test.Markdown.Spoiler qualified as Spoiler
 import Test.Markdown.Tasks qualified as Tasks
 import Test.Markdown.Tikz qualified as Tikz
@@ -94,6 +95,7 @@ main = hspec . parallel . wasmCases $ do
   Offered.spec
   Blog.spec
   Toc.spec
+  Sections.spec
   Template.spec
   Title.spec
   Assistant.spec

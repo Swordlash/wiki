@@ -82,6 +82,7 @@ import Wiki.Server.Accounts (Resolved (..), resolveSession)
 import Wiki.Server.Address (ownOrigin, ownOrigins)
 import Wiki.Server.Api (Caller (..), Env (..), Signing (..), apiApplication, currentAssistantHosts)
 import Wiki.Server.Auth (authApplication)
+import Wiki.Server.ContentsApi (asksForSection, contentsApplication, sectionApplication)
 import Wiki.Server.Events (eventsApplication)
 import Wiki.Server.Feed (FeedKind (..), feedApplication, notificationFeedApplication, sitemapApplication)
 import Wiki.Server.Health (healthApplication, metricsApplication)
@@ -285,8 +286,18 @@ listenerRoutes logger env site l caller request respond = do
           -- never by the cookie ("Wiki.Server.MarkdownApi"): on the
           -- public listener only, since on the admin listener everyone
           -- would be the administrator.
+          -- One section of a page's Markdown, at the page's Markdown
+          -- address with ?section= ("Wiki.Server.ContentsApi"): every
+          -- method, so that a write there never reaches the whole page's.
+          "api" : "markdown" : _ | asksForSection request -> case l.finding of
+            BySession _ -> sectionApplication env l.mount caller.address request respond
+            EveryoneAdministers -> notFound
           "api" : "markdown" : endpoint -> case l.finding of
             BySession _ -> markdownApplication env l.mount caller.address endpoint request respond
+            EveryoneAdministers -> notFound
+          -- A page's table of contents, signed in as the Markdown's is.
+          "api" : "contents" : _ -> case l.finding of
+            BySession _ -> contentsApplication env l.mount caller.address request respond
             EveryoneAdministers -> notFound
           -- The listing and the search of the same API, signed in as it
           -- is ("Wiki.Server.ListApi").

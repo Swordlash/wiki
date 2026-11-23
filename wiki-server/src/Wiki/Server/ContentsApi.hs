@@ -96,7 +96,7 @@ import Wiki.Core.Space (Space (id))
 import Wiki.Server.Api (Env (..))
 import Wiki.Server.MarkdownApi (Asking (..), addressUnder, markdownMediaType, notAllowed, parameter, refusal, runAs, signedInProgram, wikiRefusal)
 import Wiki.Server.Render (routeOf)
-import Wiki.Server.Storage (Who (..), editorOf)
+import Wiki.Server.Storage (Who (..), editingAs)
 
 -- | A page's table of contents, as the API gives it. @top@ is left out of
 -- the JSON for a page whose text before its first heading is blank.
@@ -222,13 +222,14 @@ sectionApplication env mount asking@Asking {address} request respond =
           | Just v <- expected, v /= pageVersion p -> respond moved
           | otherwise ->
               -- The right to edit the page is asked before the body is
-              -- judged, so that a user who may not edit it is refused as a
-              -- whole page's PUT refuses them, whatever the body. The
-              -- question is the live channel's, who may be shown editing
-              -- the page ('editorOf'); the save asks it again.
-              editorOf env.storage (AsUser u) p.id >>= \case
-                Nothing -> respond (wikiRefusal Forbidden)
-                Just _ -> case replaceSection target p.body body of
+              -- judged, by the rule the save asks first ('editingAs'), so
+              -- that a write the save would refuse (no right to edit, a
+              -- conversion of the space running) is refused as a whole
+              -- page's PUT refuses it, whatever the body. The save asks
+              -- it again.
+              editingAs env.storage (AsUser u) p.id >>= \case
+                Left e -> respond (wikiRefusal e)
+                Right _ -> case replaceSection target p.body body of
                   Left NoSuchAnchor -> respond (refusal status404 "NotFound" (Just (noSection (anchorOf target) (outline p.body))))
                   Left why -> respond (refusal status422 "Invalid" (Just (refusalText why)))
                   Right done ->

@@ -22,7 +22,7 @@ import Test.Database (Backing)
 import Test.Hspec
 import Test.Server.Fixture
 import Wiki.Api (PagesApi (..), SpacesApi (..), WikiApi (..))
-import Wiki.Api.Encrypted (EncryptSpace (..), NewGrant (..), NewSealedPage (..))
+import Wiki.Api.Encrypted (EncryptSpace (..), NewGrant (..), NewSealedPage (..), SpaceKeyStart (..), StartEncrypting (..))
 import Wiki.Api.Links (links)
 import Wiki.Api.Types qualified as Api
 import Wiki.Api.Vault (NewPublicKey (..), VaultChange (..))
@@ -245,7 +245,7 @@ refusals backing = describe "refusals" $ do
     (missing.status, errorName missing) `shouldBe` (404, Just "NotFound")
 
   it "refuses a page of an encrypted space, which the server cannot read" $ withPasswords backing $ \r -> do
-    slug <- encryptedSpace r
+    slug <- encryptedSpace =<< adminWithVault r
     for_ ["api/contents/s/" <> slug <> "/", "api/markdown/s/" <> slug <> "/?top=true"] $ \path -> do
       reply <- request r methodGet path [ada] ""
       reply.status `shouldBe` 409
@@ -336,9 +336,21 @@ writing backing = describe "writing a section" $ do
     (.status) <$> request r methodPut "api/markdown/s/docs/p/tour/?section=nowhere" [edgar] "" `shouldReturn` 403
     (.body) <$> request r methodGet "api/markdown/s/docs/p/tour/?top=true" [edgar] "" `shouldReturn` tour.body
     (.status) <$> request r methodPut "api/markdown/s/team/p/team-handbook/?top=true" [edgar] "Hidden.\n" `shouldReturn` 404
-    slug <- encryptedSpace r
+    admin <- adminWithVault r
+    slug <- encryptedSpace admin
     sealed <- request r methodPut ("api/markdown/s/" <> slug <> "/?top=true") [ada] "Plain text.\n"
     (sealed.status, errorName sealed) `shouldBe` (409, Just "Stale")
+    -- While a space is being encrypted, its pages still read as plain
+    -- text, and a section's write is refused as the whole page's is.
+    turning <- convertingSpace admin
+    let home = "api/markdown/s/" <> turning <> "/"
+    unchanged <- request r methodGet home [ada] ""
+    unchanged.status `shouldBe` 200
+    whole <- request r methodPut home [ada] "Plain text.\n"
+    part <- request r methodPut (home <> "?top=true") [ada] "Plain text.\n"
+    (part.status, part.body) `shouldBe` (whole.status, whole.body)
+    (part.status, errorName part) `shouldBe` (409, Just "Stale")
+    (.body) <$> request r methodGet home [ada] "" `shouldReturn` unchanged.body
     start r
     (.status) <$> write r "?section=install" [("If-None-Match", "*")] "## Install\n\nOther.\n" `shouldReturn` 400
     pageText r `shouldReturn` source
@@ -363,22 +375,48 @@ writing backing = describe "writing a section" $ do
 
 -- | A space the admin has encrypted, with its home page, as the browser
 -- encrypts one (the ciphertexts are bytes of no meaning): its slug. The
--- same as the Markdown's tests make ("Test.Server.MarkdownApi").
-encryptedSpace :: Running -> IO Text
-encryptedSpace r = do
-  token <- signInAs r "admin" "admin's password"
-  let as' method path body = send r method (r.public <> "/" <> path) [cookie token, (hContentType, "application/json")] body
-      bytesOf n c = toBase64Url (BS.replicate n c)
-      public = PublicKey (bytesOf 32 65)
-      keyId = fromMaybe (KeyId "") (keyIdOf public)
-      vault = Vault {format = vaultFormat, salt = Salt (bytesOf 32 1), items = Map.singleton identityItem Item {keyId = Just keyId, sealed = Sealed (Nonce (bytesOf 12 2)) (Ciphertext (bytesOf 64 3))}, wraps = Map.singleton ByPassword (WrappedKey (Nonce (bytesOf 12 4)) (Ciphertext (bytesOf 48 5)))}
-      spaceKey = KeyId (bytesOf 16 6)
-  (.status) <$> as' methodPut "api/v1/assistant/vault" (encode VaultChange {vault, publicKey = Just NewPublicKey {keyId, publicKey = public}}) `shouldReturn` 200
+-- same as the Markdown's tests make ("Test.Server.MarkdownApi"), through the
+-- admin's session with a vault ('adminWithVault'), which a test sets once.
+encryptedSpace :: (Method -> Text -> LByteString -> IO Reply, KeyId) -> IO Text
+encryptedSpace (as', keyId) = do
+  let spaceKey = KeyId (bytesOf 16 6)
   made :: S.Space <- as' methodPost "api/v1/spaces" (encode Api.NewSpace {parent = Nothing, name = "Vault room"}) >>= jsonAs 201
   (.status)
     <$> as'
       methodPost
       ("api/v1/encrypted/spaces/" <> made.id.text)
-      (encode EncryptSpace {keyId = spaceKey, grant = NewGrant {recipient = UserId "user-admin", recipientKeyId = keyId, enc = Encapsulated (bytesOf 32 7), sealed = Ciphertext (bytesOf 48 8)}, homePage = NewSealedPage {id = PageId "4c1a6d2f-3e5b-4f7c-9dae-1b2c3d4e5f60", parent = Nothing, pageKey = PageKey {keyId = KeyId (bytesOf 16 20), spaceKeyId = spaceKey, wrapped = WrappedKey (Nonce (bytesOf 12 21)) (Ciphertext (bytesOf 48 22))}, content = SealedContent {tag = VersionTag (bytesOf 16 23), keyId = KeyId (bytesOf 16 20), chain = Just (firstChain (VersionTag (bytesOf 16 30))), title = Sealed (Nonce (bytesOf 12 24)) (Ciphertext (bytesOf 40 25)), body = Sealed (Nonce (bytesOf 12 26)) (Ciphertext (bytesOf 60 27))}, kind = Kind.Document}})
+      (encode EncryptSpace {keyId = spaceKey, grant = grantTo keyId, homePage = NewSealedPage {id = PageId "4c1a6d2f-3e5b-4f7c-9dae-1b2c3d4e5f60", parent = Nothing, pageKey = PageKey {keyId = KeyId (bytesOf 16 20), spaceKeyId = spaceKey, wrapped = WrappedKey (Nonce (bytesOf 12 21)) (Ciphertext (bytesOf 48 22))}, content = SealedContent {tag = VersionTag (bytesOf 16 23), keyId = KeyId (bytesOf 16 20), chain = Just (firstChain (VersionTag (bytesOf 16 30))), title = Sealed (Nonce (bytesOf 12 24)) (Ciphertext (bytesOf 40 25)), body = Sealed (Nonce (bytesOf 12 26)) (Ciphertext (bytesOf 60 27))}, kind = Kind.Document}})
     `shouldReturn` 200
   pure (slugText made.slug)
+
+-- | A plain space of the admin's, with its home page, whose encryption the
+-- admin has started as the browser starts it, and not gone on with: its
+-- pages still read as plain text, and every write in it but the
+-- conversion's is refused. Its slug. Through the admin's session with a
+-- vault ('adminWithVault').
+convertingSpace :: (Method -> Text -> LByteString -> IO Reply, KeyId) -> IO Text
+convertingSpace (as', keyId) = do
+  made :: S.Space <- as' methodPost "api/v1/spaces" (encode Api.NewSpace {parent = Nothing, name = "Turning"}) >>= jsonAs 201
+  (.status) <$> as' methodPost ("api/v1/encrypted/spaces/" <> made.id.text <> "/conversion/encrypt") (encode StartEncrypting {keys = [SpaceKeyStart {space = made.id, keyId = KeyId (bytesOf 16 9), grant = grantTo keyId}]}) `shouldReturn` 200
+  pure (slugText made.slug)
+
+-- | The admin's session, as a way to send the application's API requests,
+-- with a vault and a public key given, as the browser gives them before it
+-- encrypts anything; and the public key's id.
+adminWithVault :: Running -> IO (Method -> Text -> LByteString -> IO Reply, KeyId)
+adminWithVault r = do
+  token <- signInAs r "admin" "admin's password"
+  let as' method path body = send r method (r.public <> "/" <> path) [cookie token, (hContentType, "application/json")] body
+      public = PublicKey (bytesOf 32 65)
+      keyId = fromMaybe (KeyId "") (keyIdOf public)
+      vault = Vault {format = vaultFormat, salt = Salt (bytesOf 32 1), items = Map.singleton identityItem Item {keyId = Just keyId, sealed = Sealed (Nonce (bytesOf 12 2)) (Ciphertext (bytesOf 64 3))}, wraps = Map.singleton ByPassword (WrappedKey (Nonce (bytesOf 12 4)) (Ciphertext (bytesOf 48 5)))}
+  (.status) <$> as' methodPut "api/v1/assistant/vault" (encode VaultChange {vault, publicKey = Just NewPublicKey {keyId, publicKey = public}}) `shouldReturn` 200
+  pure (as', keyId)
+
+-- | A space key sealed to the admin's public key, with bytes of no meaning.
+grantTo :: KeyId -> NewGrant
+grantTo keyId = NewGrant {recipient = UserId "user-admin", recipientKeyId = keyId, enc = Encapsulated (bytesOf 32 7), sealed = Ciphertext (bytesOf 48 8)}
+
+-- | Bytes of no meaning, all one value, as base64url.
+bytesOf :: Int -> Word8 -> Text
+bytesOf n c = toBase64Url (BS.replicate n c)

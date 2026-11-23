@@ -2158,17 +2158,25 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   before CodeMirror is attached (the attach is waited for in a fork,
   which only quiet covers); the moved examples do one `waitQuiet`
   after their start, the editor's group (#329) may still have the
-  exposure. **The slide editor's group is being moved** (branch
-  `slide-editor-reads-once`, 363 `eventually`s down to 18); found
-  there and not yet explained: "brings a slide deleted open back
-  open" read the row closed once. Not moved yet: `Http.hs`,
+  exposure. **The slide editor's group is moved (#350)**, 363
+  `eventually`s down to 18. Its undos no longer depend on how fast
+  the keys arrive (CodeMirror groups undo steps by 500 ms): an undo
+  until the text is back, or the word typed from one call where the
+  count is the point. Found: "a fence left open" read its row's
+  problems before the checker had finished and expected one of two.
+  Not explained: "brings a slide deleted open back open" read the
+  row back but closed once, at idle under load (a row's `open` is
+  rendered from the editor's `openRows`, so the attach is not
+  involved; thirty cycles did not repeat it). Left: the long walk
+  separates its steps by 0.6 s, which only a hook in
+  `web/src/editor.js` (`isolateHistory`) can take out. Not moved yet: `Http.hs`,
   `EditorSearch.hs`, the editor's remaining `eventually`s. The
   suite got slower with these moves (about 470 to 510 s on a normal
   hosted runner; a quiet wait sits out the editor's two-second
   draft), and on a slow runner it passed the runner's limit of 600 s
   for a whole run with no example at fault: the limit is 1800 s now
   (#335, `HSPEC_HALOGEN_TIMEOUT` in the wrapper), and the two pages
-  are uneven (the second gets about 85 s more work). **Open in the
+  are uneven (the second gets about 85 s more work). **Merged in the
   library: pull request 147, `quiet-under-test-clock`**: a counted
   pause asleep on a test's clock is rest (`Activity.asleep`,
   `sleeping`, `describeSleeping`), so a quiet wait no longer sits out
@@ -2176,8 +2184,12 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   (`withTestClock`, `advance`). The wiki's branch
   `editor-under-test-clock` bumps the pin and puts the editor's group
   under the test's clock: 252.6 s down to 134.8 s at equal load, 44
-  `eventually`s down to 30. Its pull request is opened when 147 is
-  merged. Seen in the library and left: Playwright's own test "the
+  `eventually`s down to 30: open (#355). **The assistant's kept
+  selection** read at quiet before CodeMirror had recorded a change
+  of focus, which it does on a 10 ms timer of its own (found on
+  #349's CI): `focusTaken` in `web/src/editor.js` gives a promise the
+  test waits on: open (#354, stacked on #349); the slide rows wait
+  out the same timer with `eventually` still. Seen in the library and left: Playwright's own test "the
   DevTools protocol slows a page's processor down" depends on the
   machine's speed (it failed at a load of 40 on 16 cores).** What is
   left, each a
@@ -2239,7 +2251,11 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   under the search's panel while it is open. #340 (the user's
   settings on a page of their own, the menu under the login keeping
   only Settings, the demo's switch of users and Sign out; confirmed
-  with him): being built on `user-settings-page`.
+  with him): open (#349), sections at `/settings/profile/`,
+  `/settings/security/`, `/settings/notifications/` and
+  `/settings/assistant/` (the old `/assistant/` redirects). Its CI
+  found a fault of the program: the offer to unlock the keys covered
+  "Sign out" in the new menu.
 - **WP5.138 An API for a page's Markdown (the owner, 2026-11-18:
   "robię to z myślą o lokalnych asystentach i MCP").** **The first
   cut is merged (#334), server only.** `GET` and `PUT` of a page's
@@ -2289,30 +2305,50 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   asked-for slug (`createPageAt`, `createSpaceAt`), refused when a
   sibling has it. **What is left is the owner's issue #338**, in this
   order unless he says otherwise. **A page's table of contents and
-  one section of it: open (#347)**, `GET /api/contents/…` and
+  one section of it: merged (#347)**, `GET /api/contents/…` and
   `?section=<anchor>` (`&own=true` without the subsections; the text
   before the first heading by `?top=true`). **The owner's rule for
   spoilers (2026-11-23):** a section never crosses a spoiler's edge:
   either the whole section is inside the spoiler, where it may have
   subsections of its own, or a spoiler in a section's text has no
   sections in it; the headings inside a spoiler form an outline
-  confined to it. **Writing one section, after #347, a small pull
-  request, his decisions of the same day:** the server adds a final
-  newline; a write that changes the sections outside its own slice is
-  refused (422); a body may change its own heading, and the answer
-  gives the new anchor; a section inside a spoiler may be written.
-  **A shell client: open (#345)**, `clients/wiki.sh`, POSIX sh with
+  confined to it. **Writing one section: open (#352, stacked on the
+  keys), his decisions of the same day:** the server adds a final
+  line break; a write after which the outline outside its own part is
+  not what it was (levels, texts, anchors, order, parents) is refused
+  (422), which covers an open fence or spoiler, a heading of another
+  level and a rename that renumbers another anchor; a body may change
+  its own heading, and the answer gives the new anchor; a section
+  inside a spoiler may be written. One pure function,
+  `replaceSection` in `Wiki.Core.Markdown.Sections`.
+  **A shell client: merged (#345)**, `clients/wiki.sh`, POSIX sh with
   `curl` only (the owner: Copilot at his work must reach the wiki
   locally, by a shell script rather than a compiled client); it lists,
   searches, reads, writes and creates, remembers the version it read
   so that every write is conditional, and with `jq` is also a local
   MCP server over standard input (`wiki.sh mcp`); it sends
   `WIKI_TOKEN` as a Bearer key already. `shellcheck` runs with its
-  test, and is required in CI. **API keys, the server's side: being
-  built** (branch `api-keys`): made by the user, with an expiry date
+  test, and is required in CI. **API keys, the server's side: open
+  (#351)**: made by the user, with an expiry date
   and rights (read, write, admin), shown
-  once, the server keeping a hash; their panel goes into the settings
-  page of #340 once both are merged. Then the handlers moved to
+  once, the server keeping the SHA-256 of 256 random bits; sent as
+  `Authorization: Bearer` or `X-API-Key`; `read` allows `GET` and
+  `HEAD` only, `admin` is checked against the user's standing at
+  every request; one entry signs every address in
+  (`signedInProgram`); a limiter of its own for refused keys, by
+  address; making a key asks for the proof adding a passkey asks for
+  (the session's choice: a stolen session must not mint a key that
+  never expires); `wiki-server keys list|add|revoke`. A new password
+  and "Sign out everywhere" leave keys working. Their panel goes
+  into the settings page of #340 once both are merged. **MCP: open
+  (#353, stacked on #352)**, as recommended below, with eight tools
+  (the five below, `wiki_page_outline`, `wiki_read_section`,
+  `wiki_create_page`); the library's callback is given the token
+  alone, so the wiki signs in before it and builds the library's
+  application for each request; the library puts the instructions
+  where a client of the older handshake does not look, and prints to
+  stderr outside the wiki's logger (worth an issue upstream, on the
+  owner's word). Then the handlers moved to
   servant-server, and with that an OpenAPI description of the API
   generated from its servant type (the owner, 2026-11-23:
   "servant-openapi3"), served by the wiki and checked in a test

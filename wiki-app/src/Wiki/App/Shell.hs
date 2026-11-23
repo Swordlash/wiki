@@ -153,7 +153,7 @@ import Web.Storage.Storage (StorageKind (..))
 import Web.Storage.Storage qualified as Storage
 import Wiki.Api.Links (archiveExportUrl)
 import Wiki.Api.ServerSettings (HomePage (showAnonymous, title))
-import Wiki.App.Account (Accounts (..))
+import Wiki.App.Account (Accounts (..), SignInError (..))
 import Wiki.App.Assistant (MonadAssistant, announceSignIn, keysDroppedElsewhere, listenToOtherTabs)
 import Wiki.App.Assistant.Sync (MonadVault)
 import Wiki.App.Backend (MonadLoad (..), MonadWiki (..), Session (..), WikiError (..), anonymous, sameAsking, shutOut)
@@ -1738,7 +1738,12 @@ component =
           >>= traverse_
             ( \a -> do
                 modify (\st -> st {passwordChange = who})
-                result <- H.async (changeOwnPassword a.changePassword change)
+                -- A failure that throws is an answer too, so that neither
+                -- the shell nor the section waits for one for ever.
+                result <-
+                  H.try (H.async (changeOwnPassword a.changePassword change)) <&> \case
+                    Left (e :: SomeException) -> Left (SignInFailed (Invalid ("The password could not be changed: " <> show e)))
+                    Right answered -> answered
                 modify (\st -> st {passwordChange = if st.passwordChange == who then Nothing else st.passwordChange})
                 H.tell "signInMethods" who (SignInMethodsView.Answered ticket result)
             )

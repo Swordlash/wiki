@@ -249,7 +249,7 @@ administrator backing = describe "for an administrator signed in" $ do
     status `shouldBe` 200
     html `shouldSatisfy` T.isInfixOf "<title>On-call · Team · Wiki</title>"
     appIn html `shouldSatisfy` T.isInfixOf "Ada Admin"
-    appIn html `shouldSatisfy` T.isInfixOf "Sign out"
+    appIn html `shouldSatisfy` T.isInfixOf "account-toggle"
     -- The administration's first section at /admin/, and the users at
     -- their own address, a page of them, with the page carrying them.
     (overviewStatus, overview) <- pageAs r [session] r.public "/admin/"

@@ -60,7 +60,7 @@ withSessionContext pw options origin who body = withContext pw options $ \ctx ->
 
 -- | What a sign-in through the form came to.
 data Outcome
-  = -- | Signed in: the header has "Sign out".
+  = -- | Signed in: the header has the button of the user's menu.
     SignedIn
   | -- | The password was right, and a second factor is asked for.
     SecondFactor

@@ -943,7 +943,7 @@ component =
       | otherwise =
           [hh|
             <section class="settings-view settings-page-{{ settingsName section }}">
-              {% if section /= AssistantSection %}
+              {% if section /= AssistantSection || not st.settingsShown %}
                 <h1>{{ settingsTitle section }}</h1>
               {% end %}
               {% if st.settingsShown %}
@@ -982,8 +982,8 @@ component =
       SecuritySection ->
         [hh|
           <div class="settings-sections">
-            {% for accounts in maybeToList st.accounts %}
-              {{ HH.slot_ "part" (SignInMethodsSlot who) SignInMethodsView.component SignInMethodsView.Input {accounts, session = st.session, here = Router.href st.router st.route} }}
+            {% for a in maybeToList st.accounts %}
+              {{ HH.slot_ "part" (SignInMethodsSlot who) SignInMethodsView.component SignInMethodsView.Input {accounts = a, session = st.session, here = Router.href st.router st.route} }}
             {% end %}
             {% if isJust st.demo %}
               <p class="account-note">The demo has no passwords: you switch between its users at the top right.</p>

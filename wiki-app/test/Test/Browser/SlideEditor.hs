@@ -302,8 +302,15 @@ spec m = readsOnce Idle $ do
           openingEnd = opening + T.length (T.takeWhile (/= '\n') block)
       marked <- problemsMarked ui
       [(a, b) | (a, b, message) <- marked, "A code block, a box or an HTML block on this slide is not closed" `T.isPrefixOf` message] `shouldBe` [(opening, openingEnd)]
-      replicateM_ 3 (press "Control+z")
-      markdown ui `shouldReturn` deck
+      -- Undone, one Ctrl+Z at a time until the text is back. CodeMirror
+      -- cuts the typing into entries of its history by its own clock (a
+      -- pause of half a second starts another), so a loaded machine can
+      -- make four entries of what is three on a fast one.
+      let undone k = do
+            press "Control+z"
+            now <- markdown ui
+            when (now /= deck) $ if k >= 6 then now `shouldBe` deck else undone (k + 1)
+      undone (1 :: Int)
       -- The notes go after the check's pause.
       waitQuiet
       length <$> findAll ui ".editor-slides .slide-row-part" `shouldReturn` 0

@@ -284,7 +284,9 @@ data Refusal
     -- the first to the second, as a heading with the same text as another
     -- one does.
     AnchorChanges Text Text
-  | -- | A section's anchor, this one, would name another section.
+  | -- | The anchor of a section outside the part written, this one, would
+    -- name a section of the body instead, whose heading has the same id
+    -- written out.
     AnchorMoves Text
   | -- | A section outside the part written, by its anchor, would change,
     -- move or no longer be one; after the part ('True') or before it.
@@ -315,9 +317,9 @@ data Refusal
 --
 -- The new page's outline is then compared with the old one. Outside the
 -- part, every section stays as it was: its anchor, its level, its text,
--- the section it is under, the spoilers it is in, its bounds once shifted
--- by the change of length, and the section its anchor names. So do the
--- block spoilers there. Inside the part:
+-- the section it is under, the spoilers it is in, and its bounds once
+-- shifted by the change of length; and a section that its anchor names
+-- stays named by it. So do the block spoilers there. Inside the part:
 --
 -- * A section written whole is one section: the body starts with a
 --   heading of the section's level, in the same spoiler, and every other
@@ -332,8 +334,10 @@ data Refusal
 -- spoiler the section is in, a heading of another level, a second
 -- heading of the same level, and a new heading text that changes another
 -- heading's anchor (@notes@ and @notes-2@). The body may change its own
--- heading's text; the new anchor is in the answer, unless an id written
--- out (@{#x}@) is an earlier section's, which is refused.
+-- heading's text; the new anchor is in the answer. An id written out
+-- (@{#x}@) that another section has is refused: an earlier section's,
+-- since the anchor would not name the section written, and a later one's,
+-- since that section would lose its address.
 --
 -- Both texts are read by 'outline', the whole page every time, never the
 -- body alone.
@@ -386,13 +390,19 @@ replaceSection target page body = do
       differs raw s = \case
         Nothing -> Just (SectionChanges s.anchor (raw >= b))
         Just n
-          | n == s -> Nothing
-          | n.shape == s.shape && n.leads == s.leads -> Just (AnchorChanges s.anchor n.anchor)
-          | n.shape == s.shape && n.anchor == s.anchor -> Just (AnchorMoves s.anchor)
+          | sameAs n s -> Nothing
+          | n.shape == s.shape -> Just (AnchorChanges s.anchor n.anchor)
           | otherwise -> Just (SectionChanges s.anchor (raw >= b))
+      sameAs n s = n.anchor == s.anchor && n.shape == s.shape
+      -- The sections outside whose anchor named them and would name an
+      -- earlier section, one in the part, with the same id written out. A
+      -- section whose anchor named an earlier one may come to be named by
+      -- it: that mends a link, and breaks none.
+      unnamed = [s.anchor | ((_, s), (_, n)) <- zip oldSeen newSeen, s.named, not n.named]
   section <- opening
-  unless (inside && map snd oldSeen == map snd newSeen && map snd oldBoxes == map snd newBoxes && oldPage == newPage) $
+  unless (inside && and (zipWith (\(_, s) (_, n) -> sameAs n s) oldSeen newSeen) && length oldSeen == length newSeen && map snd oldBoxes == map snd newBoxes && oldPage == newPage) $
     Left (fromMaybe OutsideChanges outsideRefusal)
+  for_ (head unnamed) (Left . AnchorMoves)
   case section of
     Just t
       | Just leading <- find (\x -> x.section.id == t.section.id) newPlaced
@@ -444,12 +454,12 @@ data Pos = At Int | Within
   deriving stock (Eq, Show)
 
 -- | 'Seen' is a section as 'replaceSection' compares it: its anchor, its
--- 'Shape', and where the first section with its anchor starts, the one a
--- link to the anchor names.
+-- 'Shape', and whether its anchor names it, being the first section with
+-- that id, or an earlier one with the same id written out ('sectionRange').
 data Seen = Seen
   { anchor :: Text
   , shape :: Shape
-  , leads :: Pos
+  , named :: Bool
   }
   deriving stock (Eq, Show)
 
@@ -484,7 +494,7 @@ data Box = Box
 -- page's top and the page end.
 view :: (Int -> Pos) -> (Int -> Bool) -> Outline -> ([(Int, Seen)], [(Int, Box)], (Pos, Pos))
 view at inPart o =
-  ( [ (p.section.start, Seen {anchor = p.section.id, shape = shapeOf p, leads = leadsOf p.section.id})
+  ( [ (p.section.start, Seen {anchor = p.section.id, shape = shapeOf p, named = fmap (\x -> x.section.start) (find (\x -> x.section.id == p.section.id) ps) == Just p.section.start})
     | p <- ps
     , not (inPart p.section.start)
     ]
@@ -497,6 +507,5 @@ view at inPart o =
   where
     ps = placedIn o
     shapeOf p = Shape {level = p.section.level, text = p.section.text, start = at p.section.start, ownEnd = at p.section.ownEnd, end = at p.section.end, parent = at <$> p.parent, spoilers = map at p.spoilers}
-    leadsOf anchor = maybe Within (\p -> at p.section.start) (find (\p -> p.section.id == anchor) ps)
     boxes around x = concatMap (\sb -> (sb, around) : boxes (sb.start : around) sb.outline) (x.spoilers <> concatMap (\s -> s.spoilers) (flat x.sections))
     flat = concatMap (\s -> s : flat s.below)

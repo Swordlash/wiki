@@ -334,7 +334,7 @@ refusalText = \case
   SectionInTop text -> "The text before the first heading has no heading, and the body has " <> quoted text <> "."
   AnchorTaken anchor -> "The anchor " <> quoted anchor <> " is an earlier section's: give the heading another id."
   AnchorChanges anchor new -> "The anchor of " <> quoted anchor <> " would change to " <> quoted new <> ", since the body's heading has the same text as another one: an anchor is a section's address. Give the heading another text, or an id of its own ({#id})."
-  AnchorMoves anchor -> "The anchor " <> quoted anchor <> " would name another section: an anchor is a section's address."
+  AnchorMoves anchor -> "The anchor " <> quoted anchor <> " is a section's that follows, and the body's heading has that id: the anchor would name the body's section instead. Give the heading another id."
   SectionChanges anchor after -> "The body would change the section " <> quoted anchor <> place after <> ": check for a code fence or a spoiler left open, or a spoiler's end marker."
   SectionAppears text after -> "The body would make a section of the heading " <> quoted text <> place after <> ": check for a spoiler's end marker."
   SpoilerChanges after -> "The body would change the spoiler " <> (if after then "that follows" else "around the section") <> ": check for a spoiler's end marker, or a spoiler or a code fence left open."

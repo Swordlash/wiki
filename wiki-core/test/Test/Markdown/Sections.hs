@@ -9,7 +9,7 @@ import Protolude
 import Test.Cases (coverage)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
-import Test.QuickCheck (Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, frequency, listOf, oneof, property, vectorOf, (.&&.), (===))
+import Test.QuickCheck (Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, frequency, listOf, oneof, property, tabulate, vectorOf, (.&&.), (===))
 import Test.Slides (aDeckWithBreaks)
 import Wiki.Core.Markdown.Ast (Block (..), SpoilerHead (..), SpoilerKind (..), SpoilerProblem (..), attribute, parseDeckSpans, plainText)
 import Wiki.Core.Markdown.Sections
@@ -217,6 +217,14 @@ spec = describe "Markdown.Sections" $ do
       outlineAnchors (outline source) `shouldBe` ["notes", "use", "notes-2"]
       replaceSection (WholeSection "use") source "## Notes\n\nB.\n" `shouldBe` Left (AnchorChanges "notes-2" "notes-3")
 
+    it "refuses an id written out that another section has, but lets the second of two take its own back" $ do
+      let onFirst = "# A {#x}\n\nOne.\n\n# B\n\nTwo.\n"
+          onSecond = "# A\n\nOne.\n\n# B {#x}\n\nTwo.\n"
+          both = "# A {#x}\n\nOne.\n\n# B {#x}\n\nTwo.\n"
+      replaceSection (WholeSection "b") onFirst "# B {#x}\n\nTwo.\n" `shouldBe` Left (AnchorTaken "x")
+      replaceSection (WholeSection "a") onSecond "# A {#x}\n\nOne.\n" `shouldBe` Left (AnchorMoves "x")
+      replaceSection (WholeSection "x") both "# A\n\nOne.\n" `shouldBe` Right Replaced {text = onSecond, anchor = Just "a"}
+
     it "refuses a code fence left open, which takes in the sections after it" $
       replaceSection (WholeSection "install") page "## Install\n\n```\nmake\n" `shouldBe` Left (SectionChanges "use" True)
 
@@ -264,6 +272,7 @@ spec = describe "Markdown.Sections" $ do
         forAll (aBody source target) $ \body ->
           let result = replaceSection target source body
            in counterexample (show result)
+                . tabulate "answers" [either (T.unpack . T.takeWhile (/= ' ') . show) (const "accepted") result]
                 . cover 25 (isRight result) "accepted"
                 . cover 1 (isRight result && inSpoiler target) "a section inside a spoiler written"
                 . cover 0.5 (result == Left EmptyBody) "an empty body"

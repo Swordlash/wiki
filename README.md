@@ -2908,7 +2908,8 @@ curl -u editor:'my password' -X PUT -H 'If-Match: "2026-11-23T10:15:00.123456Z"'
   more of the page follows and the body does not end with an empty line, it
   adds one, so that the next heading stays apart; nothing else of the body
   changes. So a part read and written back as it was gives the same page,
-  but where it ended right before a heading or a spoiler's end marker. An
+  but where it ended right before a heading or a spoiler's end marker, or
+  at the end of a page without a final line break. An
   empty body is refused (422), but for the top, which it takes out. The
   answer is 200 with the page's new version as the `ETag` and as JSON:
   `{"anchor": "the-week", "section": "/api/markdown/s/team/p/team-handbook/?section=the-week", "version": "…"}`
@@ -2919,14 +2920,15 @@ curl -u editor:'my password' -X PUT -H 'If-Match: "2026-11-23T10:15:00.123456Z"'
   refused with 422, saving nothing, and a message that says what would
   change. A section's body starts with a heading of the section's level, and
   every other heading in it is under that one; with `own=true` it has no
-  other heading, but inside a block spoiler; the top's has none either. Every
+  other heading, but inside a block spoiler; nor has the top's. Every
   section outside the part keeps its heading, its level, its place and its
   anchor. So a code fence or a spoiler left open, a spoiler's end marker that
   closes the spoiler the section is in, a heading of another level and a
   second heading of the section's level are refused. The body may change its
   own heading: the answer gives the new anchor. A new heading text that would
   change the anchor of another heading (`notes-2` becoming `notes-3`) is
-  refused, since an anchor is a section's address. A section inside a spoiler
+  refused, since an anchor is a section's address; so is an id written out
+  (`{#x}`) that another section has. A section inside a spoiler
   is written like any other, and stays inside it.
 
 The text between a page's `# Title` and its first `##` is the title's own

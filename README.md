@@ -2827,24 +2827,31 @@ Space: Team  /s/team/
   On-call  /s/team/p/on-call/
   Space: Projects  /s/team/projects/
     The wiki  /s/team/projects/p/the-wiki/
-      Roadmap  /s/team/projects/p/the-wiki/roadmap/  (presentation)
+    Zażółć gęślą jaźń  /s/team/projects/p/zazolc-gesla-jazn/
 
 $ wiki.sh search on-call rota
 On-call  /s/team/p/on-call/  (in Team)
-    …who is on call this week. The rota changes on Mondays…
+    On-call Who is on call this week. The rota changes on Mondays.
 
 $ wiki.sh get /s/team/p/on-call/ --out on-call.md
-wiki.sh: wrote on-call.md; its version "2026-11-18T09:30:12.345678Z" is in on-call.md.version, for put --file on-call.md
+wiki.sh: wrote on-call.md; its version "2026-11-23T15:23:50.829263Z" is in on-call.md.version, for put --file on-call.md
 
 $ wiki.sh put /s/team/p/on-call/ --file on-call.md
-wiki.sh: wrote /s/team/p/on-call/; its version is now "2026-11-23T10:02:41.120934Z"
+wiki.sh: wrote /s/team/p/on-call/; its version is now "2026-11-23T15:23:52.788599Z"
+
+$ wiki.sh get team nothing
+wiki.sh: not found (404): /s/team/p/nothing/ is not there, or you may not read it
 
 $ wiki.sh reference --sections
-Sections of the wiki's Markdown reference (1093 lines); ask for one by its heading:
-- Writing pages (under 1 kB, the introduction)
-  - Text (2 kB)
-  - Math (9 kB)
-...
+Sections of the wiki's Markdown reference (609 lines); ask for one by its heading:
+- Writing pages (3 kB, the introduction)
+  - Text (under 1 kB)
+  - Emoji (3 kB)
+  ...
+  - Math (6 kB)
+    - What KaTeX sets (2 kB)
+    - Macros (3 kB)
+  ...
 ```
 
 - **`wiki.sh list [SPACE] [--depth N]`** prints the tree of what you may read,

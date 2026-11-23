@@ -41,6 +41,7 @@ import Wiki.Api.Admin (Directory (..), ServerStatus (..), WikiSettings (..))
 import Wiki.Api.Error (ApiError (..))
 import Wiki.Api.Links (links)
 import Wiki.Api.Opaque (LoginChallenge (..), LoginFinish (..), LoginStart (..), Message (..), NewAccountRecord (..), PasswordRecordChange (..), RegistrationFor (..), Stretch (..), bytesOf, messageOf)
+import Wiki.Api.ServerSettings (ServerSettingsChange, ServerSettingsOf (..), noServerSettings)
 import Wiki.Api.Types (NewPage (..), NewSpace (..), PersonalSpaceSwitch (..), SessionInfo (..))
 import Wiki.Core.Access (Access (..))
 import Wiki.Core.Id (SpaceId, UserId (..))
@@ -49,6 +50,7 @@ import Wiki.Core.PageKind qualified as Kind
 import Wiki.Core.Path (parsePath)
 import Wiki.Core.Slug (Slug)
 import Wiki.Core.Space (Space (..))
+import Wiki.Core.Url (Url (..))
 import Wiki.Core.User (Login (..), Password (..), Standing (..), User (..))
 import Wiki.Server.Console (Users (..), UsersCommand (..), runUsers)
 import Wiki.Server.Opaque (loadServerSetup, registerHere)
@@ -635,6 +637,37 @@ guards backing = describe "requests from other sites" $ do
     reply.status `shouldBe` 403
     same <- passwordSignIn r (onPublic r) [("Sec-Fetch-Site", "same-origin")] "editor" "editor's password"
     same.status `shouldBe` 200
+
+  -- An origin is the scheme, the host in any case, and the port, the
+  -- scheme's own when none is written (443 for https). Each refusal is
+  -- next to an acceptance, so that the refusal is not the only answer.
+  it "are refused when their Origin is not the address a proxy passes on, a port the scheme's own or not" $ withPasswords backing identity $ \r -> do
+    let comingFrom origin host proto = (.status) <$> passwordSignIn r (onPublic r) [("Origin", origin), ("X-Forwarded-Host", host), ("X-Forwarded-Proto", proto)] "editor" "editor's password"
+    comingFrom "https://wiki.example.org" "wiki.example.org:443" "https" `shouldReturn` 200
+    comingFrom "https://wiki.example.org:443" "wiki.example.org" "https" `shouldReturn` 200
+    comingFrom "https://wiki.example.org:8443" "wiki.example.org:8443" "https" `shouldReturn` 200
+    comingFrom "https://Wiki.Example.ORG" "wiki.EXAMPLE.org" "https" `shouldReturn` 200
+    comingFrom "https://elsewhere.example" "wiki.example.org" "https" `shouldReturn` 403
+    comingFrom "https://wiki.example.org:8443" "wiki.example.org" "https" `shouldReturn` 403
+    comingFrom "https://wiki.example.org" "wiki.example.org:8443" "https" `shouldReturn` 403
+    comingFrom "http://wiki.example.org" "wiki.example.org" "https" `shouldReturn` 403
+    comingFrom "null" "wiki.example.org" "https" `shouldReturn` 403
+    -- Without a proxy, the listener's own address.
+    (.status) <$> passwordSignIn r (onPublic r) [("Origin", encodeUtf8 r.public)] "editor" "editor's password" `shouldReturn` 200
+    (.status) <$> passwordSignIn r (onPublic r) [("Origin", "http://elsewhere.example")] "editor" "editor's password" `shouldReturn` 403
+
+  -- A wiki is often reached by more than one address: the public one, and
+  -- the machine's own. A page served from either is the wiki's.
+  it "are refused when their Origin is neither the public address, when one is set, nor the address the request names; the admin listener takes its own only" $ withPasswords backing identity $ \r -> do
+    _ <- setServer r noServerSettings {publicUrl = Just (Url "https://wiki.example.org/")}
+    let comingFrom origin = (.status) <$> passwordSignIn r (onPublic r) [("Origin", origin)] "editor" "editor's password"
+        adminFrom origin = (.status) <$> send r methodPut (onAdmin r links.admin.setServer) [(hContentType, "application/json"), ("Origin", origin)] (encode (noServerSettings {publicUrl = Just (Url "https://wiki.example.org/")} :: ServerSettingsChange))
+    comingFrom "https://wiki.example.org" `shouldReturn` 200
+    comingFrom (encodeUtf8 r.public) `shouldReturn` 200
+    comingFrom "http://wiki.example.org" `shouldReturn` 403
+    comingFrom "https://elsewhere.example" `shouldReturn` 403
+    adminFrom (encodeUtf8 r.admin) `shouldReturn` 200
+    adminFrom "https://wiki.example.org" `shouldReturn` 403
 
 -- | WP5.87 of docs/PLAN.md: a login from before the rule of a login, which
 -- step 15 of the schema renames ("Wiki.Server.Storage.Migrate.Code.Step0015").

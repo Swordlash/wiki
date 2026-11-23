@@ -49,7 +49,9 @@ as this page.
   with the wiki's cookie, but not send a header of its choosing without the
   server's consent (CORS), which this server never gives. Where the browser
   says where a request came from (`Sec-Fetch-Site`, sent to HTTPS origins
-  and to the machine itself) it must say `same-origin` (or `none`).
+  and to the machine itself) it must say `same-origin` (or `none`). Where
+  it sends an `Origin`, that must be one of the wiki's own origins, as for
+  the live channel (below).
 - **Answers are private**: they depend on who asks, so they go out with
   `Cache-Control: private, no-cache` (unless an endpoint says otherwise)
   and `Vary: Cookie`, and so do the pages the server renders.
@@ -423,8 +425,8 @@ tells it what happens to them as it happens (decision 23 of the plan,
 `Wiki.Api.Events`). The upgrade is a request like any other: who is asking is
 found from its session cookie, a closed wiki answers someone who has not
 signed in 401 before upgrading, an upgrade whose `Origin` is not the
-wiki's own origins is 403, and a request to the address that is no
-upgrade is 426. The wiki's own origins are the one the request names (the
+wiki's own origins is 403 (the same check as a request that changes
+something), and a request to the address that is no upgrade is 426. The wiki's own origins are the one the request names (the
 host in `X-Forwarded-Host`, else `Host`, over the scheme
 `X-Forwarded-Proto` names, else the listener's) and, on the public
 listener, the public address's when the Server section sets one. Two

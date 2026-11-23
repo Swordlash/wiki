@@ -13,7 +13,8 @@
 -- The wiki's own origins are decided here too, once, for the checks that
 -- need them: the origin a passkey must be made on ('ownOrigin',
 -- "Wiki.Server.Vault") and the origins the live channel's WebSocket may
--- come from ('ownOrigins', "Wiki.Server.Events"). Two origins are compared
+-- come from, and a request that changes something ('ownOrigins',
+-- "Wiki.Server.Events", "Wiki.Server.Session"). Two origins are compared
 -- as a browser compares them ('Origin'), so that a port written out on one
 -- side only, or a host in capitals, does not make them differ.
 module Wiki.Server.Address

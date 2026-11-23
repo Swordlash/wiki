@@ -254,8 +254,9 @@ data Caller = Caller
   , origins :: [Origin]
   -- ^ The wiki's own origins, as this listener serves it
   -- ('Wiki.Server.Address.ownOrigins'): the one the request names, and on
-  -- the public listener the public address's when one is set. The live
-  -- channel's WebSocket is refused when its @Origin@ header names another.
+  -- the public listener the public address's when one is set. A request
+  -- that changes something, and the live channel's WebSocket, are refused
+  -- when their @Origin@ header names another.
   , pauseIdle :: IO ()
   -- ^ Let the request's connection stay silent longer than Warp's idle
   -- timeout of 30 seconds (Warp's @pauseTimeout@), for an answer that

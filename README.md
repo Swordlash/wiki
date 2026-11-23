@@ -1403,9 +1403,10 @@ It must pass WebSocket upgrades on (comments and notifications arrive live at
 the origin passkeys are checked against. On a port other than 443 the host
 it passes on keeps the port (`wiki.example.org:8443`; in nginx `$http_host`,
 not `$host`), or the administration's public address names it. The live
-channel's WebSocket must come from that origin too, or from the public
-address, or comments and notifications do not arrive live: behind a proxy
-that serves HTTPS and sends no `X-Forwarded-Proto`, set the public address.
+channel's WebSocket and every change sent to the API must come from that
+origin too, or from the public address, or comments and notifications do
+not arrive live and nothing can be saved: behind a proxy that serves HTTPS
+and sends no `X-Forwarded-Proto`, set the public address.
 Caddy's `reverse_proxy` does all of it;
 a whole Caddyfile, with the certificate from Let's Encrypt:
 
@@ -2489,7 +2490,9 @@ to the demo, keeping `data/`.
     (`https://your-machine.tailnet.ts.net/`, `https://wiki.example.org/`), with its
     port when that is not the scheme's own (`https://wiki.example.org:8443/`), which
     mailed links and the providers' redirect URIs start with, and passkeys are
-    checked against; mail and providers need it;
+    checked against; mail and providers need it. Pages served from it, and
+    from the address a request names, may change something; a page of any
+    other origin is refused;
   - *mail*: the SMTP server's host and port (587 is STARTTLS, 465 implicit TLS; "none"
     only for a relay on the same machine or network), the sender
     (`Wiki <wiki@example.org>`), the account and its password if it wants one; "Send a
@@ -2932,8 +2935,8 @@ there with the compose file beside it.
   `api/v1/events` (comments arrive live there: `Upgrade` and `Connection`
   forwarded), keep the `Host` the browser asked for or set
   `X-Forwarded-Host` to it, and set `X-Forwarded-Proto` when it serves
-  HTTPS, since the server refuses an upgrade whose `Origin` is not its own
-  address. A public address set in the Server section is taken too,
+  HTTPS, since the server refuses an upgrade, and any change, whose
+  `Origin` is not its own address. A public address set in the Server section is taken too,
   whatever the proxy says.
 - **The admin listener** listens on the container's own loopback,
   `127.0.0.1:8081`, which is not published and which nothing outside the container

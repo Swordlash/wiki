@@ -20,9 +20,14 @@
 -- not with a header of its choosing, which needs the server's consent
 -- first (CORS), never given. Where the browser says where the request came
 -- from (@Sec-Fetch-Site@, which browsers send to HTTPS origins and to the
--- machine itself), it must also say this origin. The check is made on both
--- listeners: the admin listener needs no cookie at all, so a page that
--- could post to it would act as the operator.
+-- machine itself), it must also say this origin. Where it sends an
+-- @Origin@, which browsers do with every request that changes something,
+-- that must be one of the wiki's own origins
+-- ('Wiki.Server.Address.ownOrigins': the address the request names, and on
+-- the public listener the public address when one is set), the same check
+-- as the live channel's WebSocket. The check is made
+-- on both listeners: the admin listener needs no cookie at all, so a page
+-- that could post to it would act as the operator.
 module Wiki.Server.Session
   ( -- * The cookie
     CookieSettings (..)
@@ -46,6 +51,7 @@ import Network.Wai (Middleware, Request (..), responseLBS)
 import Protolude
 import Wiki.Api (requestMarker)
 import Wiki.Server.Accounts (idleTime)
+import Wiki.Server.Address (Origin, fromOwnOrigin)
 import Wiki.Server.Password (SessionToken (..))
 
 -- | Where and how the cookie is set.
@@ -99,10 +105,10 @@ requestToken request =
 -- | Refuse a request that changes something and does not come from the
 -- application (see the module's Haddock), with a 403 and the API's
 -- 'Wiki.Api.Error.Forbidden' body.
-sameOrigin :: Middleware
-sameOrigin app request respond
+sameOrigin :: [Origin] -> Middleware
+sameOrigin own app request respond
   | requestMethod request `elem` [methodGet, methodHead, methodOptions] = app request respond
-  | marked && fromHere = app request respond
+  | marked && fromHere && fromOwnOrigin own request = app request respond
   | otherwise = respond (responseLBS status403 [(hContentType, "application/json")] "{\"error\":\"Forbidden\"}")
   where
     headerOf name = lookup (CI.mk name) (requestHeaders request)

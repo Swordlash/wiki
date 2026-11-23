@@ -347,8 +347,9 @@ closeAll hub = atomically $ do
 -- browser sends the reader's cookie with it; only the @Origin@ header says
 -- where the page is. So the upgrade is refused unless that header names
 -- one of the wiki's own origins, as the listener serves it
--- ('Wiki.Server.Address.ownOrigins', 'fromOwnOrigin'). A client that sends
--- no @Origin@ is not a page.
+-- ('Wiki.Server.Address.ownOrigins', 'fromOwnOrigin'), the same check as a
+-- request that changes something. A client that sends no @Origin@ is not a
+-- page.
 eventsApplication :: Storage -> Hub -> Who -> [Origin] -> Application
 eventsApplication storage hub who own request respond
   | not (fromOwnOrigin own request) = respond (responseLBS status403 [(hContentType, "application/json")] (encode ApiError.Forbidden))

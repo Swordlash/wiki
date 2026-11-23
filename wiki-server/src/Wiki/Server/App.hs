@@ -337,5 +337,5 @@ listenerRoutes logger env site l caller request respond = do
     | readOnly && null segments -> redirect (encodeUtf8 l.mount)
     | otherwise -> notFound
   where
-    api = sameOrigin (apiApplication env caller)
+    api = sameOrigin caller.origins (apiApplication env caller)
     pages template = renderPage logger env caller.who l.mount template

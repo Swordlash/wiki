@@ -92,6 +92,7 @@ library
       Wiki.Core.Markdown.Mention
       Wiki.Core.Markdown.Problems
       Wiki.Core.Markdown.Render
+      Wiki.Core.Markdown.Sections
       Wiki.Core.Markdown.Starts
       Wiki.Core.Markdown.Tasks
       Wiki.Core.Markdown.TexMath
@@ -191,6 +192,7 @@ test-suite wiki-core-test
       Test.Markdown.Markers
       Test.Markdown.Mention
       Test.Markdown.Problems
+      Test.Markdown.Sections
       Test.Markdown.Spoiler
       Test.Markdown.Tasks
       Test.Markdown.Tikz

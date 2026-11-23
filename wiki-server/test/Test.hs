@@ -17,6 +17,7 @@ import Test.Server.Backups qualified as Backups
 import Test.Server.BasicSignIn qualified as BasicSignIn
 import Test.Server.Comments qualified as Comments
 import Test.Server.Compress qualified as Compress
+import Test.Server.ContentsApi qualified as ContentsApi
 import Test.Server.Export qualified as Export
 import Test.Server.Feed qualified as Feed
 import Test.Server.Guide qualified as Guide
@@ -120,6 +121,7 @@ main = secureMain $ do
           Comments.spec b
           Mail.spec b
           MarkdownApi.spec b
+          ContentsApi.spec b
           Settings.spec b
           Backups.spec b
           BasicSignIn.spec b

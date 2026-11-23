@@ -64,6 +64,7 @@ module Wiki.Server.MarkdownApi
   , signedInBasic
   , runAs
   , refusal
+  , refusalWith
   , wikiRefusal
   , notAllowed
   , parameter
@@ -254,6 +255,7 @@ runAs env address u = runStoredWikiFrom env.storage (AsUser u) address
 refusal :: Status -> Text -> Maybe Text -> Response
 refusal status = refusalWith status []
 
+-- | 'refusal' with headers of its own (@Allow@, @Retry-After@).
 refusalWith :: Status -> [Header] -> Text -> Maybe Text -> Response
 refusalWith status hs name why =
   responseLBS status ((hContentType, "application/json") : (hCacheControl, "no-store") : hs) (encode (object (("error" .= name) : maybe [] (\w -> ["message" .= w]) why)))

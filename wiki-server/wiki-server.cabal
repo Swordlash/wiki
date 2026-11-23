@@ -96,6 +96,7 @@ library
         Wiki.Server.BasicSignIn
         Wiki.Server.Compress
         Wiki.Server.Console
+        Wiki.Server.ContentsApi
         Wiki.Server.CopyDatabase
         Wiki.Server.Events
         Wiki.Server.Export
@@ -346,6 +347,7 @@ test-suite wiki-server-test
         Test.Server.BasicSignIn
         Test.Server.Comments
         Test.Server.Compress
+        Test.Server.ContentsApi
         Test.Server.Export
         Test.Server.Feed
         Test.Server.Fixture

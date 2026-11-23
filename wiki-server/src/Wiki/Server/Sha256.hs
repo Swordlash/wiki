@@ -8,7 +8,9 @@
 -- file and id are its SHA-256 in hex ("Wiki.Server.Storage.Blobs"), the
 -- database keeps a session id's ('Wiki.Server.Password.tokenHash'), a
 -- vault key's id is the start of its key's ('Wiki.Server.Vault.keyIdOf'),
--- and the guide's record keeps one for each page
+-- an API key's secret is kept as its hash in hex
+-- ('Wiki.Server.ApiKeys.secretHash'), and the guide's record keeps one for
+-- each page
 -- ('Wiki.Server.Guide.writtenHash'). The tests ("Test.Server.Sha256") hold
 -- values the earlier library, cryptohash-sha256, computed for each of them.
 --

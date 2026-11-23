@@ -43,6 +43,7 @@ module Wiki.Server.Storage.Schema
   , ResetTokens (..)
   , EmailVerifications (..)
   , Passkeys (..)
+  , ApiKeys (..)
   , Vaults (..)
   , VaultItems (..)
   , PublicKeys (..)
@@ -854,6 +855,10 @@ deriving stock instance Eq (ConversionLeases Identity)
 
 deriving stock instance Show (ConversionLeases Identity)
 
+deriving stock instance Eq (ApiKeys Identity)
+
+deriving stock instance Show (ApiKeys Identity)
+
 deriving stock instance Eq (EmailVerifications Identity)
 
 deriving stock instance Show (EmailVerifications Identity)
@@ -1108,6 +1113,30 @@ instance Table ConversionLeases where
     deriving anyclass (Beamable)
   primaryKey r = ConversionLeaseKey r.space_id
 
+-- | A user's API key (@api_keys@, step 24, "Wiki.Server.ApiKeys"): its
+-- public id, the SHA-256 of its secret in hex, the user it signs in, the
+-- name they gave it, its right (@read@, @write@ or @admin@, in the column
+-- @access@), and when it was made, expires, was last used and was revoked.
+data ApiKeys f = ApiKeyRow
+  { id :: Columnar f Text
+  , user_id :: Columnar f Text
+  , secret_hash :: Columnar f Text
+  , name :: Columnar f Text
+  , access :: Columnar f Text
+  , created_at :: Columnar f UTCTime
+  , expires_at :: Columnar f (Maybe UTCTime)
+  , last_used_at :: Columnar f (Maybe UTCTime)
+  , revoked_at :: Columnar f (Maybe UTCTime)
+  }
+  deriving stock (Generic)
+  deriving anyclass (Beamable)
+
+instance Table ApiKeys where
+  newtype PrimaryKey ApiKeys f = ApiKeyKey (Columnar f Text)
+    deriving stock (Generic)
+    deriving anyclass (Beamable)
+  primaryKey r = ApiKeyKey r.id
+
 --------------------------------------------------------------------------------
 -- The database
 
@@ -1152,6 +1181,7 @@ data WikiDb f = WikiDb
   , sealed_attachments :: f (TableEntity SealedAttachments)
   , staged_plain :: f (TableEntity StagedPlain)
   , conversion_leases :: f (TableEntity ConversionLeases)
+  , api_keys :: f (TableEntity ApiKeys)
   }
   deriving stock (Generic)
   deriving anyclass (Database be)

@@ -96,6 +96,7 @@ import Wiki.Api
 import Wiki.Api.Account (Account (..), AccountDisabled (..), Credentials (..), InvitationInfo, InvitationToken, SignInMethods)
 import Wiki.Api.Activity (ActivityQuery (..))
 import Wiki.Api.Admin (AdministratorFlag (..), CreateSpacesFlag (..), GroupName (..), Invitation (..), Invitations (..), Invited (..), NewInvitation (..), ServerStatus (..), WikiSettings (..), userQueryOf)
+import Wiki.Api.ApiKeys (NewApiKey (..))
 import Wiki.Api.Comments (CommentText (..), NewThread (..), ThreadResolution (..))
 import Wiki.Api.ContentPolicy (interactiveSvgPolicy)
 import Wiki.Api.Encrypted (HeadingsQuery (..), LeaseToken, SpaceEntry (..))
@@ -137,6 +138,7 @@ import Wiki.Core.Version (VersionsQuery (VersionsQuery), versionsPageSize)
 import Wiki.Server.Accounts (endSession)
 import Wiki.Server.Accounts qualified as Accounts
 import Wiki.Server.Address (Origin)
+import Wiki.Server.ApiKeys qualified as ApiKeys
 import Wiki.Server.Backups (BackupService, currentBackups, requestBackup, settingsChanged)
 import Wiki.Server.BasicSignIn (BasicSignIns)
 import Wiki.Server.Events (Hub, openConnections)
@@ -203,6 +205,10 @@ data Env = Env
   , resets :: Limiter
   -- ^ The requests for a password reset, every one counted by the address
   -- it came from.
+  , keyFailures :: Limiter
+  -- ^ The requests refused for their API key, counted by the address they
+  -- came from, apart from the failed sign-ins of 'limiter'
+  -- ("Wiki.Server.ApiKeys").
   , resetTasks :: Ki.Scope
   -- ^ 'resetTasks' is the scope that owns password-reset work. Closing it
   -- cancels and joins the tasks; an unexpected failure reaches the server's
@@ -750,6 +756,24 @@ handlers env caller =
               u <- signedInUser
               now <- liftIO getCurrentTime
               liftIO (Vault.removePasskey env.storage now u i) >>= either (throwError . wikiError) pure
+          , apiKeys = signedInUser >>= liftIO . ApiKeys.apiKeysOf env.storage
+          , makeApiKey = \new -> do
+              u <- signedInUser
+              -- A key signs its user in, as a passkey does: someone at a
+              -- browser left signed in may not make one without the
+              -- password.
+              reauthenticated u new.password
+              now <- liftIO getCurrentTime
+              -- Whether the user is an administrator is read here, before the
+              -- key is stored; a user who stops being one in between has a key
+              -- that does not work ('ApiKeys.isAdministrator' is asked again
+              -- at every request).
+              administers <- liftIO (ApiKeys.isAdministrator env.storage caller.address u)
+              liftIO (ApiKeys.makeApiKey env.storage now u administers new) >>= either (throwError . wikiError) pure
+          , revokeApiKey = \i -> do
+              u <- signedInUser
+              now <- liftIO getCurrentTime
+              liftIO (ApiKeys.revokeApiKey env.storage now u i) >>= either (throwError . wikiError) pure
           , secondFactorState = signedInUser >>= liftIO . secondFactorState env.storage
           , enrolTotp = \body -> do
               u <- signedInUser

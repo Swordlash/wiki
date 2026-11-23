@@ -13,6 +13,7 @@ import Test.Hspec.Runner (Config (..), defaultConfig, hspecWith)
 import Test.Server.Access qualified as Access
 import Test.Server.Accounts qualified as Accounts
 import Test.Server.Api qualified as Api
+import Test.Server.ApiKeys qualified as ApiKeys
 import Test.Server.Backups qualified as Backups
 import Test.Server.BasicSignIn qualified as BasicSignIn
 import Test.Server.Comments qualified as Comments
@@ -125,6 +126,7 @@ main = secureMain $ do
           Settings.spec b
           Backups.spec b
           BasicSignIn.spec b
+          ApiKeys.spec b
           Oidc.spec b
           Export.spec b
           Vault.spec b

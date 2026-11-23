@@ -2381,7 +2381,9 @@ to the demo, keeping `data/`.
   `--off`), disables a login (`users disable LOGIN --on`, which signs them out;
   `--off` enables it), takes away a second factor its user has lost
   (`users second-factor-remove LOGIN`) and removes the account of a disabled
-  login (`users remove LOGIN`), keeping what the person wrote under the login. It is also how an installation whose
+  login (`users remove LOGIN`), keeping what the person wrote under the login.
+  `keys add|list|revoke LOGIN` makes, lists and revokes a user's API keys
+  (see "The API" below). The `users` command is also how an installation whose
   administrators are all locked out is recovered. Sign in on the public address
   with that login. Sessions last two weeks without use. Behind HTTPS the server
   must run with `--secure-cookies`, which the deploy script passes behind
@@ -2616,12 +2618,68 @@ to the demo, keeping `data/`.
 
 Programs on your own machine (a local assistant, a script) can read a page's
 Markdown and write it back, at `/api/markdown/` on the public listener. Each
-request signs in with your login and password (HTTP Basic, `curl -u`) and acts
-as you, with everything you may do in the wiki: the spaces' permissions apply
-as they are. The password travels in the request, outside the browser's OPAQUE
-sign-in, so use the API over HTTPS only. The session cookie is never read
-there: a page open in a browser cannot use these addresses with its reader's
-session.
+request signs in with an API key of yours, or with your login and password
+(HTTP Basic, `curl -u`), and acts as you: the spaces' permissions apply as
+they are. A key or a password travels in the request, so use the API over
+HTTPS only. The session cookie is never read there: a page open in a browser
+cannot use these addresses with its reader's session.
+
+An **API key** is a long random string made for one program, which you can
+revoke without changing your password:
+`wiki_` and an id, an underscore, and a secret, such as
+`wiki_m3k7q2xa9dwn4zrt_2q…` (74 characters). It is shown once, when it is
+made, and the wiki keeps only a hash of its secret: copy it then, or make
+another. Send it in each request as `Authorization: Bearer <key>` or as
+`X-API-Key: <key>`:
+
+```sh
+export WIKI_TOKEN='wiki_m3k7q2xa9dwn4zrt_…'
+curl -H "Authorization: Bearer $WIKI_TOKEN" https://wiki.example/api/markdown/s/blog/p/hello-world/
+curl -H "X-API-Key: $WIKI_TOKEN" 'https://wiki.example/api/search?q=on-call'
+```
+
+- **Rights.** A key has one right, which narrows what you may do: `read`
+  reads (`GET`), `write` also writes pages and creates spaces (`PUT`), and
+  `admin` is for the administration through the API, which is to come:
+  today it does what `write` does. Only an administrator may make an `admin`
+  key, and it stops working when they stop being one. A key never does more
+  than you may do at that moment: a space you may not read is not there for
+  your key either. A request its right does not allow is refused (403),
+  naming the right it needs.
+- **Expiry.** A key works until the moment you chose, or until it is
+  revoked if you chose none. A revoked key stays in your list as revoked and
+  never works again. When you are removed from the wiki your keys go with
+  you; while your login is disabled they do not work. A new password and
+  "Sign out everywhere" leave your keys as they are: revoke a key you no
+  longer trust.
+- **Second factor and passkeys.** A key works for an account with a second
+  factor, and for one that signs in with passkeys only, which a password
+  cannot sign in here: the key was made in a session the second factor or
+  the passkey let in.
+- **Where.** On `/api/markdown` (with a page's sections), `/api/contents`,
+  `/api/list` and `/api/search` only. The
+  wiki's own API, `/api/v1`, refuses a request that carries one.
+- **Refusals.** A key the wiki does not take is refused with 401, the same
+  answer whether it is unknown, wrong, expired or revoked, or your login is
+  disabled; the server's log says which. After thirty refused keys from an
+  address in fifteen minutes, that address's wrong keys get 429; a right key
+  still works, and the sign-in form's count is separate.
+- **Making one.** Your keys will be listed, made and revoked in your
+  settings, which are being moved to a page of their own; making one there
+  will ask for your password, as adding a passkey does. Until then the
+  server's console makes them, on the machine the wiki runs on (as the
+  `users` commands do):
+
+  ```sh
+  ~/wiki-demo/bin/wiki keys add --data ~/wiki-demo/data editor --name 'Laptop assistant' --right write --expires 2027-06-30
+  ~/wiki-demo/bin/wiki keys list --data ~/wiki-demo/data editor
+  ~/wiki-demo/bin/wiki keys revoke --data ~/wiki-demo/data editor m3k7q2xa9dwn4zrt
+  ```
+
+  `add` prints the key once. `--right` is `read` unless given, and
+  `--expires` names the last day the key works, until its end in UTC; with
+  none, it never expires. The application's own endpoints for the settings
+  are in [docs/api.md](docs/api.md#api-keys).
 
 A page's address is its address in the browser with `/api/markdown` in front:
 `/s/team/projects/p/the-wiki/` is read at `/api/markdown/s/team/projects/p/the-wiki/`,
@@ -2848,9 +2906,14 @@ uses (`{"error": "…", "message": "…"}`):
   since in the browser; the same answer for each, so it does not tell which.
   Failed sign-ins count toward the same limit as the sign-in form's: after
   five for a login from an address, both refuse it (429) for fifteen minutes.
+  An API key that does not sign in is 401 too, one answer for every reason
+  (see above), and 429 after thirty from an address.
+- 400 for a request with two credentials: a key and a login and password,
+  or two different keys.
 - 403 for an account with a second factor, which a password alone does not
-  sign in, for a write to a page you may read but not edit, and for a page
-  or a space you may not create there.
+  sign in (a key does), for a request a key's right does not allow, for a
+  write to a page you may read but not edit, and for a page or a space you
+  may not create there.
 - 404 for a page or a space that is not there or that you may not read,
   alike: for a page read, for one created in such a space or under such a
   page, and for a space created under such a space.
@@ -2869,9 +2932,9 @@ browser that registered the password, so the server runs at most a budget,
 `t=4,m=134217728`, what the wiki's own registration asks for (four passes of
 Argon2id over 128 MiB). An account whose record asks for more passes or more
 memory than the budget is refused (401) as a wrong password is, and costs the
-server no more than one. Keys made in your own panel instead of a password,
-attachments and an MCP server are to come; writing a single section of a page
-is not offered yet (write the page whole).
+server no more than one. A key costs a lookup and a SHA-256, and nothing is
+remembered of it. Attachments and an MCP server are to come; writing a single
+section of a page is not offered yet (write the page whole).
 
 ##### From a shell, and for assistants
 

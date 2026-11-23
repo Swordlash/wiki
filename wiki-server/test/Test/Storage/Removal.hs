@@ -16,6 +16,7 @@ import Test.Database (Backing, placeOptionsOf)
 import Test.Hspec
 import Test.Storage.Fixture (countWhere, ok, path, tableRows, withDemo, withPlaceIn)
 import Wiki.Api.Account (Account (..))
+import Wiki.Api.ApiKeys (KeyRight (..), NewApiKey (..))
 import Wiki.Api.Notifications (Notifications (..))
 import Wiki.Api.Vault (NewPublicKey (..), PasskeyInfo (..), VaultChange (..))
 import Wiki.App.Backend (MonadWiki (..), Session (..), WikiError (..))
@@ -33,6 +34,7 @@ import Wiki.Core.Space (Space (..))
 import Wiki.Core.User (Password (..), User (..))
 import Wiki.Core.Version (Author (..), VersionInfo (..), latestVersions)
 import Wiki.Server.Accounts (createAccount, setDisabled, setPassword, signInUser)
+import Wiki.Server.ApiKeys (makeApiKey)
 import Wiki.Server.Console (Users (..), UsersCommand (..), runUsers)
 import Wiki.Server.SecondFactor (enrol)
 import Wiki.Server.Storage (Storage, Who (..), defaultConfig, reading, runStoredWiki, userByLogin, withStorage)
@@ -61,6 +63,7 @@ spec backing = describe "removing an account" $ do
     void (ok =<< setPassword st u (Password "editor's password"))
     signInUser st now "127.0.0.1" u >>= either (const (expectationFailure "the editor does not sign in")) (const pass)
     void (ok =<< enrol st now u)
+    void (ok =<< makeApiKey st now u False NewApiKey {name = "Gone with them", right = WriteRight, expiresAt = Nothing, password = Nothing})
     passkey <- ok =<< registerPasskey st now u Nothing NewCredential {credentialId = "a passkey", publicKey = "its public key", algorithm = -7, signCount = 0}
     let vault = withSealed Sealed {nonce = "bm9uY2UtMTJieXRl", ciphertext = "c2VhbGVk"} Vault {format = vaultFormat, salt = "c2FsdC1vZi10aGlydHktdHdvLWJ5dGVzLWZvci1wcmY", items = mempty, wraps = Map.singleton (ByPasskey passkey.id) (WrappedKey "bm9uY2UtMTJieXRl" "YSB2YXVsdCBrZXkgd3JhcHBlZCwgYW5kIHRoZSB0YWcgb2YgaXRzIHdyYXBwaW5n")}
     let key = PublicKey "YW4gWDI1NTE5IHB1YmxpYyBrZXksIDMyIGJ5dGVzISE"
@@ -79,7 +82,8 @@ spec backing = describe "removing an account" $ do
     void (ok =<< asAdmin (setSpaceGrant blog.id (SubjectUser u) AdministerSpace True))
     void (ok =<< asAdmin (setCreateSpaces u True))
     tablesMentioning u.text st
-      `shouldReturn` [ "audit_log"
+      `shouldReturn` [ "api_keys"
+                     , "audit_log"
                      , "comments"
                      , "drafts"
                      , "global_grants"

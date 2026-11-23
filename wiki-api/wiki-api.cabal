@@ -61,6 +61,7 @@ library
       Wiki.Api.Account
       Wiki.Api.Activity
       Wiki.Api.Admin
+      Wiki.Api.ApiKeys
       Wiki.Api.Auth
       Wiki.Api.Backups
       Wiki.Api.Comments

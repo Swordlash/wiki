@@ -53,7 +53,7 @@ import System.Directory (doesDirectoryExist)
 import System.IO (hSetEncoding)
 import Wiki.Server (ServerError (..), serve)
 import Wiki.Server.Compress (compressDirectory)
-import Wiki.Server.Console (BackupOutcome (..), CheckOutcome (..), GuideCommand, MigrateOutcome (..), OidcCheck, RestoreCommand, Users, guideParser, oidcCheckParser, readPassword, restoreParser, runBackup, runCheck, runGuide, runMigrate, runOidcCheck, runRestore, runUsers, usersParser)
+import Wiki.Server.Console (BackupOutcome (..), CheckOutcome (..), GuideCommand, Keys, MigrateOutcome (..), OidcCheck, RestoreCommand, Users, guideParser, keysParser, oidcCheckParser, readPassword, restoreParser, runBackup, runCheck, runGuide, runKeys, runMigrate, runOidcCheck, runRestore, runUsers, usersParser)
 import Wiki.Server.CopyDatabase (CopyOptions, CopyOutcome (..), copyParser, runCopy)
 import Wiki.Server.Options (PlaceOptions, ServeOptions, placeOptions, serveOptions)
 import Wiki.Server.Rehearsal (RehearsalOptions, RehearsalOutcome (..), rehearsalParser, runRehearsal)
@@ -71,6 +71,8 @@ data Command
     Restore RestoreCommand
   | -- | Create or change a user.
     Users Users
+  | -- | List, make or revoke a user's API keys.
+    Keys Keys
   | -- | Check the providers to sign in with.
     Oidc OidcCheck
   | -- | Install the guide, or bring it up to this version.
@@ -100,6 +102,7 @@ commands =
               <> command "copy-database" (info (CopyDatabase <$> copyParser) (progDesc "Copy every table of the database into an empty one, a wiki in SQLite into PostgreSQL, and check the copy; no server may run on either"))
               <> command "rehearse" (info (Rehearse <$> rehearsalParser) (progDesc "Rehearse the upgrade from the running wiki's program to this one, on a copy of its database, before a deploy"))
               <> command "users" (info (Users <$> usersParser) (progDesc "List, make and change the wiki's users: the first administrator is made here"))
+              <> command "keys" (info (Keys <$> keysParser) (progDesc "List, make and revoke a user's API keys, for programs to sign in to the API with"))
               <> command "oidc" (info (Oidc <$> oidcCheckParser) (progDesc "Check the providers people sign in with, and print their redirect URIs"))
               <> command "guide" (info (Guide <$> guideParser) (progDesc "Install the guide, the wiki's documentation, or give its pages this version's text"))
               <> command "compress" (info compressCommand (progDesc "Write a gzip copy beside each of the application's files worth compressing, for the server to send"))
@@ -160,6 +163,12 @@ main = do
             exitWith (ExitFailure 1)
       Users u ->
         runUsers readPassword u >>= \case
+          Right lines' -> traverse_ putText lines'
+          Left why -> do
+            putErrText ("wiki-server: " <> why)
+            exitWith (ExitFailure 1)
+      Keys k ->
+        runKeys k >>= \case
           Right lines' -> traverse_ putText lines'
           Left why -> do
             putErrText ("wiki-server: " <> why)

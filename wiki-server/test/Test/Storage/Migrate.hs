@@ -13,9 +13,12 @@ import Protolude
 import Test.Database (Backing (..), forgetStep, withConnectionTo)
 import Test.Hspec
 import Test.Storage.Fixture (demoArchive, ok, withEmptyPlaceIn)
+import Wiki.Api.ApiKeys (ApiKeyInfo (..), KeyRight (..), MadeApiKey (..), NewApiKey (..))
 import Wiki.Api.Vault (StoredVault (..))
 import Wiki.Core.Assistant.Vault (Sealed (..), Vault (..), VaultTag (..), vaultFormat, withSealed)
 import Wiki.Core.Id (UserId (..))
+import Wiki.Server.ApiKeys (KeyHolder (..), KeyOutcome (..), makeApiKey, signInByKey)
+import Wiki.Server.Limiter (defaultLimits, newLimiter)
 import Wiki.Server.Storage (CheckProblem (..), Checked (..), Migrated (..), Place, TableRead (..), checkDatabase, closeStorage, defaultConfig, importArchive, migrateDatabase, openStorage, withStorage)
 import Wiki.Server.Storage.Backend (Backend (..))
 import Wiki.Server.Storage.Migrate
@@ -26,7 +29,8 @@ import Wiki.Server.Vault (storedVault)
 -- | The tables of the wiki's schema, the same on both databases.
 wikiTables :: [Text]
 wikiTables =
-  [ "attachments"
+  [ "api_keys"
+  , "attachments"
   , "audit_log"
   , "comments"
   , "conversion_leases"
@@ -114,6 +118,25 @@ spec backing = describe "the schema's versions" $ do
       schemaVersion c `shouldReturn` known
       tablesOf c `shouldReturn` wikiTables
       versionsOf c `shouldReturn` [1 .. known]
+
+  -- Step 24 (the API keys), applied to a wiki that has users and pages
+  -- from the steps before it, as a deploy of the program that brought the
+  -- keys migrated one ('Test.Database.forgetStep': the step undone, then
+  -- applied again alone).
+  it "add the API keys' table to a wiki of the steps before, which keeps its users and whose users then make keys" $
+    withEmptyPlaceIn backing $ \at -> do
+      withStorage defaultConfig at $ \st -> importArchive st demoArchive >>= ok
+      withConnectionTo at $ \c -> do
+        let known = knownVersion (schemaSuffix c)
+        forgetStep 24 ["DROP TABLE api_keys;"] c
+        versionsOf c `shouldReturn` [1 .. known]
+        tablesOf c `shouldReturn` wikiTables
+      withStorage defaultConfig at $ \st -> do
+        now <- getCurrentTime
+        made <- makeApiKey st now (UserId "user-editor") False NewApiKey {name = "After the step", right = ReadRight, expiresAt = Nothing, password = Nothing} >>= ok
+        limiter <- newLimiter defaultLimits
+        signInByKey st limiter now "127.0.0.1" made.key
+          `shouldReturn` KeySignedIn KeyHolder {user = UserId "user-editor", key = made.info.id, right = ReadRight}
 
   it "apply nothing a second time, and change nothing" $
     withEmptyPlaceIn backing $ \at -> withConnectionTo at $ \c -> do

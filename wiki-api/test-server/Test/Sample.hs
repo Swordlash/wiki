@@ -55,6 +55,9 @@ module Test.Sample
   , vault
   , storedVault
   , passkeyInfo
+  , apiKeyInfo
+  , revokedKeyInfo
+  , madeApiKey
   , publicKeyEntry
   , registrationOptions
   , registrationResponse
@@ -70,6 +73,7 @@ import Protolude
 import Wiki.Api.Account (Account (..), InvitationInfo (..), InvitationToken (..), LinkedIdentity (..), SignInMethods (..))
 import Wiki.Api.Activity (Activity (..))
 import Wiki.Api.Admin (Directory (..), Invitation (..), Invitations (..), Invited (..), LoggedError (..), MacroUse (..), ServerStatus (..), TexEngine (..), TexStatus (..), WikiSettings (..))
+import Wiki.Api.ApiKeys (ApiKeyId (..), ApiKeyInfo (..), KeyRight (..), MadeApiKey (..))
 import Wiki.Api.Backups (BackupRecord (..), BackupSettingsChange, BackupSettingsOf (..), Backups (..), DestinationOf (..), OffSite (..), Retention (..), Schedule (..), Trigger (..))
 import Wiki.Api.Export (ExportFormat (..))
 import Wiki.Api.Import
@@ -701,6 +705,15 @@ storedVault = StoredVault {tag = VaultTag "\"3\"", vault}
 -- lengths, and the id the server would compute for them.
 publicKeyEntry :: PublicKeyEntry
 publicKeyEntry = PublicKeyEntry {user = UserId "user-ada", keyId = KeyId "Y2-9-YWJjZGVmZ2hpams", publicKey = PublicKey "YW4gWDI1NTE5IHB1YmxpYyBrZXksIDMyIGJ5dGVzISE", createdAt = time}
+
+apiKeyInfo :: ApiKeyInfo
+apiKeyInfo = ApiKeyInfo {id = ApiKeyId "m3k7q2xa9dwn4zrt", name = "Laptop assistant", right = WriteRight, createdAt = time, expiresAt = Just (UTCTime (fromGregorian 2027 1 1) 0), lastUsedAt = Just later, revokedAt = Nothing}
+
+revokedKeyInfo :: ApiKeyInfo
+revokedKeyInfo = ApiKeyInfo {id = ApiKeyId "b5c2t7yq4nx3wa6e", name = "Made on 2026-10-24 at 09:30 UTC", right = ReadRight, createdAt = time, expiresAt = Nothing, lastUsedAt = Nothing, revokedAt = Just later}
+
+madeApiKey :: MadeApiKey
+madeApiKey = MadeApiKey {key = "wiki_m3k7q2xa9dwn4zrt_abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst", info = apiKeyInfo}
 
 passkeyInfo :: PasskeyInfo
 passkeyInfo = PasskeyInfo {id = CredentialId "Y3JlZGVudGlhbC0x", name = "Added on 2026-10-28 at 09:30 UTC", createdAt = time, lastUsedAt = Just later, unlocks = True}

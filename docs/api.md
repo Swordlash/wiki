@@ -1021,6 +1021,53 @@ out of the log. The links are the application's pages
 `reset-password/<secret>/` and `verify-email/<secret>/`, which a closed wiki
 shows to anyone, as an invitation's.
 
+### API keys
+
+A user's API keys (`Wiki.Api.ApiKeys`, issue #338) are what a program on
+their machine signs in with to the API for programs (`/api/markdown`, a
+page's sections included, `/api/contents`, `/api/list`, `/api/search`; the
+README's "The API"), instead of their login
+and password. They are made, listed and revoked here, by the signed-in
+session, and never sign a request in to `/api/v1` itself.
+
+| Method | Path | Body | Response | Errors | |
+| ------ | ---- | ---- | -------- | ------ | - |
+| GET | `api/v1/account/api-keys` | | `[ApiKeyInfo]` `{"id", "name", "right", "createdAt", "expiresAt", "lastUsedAt", "revokedAt"}`, the newest first, revoked ones too; never a key's secret nor its hash | 401, 400 (the operator) | (`apiKeys`) |
+| POST | `api/v1/account/api-keys` | `NewApiKey` `{"name", "right", "expiresAt", "password"}`: the password proved as for `second-factor/totp` (`null` for a user who has none), since a key signs the user in; `right` is `"read"`, `"write"` or `"admin"`; `expiresAt` a moment in the future, or `null` for never; an empty name becomes the day it is made | 201, `MadeApiKey` `{"key", "info"}`: the whole key, shown this once, and the key as the list shows it | 401 (nobody signed in, a sign-in still waiting for its second factor, or a wrong password, counted as a failed sign-in), 429, 400 (the operator; an expiry not in the future; a name over 100 characters; twenty keys that work already), 403 (`"admin"` asked by a user who is not an administrator) | (`makeApiKey`) |
+| POST | `api/v1/account/api-keys/<id>/revoke` | | `[ApiKeyInfo]` then: the key revoked, for good, and still listed; revoking it again changes nothing | 401, 404 (not one of the user's keys) | (`revokeApiKey`) |
+
+A key is `wiki_<id>_<secret>`, 74 characters of lowercase base32 after the
+prefix: an id of 16 characters (80 random bits), public, which names the key
+in the list and in the server's log, and a secret of 52 (256 random bits).
+The server stores the id, the SHA-256 of the secret, and the rest of
+`ApiKeyInfo`; the time of last use is written at most once every ten
+minutes. A key is sent in each request as `Authorization: Bearer <key>` or
+`X-API-Key: <key>` (the same key in both counts as one), on every address of
+the API for programs, and never with a login and password beside it (400).
+A key's right narrows what its user may do at the moment of the request:
+`read` allows `GET` and `HEAD`, `write` everything else too, and `admin`,
+for the administration through the API that is to come, what `write` does,
+while its user is an administrator (403 once they are not). A method the
+right does not allow is 403, with the right it needs named. A malformed
+key, an unknown id, a wrong secret, an expired or revoked key and a
+disabled user's key are answered alike, 401 with
+`WWW-Authenticate: Bearer realm="wiki", error="invalid_token"`; the
+server's log says which (`event=api-key-refused why=…`), with the key's id
+when the key was well formed, never the key. After thirty refused keys from
+an address in fifteen minutes, its further refused keys are 429; a right
+key is let in whatever that count, and the sign-in form's count is apart.
+A key works for an account with a second factor, and for one with passkeys
+only. A user's keys go with their account, stop while it is disabled, and
+work again once it is enabled. A request to `/api/v1` that carries
+`X-API-Key`, or a bearer token of the form `wiki_…`, is 401.
+
+The request log's `principal` for a request of the API for programs is the
+user it signed in, `user:<id>`, with a key's id as `key=<id>` beside it.
+
+`wiki-server keys list|add|revoke --data DIR LOGIN` does the same on the
+server's machine (`add` prints the key once; `--right`, `--expires
+YYYY-MM-DD`, the last day it works, to its end in UTC).
+
 ### The assistant's keys across devices
 
 | Method | Path | Body | Response | Errors | `MonadVault` |

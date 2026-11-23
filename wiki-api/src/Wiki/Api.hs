@@ -97,6 +97,7 @@ import Servant.Multipart.API (MultipartForm, Tmp)
 import Wiki.Api.Account (Account, AccountDisabled, Credentials, InvitationInfo, InvitationToken, SignInMethods)
 import Wiki.Api.Activity (Activity)
 import Wiki.Api.Admin (AdministratorFlag, CreateSpacesFlag, Directory, GroupName, Invitations, Invited, MacroUse, NewInvitation, ServerStatus, TexEngine, UserPage, WikiSettings)
+import Wiki.Api.ApiKeys (ApiKeyId, ApiKeyInfo, MadeApiKey, NewApiKey)
 import Wiki.Api.Backups (BackupSettingsChange, Backups)
 import Wiki.Api.Comments (CommentsApi (..))
 import Wiki.Api.Encrypted (ConversionCommit, ConversionInfo, ConversionLease, ConversionProgress, EncryptSpace, HeadingsQuery, LeaseRequest, LeaseToken, NewEncryptedSubspace, NewGrants, NewSealedComment, NewSealedPage, NewSealedThread, PageHeading, Rotation, RotationInfo, SealedAttachment, SealedCommentEdit, SealedCommentInfo, SealedEdit, SealedPage, SealedSummary, SealedThread, SealedThreads, SealedVersion, SealedVersionInfo, SpaceEncryption, SpaceEntry, StagedPage, StagedPlain, StagedSealed, StartEncrypting, sealedVersion)
@@ -882,6 +883,25 @@ data AccountApi form mode = AccountApi
   , removePasskey :: mode :- "passkeys" :> Capture "passkey" CredentialId :> Delete '[JSON] [PasskeyInfo]
   -- ^ Remove one of the user's passkeys, with its wrapped copy of the
   -- vault key. The response is the passkeys left.
+  , apiKeys :: mode :- "api-keys" :> Get '[JSON] [ApiKeyInfo]
+  -- ^ The user's API keys ("Wiki.Api.ApiKeys"), the newest first, the
+  -- revoked ones too: never a key's secret nor its hash.
+  , makeApiKey :: mode :- "api-keys" :> ReqBody '[JSON] NewApiKey :> PostCreated '[JSON] MadeApiKey
+  -- ^ Make an API key for the user. The response holds the whole key,
+  -- which no later response shows again. It needs the user's current
+  -- password, as 'beginRegistration' does: a wrong or missing one is
+  -- 'Wiki.Api.Error.Unauthenticated' and counts as a failed sign-in. A key with the right @admin@
+  -- made by a user who is not an administrator is
+  -- 'Wiki.Api.Error.Forbidden'. An expiry that is not in the future, a
+  -- name that is too long, or a user who has as many keys that work as
+  -- they may (20) is 'Wiki.Api.Error.Invalid'. A
+  -- session still waiting for its second factor is not signed in, and is
+  -- 'Wiki.Api.Error.Unauthenticated'.
+  , revokeApiKey :: mode :- "api-keys" :> Capture "key" ApiKeyId :> "revoke" :> Post '[JSON] [ApiKeyInfo]
+  -- ^ Revoke one of the user's API keys: it never signs a request in
+  -- again, and stays in the list as revoked. Revoking a revoked key
+  -- changes nothing. The response is the user's keys after it; a key that
+  -- is not the user's is 'Wiki.Api.Error.NotFound'.
   , secondFactorState :: mode :- "second-factor" :> Get '[JSON] SecondFactorState
   -- ^ Whether the user has a second factor.
   , enrolTotp :: mode :- "second-factor" :> "totp" :> ReqBody '[JSON] CurrentPassword :> Post '[JSON] TotpEnrolment

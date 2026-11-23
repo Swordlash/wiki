@@ -57,6 +57,7 @@ $( browserJS
      , ("js_computed_colour", "wiki_test_computed_colour", Safe, [t|JSText -> IO JSText|])
      , ("js_computed_style", "wiki_test_computed_style", Safe, [t|JSText -> JSText -> IO JSText|])
      , ("js_rect", "wiki_test_rect", Safe, [t|JSText -> IO JSText|])
+     , ("js_on_top", "wiki_test_on_top", Safe, [t|JSText -> IO JSText|])
      , ("js_location_hash", "wiki_test_location_hash", Safe, [t|IO JSText|])
      ]
  )
@@ -266,6 +267,28 @@ spec m = readsOnce Idle $ do
     find ui ".editor-saved-notice" >>= (`shouldHaveText` "Saved")
     eventually (traverse rectOf (take 2 buttons) `shouldReturn` take 2 before)
     belowTheTop ".editor-saved-notice"
+
+  -- Issue #339: with the search's panel open, "Draft saved" hung over the
+  -- panel's Previous, Next and Close buttons.
+  it "shows Draft saved clear of the open search's panel and its buttons" $ runPage $ do
+    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    text <- editorText ui
+    typeText text " More."
+    press "Control+f"
+    _ <- find ui ".editor-search"
+    -- The draft is saved after the typing's pause.
+    waitQuiet
+    find ui ".editor-draft-status" >>= (`shouldHaveText` "Draft saved")
+    -- The notice's box and the panel's, left, top, right and bottom, share
+    -- no point inside both.
+    let apart = \case
+          ([nl, nt, nr, nb], [pl, pt, pr, pb]) -> nr <= pl || pr <= nl || nb <= pt || pb <= nt
+          _ -> False
+    boxes <- (,) <$> edges ".editor-draft-status" <*> edges ".editor-search"
+    boxes `shouldSatisfy` apart
+    -- Each of the panel's buttons is what is drawn all over its box.
+    for_ [".editor-search-previous", ".editor-search-next", ".editor-search-close"] $ \button ->
+      onTop button `shouldReturn` ""
 
   it "goes back to the page on Cancel when nothing has changed" $ runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
@@ -1101,6 +1124,12 @@ computedStyle selector property = unsafeIOToPageM (fromJSText <$> js_computed_st
 -- "left top right bottom", or "" when there is none.
 rectOf :: Text -> PageM s Text
 rectOf selector = unsafeIOToPageM (fromJSText <$> js_rect (toJSText selector))
+
+-- | What is drawn on top over the first element a selector finds, at its
+-- centre and near its corners: "" when that element is, else the first
+-- point covered and the element on top there.
+onTop :: Text -> PageM s Text
+onTop selector = unsafeIOToPageM (fromJSText <$> js_on_top (toJSText selector))
 
 -- | The edges of 'rectOf', as numbers: left, top, right and bottom.
 edges :: Text -> PageM s [Double]

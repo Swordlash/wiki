@@ -2823,11 +2823,11 @@ curl -u editor:'my password' 'https://wiki.example/api/search?q=on-call+rota&spa
                                {"match": false, "text": "…"}]}]}
   ```
 
-A long page can be read a part at a time: its table of contents at
-`/api/contents/` followed by the page's address, and one section at the
-page's Markdown address with `?section=` and the section's anchor. Both are
-signed in in the same way, with the permissions of reading the page, and take
-only `GET`.
+A long page can be read and written a part at a time: its table of contents
+at `/api/contents/` followed by the page's address, and one section at the
+page's Markdown address with `?section=` and the section's anchor, read with
+`GET` and written with `PUT`. Both are signed in in the same way, with the
+permissions of reading the page, and of editing it for a write.
 
 ```sh
 # The page's headings as a tree, each with the address of its section.
@@ -2841,6 +2841,10 @@ curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-ha
 
 # The text before the first heading.
 curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-handbook/?top=true'
+
+# A section written back, the rest of the page as it is, if the page has not changed since.
+curl -u editor:'my password' -X PUT -H 'If-Match: "2026-11-23T10:15:00.123456Z"' \
+  --data-binary @the-week.md 'https://wiki.example/api/markdown/s/team/p/team-handbook/?section=the-week'
 ```
 
 - **`GET /api/contents/s/<space path>/p/<page path>/`** (a space's home page
@@ -2890,9 +2894,40 @@ curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-ha
   and `top` is refused (400). So the top and every section with `own=true`,
   in order, are the whole page. The `ETag` is the page's: a section has no
   version of its own. An anchor the page does not have is 404, with the
-  page's anchors in the message. A section is only read: a `PUT` with
-  `?section=` or `?top=` is refused (405) and writes nothing; write the page
-  whole.
+  page's anchors in the message.
+- **`PUT /api/markdown/…/?section=<anchor>`** (and `&own=true`, and
+  `?top=true`) puts the body, Markdown in UTF-8, in the place of that part of
+  the page, and saves the page as a `PUT` of the whole page does: a new
+  version in the history, the page updated for its readers, the
+  notifications. `If-Match` with the page's version is optional, as for the
+  whole page: given, a page saved since is refused (412); left out, the body
+  goes in the page as it is when the request comes, and a save that comes in
+  between is never written over. `If-None-Match` is refused (400): a section
+  is written in a page that is there, never created, and a page not there is
+  404. The server ends the body with a line break when it has none, and when
+  more of the page follows and the body does not end with an empty line, it
+  adds one, so that the next heading stays apart; nothing else of the body
+  changes. So a part read and written back as it was gives the same page,
+  but where it ended right before a heading or a spoiler's end marker. An
+  empty body is refused (422), but for the top, which it takes out. The
+  answer is 200 with the page's new version as the `ETag` and as JSON:
+  `{"anchor": "the-week", "section": "/api/markdown/s/team/p/team-handbook/?section=the-week", "version": "…"}`
+  for a section, `{"top": "/api/markdown/…/?top=true", "version": "…"}` for
+  the top.
+
+  The body is that one part and changes nothing else of the page, or it is
+  refused with 422, saving nothing, and a message that says what would
+  change. A section's body starts with a heading of the section's level, and
+  every other heading in it is under that one; with `own=true` it has no
+  other heading, but inside a block spoiler; the top's has none either. Every
+  section outside the part keeps its heading, its level, its place and its
+  anchor. So a code fence or a spoiler left open, a spoiler's end marker that
+  closes the spoiler the section is in, a heading of another level and a
+  second heading of the section's level are refused. The body may change its
+  own heading: the answer gives the new anchor. A new heading text that would
+  change the anchor of another heading (`notes-2` becoming `notes-3`) is
+  refused, since an anchor is a section's address. A section inside a spoiler
+  is written like any other, and stays inside it.
 
 The text between a page's `# Title` and its first `##` is the title's own
 section, `?section=<the title's anchor>&own=true`. Without `own`, a section

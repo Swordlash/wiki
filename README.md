@@ -2657,7 +2657,7 @@ curl -H "X-API-Key: $WIKI_TOKEN" 'https://wiki.example/api/search?q=on-call'
   cannot sign in here: the key was made in a session the second factor or
   the passkey let in.
 - **Where.** On `/api/markdown` (with a page's sections), `/api/contents`,
-  `/api/list` and `/api/search` only. The
+  `/api/list`, `/api/search` and the MCP server, `/mcp` ([MCP](#mcp)), only. The
   wiki's own API, `/api/v1`, refuses a request that carries one.
 - **Refusals.** A key the wiki does not take is refused with 401, the same
   answer whether it is unknown, wrong, expired or revoked, or your login is
@@ -2989,7 +2989,79 @@ browser that registered the password, so the server runs at most a budget,
 Argon2id over 128 MiB). An account whose record asks for more passes or more
 memory than the budget is refused (401) as a wrong password is, and costs the
 server no more than one. A key costs a lookup and a SHA-256, and nothing is
-remembered of it. Attachments and an MCP server are to come.
+remembered of it. Attachments are to come.
+
+#### MCP
+
+The wiki is an MCP server: an assistant that speaks the Model Context
+Protocol, such as Claude Code or Codex, reads and writes the wiki's pages
+through its tools, with nothing to install. The server is at `/mcp` on the
+public listener (`https://wiki.example/mcp`; under the base path when there
+is one), never on the admin listener. It takes an API key only
+([The API](#the-api)), sent as `Authorization: Bearer <key>`: no password, no
+cookie, and no page in a browser (a request with an `Origin` is refused). The
+assistant acts as the key's user, and sees only what that user may read. A
+key with the right `read` is given the tools that read only.
+
+The tools name a page by its path, the one the browser's address bar shows
+after the wiki's own part: `/s/team/p/on-call/`, or `/s/team/` for a space's
+home page. A full address of the wiki is taken too.
+
+| Tool | What it does |
+|---|---|
+| `wiki_list` | The spaces and pages the user may read, as a tree (`space`, `depth`). |
+| `wiki_search` | The search box's search (`query`, `space`, `limit`): title, space, path and excerpt of each hit. |
+| `wiki_read_page` | A page's Markdown, its title and its version. |
+| `wiki_page_outline` | A page's headings as a tree, each with its anchor, and the page's version. |
+| `wiki_read_section` | One section of a page by its anchor (`own` without its subsections), and the page's version. |
+| `wiki_write_page` | Replaces a page's whole Markdown, over `base_version`, the version read: a page saved since is not written, and the assistant is told to read it again and merge. |
+| `wiki_create_page` | Creates a page at a path where there is none, with its Markdown and a `title`. |
+| `wiki_markdown_reference` | The wiki's Markdown reference: its sections, or one of them. |
+
+Every write is a version in the page's history under the key's user, as a
+save in the editor is, and can be undone there. A result longer than 50,000
+characters is not sent: the assistant is told how to ask for less (a page by
+its outline and sections, a tree one space at a time). The server's
+instructions to the assistant say how a page is named, to read before
+writing, and to look a construct up in the reference before using it.
+
+To add the wiki to **Claude Code** for yourself, with the key in a variable
+of your shell:
+
+```sh
+claude mcp add --transport http wiki https://wiki.example/mcp \
+  --header "Authorization: Bearer $WIKI_KEY"
+```
+
+This keeps the key itself in `~/.claude.json`. For a project's `.mcp.json`,
+shared with the repository, name the variable instead; Claude Code reads it
+from the environment it starts in:
+
+```json
+{
+  "mcpServers": {
+    "wiki": {
+      "type": "http",
+      "url": "https://wiki.example/mcp",
+      "headers": { "Authorization": "Bearer ${WIKI_KEY}" }
+    }
+  }
+}
+```
+
+For **Codex**, in `~/.codex/config.toml`, or with
+`codex mcp add wiki --url https://wiki.example/mcp --bearer-token-env-var WIKI_KEY`:
+
+```toml
+[mcp_servers.wiki]
+url = "https://wiki.example/mcp"
+bearer_token_env_var = "WIKI_KEY"
+```
+
+The server speaks the protocol's Streamable HTTP transport, in its current
+revision and in the older one with `initialize`, through the Hackage library
+`mcp-server`. Claude's apps in the browser and on the desktop connect from
+Anthropic's servers, with OAuth, which this server does not offer.
 
 ##### From a shell, and for assistants
 

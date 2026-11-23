@@ -27,6 +27,7 @@ import Test.Server.Hygiene qualified as Hygiene
 import Test.Server.Import qualified as Import
 import Test.Server.Mail qualified as Mail
 import Test.Server.MarkdownApi qualified as MarkdownApi
+import Test.Server.McpApi qualified as McpApi
 import Test.Server.Metrics qualified as Metrics
 import Test.Server.Notifications qualified as Notifications
 import Test.Server.Observability qualified as Observability
@@ -127,6 +128,7 @@ main = secureMain $ do
           Backups.spec b
           BasicSignIn.spec b
           ApiKeys.spec b
+          McpApi.spec b
           Oidc.spec b
           Export.spec b
           Vault.spec b

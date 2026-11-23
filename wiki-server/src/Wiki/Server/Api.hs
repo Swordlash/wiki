@@ -80,6 +80,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Data.UUID.Types qualified as UUID
 import Ki qualified
+import MCP.Server (StateCodec)
 import Network.HTTP.Types (Header, Status (..), hCacheControl, hContentType, hETag, hIfNoneMatch, hSetCookie, hVary, methodGet, methodHead, status200, status304, status405, status500, status503)
 import Network.HTTP.Types.URI (urlEncode)
 import Network.Wai (Application, Middleware, Request (..), Response, mapResponseHeaders, responseFile, responseHeaders, responseLBS, responseStatus)
@@ -246,6 +247,10 @@ data Env = Env
   -- ^ The page "What's new?": the version, build date and changelog
   -- entries this server was compiled with ("Wiki.Server.WhatsNew"), or
   -- 'Nothing' when it runs with @--no-whats-new@.
+  , mcpState :: StateCodec
+  -- ^ The key the MCP server ("Wiki.Server.McpApi") seals the state of a
+  -- request of several round trips with, made once at the server's start
+  -- so that every request is opened with the same key.
   }
 
 -- | 'Caller' is who sent a request, as the listener identified them.

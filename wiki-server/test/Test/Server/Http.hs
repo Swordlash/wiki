@@ -15,6 +15,7 @@ module Test.Server.Http (spec, withApiEnv) where
 
 import Data.Time (getCurrentTime)
 import Ki qualified
+import MCP.Server (ephemeralStateCodec)
 import Protolude
 import Test.Database (Backing)
 import Test.Hspec (Spec, describe, it, shouldBe, shouldReturn)
@@ -141,4 +142,5 @@ withApiEnv storage test = Ki.scoped $ \resetTasks -> do
   metrics <- newMetrics
   feeds <- newFeedCache
   ceremonies <- newCeremonies
-  test Env {storage, version = "wiki-server-test", startedAt, dataDir = "", maxImportSize = 64 * 1024 * 1024, limiter, registrations, sendMail = \_ _ _ -> pure (Left "no mail here"), providerCache, flows, events, exports, texEngine, backups, resets, keyFailures, resetTasks, pending, attempts, proofs, basicSignIns, logger = silentLogger (const pass), errors, metrics, feeds, assistantHosts = [], ceremonies, whatsNew = Nothing}
+  mcpState <- ephemeralStateCodec
+  test Env {storage, version = "wiki-server-test", startedAt, dataDir = "", maxImportSize = 64 * 1024 * 1024, limiter, registrations, sendMail = \_ _ _ -> pure (Left "no mail here"), providerCache, flows, events, exports, texEngine, backups, resets, keyFailures, resetTasks, pending, attempts, proofs, basicSignIns, logger = silentLogger (const pass), errors, metrics, feeds, assistantHosts = [], ceremonies, whatsNew = Nothing, mcpState}

@@ -93,7 +93,8 @@ spec smoke = describe "reading offline, through the service worker" $
       -- Signing out lets go of every page and answer kept as the
       -- administrator; what is read after, as nobody, is kept again.
       signingOut :: Text <- evaluate reader "new Date().toISOString()"
-      click (locator reader "#app .sign-out")
+      click (locator reader "#app .account-toggle")
+      click (locator reader "#app .account-menu .sign-out")
       waitQuiet reader
       count (locator reader "#app .sign-in-toggle") `shouldReturn` 1
       -- The worker lets go of its caches when told: its own, a condition.

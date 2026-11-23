@@ -22,7 +22,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Http (Asked (..), answerWith, asked, serveDemo, serverStarts, serverStops, startServer)
-import Test.Browser.Mount (slugs, start)
+import Test.Browser.Mount (signOut, slugs, start)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
 import Wiki.Api.ServerSettings (defaultHomePage)
@@ -139,7 +139,7 @@ spec m = do
         keptKinds `shouldReturn` "answers app pages"
         answerWith "DELETE" "api/v1/session" 200 SessionInfo {user = Nothing, groups = mempty, grants = mempty, standing = NotSignedIn, providers = [], exports = [], boxes = [], homePage = defaultHomePage, mathMacros = Nothing, assistantServices = [], whatsNew = Nothing}
         ui <- startServer m Home
-        find ui ".account .sign-out" >>= click
+        signOut ui
         _ <- find ui ".sign-in-toggle"
         map (\r -> r.url) . filter (\r -> r.method == "DELETE") <$> asked `shouldReturn` ["api/v1/session"]
         eventually (keptKinds `shouldReturn` "app")

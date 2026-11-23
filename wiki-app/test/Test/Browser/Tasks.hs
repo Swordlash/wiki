@@ -25,7 +25,7 @@ import Test.Browser.Http (Asked (..), answerRaw, answerWith, answersTaken, asked
 import Test.Browser.Mount (adopt, clickButton, slugs, start, startChangedWith)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
-import Wiki.Api (AccountApi (..), SpacesApi (..), WikiApi (..))
+import Wiki.Api (SpacesApi (..), WikiApi (..))
 import Wiki.Api.Events (PageEvent (PageChanged), ServerMessage (Event))
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend (MonadWiki (postDetails))
@@ -343,17 +343,27 @@ spec m = describe "tasks ticked in a page" $ do
       wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-admin")})
       either (panic . show) identity <$> runMemWiki wiki (postDetails blog.id)
     -- The blog's home page has tasks, and is shown above its posts.
-    answerWith "GET" (endpointUrl (\e -> e.spaces.pageAt blog.id [])) 200 home {Core.body = "# Blog\n\n- [ ] Write the first post\n- [ ] Tell the team\n"}
-    -- Turning a personal space on, in the account's menu, reloads the wiki.
-    answerWith "GET" (endpointUrl (\e -> e.account.personalSpace)) 200 (Nothing :: Maybe Core.Space)
-    answerWith "PUT" (endpointUrl (\e -> e.account.setPersonalSpace (panic "the body is not part of the address"))) 200 blog
+    let tasks = "# Blog\n\n- [ ] Write the first post\n- [ ] Tell the team\n"
+        saveAt = "api/v1/pages/" <> home.id.text
+    answerWith "GET" (endpointUrl (\e -> e.spaces.pageAt blog.id [])) 200 home {Core.body = tasks}
+    answerWith "PUT" saveAt 200 home {Core.body = T.replace "- [ ] Tell" "- [x] Tell" tasks, updatedAt = addUTCTime 60 home.updatedAt}
+    holdAt "PUT" saveAt
     ui <- startServer m (Space (slugs ["blog"]))
+    -- A save of other ticks lands once the reader has left and come back
+    -- and ticked again: the shell reloads the wiki, which the reader did
+    -- not ask for. (The account's menu once turned a personal space on for
+    -- this; it holds no such switch any more.)
+    eventuallyWithin 20000 (find ui ".blog-home .page-body input[data-task='1']") >>= click
+    eventually $ find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
+    find ui ".page-ticks-save" >>= click
+    find ui ".wiki-brand" >>= click
+    find ui ".leave-confirm button.danger" >>= click
+    eventually (find ui ".wiki-sidebar a[href$='#/s/blog/']") >>= click
     eventuallyWithin 20000 (find ui ".blog-home .page-body input[data-task='0']") >>= click
     eventually $ find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     -- The blog's reload fails.
     answerRaw "GET" detailsAt 503 "<html>down for maintenance</html>"
-    find ui ".account-toggle" >>= click
-    eventually (find ui ".account-personal .personal-space-enable" >>= click)
+    release
     eventuallyWithin 20000 $ find ui ".blog-view .stale-reload" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "What is shown stays")
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     (find ui ".blog-home .page-body input[data-task='0']" >>= (`getProperty` "checked")) `shouldReturn` "true"

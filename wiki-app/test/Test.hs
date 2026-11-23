@@ -39,6 +39,7 @@ import Test.Readme qualified as Readme
 import Test.Rect qualified as Rect
 import Test.Route qualified as Route
 import Test.Server qualified as Server
+import Test.SettingsDom qualified as SettingsDom
 import Test.Shell qualified as Shell
 import Test.Threads qualified as Threads
 import Test.Ticking qualified as Ticking
@@ -78,6 +79,7 @@ main = do
       EditorDom.spec
       LivePreviewDom.spec
       Users.spec
+      SettingsDom.spec
       Deck.spec
       Latest.spec
       Shell.spec

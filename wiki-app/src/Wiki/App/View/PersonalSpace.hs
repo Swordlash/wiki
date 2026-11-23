@@ -1,10 +1,10 @@
 {-# LANGUAGE QuasiQuotes #-}
 
--- | The account menu's switch of the signed-in user's personal space
+-- | The switch of the signed-in user's personal space, in the settings'
+-- section "Profile"
 -- (WP5.54 of docs/PLAN.md): "Enable personal space" while they have none,
 -- or have one turned off, and "Disable personal space" while it is on.
--- The server's account panel ("Wiki.App.View.SignIn") and the demo's menu
--- of users ("Wiki.App.Shell") both show it.
+-- The section ("Wiki.App.Shell") shows it on a server and in the demo.
 --
 -- Enabling makes the space the first time ('setPersonalSpace'): a space
 -- named after the user, in the container "User subspaces", which the

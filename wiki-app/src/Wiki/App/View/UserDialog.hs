@@ -38,7 +38,7 @@
 -- offered to remove their own administrator status, nor to disable their
 -- own login, nor to remove their own second factor or account, or disconnect their own
 -- providers' accounts: from the administration that would lock them out,
--- or belongs to their own account panel. The operator on the server's
+-- or belongs to their own settings. The operator on the server's
 -- admin listener is not a user and may change everyone. An administrator
 -- creates spaces whatever their own grant says, so their switch shows the
 -- permission on and is disabled. A password is typed into its own form and

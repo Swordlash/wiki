@@ -15,6 +15,9 @@ module Test.Browser.Mount
   , startKeptWith
   , startOpened
   , clickButton
+  , openSettings
+  , showSection
+  , signOut
   , slugs
   )
 where
@@ -35,7 +38,7 @@ import Wiki.App.Backend.Mem (Opened (..), newMemWiki, openMemWiki, runMemWiki, r
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Route (..))
+import Wiki.App.Route (Route (..), SettingsSection, settingsName)
 #if defined(wasm32_HOST_ARCH)
 import Halogen.VDom.DOM.Monad (runBrowserDOM)
 import Web.Storage.Storage (StorageKind (..))
@@ -233,6 +236,26 @@ clickButton ui selector label = do
   case labelled of
     b : _ -> click b
     [] -> expectationFailure ("no " <> selector <> " says " <> label)
+
+-- | Open the signed-in user's settings at a section as a reader does:
+-- the menu under their name (the server's, or the demo's of its users),
+-- "Settings" there, and the section in the settings' list.
+openSettings :: Mounted s q o m -> SettingsSection -> PageM s ()
+openSettings ui section = do
+  find ui ".account-toggle, .user-switcher-toggle" >>= click
+  find ui ".user-menu .settings-entry" >>= click
+  showSection ui section
+
+-- | Show another section of the settings shown, from their list: the
+-- section shown before is unmounted.
+showSection :: Mounted s q o m -> SettingsSection -> PageM s ()
+showSection ui section = find ui (".settings-nav-link[data-section=" <> settingsName section <> "]") >>= click
+
+-- | Sign out of the server's wiki, from the menu under the user's name.
+signOut :: Mounted s q o m -> PageM s ()
+signOut ui = do
+  find ui ".account-toggle" >>= click
+  find ui ".account-menu .sign-out" >>= click
 
 slugs :: [Text] -> [Slug]
 slugs = map (either (panic . show) identity . mkSlug)

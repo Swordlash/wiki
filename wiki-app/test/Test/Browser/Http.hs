@@ -59,7 +59,7 @@ import Halogen.Router (Router)
 import Halogen.Router qualified as Router
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
-import Test.Browser.Mount (clickButton, slugs, start)
+import Test.Browser.Mount (clickButton, signOut, slugs, start)
 import Test.Browser.Opaque (fakeChallenge, fakeRegistration)
 import Test.Browser.Text (editorText, markdown)
 import Test.Hspec.Halogen
@@ -93,7 +93,7 @@ import Wiki.App.Backend.Notifications (MonadNotifications (..))
 import Wiki.App.Backend.Stars (MonadStars (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Against (..), Route (..), allUsers)
+import Wiki.App.Route (Against (..), Route (..), SettingsSection (..), allUsers)
 import Wiki.App.Route qualified as R
 import Wiki.App.Shell qualified as Shell
 import Wiki.App.View.Body qualified as Body
@@ -505,7 +505,7 @@ accounts m = describe "signing in and out" $ do
     spacesBefore <- length . filter (\r -> r.url == "api/v1/spaces") <$> asked
     find ui ".sign-in-form button[type=submit]" >>= click
     find ui ".account .user-name" >>= (`shouldHaveText` "Ada Admin")
-    _ <- find ui ".account .sign-out"
+    _ <- find ui ".account-toggle"
     length <$> findAll ui ".sign-in-form" `shouldReturn` 0
     -- The login field's offer of passkeys asks for a challenge of its own.
     -- This server answers OPAQUE as for an account from before it
@@ -544,7 +544,7 @@ accounts m = describe "signing in and out" $ do
     ui <- startServer m Home
     find ui ".account .user-name" >>= (`shouldHaveText` "Ada Admin")
     answerWith "GET" "api/v1/spaces" 200 ([] :: [S.Space])
-    find ui ".account .sign-out" >>= click
+    signOut ui
     _ <- find ui ".sign-in-toggle"
     find ui ".directory .empty" >>= (`shouldHaveText` "There are no spaces you can see.")
     length <$> findAll ui ".admin-link" `shouldReturn` 0
@@ -564,28 +564,27 @@ accounts m = describe "signing in and out" $ do
     find ui ".wiki-sidebar a[href$='#/s/team/']" >>= click
     find ui ".sign-in-notice" >>= (`shouldHaveText` "Your session has ended. Sign in again to go on.")
     _ <- find ui ".sign-in-form input[name=login]"
-    length <$> findAll ui ".account .sign-out" `shouldReturn` 0
+    length <$> findAll ui ".account-toggle" `shouldReturn` 0
     unmount ui
     serverStops
 
--- | A signed-in user's own password, from the panel under their name
+-- | A signed-in user's own password, from the settings' section "Security"
 -- (WP3.7 of docs/PLAN.md), where the server names no provider to sign in
--- with: the name is a button all the same.
+-- with: the section shows it all the same.
 ownPassword :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
 ownPassword m = describe "one's own password" $ do
   let typeIn ui field text = find ui (".password-change input[name=" <> field <> "]") >>= (`typeText` text)
       puts = filter (\r -> r.method == "PUT") <$> asked
 
-  it "is changed from the panel under the name, with the current one" $ runPage $ do
+  it "is changed from the security settings, with the current one" $ runPage $ do
     serverStarts
     serveDemo
     rita <- unsafeIOToPageM (signedInAs "user-reader")
     answerWith "GET" "api/v1/session" 200 rita
     answerWith "GET" "api/v1/account/identities" 200 SignInMethods {password = True, identities = []}
     answerWith "PUT" "api/v1/account/password" 200 SignInMethods {password = True, identities = []}
-    ui <- startServer m Home
+    ui <- startServer m (UserSettings SecuritySection)
     find ui ".account-toggle" >>= (`shouldHaveText` "Rita Reader")
-    find ui ".account-toggle" >>= click
     find ui ".account-password" >>= (`shouldHaveText` "With your password")
     find ui ".password-change-toggle" >>= (`shouldHaveText` "Change password…")
     find ui ".password-change-toggle" >>= click
@@ -613,8 +612,7 @@ ownPassword m = describe "one's own password" $ do
     answerWith "GET" "api/v1/session" 200 rita
     answerWith "GET" "api/v1/account/identities" 200 SignInMethods {password = True, identities = []}
     answerRaw "PUT" "api/v1/account/password/proof/old" 401 "{\"error\":\"Unauthenticated\"}"
-    ui <- startServer m Home
-    find ui ".account-toggle" >>= click
+    ui <- startServer m (UserSettings SecuritySection)
     find ui ".password-change-toggle" >>= click
     typeIn ui "current" "not rita's password"
     typeIn ui "new" "a longer new password"
@@ -640,8 +638,7 @@ ownPassword m = describe "one's own password" $ do
     answerWith "GET" "api/v1/session" 200 rita
     answerWith "GET" "api/v1/account/identities" 200 SignInMethods {password = False, identities = []}
     answerWith "PUT" "api/v1/account/password" 200 SignInMethods {password = True, identities = []}
-    ui <- startServer m Home
-    find ui ".account-toggle" >>= click
+    ui <- startServer m (UserSettings SecuritySection)
     find ui ".password-change-toggle" >>= (`shouldHaveText` "Set a password…")
     find ui ".password-change-toggle" >>= click
     _ <- find ui ".password-change input[name=new]"
@@ -669,23 +666,33 @@ ownPassword m = describe "one's own password" $ do
     unmount ui
     serverStops
 
+  it "leaves the operator, who has no account, only the writing assistant's settings" $ runPage $ do
+    serverStarts
+    serveDemo
+    ada <- unsafeIOToPageM (signedInAs "user-admin")
+    answerWith "GET" "api/v1/session" 200 SessionInfo {user = ada.user, groups = ada.groups, grants = ada.grants, standing = Operator, providers = [], exports = [], boxes = [], homePage = ada.homePage, mathMacros = Nothing, assistantServices = [], whatsNew = Nothing}
+    ui <- startServer m (UserSettings SecuritySection)
+    find ui ".settings-unavailable" >>= (`shouldContainText` "the server's operator has no account")
+    length <$> findAll ui ".password-change-toggle, .account-security" `shouldReturn` 0
+    findAll ui ".settings-nav-link" >>= traverse textContent >>= (`shouldBe` ["Writing assistant"])
+    unmount ui
+    serverStops
+
 -- | The address of one's feed of notifications, made, copied and made
--- anew from the account panel's notifications, and copied again without
--- the browser's asynchronous clipboard.
+-- anew from the settings' section "Notifications", and copied again
+-- without the browser's asynchronous clipboard.
 notificationFeed :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
 notificationFeed m = describe "one's feed of notifications" $
-  it "makes its address in the account panel, shows it whole, copies it, and makes a new one" $
+  it "makes its address in the notification settings, shows it whole, copies it, and makes a new one" $
     runPage $ do
       serverStarts
       serveDemo
       rita <- unsafeIOToPageM (signedInAs "user-reader")
       answerWith "GET" "api/v1/session" 200 rita
-      answerWith "GET" "api/v1/account/identities" 200 SignInMethods {password = True, identities = []}
       answerWith "GET" (endpointUrl (\e -> e.notifications.settings)) 200 NotificationSettings {mail = MailOff, watchOwn = True, verifiedEmail = False, mailing = False}
       answerWith "GET" "api/v1/notifications/feed" 200 FeedAddress {address = Nothing}
       answerWith "POST" "api/v1/notifications/feed" 200 FeedAddress {address = Just "me/notifications.atom?token=first"}
-      ui <- startServer m Home
-      find ui ".account-toggle" >>= click
+      ui <- startServer m (UserSettings NotificationsSection)
       find ui ".notification-feed-renew" >>= (`shouldHaveText` "Make an address")
       length <$> findAll ui ".notification-feed-address" `shouldReturn` 0
       find ui ".notification-feed-renew" >>= click
@@ -1309,7 +1316,7 @@ presence m = describe "who is editing and reading" $ do
       settle
       (traverse textContent =<< findAll ui ".page-body p") >>= (`shouldSatisfy` elem "Home saved in another tab.")
     length <$> findAll ui ".comments-toggle, .page-comments" `shouldReturn` 0
-    find ui ".account .sign-out" >>= click
+    signOut ui
     _ <- find ui ".sign-in-toggle"
     eventually $ length <$> findAll ui ".page-editors" `shouldReturn` 0
     tell (Event home.id (Editing [rita]))

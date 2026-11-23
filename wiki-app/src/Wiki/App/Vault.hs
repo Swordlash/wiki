@@ -270,7 +270,7 @@ data Settled = Settled
 afterSignIn :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe KeyRef -> m (Either Text Settled)
 afterSignIn u key = holdingDeviceRecords $ do
   -- Where the browser offers no WebCrypto (a page over plain HTTP), there
-  -- are no keys to settle: the panel says why.
+  -- are no keys to settle: the settings' section "Security" says why.
   here <- sealingHere
   result <- if here then runExceptT (settleWith u key) else pure (Left "This browser offers no encryption to this page.")
   case result of
@@ -567,7 +567,8 @@ fetched =
     Right _ -> pure Nothing
     Left e -> throwError ("The vault could not be fetched: " <> wikiText e)
 
--- | What the panel shows, from the vault fetched and this device.
+-- | What the settings' section "Security" shows, from the vault fetched
+-- and this device.
 describe :: (MonadAssistant m, MonadVault m) => UserId -> Maybe StoredVault -> Bool -> Step m UserKeys
 describe u stored unlocked = do
   current <- either (\e -> throwError ("The directory of public keys could not be read: " <> wikiText e)) pure =<< lift (publicKeyOf u)

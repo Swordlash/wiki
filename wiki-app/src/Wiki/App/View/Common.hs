@@ -385,7 +385,7 @@ openPersonalSpaces ctx = filter (\s -> isPersonal s && s.active && mayView ctx s
 
 -- | How big a user's avatar is drawn: 'SmallAvatar' beside a name in a
 -- line of text (the header, a comment, a byline, the readers of a page),
--- 'LargeAvatar' in the account panel.
+-- 'LargeAvatar' in the settings' section "Profile".
 data AvatarSize = SmallAvatar | LargeAvatar
 
 -- | A user's avatar, round (WP5.55 of docs/PLAN.md): their picture, from

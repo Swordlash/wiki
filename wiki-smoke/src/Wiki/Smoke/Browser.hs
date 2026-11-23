@@ -72,7 +72,8 @@ data Outcome
 -- started, with nobody signed in): open the form, type the login and the
 -- password, send it, and wait until the program is quiet (OPAQUE's
 -- requests, the keys kept, the shell reloaded as the user); then what the
--- page shows of it.
+-- page shows of it: the signed-in user's name, the button of their menu,
+-- or the second factor's form, or why the sign-in was refused.
 signInOn :: (HasCallStack) => Page -> Text -> Text -> IO Outcome
 signInOn page login password = do
   click (locator page "#app .sign-in-toggle")
@@ -83,7 +84,7 @@ signInOn page login password = do
   shown <-
     traverse
       (\(selector, outcome) -> (outcome,) . (> 0) <$> count (locator page selector))
-      [("#app .sign-out", SignedIn), ("#app .sign-in-code-form", SecondFactor), ("#app .sign-in-form .sign-in-error", Refused)]
+      [("#app .account-toggle", SignedIn), ("#app .sign-in-code-form", SecondFactor), ("#app .sign-in-form .sign-in-error", Refused)]
   case find snd shown of
     Just (outcome, _) -> pure outcome
     Nothing -> expectationFailure ("signing " <> Text.unpack login <> " in: nothing happened") >> pure Refused

@@ -1,23 +1,22 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskell #-}
 
--- | The account panel's avatar (WP5.55 of docs/PLAN.md): the signed-in
+-- | The avatar in the settings' section "Profile" (WP5.55 of
+-- docs/PLAN.md, "Wiki.App.Shell"): the signed-in
 -- user's picture, or the first letter of their name in a circle, large.
 -- The circle is what changes it: it holds a file input, which takes the
 -- keyboard's focus and opens the browser's file picker, and a camera shows
 -- over it on hover and on focus ("Change your picture"). Under it,
--- "Remove" while the user has a picture. The server's account panel
--- ("Wiki.App.View.SignIn") and the demo's account panel
--- ("Wiki.App.Shell") both show it, as they show the personal space's
--- switch.
+-- "Remove" while the user has a picture. The section shows it above the
+-- personal space's switch, on a server and in the demo.
 --
 -- A picture chosen opens a dialog with a cropper (Cropper.js, through the
 -- page's islands: @web/src/avatar.js@, loaded the first time), in which
 -- the user picks a square of the picture, shown round. The dialog is a
 -- @\<dialog>@ shown as a modal ('showDialog'), as the editor's "Link to a
 -- page" dialog is ("Wiki.App.View.LinkDialog"): the browser draws it in
--- its top layer, centred in the window, whatever the account panel around
--- the component does, and the rest of the page is inert. "Cancel", Escape
+-- its top layer, centred in the window, whatever the page around the
+-- component does, and the rest of the page is inert. "Cancel", Escape
 -- and a click that starts on the backdrop close it, the cropper taken out
 -- and nothing uploaded. "Use this" uploads
 -- that square, a PNG of 256 by 256 pixels, as the avatar ('setAvatar');

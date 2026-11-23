@@ -65,7 +65,7 @@ import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import System.Timeout (timeout)
 import Test.Browser.Http (Asked (..), answerWith, answersTaken, asked, holdAt, offline, release, said, serveDemo, serverStartsWith, startServer, startServerOver, startServerThrough, tellServer)
-import Test.Browser.Mount (clickButton)
+import Test.Browser.Mount (clickButton, signOut)
 import Test.Browser.Text (editorText)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
@@ -1315,8 +1315,7 @@ spec m = readsOnce Quiet $ do
       ui <- startServerOver m tab (R.EditPage [secretSlug] [made.slug])
       typed ui
       offline True
-      find ui ".account-toggle" >>= click
-      find ui ".account .sign-out" >>= click
+      signOut ui
       gone ui
       unmount ui
 

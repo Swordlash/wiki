@@ -132,7 +132,7 @@ data Space = Space
   -- its owner's display name ('personalName') wherever spaces are read.
   , active :: Bool
   -- ^ Whether it is shown. Only a personal space is ever inactive: its
-  -- owner turned it off from the account menu. An inactive space, and
+  -- owner turned it off in their settings. An inactive space, and
   -- everything in it, is absent for everyone, administrators included,
   -- until its owner turns it on again; its content is kept.
   , personalContainer :: Bool

@@ -94,7 +94,7 @@ spec p = describe "the assistant's keys in the vault" $ onWalkPage serverContext
     _ :: Value <- cdp page "WebAuthn.enable" (object [])
     added :: Value <- cdp page "WebAuthn.addVirtualAuthenticator" (object ["options" .= authenticatorOptions "internal"])
     text (added .! "authenticatorId") >>= writeIORef p.authenticator . Just
-    visit page (p.origin <> "/assistant/")
+    visit page (p.origin <> "/settings/assistant/")
     let anthropic = locator page ".assistant-provider-settings[data-provider='anthropic']"
     fill (locator anthropic ".assistant-key") "a-test-key-for-anthropic"
     click (locator anthropic ".assistant-key-form button")

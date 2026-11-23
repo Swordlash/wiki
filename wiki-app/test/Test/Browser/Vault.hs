@@ -32,6 +32,7 @@ import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Encrypted qualified as E
 import Test.Browser.Http (Asked (..), answerWith, asked, holdAt, release, serveDemo, serverStartsWith, serverStops, startServer)
+import Test.Browser.Mount (openSettings, showSection, signOut)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
 import Web.Storage.IndexedDB qualified as IDB
@@ -46,7 +47,7 @@ import Wiki.App.Backend.Mem (newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State qualified as M
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Route (..))
+import Wiki.App.Route (Route (..), SettingsSection (..))
 import Wiki.App.Route qualified as R
 import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Access (Access (..))
@@ -180,8 +181,8 @@ spec m = readsOnce Quiet $ do
 -- | Signing in with a passkey, and the account's passkeys (WP5.30 of
 -- docs/PLAN.md): the button and the login field's offer sign in with the
 -- stub's passkey alone; the second factor's form takes one in place of the
--- code; the account panel lists, adds and removes them; over plain HTTP
--- there is neither.
+-- code; the settings' section "Security" lists, adds and removes them;
+-- over plain HTTP there is neither.
 signing :: forall m -> (Specs m) => Spec
 signing m = describe "signing in with a passkey" $ do
   it "signs in with the button, and with the passkey the login field offers" $ runOwn $ do
@@ -283,8 +284,7 @@ signing m = describe "signing in with a passkey" $ do
     unsafeIOToPageM js_vault_server
     unsafeIOToPageM (js_install True True)
     _ <- unsafeIOToPageM js_existing
-    ui <- startServer m Home
-    find ui ".account-toggle" >>= click
+    ui <- startServer m (UserSettings SecuritySection)
     length <$> findAll ui ".passkey-item" `shouldReturn` 1
     find ui ".passkey-name" >>= (`shouldHaveText` "My laptop")
     find ui ".passkey-add input[name=passkey-name]" >>= (`typeText` "My phone")
@@ -312,11 +312,12 @@ signing m = describe "signing in with a passkey" $ do
     closedSignedIn ui
 
   -- A passkey is made on the authenticator first, then registered with the
-  -- server. The account's panel can close in between (the person closes it,
-  -- or signs out); the registration then still goes to the server, from
-  -- the panel's finalizer, so that the passkey the person made is the
-  -- account's rather than one on their authenticator that signs nobody in.
-  it "registers a passkey made as the account's panel closes" $ runOwn $ do
+  -- server. The settings' section "Security" can be left in between (the
+  -- person opens another section or page, or signs out); the registration
+  -- then still goes to the server, from the section's finalizer, so that
+  -- the passkey the person made is the account's rather than one on their
+  -- authenticator that signs nobody in.
+  it "registers a passkey made as the security settings are left" $ runOwn $ do
     serverStartsWith offerOpen
     serveDemo
     me <- signedInAs "user-editor"
@@ -325,8 +326,7 @@ signing m = describe "signing in with a passkey" $ do
     unsafeIOToPageM js_vault_server
     unsafeIOToPageM (js_install True True)
     _ <- unsafeIOToPageM js_existing
-    ui <- startServer m Home
-    find ui ".account-toggle" >>= click
+    ui <- startServer m (UserSettings SecuritySection)
     length <$> findAll ui ".passkey-item" `shouldReturn` 1
     find ui ".passkey-add input[name=passkey-name]" >>= (`typeText` "My phone")
     find ui ".passkey-add input[name=passkey-password]" >>= (`typeText` "editor's password")
@@ -336,22 +336,22 @@ signing m = describe "signing in with a passkey" $ do
     -- Quiet once the server holds the request, which it counts as held.
     waitQuiet
     finishes `shouldReturn` 1
-    find ui ".account-toggle" >>= click
+    showSection ui ProfileSection
     length <$> findAll ui ".passkey-add" `shouldReturn` 0
     release
-    -- The closed panel's finalizer sends the registration on the shell's
-    -- tree, which is still mounted: 'waitQuiet' counts its wait.
+    -- The finalizer of the section left sends the registration on the
+    -- shell's tree, which is still mounted: 'waitQuiet' counts its wait.
     waitQuiet
     unsafeIOToPageM (fromJSText <$> js_unregistered) `shouldReturn` "[]"
     closedSignedIn ui
 
-  -- The panel reopened, and another passkey begun, while the first one's
-  -- registration, sent again from the closed panel, waits: the server
-  -- refuses that late answer to a challenge the new one replaced, and
-  -- leaves the new one's challenge for its own answer. The new passkey is
-  -- the account's; the first stays on the authenticator unknown to the
-  -- wiki, as one did before the panel sent it again.
-  it "registers a passkey begun in the panel reopened while the closed panel's registration waits" $ runOwn $ do
+  -- The section opened again, and another passkey begun, while the first
+  -- one's registration, sent again from the section left, waits: the
+  -- server refuses that late answer to a challenge the new one replaced,
+  -- and leaves the new one's challenge for its own answer. The new passkey
+  -- is the account's; the first stays on the authenticator unknown to the
+  -- wiki, as one did before the section sent it again.
+  it "registers a passkey begun in the security settings opened again while the registration sent as they were left waits" $ runOwn $ do
     serverStartsWith offerOpen
     serveDemo
     me <- signedInAs "user-editor"
@@ -360,25 +360,24 @@ signing m = describe "signing in with a passkey" $ do
     unsafeIOToPageM js_vault_server
     unsafeIOToPageM (js_install True True)
     _ <- unsafeIOToPageM js_existing
-    ui <- startServer m Home
+    ui <- startServer m (UserSettings SecuritySection)
     let finishes = length . filter (\r -> r.method == "PUT" && r.url == "api/v1/account/passkeys/registration") <$> asked
         addPasskey name = do
           find ui ".passkey-add input[name=passkey-name]" >>= (`typeText` name)
           find ui ".passkey-add input[name=passkey-password]" >>= (`typeText` "editor's password")
           find ui ".passkey-add button[type=submit]" >>= click
-    find ui ".account-toggle" >>= click
     length <$> findAll ui ".passkey-item" `shouldReturn` 1
     holdAt "PUT" "api/v1/account/passkeys/registration"
     addPasskey "My phone"
     -- Quiet once the server holds the request, which it counts as held.
     waitQuiet
     finishes `shouldReturn` 1
-    -- Closed: its finalizer sends the registration again, held too, in
-    -- place of the panel's own, which the close ended.
-    find ui ".account-toggle" >>= click
+    -- Left: its finalizer sends the registration again, held too, in
+    -- place of the section's own, which leaving it ended.
+    showSection ui ProfileSection
     waitQuiet
     finishes `shouldReturn` 2
-    find ui ".account-toggle" >>= click
+    showSection ui SecuritySection
     length <$> findAll ui ".passkey-item" `shouldReturn` 1
     addPasskey "My tablet"
     waitQuiet
@@ -403,8 +402,7 @@ signing m = describe "signing in with a passkey" $ do
     me <- signedInAs "user-editor"
     answerWith "GET" "api/v1/session" 200 me
     answerAccount
-    signedIn <- startServer m Home
-    find signedIn ".account-toggle" >>= click
+    signedIn <- startServer m (UserSettings SecuritySection)
     find signedIn ".passkeys-unavailable" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "served over HTTPS")
     -- No key is made on such a page, and the count of keys left needs a
     -- passkey, which it cannot have: the page is closed without it.
@@ -431,7 +429,7 @@ signing m = describe "signing in with a passkey" $ do
     -- Whether the login field offers a passkey now.
     offered :: PageM s Bool
     offered = waitQuiet *> unsafeIOToPageM js_offered
-    -- What the account panel fetches besides the passkeys.
+    -- What the security settings fetch besides the passkeys.
     answerAccount = do
       answerWith "GET" "api/v1/account/identities" 200 (Aeson.object ["password" Aeson..= True, "identities" Aeson..= ([] :: [Text])])
       answerWith "GET" "api/v1/account/sessions" 200 ([] :: [Text])
@@ -781,7 +779,7 @@ opened m prf atCreate = do
   unsafeIOToPageM js_vault_server
   unsafeIOToPageM (js_install prf atCreate)
   unsafeIOToPageM (evaluate =<< js_new_device)
-  ui <- startServer m AssistantSettings
+  ui <- startServer m (UserSettings AssistantSection)
   anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
   findIn anthropic ".assistant-key" >>= (`typeText` "test-key-anthropic-one")
   findIn anthropic ".assistant-key-form button" >>= click
@@ -790,7 +788,7 @@ opened m prf atCreate = do
 
 -- | The settings page again, as when the wiki opens on this device.
 reopened :: forall m -> (Specs m) => PageM s (Mounted s Shell.Query Void m)
-reopened m = startServer m AssistantSettings
+reopened m = startServer m (UserSettings AssistantSection)
 
 -- | Forget the key kept for Anthropic, and keep another.
 replaceKey :: Mounted s q o n -> Text -> PageM s ()
@@ -882,13 +880,13 @@ userKeys m = describe "the user's keys" $ do
     find ui ".sign-in-toggle" >>= click
     find ui ".passkey-sign-in" >>= click
     find ui ".account .user-name" >>= (`shouldHaveText` "Edgar Editor")
-    find ui ".account-toggle" >>= click
+    openSettings ui SecuritySection
     _ <- find ui ".keys-none"
     field ["vault"] <$> vaultState `shouldReturn` Just Aeson.Null
     closed ui
 
   it "turns the assistant's syncing on in the vault the first sign-in made, with the password and a new passkey" $ runOwn $ do
-    ui <- signedOutAt AssistantSettings "editor's password"
+    ui <- signedOutAt (UserSettings AssistantSection) "editor's password"
     signIn ui "editor's password"
     made <- madeKeys
     -- The vault opens with the password alone: the password unwraps its
@@ -923,7 +921,7 @@ userKeys m = describe "the user's keys" $ do
     ui <- signedOut "editor's password"
     signIn ui "editor's password"
     made <- madeKeys
-    find ui ".account-toggle" >>= click
+    openSettings ui SecuritySection
     find ui ".password-change-toggle" >>= click
     find ui ".password-change input[name=current]" >>= (`typeText` "editor's password")
     find ui ".password-change input[name=new]" >>= (`typeText` "a password of the editor's")
@@ -969,20 +967,20 @@ userKeys m = describe "the user's keys" $ do
     _ <- madeKeys
     -- The vault comes to open with a passkey alone: one added, the
     -- password's wrap taken away.
-    find ui ".account-toggle" >>= click
+    openSettings ui SecuritySection
     find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
     find ui ".keys-passkey-add" >>= click
     length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
     find ui ".keys-password-remove" >>= click
     length <$> findAll ui ".keys-unlock-password" `shouldReturn` 0
-    find ui ".account-toggle" >>= click
+    leaveSettings ui
     -- Signed out and in again with the password: the offer.
     answerWith "DELETE" "api/v1/session" 200 nobody
-    find ui ".account .sign-out" >>= click
+    signOut ui
     signIn ui "editor's password"
     _ <- find ui ".keys-offer"
     -- Signed out: the offer was the editor's, and goes.
-    find ui ".account .sign-out" >>= click
+    signOut ui
     _ <- find ui ".sign-in-toggle"
     length <$> findAll ui ".keys-offer" `shouldReturn` 0
     closed ui
@@ -999,15 +997,15 @@ userKeys m = describe "the user's keys" $ do
     ui <- signedOut "editor's password"
     signIn ui "editor's password"
     _ <- madeKeys
-    find ui ".account-toggle" >>= click
+    openSettings ui SecuritySection
     find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
     find ui ".keys-passkey-add" >>= click
     length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
     find ui ".keys-password-remove" >>= click
     length <$> findAll ui ".keys-unlock-password" `shouldReturn` 0
-    find ui ".account-toggle" >>= click
+    leaveSettings ui
     answerWith "DELETE" "api/v1/session" 200 nobody
-    find ui ".account .sign-out" >>= click
+    signOut ui
     _ <- find ui ".sign-in-toggle"
     settle
     let passwordKeys = waitQuiet *> unsafeIOToPageM js_password_keys
@@ -1044,7 +1042,7 @@ userKeys m = describe "the user's keys" $ do
       unsafeIOToPageM (js_assistant_key (toJSText ("user-editor" :: Text)) shared)
       unsafeIOToPageM js_hear_drops
       answerWith "DELETE" "api/v1/session" 200 nobody
-      find ui ".account .sign-out" >>= click
+      signOut ui
       _ <- find ui ".sign-in-toggle"
       stored "vault:user-editor" `shouldReturn` False
       stored "identity:user-editor" `shouldReturn` False
@@ -1063,8 +1061,7 @@ userKeys m = describe "the user's keys" $ do
       -- Signed in again, with no password typed: the keys are locked.
       me <- signedInAs "user-editor"
       answerWith "GET" "api/v1/session" 200 me
-      again <- startServer m Home
-      find again ".account-toggle" >>= click
+      again <- startServer m (UserSettings SecuritySection)
       find again ".keys-device" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "does not hold your keys")
       closed again
 
@@ -1150,11 +1147,10 @@ userKeys m = describe "the user's keys" $ do
     find gated ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Opened with the password.")
     -- A passkey added to the keys: the view offers it, and it opens the
     -- space in another tab.
-    find gated ".account-toggle" >>= click
+    openSettings gated SecuritySection
     find gated ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
     find gated ".keys-passkey-add" >>= click
     length <$> findAll gated ".keys-unlock-passkey" `shouldReturn` 1
-    find gated ".account-toggle" >>= click
     unmount gated
     -- Both are offered: a passkey that fails here (one not on this
     -- device, its dialog closed) leaves the password.
@@ -1178,7 +1174,7 @@ userKeys m = describe "the user's keys" $ do
     ui <- signedOut "editor's password"
     signIn ui "editor's password"
     made <- madeKeys
-    find ui ".account-toggle" >>= click
+    openSettings ui SecuritySection
     find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
     find ui ".keys-passkey-add" >>= click
     length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
@@ -1186,8 +1182,7 @@ userKeys m = describe "the user's keys" $ do
     unsafeIOToPageM (evaluate =<< js_new_device)
     me <- signedInAs "user-editor"
     answerWith "GET" "api/v1/session" 200 me
-    again <- startServer m Home
-    find again ".account-toggle" >>= click
+    again <- startServer m (UserSettings SecuritySection)
     find again ".keys-device" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "does not hold your keys")
     find again ".keys-unlock-passkey-button" >>= click
     find again ".keys-device" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "holds your private key")
@@ -1208,7 +1203,7 @@ userKeys m = describe "the user's keys" $ do
     unsafeIOToPageM js_plain_http
     ui <- signedOut "editor's password"
     signIn ui "editor's password"
-    find ui ".account-toggle" >>= click
+    openSettings ui SecuritySection
     find ui ".keys-unavailable" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "plain HTTP")
     find ui ".password-change-toggle" >>= click
     find ui ".password-change input[name=current]" >>= (`typeText` "editor's password")
@@ -1216,11 +1211,11 @@ userKeys m = describe "the user's keys" $ do
     find ui ".password-change input[name=repeat]" >>= (`typeText` "a password of the editor's")
     find ui ".password-change button[type=submit]" >>= click
     find ui ".account-told" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Your password is changed")
-    find ui ".account-toggle" >>= click
+    leaveSettings ui
     -- Signed out and in again with the new password: the record made
     -- without WebCrypto is the one the server checks.
     answerWith "DELETE" "api/v1/session" 200 nobody
-    find ui ".account .sign-out" >>= click
+    signOut ui
     signIn ui "a password of the editor's"
     field ["vault"] <$> vaultState `shouldReturn` Just Aeson.Null
     identityExport `shouldReturn` "none"
@@ -1269,10 +1264,13 @@ userKeys m = describe "the user's keys" $ do
     heard = unsafeIOToPageM (fromMaybe [] . decodeStrict . encodeUtf8 . fromJSText <$> js_drops_heard) :: PageM s [Text]
     pageKeySlots = unsafeIOToPageM (fromMaybe [] . decodeStrict . encodeUtf8 . fromJSText <$> js_page_key_slots) :: PageM s [Text]
     fingerprint ui = do
-      find ui ".account-toggle" >>= click
+      openSettings ui SecuritySection
       printed <- find ui ".keys-fingerprint code" >>= textContent
-      find ui ".account-toggle" >>= click
+      leaveSettings ui
       pure printed
+    -- Leave the settings for the front page, as the panel they were once
+    -- in was closed: their views are unmounted.
+    leaveSettings ui = find ui ".wiki-brand" >>= click
     -- Every test ends with no key of its own in the page that can be
     -- exported ('runOwn' counts from the test's start). A step still
     -- running (a vault being made after a sign-in) is waited for: stopped

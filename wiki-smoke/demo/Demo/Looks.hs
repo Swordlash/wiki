@@ -103,6 +103,16 @@ spec site = do
     count (locator page "#app .server-provider-form") `shouldReturn` 1
     fits "the administration is wider than a phone"
     besides page [".server-provider-form"] `shouldReturn` []
+    -- The settings, from the menu of users: their sections a row of tabs
+    -- above the section, as the administration's are, on a phone too.
+    tap (locator page "#app .user-switcher-toggle")
+    tap (locator page "#app .user-menu .settings-entry")
+    waitQuiet page
+    tap (locator page "#app .settings-nav-link[data-section=security]")
+    waitQuiet page
+    count (locator page "#app .settings-page-security .account-sessions") `shouldReturn` 1
+    isVisible (locator page "#app .settings-nav-link[data-section=profile]") `shouldReturn` True
+    fits "the settings are wider than a phone"
     nothingWrong page
 
   -- A page presented as slides: moved through by the keys with the slide

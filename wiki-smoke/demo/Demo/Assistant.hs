@@ -31,9 +31,12 @@ spec site =
     visit page (address site.demo "/")
     waitQuiet page
     count (withText "Spaces" (locator page "#app .wiki-home .page-view h1")) `shouldReturn` 1
-    -- The settings, from the user menu: the demo starts as admin.
+    -- The settings, from the user menu, and their section of the
+    -- assistant: the demo starts as admin.
     click (locator page "#app .user-switcher-toggle")
-    click (locator page "#app .user-menu .assistant-settings-entry")
+    click (locator page "#app .user-menu .settings-entry")
+    waitQuiet page
+    click (locator page "#app .settings-nav-link[data-section=assistant]")
     waitQuiet page
     count (withText "Writing assistant" (locator page "#app .assistant-settings h1")) `shouldReturn` 1
     crumb page `shouldReturn` "Writing assistant"

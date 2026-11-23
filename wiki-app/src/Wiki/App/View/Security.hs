@@ -1,8 +1,9 @@
 {-# LANGUAGE QuasiQuotes #-}
 
--- | The account security section of the account panel (WP4.11 of
--- docs/PLAN.md, "Wiki.App.Security"): where one is signed in, a second
--- factor, and an e-mail address.
+-- | The account's security, in the settings' section "Security" (WP4.11
+-- of docs/PLAN.md, "Wiki.App.Security"; "Wiki.App.Shell"), under how the
+-- user signs in ("Wiki.App.View.SignInMethods"): where one is signed in, a
+-- second factor, passkeys, the user's keys, and an e-mail address.
 --
 -- * __Sessions.__ Each of the user's sessions, with when it began, and
 --   when and from where it was last used. Every session except this
@@ -34,7 +35,7 @@
 --   "ask each time". A user with no key pair yet makes one here: with the
 --   password, or, without one, with a passkey. The last way to unlock the
 --   vault cannot be taken away: a passkey that is that way cannot be
---   removed. Opening the panel brings this browser up to date with the
+--   removed. Showing the section brings this browser up to date with the
 --   vault ('Wiki.App.Vault.settleKeys'): it unseals the private key, or
 --   makes the key pair, when it holds the vault key.
 -- * __E-mail.__ The address, whether it is verified, a form to set another
@@ -57,7 +58,7 @@
 -- and the e-mail are shown disabled with a note, since only a server has
 -- them ('securityAvailable').
 --
--- Everything is fetched when the panel opens (in the initializer: the
+-- Everything is fetched when the section is shown (in the initializer: the
 -- server never prerenders it), and each part fetches again what it
 -- changed.
 module Wiki.App.View.Security
@@ -140,11 +141,11 @@ data State = State
   -- passkey signs the user in.
   , keysProblem :: Maybe Text
   , owner :: Maybe UserId
-  -- ^ The signed-in user, whose keys the panel shows: none in the demo.
+  -- ^ The signed-in user, whose keys the section shows: none in the demo.
   , sealable :: Bool
   -- ^ Whether the browser offers WebCrypto to this page.
   , userKeys :: Maybe (Either Text UserKeys)
-  -- ^ The user's keys, once settled when the panel opens.
+  -- ^ The user's keys, once settled when the section is shown.
   , typedVaultPassword :: Text
   , vaultPasswordField :: H.RefLabel
   , vaultProblem :: Maybe Text
@@ -639,7 +640,7 @@ component =
         owner <- gets (\st -> st.owner)
         for_ owner $ \u ->
           when (keysKept && sealable) $ do
-            -- Opening the panel brings this browser up to date with the
+            -- Showing the section brings this browser up to date with the
             -- vault: the private key unsealed, or the key pair made, when
             -- the browser holds the vault key.
             vault <- H.async (settleKeys u)
@@ -686,15 +687,16 @@ component =
                     keys <- H.async listPasskeys
                     modify (\st -> st {keys = Just keys})
       -- A passkey made and not answered for: registered from here, as the
-      -- step the close cancelled would have. The finalizer may wait; nothing
-      -- else of the panel runs. A refusal leaves the passkey on the
+      -- step the close cancelled would have. The section closes when the
+      -- reader leaves it (another section or page, or a sign-out). The
+      -- finalizer may wait; nothing else of the section runs. A refusal leaves the passkey on the
       -- authenticator, and nothing more can be done: the close may have
       -- cut off a request the server had already taken, which a refusal of
       -- this one cannot be told from, and a browser cannot delete a
       -- passkey. It can only tell the person's password manager that one is
       -- unknown ('discardPasskey', PublicKeyCredential.signalUnknownCredential,
       -- where the browser has it), which for a passkey the server did take
-      -- would hide one that works. A panel closed while the authenticator
+      -- would hide one that works. A section closed while the authenticator
       -- makes the passkey does not learn it at all.
       --
       -- What the registration sent again meets at the server, which keeps
@@ -702,7 +704,7 @@ component =
       -- an answer to it: the request the close cut off was taken (the
       -- passkey is the account's, and this one is refused, saying nothing
       -- here); it never arrived (this one registers the passkey, which is
-      -- what it is for); or the panel was opened again and another passkey
+      -- what it is for); or the section was shown again and another passkey
       -- begun first (this one answers a challenge replaced since, and is
       -- refused, leaving the new one's for its own answer: the first
       -- passkey stays on the authenticator unknown to the wiki, as before

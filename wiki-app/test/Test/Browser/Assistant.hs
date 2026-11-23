@@ -65,7 +65,7 @@ import Wiki.App.Backend.Mem (newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State qualified as M
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Route (..))
+import Wiki.App.Route (Route (..), SettingsSection (..))
 import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Assistant (ApiKey (..), Mode (..), ModelName (..), Provider (..), ProviderSettings (..), Settings (..), aboutTokens, chooseProvider, defaultSettings, settingsOf, withBaseUrl, withEffort, withKey, withMode, withModel)
 import Wiki.Core.Assistant.Reference (markdownReference)
@@ -616,7 +616,7 @@ spec m = readsOnce Quiet $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withKey Anthropic Nothing defaultSettings)
     keep m (UserId "user-admin") (withKey Anthropic Nothing defaultSettings)
-    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     find ui ".assistant-settings h1" >>= (`shouldHaveText` "Writing assistant")
     find ui ".assistant-intro" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "billed by its provider")
     find ui ".assistant-intro" >>= textContent >>= (`shouldSatisfy` T.isInfixOf ("Markdown reference, about " <> aboutTokens (T.length markdownReference) <> " of English text"))
@@ -654,7 +654,7 @@ spec m = readsOnce Quiet $ do
   it "keeps the page's cap typed on the settings page, with about how many tokens it is, and refuses one out of bounds" $ runFresh $ do
     script []
     keep m (UserId "user-editor") (withKey Anthropic (Just "sk-ant-test") defaultSettings)
-    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     field <- find ui ".assistant-page-cap"
     getProperty field "value" >>= (`shouldBe` "200000")
     find ui ".assistant-page-cap-estimate" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "About 57,000 tokens of English or Polish text.")
@@ -674,7 +674,7 @@ spec m = readsOnce Quiet $ do
   it "chooses each provider's default effort on the settings page, medium unless one is chosen" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withKey Anthropic (Just "sk-ant-test") defaultSettings)
-    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     findIn anthropic ".assistant-default-effort" >>= (`getProperty` "value") >>= (`shouldBe` "medium")
     findAllIn anthropic ".assistant-default-effort option" >>= traverse textContent >>= (`shouldBe` ["low", "medium (default)", "high", "xhigh", "max"])
@@ -769,7 +769,7 @@ spec m = readsOnce Quiet $ do
   it "offers only the provider's own service in the demo, which has no server" $ runFresh $ do
     scriptWith [] (object [])
     keep m (UserId "user-editor") defaultSettings
-    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     -- Once the settings are read.
     findAll ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service option" >>= traverse textContent >>= (`shouldBe` ["Anthropic's own"])
     findAll ui ".assistant-provider-settings[data-provider='openai'] .assistant-service option" >>= traverse textContent >>= (`shouldBe` ["OpenAI's own"])
@@ -778,7 +778,7 @@ spec m = readsOnce Quiet $ do
   it "tests the connection to another address without a key, until a key is typed, which is then the only one tested" $ runFresh $ do
     scriptWith [] (object [])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
-    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     -- Nothing typed: the connection is tested without a key, and says so.
     test <- findIn anthropic ".assistant-test"
@@ -799,7 +799,7 @@ spec m = readsOnce Quiet $ do
   it "tests a typed key before keeping it: a refused one is not kept and stays in the field, an accepted one is kept with its models, and Enter tests it" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
-    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     let refuse = unsafeIOToPageM (js_check (toJSText (decodeUtf8 (BSL.toStrict (encode (object ["kind" .= ("authentication" :: Text), "status" .= (401 :: Int), "message" .= ("token expired: gw-wrong" :: Text)]))))))
         accept = unsafeIOToPageM (js_check (toJSText "null"))
@@ -839,7 +839,7 @@ spec m = readsOnce Quiet $ do
   it "disables the provider's inputs while a typed key is tested, and keeps nothing when the address changes before the answer" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
-    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     let settingsNow = settingsOf Anthropic <$> settingsFor m (UserId "user-editor")
     -- A gateway that answers only when the test lets the check go.
@@ -868,7 +868,7 @@ spec m = readsOnce Quiet $ do
     let refused = object ["error" .= object ["kind" .= ("authentication" :: Text), "status" .= (401 :: Int), "message" .= ("bad token" :: Text)]]
     scriptWith [] (object ["anthropic" .= refused])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
-    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     findIn anthropic ".assistant-key" >>= (`typeText` "gw-wrong")
     findIn anthropic ".assistant-key-form button[type='submit']" >>= click
@@ -882,7 +882,7 @@ spec m = readsOnce Quiet $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     -- A model chosen earlier that the gateway does not list.
     keep m (UserId "user-editor") (withModel Anthropic "claude-retired-1" (withBaseUrl Anthropic gateway defaultSettings))
-    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     findIn anthropic ".assistant-key" >>= (`typeText` "gw-token")
     findIn anthropic ".assistant-key-form button[type='submit']" >>= click
@@ -901,7 +901,7 @@ spec m = readsOnce Quiet $ do
   it "keeps nothing when the message test fails with the model, and keeps the key with another model chosen from the list" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
-    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     let fail404 = encode (object ["kind" .= ("not_found" :: Text), "status" .= (404 :: Int)])
         keyNow = (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor")
@@ -929,7 +929,7 @@ spec m = readsOnce Quiet $ do
     let missing = object ["error" .= object ["kind" .= ("not_found" :: Text), "status" .= (404 :: Int), "message" .= ("no such route" :: Text)]]
     scriptWith [] (object ["anthropic" .= missing])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
-    (ui, _) <- startWith m (Just "user-editor") AssistantSettings
+    (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
     findIn anthropic ".assistant-key" >>= (`typeText` "gw-token")
     findIn anthropic ".assistant-key-form button[type='submit']" >>= click
@@ -954,7 +954,7 @@ settingsOver m services = do
     wiki <- newMemWiki ((demoState demoNow) {M.current = Just (UserId "user-editor")})
     runMemWiki wiki session
   answerWith "GET" "api/v1/session" 200 SessionInfo {user = me.user, groups = me.groups, grants = me.grants, standing = SignedIn, providers = [], exports = [], boxes = [], homePage = me.homePage, mathMacros = Nothing, assistantServices = services, whatsNew = Nothing}
-  ui <- startServer m AssistantSettings
+  ui <- startServer m (UserSettings AssistantSection)
   _ <- find ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service"
   pure ui
 

@@ -1,6 +1,7 @@
 -- | Personal spaces and private subspaces in a browser (WP5.54 of
--- docs/PLAN.md), over the demo. A user turns their personal space on from
--- the demo's menu of users; the front page then lists "User subspaces" as
+-- docs/PLAN.md), over the demo. A user turns their personal space on in
+-- the settings' section "Profile", which the demo's menu of users leads
+-- to; the front page then lists "User subspaces" as
 -- a space they see only a subspace of, and the header's Starred panel
 -- links to the space as "Your space". Turning it off asks first, and
 -- hides it. A personal space's settings open, with its name read-only.
@@ -14,12 +15,12 @@ import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
-import Test.Browser.Mount (slugs, start, startChanged)
+import Test.Browser.Mount (openSettings, slugs, start, startChanged)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend.Mem.State (MemState (..), grantSpace, setPersonalSpaceIn)
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Route (..))
+import Wiki.App.Route (Route (..), SettingsSection (..))
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Permission (SpacePermission (..), Subject (..))
 import Wiki.Core.Slug (slugText)
@@ -27,13 +28,13 @@ import Wiki.Core.Space qualified as S
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
 spec m = do
-  it "turns a personal space on from the menu, lists it on the front page, and links to it as Your space" $ runPage $ do
+  it "turns a personal space on in the profile settings, lists it on the front page, and links to it as Your space" $ runPage $ do
     ui <- start m (Just "user-editor") Home
     _ <- find ui ".directory .space-card"
-    find ui ".user-switcher-toggle" >>= click
-    eventually (find ui ".user-menu .personal-space-enable" >>= click)
-    eventually (void (find ui ".user-menu .personal-space-disable"))
-    find ui ".user-switcher-toggle" >>= click
+    openSettings ui ProfileSection
+    eventually (find ui ".account-personal .personal-space-enable" >>= click)
+    eventually (void (find ui ".account-personal .personal-space-disable"))
+    find ui ".wiki-brand" >>= click
     -- The container, which nobody may view, leads to the finder of user
     -- spaces, and the sidebar has the editor's own space under it.
     eventually (find ui ".space-card-users .space-card-name" >>= (`shouldHaveText` "User subspaces"))
@@ -52,11 +53,12 @@ spec m = do
   it "turns it off after asking, and hides it" $ runPage $ do
     ui <- startChanged m (personalFor "user-editor") (Just "user-editor") Home
     _ <- find ui ".space-card-users"
-    find ui ".user-switcher-toggle" >>= click
-    eventually (find ui ".user-menu .personal-space-disable" >>= click)
+    openSettings ui ProfileSection
+    eventually (find ui ".account-personal .personal-space-disable" >>= click)
     find ui ".personal-space-confirm" >>= (`shouldContainText` "Nothing in it is deleted")
     find ui ".personal-space-confirm-disable" >>= click
-    eventually (void (find ui ".user-menu .personal-space-enable"))
+    eventually (void (find ui ".account-personal .personal-space-enable"))
+    find ui ".wiki-brand" >>= click
     eventually (length <$> findAll ui ".space-card-users" `shouldReturn` 0)
     length <$> findAll ui ".user-spaces-link" `shouldReturn` 0
     unmount ui

@@ -46,6 +46,19 @@
 -- So those controls and their state stay here, and the "Backups and data"
 -- section shows them under the backups.
 --
+-- The signed-in user's settings ('UserSettings') are laid out the same
+-- way: the sidebar lists their sections ('settingsSidebar'), and the
+-- content is one section ('settingsPage'): the profile (the avatar and the
+-- personal space), security (how the user signs in, the account's
+-- security and keys), the notifications, and the writing assistant. The
+-- address @\/settings\/@ shows the first, and the assistant's address
+-- from before, @\/assistant\/@, its section; the shell puts the section's
+-- own address in place of either. The header's menu under the user's name
+-- leads there ("Settings"). Someone not signed in is asked to sign in.
+-- The sections read what they show in the browser only, after the first
+-- render ('settingsShown'): a page the server prerenders shows the list of
+-- sections and says that the section is being read.
+--
 -- When the backend answers at once (the demo's in-memory backend), the
 -- shell loads all of that in its initial state, so that its first render
 -- is the page the prerender shows. When the backend would wait (the HTTP
@@ -160,7 +173,7 @@ import Wiki.App.Islands qualified as Islands
 import Wiki.App.Live (Feed (..), Live (..))
 import Wiki.App.Offline (browserOnline, install, installAvailable, installChanges, offlineCopy)
 import Wiki.App.Recent (rememberVisit)
-import Wiki.App.Route (AdminSection, Route (..), adminSections, locationRoute, sectionName, sectionTitle, settledRoute)
+import Wiki.App.Route (AdminSection, Route (..), SettingsSection (..), adminSections, locationRoute, sectionName, sectionTitle, settingsName, settingsSections, settingsTitle, settledRoute)
 import Wiki.App.Route qualified as R
 import Wiki.App.Security (MonadSecurity)
 import Wiki.App.Vault (forgetEveryUsersKeys, forgetUserKeys)
@@ -196,6 +209,7 @@ import Wiki.App.View.SearchResults qualified as SearchResultsView
 import Wiki.App.View.Security qualified as SecurityView
 import Wiki.App.View.Server qualified as ServerView
 import Wiki.App.View.SignIn qualified as SignInView
+import Wiki.App.View.SignInMethods qualified as SignInMethodsView
 import Wiki.App.View.Slides qualified as SlidesView
 import Wiki.App.View.Source qualified as SourceView
 import Wiki.App.View.Space qualified as SpaceView
@@ -220,7 +234,7 @@ import Wiki.Core.Permission (GlobalPermission (Administer), canView, hasGlobalPe
 import Wiki.Core.Slug (Slug)
 import Wiki.Core.Space (Icon (..), Space (blog, description, encryption, icon, id, name, parent, personalContainer), containerName, pageAt, pagesAt, rootPage, subspacesOf)
 import Wiki.Core.Space qualified as Space
-import Wiki.Core.User (Login (..), User (..))
+import Wiki.Core.User (Login (..), Standing (..), User (..))
 
 -- | The shell's input: the router; a route the home page invites a
 -- newcomer to (the demo's tour), if any; the demo's controls, on a backend
@@ -293,8 +307,11 @@ data ViewSlot
   | UsersSlot
   | GroupsSlot
   | StatusSlot
-  | PersonalSpaceSlot
-  | AvatarSlot
+  | -- | The settings' views are keyed by the user they are for: another
+    -- user (the demo's switch) mounts them again, with nothing kept of the
+    -- user before.
+    PersonalSpaceSlot (Maybe UserId)
+  | AvatarSlot (Maybe UserId)
   | EncryptedSlot
   deriving stock (Eq, Ord)
 
@@ -306,13 +323,15 @@ data PartSlot
   | StarredSlot
   | HelpSlot
   | OfflineCopySlot
-  | DemoAccountSlot
-  | DemoNotificationsSlot
   | ActivitySlot
   | BackupsSlot
   | VerifyEmailSlot
   | UnsubscribeSlot
-  | AssistantSettingsSlot
+  | -- | Keyed by the user, as the settings' other views ('PersonalSpaceSlot').
+    SignInMethodsSlot (Maybe UserId)
+  | SecuritySlot (Maybe UserId)
+  | NotificationsSlot (Maybe UserId)
+  | AssistantSettingsSlot (Maybe UserId)
   | WhatsNewSlot
   | UserSpacesSlot
   deriving stock (Eq, Ord)
@@ -393,9 +412,11 @@ data State m = State
   , menuWatch :: Maybe H.SubscriptionId
   -- ^ The watch for a press outside the user menu or Escape, while it is
   -- open.
-  , demoAccountOpen :: Bool
-  -- ^ Whether the demo's account panel (its one session, and the server's
-  -- features shown disabled) is open.
+  , settingsShown :: Bool
+  -- ^ Whether the settings' sections are mounted: in a browser, after the
+  -- first render. Each reads what it shows as it starts, from the server
+  -- and from this browser, so a page the server prerenders shows none of
+  -- them, and the program adopts that page unchanged.
   , panel :: Panel
   -- ^ What the administration's section on the wiki's data shows.
   , kept :: Bool
@@ -511,7 +532,6 @@ data Action
   | OpenSignIn
   | FromInvite InviteView.Output
   | FromReset ResetView.Output
-  | ToggleDemoAccount
   | Online Bool
   | InstallChanged
   | Install
@@ -575,7 +595,7 @@ component =
                   , menuOpen = False
                   , menuHolder
                   , menuWatch = Nothing
-                  , demoAccountOpen = False
+                  , settingsShown = False
                   , panel = Actions Nothing
                   , kept
                   , settled = False
@@ -801,7 +821,8 @@ component =
     ownAvatar :: State m -> Maybe Text
     ownAvatar st = st.session.user >>= \u -> Map.lookup u.id st.avatars
 
-    -- The demo's menu of who one is: nobody, or one of its users.
+    -- The demo's menu of who one is: nobody, or one of its users, and
+    -- for a user, the way to their settings.
     userSwitcher :: State m -> H.ComponentHTML Action Slots m
     userSwitcher st =
       [hh|
@@ -826,35 +847,11 @@ component =
                 </li>
               {% end %}
               {% if isJust st.session.user %}
-                <li class="user-menu-account">
-                  <button type="button" class="demo-account-toggle" onClick={{ const ToggleDemoAccount }}>Your account…</button>
-                </li>
-                <li class="user-menu-personal">
-                  {{ HH.slot "view" PersonalSpaceSlot PersonalSpaceView.component PersonalSpaceView.Input {user = (\u -> u.id) <$> st.session.user} FromView }}
-                </li>
-                <li class="user-menu-assistant">
-                  <a class="assistant-settings-entry" {{ Router.linkProps st.router Followed AssistantSettings }}>Assistant</a>
+                <li class="user-menu-settings">
+                  <a class="settings-entry" {{ Router.linkProps st.router Followed (UserSettings ProfileSection) }}>Settings</a>
                 </li>
               {% end %}
             </ul>
-          {% end %}
-          {% if st.demoAccountOpen && isJust st.session.user %}
-            <section class="account-panel demo-account-panel" aria-label="Your account">
-              <h2>Your account</h2>
-              <p class="account-note">The demo has no passwords: you switch between its users above.</p>
-              <section class="account-avatar" aria-label="Avatar">
-                <h3>Avatar</h3>
-                {{ HH.slot "view" AvatarSlot AvatarView.component AvatarView.Input {user = st.session.user} FromView }}
-              </section>
-              {{ HH.slot_ "part" DemoAccountSlot SecurityView.component Nothing }}
-              <section class="account-notifications" aria-label="Notifications">
-                <h3>Notifications</h3>
-                {{ HH.slot_ "part" DemoNotificationsSlot NotificationSettingsView.component () }}
-              </section>
-              <div class="actions">
-                <button type="button" onClick={{ const ToggleDemoAccount }}>Close</button>
-              </div>
-            </section>
           {% end %}
         </div>
       |]
@@ -919,6 +916,90 @@ component =
         dataIntro
           | isJust st.demo = "Export the whole wiki to keep a copy or to take it to another browser, or import one to replace everything here."
           | otherwise = "Export the whole wiki to keep a copy, or import the pages of another into this one, choosing what to bring in."
+
+    -- One section of the signed-in user's settings: its heading and its
+    -- views. Someone not signed in is asked to sign in, as the
+    -- administration and a closed wiki ask, and the server's operator, who
+    -- has no account, has only the writing assistant's section.
+    settingsPage :: State m -> SettingsSection -> H.ComponentHTML Action Slots m
+    settingsPage st section
+      | null sections =
+          [hh|
+            <section class="settings-view">
+              <h1>Settings</h1>
+              <p class="sign-in-hint">{{ signInFirst }}</p>
+              {% if isJust st.accounts %}
+                <button type="button" class="primary settings-sign-in" onClick={{ const OpenSignIn }}>Sign in</button>
+              {% end %}
+            </section>
+          |]
+      | section `notElem` sections =
+          [hh|
+            <section class="settings-view">
+              <h1>{{ settingsTitle section }}</h1>
+              <p class="settings-unavailable">This section is for an account's own settings, and the server's operator has no account.</p>
+            </section>
+          |]
+      | otherwise =
+          [hh|
+            <section class="settings-view settings-page-{{ settingsName section }}">
+              {% if section /= AssistantSection %}
+                <h1>{{ settingsTitle section }}</h1>
+              {% end %}
+              {% if st.settingsShown %}
+                {{ settingsSection st section }}
+              {% else %}
+                <p class="settings-reading" role="status">Reading your settings…</p>
+              {% end %}
+            </section>
+          |]
+      where
+        sections = offeredSettings st
+        signInFirst :: Text
+        signInFirst
+          | isJust st.demo = "Your settings are a user's own, and you are not signed in. Choose who you are at the top right."
+          | otherwise = "Your settings are your account's own. Sign in to see them."
+
+    -- The views of a settings section, each for the signed-in user. The
+    -- writing assistant's view has a heading of its own.
+    settingsSection :: State m -> SettingsSection -> H.ComponentHTML Action Slots m
+    settingsSection st = \case
+      ProfileSection ->
+        [hh|
+          <div class="settings-sections">
+            <section class="account-avatar" aria-label="Avatar">
+              <h2>Avatar</h2>
+              <p class="account-note">A picture of you, shown round beside your name, at your comments and to the readers of a page.</p>
+              {{ HH.slot "view" (AvatarSlot who) AvatarView.component AvatarView.Input {user = st.session.user} FromView }}
+            </section>
+            <section class="account-personal" aria-label="Personal space">
+              <h2>Personal space</h2>
+              <p class="account-note">A space of your own, under User subspaces, which you administer.</p>
+              {{ HH.slot "view" (PersonalSpaceSlot who) PersonalSpaceView.component PersonalSpaceView.Input {user = who} FromView }}
+            </section>
+          </div>
+        |]
+      SecuritySection ->
+        [hh|
+          <div class="settings-sections">
+            {% for accounts in maybeToList st.accounts %}
+              {{ HH.slot_ "part" (SignInMethodsSlot who) SignInMethodsView.component SignInMethodsView.Input {accounts, session = st.session, here = Router.href st.router st.route} }}
+            {% end %}
+            {% if isJust st.demo %}
+              <p class="account-note">The demo has no passwords: you switch between its users at the top right.</p>
+            {% end %}
+            {{ HH.slot_ "part" (SecuritySlot who) SecurityView.component (guard (isNothing st.demo) *> who) }}
+          </div>
+        |]
+      NotificationsSection ->
+        [hh|
+          <div class="settings-sections account-notifications">
+            {{ HH.slot_ "part" (NotificationsSlot who) NotificationSettingsView.component () }}
+          </div>
+        |]
+      AssistantSection -> HH.slot_ "part" (AssistantSettingsSlot who) AssistantSettingsView.component AssistantSettingsView.Input {context = context st}
+      where
+        who = (\u -> u.id) <$> st.session.user
 
     -- What can be done with the wiki's data: the demo's, or the server's.
     dataControls :: State m -> H.ComponentHTML Action Slots m
@@ -1029,6 +1110,7 @@ component =
     sidebar :: State m -> H.ComponentHTML Action Slots m
     sidebar st = case (st.route, st.here) of
       (Admin section, _) | st.world == WorldReady && isAdministrator st -> adminSidebar st section
+      (UserSettings section, _) | st.world == WorldReady && not (null (offeredSettings st)) -> settingsSidebar st section
       (_, InSpace _ space pages) | not (homeSpace (context st) space.id) -> spaceSidebar st space pages
       _ -> spacesSidebar st
 
@@ -1050,6 +1132,32 @@ component =
                   {{ Router.linkProps st.router Followed (Admin s) }}
                 >
                   {{ sectionTitle s }}
+                </a>
+              </li>
+            {% end %}
+          </ul>
+        </nav>
+      |]
+
+    -- The settings' list of sections, in the sidebar's place, as the
+    -- administration's: an entry per section the user has, the current one
+    -- marked. On a narrow screen the stylesheet turns it into a row of tabs
+    -- above the section.
+    settingsSidebar :: State m -> SettingsSection -> H.ComponentHTML Action Slots m
+    settingsSidebar st current =
+      [hh|
+        <nav class="wiki-sidebar settings-sidebar" aria-label="Settings">
+          <h2>Settings</h2>
+          <ul class="settings-nav">
+            {% for s in offeredSettings st %}
+              <li>
+                <a
+                  class="settings-nav-link"
+                  data-section={{ settingsName s }}
+                  {{ [attr "aria-current" "page" | s == current] }}
+                  {{ Router.linkProps st.router Followed (UserSettings s) }}
+                >
+                  {{ settingsTitle s }}
                 </a>
               </li>
             {% end %}
@@ -1255,7 +1363,7 @@ component =
       ResetPassword token -> HH.slot "reset" () ResetView.component ResetView.Input {accounts = st.accounts, token, session = st.session} FromReset
       VerifyEmail token -> HH.slot_ "part" VerifyEmailSlot VerifyEmailView.component VerifyEmailView.Input {accounts = st.accounts, token}
       Unsubscribe token -> HH.slot_ "part" UnsubscribeSlot UnsubscribeView.component UnsubscribeView.Input {token}
-      AssistantSettings -> HH.slot_ "part" AssistantSettingsSlot AssistantSettingsView.component AssistantSettingsView.Input {context = context st}
+      UserSettings section -> settingsPage st section
       WhatsNewPage -> HH.slot_ "part" WhatsNewSlot WhatsNewView.component WhatsNewView.Input {context = context st}
       UserSpaces -> HH.slot_ "part" UserSpacesSlot UserSpacesView.component UserSpacesView.Input {context = context st}
       Home -> homeContent st
@@ -1398,6 +1506,9 @@ component =
         -- this is the server's prerender, whose storage is the process's
         -- and nobody's.
         when inBrowser $ do
+          -- And the settings' sections, which a prerendered page leaves
+          -- out.
+          modify (\st -> st {settingsShown = True})
           seen <- H.liftEffect (Storage.getItem LocalStorage whatsNewSeenKey)
           modify (\st -> st {seen = Just (fromMaybe 0 (seen >>= rightToMaybe))})
           whatsNewSeen
@@ -1537,7 +1648,7 @@ component =
       -- one was before switching, so they are cleared.
       SwitchTo user -> withDemo $ \demo -> do
         shut <- shutMenu
-        modify (shut . \st -> st {demoAccountOpen = False, panel = Actions Nothing, settled = False})
+        modify (shut . \st -> st {panel = Actions Nothing, settled = False})
         H.async (demo.switchTo user)
         reload Nothing
       AskReset -> modify (\st -> st {panel = ConfirmingReset})
@@ -1593,13 +1704,10 @@ component =
         modify (newSession s)
         restartFeed
         reload Nothing
-      -- The user turned their personal space on or off, or changed their
-      -- avatar.
-      FromAccount SignInView.SpacesChanged -> reload Nothing
       -- The session ended by itself (or changed elsewhere): reload
       -- everything as the current user ('sessionEnded'). Unless it is the
       -- same user, with the same rights, whose own record changed
-      -- (their avatar, from the account panel): only what shows the user
+      -- (their avatar, from their settings): only what shows the user
       -- is read again, with the spaces (a personal space shows its owner's
       -- avatar).
       SessionChanged s
@@ -1619,9 +1727,6 @@ component =
         reload (Just Home)
       -- A password set through a reset link: the sign-in form, to use it.
       FromReset ResetView.SignInWanted -> H.tell "signIn" () (SignInView.Prompt "Sign in with your new password.")
-      ToggleDemoAccount -> do
-        shut <- shutMenu
-        modify (shut . \st -> st {demoAccountOpen = not st.demoAccountOpen})
 
     -- The address of an administration's route as the router writes it,
     -- in place of the one the route was read from: @\/admin\/@ becomes the
@@ -1646,7 +1751,7 @@ component =
       now <- H.liftEffect (Router.current st.router)
       if
         | now /= st.route -> handleAction (Arrived now)
-        | isAdminRoute st.route -> H.liftEffect (Router.redirect st.router st.route)
+        | isAdminRoute st.route || isSettingsRoute st.route -> H.liftEffect (Router.redirect st.router st.route)
         | otherwise -> pass
 
     -- The session ended by itself, or changed elsewhere: everything is
@@ -2030,6 +2135,23 @@ isAdminRoute = \case
   Admin _ -> True
   _ -> False
 
+-- | Whether a route is one of the settings' sections.
+isSettingsRoute :: Route -> Bool
+isSettingsRoute = \case
+  UserSettings _ -> True
+  _ -> False
+
+-- | The settings' sections the signed-in user has, in the order of their
+-- list: every one for a user, the writing assistant's alone for the
+-- server's operator, who has no account, and none for someone not signed
+-- in.
+offeredSettings :: State m -> [SettingsSection]
+offeredSettings st = case st.session.user of
+  Nothing -> []
+  Just _
+    | st.session.standing == Operator -> [AssistantSection]
+    | otherwise -> settingsSections
+
 -- | Whether the user may administer the wiki as a whole, and so is shown
 -- the administration.
 isAdministrator :: State m -> Bool
@@ -2216,7 +2338,7 @@ crumbs st = case st.route of
   PermanentLink {} -> []
   Search {} -> [("Search", Nothing)]
   Admin section -> [("Administration", Just (Admin R.Overview)), (sectionTitle section, Nothing)]
-  AssistantSettings -> [("Writing assistant", Nothing)]
+  UserSettings section -> [("Settings", Just (UserSettings ProfileSection)), (settingsTitle section, Nothing)]
   WhatsNewPage -> [("What's new?", Nothing)]
   UserSpaces -> [(containerName, Nothing)]
   where
@@ -2394,7 +2516,7 @@ routeSpace = \case
   ResetPassword _ -> outside
   VerifyEmail _ -> outside
   Unsubscribe _ -> outside
-  AssistantSettings -> outside
+  UserSettings _ -> outside
   WhatsNewPage -> outside
   UserSpaces -> outside
   where

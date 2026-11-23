@@ -1,8 +1,8 @@
 {-# LANGUAGE QuasiQuotes #-}
 
--- | The assistant settings page: the writing assistant's settings, a page
--- of the signed-in user's own ("Assistant" in the account menu; WP4.19 of
--- docs/PLAN.md). It holds an API key per provider, the provider the
+-- | The writing assistant's settings, the signed-in user's own: the
+-- settings' section "Writing assistant" (WP4.19 of docs/PLAN.md,
+-- "Wiki.App.Shell"). It holds an API key per provider, the provider the
 -- assistant uses, the model to use, and the effort a new conversation
 -- starts with. The model is one from the provider's own list, or any
 -- other id typed in. The list is fetched with the key when the key is

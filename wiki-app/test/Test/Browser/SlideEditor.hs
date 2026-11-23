@@ -1101,7 +1101,8 @@ spec m = readsOnce Idle $ do
     waitQuiet
     (findAll ui ".editor-slides .slide-row-problems" >>= traverse textContent) `shouldReturn` ["2 problems"]
     marked <- problemsMarked ui
-    [message | (_, _, message) <- marked, any (`T.isPrefixOf` message) ["A code block, a box or an HTML block on this slide is not closed", "This slide is cut when presented"]] `shouldSatisfy` ((== 2) . length)
+    let kinds = ["A code block, a box or an HTML block on this slide is not closed", "This slide is cut when presented"]
+    [length [() | (_, _, message) <- marked, kind `T.isPrefixOf` message] | kind <- kinds] `shouldBe` [1, 1]
     -- A keystroke in the open fence, and the pause after it.
     openRowContent ui >>= (`typeText` "y")
     waitQuiet

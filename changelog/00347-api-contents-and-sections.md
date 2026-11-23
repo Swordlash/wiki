@@ -18,7 +18,9 @@ title: Programs can read a page's table of contents and one section of it
 - A program can read one section of a long page instead of the whole page:
   the section's Markdown exactly as it is written in the page, from its
   heading to the next heading of the same or a higher level, its
-  subsections included.
+  subsections included. A section never crosses a spoiler's edge: a spoiler
+  stays whole in the section around it, and the headings inside a spoiler
+  have sections of their own, within the spoiler.
 
   ```sh
   curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-handbook/?section=the-week'
@@ -26,9 +28,9 @@ title: Programs can read a page's table of contents and one section of it
 
   With `own=true` the section stops at the next heading of any level, so
   the text between a page's title and its first subsection is the title's
-  own section; `~top` is the text before the first heading:
+  own section; `top=true` gives the text before the first heading:
 
   ```sh
   curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-handbook/?section=team-handbook&own=true'
-  curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-handbook/?section=~top'
+  curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-handbook/?top=true'
   ```

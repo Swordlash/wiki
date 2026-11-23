@@ -63,10 +63,11 @@
 -- 'RawHtmlBlock'. The allowlist in "Wiki.Core.Markdown.Html" decides what
 -- of it reaches the page, when it is rendered.
 --
--- Source positions are not kept in the tree. The one place that needs
--- one is the export, which reads a page with pandoc's own reader and must
--- find the boxes this parser found: 'boxMarkers' gives where each box's
--- marker is in the source.
+-- Source positions are not kept in the tree. The export, which reads a
+-- page with pandoc's own reader and must find the boxes this parser found,
+-- has 'boxMarkers': where each box's marker is in the source. A page's
+-- sections ("Wiki.Core.Markdown.Sections") have the lines of the blocks in
+-- each block spoiler ('SpoilerInside', 'parseDeckSpansAndInsides').
 module Wiki.Core.Markdown.Ast
   ( -- * The tree
     Block (..)
@@ -116,6 +117,8 @@ module Wiki.Core.Markdown.Ast
   , parseWithLinesAndMarkers
   , parseWithSpans
   , parseDeckSpans
+  , parseDeckSpansAndInsides
+  , SpoilerInside (..)
   , parseWithLinesMarkersAndDeck
 
     -- * Reading the tree
@@ -491,7 +494,7 @@ parseWithMarkers = fmap (\(bs, ms, _, _) -> (bs, ms)) . parseWithAllMarkers
 -- identifiers the wiki gives them ("Wiki.Server.Export.Document").
 parseWithAllMarkers :: Text -> Either ParseError ([Block], [BoxMarker], [MarkerLine], WrittenIds)
 parseWithAllMarkers source =
-  ( \(Blocks bs (Markers ms ss _ _) _) ->
+  ( \(Blocks bs (Markers ms ss _ _ _) _) ->
       let read' = map snd (toList bs)
        in ( finished read'
           , sortOn (\m -> (m.markerLine, m.markerColumn)) (ordNub ms)
@@ -507,7 +510,7 @@ parseWithAllMarkers source =
 -- one parse.
 parseWithStartsAndMarkers :: Text -> Either ParseError ([(Maybe Int, Block)], [BoxMarker], [MarkerLine])
 parseWithStartsAndMarkers source =
-  ( \(Blocks bs (Markers ms ss _ _) _) ->
+  ( \(Blocks bs (Markers ms ss _ _ _) _) ->
       ( map (first (fmap fst)) (finishedWith (toList bs))
       , sortOn (\m -> (m.markerLine, m.markerColumn)) (ordNub ms)
       , sortOn (\s -> (s.lineAt, s.columnAt)) (ordNub ss)
@@ -570,13 +573,13 @@ ownId attrs = [i | Just i <- [attribute "id" attrs], not (T.null i)]
 -- task by its place in this order.
 parseWithTasks :: Text -> Either ParseError ([Block], [TaskBox])
 parseWithTasks source =
-  (\(Blocks bs (Markers _ _ ts _) _) -> (finished (map snd (toList bs)), ts)) <$> parsed source
+  (\(Blocks bs (Markers _ _ ts _ _) _) -> (finished (map snd (toList bs)), ts)) <$> parsed source
 
 -- | Parse a page's Markdown into the shapes of its blocks ('Shape'): where
 -- each block is in the source, the blocks inside others too. The editor's
 -- Enter reads them ("Wiki.Core.Markdown.Enter").
 parseShapes :: Text -> Either ParseError [Shape]
-parseShapes source = (\(Blocks _ (Markers _ _ _ hs) _) -> hs) <$> parsed source
+parseShapes source = (\(Blocks _ (Markers _ _ _ hs _) _) -> hs) <$> parsed source
 
 -- | Parse a page's Markdown, each block of the page (not those inside
 -- another) with the line of the source it starts on, from 1: what the
@@ -603,7 +606,7 @@ parseWithSpans source =
 -- both (the editor's check of its text, "Wiki.Core.Markdown.Problems").
 parseWithLinesAndMarkers :: Text -> Either ParseError ([(Maybe Int, Block)], [MarkerLine])
 parseWithLinesAndMarkers source =
-  (\(Blocks bs (Markers _ ss _ _) _) -> (map (first (fmap fst)) (finishedWith (toList bs)), sortOn (\s -> (s.lineAt, s.columnAt)) (ordNub ss))) <$> parsed source
+  (\(Blocks bs (Markers _ ss _ _ _) _) -> (map (first (fmap fst)) (finishedWith (toList bs)), sortOn (\s -> (s.lineAt, s.columnAt)) (ordNub ss))) <$> parsed source
 
 -- | What every block of a page goes through once parsed.
 finished :: [Block] -> [Block]
@@ -639,12 +642,20 @@ finishedFlatWith located =
 parseDeckSpans :: Text -> Either ParseError [(Maybe (Int, Int), Block)]
 parseDeckSpans source = (\(Blocks bs _ _) -> finishedFlatWith (toList bs)) <$> parsed source
 
+-- | 'parseDeckSpans', with what is inside each block spoiler of the
+-- page, at any depth ('SpoilerInside'): the blocks between its markers,
+-- each with its lines, as the parser read them in the page. One parse
+-- gives a page's sections ("Wiki.Core.Markdown.Sections") the lines of
+-- its headings, those in its block spoilers too.
+parseDeckSpansAndInsides :: Text -> Either ParseError ([(Maybe (Int, Int), Block)], [SpoilerInside])
+parseDeckSpansAndInsides source = (\(Blocks bs (Markers _ _ _ _ ps) _) -> (finishedFlatWith (toList bs), ps)) <$> parsed source
+
 -- | 'parseWithLinesAndMarkers', with 'parseDeckSpans'' blocks too, each
 -- with the line it starts on, and the shapes ('parseShapes'): one parse
 -- for the editor's check of a text, which reads them all.
 parseWithLinesMarkersAndDeck :: Text -> Either ParseError ([(Maybe Int, Block)], [MarkerLine], [(Maybe Int, Block)], [Shape])
 parseWithLinesMarkersAndDeck source =
-  ( \(Blocks bs (Markers _ ss _ hs) _) ->
+  ( \(Blocks bs (Markers _ ss _ hs _) _) ->
       let located = toList bs
        in (map (first (fmap fst)) (finishedWith located), sortOn (\s -> (s.lineAt, s.columnAt)) (ordNub ss), map (first (fmap fst)) (finishedFlatWith located), hs)
   )
@@ -1203,7 +1214,7 @@ barsOf (Inlines _ bs _) = bs
 
 -- | Blocks made of some inlines, with the bars of their inline spoilers.
 withBars :: Inlines -> Blocks -> Blocks
-withBars xs (Blocks bs ms at) = Blocks bs (ms <> Markers [] (barsOf xs) [] []) at
+withBars xs (Blocks bs ms at) = Blocks bs (ms <> Markers [] (barsOf xs) [] [] []) at
 
 -- | Blocks as the parser builds them, each with the first and the last
 -- line of the source it is written on once the parser has said
@@ -1218,9 +1229,23 @@ data Blocks = Blocks (Seq (Maybe (Int, Int), Block)) Markers (Maybe (Int, Int))
   deriving stock (Show)
 
 -- | The markers of boxes and of spoilers among some blocks, nested ones
--- too, the places of their tasks, in the order of the tree, and their
--- shapes ('Shape'), the outermost ones.
-data Markers = Markers [BoxMarker] [MarkerLine] [TaskBox] [Shape]
+-- too, the places of their tasks, in the order of the tree, their shapes
+-- ('Shape'), the outermost ones, and what is inside their block spoilers
+-- ('SpoilerInside').
+data Markers = Markers [BoxMarker] [MarkerLine] [TaskBox] [Shape] [SpoilerInside]
+  deriving stock (Show)
+
+-- | 'SpoilerInside' is what the parser read between a block spoiler's
+-- marker lines: the line of its start marker, the line of its end marker
+-- ('Nothing' for a spoiler never closed), and its blocks, each with the
+-- first and the last line of the source it is written on, as the parser
+-- read them in the page. The tree keeps a spoiler's blocks without their
+-- lines; a page's sections ("Wiki.Core.Markdown.Sections") find the
+-- spoiler's body and the lines of its headings here. The blocks are as
+-- the parser made them, before what every block goes through once parsed
+-- ('finishedWith'): a heading spoiler is its heading alone, its section's
+-- blocks after it.
+data SpoilerInside = SpoilerInside Int (Maybe Int) [(Maybe (Int, Int), Block)]
   deriving stock (Show)
 
 -- | 'Shape' is where a block is in a page's source, as the parser read
@@ -1296,10 +1321,10 @@ startOf :: Blocks -> Maybe (Int, Int)
 startOf (Blocks _ _ at) = at
 
 instance Semigroup Markers where
-  Markers bs ss ts hs <> Markers bs' ss' ts' hs' = Markers (bs <> bs') (ss <> ss') (ts <> ts') (hs <> hs')
+  Markers bs ss ts hs ps <> Markers bs' ss' ts' hs' ps' = Markers (bs <> bs') (ss <> ss') (ts <> ts') (hs <> hs') (ps <> ps')
 
 instance Monoid Markers where
-  mempty = Markers [] [] [] []
+  mempty = Markers [] [] [] [] []
 
 instance Semigroup Blocks where
   Blocks xs ms _ <> Blocks ys ns _ = Blocks (xs <> ys) (ms <> ns) Nothing
@@ -1325,6 +1350,10 @@ inlines (Inlines xs _ _) = toList xs
 
 blocks :: Blocks -> [Block]
 blocks (Blocks xs _ _) = map snd (toList xs)
+
+-- | Some blocks, each with the lines of the source the parser gave it.
+withLines :: Blocks -> [(Maybe (Int, Int), Block)]
+withLines (Blocks xs _ _) = toList xs
 
 -- | The parser gives the place of each inline it makes, the formatted ones
 -- just after it makes them: an inline spoiler's place, from its first two
@@ -1368,14 +1397,14 @@ instance CM.Rangeable Inlines where
 -- 'OtherShape' around their shapes, which 'CM.IsBlock''s @list@ makes an
 -- 'ItemShape'.
 instance CM.Rangeable Blocks where
-  ranged (CM.SourceRange ranges) (Blocks xs (Markers bs ss ts hs) at) = case ranges of
+  ranged (CM.SourceRange ranges) (Blocks xs (Markers bs ss ts hs ps) at) = case ranges of
     (start, _) : _ ->
       let firstLine = foldl' min (CM.sourceLine start) [CM.sourceLine s | (s, _) <- ranges]
           lastLine = foldl' max firstLine [if CM.sourceColumn e == 1 then CM.sourceLine e - 1 else CM.sourceLine e | (_, e) <- ranges]
           parts = [((CM.sourceLine s, CM.sourceColumn s), (CM.sourceLine e, CM.sourceColumn e)) | (s, e) <- ranges]
           kind = maybe OtherShape shapeKind (head [b | (Nothing, b) <- toList xs])
-       in Blocks (first (<|> Just (firstLine, lastLine)) <$> xs) (Markers bs ss ts [Shape {kind, parts, inner = hs, attributes = []}]) (Just (CM.sourceLine start, CM.sourceColumn start))
-    [] -> Blocks xs (Markers bs ss ts hs) at
+       in Blocks (first (<|> Just (firstLine, lastLine)) <$> xs) (Markers bs ss ts [Shape {kind, parts, inner = hs, attributes = []}] ps) (Just (CM.sourceLine start, CM.sourceColumn start))
+    [] -> Blocks xs (Markers bs ss ts hs ps) at
 
 -- | The kind of a block's 'Shape'.
 shapeKind :: Block -> ShapeKind
@@ -1398,7 +1427,7 @@ shapeKind = \case
 -- | The shapes of a list's items made 'ItemShape's of the list's kind:
 -- each item's shape is the outermost of its blocks' ('CM.Rangeable').
 itemShapes :: CM.ListType -> Bool -> Markers -> Markers
-itemShapes kind task (Markers bs ss ts hs) = Markers bs ss ts [Shape {kind = ItemShape mark task, parts = h.parts, inner = h.inner, attributes = h.attributes} | h <- hs]
+itemShapes kind task (Markers bs ss ts hs ps) = Markers bs ss ts [Shape {kind = ItemShape mark task, parts = h.parts, inner = h.inner, attributes = h.attributes} | h <- hs] ps
   where
     mark = case kind of
       CM.BulletList c -> Bullet c
@@ -1421,7 +1450,8 @@ instance CM.HasAttributes Blocks where
       -- the block does with them (a paragraph drops them). The editor's
       -- Enter compares them, so that its answer does not move a line of
       -- attributes onto another block ("Wiki.Core.Markdown.Enter").
-      owned (Markers bs ss ts hs) = Markers bs ss ts $ case (at, hs) of
+      owned (Markers bs ss ts hs ps) = Markers bs ss ts (ownShapes hs) ps
+      ownShapes hs = case (at, hs) of
         (Just _, [s]) -> [Shape {kind = s.kind, parts = s.parts, inner = s.inner, attributes = s.attributes <> new}]
         _ -> hs
       -- Blocks the parser has placed ('startOf') take the attributes of a
@@ -1431,7 +1461,7 @@ instance CM.HasAttributes Blocks where
       -- then puts in a box of those attributes, as the page does
       -- (@{.incremental}@ on the line before a list).
       taken = case (at, toList xs) of
-        (Just (line, column), [(_, b)]) | not (null new), fence b || isList b -> Markers [] [MarkerLine line column (TakesAttributes new)] [] []
+        (Just (line, column), [(_, b)]) | not (null new), fence b || isList b -> Markers [] [MarkerLine line column (TakesAttributes new)] [] [] []
         _ -> mempty
       isList = \case
         List _ _ -> True
@@ -1534,13 +1564,13 @@ instance CME.HasTaskList Inlines Blocks where
   taskList kind _ items =
     Blocks
       (Seq.singleton . (Nothing,) $ (List (listKind kind) [ListItem (Just done) (blocks b) | (done, b) <- items]))
-      (foldMap (\(_, b) -> Markers [] [] [TaskBox line column | Just (line, column) <- [startOf b]] [] <> itemShapes kind True (markersOf b)) items)
+      (foldMap (\(_, b) -> Markers [] [] [TaskBox line column | Just (line, column) <- [startOf b]] [] [] <> itemShapes kind True (markersOf b)) items)
       Nothing
 
 instance CME.HasFootnote Inlines Blocks where
   footnote number label inside =
-    let Blocks xs (Markers bs ss ts hs) at = around (Footnotes . pure . Footnote number label) inside
-     in Blocks xs (Markers bs ss ts [Shape {kind = NoteShape, parts = [], inner = hs, attributes = []}]) at
+    let Blocks xs (Markers bs ss ts hs ps) at = around (Footnotes . pure . Footnote number label) inside
+     in Blocks xs (Markers bs ss ts [Shape {kind = NoteShape, parts = [], inner = hs, attributes = []}] ps) at
   footnoteList notes =
     let all' = mconcat notes
      in Blocks (Seq.singleton . (Nothing,) $ (Footnotes (concat [ns | Footnotes ns <- blocks all']))) (markersOf all') Nothing
@@ -1614,7 +1644,7 @@ alertBlockSpec =
         written <- if null titleToks then pure Nothing else Just <$> CM.runInlineParser titleToks
         inside <- mconcat <$> CM.renderChildren node
         let title = inlines <$> written
-        pure (Blocks (Seq.singleton . (Nothing,) $ (Alert marker.boxKind BoxHead {title, numbered = marker.boxNumbered, id = Nothing} (blocks inside))) (Markers [marker] (foldMap barsOf written) [] [] <> markersOf inside) Nothing)
+        pure (Blocks (Seq.singleton . (Nothing,) $ (Alert marker.boxKind BoxHead {title, numbered = marker.boxNumbered, id = Nothing} (blocks inside))) (Markers [marker] (foldMap barsOf written) [] [] [] <> markersOf inside) Nothing)
     , CM.blockFinalize = CM.defaultFinalizer
     }
 
@@ -2009,13 +2039,13 @@ markerBlockSpec =
             parsedDescription <- CM.runInlineParser o.openDescriptionToks
             let name = fromMaybe "" o.openName
                 h = SpoilerHead {name, description = inlines parsedDescription, marker = o.openMarker, line = o.openLine, problem = NotClosed <$ guard (isNothing o.ended), kind = BetweenMarkers}
-                found = Markers [] ([MarkerLine o.openLine o.openColumn (Starts name o.openDescription)] <> [MarkerLine l c (Ends o.openLine) | Just (l, c) <- [o.ended]] <> barsOf parsedDescription) [] []
+                found = Markers [] ([MarkerLine o.openLine o.openColumn (Starts name o.openDescription)] <> [MarkerLine l c (Ends o.openLine) | Just (l, c) <- [o.ended]] <> barsOf parsedDescription) [] [] [SpoilerInside o.openLine (fst <$> o.ended) (withLines inside)]
             pure (Blocks (Seq.singleton (Nothing, Spoiler h (blocks inside))) (found <> markersOf inside) Nothing)
           Just o -> pure $ case o.ended of
             Just (l, c) ->
               Blocks
                 (Seq.singleton (Nothing, Div o.openAttributes (blocks inside)))
-                (Markers [] [MarkerLine o.openLine o.openColumn (Opens o.openAttributes), MarkerLine l c (Ends o.openLine)] [] [] <> markersOf inside)
+                (Markers [] [MarkerLine o.openLine o.openColumn (Opens o.openAttributes), MarkerLine l c (Ends o.openLine)] [] [] [] <> markersOf inside)
                 Nothing
             -- Shown as an unclosed spoiler is: the marker and the reason
             -- in red, then the blocks in red.
@@ -2023,7 +2053,7 @@ markerBlockSpec =
               let why = notClosed o.openKind
                in Blocks
                     (Seq.fromList [(Nothing, MarkerError o.openMarker why), (Nothing, Div [("class", "spoiler-unclosed")] (blocks inside))])
-                    (Markers [] [MarkerLine o.openLine o.openColumn (Faulty o.openMarker why)] [] [] <> markersOf inside)
+                    (Markers [] [MarkerLine o.openLine o.openColumn (Faulty o.openMarker why)] [] [] [] <> markersOf inside)
                     Nothing
     , CM.blockFinalize = CM.defaultFinalizer
     }
@@ -2093,7 +2123,7 @@ markerLineSpec =
     , CM.blockParagraph = False
     , CM.blockContinue = const mzero
     , CM.blockConstructor = \node -> pure $ case fromDynamic (CM.blockData (rootLabel node)) of
-        Just (b, m) -> Blocks (Seq.singleton (Nothing, b)) (Markers [] [m :: MarkerLine] [] []) Nothing
+        Just (b, m) -> Blocks (Seq.singleton (Nothing, b)) (Markers [] [m :: MarkerLine] [] [] []) Nothing
         Nothing -> mempty
     , CM.blockFinalize = CM.defaultFinalizer
     }
@@ -2175,7 +2205,7 @@ spoilerHeadingBlockSpec =
             let line = Parsec.sourceLine m.markerPos
                 h = SpoilerHead {name = fromMaybe "" m.markerName, description = [], marker = m.markerWritten, line, problem = Nothing, kind = OnHeading}
                 found = MarkerLine line (Parsec.sourceColumn m.markerPos) (HeadingMarker (Parsec.sourceColumn m.textAt))
-            pure (Blocks (Seq.singleton (Nothing, Spoiler h [Heading level [] (inlines text)])) (Markers [] (found : barsOf text) [] []) Nothing)
+            pure (Blocks (Seq.singleton (Nothing, Spoiler h [Heading level [] (inlines text)])) (Markers [] (found : barsOf text) [] [] []) Nothing)
           Nothing -> CM.heading level <$> CM.runInlineParser toks
     }
 
@@ -2206,7 +2236,7 @@ attributeLineBlockSpec =
       -- ends the attributes and starts the next block.
       CM.blockContinue = try . CM.blockContinue CM.attributeSpec
     , CM.blockConstructor = \node ->
-        pure (Blocks Seq.empty (Markers [] [MarkerLine (Parsec.sourceLine p) (Parsec.sourceColumn p) SetsAttributes | p <- CM.blockStartPos (rootLabel node)] [] []) Nothing)
+        pure (Blocks Seq.empty (Markers [] [MarkerLine (Parsec.sourceLine p) (Parsec.sourceColumn p) SetsAttributes | p <- CM.blockStartPos (rootLabel node)] [] [] []) Nothing)
     }
 
 listKind :: CM.ListType -> ListKind

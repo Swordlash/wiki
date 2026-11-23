@@ -56,6 +56,7 @@ data Heading = Heading
   { level :: Int
   , text :: Text
   , anchor :: Text
+  , inSpoiler :: Bool
   , section :: Text
   , children :: [Heading]
   }
@@ -148,8 +149,28 @@ contents backing = describe "a page's table of contents" $ do
     let source = "Before the title.\n\n# Hello\n\nText.\n\n## Part\n\nOne.\n\n## Part\n\nTwo.\n\n```\n# not a heading\n```\n" :: Text
     (.status) <$> request r methodPut "api/markdown/s/blog/p/hello-world/" [edgar] (toS (encodeUtf8 source)) `shouldReturn` 204
     c <- contentsOf r edgar "s/blog/p/hello-world/"
-    c.top `shouldBe` Just "/api/markdown/s/blog/p/hello-world/?section=~top"
+    c.top `shouldBe` Just "/api/markdown/s/blog/p/hello-world/?top=true"
     map (\h -> (h.level, h.anchor)) (everyHeading c.headings) `shouldBe` [(1, "hello"), (2, "part"), (2, "part-2")]
+
+  it "lists a block spoiler's headings under the section that holds the spoiler, each section within the spoiler" $ withPasswords backing $ \r -> do
+    let source = "# A\n\nLead.\n\n[[!spoiler]]{s}(More)\n## Hidden\n\nInside.\n[[/spoiler]]{s}\n\n## Next\n\nText.\n" :: Text
+    (.status) <$> request r methodPut "api/markdown/s/blog/p/hello-world/" [edgar] (toS (encodeUtf8 source)) `shouldReturn` 204
+    c <- contentsOf r edgar "s/blog/p/hello-world/"
+    [(h.anchor, h.inSpoiler, [(x.anchor, x.inSpoiler) | x <- h.children]) | h <- c.headings] `shouldBe` [("a", False, [("hidden", True), ("next", False)])]
+    hidden <- maybe (expectationFailure "no hidden heading" >> pure "") (fmap bodyText . follow r edgar . (\h -> h.section)) (find (\h -> h.anchor == "hidden") (everyHeading c.headings))
+    hidden `shouldBe` "## Hidden\n\nInside.\n"
+    -- The section that holds the spoiler holds all of it, markers too.
+    (bodyText <$> request r methodGet "api/markdown/s/blog/p/hello-world/?section=a&own=true" [edgar] "") `shouldReturn` "# A\n\nLead.\n\n[[!spoiler]]{s}(More)\n## Hidden\n\nInside.\n[[/spoiler]]{s}\n\n"
+
+  it "leads from each address it gives to what it names, for headings whose ids are ~top and top" $ withPasswords backing $ \r -> do
+    let source = "Before the title.\n\n# One {id=\"~top\"}\n\nA.\n\n# Two {#top}\n\nB.\n" :: Text
+    (.status) <$> request r methodPut "api/markdown/s/blog/p/hello-world/" [edgar] (toS (encodeUtf8 source)) `shouldReturn` 204
+    c <- contentsOf r edgar "s/blog/p/hello-world/"
+    map (\h -> h.anchor) c.headings `shouldBe` ["~top", "top"]
+    sections' <- for c.headings $ \h -> bodyText <$> follow r edgar h.section
+    sections' `shouldBe` ["# One {id=\"~top\"}\n\nA.\n\n", "# Two {#top}\n\nB.\n"]
+    top <- maybe (expectationFailure "no top" >> pure "") (fmap bodyText . follow r edgar) c.top
+    top `shouldBe` "Before the title.\n\n"
 
   it "reads a space's home page at the space's address" $ withPasswords backing $ \r -> do
     c <- contentsOf r rita "s/team/projects/"
@@ -182,18 +203,22 @@ sections backing = describe "a section of a page" $ do
     whole <- request r methodGet "api/markdown/s/team/p/team-handbook/?section=team-handbook&own=false" [ada] ""
     whole.body `shouldBe` page.body
 
-  it "reads the text before the first heading as ~top, empty where the page starts with its heading" $ withPasswords backing $ \r -> do
+  it "reads the text before the first heading with top=true, empty where the page starts with its heading" $ withPasswords backing $ \r -> do
     (.status) <$> request r methodPut "api/markdown/s/blog/p/hello-world/" [edgar] "Before the title.\n\n# Hello\n\nText.\n" `shouldReturn` 204
-    (bodyText <$> request r methodGet "api/markdown/s/blog/p/hello-world/?section=~top" [edgar] "") `shouldReturn` "Before the title.\n\n"
+    (bodyText <$> request r methodGet "api/markdown/s/blog/p/hello-world/?top=true" [edgar] "") `shouldReturn` "Before the title.\n\n"
+    (bodyText <$> request r methodGet "api/markdown/s/blog/p/hello-world/?top" [edgar] "") `shouldReturn` "Before the title.\n\n"
     (bodyText <$> request r methodGet "api/markdown/s/blog/p/hello-world/?section=hello" [edgar] "") `shouldReturn` "# Hello\n\nText.\n"
-    none <- request r methodGet "api/markdown/s/team/p/team-handbook/?section=~top" [ada] ""
+    none <- request r methodGet "api/markdown/s/team/p/team-handbook/?top=true" [ada] ""
     (none.status, none.body) `shouldBe` (200, "")
+    -- A section and the top at once are refused.
+    (.status) <$> request r methodGet "api/markdown/s/blog/p/hello-world/?section=hello&top=true" [edgar] "" `shouldReturn` 400
 
   it "answers 404 to an anchor no section has, naming the anchors there are" $ withPasswords backing $ \r -> do
     missing <- request r methodGet "api/markdown/s/team/p/team-handbook/?section=no-such-part" [ada] ""
     missing.status `shouldBe` 404
     errorName missing `shouldBe` Just "NotFound"
-    bodyText missing `shouldSatisfy` T.isInfixOf "~top, team-handbook, the-week, before-your-first-day, meetings"
+    bodyText missing `shouldSatisfy` T.isInfixOf "Its anchors: team-handbook, the-week, before-your-first-day, meetings."
+    bodyText missing `shouldSatisfy` T.isInfixOf "?top=true"
     (.status) <$> request r methodGet "api/markdown/s/team/p/team-handbook/?section=team-handbook&own=maybe" [ada] "" `shouldReturn` 400
 
 refusals :: Backing -> Spec
@@ -210,12 +235,12 @@ refusals backing = describe "refusals" $ do
     (.status) <$> request r methodGet "api/contents/s/team/p/team-handbook/" [rita] "" `shouldReturn` 404
     (.status) <$> request r methodGet "api/contents/s/team/p/no-such-page/" [ada] "" `shouldReturn` 404
     -- A section of a page that is not there is the page's 404.
-    missing <- request r methodGet "api/markdown/s/team/p/no-such-page/?section=~top" [ada] ""
+    missing <- request r methodGet "api/markdown/s/team/p/no-such-page/?top=true" [ada] ""
     (missing.status, errorName missing) `shouldBe` (404, Just "NotFound")
 
   it "refuses a page of an encrypted space, which the server cannot read" $ withPasswords backing $ \r -> do
     slug <- encryptedSpace r
-    for_ ["api/contents/s/" <> slug <> "/", "api/markdown/s/" <> slug <> "/?section=~top"] $ \path -> do
+    for_ ["api/contents/s/" <> slug <> "/", "api/markdown/s/" <> slug <> "/?top=true"] $ \path -> do
       reply <- request r methodGet path [ada] ""
       reply.status `shouldBe` 409
       errorName reply `shouldBe` Just "Stale"
@@ -230,6 +255,8 @@ refusals backing = describe "refusals" $ do
     -- A PUT to a free address creates a page there, but not with ?section=.
     nowhere <- request r methodPut "api/markdown/s/blog/p/new-page/?section=x" [edgar] "# New page\n"
     (nowhere.status, header "Allow" nowhere) `shouldBe` (405, Just "GET, HEAD")
+    (.status) <$> request r methodGet "api/markdown/s/blog/p/new-page/" [edgar] "" `shouldReturn` 404
+    (.status) <$> request r methodPut "api/markdown/s/blog/p/new-page/?top=true" [edgar] "# New page\n" `shouldReturn` 405
     (.status) <$> request r methodGet "api/markdown/s/blog/p/new-page/" [edgar] "" `shouldReturn` 404
 
 -- | A space the admin has encrypted, with its home page, as the browser

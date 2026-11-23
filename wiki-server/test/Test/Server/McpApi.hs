@@ -16,13 +16,14 @@ import Data.Aeson (Object, Value (..), decode, encode, object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Pair)
+import Data.ByteString.Builder (toLazyByteString)
 import Data.ByteString.Lazy qualified as BSL
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text qualified as T
 import Data.Time (addUTCTime, getCurrentTime)
 import Database.Beam (runUpdate, update, val_, (<-.), (==.))
 import Network.HTTP.Types (Header, methodGet, methodPost, methodPut, statusCode)
-import Network.Wai (Request (..), defaultRequest, responseStatus, setRequestBodyChunks)
+import Network.Wai (Request (..), defaultRequest, responseStatus, responseToStream, setRequestBodyChunks)
 import Network.Wai.Internal (ResponseReceived (..))
 import Protolude
 import Test.Database (Backing)
@@ -61,6 +62,7 @@ spec backing = describe "the MCP server" $ do
   writing' backing
   hidden backing
   logging backing
+  underBasePath backing
 
 -- | The demo with passwords for the editor, the reader and the admin.
 withPasswords :: Backing -> (Running -> IO a) -> IO a
@@ -253,6 +255,9 @@ signingIn backing = describe "signing in" $ do
       refused.status `shouldBe` 401
       header "WWW-Authenticate" refused `shouldBe` Just "Bearer realm=\"wiki\""
     (.status) <$> post r (("Authorization", "Basic ZWRpdG9yOmVkaXRvcidzIHBhc3N3b3Jk") : hs) body `shouldReturn` 401
+    -- A right key sent as X-API-Key, which the HTTP API takes: here only
+    -- Authorization: Bearer is read.
+    (.status) <$> post r (("X-API-Key", encodeUtf8 k.key) : hs) body `shouldReturn` 401
     -- An expired key, a revoked one and 28 wrong ones: thirty failures.
     for_ (expiring : revoked : map wrong [1 .. 28]) $ \bad ->
       (.status) <$> post r (bearer bad : hs) body `shouldReturn` 401
@@ -450,6 +455,14 @@ hidden backing = describe "what the key's user may not read" $ do
     readerKey <- keyOf r "user-reader" ReadRight
     void (okCall r readerKey "wiki_read_page" ["path" .= ("/s/team/projects/p/the-wiki/" :: Text)])
 
+  it "is refused a write where the user may read and not edit, and nothing is written" $ withPasswords backing $ \r -> do
+    k <- keyOf r "user-editor" WriteRight
+    tour <- api r k "markdown/s/docs/p/tour/"
+    refused <- failedCall r k "wiki_write_page" ["path" .= ("/s/docs/p/tour/" :: Text), "markdown" .= ("Not mine to write." :: Text), "base_version" .= maybe "" decodeUtf8 (header "ETag" tour)]
+    refused `shouldSatisfy` T.isInfixOf "not write it"
+    later <- api r k "markdown/s/docs/p/tour/"
+    (later.body, header "ETag" later) `shouldBe` (tour.body, header "ETag" tour)
+
   it "is refused in an encrypted space, which the server cannot read" $ withPasswords backing $ \r -> do
     slug <- encryptedSpace r
     k <- keyOf r "user-admin" AdminRight
@@ -476,3 +489,29 @@ logging backing = describe "the request's log line" $ do
     logged <- readIORef lines'
     filter (T.isInfixOf (T.drop 5 made.key)) logged `shouldBe` []
     filter (\l -> T.isInfixOf ("principal=user:user-editor key=" <> made.info.id.text <> " ") l && T.isInfixOf "route=/mcp" l) logged `shouldSatisfy` ((== 1) . length)
+
+underBasePath :: Backing -> Spec
+underBasePath backing = describe "under a base path" $ do
+  it "is at the base path's mcp, and takes a page's path with the base path or without it" $ withDemo backing $ \st -> withApiEnv st $ \env -> do
+    let listener = Listener {name = "public", mount = "/wiki/", finding = BySession CookieSettings {path = "/wiki/", secure = False}}
+        app = listenerApp env.logger env Nothing listener
+    now <- getCurrentTime
+    made <- either (panic . show) identity <$> makeApiKey st now (UserId "user-editor") False NewApiKey {name = "Under a path", right = ReadRight, expiresAt = Nothing, password = Nothing}
+    -- The listener's application called in process, with a body: the
+    -- status and the body of its answer.
+    let posted (hs, body) = do
+          chunks <- newIORef [BSL.toStrict (encode body)]
+          answered <- newIORef (0, "")
+          let request' = setRequestBodyChunks (atomicModifyIORef' chunks (\case c : cs -> (cs, c); [] -> ([], ""))) defaultRequest {requestMethod = methodPost, rawPathInfo = "/wiki/mcp", pathInfo = ["wiki", "mcp"], requestHeaders = bearer made : ("Content-Type", "application/json") : hs}
+          _ <- app request' $ \response -> do
+            let (status, _, withBody) = responseToStream response
+            bytes <- newIORef mempty
+            withBody $ \streaming -> streaming (\b -> modifyIORef' bytes (<> b)) pass
+            written <- readIORef bytes
+            writeIORef answered (statusCode status, toLazyByteString written)
+            pure ResponseReceived
+          readIORef answered
+    for_ ["/s/blog/p/hello-world/", "/wiki/s/blog/p/hello-world/", "https://wiki.example/wiki/s/blog/p/hello-world/"] $ \path -> do
+      (status, reply) <- posted (modern "tools/call" (Just "wiki_read_page") ["name" .= ("wiki_read_page" :: Text), "arguments" .= object ["path" .= (path :: Text)]])
+      called <- calledOf Reply {status, headers = [], body = reply}
+      (called.failed, length called.texts) `shouldBe` (False, 2)

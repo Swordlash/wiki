@@ -147,7 +147,6 @@ data Tool = Tool
   , arguments :: [(Text, Mcp.Schema)]
   , required :: [Text]
   , writes :: Bool
-  , destructive :: Bool
   , tooLong :: Int -> Text
   , run :: Arguments -> IO Mcp.ToolResult
   }
@@ -184,8 +183,8 @@ toolHandlers env mount address holder = (listed, call)
         size = sum [T.length s | Mcp.ContentText s <- Mcp.toolResultContent result]
 
 -- | A tool's definition, as @tools\/list@ gives it, with the hints a
--- client shows: whether it only reads, and whether a write can take away
--- what was there.
+-- client shows: whether it only reads, and, for a tool that writes, that
+-- it may change what is there.
 definition :: Tool -> Mcp.ToolDefinition
 definition t =
   (Mcp.mkToolDefinition t.name t.description (Mcp.schema (Mcp.SchemaObject t.arguments t.required)))
@@ -193,7 +192,7 @@ definition t =
         Just
           Mcp.defaultToolAnnotations
             { Mcp.toolReadOnlyHint = Just (not t.writes)
-            , Mcp.toolDestructiveHint = guard t.writes $> t.destructive
+            , Mcp.toolDestructiveHint = guard t.writes $> True
             , Mcp.toolOpenWorldHint = Just False
             }
     }
@@ -211,7 +210,6 @@ tools env mount address holder =
           ]
       , required = []
       , writes = False
-      , destructive = False
       , tooLong = \n -> "The tree has " <> show n <> " characters, more than one answer holds: list one space (space) or fewer levels (depth), such as depth 1, and go down from there."
       , run = \args -> withArguments ((,) <$> (textArgument "space" args >>= searchSpace) <*> (intArgument "depth" args >>= depthOf)) $ \(space, depth) ->
           runAs env address holder.user (runExceptT (listing toolAddresses depth space)) <&> \case
@@ -230,7 +228,6 @@ tools env mount address holder =
           ]
       , required = ["query"]
       , writes = False
-      , destructive = False
       , tooLong = \n -> "The hits have " <> show n <> " characters, more than one answer holds: ask for fewer (limit), or keep to a space (space)."
       , run = \args -> withArguments ((,,) <$> (requiredArgument "query" (textArgument "query" args) >>= words') <*> (textArgument "space" args >>= searchSpace) <*> intArgument "limit" args) $ \(q, within, limit) ->
           jsonResult . object . pure . ("hits" .=) . map hit <$> runAs env address holder.user (searching toolAddresses q within limit)
@@ -241,7 +238,6 @@ tools env mount address holder =
       , arguments = [pathArgument "The page's path, such as /s/team/p/on-call/."]
       , required = ["path"]
       , writes = False
-      , destructive = False
       , tooLong = \n -> "The page has more than one answer holds (" <> show n <> " characters with its title and version): read its outline with wiki_page_outline, then its sections one at a time with wiki_read_section."
       , run = \args -> withPage args $ \at sp pp ->
           findPage env address holder.user sp pp <&> \case
@@ -254,7 +250,6 @@ tools env mount address holder =
       , arguments = [pathArgument "The page's path, such as /s/team/p/on-call/."]
       , required = ["path"]
       , writes = False
-      , destructive = False
       , tooLong = \n -> "The page's outline has " <> show n <> " characters, more than one answer holds: read the page's sections by their anchors with wiki_read_section."
       , run = \args -> withPage args $ \at sp pp ->
           findPage env address holder.user sp pp <&> \case
@@ -271,7 +266,6 @@ tools env mount address holder =
           ]
       , required = ["path", "section"]
       , writes = False
-      , destructive = False
       , tooLong = \n -> "The section has " <> show n <> " characters, more than one answer holds: read its own text (own true), then its subsections, whose anchors the outline (wiki_page_outline) gives."
       , run = \args -> withArguments ((,) <$> requiredArgument "section" (textArgument "section" args) <*> (fromMaybe False <$> boolArgument "own" args)) $ \(anchor, own) ->
           withPage args $ \at sp pp ->
@@ -285,7 +279,7 @@ tools env mount address holder =
       }
   , Tool
       { name = "wiki_write_page"
-      , description = "Replace a page's whole Markdown, as a save in the editor does: a new version in the page's history under the user's name, shown at once to whoever has the page open. base_version is the version you read (wiki_read_page, wiki_page_outline or wiki_read_section): if the page has been saved since, nothing is written, and you read it again, merge, and write with its new version. The title stays. Every write can be seen and undone in the page's history. The result is the page's new version."
+      , description = "Replace a page's whole Markdown, as a save in the editor does: a new version in the page's history under the user's name, shown at once to whoever has the page open. base_version is the version you read (wiki_read_page, wiki_page_outline or wiki_read_section): if the page has been saved since, nothing is written, and you read it again, merge, and write with its new version. The title stays. Look a construct of the wiki's Markdown up in wiki_markdown_reference before using it. Every write can be seen and undone in the page's history. The result is the page's new version."
       , arguments =
           [ pathArgument "The page's path, such as /s/team/p/on-call/."
           , ("markdown", Mcp.describedSchema "The page's whole new Markdown." (Mcp.SchemaString Nothing))
@@ -293,7 +287,6 @@ tools env mount address holder =
           ]
       , required = ["path", "markdown", "base_version"]
       , writes = True
-      , destructive = True
       , tooLong = const "The answer is too long."
       , run = \args -> withArguments ((,) <$> requiredArgument "markdown" (textArgument "markdown" args) <*> (requiredArgument "base_version" (textArgument "base_version" args) >>= versionArgument)) $ \(body, base) ->
           withPage args $ \at sp pp ->
@@ -309,7 +302,7 @@ tools env mount address holder =
       }
   , Tool
       { name = "wiki_create_page"
-      , description = "Create a page at a path where there is none, with its Markdown, as the browser's \"New page\" does: its first version under the user's name. The path's last slug is the new page's slug, and the page above it, named by the slugs before, has to exist; nothing is created on the way. Without a title, the title is made from the slug. A page already at the path is not written over. The result is the page's path and its version."
+      , description = "Create a page at a path where there is none, with its Markdown, as the browser's \"New page\" does: its first version under the user's name. The path's last slug is the new page's slug, and the page above it, named by the slugs before, has to exist; nothing is created on the way. Without a title, the title is made from the slug. A page already at the path is not written over. Look a construct of the wiki's Markdown up in wiki_markdown_reference before using it. The result is the page's path and its version."
       , arguments =
           [ pathArgument "The new page's path, such as /s/team/p/on-call/rota/: its space, the page above it, and its own slug (lowercase letters, digits and dashes)."
           , ("markdown", Mcp.describedSchema "The new page's Markdown." (Mcp.SchemaString Nothing))
@@ -317,7 +310,6 @@ tools env mount address holder =
           ]
       , required = ["path", "markdown"]
       , writes = True
-      , destructive = False
       , tooLong = const "The answer is too long."
       , run = \args -> withArguments ((,) <$> requiredArgument "markdown" (textArgument "markdown" args) <*> textArgument "title" args) $ \(body, title) ->
           withPage args $ \at sp pp ->
@@ -338,7 +330,6 @@ tools env mount address holder =
       , arguments = [("section", Mcp.describedSchema "The section's anchor (such as notes-and-boxes) or its heading." (Mcp.SchemaString Nothing))]
       , required = []
       , writes = False
-      , destructive = False
       , tooLong = \n -> "The section has " <> show n <> " characters, more than one answer holds."
       , run = \args -> withArguments (textArgument "section" args) (pure . reference)
       }

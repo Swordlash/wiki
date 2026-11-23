@@ -3060,8 +3060,9 @@ bearer_token_env_var = "WIKI_KEY"
 
 The server speaks the protocol's Streamable HTTP transport, in its current
 revision and in the older one with `initialize`, through the Hackage library
-`mcp-server`. Claude's apps in the browser and on the desktop connect from
-Anthropic's servers, with OAuth, which this server does not offer.
+`mcp-server`. It does not offer OAuth, which a connector of Claude's apps in
+the browser and on the desktop asks for; a client that sends a header, as
+the two above do, needs none.
 
 ##### From a shell, and for assistants
 

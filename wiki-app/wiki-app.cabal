@@ -496,13 +496,11 @@ test-suite wiki-app-browser-test
       haskell-halogen-core,
       haskell-halogen-jsbits,
       haskell-halogen-router,
+      hspec >= 2,
       hspec-halogen,
       wiki-api,
       wiki-app,
       wiki-core
-
-  if arch(wasm32)
-    build-depends: hspec >= 2
 
   if arch(wasm32) && !flag(interactive)
     ghc-options:

@@ -14,13 +14,14 @@ module Test.Browser.Editor (spec) where
 import Control.Monad.UUID (MonadUUID)
 import Data.IORef (IORef, modifyIORef', readIORef)
 import Data.Text qualified as T
-import Halogen.Activity.Control (advance, withTestClock)
+import Halogen.Activity.Control (TestClock, advance, withTestClock)
 import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (clickButton, slugs, startChanged, startWith)
 import Test.Browser.Text (clearBody, completing, editorSelection, editorText, markdown, mathIn, problemsMarked, selectText, setMarkdown, utf16Length)
+import Test.Hspec (around)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (..))
 import Wiki.App.Assistant (MonadAssistant)
@@ -30,7 +31,8 @@ import Wiki.App.Backend.Mem (runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..), insertUser)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
-import Wiki.App.View.Editor (previewDelay)
+import Wiki.App.View.Editor (draftDelay, previewDelay, savedNoticeTime)
+import Wiki.App.View.PagePicker qualified as PagePicker
 import Wiki.Core.Attachment (Attachment (name), FileName (..))
 import Wiki.Core.Draft (Draft (..))
 import Wiki.Core.Id (UserId (..))
@@ -72,10 +74,16 @@ js_choose_file :: JSText -> JSText -> JSText -> JSText -> IO ()
 js_choose_file a1 a2 a3 a4 = if inBrowser then wait =<< js_choose_filePromise a1 a2 a3 a4 else pure inert
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
--- The reads look once, with the program idle; a read of the preview after
--- typing first waits for the preview's pause ('waitQuiet').
-spec m = readsOnce Idle $ do
-  it "previews what is typed, with its formulas drawn, and saves it" $ runPage $ do
+-- The reads look once, with the program idle. Every example runs on the
+-- test's clock (core's 'withTestClock'): the editor's pauses (the
+-- preview's, the check's, the draft's, the "Saved" notice's, the link
+-- dialog's search) sleep until the example advances the clock past them,
+-- and a wait for the program to be quiet does not wait for a pause asleep
+-- on it. So an example sits out no pause it does not read the work of,
+-- and reads the preview, the draft or a search's hits once, after the
+-- pause it advances ('previewNow', 'draftNow', 'pickerNow').
+spec m = readsOnce Idle $ around withTestClock $ do
+  it "previews what is typed, with its formulas drawn, and saves it" $ \clock -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     find ui ".editor-heading" >>= (`shouldHaveText` "Editing Hello, world")
     sideBySide ui
@@ -83,14 +91,15 @@ spec m = readsOnce Idle $ do
     clearBody ui
     typeText text "Euler: $e^{i\\pi} + 1 = 0$"
     -- The preview follows after its pause.
-    waitQuiet
+    previewNow clock
     find ui ".editor-preview .page-body h1" >>= (`shouldHaveText` "Hello, world")
     formula <- find ui ".editor-preview .wiki-math-inline .katex"
     findIn formula "annotation" >>= (`shouldHaveText` "e^{i\\pi} + 1 = 0")
     -- More typing redraws the preview, but not a formula it has not touched.
     island <- find ui ".editor-preview .wiki-math-inline"
     typeText text "\n\nAnd more."
-    eventually $ find ui ".editor-preview .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "And more.")
+    previewNow clock
+    find ui ".editor-preview .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "And more.")
     find ui ".editor-preview .wiki-math-inline" >>= (`shouldBeSameElement` island)
     find ui ".editor-save-close" >>= click
     find ui ".page-view .page-body h1" >>= (`shouldHaveText` "Hello, world")
@@ -98,7 +107,7 @@ spec m = readsOnce Idle $ do
     saved <- readPage wiki ["blog"] ["hello-world"]
     saved.body `shouldBe` "# Hello, world\n\nEuler: $e^{i\\pi} + 1 = 0$\n\nAnd more."
 
-  it "saves with Ctrl+S and stays, saying Saved for a while, and indents with Tab" $ runPage $ do
+  it "saves with Ctrl+S and stays, saying Saved for a while, and indents with Tab" $ \clock -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     notice <- find ui ".editor-saved-notice"
@@ -129,7 +138,8 @@ spec m = readsOnce Idle $ do
     press "Enter"
     typeText text "more"
     -- The notice goes by itself.
-    eventuallyWithin 6000 (notice `shouldHaveText` "")
+    perform (advance clock savedNoticeTime)
+    notice `shouldHaveText` ""
     -- A second save is made against the first: no conflict.
     press "Control+s"
     notice `shouldHaveText` "Saved"
@@ -138,7 +148,7 @@ spec m = readsOnce Idle $ do
     again.body `shouldBe` "# Hello, world\n\n- a list\n  - nested\n- more"
     again.updatedAt `shouldSatisfy` (> saved.updatedAt)
 
-  it "saves, saves again, and shows the page after Save and close" $ runPage $ do
+  it "saves, saves again, and shows the page after Save and close" $ \_ -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     clearBody ui
@@ -153,7 +163,7 @@ spec m = readsOnce Idle $ do
     find ui ".page-view .page-body p" >>= (`shouldHaveText` "One. Two. Three.")
     length <$> findAll ui ".error-conflict" `shouldReturn` 0
 
-  it "writes a new page from the space's New page, made from its title first" $ runPage $ do
+  it "writes a new page from the space's New page, made from its title first" $ \_ -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") (SpacePages (slugs ["blog"]))
     find ui ".space-view .actions a[href$='#/s/blog/new-page/']" >>= click
     find ui ".new-page-view h1" >>= (`shouldHaveText` "New page in Blog")
@@ -177,7 +187,7 @@ spec m = readsOnce Idle $ do
     created <- readPage wiki ["blog"] ["third-post"]
     created.body `shouldBe` "# Third post\n\nSome **news**."
 
-  it "writes a new page under another from its New subpage" $ runPage $ do
+  it "writes a new page under another from its New subpage" $ \_ -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") (Page (slugs ["blog"]) (slugs ["hello-world"]))
     find ui ".page-view .actions a[href$='#/s/blog/new-page/hello-world/']" >>= click
     find ui ".new-page-view h1" >>= (`shouldHaveText` "New page under Hello, world")
@@ -190,7 +200,7 @@ spec m = readsOnce Idle $ do
     created.title `shouldBe` "Follow-up"
     created.body `shouldBe` "# Follow-up\n\n"
 
-  it "attaches a file to a new page before anything is saved" $ runPage $ do
+  it "attaches a file to a new page before anything is saved" $ \_ -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") (NewPage (slugs ["blog"]) Nothing)
     find ui ".new-page-title" >>= (`typeText` "With a picture")
     find ui ".new-page-view button.primary" >>= click
@@ -208,7 +218,7 @@ spec m = readsOnce Idle $ do
     _ <- find ui ".page-view .page-body img[alt='dot.png']"
     pass
 
-  it "asks on Cancel with changes whether to keep the draft, and keeps it or not as told" $ runPage $ do
+  it "asks on Cancel with changes whether to keep the draft, and keeps it or not as told" $ \_ -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     clearBody ui
@@ -241,7 +251,7 @@ spec m = readsOnce Idle $ do
 
   -- Issue #193: "Draft saved" beside the buttons pushed them along as it
   -- appeared, so that a click meant for Save could land on Cancel.
-  it "shows Draft saved and Saved under the top bar, without moving the buttons" $ runPage $ do
+  it "shows Draft saved and Saved under the top bar, without moving the buttons" $ \clock -> runPage $ do
     let buttons = [".editor-save", ".editor-save-close", ".editor-cancel"]
         -- A notice's top edge is at or below the bottom of the editor's
         -- top, so that the notice covers none of the top's controls.
@@ -258,7 +268,8 @@ spec m = readsOnce Idle $ do
     -- the boxes are read after the typing, before the draft is saved.
     find ui ".editor-draft-status" >>= (`shouldHaveText` "")
     before <- traverse rectOf buttons
-    eventuallyWithin 10000 $ find ui ".editor-draft-status" >>= (`shouldHaveText` "Draft saved")
+    draftNow clock
+    find ui ".editor-draft-status" >>= (`shouldHaveText` "Draft saved")
     traverse rectOf buttons `shouldReturn` before
     belowTheTop ".editor-draft-status"
     -- "Saved" shows in the same place. Saving drops the draft, which turns
@@ -270,14 +281,14 @@ spec m = readsOnce Idle $ do
 
   -- Issue #339: with the search's panel open, "Draft saved" hung over the
   -- panel's Previous, Next and Close buttons.
-  it "shows Draft saved clear of the open search's panel and its buttons" $ runPage $ do
+  it "shows Draft saved clear of the open search's panel and its buttons" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     typeText text " More."
     press "Control+f"
     _ <- find ui ".editor-search"
     -- The draft is saved after the typing's pause.
-    waitQuiet
+    draftNow clock
     find ui ".editor-draft-status" >>= (`shouldHaveText` "Draft saved")
     -- The notice's box and the panel's, left, top, right and bottom, share
     -- no point inside both.
@@ -290,13 +301,13 @@ spec m = readsOnce Idle $ do
     for_ [".editor-search-previous", ".editor-search-next", ".editor-search-close"] $ \button ->
       onTop button `shouldReturn` ""
 
-  it "goes back to the page on Cancel when nothing has changed" $ runPage $ do
+  it "goes back to the page on Cancel when nothing has changed" $ \_ -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     find ui ".editor-cancel" >>= click
     find ui ".page-view .page-body h1" >>= (`shouldHaveText` "Hello, world")
     length <$> findAll ui ".leave-confirm" `shouldReturn` 0
 
-  it "asks before leaving unsaved changes, and stays or leaves as told" $ runPage $ do
+  it "asks before leaving unsaved changes, and stays or leaves as told" $ \_ -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     clearBody ui
@@ -317,7 +328,7 @@ spec m = readsOnce Idle $ do
     unchanged <- readPage wiki ["blog"] ["hello-world"]
     unchanged.body `shouldSatisfy` T.isPrefixOf "# Hello, world"
 
-  it "opens the conflict view on a save over someone else's, keeping the text as a draft, and keeps mine" $ runPage $ do
+  it "opens the conflict view on a save over someone else's, keeping the text as a draft, and keeps mine" $ \_ -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     page <- someoneElseSaves wiki
@@ -342,7 +353,7 @@ spec m = readsOnce Idle $ do
     saved.body `shouldBe` "# Hello, world\n\nMy words."
     draftOf wiki page `shouldReturn` Nothing
 
-  it "takes theirs in place of the author's text when told to" $ runPage $ do
+  it "takes theirs in place of the author's text when told to" $ \_ -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     _ <- someoneElseSaves wiki
@@ -366,7 +377,7 @@ spec m = readsOnce Idle $ do
     find ui ".editor-saved-notice" >>= (`shouldHaveText` "Saved")
     length <$> findAll ui ".editor-conflict" `shouldReturn` 0
 
-  it "merges by hand: the author's text stays, their changes beside it, and the save is over theirs" $ runPage $ do
+  it "merges by hand: the author's text stays, their changes beside it, and the save is over theirs" $ \clock -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     page <- someoneElseSaves wiki
@@ -383,7 +394,8 @@ spec m = readsOnce Idle $ do
     press "Control+End"
     typeText text " And theirs: someone else's words."
     -- The draft follows, as an edit of their version.
-    eventuallyWithin 8000 $ (fmap (\d -> d.body) <$> draftOf wiki page) `shouldReturn` Just "# Hello, world\n\nMy words. And theirs: someone else's words."
+    draftNow clock
+    (fmap (\d -> d.body) <$> draftOf wiki page) `shouldReturn` Just "# Hello, world\n\nMy words. And theirs: someone else's words."
     find ui ".editor-save" >>= click
     find ui ".editor-saved-notice" >>= (`shouldHaveText` "Saved")
     length <$> findAll ui ".editor-conflict-pane" `shouldReturn` 0
@@ -399,14 +411,14 @@ spec m = readsOnce Idle $ do
   -- turn (the driver waits for it), so a render that comes between a key
   -- and its input, the fault of e9055578, is not this example's: the
   -- editor on the in-memory DOM puts it in that order ("Test.EditorDom").
-  it "ends in the text typed when the preview's turns come between the keys" $ withTestClock $ \clock -> runPage $ do
+  it "ends in the text typed when the preview's turns come between the keys" $ \clock -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
     original <- markdown ui
     focus text
     press "Control+End"
-    let turn = unsafeIOToPageM (advance clock previewDelay)
+    let turn = perform (advance clock previewDelay)
         pieces = [" w" <> show i | i <- [1 .. 12 :: Int]]
         long = T.replicate 3 " the quick brown fox jumps over the lazy dog"
     -- The clock holds the preview: a key, and the preview shows the text
@@ -415,19 +427,19 @@ spec m = readsOnce Idle $ do
     press "Z"
     previewText >>= (`shouldSatisfy` (not . T.isInfixOf "Z"))
     turn
-    eventually $ previewText >>= (`shouldSatisfy` T.isInfixOf "Z")
+    previewText >>= (`shouldSatisfy` T.isInfixOf "Z")
     for_ pieces $ \word -> for_ (T.unpack word) $ \c -> press (T.singleton c) >> turn
     traverse_ (press . T.singleton) (T.unpack long)
     turn
     let expected = original <> "Z" <> mconcat pieces <> long
     markdown ui `shouldReturn` expected
-    eventually $ previewText >>= (`shouldSatisfy` T.isInfixOf "w12 the quick")
+    previewText >>= (`shouldSatisfy` T.isInfixOf "w12 the quick")
     find ui ".editor-save-close" >>= click
     find ui ".page-view .page-body h1" >>= (`shouldHaveText` "Hello, world")
     saved <- readPage wiki ["blog"] ["hello-world"]
     saved.body `shouldBe` expected
 
-  it "attaches a dropped image and embeds it at the cursor" $ runPage $ do
+  it "attaches a dropped image and embeds it at the cursor" $ \clock -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
@@ -436,7 +448,7 @@ spec m = readsOnce Idle $ do
     perform (dropFile ".editor-cm .cm-content" "dot.png" "image/png" dotPng)
     eventually $ markdown ui `shouldReturn` "# Hello, world\n\nLook: ![dot.png](attachment:dot.png)"
     -- The preview follows after its pause.
-    waitQuiet
+    previewNow clock
     image <- find ui ".editor-preview .page-body img[alt='dot.png']"
     getAttribute image "src" >>= (`shouldSatisfy` maybe False (T.isPrefixOf "blob:"))
     find ui ".editor-attachments li a" >>= (`shouldHaveText` "dot.png")
@@ -445,7 +457,7 @@ spec m = readsOnce Idle $ do
     saved <- readPage wiki ["blog"] ["hello-world"]
     map (\a -> a.name.text) saved.attachments `shouldBe` ["dot.png"]
 
-  it "attaches a pasted image at the cursor, and a file pasted into the textarea, putting in nothing else" $ runPage $ do
+  it "attaches a pasted image at the cursor, and a file pasted into the textarea, putting in nothing else" $ \clock -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
@@ -458,7 +470,7 @@ spec m = readsOnce Idle $ do
     settle
     eventually $ markdown ui `shouldReturn` "# Hello, world\n\nLook: ![dot.png](attachment:dot.png)"
     -- The preview follows after its pause.
-    waitQuiet
+    previewNow clock
     image <- find ui ".editor-preview .page-body img[alt='dot.png']"
     getAttribute image "src" >>= (`shouldSatisfy` maybe False (T.isPrefixOf "blob:"))
     find ui ".editor-attachments li a" >>= (`shouldHaveText` "dot.png")
@@ -475,7 +487,7 @@ spec m = readsOnce Idle $ do
     map (\a -> a.name.text) saved.attachments `shouldBe` ["dot.png", "notes.txt"]
     saved.body `shouldBe` "# Hello, world\n\nLook: ![dot.png](attachment:dot.png)[notes.txt](attachment:notes.txt)"
 
-  it "puts pasted text in unchanged but for its line endings, attaching nothing" $ runPage $ do
+  it "puts pasted text in unchanged but for its line endings, attaching nothing" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
@@ -485,10 +497,10 @@ spec m = readsOnce Idle $ do
     _ <- unsafeIOToPageM (pasteText ".editor-cm .cm-content" "*Hello*, <b>world</b>\r\n\n- [x] one\r\n")
     settle
     eventually $ markdown ui `shouldReturn` "# Hello, world\n\nSay: *Hello*, <b>world</b>\n\n- [x] one\n"
-    previewHas ui "b" "world"
+    previewHas clock ui "b" "world"
     length <$> findAll ui ".editor-attachments li" `shouldReturn` attached
 
-  it "attaches a chosen file as a link, its name with spaces in angle brackets" $ runPage $ do
+  it "attaches a chosen file as a link, its name with spaces in angle brackets" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     _ <- editorText ui
@@ -496,11 +508,11 @@ spec m = readsOnce Idle $ do
     perform (chooseFile ".editor-attach input" "meeting notes.txt" "text/plain" "aGVsbG8K")
     eventually $ markdown ui `shouldReturn` "# Hello, world\n\n[meeting notes.txt](<attachment:meeting notes.txt>)"
     -- The preview follows after its pause.
-    waitQuiet
+    previewNow clock
     download <- find ui ".editor-preview .page-body a[download='meeting notes.txt']"
     getAttribute download "href" >>= (`shouldSatisfy` maybe False (T.isPrefixOf "blob:"))
 
-  it "makes a selected word bold from the toolbar, in the Markdown and the preview" $ runPage $ do
+  it "makes a selected word bold from the toolbar, in the Markdown and the preview" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
@@ -511,12 +523,12 @@ spec m = readsOnce Idle $ do
     find ui ".editor-toolbar button[aria-label='Bold']" >>= click
     markdown ui `shouldReturn` "# Hello, world\n\nSome **words**"
     editorSelection ui `shouldReturn` (23, 28)
-    previewHas ui "strong" "words"
+    previewHas clock ui "strong" "words"
     -- Again, and the word is plain again.
     find ui ".editor-toolbar button[aria-label='Bold']" >>= click
     markdown ui `shouldReturn` "# Hello, world\n\nSome words"
 
-  it "makes every line selected a list item from the toolbar, and another list from a shortcut" $ runPage $ do
+  it "makes every line selected a list item from the toolbar, and another list from a shortcut" $ \_ -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     clearBody ui
@@ -537,7 +549,7 @@ spec m = readsOnce Idle $ do
   -- cursor after them. What Enter writes is Wiki.Core.Markdown.Enter's,
   -- tested natively; these show the keymap asking it and making its
   -- answer, in the master.
-  it "continues a list or a box on Enter, goes up a level and out on an empty line, and breaks the line alone on Shift+Enter" $ runPage $ do
+  it "continues a list or a box on Enter, goes up a level and out on an empty line, and breaks the line alone on Shift+Enter" $ \_ -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     _ <- editorText ui
     for_ enterCases $ \(name, before, keys, after) -> do
@@ -559,7 +571,7 @@ spec m = readsOnce Idle $ do
   -- list (Codex's case on #292): the list's line is HTML, and Enter a
   -- line break alone. Then a list of two hundred items, longer than the
   -- limit: each item starts a text Enter may read, so it goes on.
-  it "reads the text from where the last check found a block starting, past a long paragraph, over HTML that reads on, and in a long list" $ runPage $ do
+  it "reads the text from where the last check found a block starting, past a long paragraph, over HTML that reads on, and in a long list" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     _ <- editorText ui
     let long = T.intercalate " " (replicate 500 "word")
@@ -567,7 +579,9 @@ spec m = readsOnce Idle $ do
         html = titleLines <> long <> "\n\n[[!nothing]]\n\n[[!nothing]]\n\n- a\n<a>\n# Heading\n- "
         enterAtEnd text count = do
           setMarkdown ui text
-          eventually $ length <$> problemsMarked ui `shouldReturn` count
+          -- The check runs after the preview's pause.
+          previewNow clock
+          length <$> problemsMarked ui `shouldReturn` count
           selectText ui (utf16Length text) (utf16Length text)
           press "Enter"
     enterAtEnd listed 1
@@ -578,7 +592,7 @@ spec m = readsOnce Idle $ do
     enterAtEnd items 1
     markdown ui `shouldReturn` items <> "\n- "
 
-  it "leaves Ctrl+B's placeholder selected, for the typing to replace" $ runPage $ do
+  it "leaves Ctrl+B's placeholder selected, for the typing to replace" $ \_ -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     clearBody ui
@@ -589,7 +603,7 @@ spec m = readsOnce Idle $ do
     typeText text "there"
     markdown ui `shouldReturn` "# Hello, world\n\nHi **there**"
 
-  it "keeps Ctrl+K from the browser, and puts in a link the browser's undo takes back" $ runPage $ do
+  it "keeps Ctrl+K from the browser, and puts in a link the browser's undo takes back" $ \_ -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     _ <- editorText ui
     clearBody ui
@@ -604,7 +618,7 @@ spec m = readsOnce Idle $ do
     press "x"
     unsafeIOToPageM js_last_key_prevented `shouldReturn` False
 
-  it "links a page found in the \"Link to a page\" dialog, with its title as the text" $ runPage $ do
+  it "links a page found in the \"Link to a page\" dialog, with its title as the text" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
@@ -612,7 +626,8 @@ spec m = readsOnce Idle $ do
     typeText text "See "
     find ui ".editor-toolbar button[aria-label='Link to a page']" >>= click
     find ui ".link-dialog .search-input" >>= (`typeText` "diagrams")
-    eventually $ find ui ".link-dialog .search-hit .search-hit-title" >>= (`shouldHaveText` "Diagrams")
+    pickerNow clock
+    find ui ".link-dialog .search-hit .search-hit-title" >>= (`shouldHaveText` "Diagrams")
     -- Enter with no hit chosen picks the first.
     press "Enter"
     eventually $ length <$> findAll ui ".link-dialog" `shouldReturn` 0
@@ -622,11 +637,11 @@ spec m = readsOnce Idle $ do
     markdown ui `shouldReturn` "# Hello, world\n\nSee [Diagrams](/s/docs/p/markdown-guide/diagrams/)."
     -- The address leads to the page.
     -- The preview follows after its pause.
-    waitQuiet
+    previewNow clock
     _ <- find ui ".editor-preview .page-body a[href$='#/s/docs/p/markdown-guide/diagrams/']"
     pure ()
 
-  it "links the selection to a section of a page, from Ctrl+Shift+K" $ runPage $ do
+  it "links the selection to a section of a page, from Ctrl+Shift+K" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     clearBody ui
@@ -636,9 +651,10 @@ spec m = readsOnce Idle $ do
     field <- find ui ".link-dialog .search-input"
     find ui ".link-dialog-section-toggle input" >>= click
     typeText field "mathematics"
-    hit <- eventually $ do
+    pickerNow clock
+    hit <- do
       hits <- findAll ui ".link-dialog a.search-hit[href$='#/s/docs/p/markdown-guide/mathematics/']"
-      maybe (expectationFailure "no hit for Mathematics yet") pure (head hits)
+      maybe (expectationFailure "no hit for Mathematics") pure (head hits)
     click hit
     -- The page's sections, its title line not among them.
     find ui ".link-dialog-page" >>= (`shouldHaveText` "Sections of Mathematics")
@@ -652,13 +668,14 @@ spec m = readsOnce Idle $ do
     eventually $ length <$> findAll ui ".link-dialog" `shouldReturn` 0
     markdown ui `shouldReturn` "# Hello, world\n\nthe [macros](/s/docs/p/markdown-guide/mathematics/#macros)"
 
-  it "writes nothing when the \"Link to a page\" dialog is closed" $ runPage $ do
+  it "writes nothing when the \"Link to a page\" dialog is closed" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     _ <- editorText ui
     clearBody ui
     find ui ".editor-toolbar button[aria-label='Link to a page']" >>= click
     find ui ".link-dialog .search-input" >>= (`typeText` "diagrams")
-    eventually $ find ui ".link-dialog .search-hit .search-hit-title" >>= (`shouldHaveText` "Diagrams")
+    pickerNow clock
+    find ui ".link-dialog .search-hit .search-hit-title" >>= (`shouldHaveText` "Diagrams")
     -- The first Escape may only clear the search input's text, as the
     -- browser does in a search field.
     press "Escape"
@@ -668,7 +685,7 @@ spec m = readsOnce Idle $ do
     -- The header's search box is still the header's: its list is shut.
     length <$> findAll ui ".wiki-search .search-results" `shouldReturn` 0
 
-  it "wraps the selection in an element from the HTML menu" $ runPage $ do
+  it "wraps the selection in an element from the HTML menu" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
@@ -679,9 +696,9 @@ spec m = readsOnce Idle $ do
     clickButton ui ".toolbar-menu button" "Mark<mark>"
     markdown ui `shouldReturn` "# Hello, world\n\nLook <mark>here</mark>"
     length <$> findAll ui ".toolbar-menu" `shouldReturn` 0
-    previewHas ui "mark" "here"
+    previewHas clock ui "mark" "here"
 
-  it "makes the lines selected a box from the Box menu, numbered in the preview, and changes its kind" $ runPage $ do
+  it "makes the lines selected a box from the Box menu, numbered in the preview, and changes its kind" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
@@ -696,14 +713,14 @@ spec m = readsOnce Idle $ do
     clickButton ui ".box-menu button" "Tip[!TIP]"
     markdown ui `shouldReturn` "# Hello, world\n\n> [!TIP]\n> Read this first"
     length <$> findAll ui ".toolbar-menu" `shouldReturn` 0
-    previewHas ui ".alert-tip .alert-title" "Tip 1"
+    previewHas clock ui ".alert-tip .alert-title" "Tip 1"
     -- On the marker's line, another kind replaces the box's.
     find ui ".editor-toolbar button[aria-label='Box']" >>= click
     clickButton ui ".box-menu button" "Exercise[!EXERCISE]"
     markdown ui `shouldReturn` "# Hello, world\n\n> [!EXERCISE]\n> Read this first"
-    previewHas ui ".alert-exercise .alert-title" "Exercise 1"
+    previewHas clock ui ".alert-exercise .alert-title" "Exercise 1"
 
-  it "hides the selected words as an inline spoiler from the toolbar, and the selected lines as a block spoiler" $ runPage $ do
+  it "hides the selected words as an inline spoiler from the toolbar, and the selected lines as a block spoiler" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
@@ -712,7 +729,7 @@ spec m = readsOnce Idle $ do
     press "Control+Shift+ArrowLeft"
     find ui ".editor-toolbar button[aria-label='Inline spoiler']" >>= click
     markdown ui `shouldReturn` "# Hello, world\n\nSome ||words||"
-    previewHas ui "span.spoiler" "words"
+    previewHas clock ui "span.spoiler" "words"
     -- The line, from its start, in a block spoiler, its name selected to
     -- be typed over.
     press "End"
@@ -720,22 +737,22 @@ spec m = readsOnce Idle $ do
     find ui ".editor-toolbar button[aria-label='Block spoiler']" >>= click
     markdown ui `shouldReturn` "# Hello, world\n\n[[!spoiler]]{name}(Description)\nSome ||words||\n[[/spoiler]]"
     editorSelection ui `shouldReturn` (29, 33)
-    eventually $ find ui ".editor-preview details.spoiler > summary" >>= (`shouldHaveText` "Description")
+    previewHas clock ui "details.spoiler > summary" "Description"
 
-  it "shows a spoiler that is not closed in red in the preview as it is typed, and as a spoiler once it is" $ runPage $ do
+  it "shows a spoiler that is not closed in red in the preview as it is typed, and as a spoiler once it is" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
     clearBody ui
     typeText text "[[!spoiler]]{answer}(The answer)\nForty-two."
-    previewHas ui ".spoiler-error .spoiler-error-reason" "Spoiler “answer” is not closed: add [[/spoiler]]{answer}"
-    previewHas ui ".spoiler-unclosed p" "Forty-two."
+    previewHas clock ui ".spoiler-error .spoiler-error-reason" "Spoiler “answer” is not closed: add [[/spoiler]]{answer}"
+    previewHas clock ui ".spoiler-unclosed p" "Forty-two."
     computedStyle ".editor-preview .spoiler-unclosed" "color" >>= (`shouldNotBe` "")
     typeText text "\n[[/spoiler]]{answer}"
-    eventually $ find ui ".editor-preview details.spoiler[data-spoiler='answer'] > summary" >>= (`shouldHaveText` "The answer")
+    previewHas clock ui "details.spoiler[data-spoiler='answer'] > summary" "The answer"
     length <$> findAll ui ".editor-preview .spoiler-error" `shouldReturn` 0
 
-  it "defines a new kind of box in a dialog, without leaving the page, writes a box of it, and lists it at once" $ runPage $ do
+  it "defines a new kind of box in a dialog, without leaving the page, writes a box of it, and lists it at once" $ \_ -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-admin") helloEditor
     find ui ".editor-toolbar button[aria-label='Box']" >>= click
     find ui ".box-menu .box-menu-new" >>= (`shouldHaveText` "New kind…")
@@ -763,13 +780,13 @@ spec m = readsOnce Idle $ do
     stored <- unsafeIOToPageM (runMemWiki wiki (either (panic . show) identity <$> getPage blog.id (slugs ["hello-world"])))
     stored.body `shouldSatisfy` (not . T.isInfixOf "[!LEMMA]")
 
-  it "offers no new kind of box to someone who is not an administrator" $ runPage $ do
+  it "offers no new kind of box to someone who is not an administrator" $ \_ -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     find ui ".editor-toolbar button[aria-label='Box']" >>= click
     _ <- find ui ".box-menu button[data-kind='TIP']"
     length <$> findAll ui ".box-menu .box-menu-new" `shouldReturn` 0
 
-  it "edits the page's block of macros and the space's from the Math macros panel" $ runPage $ do
+  it "edits the page's block of macros and the space's from the Math macros panel" $ \clock -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
@@ -790,7 +807,8 @@ spec m = readsOnce Idle $ do
     find ui ".editor-macros-page button[type=submit]" >>= click
     markdown ui `shouldReturn` "# Hello, world\n\n```math\n\\newcommand{\\half}{\\frac{1}{2}}\n```\n\nHalf: $\\half + \\twice$"
     -- The block shows nothing in the preview; the formula has the macro.
-    eventually (length <$> findAll ui ".editor-preview .wiki-math-display" `shouldReturn` 0)
+    previewNow clock
+    length <$> findAll ui ".editor-preview .wiki-math-display" `shouldReturn` 0
     -- The space's, which an editor of the whole space saves at once.
     space <- find ui ".editor-macros-space .macros-source"
     typeText space "\\newcommand{\\twice}{2}"
@@ -803,7 +821,7 @@ spec m = readsOnce Idle $ do
     stored <- unsafeIOToPageM (runMemWiki wiki (either (panic . show) identity <$> getPage blog.id (slugs ["hello-world"])))
     stored.body `shouldSatisfy` (not . T.isInfixOf "\\half")
 
-  it "colours a word from the palette, changes its colour, highlights it and takes the colour away" $ runPage $ do
+  it "colours a word from the palette, changes its colour, highlights it and takes the colour away" $ \clock -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     sideBySide ui
     text <- editorText ui
@@ -817,7 +835,7 @@ spec m = readsOnce Idle $ do
     markdown ui `shouldReturn` "# Hello, world\n\nLook <span class=\"c-red\">here</span>"
     editorSelection ui `shouldReturn` (41, 45)
     length <$> findAll ui ".toolbar-menu" `shouldReturn` 0
-    previewHas ui "span.c-red" "here"
+    previewHas clock ui "span.c-red" "here"
     -- The style sheet draws the class, in a colour of its own.
     plain <- computedColour ".editor-preview .page-body p"
     red <- computedColour ".editor-preview .page-body span.c-red"
@@ -826,16 +844,16 @@ spec m = readsOnce Idle $ do
     -- Another colour replaces the first, rather than going inside it.
     pick "Blue text"
     markdown ui `shouldReturn` "# Hello, world\n\nLook <span class=\"c-blue\">here</span>"
-    previewHas ui "span.c-blue" "here"
+    previewHas clock ui "span.c-blue" "here"
     pick "Yellow highlight"
     markdown ui `shouldReturn` "# Hello, world\n\nLook <span class=\"c-blue\"><mark class=\"h-yellow\">here</mark></span>"
     pick "No text colour"
     markdown ui `shouldReturn` "# Hello, world\n\nLook <mark class=\"h-yellow\">here</mark>"
-    previewHas ui "mark.h-yellow" "here"
+    previewHas clock ui "mark.h-yellow" "here"
     pick "No highlight"
     markdown ui `shouldReturn` "# Hello, world\n\nLook here"
 
-  it "shows the Markdown as it will look while it is typed, its markers dimmed" $ runPage $ do
+  it "shows the Markdown as it will look while it is typed, its markers dimmed" $ \_ -> runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     clearBody ui
@@ -868,7 +886,7 @@ spec m = readsOnce Idle $ do
     find ui ".editor-save" >>= click
     eventually $ (\p -> p.body) <$> readPage wiki ["blog"] ["hello-world"] >>= (`shouldBe` typed)
 
-  it "takes back a toolbar command as one step of the undo, and the typing after it as another" $ runPage $ do
+  it "takes back a toolbar command as one step of the undo, and the typing after it as another" $ \_ -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     text <- editorText ui
     clearBody ui
@@ -886,7 +904,7 @@ spec m = readsOnce Idle $ do
     press "Control+z"
     markdown ui `shouldReturn` "# Hello, world\n\nSome words"
 
-  it "shows the preview on its own, and comes back to the Markdown as it was left" $ runPage $ do
+  it "shows the preview on its own, and comes back to the Markdown as it was left" $ \_ -> runPage $ do
     (ui, _) <- startWith m (Just "user-admin") (EditPage (slugs ["docs"]) (slugs ["markdown-guide"]))
     text <- editorText ui
     original <- markdown ui
@@ -919,7 +937,7 @@ spec m = readsOnce Idle $ do
     press "X"
     markdown ui `shouldReturn` (T.take at typed <> "X" <> T.drop at typed)
 
-  it "shows both panes with the side by side preview, and remembers it" $ runPage $ do
+  it "shows both panes with the side by side preview, and remembers it" $ \_ -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     length <$> findAll ui ".editor-preview" `shouldReturn` 0
     sideBySide ui
@@ -932,7 +950,7 @@ spec m = readsOnce Idle $ do
     find ui ".editor-side-by-side" >>= \button -> getAttribute button "aria-pressed" `shouldReturn` Just "true"
     find ui ".editor-preview" >>= shouldBeVisible
 
-  it "finds TeX math in the text where the wiki's own parser does" $ runPage $ do
+  it "finds TeX math in the text where the wiki's own parser does" $ \_ -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     -- The cases of commonmark-extensions' math and of TexMath: delimiters
     -- that open and close, a blank or a digit that stops them, braces, a
@@ -965,7 +983,7 @@ spec m = readsOnce Idle $ do
       found <- map stripDelimiters <$> mathIn ui
       (source, found) `shouldBe` (source, wikiMath source)
 
-  it "underlines inline math left open on its line, from its opening to the line's end, and nothing else" $ runPage $ do
+  it "underlines inline math left open on its line, from its opening to the line's end, and nothing else" $ \_ -> runPage $ do
     (ui, _) <- startWith m (Just "user-editor") helloEditor
     let underlined = T.concat <$> (findAll ui ".cm-wiki-unclosed-math" >>= traverse textContent)
     -- Open: a $ closed by nothing, a \( and a $ closed on the next line
@@ -982,7 +1000,7 @@ spec m = readsOnce Idle $ do
     setMarkdown ui "# Cases\n\nCompute $2x + y here\n\nThen $2 + x\n\nSee [this](other \"Amount: $USD\") and $3.50 or $5 each."
     eventually $ underlined `shouldReturn` "$2x + y here$2 + x"
 
-  it "completes a mention with the users whose names start with what is typed, but not in code, a link or math" $ runPage $ do
+  it "completes a mention with the users whose names start with what is typed, but not in code, a link or math" $ \_ -> runPage $ do
     ui <- startChanged m withMentionable (Just "user-editor") helloEditor
     text <- editorText ui
     clearBody ui
@@ -1109,12 +1127,30 @@ sideBySide ui = do
   find ui ".editor-side-by-side" >>= \b -> getAttribute b "aria-pressed" `shouldReturn` Just "true"
   find ui ".editor-preview" >>= shouldBeVisible
 
--- | Wait for the preview to have an element with this text, finding it
--- again on each try: until the preview follows the draft, an element found
--- may be one that is going away.
-previewHas :: Mounted s q o m -> Text -> Text -> PageM s ()
-previewHas ui selector expected =
-  eventually $ find ui (".editor-preview .page-body " <> selector) >>= textContent >>= (`shouldBe` expected)
+-- | The preview, once it has followed the text, has an element with this
+-- text: the clock is advanced past the preview's pause first.
+previewHas :: TestClock -> Mounted s q o m -> Text -> Text -> PageM s ()
+previewHas clock ui selector expected = do
+  previewNow clock
+  find ui (".editor-preview .page-body " <> selector) >>= (`shouldHaveText` expected)
+
+-- | Advance the test's clock past the preview's pause, and the check's,
+-- which is as long, and wait for what they woke: the preview has followed
+-- the text, and the check, which runs on a worker, has come back.
+previewNow :: TestClock -> PageM s ()
+previewNow clock = perform (advance clock previewDelay) >> waitQuiet
+
+-- | Advance the test's clock past the draft's pause, and wait for the
+-- draft to be written. The pause starts again if the text changed while
+-- it ran, as it does when its first key came before the last, so two of
+-- them are advanced.
+draftNow :: TestClock -> PageM s ()
+draftNow clock = perform (advance clock (2 * draftDelay)) >> waitQuiet
+
+-- | Advance the test's clock past the link dialog's pause in the typing,
+-- and wait for its search to come back.
+pickerNow :: TestClock -> PageM s ()
+pickerNow clock = perform (advance clock PagePicker.pause) >> waitQuiet
 
 -- | A property the style sheet gives the first element a selector finds.
 computedStyle :: Text -> Text -> PageM s Text

@@ -41,8 +41,9 @@ spec = describe "Wiki.App.View.Users, mounted on the in-memory DOM" $
         settle view
         -- Typed, and typed again before the pause is over: the pause
         -- starts again from the last keystroke. The pause counts as the
-        -- program waiting, so a wait for the program to be quiet waits
-        -- for it.
+        -- program waiting, and as asleep on the test's clock, so a wait
+        -- for the program to be quiet does not wait for it: the test
+        -- advances the clock.
         typeInto view ".users-search-input" "ad"
         waitActivity view (\a -> a.running == 0)
         (\a -> a.waiting) <$> activity view `shouldReturn` 1

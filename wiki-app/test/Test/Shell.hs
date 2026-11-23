@@ -35,7 +35,7 @@ as :: Maybe Text -> MemState
 as who = (demoState demoNow) {current = UserId <$> who}
 
 -- | The state with these users' personal spaces turned on, as each would
--- turn theirs on from the account menu.
+-- turn theirs on in their settings.
 withPersonal :: [Text] -> MemState -> MemState
 withPersonal users st0 = (foldl' turnOn st0 users) {current = st0.current}
   where

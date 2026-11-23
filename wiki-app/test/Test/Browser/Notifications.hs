@@ -2,8 +2,8 @@
 -- docs/PLAN.md). Over the demo: a mention in a comment is a link to whoever
 -- it names; the user mentioned, switched to, finds it under the header's
 -- bell, which counts it, lists it with a link to its page and marks it
--- read; a page's and a space's "Watch" button chooses; the account panel's
--- notifications, mail disabled in a demo. Over the backend over HTTP with a
+-- read; a page's and a space's "Watch" button chooses; the notification
+-- settings, mail disabled in a demo. Over the backend over HTTP with a
 -- server in fetch's place: a notification told over the live channel
 -- counted at once, with no page subscribed to.
 module Test.Browser.Notifications (spec) where

@@ -73,6 +73,7 @@ import Wiki.Api.Comments (CommentsApi (..), NewThread (..))
 import Wiki.Api.Events (ClientMessage (..), PageEvent (CommentAdded, Editing, PageChanged), ServerMessage (..))
 import Wiki.Api.Events qualified as Events
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), Notifications (..), NotificationsApi (..))
+import Wiki.Api.Opaque (RegistrationChallenge (..))
 import Wiki.Api.ServerSettings (HomePage (showAnonymous), ServerSettings, ServerSettingsOf (homePage), noServerSettings)
 import Wiki.Api.Stars (StarredPage)
 import Wiki.Api.Types (DraftEdit (..), SessionInfo (..))
@@ -249,6 +250,14 @@ serveOpaque = do
   answerRaw "PUT" "api/v1/account/password/proof/old" 204 ""
   answerWith "POST" "api/v1/password-registration" 200 fakeRegistration
   answerWith "PUT" "api/v1/account/password" 200 SignInMethods {password = True, identities = []}
+
+-- | The answer to the registration of the signed-in user's own new
+-- password, whose id this is: 'fakeRegistration' with the credential the
+-- server names after that user (@Wiki.Server.Opaque.registrationChallenge@,
+-- for the session's user), as the backend checks before it makes the
+-- record ('Wiki.App.Backend.Http.ownRecord').
+ownRegistration :: Text -> RegistrationChallenge
+ownRegistration user = RegistrationChallenge {credential = user, response = fakeRegistration.response, stretch = fakeRegistration.stretch}
 
 serverStops :: PageM s ()
 serverStops = unsafeIOToPageM js_server_stop
@@ -582,6 +591,7 @@ ownPassword m = describe "one's own password" $ do
     rita <- unsafeIOToPageM (signedInAs "user-reader")
     answerWith "GET" "api/v1/session" 200 rita
     answerWith "GET" "api/v1/account/identities" 200 SignInMethods {password = True, identities = []}
+    answerWith "POST" "api/v1/password-registration" 200 (ownRegistration "user-reader")
     answerWith "PUT" "api/v1/account/password" 200 SignInMethods {password = True, identities = []}
     ui <- startServer m (UserSettings SecuritySection)
     find ui ".account-toggle" >>= (`shouldHaveText` "Rita Reader")
@@ -637,6 +647,7 @@ ownPassword m = describe "one's own password" $ do
     rita <- unsafeIOToPageM (signedInAs "user-reader")
     answerWith "GET" "api/v1/session" 200 rita
     answerWith "GET" "api/v1/account/identities" 200 SignInMethods {password = False, identities = []}
+    answerWith "POST" "api/v1/password-registration" 200 (ownRegistration "user-reader")
     answerWith "PUT" "api/v1/account/password" 200 SignInMethods {password = True, identities = []}
     ui <- startServer m (UserSettings SecuritySection)
     find ui ".password-change-toggle" >>= (`shouldHaveText` "Set a password…")

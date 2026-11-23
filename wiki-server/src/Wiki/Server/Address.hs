@@ -28,7 +28,7 @@ module Wiki.Server.Address
   , showOrigin
   , ownOrigin
   , ownOrigins
-  , addressOrigin
+  , originOfUri
   , fromOwnOrigin
   )
 where

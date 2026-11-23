@@ -460,6 +460,33 @@ writing' backing = describe "writing a page" $ do
 
 hidden :: Backing -> Spec
 hidden backing = describe "what the key's user may not read" $ do
+  it "is no page for an address with a query, a fragment or a user, and nothing is written" $ withPasswords backing $ \r -> do
+    k <- keyOf r "user-editor" WriteRight
+    hello <- api r k "markdown/s/blog/p/hello-world/"
+    let version = maybe "" decodeUtf8 (header "ETag" hello)
+        authority = fromMaybe r.public (T.stripPrefix "http://" r.public)
+    for_
+      [ r.public <> "?next=/s/blog/p/hello-world/"
+      , r.public <> "/#/s/blog/p/hello-world/"
+      , r.public <> "/s/blog/p/hello-world/?version=1"
+      , "/s/blog/p/hello-world/#why-a-wiki"
+      , "/?next=/s/blog/p/hello-world/"
+      , "http://evil.example@" <> authority <> "/s/blog/p/hello-world/"
+      , "http://" <> authority <> "@evil.example/s/blog/p/hello-world/"
+      ]
+      $ \address -> do
+        refused <- failedCall r k "wiki_write_page" ["path" .= address, "markdown" .= ("Not here." :: Text), "base_version" .= version]
+        refused `shouldNotSatisfy` T.isInfixOf "saved since"
+    later <- api r k "markdown/s/blog/p/hello-world/"
+    (later.body, header "ETag" later) `shouldBe` (hello.body, header "ETag" hello)
+
+  it "reads a percent-encoded path as the HTTP API reads it" $ withPasswords backing $ \r -> do
+    k <- keyOf r "user-editor" ReadRight
+    for_ ["s/blog/p/hello%2Dworld/", "s/blog/p/hello-world%2Fx/", "s/blog/p/hello%20world/"] $ \path -> do
+      http <- api r k ("markdown/" <> path)
+      for_ ["/" <> path, r.public <> "/" <> path] $ \given -> do
+        called <- call r k "wiki_read_page" ["path" .= given]
+        (not called.failed, drop 1 called.texts) `shouldBe` (http.status == 200, [bodyText http | http.status == 200])
   it "is not found in a private space, as a page that is not there" $ withPasswords backing $ \r -> do
     k <- keyOf r "user-editor" WriteRight
     for_ ["/s/team/p/team-handbook/", "/s/team/p/no-such-page/"] $ \path -> do

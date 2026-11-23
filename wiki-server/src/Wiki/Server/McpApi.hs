@@ -60,12 +60,13 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Halogen.Router.Duplex qualified as Duplex
 import MCP.Server qualified as Mcp
-import Network.HTTP.Types (hAuthorization, status401)
+import Network.HTTP.Types (status400, status401)
+import Network.URI (URI (..), parseAbsoluteURI, parseRelativeReference)
 import Network.Wai (Application, Request (..))
 import Protolude
-import Web.HttpApiData (parseHeader, toHeader)
+import Web.HttpApiData (parseHeader, parseUrlPiece, toHeader)
 import Wiki.Api.ApiKeys (KeyRight (..), rightName)
-import Wiki.Api.Version (PageVersion, pageVersion)
+import Wiki.Api.Version (PageVersion (..), VersionTime (..), pageVersion)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Route qualified as Route
 import Wiki.Core.Assistant.Reference (markdownReference)
@@ -74,12 +75,12 @@ import Wiki.Core.Page (Page (..))
 import Wiki.Core.PageKind (PageKind (..))
 import Wiki.Core.Path (renderPath)
 import Wiki.Core.Slug (Slug)
-import Wiki.Server.Address (Origin, addressOrigin)
+import Wiki.Server.Address (Origin, originOfUri)
 import Wiki.Server.Api (Env (..))
 import Wiki.Server.ApiKeys (KeyHolder (..))
 import Wiki.Server.ContentsApi (contentsOf, sectionOf)
 import Wiki.Server.ListApi (Addresses (..), HitEntry (..), HitSpace (..), TopLevel (..), hasSearchWords, listing, searchSpace, searching)
-import Wiki.Server.MarkdownApi (Asking (..), Put (..), findPage, notASlug, putMarkdown, refusalWith, runAs, signInWithKey)
+import Wiki.Server.MarkdownApi (Asking (..), Credential (..), Put (..), credentialOf, findPage, notASlug, putMarkdown, refusal, refusalWith, runAs, signInWithKey)
 import Wiki.Server.Render (routeOf)
 
 -- | The MCP server, on a listener that serves the wiki under this path
@@ -89,8 +90,9 @@ import Wiki.Server.Render (routeOf)
 -- The listener routes @mcp@ under its path here.
 mcpApplication :: Env -> Text -> [Origin] -> Asking -> Application
 mcpApplication env mount own asking request respond = case bearerOf request of
-  Nothing -> respond noKey
-  Just presented ->
+  Left why -> respond (refusal status400 "Invalid" (Just why))
+  Right Nothing -> respond noKey
+  Right (Just presented) ->
     signInWithKey env asking presented >>= \case
       Left refused -> respond refused
       Right holder -> do
@@ -108,16 +110,19 @@ mcpApplication env mount own asking request respond = case bearerOf request of
       refusalWith status401 [("WWW-Authenticate", "Bearer realm=\"wiki\"")] "Unauthenticated" $
         Just "The wiki's MCP server signs in with an API key of the wiki only, sent as Authorization: Bearer <key>."
 
--- | The key a request presents in its one @Authorization@ header, as
--- @Bearer \<key>@, the scheme's name in any case; 'Nothing' for a request
--- with no such header, or with more than one.
-bearerOf :: Request -> Maybe Text
-bearerOf request = case [v | (n, v) <- requestHeaders request, n == hAuthorization] of
-  [v]
-    | (scheme, rest) <- T.break (== ' ') (decodeUtf8With lenientDecode v)
-    , T.toCaseFold scheme == "bearer" ->
-        Just (T.strip rest)
-  _ -> Nothing
+-- | The key a request presents as @Authorization: Bearer \<key>@, read by
+-- the HTTP API's own 'credentialOf'; or why the request's credentials
+-- cannot be read (two @Authorization@ headers). 'Nothing' for a request
+-- without such a key: one with none, or with a login and a password. A
+-- key in @X-API-Key@, which the HTTP API also takes, is not taken here,
+-- and a request with that header presents no key.
+bearerOf :: Request -> Either Text (Maybe Text)
+bearerOf request
+  | any ((== "X-API-Key") . fst) (requestHeaders request) = Right Nothing
+  | otherwise =
+      credentialOf request <&> \case
+        Key presented -> Just presented
+        _ -> Nothing
 
 -- | What the server tells an assistant when it connects, before any tool:
 -- what the wiki is, how a page is named, and how to read and write. Claude
@@ -396,32 +401,52 @@ withTop p = \case
 pathOf :: [Slug] -> [Slug] -> Text
 pathOf sp pp = Duplex.print Route.route (Route.pageRoute sp pp)
 
--- | The path a tool is given, as the router reads it: a path in the wiki,
--- without the listener's path, as the tools give paths
--- (@\/s\/team\/p\/on-call\/@). Such a path is taken as it is, whatever it
--- starts with. A full address of the wiki is the one form that carries
--- the listener's path: its scheme and host are taken off, then the
--- listener's path, at a segment's end. It names a page only when its
--- origin is one of the wiki's own ('ownOrigins', as the live channel
--- checks a page's) and its path is under the listener's; for another, the
--- result is why it names nothing here. A query and a fragment are left
--- out, and the path has a slash at each end.
+-- | The path a tool is given, as the router reads it (percent-encoded, as
+-- sent), with a slash at each end; or why it names no page. Both forms are
+-- read by network-uri, as "Wiki.Server.Address" reads addresses, never
+-- taken apart by hand.
+--
+-- * A path in the wiki, without the listener's path, as the tools give
+--   paths (@\/s\/team\/p\/on-call\/@): taken as it is, whatever it starts
+--   with.
+-- * A full address of the wiki, the one form that carries the listener's
+--   path: its path component, with the listener's path taken off at a
+--   segment's end. It names a page only when its origin is one of the
+--   wiki's own ('ownOrigins', as the live channel checks a page's; an
+--   address with a user, @https:\/\/a\@b\/@, has none) and its path is
+--   under the listener's.
+--
+-- A query or a fragment is refused in either form.
 localPath :: Text -> [Origin] -> Text -> Either Text Text
-localPath mount own given = withSlashes . T.takeWhile (`notElem` ['?', '#']) <$> inWiki (T.strip given)
+localPath mount own given = case parseAbsoluteURI (toS t) of
+  -- A full address: http or https, with a host.
+  Just uri | isJust uri.uriAuthority -> do
+    unless (maybe False (`elem` own) (originOfUri uri)) $
+      Left (show t <> " is not an address of this wiki: pass the page's path, such as /s/team/p/on-call/.")
+    whole uri
+    withSlashes <$> underMount (toS uri.uriPath)
+  -- A path in the wiki, as the tools give it.
+  _ -> case parseRelativeReference (toS t) of
+    Just uri -> whole uri $> withSlashes (toS uri.uriPath)
+    Nothing -> Left (fromMaybe (show t <> " is not a page's path: a page's path is /s/<space path>/p/<page path>/, such as /s/team/p/on-call/.") (notASlug (pathSegments t)))
   where
-    inWiki t = case T.breakOn "://" t of
-      (_, rest)
-        | T.null rest -> Right t
-        | maybe False (`elem` own) (addressOrigin t) -> underMount t (T.takeWhile (`notElem` ['?', '#']) (T.dropWhile (/= '/') (T.drop 3 rest)))
-        | otherwise -> Left (show t <> " is not an address of this wiki: pass the page's path, such as /s/team/p/on-call/.")
-    -- The path of a full address, under the listener's path, which ends
-    -- with a slash: @\/wiki\/s\/…@ under @\/wiki\/@, never @\/wikis\/…@.
-    underMount t path
+    t = T.strip given
+    -- No page's reading address has a query or a fragment
+    -- ('Wiki.App.Route.Page' and 'Wiki.App.Route.Space' have none): one is
+    -- refused rather than read past, so that a tool never acts on a page
+    -- the address does not name.
+    whole uri =
+      unless (null uri.uriQuery && null uri.uriFragment) $
+        Left (show t <> " has a query or a fragment (?… or #…), which no page's address has: pass the page's address without them.")
+    -- The path of a full address, as sent (percent-encoded), under the
+    -- listener's path, which ends with a slash: @\/wiki\/s\/…@ under
+    -- @\/wiki\/@, never @\/wikis\/…@.
+    underMount path
       | mount == "/" = Right path
       | path == T.dropWhileEnd (== '/') mount = Right "/"
       | Just rest <- T.stripPrefix mount path = Right ("/" <> rest)
       | otherwise = Left (show t <> " is not under the wiki's path, " <> mount <> ": pass the page's path, such as /s/team/p/on-call/.")
-    withSlashes t = "/" <> T.dropAround (== '/') t <> (if T.null (T.dropAround (== '/') t) then "" else "/")
+    withSlashes p = "/" <> T.dropAround (== '/') p <> (if T.null (T.dropAround (== '/') p) then "" else "/")
 
 -- | The segments of a path, without the empty ones.
 pathSegments :: Text -> [Text]
@@ -435,10 +460,15 @@ versionOf p = decodeUtf8 (toHeader (pageVersion p))
 -- | The version a write names: the value the tools gave, with its quotes
 -- or without them.
 versionArgument :: Text -> Either Text PageVersion
-versionArgument given = first (const ("base_version " <> show given <> " is not a page's version: pass the version a reading tool gave, such as \"2026-11-18T09:30:12.345678Z\".")) (parseHeader (encodeUtf8 quoted))
+versionArgument given =
+  first
+    (const ("base_version " <> show given <> " is not a page's version: pass the version a reading tool gave, such as \"2026-11-18T09:30:12.345678Z\"."))
+    -- The entity tag, quoted, as the HTTP API reads If-Match; or the
+    -- version's time without the quotes, as the API reads a version in a
+    -- path ('VersionTime').
+    (parseHeader (encodeUtf8 t) <> ((\v -> PageVersion v.time) <$> parseUrlPiece @VersionTime t))
   where
     t = T.strip given
-    quoted = if "\"" `T.isPrefixOf` t then t else "\"" <> t <> "\""
 
 -- | The sentence for a refusal of the wiki's domain, about the page at a
 -- path.

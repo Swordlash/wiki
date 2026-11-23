@@ -2184,7 +2184,8 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   (`withTestClock`, `advance`). The wiki's branch
   `editor-under-test-clock` bumps the pin and puts the editor's group
   under the test's clock: 252.6 s down to 134.8 s at equal load, 44
-  `eventually`s down to 30: open (#355). **The assistant's kept
+  `eventually`s down to 30: merged (#355), the groups moved since
+  passing on the new pin. **The assistant's kept
   selection** read at quiet before CodeMirror had recorded a change
   of focus, which it does on a 10 ms timer of its own (found on
   #349's CI): `focusTaken` in `web/src/editor.js` gives a promise the
@@ -2255,7 +2256,21 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   `/settings/security/`, `/settings/notifications/` and
   `/settings/assistant/` (the old `/assistant/` redirects). Its CI
   found a fault of the program: the offer to unlock the keys covered
-  "Sign out" in the new menu.
+  "Sign out" in the new menu. Codex found another: a change of
+  password cut off by leaving the Security section left an
+  exportable vault key in the page's key registry (leaving a section
+  kills its workers, and a handle registered when a promise resolves
+  cannot be released by a `finally`); the shell owns the change now.
+  **Found there and left, older than #349:** the section's other
+  vault operations (`settleKeys` each time it is shown, everything
+  under `withVault`, the proof behind a passkey's registration, the
+  second factor's enrolment, the e-mail's change) can leave keys in
+  the registry the same way when the section is left mid-way, as
+  they could when the old panel was closed. Making them outlive the
+  section races the sign-out's `forgetUserKeys`, so the owner of the
+  operation has to check that the user is still the one it began
+  for: a package of its own. An avatar or a personal space changed
+  and left before the answer leaves the header stale until a reload.
 - **WP5.138 An API for a page's Markdown (the owner, 2026-11-18:
   "robię to z myślą o lokalnych asystentach i MCP").** **The first
   cut is merged (#334), server only.** `GET` and `PUT` of a page's
@@ -2328,7 +2343,7 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   so that every write is conditional, and with `jq` is also a local
   MCP server over standard input (`wiki.sh mcp`); it sends
   `WIKI_TOKEN` as a Bearer key already. `shellcheck` runs with its
-  test, and is required in CI. **API keys, the server's side: open
+  test, and is required in CI. **API keys, the server's side: merged
   (#351)**: made by the user, with an expiry date
   and rights (read, write, admin), shown
   once, the server keeping the SHA-256 of 256 random bits; sent as

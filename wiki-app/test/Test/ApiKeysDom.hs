@@ -13,7 +13,8 @@ import Data.Char (isAsciiLower)
 import Data.IORef (IORef)
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
-import Halogen.VDom.DOM.Monad (MemDOM)
+import Halogen.Router qualified as Router
+import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
 import Halogen.VDom.DOM.Monad.Native qualified as N
 import Protolude hiding (find)
@@ -25,8 +26,9 @@ import Wiki.App.Account (SignInError (..))
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Backend.Mem (MemState, MemWiki, newMemWiki, runMemWiki, switchUser)
 import Wiki.App.Demo (demoNow, demoState)
+import Wiki.App.Route (Route (Unknown), route)
 import Wiki.App.Security (MonadSecurity (..))
-import Wiki.App.View.ApiKeys (Input (..), component)
+import Wiki.App.View.ApiKeys (Input (..), component, programAddress)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.User (Password (..))
 
@@ -137,6 +139,12 @@ valueOf view selector =
 
 spec :: Spec
 spec = describe "Wiki.App.View.ApiKeys, mounted on the in-memory DOM" $ do
+  it "writes the wiki's address as a program reaches it, under the path the wiki is served from" $ do
+    let at' base = runMemDOM (Router.newRouter base Unknown route) >>= \r -> programAddress "https://wiki.example/" r <$ Router.stop r
+    at' "/" `shouldReturn` "https://wiki.example"
+    at' "/wiki/" `shouldReturn` "https://wiki.example/wiki"
+    at' "/wiki" `shouldReturn` "https://wiki.example/wiki"
+
   it "says loading, then that there is no key yet" $
     withPanel editor $ \gate view quiet -> do
       textOf view ".loading" `shouldReturn` "Loading…"

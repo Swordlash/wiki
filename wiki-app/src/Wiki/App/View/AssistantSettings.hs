@@ -281,6 +281,7 @@ component =
         <div class="assistant-settings-body">
           <p class="assistant-intro">
             The assistant in the editor edits a page with you, through Anthropic's Claude or OpenAI's models, with an API key of your own.
+            These keys are a provider's, which you get from Anthropic or OpenAI; the keys a program signs in to this wiki with are under API keys.
             Each key is billed by its provider, to your account there, for every request the assistant makes.
             It stays in this browser, kept for you alone and sealed with a key the browser keeps, and goes from here to its provider only, never to this wiki's server in the clear: with syncing on, the server keeps your keys sealed, and cannot open them.
             Each request also sends the wiki's Markdown reference, about {{ aboutTokens (T.length markdownReference) }} of English text, which the provider caches where it can, so that a request soon after another costs less.

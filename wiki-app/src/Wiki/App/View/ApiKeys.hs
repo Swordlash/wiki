@@ -28,6 +28,7 @@ module Wiki.App.View.ApiKeys
   , component
   , rightText
   , examples
+  , programAddress
   )
 where
 
@@ -40,6 +41,8 @@ import Halogen qualified as H
 import Halogen.HTML.Events qualified as HE
 import Halogen.HTML.Properties qualified as HP
 import Halogen.Machine qualified as Machine
+import Halogen.Router (Router)
+import Halogen.Router qualified as Router
 import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
 import Protolude hiding (State)
@@ -48,6 +51,7 @@ import Wiki.Api.Security (SecondFactorState (..))
 import Wiki.App.Account (SignInError (..), signInErrorText)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Browser (copyText, endOfDay)
+import Wiki.App.Route (Route (Home))
 import Wiki.App.Security (MonadSecurity (..))
 import Wiki.App.View.ApiKeys.Machine
   ( Choice (..)
@@ -388,12 +392,24 @@ refusalText = \case
   SignInFailed (Conflict why) -> why
   e -> signInErrorText e
 
+-- | The wiki's address as a program reaches it: the page's origin (its
+-- scheme and host, @https:\/\/wiki.example@) and the path the wiki is
+-- served under, which the router's front page names (@\/@, or
+-- @\/wiki\/@ for a wiki served with @--base-path \/wiki\/@), without a
+-- final slash. The API is served under the same path, so the examples
+-- written with it reach the API whatever the wiki's base path is.
+programAddress :: Text -> Router Route -> Text
+programAddress origin router = T.dropWhileEnd (== '/') (T.dropWhileEnd (== '/') origin <> Router.href router Home)
+
 -- | The examples of a key's use shown with it: a request with @curl@, and
 -- the wiki's shell client (@clients\/wiki.sh@), at the wiki's address.
 examples :: Text -> Text -> [Text]
 examples given key =
   [ "curl -H 'Authorization: Bearer " <> key <> "' '" <> address <> "/api/list/'"
   , "WIKI_TOKEN='" <> key <> "' WIKI_URL='" <> address <> "' sh wiki.sh list"
+  -- The line that adds the wiki's MCP server to an assistant
+  -- (@claude mcp add --transport http … --header@) goes here once the
+  -- wiki serves MCP and the README describes it.
   ]
   where
     address = T.dropWhileEnd (== '/') given

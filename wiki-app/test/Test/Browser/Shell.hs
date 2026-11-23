@@ -73,7 +73,7 @@ spec m = do
     find ui ".user-menu .settings-entry" >>= click
     find ui ".settings-view h1" >>= (`shouldHaveText` "Profile")
     length <$> findAll ui ".user-menu" `shouldReturn` 0
-    (findAll ui ".settings-nav-link" >>= traverse textContent) `shouldReturn` ["Profile", "Security", "Notifications", "Writing assistant"]
+    (findAll ui ".settings-nav-link" >>= traverse textContent) `shouldReturn` ["Profile", "Security", "API keys", "Notifications", "Writing assistant"]
     _ <- find ui ".settings-page-profile .account-personal .personal-space-enable"
     showSection ui SecuritySection
     find ui ".settings-view h1" >>= (`shouldHaveText` "Security")

@@ -163,7 +163,7 @@ import Wiki.App.Backend.Encrypted (MonadEncryption (..))
 import Wiki.App.Backend.Notifications (MonadNotifications)
 import Wiki.App.Backend.Stars (MonadStars)
 import Wiki.App.Backend.WhatsNew (MonadWhatsNew)
-import Wiki.App.Browser (download, historyEntry, historyGo, keepContents, keepHeights, redirectKeepingFragment, replacingEntry, revealFragment, setDocumentTitle, setFavicon, unzipFiles, zipFiles)
+import Wiki.App.Browser (absoluteUrl, download, historyEntry, historyGo, keepContents, keepHeights, redirectKeepingFragment, replacingEntry, revealFragment, setDocumentTitle, setFavicon, unzipFiles, zipFiles)
 import Wiki.App.DemoUsers (Demo (..))
 import Wiki.App.Editor.Browser (PickedFile (..), chosenFiles, onPreviewEntry, pickedFiles, readPickedFile)
 import Wiki.App.Favicon (Favicon (..), defaultFavicon, homeFavicon, spaceFavicon)
@@ -179,6 +179,7 @@ import Wiki.App.Security (MonadSecurity)
 import Wiki.App.Vault (changeOwnPassword, forgetEveryUsersKeys, forgetUserKeys)
 import Wiki.App.View.Access qualified as AccessView
 import Wiki.App.View.Activity qualified as ActivityView
+import Wiki.App.View.ApiKeys qualified as ApiKeysView
 import Wiki.App.View.AssistantSettings qualified as AssistantSettingsView
 import Wiki.App.View.Avatar qualified as AvatarView
 import Wiki.App.View.Backups qualified as BackupsView
@@ -330,6 +331,7 @@ data PartSlot
   | UnsubscribeSlot
   | -- | Keyed by the user, as the settings' other views ('PersonalSpaceSlot').
     SecuritySlot (Maybe UserId)
+  | ApiKeysSlot (Maybe UserId)
   | NotificationsSlot (Maybe UserId)
   | AssistantSettingsSlot (Maybe UserId)
   | WhatsNewSlot
@@ -417,6 +419,10 @@ data State m = State
   -- first render. Each reads what it shows as it starts, from the server
   -- and from this browser, so a page the server prerenders shows none of
   -- them, and the program adopts that page unchanged.
+  , origin :: Text
+  -- ^ The page's scheme and host (@https:\/\/wiki.example@), read with the
+  -- settings' sections: the section of API keys writes the wiki's address
+  -- with it ('ApiKeysView.programAddress'). Empty natively.
   , passwordChange :: Maybe UserId
   -- ^ The user whose change of password the shell runs, until the server
   -- has answered and the page has let go of the keys it held for it
@@ -601,6 +607,7 @@ component =
                   , menuHolder
                   , menuWatch = Nothing
                   , settingsShown = False
+                  , origin = ""
                   , passwordChange = Nothing
                   , panel = Actions Nothing
                   , kept
@@ -995,6 +1002,12 @@ component =
               <p class="account-note">The demo has no passwords: you switch between its users at the top right.</p>
             {% end %}
             {{ HH.slot_ "part" (SecuritySlot who) SecurityView.component (guard (isNothing st.demo) *> who) }}
+          </div>
+        |]
+      ApiKeysSection ->
+        [hh|
+          <div class="settings-sections">
+            {{ HH.slot_ "part" (ApiKeysSlot who) ApiKeysView.component ApiKeysView.Input {session = st.sessionNumber, administers = isAdministrator st, address = ApiKeysView.programAddress st.origin st.router, demo = isJust st.demo} }}
           </div>
         |]
       NotificationsSection ->
@@ -1514,7 +1527,8 @@ component =
         when inBrowser $ do
           -- And the settings' sections, which a prerendered page leaves
           -- out.
-          modify (\st -> st {settingsShown = True})
+          origin <- H.liftEffect (absoluteUrl "/")
+          modify (\st -> st {settingsShown = True, origin})
           seen <- H.liftEffect (Storage.getItem LocalStorage whatsNewSeenKey)
           modify (\st -> st {seen = Just (fromMaybe 0 (seen >>= rightToMaybe))})
           whatsNewSeen

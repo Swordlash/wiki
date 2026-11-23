@@ -65,8 +65,8 @@ spec = describe "Wiki.App.View.SignIn and Wiki.App.Shell, the way to the setting
         click view ".user-menu .settings-entry"
         settle view
         textOf view ".settings-view h1" `shouldReturn` "Profile"
-        (findAll view ".settings-nav-link" >>= traverse N.textContent) `shouldReturn` ["Profile", "Security", "Notifications", "Writing assistant"]
-        (findAll view ".settings-nav-link" >>= traverse (N.attribute "href")) `shouldReturn` map Just ["/settings/profile/", "/settings/security/", "/settings/notifications/", "/settings/assistant/"]
+        (findAll view ".settings-nav-link" >>= traverse N.textContent) `shouldReturn` ["Profile", "Security", "API keys", "Notifications", "Writing assistant"]
+        (findAll view ".settings-nav-link" >>= traverse (N.attribute "href")) `shouldReturn` map Just ["/settings/profile/", "/settings/security/", "/settings/api-keys/", "/settings/notifications/", "/settings/assistant/"]
         textOf view ".settings-nav-link[aria-current=page]" `shouldReturn` "Profile"
         textOf view ".settings-reading" `shouldReturn` "Reading your settings…"
         (length <$> findAll view ".user-menu") `shouldReturn` 0

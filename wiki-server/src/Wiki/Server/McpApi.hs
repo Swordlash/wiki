@@ -54,6 +54,7 @@ module Wiki.Server.McpApi
 where
 
 import Data.Aeson (Result (..), ToJSON (..), Value (..), encode, fromJSON, object, (.=))
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
@@ -128,7 +129,7 @@ instructions =
     , ""
     , "A page is named by its path, the one the browser's address bar shows: /s/<space path>/p/<page path>/, such as /s/team/p/on-call/. A subspace's path follows its space's (/s/team/projects/p/roadmap/), and a page under another page adds its own slug (/s/team/p/on-call/rota/). A space's home page is /s/<space path>/. A full address of the wiki, https://wiki.example/s/team/p/on-call/, is taken too. Find pages with wiki_list and wiki_search."
     , ""
-    , "Read before you write, and pass the version. wiki_read_page gives a page's Markdown and its version. wiki_write_page replaces the whole page, and takes base_version, the version you read: if the page has been saved since, nothing is written, and you read it again, merge your change into what it says now, and write with its new version. For a long page, read its outline (wiki_page_outline) and then one section at a time (wiki_read_section)."
+    , "Read before you write, and pass the version. wiki_read_page gives a page's Markdown and its version. wiki_write_page replaces the whole page, and takes base_version, the version you read: if the page has been saved since, nothing is written, and you read it again, merge your change into what it says now, and write with its new version. For a long page, read its outline (wiki_page_outline), then one section at a time (wiki_read_section), and the text before its first heading with top true."
     , ""
     , "Look a construct of the wiki's Markdown up in wiki_markdown_reference before using it: a box, math, a diagram, a spoiler, a link to another page, a presentation. Called without a section, it lists the reference's sections; with one, it gives that section."
     , ""
@@ -242,7 +243,7 @@ tools env mount own address holder =
       , arguments = [pathArgument "The page's path, such as /s/team/p/on-call/."]
       , required = ["path"]
       , writes = False
-      , tooLong = \n -> "The page has more than one answer holds (" <> show n <> " characters with its title and version): read its outline with wiki_page_outline, then its sections one at a time with wiki_read_section."
+      , tooLong = \n -> "The page has more than one answer holds (" <> show n <> " characters with its title and version): read its outline with wiki_page_outline, then its sections one at a time with wiki_read_section, and the text before its first heading with wiki_read_section and top true."
       , run = \args -> withPage args $ \at sp pp ->
           findPage env address holder.user sp pp <&> \case
             Left e -> Mcp.toolError (refusalText at e)
@@ -250,7 +251,7 @@ tools env mount own address holder =
       }
   , Tool
       { name = "wiki_page_outline"
-      , description = "Read a page's outline: its title, its version, and its headings as a tree, each with its level, its text, its anchor (the name of its section, for wiki_read_section) and whether it is inside a spoiler."
+      , description = "Read a page's outline: its title, its version, topCharacters, the length of the text before its first heading (0 when there is none; read it with wiki_read_section and top true), and its headings as a tree, each with its level, its text, its anchor (the name of its section, for wiki_read_section) and whether it is inside a spoiler."
       , arguments = [pathArgument "The page's path, such as /s/team/p/on-call/."]
       , required = ["path"]
       , writes = False
@@ -258,28 +259,29 @@ tools env mount own address holder =
       , run = \args -> withPage args $ \at sp pp ->
           findPage env address holder.user sp pp <&> \case
             Left e -> Mcp.toolError (refusalText at e)
-            Right p -> jsonResult (contentsOf Nothing p)
+            Right p -> jsonResult (withTop p (toJSON (contentsOf Nothing p)))
       }
   , Tool
       { name = "wiki_read_section"
-      , description = "Read one section of a page: its Markdown from its heading to the next heading of the same or a higher level, its subsections included, or with own true only to the next heading of any level. Also the page's version, to pass as base_version when you write the page."
+      , description = "Read one part of a page: a section by its anchor, its Markdown from its heading to the next heading of the same or a higher level, its subsections included, or with own true only to the next heading of any level; or, with top true instead of section, the text before the first heading. Also the page's version, to pass as base_version when you write the page."
       , arguments =
           [ pathArgument "The page's path, such as /s/team/p/on-call/."
-          , ("section", Mcp.describedSchema "The section's anchor, from the page's outline (wiki_page_outline)." (Mcp.SchemaString Nothing))
+          , ("section", Mcp.describedSchema "The section's anchor, from the page's outline (wiki_page_outline). Give section or top, not both." (Mcp.SchemaString Nothing))
           , ("own", Mcp.describedSchema "True for the section's own text only, without its subsections." Mcp.SchemaBoolean)
+          , ("top", Mcp.describedSchema "True for the text before the first heading, in place of section." Mcp.SchemaBoolean)
           ]
-      , required = ["path", "section"]
+      , required = ["path"]
       , writes = False
-      , tooLong = \n -> "The section has " <> show n <> " characters, more than one answer holds: read its own text (own true), then its subsections, whose anchors the outline (wiki_page_outline) gives."
-      , run = \args -> withArguments ((,) <$> requiredArgument "section" (textArgument "section" args) <*> (fromMaybe False <$> boolArgument "own" args)) $ \(anchor, ownOnly) ->
+      , tooLong = \n -> "The part has " <> show n <> " characters, more than one answer holds: for a section, read its own text (own true), then its subsections, whose anchors the outline (wiki_page_outline) gives. A section's own text and the text before the first heading are not read in smaller parts."
+      , run = \args -> withArguments (partArgument args) $ \(asked, ownOnly) ->
           withPage args $ \at sp pp ->
             findPage env address holder.user sp pp <&> \case
               Left e -> Mcp.toolError (refusalText at e)
-              Right p -> case sectionOf p.body (Just anchor) ownOnly of
+              Right p -> case sectionOf p.body asked ownOnly of
                 Nothing ->
                   let anchors = outlineAnchors (outline p.body)
-                   in Mcp.toolError ("The page at " <> at <> " has no section with the anchor " <> show anchor <> ". Its anchors: " <> (if null anchors then "none" else T.intercalate ", " anchors) <> ".")
-                Just part -> withText (object ["path" .= at, "title" .= p.title, "section" .= anchor, "version" .= versionOf p]) part
+                   in Mcp.toolError ("The page at " <> at <> " has no section with the anchor " <> show (fromMaybe "" asked) <> ". Its anchors: " <> (if null anchors then "none" else T.intercalate ", " anchors) <> ".")
+                Just part -> withText (object (["path" .= at, "title" .= p.title] <> maybe ["top" .= True] (\anchor -> ["section" .= anchor]) asked <> ["version" .= versionOf p])) part
       }
   , Tool
       { name = "wiki_write_page"
@@ -361,28 +363,64 @@ tools env mount own address holder =
         Route.Space sp -> continue (pathOf sp []) sp []
         _ -> pure (Mcp.toolError (fromMaybe (show given <> " is not a page's path: a page's path is /s/<space path>/p/<page path>/, such as /s/team/p/on-call/, and a space's home page is /s/<space path>/.") (notASlug (pathSegments given))))
 
+-- | The part of a page that @wiki_read_section@ asks for: a section by
+-- its anchor, or the text before the first heading ('Nothing', from
+-- @top@), and whether only the section's own text is asked for. Exactly
+-- one of @section@ and @top@.
+partArgument :: Arguments -> Either Text (Maybe Text, Bool)
+partArgument args = do
+  anchor <- textArgument "section" args
+  top <- fromMaybe False <$> boolArgument "top" args
+  ownOnly <- fromMaybe False <$> boolArgument "own" args
+  case (anchor, top) of
+    (Just a, False) -> Right (Just a, ownOnly)
+    (Nothing, True)
+      | ownOnly -> Left "own goes with a section: the text before the first heading has no subsections."
+      | otherwise -> Right (Nothing, False)
+    (Just _, True) -> Left "Give section or top, not both."
+    (Nothing, False) -> Left "Give section, a section's anchor from the page's outline, or top true for the text before the first heading."
+
+-- | A page's outline as the tools give it, with @topCharacters@: how long
+-- the text before the first heading is, 0 when it is blank, so that a
+-- model knows to read it with @top@.
+withTop :: Page -> Value -> Value
+withTop p = \case
+  Object o -> Object (KeyMap.insert "topCharacters" (toJSON characters) o)
+  v -> v
+  where
+    top = fromMaybe "" (sectionOf p.body Nothing False)
+    characters = if T.any (not . isSpace) top then T.length top else 0
+
 -- | The path of the page at a space's path and a page's path, as the
 -- browser's address bar shows it under the wiki's own part.
 pathOf :: [Slug] -> [Slug] -> Text
 pathOf sp pp = Duplex.print Route.route (Route.pageRoute sp pp)
 
--- | The path a tool is given, as the router reads it under the listener's
--- path: a full address's scheme and host taken off, then the listener's
--- path, then a query or a fragment; with a slash at each end. A full
--- address names a page only when its origin is one of the wiki's own
--- ('ownOrigins', as the live channel checks a page's); for another, the
--- result is why it names nothing here.
+-- | The path a tool is given, as the router reads it: a path in the wiki,
+-- without the listener's path, as the tools give paths
+-- (@\/s\/team\/p\/on-call\/@). Such a path is taken as it is, whatever it
+-- starts with. A full address of the wiki is the one form that carries
+-- the listener's path: its scheme and host are taken off, then the
+-- listener's path, at a segment's end. It names a page only when its
+-- origin is one of the wiki's own ('ownOrigins', as the live channel
+-- checks a page's) and its path is under the listener's; for another, the
+-- result is why it names nothing here. A query and a fragment are left
+-- out, and the path has a slash at each end.
 localPath :: Text -> [Origin] -> Text -> Either Text Text
-localPath mount own given = withSlashes . T.takeWhile (`notElem` ['?', '#']) . underMount <$> withoutOrigin (T.strip given)
+localPath mount own given = withSlashes . T.takeWhile (`notElem` ['?', '#']) <$> inWiki (T.strip given)
   where
-    withoutOrigin t = case T.breakOn "://" t of
+    inWiki t = case T.breakOn "://" t of
       (_, rest)
         | T.null rest -> Right t
-        | maybe False (`elem` own) (addressOrigin t) -> Right (T.dropWhile (/= '/') (T.drop 3 rest))
+        | maybe False (`elem` own) (addressOrigin t) -> underMount t (T.takeWhile (`notElem` ['?', '#']) (T.dropWhile (/= '/') (T.drop 3 rest)))
         | otherwise -> Left (show t <> " is not an address of this wiki: pass the page's path, such as /s/team/p/on-call/.")
-    underMount t
-      | mount /= "/", Just rest <- T.stripPrefix (T.dropWhileEnd (== '/') mount) t = rest
-      | otherwise = t
+    -- The path of a full address, under the listener's path, which ends
+    -- with a slash: @\/wiki\/s\/…@ under @\/wiki\/@, never @\/wikis\/…@.
+    underMount t path
+      | mount == "/" = Right path
+      | path == T.dropWhileEnd (== '/') mount = Right "/"
+      | Just rest <- T.stripPrefix mount path = Right ("/" <> rest)
+      | otherwise = Left (show t <> " is not under the wiki's path, " <> mount <> ": pass the page's path, such as /s/team/p/on-call/.")
     withSlashes t = "/" <> T.dropAround (== '/') t <> (if T.null (T.dropAround (== '/') t) then "" else "/")
 
 -- | The segments of a path, without the empty ones.

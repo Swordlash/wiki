@@ -3005,15 +3005,16 @@ key with the right `read` is given the tools that read only.
 
 The tools name a page by its path, the one the browser's address bar shows
 after the wiki's own part: `/s/team/p/on-call/`, or `/s/team/` for a space's
-home page. A full address of the wiki is taken too.
+home page. The paths the tools give and take never carry the wiki's base
+path; a full address of the wiki, which does, is taken too.
 
 | Tool | What it does |
 |---|---|
 | `wiki_list` | The spaces and pages the user may read, as a tree (`space`, `depth`). |
 | `wiki_search` | The search box's search (`query`, `space`, `limit`): title, space, path and excerpt of each hit. |
 | `wiki_read_page` | A page's Markdown, its title and its version. |
-| `wiki_page_outline` | A page's headings as a tree, each with its anchor, and the page's version. |
-| `wiki_read_section` | One section of a page by its anchor (`own` without its subsections), and the page's version. |
+| `wiki_page_outline` | A page's headings as a tree, each with its anchor; how long the text before the first heading is (`topCharacters`); and the page's version. |
+| `wiki_read_section` | One section of a page by its anchor (`own` without its subsections), or with `top` the text before the first heading, and the page's version. |
 | `wiki_write_page` | Replaces a page's whole Markdown, over `base_version`, the version read: a page saved since is not written, and the assistant is told to read it again and merge. |
 | `wiki_create_page` | Creates a page at a path where there is none, with its Markdown and a `title`. |
 | `wiki_markdown_reference` | The wiki's Markdown reference: its sections, or one of them. |
@@ -3021,7 +3022,9 @@ home page. A full address of the wiki is taken too.
 Every write is a version in the page's history under the key's user, as a
 save in the editor is, and can be undone there. A result longer than 50,000
 characters is not sent: the assistant is told how to ask for less (a page by
-its outline and sections, a tree one space at a time). The server's
+its outline, its sections and the text before its first heading, a tree one
+space at a time). A single section's own text, or the text before the first
+heading, longer than that cannot be read in smaller parts. The server's
 instructions to the assistant say how a page is named, to read before
 writing, and to look a construct up in the reference before using it.
 

@@ -356,7 +356,18 @@ tools backing = describe "each tool gives what the HTTP API gives" $ do
     elsewhere `shouldSatisfy` T.isInfixOf "is not an address of this wiki"
     outline' <- okCall r k "wiki_page_outline" ["path" .= ("/s/blog/p/hello-world/" :: Text)] >>= traverse jsonOf
     contents <- api r k "contents/s/blog/p/hello-world/" >>= jsonAs 200
-    outline' `shouldBe` [asTools (without "markdown" contents)]
+    map (without "topCharacters") outline' `shouldBe` [asTools (without "markdown" contents)]
+    -- The text before the first heading: its length in the outline, and
+    -- read with top, as the HTTP API's ?top=true.
+    top <- api r k "markdown/s/blog/p/hello-world/?top=true"
+    map (\case Object o -> KeyMap.lookup "topCharacters" o; _ -> Nothing) outline' `shouldBe` [Just (Number (fromIntegral (T.length (bodyText top))))]
+    okCall r k "wiki_read_section" ["path" .= ("/s/blog/p/hello-world/" :: Text), "top" .= True] >>= \case
+      [about, text] -> do
+        text `shouldBe` bodyText top
+        field "version" <$> jsonOf about `shouldReturn` Just version
+      other -> expectationFailure ("not the top: " <> show other)
+    for_ [["top" .= True, "section" .= ("one" :: Text)], [], ["top" .= True, "own" .= True]] $ \asked ->
+      void (failedCall r k "wiki_read_section" (("path" .= ("/s/blog/p/hello-world/" :: Text)) : asked))
     for_ [("one", False), ("one", True), ("inside", False), ("three", False)] $ \(anchor, own) -> do
       part <- api r k ("markdown/s/blog/p/hello-world/?section=" <> anchor <> (if own then "&own=true" else ""))
       okCall r k "wiki_read_section" ["path" .= ("/s/blog/p/hello-world/" :: Text), "section" .= anchor, "own" .= own] >>= \case
@@ -495,26 +506,50 @@ logging backing = describe "the request's log line" $ do
 
 underBasePath :: Backing -> Spec
 underBasePath backing = describe "under a base path" $ do
-  it "is at the base path's mcp, and takes a page's path with the base path or without it" $ withDemo backing $ \st -> withApiEnv st $ \env -> do
-    let listener = Listener {name = "public", mount = "/wiki/", finding = BySession CookieSettings {path = "/wiki/", secure = False}}
-        app = listenerApp env.logger env Nothing listener
-    now <- getCurrentTime
-    made <- either (panic . show) identity <$> makeApiKey st now (UserId "user-editor") False NewApiKey {name = "Under a path", right = ReadRight, expiresAt = Nothing, password = Nothing}
-    -- The listener's application called in process, with a body: the
-    -- status and the body of its answer.
-    let posted (hs, body) = do
-          chunks <- newIORef [BSL.toStrict (encode body)]
-          answered <- newIORef (0, "")
-          let request' = setRequestBodyChunks (atomicModifyIORef' chunks (\case c : cs -> (cs, c); [] -> ([], ""))) defaultRequest {requestMethod = methodPost, rawPathInfo = "/wiki/mcp", pathInfo = ["wiki", "mcp"], requestHeaderHost = Just "wiki.example", requestHeaders = ("Host", "wiki.example") : bearer made : ("Content-Type", "application/json") : hs}
-          _ <- app request' $ \response -> do
-            let (status, _, withBody) = responseToStream response
-            bytes <- newIORef mempty
-            withBody $ \streaming -> streaming (\b -> modifyIORef' bytes (<> b)) pass
-            written <- readIORef bytes
-            writeIORef answered (statusCode status, toLazyByteString written)
-            pure ResponseReceived
-          readIORef answered
-    for_ ["/s/blog/p/hello-world/", "/wiki/s/blog/p/hello-world/", "http://wiki.example/wiki/s/blog/p/hello-world/"] $ \path -> do
-      (status, reply) <- posted (modern "tools/call" (Just "wiki_read_page") ["name" .= ("wiki_read_page" :: Text), "arguments" .= object ["path" .= (path :: Text)]])
-      called <- calledOf Reply {status, headers = [], body = reply}
-      (called.failed, length called.texts) `shouldBe` (False, 2)
+  for_ ["/wiki/", "/s/"] $ \mount ->
+    it ("reads every page the listing and the search give, under " <> toS mount <> ", and a full address with the base path") $ withDemo backing $ \st -> withApiEnv st $ \env -> do
+      let listener = Listener {name = "public", mount, finding = BySession CookieSettings {path = mount, secure = False}}
+          app = listenerApp env.logger env Nothing listener
+          mounted = filter (not . T.null) (T.splitOn "/" mount)
+      now <- getCurrentTime
+      made <- either (panic . show) identity <$> makeApiKey st now (UserId "user-editor") False NewApiKey {name = "Under a path", right = ReadRight, expiresAt = Nothing, password = Nothing}
+      -- A tool called through the listener's application, in process, at
+      -- the base path's mcp: the tool's result.
+      let callTool tool args = do
+            let (hs, body) = modern "tools/call" (Just tool) ["name" .= tool, "arguments" .= object args]
+            chunks <- newIORef [BSL.toStrict (encode body)]
+            answered <- newIORef (0, "")
+            let request' = setRequestBodyChunks (atomicModifyIORef' chunks (\case c : cs -> (cs, c); [] -> ([], ""))) defaultRequest {requestMethod = methodPost, rawPathInfo = encodeUtf8 (mount <> "mcp"), pathInfo = mounted <> ["mcp"], requestHeaderHost = Just "wiki.example", requestHeaders = ("Host", "wiki.example") : bearer made : ("Content-Type", "application/json") : hs}
+            _ <- app request' $ \response -> do
+              let (status, _, withBody) = responseToStream response
+              bytes <- newIORef mempty
+              withBody $ \streaming -> streaming (\b -> modifyIORef' bytes (<> b)) pass
+              written <- readIORef bytes
+              writeIORef answered (statusCode status, toLazyByteString written)
+              pure ResponseReceived
+            (status, reply) <- readIORef answered
+            calledOf Reply {status, headers = [], body = reply}
+          readPage path = do
+            called <- callTool "wiki_read_page" ["path" .= (path :: Text)]
+            unless (not called.failed && length called.texts == 2) $ expectationFailure ("not read: " <> toS path <> ": " <> show called)
+            pure (drop 1 called.texts)
+      -- Every page's path and every home page's path the listing gives.
+      listed <- callTool "wiki_list" [] >>= traverse jsonOf . (.texts)
+      let paths = \case
+            Object o -> concat [[s | k `elem` ["markdown", "home"], String s <- [v]] <> paths v | (k, v) <- KeyMap.toList o]
+            Array a -> concatMap paths (toList a)
+            _ -> []
+          fromList = concatMap paths listed
+      fromList `shouldSatisfy` (> 5) . length
+      for_ fromList readPage
+      -- Every hit's path the search gives.
+      found <- callTool "wiki_search" ["query" .= ("hello" :: Text)] >>= traverse jsonOf . (.texts)
+      let fromSearch = [p | v <- found, Object o <- [v], Just (Array hs) <- [KeyMap.lookup "hits" o], h <- toList hs, Just p <- [field "path" h]]
+      fromSearch `shouldNotBe` []
+      for_ fromSearch readPage
+      -- A full address of the wiki carries the base path, and reads the
+      -- same page; one outside the base path is refused.
+      page <- readPage "/s/blog/p/hello-world/"
+      readPage ("http://wiki.example" <> mount <> "s/blog/p/hello-world/") `shouldReturn` page
+      outside <- callTool "wiki_read_page" ["path" .= ("http://wiki.example/elsewhere/s/blog/p/hello-world/" :: Text)]
+      outside.failed `shouldBe` True

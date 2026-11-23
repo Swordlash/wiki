@@ -150,7 +150,7 @@ spec = describe "golden JSON" $ do
     golden "error-second-factor-required" SecondFactorRequired
   describe "requests" $ do
     golden "new-space" NewSpace {parent = Just (SpaceId "s1"), name = "Guides"}
-    golden "new-api-key" NewApiKey {name = "Laptop assistant", right = WriteRight, expiresAt = Nothing}
+    golden "new-api-key" NewApiKey {name = "Laptop assistant", right = WriteRight, expiresAt = Nothing, password = Just (Password "correct horse battery staple")}
     golden "space-name" SpaceName {name = "Guides"}
     golden "space-public" SpacePublic {public = True}
     golden "space-sealed" SpaceSealed {sealed = True}

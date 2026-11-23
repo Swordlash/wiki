@@ -281,7 +281,7 @@ listenerRoutes logger env site l caller loggedAs request respond = do
         respond (responseLBS status401 [(hContentType, "application/json"), (hCacheControl, "private, no-cache"), (hVary, "Cookie")] "{\"error\":\"Unauthenticated\"}")
       keyRefused =
         respond . refusal status401 "Unauthenticated" $
-          Just "An API key signs in only to the API for programs (api/markdown, api/list and api/search). The application's API, api/v1, takes the browser's session."
+          Just "An API key signs in only to the API for programs (api/markdown, api/contents, api/list and api/search). The application's API, api/v1, takes the browser's session."
       asking = Asking {address = caller.address, loggedAs}
   if
     -- What a listener reports about the server to a machine, at its root.
@@ -299,14 +299,14 @@ listenerRoutes logger env site l caller loggedAs request respond = do
           -- address with ?section= ("Wiki.Server.ContentsApi"): every
           -- method, so that a write there never reaches the whole page's.
           "api" : "markdown" : _ | asksForSection request -> case l.finding of
-            BySession _ -> sectionApplication env l.mount caller.address request respond
+            BySession _ -> sectionApplication env l.mount asking request respond
             EveryoneAdministers -> notFound
           "api" : "markdown" : endpoint -> case l.finding of
             BySession _ -> markdownApplication env l.mount asking endpoint request respond
             EveryoneAdministers -> notFound
           -- A page's table of contents, signed in as the Markdown's is.
           "api" : "contents" : _ -> case l.finding of
-            BySession _ -> contentsApplication env l.mount caller.address request respond
+            BySession _ -> contentsApplication env l.mount asking request respond
             EveryoneAdministers -> notFound
           -- The listing and the search of the same API, signed in as it
           -- is ("Wiki.Server.ListApi").

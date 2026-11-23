@@ -888,7 +888,9 @@ data AccountApi form mode = AccountApi
   -- revoked ones too: never a key's secret nor its hash.
   , makeApiKey :: mode :- "api-keys" :> ReqBody '[JSON] NewApiKey :> PostCreated '[JSON] MadeApiKey
   -- ^ Make an API key for the user. The response holds the whole key,
-  -- which no later response shows again. A key with the right @admin@
+  -- which no later response shows again. It needs the user's current
+  -- password, as 'beginRegistration' does: a wrong or missing one is
+  -- 'Wiki.Api.Error.Unauthenticated' and counts as a failed sign-in. A key with the right @admin@
   -- made by a user who is not an administrator is
   -- 'Wiki.Api.Error.Forbidden'. An expiry that is not in the future, a
   -- name that is too long, or a user who has as many keys that work as

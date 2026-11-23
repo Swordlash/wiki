@@ -163,7 +163,7 @@ stubs =
           , finishRegistration = \_ -> pure Sample.passkeyInfo
           , removePasskey = \i -> if i == Sample.passkeyInfo.id then pure [] else refuse NotFound
           , apiKeys = pure [Sample.apiKeyInfo, Sample.revokedKeyInfo]
-          , makeApiKey = \new -> if new.right == AdminRight then refuse Forbidden else pure Sample.madeApiKey
+          , makeApiKey = \new -> if new.password /= Just (Password "secret") then refuse Unauthenticated else if new.right == AdminRight then refuse Forbidden else pure Sample.madeApiKey
           , revokeApiKey = \i -> if i == Sample.apiKeyInfo.id then pure [Sample.apiKeyInfo {revokedAt = Just Sample.later}, Sample.revokedKeyInfo] else refuse NotFound
           , secondFactorState = pure Sample.secondFactor
           , enrolTotp = \body -> if body.password == Just (Password "the current one") then pure Sample.enrolment else refuse Unauthenticated
@@ -657,8 +657,9 @@ spec = describe "a server of the API's type" $ do
       (k.apiKeys, k.makeApiKey, k.revokeApiKey Sample.apiKeyInfo.id)
         `shouldBe` ("api/v1/account/api-keys", "api/v1/account/api-keys", "api/v1/account/api-keys/m3k7q2xa9dwn4zrt/revoke")
       answers (getAt k.apiKeys) 200 [Sample.apiKeyInfo, Sample.revokedKeyInfo]
-      answers (sendJson methodPost k.makeApiKey NewApiKey {name = "Laptop assistant", right = WriteRight, expiresAt = Nothing}) 201 Sample.madeApiKey
-      answers (sendJson methodPost k.makeApiKey NewApiKey {name = "", right = AdminRight, expiresAt = Nothing}) 403 Forbidden
+      answers (sendJson methodPost k.makeApiKey NewApiKey {name = "Laptop assistant", right = WriteRight, expiresAt = Nothing, password = Just (Password "secret")}) 201 Sample.madeApiKey
+      answers (sendJson methodPost k.makeApiKey NewApiKey {name = "Laptop assistant", right = WriteRight, expiresAt = Nothing, password = Nothing}) 401 Unauthenticated
+      answers (sendJson methodPost k.makeApiKey NewApiKey {name = "", right = AdminRight, expiresAt = Nothing, password = Just (Password "secret")}) 403 Forbidden
       answers (request methodPost (k.revokeApiKey Sample.apiKeyInfo.id) [] "") 200 [Sample.apiKeyInfo {revokedAt = Just Sample.later}, Sample.revokedKeyInfo]
       answers (request methodPost (k.revokeApiKey (ApiKeyId "other")) [] "") 404 NotFound
     it "signs in with a passkey, alone or as the second step, in two steps each" $ do

@@ -2,14 +2,17 @@
 
 -- | The API keys (WP5.138 of docs/PLAN.md, issue #338): what a program on
 -- a user's own machine signs in with to the API for programs
--- (@api\/markdown@, @api\/list@, @api\/search@), instead of the user's
--- login and password.
+-- (@api\/markdown@, @api\/contents@, @api\/list@, @api\/search@), instead
+-- of the user's login and password.
 --
 -- A key is made by its user in a signed-in session, under
 -- @api\/v1\/account\/api-keys@: @POST@ makes one ('NewApiKey') and answers
 -- it whole, once ('MadeApiKey'); @GET@ lists the user's keys
 -- ('ApiKeyInfo'), without their secrets; @POST api-keys\/\<id>\/revoke@
--- revokes one for good. A program sends the whole key in each request, as
+-- revokes one for good. Making a key needs the user's current password,
+-- as adding a passkey or a second factor does ("Wiki.Api.Security"): a
+-- key signs its user in, so someone at a browser left signed in must not
+-- be able to make one. A program sends the whole key in each request, as
 -- @Authorization: Bearer \<key>@ or @X-API-Key: \<key>@. The server keeps
 -- only a hash of the key's secret ("Wiki.Server.ApiKeys").
 --
@@ -32,6 +35,7 @@ import Data.Time (UTCTime)
 import Protolude
 import Text.Show (Show (showsPrec), showParen)
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
+import Wiki.Core.User (Password)
 
 -- | 'ApiKeyId' is the public part of an API key: the part between the
 -- prefix and the secret, which names the key in the list and in the
@@ -92,10 +96,16 @@ data ApiKeyInfo = ApiKeyInfo
 -- expires. The expiry is a moment, not a day: the browser knows the
 -- user's time zone and turns the day they choose into the moment it ends.
 -- It must be in the future; 'Nothing' makes a key that never expires.
+-- The @password@ is the user's current password, the same field and the
+-- same check as 'Wiki.Api.Security.CurrentPassword': an account with an
+-- OPAQUE record proves its password beforehand instead
+-- ("Wiki.Api.Opaque"), and sends 'Nothing'. The console makes keys
+-- without it.
 data NewApiKey = NewApiKey
   { name :: Text
   , right :: KeyRight
   , expiresAt :: Maybe UTCTime
+  , password :: Maybe Password
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)

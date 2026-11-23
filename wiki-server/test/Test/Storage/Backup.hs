@@ -105,7 +105,7 @@ copies backing = describe "backup" $ do
       page <- runStoredWiki st admin (createPage blog.id Nothing "Kept" "In the backup.") >>= ok
       _ <- runStoredWiki st admin (uploadAttachment page.id "a.txt" "text/plain" "bytes") >>= ok
       _ <- runStoredWiki st admin (saveDraft page.id page.updatedAt "Kept" "A draft") >>= ok
-      _ <- makeApiKey st (UTCTime (fromGregorian 2026 11 23) 0) (UserId "user-editor") False NewApiKey {name = "Kept", right = ReadRight, expiresAt = Nothing} >>= ok
+      _ <- makeApiKey st (UTCTime (fromGregorian 2026 11 23) 0) (UserId "user-editor") False NewApiKey {name = "Kept", right = ReadRight, expiresAt = Nothing, password = Nothing} >>= ok
       file <- backupOf at
       takeDirectory file `shouldBe` backupsDir at.dataDir
       live <- tableRows st

@@ -1024,15 +1024,16 @@ shows to anyone, as an invitation's.
 ### API keys
 
 A user's API keys (`Wiki.Api.ApiKeys`, issue #338) are what a program on
-their machine signs in with to the API for programs (`/api/markdown`,
-`/api/list`, `/api/search`; the README's "The API"), instead of their login
+their machine signs in with to the API for programs (`/api/markdown`, a
+page's sections included, `/api/contents`, `/api/list`, `/api/search`; the
+README's "The API"), instead of their login
 and password. They are made, listed and revoked here, by the signed-in
 session, and never sign a request in to `/api/v1` itself.
 
 | Method | Path | Body | Response | Errors | |
 | ------ | ---- | ---- | -------- | ------ | - |
 | GET | `api/v1/account/api-keys` | | `[ApiKeyInfo]` `{"id", "name", "right", "createdAt", "expiresAt", "lastUsedAt", "revokedAt"}`, the newest first, revoked ones too; never a key's secret nor its hash | 401, 400 (the operator) | (`apiKeys`) |
-| POST | `api/v1/account/api-keys` | `NewApiKey` `{"name", "right", "expiresAt"}`: `right` is `"read"`, `"write"` or `"admin"`; `expiresAt` a moment in the future, or `null` for never; an empty name becomes the day it is made | 201, `MadeApiKey` `{"key", "info"}`: the whole key, shown this once, and the key as the list shows it | 401 (nobody signed in, or a sign-in still waiting for its second factor), 400 (the operator; an expiry not in the future; a name over 100 characters; twenty keys that work already), 403 (`"admin"` asked by a user who is not an administrator) | (`makeApiKey`) |
+| POST | `api/v1/account/api-keys` | `NewApiKey` `{"name", "right", "expiresAt", "password"}`: the password proved as for `second-factor/totp` (`null` for a user who has none), since a key signs the user in; `right` is `"read"`, `"write"` or `"admin"`; `expiresAt` a moment in the future, or `null` for never; an empty name becomes the day it is made | 201, `MadeApiKey` `{"key", "info"}`: the whole key, shown this once, and the key as the list shows it | 401 (nobody signed in, a sign-in still waiting for its second factor, or a wrong password, counted as a failed sign-in), 429, 400 (the operator; an expiry not in the future; a name over 100 characters; twenty keys that work already), 403 (`"admin"` asked by a user who is not an administrator) | (`makeApiKey`) |
 | POST | `api/v1/account/api-keys/<id>/revoke` | | `[ApiKeyInfo]` then: the key revoked, for good, and still listed; revoking it again changes nothing | 401, 404 (not one of the user's keys) | (`revokeApiKey`) |
 
 A key is `wiki_<id>_<secret>`, 74 characters of lowercase base32 after the

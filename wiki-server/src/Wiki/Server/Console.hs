@@ -362,7 +362,7 @@ runKeys k = (`onPlace` k.place) $ \at -> withStorageAside at $ \st -> runExceptT
       now <- liftIO getCurrentTime
       administrator <- liftIO (isAdministrator st consoleAddress a.user.id)
       let until' = (\d -> UTCTime (addDays 1 d) 0) <$> expires
-      made <- withExceptT explainKey (ExceptT (makeApiKey st now a.user.id administrator NewApiKey {name, right, expiresAt = until'}))
+      made <- withExceptT explainKey (ExceptT (makeApiKey st now a.user.id administrator NewApiKey {name, right, expiresAt = until', password = Nothing}))
       pure
         [ "Made the key " <> made.info.id.text <> " (" <> made.info.name <> ", " <> rightName made.info.right <> ") for " <> describe a.user <> ". It is shown this once:"
         , made.key

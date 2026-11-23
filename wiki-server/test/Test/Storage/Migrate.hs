@@ -133,7 +133,7 @@ spec backing = describe "the schema's versions" $ do
         tablesOf c `shouldReturn` wikiTables
       withStorage defaultConfig at $ \st -> do
         now <- getCurrentTime
-        made <- makeApiKey st now (UserId "user-editor") False NewApiKey {name = "After the step", right = ReadRight, expiresAt = Nothing} >>= ok
+        made <- makeApiKey st now (UserId "user-editor") False NewApiKey {name = "After the step", right = ReadRight, expiresAt = Nothing, password = Nothing} >>= ok
         limiter <- newLimiter defaultLimits
         signInByKey st limiter now "127.0.0.1" made.key
           `shouldReturn` KeySignedIn KeyHolder {user = UserId "user-editor", key = made.info.id, right = ReadRight}

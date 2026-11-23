@@ -96,6 +96,7 @@ import Wiki.Api
 import Wiki.Api.Account (Account (..), AccountDisabled (..), Credentials (..), InvitationInfo, InvitationToken, SignInMethods)
 import Wiki.Api.Activity (ActivityQuery (..))
 import Wiki.Api.Admin (AdministratorFlag (..), CreateSpacesFlag (..), GroupName (..), Invitation (..), Invitations (..), Invited (..), NewInvitation (..), ServerStatus (..), WikiSettings (..), userQueryOf)
+import Wiki.Api.ApiKeys (NewApiKey (..))
 import Wiki.Api.Comments (CommentText (..), NewThread (..), ThreadResolution (..))
 import Wiki.Api.ContentPolicy (interactiveSvgPolicy)
 import Wiki.Api.Encrypted (HeadingsQuery (..), LeaseToken, SpaceEntry (..))
@@ -758,6 +759,10 @@ handlers env caller =
           , apiKeys = signedInUser >>= liftIO . ApiKeys.apiKeysOf env.storage
           , makeApiKey = \new -> do
               u <- signedInUser
+              -- A key signs its user in, as a passkey does: someone at a
+              -- browser left signed in may not make one without the
+              -- password.
+              reauthenticated u new.password
               now <- liftIO getCurrentTime
               -- Whether the user is an administrator is read here, before the
               -- key is stored; a user who stops being one in between has a key

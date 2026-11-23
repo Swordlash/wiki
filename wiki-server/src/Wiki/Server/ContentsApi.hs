@@ -3,7 +3,9 @@
 -- program on a user's own machine (a local assistant, later an MCP server)
 -- reads to take a part of a long page rather than all of it. Both sign in
 -- as the API for a page's Markdown does ("Wiki.Server.MarkdownApi"), with
--- HTTP Basic alone ('signedInBasic'), and both only read.
+-- HTTP Basic or an API key ('signedInProgram'), and both only read: a key
+-- with the right @read@ is enough, and a write under such a key is refused
+-- for its right before it is refused here.
 --
 -- = Addresses
 --
@@ -74,7 +76,7 @@ import Wiki.Core.Page (Page (..))
 import Wiki.Core.Slug (Slug)
 import Wiki.Core.Space (Space (id))
 import Wiki.Server.Api (Env)
-import Wiki.Server.MarkdownApi (addressUnder, markdownMediaType, notAllowed, parameter, refusal, refusalWith, runAs, signedInBasic, wikiRefusal)
+import Wiki.Server.MarkdownApi (Asking (..), addressUnder, markdownMediaType, notAllowed, parameter, refusal, refusalWith, runAs, signedInProgram, wikiRefusal)
 import Wiki.Server.Render (routeOf)
 
 -- | A page's table of contents, as the API gives it. @top@ is left out of
@@ -127,10 +129,11 @@ asksForSection :: Request -> Bool
 asksForSection request = any ((`elem` ["section", "top"]) . fst) (queryString request)
 
 -- | The table of contents, on a listener that serves the wiki under this
--- path (with a slash at each end), for a request from this address.
-contentsApplication :: Env -> Text -> Text -> Application
-contentsApplication env mount address request respond =
-  signedInBasic env address request respond $ \u ->
+-- path (with a slash at each end), for a request the listener knows this
+-- of ('Asking').
+contentsApplication :: Env -> Text -> Asking -> Application
+contentsApplication env mount asking@Asking {address} request respond =
+  signedInProgram env asking request respond $ \u ->
     if requestMethod request `notElem` [methodGet, methodHead]
       then respond (notAllowed [methodGet, methodHead])
       else
@@ -158,10 +161,10 @@ contentsApplication env mount address request respond =
 
 -- | One section of a page, for a request to the API for a page's Markdown
 -- that asks for one ('asksForSection'), on a listener that serves the wiki
--- under this path, from this address.
-sectionApplication :: Env -> Text -> Text -> Application
-sectionApplication env mount address request respond =
-  signedInBasic env address request respond $ \u ->
+-- under this path, for a request the listener knows this of ('Asking').
+sectionApplication :: Env -> Text -> Asking -> Application
+sectionApplication env mount asking@Asking {address} request respond =
+  signedInProgram env asking request respond $ \u ->
     if requestMethod request `notElem` [methodGet, methodHead]
       then respond writeRefused
       else case (partOf, own) of

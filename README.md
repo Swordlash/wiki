@@ -2656,7 +2656,8 @@ curl -H "X-API-Key: $WIKI_TOKEN" 'https://wiki.example/api/search?q=on-call'
   factor, and for one that signs in with passkeys only, which a password
   cannot sign in here: the key was made in a session the second factor or
   the passkey let in.
-- **Where.** On `/api/markdown`, `/api/list` and `/api/search` only. The
+- **Where.** On `/api/markdown` (with a page's sections), `/api/contents`,
+  `/api/list` and `/api/search` only. The
   wiki's own API, `/api/v1`, refuses a request that carries one.
 - **Refusals.** A key the wiki does not take is refused with 401, the same
   answer whether it is unknown, wrong, expired or revoked, or your login is
@@ -2664,7 +2665,8 @@ curl -H "X-API-Key: $WIKI_TOKEN" 'https://wiki.example/api/search?q=on-call'
   address in fifteen minutes, that address's wrong keys get 429; a right key
   still works, and the sign-in form's count is separate.
 - **Making one.** Your keys will be listed, made and revoked in your
-  settings, which are being moved to a page of their own. Until then the
+  settings, which are being moved to a page of their own; making one there
+  will ask for your password, as adding a passkey does. Until then the
   server's console makes them, on the machine the wiki runs on (as the
   `users` commands do):
 

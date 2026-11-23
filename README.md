@@ -2886,7 +2886,12 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   however the version sent was chosen. `get --out FILE` writes the text and
   its version beside `FILE` first, checks the text is whole, and moves the text
   into place before the version: a full disk or a file size limit leaves
-  `FILE` and `FILE.version` as they were. With no version known, `put` refuses
+  `FILE` and `FILE.version` as they were. The files beside them are made by
+  `mktemp` (nobody can name one in advance, in `/tmp` either), and each takes
+  the mode of the file it replaces, or for a new file the one your umask
+  gives; a `FILE` that is a symbolic link is refused. Everything else the
+  script writes is private to you: the state files, and a directory of its
+  own under `TMPDIR` that it removes when it ends. With no version known, `put` refuses
   to write blind; `--force` writes without one.
 - **`wiki.sh reference`** prints the Markdown reference, `--sections` the list
   of its sections, and `wiki.sh reference Math` one of them.
@@ -2902,9 +2907,12 @@ page under any base path. An address is read whole, by the wiki's own grammar
 for addresses: one with an empty part, a capital, a space, a query, an
 unknown `~word`, a bare `edit` outside a browser's URL, or no page after
 `/p/` is refused (exit 2) before anything is sent, and never repaired. An
-answer that is not the wiki's (not JSON, or not Markdown, by its content type
-and its text: a wrong `WIKI_URL`, a proxy's page) fails with exit 1 and says
-so. A failure is one line on standard error, and its exit
+answer that is not the wiki's fails with exit 1 and says so, and changes
+nothing that is remembered: each request has one answer the wiki gives on
+success (a read 200 with its content type, a listing or a search in the
+shape the server writes it, a page with its version; a write 204 with its new
+version and no body), and anything else (a wrong `WIKI_URL`, a proxy's page,
+a JSON error with 200) is not taken for it. A failure is one line on standard error, and its exit
 code tells the kinds apart: 2 a wrong use (or no version known for a `put`),
 3 the sign-in refused, 4 not found or not yours to read, 5 the page saved
 since your version, 6 refused (not allowed, an encrypted space), 7 too many

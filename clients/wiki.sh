@@ -34,6 +34,35 @@ nl='
 cr=$(printf '\r')
 tab=$(printf '\t')
 
+# Every file this script makes, where, and how:
+#
+#   the run's directory      mktemp -d under TMPDIR (mode 700), removed on
+#                            exit: every answer's body and headers, curl's
+#                            errors, a put's text, and the MCP server's
+#                            messages, replies, results and arguments
+#   the state files          under WIKI_STATE_DIR (~/.local/state/wiki),
+#                            whose directories mkdir -p makes under umask
+#                            077: each written to a file mktemp makes beside
+#                            it (mode 600), then moved over it
+#   get --out FILE           FILE and FILE.version, each written to a file
+#                            mktemp makes in FILE's directory (mode 600,
+#                            never a name this script composes), given the
+#                            mode of the file it replaces (or, for a new
+#                            one, the mode the caller's umask gives a new
+#                            file), then moved over it; a FILE or
+#                            FILE.version that is a symbolic link is
+#                            refused, so nothing is written through one
+#   put --file FILE          FILE.version, as get --out writes it, when it
+#                            names the page written
+#   curl's config            a here-document on descriptor 3: a pipe, or on
+#                            bash 3.2 a file the shell itself makes and
+#                            removes
+#
+# The caller's umask is kept for a new FILE, and the script's own is 077,
+# so that nothing else it makes can be read by others.
+user_umask=$(umask -S 2>/dev/null) || user_umask=u=rwx,g=rx,o=rx
+umask 077
+
 # ---------------------------------------------------------------------------
 # Small helpers
 
@@ -357,6 +386,7 @@ check_answer() {
       fail "$EX_LIMITED" "too many failed sign-ins (429): try again in ${wait_for:-a few} seconds$said"
       ;;
     400) fail "$EX_REFUSED" "the wiki refused the request (400)$said" ;;
+    407) fail "$EX_SIGNIN" "a proxy asks for a sign-in (407), not the wiki: give WIKI_PROXY as http://login:password@proxy:port" ;;
     3??) fail "$EX_ERROR" "the wiki answered with a redirect to $(header_value location) ($http_status): set WIKI_URL to the wiki's own address" ;;
     5??) fail "$EX_ERROR" "the wiki failed to answer ($http_status)$said: try again later" ;;
     000) fail "$EX_CONNECTION" "no answer from $wiki_base" ;;
@@ -557,33 +587,124 @@ wrong_answer() {
   fail "$EX_ERROR" "the answer of $wiki_base is not the wiki's ($1): is WIKI_URL the wiki's address, or did a proxy answer?"
 }
 
-# A successful answer checked to be what the wiki sends before it is read:
-# KIND json (Content-Type application/json, and JSON by its grammar) or
-# markdown (text/markdown). A proxy's page fails at once.
+# A successful answer (2xx) checked to be exactly what the wiki's handler
+# sends, before anything is read from it or remembered. What each request
+# is answered on success, from the server's code
+# (wiki-server/src/Wiki/Server/MarkdownApi.hs, markdownApplication, and
+# ListApi.hs, listApplication and searchApplication):
+#
+#   KIND       request                     status  Content-Type      body
+#   page       GET api/markdown/s/...      200     text/markdown     the page's
+#                                                                    text; an ETag
+#   written    PUT api/markdown/s/...      204     (none)            empty; an ETag
+#   reference  GET api/markdown/reference  200     text/markdown     the reference
+#   top        GET api/list/               200     application/json  {"spaces": [SPACE]}
+#   space      GET api/list/s/...          200     application/json  SPACE
+#   search     GET api/search?q=...        200     application/json  {"hits": [HIT]}
+#
+#   SPACE  an object: title, path (strings), encrypted (true or false);
+#          when given, list (an address under WIKI_URL's api/list/s/), home
+#          (under api/markdown/s/), subspaces ([SPACE]), pages ([PAGE])
+#   PAGE   an object: title, kind, updated (strings), markdown (under
+#          api/markdown/s/), template (true or false); when given,
+#          children ([PAGE])
+#   HIT    an object: title, excerpt (strings), markdown (under
+#          api/markdown/s/), space (an object with path and title, strings)
+#
+# A create (201), when the API has one, joins this table. Anything else on
+# a 2xx (another status, another type, JSON not of this shape, a read with
+# no ETag, a write's 204 with a body or without an ETag, a proxy's 200 page)
+# is not the wiki's answer, and fails (wrong_answer).
 expect_answer() {
+  kind=$1
+  case $kind in
+    written) want=204 ;;
+    *) want=200 ;;
+  esac
+  if [ "$http_status" != "$want" ]; then
+    wrong_answer "it answered $http_status, where the wiki answers $want"
+    return
+  fi
   media=$(header_value content-type | tr 'A-Z' 'a-z')
   media=${media%%;*}
   trim "$media"
   media=$trimmed
-  case $1 in
-    json)
-      if [ "$media" != application/json ]; then
-        wrong_answer "it is ${media:-of no type}, not JSON"
-        return
-      fi
-      if ! awk "$json_reader" "$work/body" >/dev/null 2>&1; then
-        wrong_answer "it says it is JSON, but is not"
-        return
-      fi
-      ;;
-    markdown)
+  case $kind in
+    page | reference)
       if [ "$media" != text/markdown ]; then
         wrong_answer "it is ${media:-of no type}, not Markdown"
         return
       fi
       ;;
+    written)
+      if [ -s "$work/body" ]; then
+        wrong_answer "a write's answer has a body"
+        return
+      fi
+      ;;
+    *)
+      if [ "$media" != application/json ]; then
+        wrong_answer "it is ${media:-of no type}, not JSON"
+        return
+      fi
+      if ! awk -v shape="$kind" -v mount="$wiki_mount" "$json_reader$answer_shapes" "$work/body" >/dev/null 2>"$work/shape-error"; then
+        wrong_answer "$(head -n 1 "$work/shape-error")"
+        return
+      fi
+      ;;
+  esac
+  case $kind in
+    page | written)
+      if [ -z "$(header_value etag)" ]; then
+        wrong_answer "it has no version (ETag)"
+        return
+      fi
+      ;;
   esac
 }
+
+# The shapes of expect_answer's table, appended to json_reader: its END
+# rule fails (status 3) with the first field that is not as it should be.
+answer_shapes='
+function wrong_at(p, what) { if (problem == "") problem = (p == "" ? "the answer" : p) " is not " what }
+function need(p, kind, what) { if (t[p] != kind) wrong_at(p, what) }
+function may(p, kind, what) { if ((p in t) && t[p] != kind) wrong_at(p, what) }
+function under(p, prefix) { if ((p in t) && (t[p] != "s" || index(v[p], mount prefix) != 1)) wrong_at(p, "an address under " mount prefix) }
+function space_shape(p,   k) {
+  need(p, "o", "an object")
+  need(p "/title", "s", "a string"); need(p "/path", "s", "a string")
+  need(p "/encrypted", "bool", "true or false")
+  under(p "/list", "/api/list/s/"); under(p "/home", "/api/markdown/s/")
+  may(p "/subspaces", "a", "an array"); may(p "/pages", "a", "an array")
+  for (k = 0; k < len[p "/subspaces"] + 0; k++) space_shape(p "/subspaces/" k)
+  for (k = 0; k < len[p "/pages"] + 0; k++) page_shape(p "/pages/" k)
+}
+function page_shape(p,   k) {
+  need(p, "o", "an object")
+  need(p "/title", "s", "a string"); need(p "/kind", "s", "a string"); need(p "/updated", "s", "a string")
+  need(p "/markdown", "s", "a string"); under(p "/markdown", "/api/markdown/s/")
+  need(p "/template", "bool", "true or false")
+  may(p "/children", "a", "an array")
+  for (k = 0; k < len[p "/children"] + 0; k++) page_shape(p "/children/" k)
+}
+function hit_shape(p) {
+  need(p, "o", "an object")
+  need(p "/title", "s", "a string"); need(p "/excerpt", "s", "a string")
+  need(p "/markdown", "s", "a string"); under(p "/markdown", "/api/markdown/s/")
+  need(p "/space", "o", "an object"); need(p "/space/path", "s", "a string"); need(p "/space/title", "s", "a string")
+}
+END {
+  if (shape == "top") {
+    need("", "o", "an object"); need("/spaces", "a", "an array of spaces")
+    for (k = 0; k < len["/spaces"] + 0; k++) space_shape("/spaces/" k)
+  } else if (shape == "space") space_shape("")
+  else if (shape == "search") {
+    need("", "o", "an object"); need("/hits", "a", "an array of hits")
+    for (k = 0; k < len["/hits"] + 0; k++) hit_shape("/hits/" k)
+  }
+  if (problem != "") { print "it is JSON, but " problem > "/dev/stderr"; exit 3 }
+}
+'
 
 # The search's hits, best first: title, address and space, then the excerpt.
 render_search() {
@@ -867,9 +988,14 @@ page_address_found() {
 #                                  once the wiki accepted the write, however
 #                                  the version sent was chosen; FILE.version
 #                                  is never made by a put
-#   a write accepted with no ETag  both records of the page are removed: the
-#                                  text sent is newer than what they say, so
-#                                  the next put must not go out blind
+#   an answer not the wiki's       nothing: a 2xx that is not the answer the
+#                                  wiki gives (expect_answer's table: a
+#                                  proxy's 200 page to a put, a write's 204
+#                                  with no ETag, a read with none) fails
+#                                  before any record is touched; after such
+#                                  a put the records keep the older version,
+#                                  and the next put is refused (412) if the
+#                                  write did happen
 #   a refused or failed request    nothing (412, 4xx, 5xx, no connection)
 #   an interrupted run             nothing before the answer; between an
 #                                  accepted write and the records, they keep
@@ -880,8 +1006,9 @@ page_address_found() {
 #   wiki_write_page (MCP)          the state file, once the wiki accepted
 #                                  the write
 #
-# Each record is written to a temporary file and moved into place, so an
-# interrupted write leaves the record whole, old or new.
+# Each record is written to a file mktemp makes beside it and moved into
+# place (stage and place_staged), so an interrupted write leaves the record
+# whole, old or new.
 
 # The state file of the page at addr: under WIKI_STATE_DIR, by default
 # ~/.local/state/wiki, then the wiki's address and the page's, ending in
@@ -893,18 +1020,71 @@ version_file() {
   printf '%s/%s/%s_version' "$state" "$site" "$addr"
 }
 
-# Write a record whole: CONTENT into FILE, through a temporary file beside
-# it.
+# The directory of a path: where a file beside it is made.
+directory_of() {
+  case $1 in
+    */*) dir=${1%/*} && printf '%s' "${dir:-/}" ;;
+    *) printf . ;;
+  esac
+}
+
+# The mode of an existing file in chmod's symbolic form, from ls (the one
+# way stock Linux and macOS agree on): -rw-r----- is u=rw,g=r,o=. Set-id
+# and sticky bits count as x.
+mode_of() {
+  ls -ld -- "$1" 2>/dev/null | awk '{
+    m = $1
+    split("u g o", who, " ")
+    r = ""
+    for (k = 0; k < 3; k++) {
+      s = substr(m, 2 + 3 * k, 3)
+      p = ""
+      if (substr(s, 1, 1) == "r") p = p "r"
+      if (substr(s, 2, 1) == "w") p = p "w"
+      if (index("xst", substr(s, 3, 1)) > 0) p = p "x"
+      r = r (k > 0 ? "," : "") who[k + 1] "=" p
+    }
+    print r
+  }'
+}
+
+# A new file for FILE, made by mktemp in FILE's directory (mode 600, a name
+# nobody could make beforehand), in staged; its status is 1 when it cannot
+# be made.
+stage() {
+  staged=$(mktemp "$(directory_of "$1")/.wiki-sh.XXXXXX" 2>/dev/null) || return 1
+}
+
+# The staged file moved over FILE, with FILE's mode when FILE exists and
+# PRIVATE is not given, the mode the caller's umask gives a new file when
+# it does not, and 600 with PRIVATE (the state files).
+place_staged() {
+  if [ "${3:-}" != private ]; then
+    if [ -e "$2" ]; then
+      mode=$(mode_of "$2")
+    else
+      mode=$(printf '%s' "$user_umask" | sed 's/x//g')
+    fi
+    chmod "$mode" "$1" 2>/dev/null || return 1
+  fi
+  mv -f "$1" "$2" 2>/dev/null
+}
+
+# Write a record whole: CONTENT into FILE, through a staged file; PRIVATE
+# as for place_staged.
 write_record() {
-  { printf '%s' "$2" >"$1.$$" && mv -f "$1.$$" "$1"; } 2>/dev/null || {
-    rm -f "$1.$$"
+  stage "$1" || return 1
+  if ! { printf '%s' "$2" >"$staged" && place_staged "$staged" "$1" "${3:-}"; } 2>/dev/null; then
+    rm -f "$staged"
     return 1
-  }
+  fi
 }
 
 # The sidecar of FILE, when it is this page's: FILE.version, else nothing.
+# A sidecar that is a symbolic link is never this page's: nothing is
+# written through one.
 sidecar_of() {
-  if [ -n "$1" ] && [ -f "$1.version" ] && [ "$(sed -n 2p "$1.version")" = "$addr_shown" ]; then
+  if [ -n "$1" ] && [ -f "$1.version" ] && [ ! -L "$1.version" ] && [ "$(sed -n 2p "$1.version")" = "$addr_shown" ]; then
     printf '%s' "$1.version"
   fi
 }
@@ -914,19 +1094,13 @@ sidecar_of() {
 # this page's).
 record_version() {
   vf=$(version_file)
-  if ! { mkdir -p "${vf%/*}" && write_record "$vf" "$1$nl"; }; then
+  if ! { mkdir -p "${vf%/*}" && write_record "$vf" "$1$nl" private; }; then
     note "cannot keep the version in $vf"
   fi
   sidecar=$(sidecar_of "${2:-}")
   if [ -n "$sidecar" ] && ! write_record "$sidecar" "$1$nl$addr_shown$nl"; then
     note "cannot keep the version in $sidecar"
   fi
-}
-
-# The page at addr is at a version not known: its records go.
-forget_version() {
-  sidecar=$(sidecar_of "${1:-}")
-  rm -f "$(version_file)" ${sidecar:+"$sidecar"}
 }
 
 remembered_version() {
@@ -952,17 +1126,14 @@ quoted_version() {
 fetch_page() {
   wiki_request GET "api/markdown/$addr" || return
   check_answer "$addr_shown" || return
-  expect_answer markdown || return
+  expect_answer page || return
   page_version=$(header_value etag)
-  if [ -z "$page_version" ]; then
-    fail "$EX_ERROR" "the wiki gave no version (ETag) for $addr_shown"
-    return
-  fi
 }
 
 # The file's text written over the page at addr, conditional on the version
-# given (none: unconditional). The new version is in page_version, empty
-# when the wiki gave none; the caller records it.
+# given (none: unconditional). The new version is in page_version; the
+# caller records it. An answer that is not the wiki's 204 with an ETag
+# fails, and nothing is recorded.
 store_page() {
   store_body=$1 store_if_match=$2
   if [ -n "$store_if_match" ]; then
@@ -972,14 +1143,16 @@ store_page() {
   fi
   wiki_request PUT "api/markdown/$addr" -H 'Content-Type: text/markdown; charset=utf-8' --data-binary "@$store_body" "$@" || return
   check_answer "$addr_shown" || return
+  expect_answer written || return
   page_version=$(header_value etag)
 }
 
 # The listing of SPACE (empty: the whole wiki), DEPTH levels deep (empty:
 # all), as the server's JSON in $work/body.
 fetch_list() {
-  list_path=api/list/
+  list_path=api/list/ list_kind=top
   if [ -n "$1" ]; then
+    list_kind=space
     page_address "$1" || return
     if [ -n "$pg" ]; then
       fail "$EX_USAGE" "$1 is a page: list takes a space's path (team/projects)"
@@ -994,7 +1167,7 @@ fetch_list() {
   fi
   wiki_request GET "$list_path" "$@" || return
   check_answer "the space ${list_path#api/list/}" || return
-  expect_answer json
+  expect_answer "$list_kind"
 }
 
 # The search for WORDS in SPACE (empty: everywhere), LIMIT hits (empty: the
@@ -1013,7 +1186,7 @@ fetch_search() {
   [ -z "$limit" ] || set -- "$@" --data-urlencode "limit=$limit"
   wiki_request GET api/search "$@" || return
   check_answer "the search" || return
-  expect_answer json
+  expect_answer search
 }
 
 # The Markdown reference: the whole of it (no argument), the list of its
@@ -1022,7 +1195,7 @@ fetch_search() {
 show_reference() {
   wiki_request GET api/markdown/reference || return
   check_answer "the Markdown reference" || return
-  expect_answer markdown || return
+  expect_answer reference || return
   if [ $# = 0 ]; then
     cat "$work/body"
     return
@@ -1183,6 +1356,15 @@ cmd_get() {
   [ -n "$first" ] || { usage "get needs a page's address"; return; }
   load_config || return
   page_address "$first" "$second" || return
+  if [ -n "$out" ]; then
+    # Nothing is written through a symbolic link, nor into a directory.
+    for target in "$out" "$out.version"; do
+      if [ -L "$target" ] || [ -d "$target" ]; then
+        fail "$EX_USAGE" "$target is a symbolic link or a directory: give --out a plain file"
+        return
+      fi
+    done
+  fi
   fetch_page || return
   # The version is recorded only once the text is delivered whole (the
   # table above record_version).
@@ -1196,24 +1378,31 @@ cmd_get() {
     # put of it is refused (412) unless nobody saved since; the other
     # order would leave the new version beside the old text, which a put
     # would write over the new version's changes unseen.
-    text_tmp=$out.wiki-sh-$$ version_tmp=$out.version.wiki-sh-$$
+    # Each is staged in a file mktemp makes beside it (stage), and gets the
+    # mode of the file it replaces as it is moved in (place_staged).
+    if ! stage "$out"; then
+      fail "$EX_ERROR" "cannot make a file in the directory of $out: $out and its version are as they were"
+      return
+    fi
+    text_tmp=$staged
     if ! { cat "$work/body" >"$text_tmp"; } 2>/dev/null ||
       [ "$(($(wc -c <"$text_tmp")))" != "$(($(wc -c <"$work/body")))" ]; then
       rm -f "$text_tmp"
       fail "$EX_ERROR" "cannot write $out whole (is the disk full, or a file size limit reached?): $out and its version are as they were"
       return
     fi
-    if ! { printf '%s\n%s\n' "$page_version" "$addr_shown" >"$version_tmp"; } 2>/dev/null; then
-      rm -f "$text_tmp" "$version_tmp"
+    if ! stage "$out.version" || ! { printf '%s\n%s\n' "$page_version" "$addr_shown" >"$staged"; } 2>/dev/null; then
+      rm -f "$text_tmp" ${staged:+"$staged"}
       fail "$EX_ERROR" "cannot write $out.version: $out and its version are as they were"
       return
     fi
-    if ! mv -f "$text_tmp" "$out"; then
+    version_tmp=$staged
+    if ! place_staged "$text_tmp" "$out"; then
       rm -f "$text_tmp" "$version_tmp"
       fail "$EX_ERROR" "cannot move the text into $out: $out and its version are as they were"
       return
     fi
-    if ! mv -f "$version_tmp" "$out.version"; then
+    if ! place_staged "$version_tmp" "$out.version"; then
       rm -f "$version_tmp"
       fail "$EX_ERROR" "$out has the page's new text, but $out.version could not be written: a put --file $out will be refused; get the page again"
       return
@@ -1289,13 +1478,8 @@ cmd_put() {
   store_page "$work/put-body" "$version" || return
   # Accepted: every record of the page follows, however the version sent
   # was chosen (the table above record_version).
-  if [ -n "$page_version" ]; then
-    record_version "$page_version" "$file"
-    note "wrote $addr_shown; its version is now $page_version"
-  else
-    forget_version "$file"
-    note "wrote $addr_shown; the wiki gave no new version, so none is remembered: get the page before the next put"
-  fi
+  record_version "$page_version" "$file"
+  note "wrote $addr_shown; its version is now $page_version"
 }
 
 cmd_reference() {
@@ -1609,7 +1793,7 @@ mcp_call_tool() {
       mv "$work/arg" "$work/content"
       page_address "$page" || { tool_failed "$fail_message"; return; }
       if store_page "$work/content" "$(quoted_version "$version")"; then
-        if [ -n "$page_version" ]; then record_version "$page_version"; else forget_version; fi
+        record_version "$page_version"
         printf 'Wrote %s. Its version is now %s.' "$addr_shown" "$page_version" >"$work/tool-text"
         tool_answer false "$work/tool-text"
       elif [ $? = "$EX_MOVED" ]; then

@@ -204,8 +204,13 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 cat "$FAKE_BODY" >"$out"
-printf 'HTTP/1.1 200 OK\r\nContent-Type: %s\r\nETag: "2026-11-23T00:00:00Z"\r\n\r\n' "$FAKE_TYPE" >"$headers"
-printf '200 %s' "$(($(wc -c <"$FAKE_BODY")))"
+{
+  printf 'HTTP/1.1 %s Fake\r\n' "$FAKE_STATUS"
+  [ -z "$FAKE_TYPE" ] || printf 'Content-Type: %s\r\n' "$FAKE_TYPE"
+  [ "$FAKE_ETAG" = none ] || printf 'ETag: %s\r\n' "$FAKE_ETAG"
+  printf '\r\n'
+} >"$headers"
+printf '%s %s' "$FAKE_STATUS" "$(($(wc -c <"$FAKE_BODY")))"
 EOF
 chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl"
 # The PATH the client runs with: the recording curl, and the failing jq
@@ -549,6 +554,8 @@ suite() {
   rm -f "$work/jq.calls"
 
   wrong_answers
+  answers_by_kind
+  files_written
   round_trip "$public_root" root
   round_trip "$public_wiki" base-path
   url=$public_root user=editor password=$editor_password state=$work/state-$1-a input=/dev/null
@@ -692,14 +699,173 @@ EOF
 # Answers that are not the wiki's, as a wrong WIKI_URL or a proxy gives
 # them with 200, from the answering fake curl: each command and each MCP
 # tool fails with the wrong-answer message, and a right answer passes.
+fake_status=200 fake_etag='"2026-11-23T00:00:00Z"'
 fake_answer() {
   printf '%s' "$1" >"$work/fake-body"
   fake_type=$2
   shift 2
   env -i PATH="$work/fakes/answer:$work/fakes/nojq:$PATH" HOME="$work/home" WIKI_URL=http://wiki.invalid WIKI_USER=editor WIKI_PASSWORD=x \
-    WIKI_STATE_DIR="$work/state-$shell-fake" FAKE_BODY="$work/fake-body" FAKE_TYPE="$fake_type" \
+    WIKI_STATE_DIR="$work/state-$shell-fake" FAKE_BODY="$work/fake-body" FAKE_TYPE="$fake_type" FAKE_STATUS="$fake_status" FAKE_ETAG="$fake_etag" \
     "$shell" "$client" "$@" </dev/null >"$work/out" 2>"$work/err"
   status=$?
+}
+
+# A 2xx that is not the answer the wiki's handler gives (expect_answer's
+# table in clients/wiki.sh): BODY, TYPE, STATUS and ETAG (none for no
+# ETag), then the command. It fails with the wrong-answer message.
+not_the_wikis() {
+  fake_status=$3 fake_etag=$4
+  body=$1 type=$2
+  shift 4
+  fake_answer "$body" "$type" "$@"
+  expect 1 "$* answered $fake_status ${type:-without a type}, ETag $fake_etag: $body fails"
+  has err "is not the wiki's" "$* answered so says the answer is not the wiki's"
+  fake_status=200 fake_etag='"2026-11-23T00:00:00Z"'
+}
+
+# Every kind of request, answered with what is not the wiki's answer: a
+# proxy's 200 page, a 200 JSON error, the right type in the wrong shape, a
+# 204 where a body is due and a 200 where a 204 is; and for a put, the
+# remembered version and the sidecar unchanged after it. In the commands
+# and through the MCP tools.
+answers_by_kind() {
+  html='<html><body>Sign in to the proxy</body></html>'
+  login='{"error":"login required"}'
+  page_text='# A page'
+  v='"2026-11-23T00:00:00Z"'
+  # A page's Markdown.
+  not_the_wikis "$html" text/html 200 "$v" get /s/team/p/x/
+  not_the_wikis "$login" application/json 200 "$v" get /s/team/p/x/
+  not_the_wikis "$page_text" 'text/markdown; charset=utf-8' 200 none get /s/team/p/x/
+  not_the_wikis '' '' 204 "$v" get /s/team/p/x/
+  fake_answer "$page_text" 'text/markdown; charset=utf-8' get /s/team/p/x/
+  expect 0 "get answered as the wiki answers succeeds"
+  # The reference.
+  not_the_wikis "$html" text/html 200 none reference
+  not_the_wikis "$login" application/json 200 none reference
+  not_the_wikis '' '' 204 none reference
+  # The listing of the top level, and of a space.
+  space='{"title":"T","path":"t","encrypted":false,"list":"/api/list/s/t/","home":"/api/markdown/s/t/","subspaces":[],"pages":[]}'
+  not_the_wikis "$html" text/html 200 none list
+  not_the_wikis "$login" application/json 200 none list
+  not_the_wikis '{"spaces":{}}' application/json 200 none list
+  not_the_wikis '{"spaces":[{"path":"t","encrypted":false}]}' application/json 200 none list
+  not_the_wikis '{"spaces":[{"title":1,"path":"t","encrypted":false}]}' application/json 200 none list
+  not_the_wikis '' application/json 204 none list
+  fake_answer "{\"spaces\":[$space]}" application/json list
+  expect 0 "list answered as the wiki answers succeeds"
+  not_the_wikis "$login" application/json 200 none list team
+  not_the_wikis '{"title":"T"}' application/json 200 none list team
+  not_the_wikis '{"title":"T","path":"t","encrypted":"no"}' application/json 200 none list team
+  not_the_wikis '{"title":"T","path":"t","encrypted":false,"pages":[{"title":"P","kind":"document","updated":"x","template":false}]}' application/json 200 none list team
+  not_the_wikis '{"title":"T","path":"t","encrypted":false,"pages":[{"title":"P","kind":"document","markdown":"http://elsewhere.example/x","updated":"x","template":false}]}' application/json 200 none list team
+  not_the_wikis '{"title":"T","path":"t","encrypted":false,"home":"/elsewhere/"}' application/json 200 none list team
+  fake_answer "$space" application/json list team
+  expect 0 "list of a space answered as the wiki answers succeeds"
+  # The search.
+  hit='{"title":"A","excerpt":"a","markdown":"/api/markdown/s/t/p/a/","space":{"path":"t","title":"T"}}'
+  not_the_wikis "$login" application/json 200 none search x
+  not_the_wikis '{"hits":{}}' application/json 200 none search x
+  not_the_wikis '{"hits":[{"title":"A","excerpt":"a","space":{"path":"t","title":"T"}}]}' application/json 200 none search x
+  not_the_wikis '{"hits":[{"title":"A","excerpt":"a","markdown":"/api/markdown/s/t/p/a/","space":"t"}]}' application/json 200 none search x
+  not_the_wikis '' application/json 204 none search x
+  fake_answer "{\"hits\":[$hit]}" application/json search x
+  expect 0 "search answered as the wiki answers succeeds"
+  # A put: its records, the state file and the sidecar, stay as they were.
+  fake_answer "$page_text" 'text/markdown; charset=utf-8' get /s/team/p/x/ --out "$work/fake.md"
+  expect 0 "get --out of a page, for the put's records"
+  state_file=$work/state-$shell-fake/http___wiki.invalid/s/team/p/x/_version
+  cp "$state_file" "$work/fake-state.before"
+  cp "$work/fake.md.version" "$work/fake-sidecar.before"
+  not_the_wikis "$html" text/html 200 "$v" put /s/team/p/x/ --file "$work/fake.md"
+  not_the_wikis '{"ok":true}' application/json 200 "$v" put /s/team/p/x/ --file "$work/fake.md"
+  not_the_wikis 'Saved.' text/plain 204 '"2026-11-24T00:00:00Z"' put /s/team/p/x/ --file "$work/fake.md"
+  not_the_wikis '' '' 204 none put /s/team/p/x/ --file "$work/fake.md"
+  not_the_wikis '' '' 201 '"2026-11-24T00:00:00Z"' put /s/team/p/x/ --file "$work/fake.md"
+  check "after the wrong answers to a put, the state file is as it was" cmp -s "$state_file" "$work/fake-state.before"
+  check "after the wrong answers to a put, the sidecar is as it was" cmp -s "$work/fake.md.version" "$work/fake-sidecar.before"
+  fake_status=204 fake_etag='"2026-11-24T00:00:00Z"'
+  fake_answer '' '' put /s/team/p/x/ --file "$work/fake.md"
+  fake_status=200 fake_etag=$v
+  expect 0 "a put answered as the wiki answers succeeds"
+  check "and its version is remembered" grep -qF '"2026-11-24T00:00:00Z"' "$state_file"
+  # Through the MCP tools: each answer as above, one tool call each.
+  for call in \
+    "$html|text/html|200|$v|wiki_write_page|{\"page\":\"/s/team/p/x/\",\"version\":\"v\",\"content\":\"x\"}" \
+    "|text/plain|200|$v|wiki_write_page|{\"page\":\"/s/team/p/x/\",\"version\":\"v\",\"content\":\"x\"}" \
+    "$page_text|text/markdown|200|none|wiki_read_page|{\"page\":\"/s/team/p/x/\"}" \
+    "$login|application/json|200|none|wiki_list|{}" \
+    "{\"hits\":{}}|application/json|200|none|wiki_search|{\"query\":\"x\"}" \
+    "|text/markdown|204|none|wiki_markdown_reference|{}"; do
+    IFS='|' read -r body type fake_status fake_etag tool arguments <<EOF
+$call
+EOF
+    printf '%s' "$body" >"$work/fake-body"
+    {
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+      "$real_jq" -nc --arg tool "$tool" --argjson arguments "$arguments" '{jsonrpc: "2.0", id: 2, method: "tools/call", params: {name: $tool, arguments: $arguments}}'
+    } >"$work/mcp-kind.in"
+    cp "$state_file" "$work/fake-state.before"
+    env -i PATH="$work/fakes/answer:$PATH" HOME="$work/home" WIKI_URL=http://wiki.invalid WIKI_USER=editor WIKI_PASSWORD=x \
+      WIKI_STATE_DIR="$work/state-$shell-fake" FAKE_BODY="$work/fake-body" FAKE_TYPE="$type" FAKE_STATUS="$fake_status" FAKE_ETAG="$fake_etag" \
+      "$shell" "$client" mcp <"$work/mcp-kind.in" >"$work/mcp-kind.out" 2>/dev/null
+    if "$real_jq" -e -s 'map(select(.id == 2))[0].result | .isError == true and (.content[0].text | test("is not the wiki"))' "$work/mcp-kind.out" >/dev/null; then
+      pass "$tool, answered $fake_status ${type:-without a type}: $body, is the tool's error"
+    else
+      fail "$tool, answered $fake_status ${type:-without a type}: $body, is the tool's error"
+      sed 's/^/  reply: /' "$work/mcp-kind.out" | cut -c1-200 >&2
+    fi
+    check "$tool, answered so, leaves the remembered version as it was" cmp -s "$state_file" "$work/fake-state.before"
+  done
+  fake_status=200 fake_etag=$v
+}
+
+# What get --out writes, where and with which mode: never through a name
+# another user could make first, a symbolic link, with the mode of the file
+# it replaces (or the caller's umask's for a new one), and nothing left
+# beside it.
+files_written() {
+  page_text='# A page'
+  mkdir -p "$work/shared-$shell"
+  out=$work/shared-$shell/page.md
+  printf 'precious\n' >"$work/victim"
+  # The names an earlier version of the client staged under, made links to
+  # the victim beforehand: the client's process id is the one sh -c had,
+  # as it execs the client.
+  printf '%s' "$page_text" >"$work/fake-body"
+  env -i PATH="$work/fakes/answer:$work/fakes/nojq:$PATH" HOME="$work/home" WIKI_URL=http://wiki.invalid WIKI_USER=editor WIKI_PASSWORD=x \
+    WIKI_STATE_DIR="$work/state-$shell-fake" FAKE_BODY="$work/fake-body" FAKE_TYPE=text/markdown FAKE_STATUS=200 FAKE_ETAG="$fake_etag" \
+    sh -c 'ln -s "$1" "$2.wiki-sh-$$"; ln -s "$1" "$2.version.wiki-sh-$$"; exec "$3" "$4" get /s/team/p/x/ --out "$2"' sh "$work/victim" "$out" "$shell" "$client" \
+    </dev/null >"$work/out" 2>"$work/err"
+  status=$?
+  expect 0 "get --out beside links made in advance"
+  check "the file a link made in advance points to is unchanged" [ "$(cat "$work/victim")" = precious ]
+  check "the page is in the file asked for" [ "$(cat "$out")" = "$page_text" ]
+  find "$work/shared-$shell" -type l -exec rm -f {} +
+  # A private file stays private; a new one gets the caller's umask.
+  chmod 600 "$out" "$out.version"
+  ( umask 022 && fake_answer "$page_text" text/markdown get /s/team/p/x/ --out "$out" && exit "$status" )
+  status=$?
+  expect 0 "get --out over a private file"
+  check "the file keeps its mode 600" [ "$(ls -l "$out" | cut -c1-10)" = -rw------- ]
+  check "its version keeps its mode 600" [ "$(ls -l "$out.version" | cut -c1-10)" = -rw------- ]
+  rm -f "$out" "$out.version"
+  ( umask 022 && fake_answer "$page_text" text/markdown get /s/team/p/x/ --out "$out" && exit "$status" )
+  status=$?
+  expect 0 "get --out to a new file"
+  check "the new file has the mode the umask gives (644)" [ "$(ls -l "$out" | cut -c1-10)" = -rw-r--r-- ]
+  check "nothing is left beside it after success" [ -z "$(find "$work/shared-$shell" -name '.wiki-sh.*')" ]
+  # A link given as the file is refused, and nothing is written through it.
+  rm -f "$out"
+  ln -s "$work/victim" "$out"
+  fake_answer "$page_text" text/markdown get /s/team/p/x/ --out "$out"
+  expect 2 "get --out to a symbolic link is refused"
+  check "the file it points to is unchanged" [ "$(cat "$work/victim")" = precious ]
+  rm -f "$out"
+  # A failure leaves nothing beside the file either.
+  fake_answer "$page_text" text/html get /s/team/p/x/ --out "$out"
+  expect 1 "get --out of a wrong answer fails"
+  check "nothing is left beside it after a failure" [ -z "$(find "$work/shared-$shell" -name '.wiki-sh.*')" ]
 }
 wrong_answers() {
   for answer in 'ok|application/json' '<html></html>|text/html' '|application/json' '{"hits":[]} trailing|application/json' \
@@ -734,7 +900,7 @@ wrong_answers() {
       printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"wiki_read_page","arguments":{"page":"/s/team/p/x/"}}}'
     } >"$work/mcp-wrong.in"
     env -i PATH="$work/fakes/answer:$PATH" HOME="$work/home" WIKI_URL=http://wiki.invalid WIKI_USER=editor WIKI_PASSWORD=x \
-      WIKI_STATE_DIR="$work/state-$shell-fake" FAKE_BODY="$work/fake-body" FAKE_TYPE="${answer##*|}" \
+      WIKI_STATE_DIR="$work/state-$shell-fake" FAKE_BODY="$work/fake-body" FAKE_TYPE="${answer##*|}" FAKE_STATUS=200 FAKE_ETAG="$fake_etag" \
       "$shell" "$client" mcp <"$work/mcp-wrong.in" >"$work/mcp-wrong.out" 2>/dev/null
     if "$real_jq" -e -s 'map(select(.id >= 2)) | length == 3 and all(.result.isError == true and (.result.content[0].text | test("is not the wiki")))' "$work/mcp-wrong.out" >/dev/null; then
       pass "the MCP tools, answered ${answer%|*}, report the wrong answer as an error"
@@ -810,7 +976,7 @@ versions_follow_delivery() {
   has err "cannot write $work/limited.md whole" "it fails at the file, after the answer came whole"
   check "the file is as it was" cmp -s "$work/limited.md" "$work/limited.before"
   check "its version beside it is as it was" cmp -s "$work/limited.md.version" "$work/limited.version.before"
-  check "no file is left beside it" [ -z "$(find "$work" -maxdepth 1 -name 'limited.md*wiki-sh*')" ]
+  check "no file is left beside it" [ -z "$(find "$work" -maxdepth 1 -name '.wiki-sh.*')" ]
   client put "$second" --file "$work/limited.md"
   expect 0 "its put goes over the version beside it"
   client get "$second"

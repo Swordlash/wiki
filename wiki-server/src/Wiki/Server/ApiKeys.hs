@@ -42,7 +42,9 @@
 -- When the key's time of last use has to be written ('lastUsedEvery'),
 -- the write waits for the database's writer, and the key could be revoked
 -- meanwhile. So the key is read again and decided again in the writing
--- transaction, and that second decision is the answer.
+-- transaction, and that second decision is the answer. Other requests may
+-- have found the time due too and written it first, so it is written only
+-- if it is still due.
 --
 -- = The limit on failed keys
 --
@@ -83,6 +85,7 @@ module Wiki.Server.ApiKeys
   , refusalName
   , KeyOutcome (..)
   , signInByKey
+  , recordUse
   )
 where
 
@@ -333,44 +336,61 @@ signInByKey st limiter now address presented = do
   let parsed = parseKey (T.strip presented)
       given = encodeUtf8 (secretHash (maybe "" snd parsed))
   found <- maybe (pure Nothing) (\(i, _) -> reading st (keyAndUser i)) parsed
-  decided <- decide given parsed found
-  outcome <- case decided of
-    Right (k, _)
-      | maybe True (\t -> diffUTCTime now t >= lastUsedEvery) k.last_used_at ->
-          -- The write waits for the writer: the key is read and decided
-          -- again in its transaction, and the time written only if it
-          -- still signs in.
-          writing st $ do
-            again <- maybe (pure Nothing) (\(i, _) -> keyAndUser i) parsed
-            let redecided = decidePure (constEq given (storedOf again)) parsed again
-            for_ redecided $ \(k', _) -> runUpdate (update wikiDb.api_keys (\r -> r.last_used_at <-. val_ (Just (micro now))) (\r -> r.id ==. val_ k'.id))
-            pure redecided
-    other -> pure other
+  -- The comparison is made whether or not a key has the id, and forced
+  -- before the decision, so that an unknown id costs what a wrong secret
+  -- does.
+  matches <- evaluate (constEq given (storedHashOf found))
+  outcome <- case decideKey now matches parsed found of
+    Right (k, _) | lastUseDue now k -> writing st (recordUse now presented)
+    other -> pure (snd <$> other)
   case outcome of
-    Right (_, holder) -> pure (KeySignedIn holder)
+    Right holder -> pure (KeySignedIn holder)
     Left why ->
       countFailureAt limiter now address <&> \case
         Allowed -> KeyRefused (fst <$> parsed) why
         Refused seconds -> KeyLimited (fst <$> parsed) why seconds
-  where
-    -- The comparison is made whether or not a key has the id, and forced
-    -- before the decision, so that an unknown id costs what a wrong
-    -- secret does.
-    decide given parsed found = do
-      matches <- evaluate (constEq given (storedOf found))
-      pure (decidePure matches parsed found)
-    storedOf found = encodeUtf8 (maybe unknownHash (\(k, _) -> k.secret_hash) found)
-    decidePure :: Bool -> Maybe (ApiKeyId, Text) -> Maybe (ApiKeys Identity, Bool) -> Either Refusal (ApiKeys Identity, KeyHolder)
-    decidePure matches parsed found = case (parsed, found) of
-      (Nothing, _) -> Left Malformed
-      (Just _, Nothing) -> Left UnknownKey
-      (Just _, Just (k, disabled))
-        | not matches -> Left WrongSecret
-        | isJust k.revoked_at -> Left Revoked
-        | maybe False (<= now) k.expires_at -> Left Expired
-        | disabled -> Left UserDisabled
-        | Just right <- rightOf k.access -> Right (k, KeyHolder {user = UserId k.user_id, key = ApiKeyId k.id, right})
-        | otherwise -> Left Malformed
+
+-- | Whether a key's time of last use is old enough at this time to be
+-- written again: never written, or 'lastUsedEvery' ago or more.
+lastUseDue :: UTCTime -> ApiKeys Identity -> Bool
+lastUseDue now k = maybe True (\t -> diffUTCTime now t >= lastUsedEvery) k.last_used_at
+
+-- | Sign in with a key and write its time of last use, in the writer's
+-- transaction: the step of 'signInByKey' for a key whose time is due. The
+-- write waits for the writer, and the key may have changed meanwhile, so
+-- the key is read and decided again here, and this decision is the
+-- answer. A burst of requests with a key not used for a while all find its
+-- time due and queue for the writer; the time is written only if it is
+-- still due when the read here sees it, so the burst writes it once.
+recordUse :: (Backend be) => UTCTime -> Text -> Db be (Either Refusal KeyHolder)
+recordUse now presented = do
+  let parsed = parseKey (T.strip presented)
+      given = encodeUtf8 (secretHash (maybe "" snd parsed))
+  found <- maybe (pure Nothing) (\(i, _) -> keyAndUser i) parsed
+  let decided = decideKey now (constEq given (storedHashOf found)) parsed found
+  for_ decided $ \(k, _) ->
+    when (lastUseDue now k) $ runUpdate (update wikiDb.api_keys (\r -> r.last_used_at <-. val_ (Just (micro now))) (\r -> r.id ==. val_ k.id))
+  pure (snd <$> decided)
+
+-- | The stored hash a presented secret is compared with: the key's, or
+-- 'unknownHash' when no key has the id.
+storedHashOf :: Maybe (ApiKeys Identity, Bool) -> ByteString
+storedHashOf found = encodeUtf8 (maybe unknownHash (\(k, _) -> k.secret_hash) found)
+
+-- | Whether a key signs in at a time, given whether its secret matched,
+-- the key as parsed, and the stored key with whether its user is
+-- disabled.
+decideKey :: UTCTime -> Bool -> Maybe (ApiKeyId, Text) -> Maybe (ApiKeys Identity, Bool) -> Either Refusal (ApiKeys Identity, KeyHolder)
+decideKey now matches parsed found = case (parsed, found) of
+  (Nothing, _) -> Left Malformed
+  (Just _, Nothing) -> Left UnknownKey
+  (Just _, Just (k, disabled))
+    | not matches -> Left WrongSecret
+    | isJust k.revoked_at -> Left Revoked
+    | maybe False (<= now) k.expires_at -> Left Expired
+    | disabled -> Left UserDisabled
+    | Just right <- rightOf k.access -> Right (k, KeyHolder {user = UserId k.user_id, key = ApiKeyId k.id, right})
+    | otherwise -> Left Malformed
 
 -- | A key by its id, with whether its user's login is disabled: one query,
 -- whether or not a key has the id, so that the time of the answer does

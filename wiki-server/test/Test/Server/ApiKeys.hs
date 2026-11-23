@@ -435,6 +435,18 @@ atTimes backing = describe "signing in at a time" $ do
     usedAt (addUTCTime (9 * 60) now) `shouldReturn` [Just (micro (addUTCTime 1 now))]
     usedAt (addUTCTime (11 * 60) now) `shouldReturn` [Just (micro (addUTCTime (11 * 60) now))]
 
+  it "writes the time once when requests that all found it due reach the writer one after another" $ withDemo backing $ \st -> do
+    now <- getCurrentTime
+    made <- either (panic . show) identity <$> makeApiKey st now (UserId "user-editor") False NewApiKey {name = "Burst", right = ReadRight, expiresAt = Nothing, password = Nothing}
+    let lastUse = map (\k -> k.lastUsedAt) <$> apiKeysOf st (UserId "user-editor")
+    -- Two requests read the key before either wrote its time, so both go
+    -- on to the writer's step ('recordUse'). The first writes; the second,
+    -- a second later and inside the interval, signs in and writes nothing.
+    writing st (recordUse (addUTCTime 1 now) made.key) `shouldReturn` Right KeyHolder {user = UserId "user-editor", key = made.info.id, right = ReadRight}
+    lastUse `shouldReturn` [Just (micro (addUTCTime 1 now))]
+    writing st (recordUse (addUTCTime 2 now) made.key) `shouldReturn` Right KeyHolder {user = UserId "user-editor", key = made.info.id, right = ReadRight}
+    lastUse `shouldReturn` [Just (micro (addUTCTime 1 now))]
+
   it "says why it refused, for the log: the id only of a key that was well formed" $ withDemo backing $ \st -> do
     limiter <- newLimiter defaultLimits
     now <- getCurrentTime

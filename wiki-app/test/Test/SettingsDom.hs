@@ -17,14 +17,15 @@
 module Test.SettingsDom (spec) where
 
 import Data.Map.Strict qualified as Map
+import Data.Time (UTCTime (..), fromGregorian)
 import Halogen.Router qualified as Router
 import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Halogen.VDom.DOM.Monad.Native qualified as N
 import Protolude hiding (find)
-import Test.Harness.MemDom (View, click, clickOutside, find, findAll, outputs, settle, tell, textOf, typeInto, withView)
+import Test.Harness.MemDom (View, click, clickOutside, find, findAll, outputs, setInput, settle, tell, textOf, typeInto, withView)
 import Test.Hspec
-import Wiki.Api.Account (SignInMethods (..))
+import Wiki.Api.Account (LinkedIdentity (..), SignInMethods (..))
 import Wiki.Api.Account qualified as Account (PasswordChange (..))
 import Wiki.App (component, input)
 import Wiki.App.Account (Accounts (..), SignInError (..))
@@ -82,7 +83,7 @@ spec = describe "Wiki.App.View.SignIn and Wiki.App.Shell, the way to the setting
   describe "the server's menu under the user's name" $ do
     it "holds Settings and Sign out for a user signed in, and closes on a press outside" $ do
       editor <- signedIn "user-editor"
-      withSignIn editor $ \view -> do
+      withSignIn editor False $ \view -> do
         (length <$> findAll view ".account-menu") `shouldReturn` 0
         click view ".account-toggle"
         settle view
@@ -92,11 +93,21 @@ spec = describe "Wiki.App.View.SignIn and Wiki.App.Shell, the way to the setting
         settle view
         (length <$> findAll view ".account-menu") `shouldReturn` 0
 
+    it "signs nobody out while the shell changes the user's password, and says why" $ do
+      editor <- signedIn "user-editor"
+      withSignIn editor True $ \view -> do
+        click view ".account-toggle"
+        settle view
+        textOf view ".account-menu .sign-out-note" `shouldReturn` "Your password is being changed: you can sign out once that is done."
+        click view ".account-menu .sign-out"
+        settle view
+        length <$> outputs view `shouldReturn` 0
+
     it "offers a visitor only to sign in, and to create an account where the wiki takes new ones" $ do
-      withSignIn (anonymousIn Open) $ \view -> do
+      withSignIn (anonymousIn Open) False $ \view -> do
         (findAll view ".account > button" >>= traverse N.textContent) `shouldReturn` ["Sign in", "Create account"]
         (length <$> findAll view ".account-toggle, .settings-entry, .sign-out") `shouldReturn` 0
-      withSignIn (anonymousIn Closed) $ \view ->
+      withSignIn (anonymousIn Closed) False $ \view ->
         (findAll view ".account > button" >>= traverse N.textContent) `shouldReturn` ["Sign in"]
 
   describe "the section \"How you sign in\", whose change of password the shell runs" $ do
@@ -118,21 +129,29 @@ spec = describe "Wiki.App.View.SignIn and Wiki.App.Shell, the way to the setting
             length <$> findAll view ".password-change" `shouldReturn` 0
           _ -> expectationFailure ("one change asked for, not " <> show (length asked))
 
-    it "offers no change while the shell runs one asked for by a section left since, and takes from its answer the methods only" $ do
+    -- The methods shown come from one ask at a time. A section mounted
+    -- again while the shell runs another mount's change reads nothing
+    -- (its read could be answered before or after the change), offers
+    -- nothing (a disconnection would overlap the change), and does not
+    -- show that change's answer, which may be older than a read asked
+    -- after it. Once the change has ended, it reads the methods.
+    it "reads and offers nothing while the shell runs a change asked for by a section left since, takes nothing from that change's answer, and reads the methods once it has ended" $ do
       editor <- signedIn "user-editor"
       -- The ticket of a mount left since: the section mounted before.
       left <- withMethods editor False askChange
       withMethods editor True $ \view -> do
-        textOf view ".account-password" `shouldReturn` "No password: you sign in with the accounts below."
-        click view ".password-change-toggle"
-        settle view
-        length <$> findAll view ".password-change" `shouldReturn` 0
+        textOf view ".account-methods-section .loading" `shouldReturn` "Your password is being changed. How you sign in is shown once that is done."
+        length <$> findAll view ".password-change-toggle, .identity-disconnect" `shouldReturn` 0
         case left of
           [SignInMethods.ChangePassword ticket _] -> do
             tell view (SignInMethods.Answered ticket (Right withPassword))
             settle view
-            textOf view ".account-password" `shouldReturn` "With your password"
-            length <$> findAll view ".account-told" `shouldReturn` 0
+            length <$> findAll view ".account-password, .identity" `shouldReturn` 0
+            setInput view (methodsInput editor False)
+            settle view
+            textOf view ".identity-provider" `shouldReturn` "github"
+            length <$> findAll view ".identity-disconnect:not([disabled])" `shouldReturn` 1
+            length <$> outputs view `shouldReturn` 0
           _ -> expectationFailure ("one change asked for, not " <> show (length left))
   where
     withPassword = SignInMethods {password = True, identities = []}
@@ -173,27 +192,32 @@ signedIn user = do
 
 -- | The sign-in view alone, for this session, over a backend that signs
 -- nobody in and says nothing.
-withSignIn :: Session -> (View SignIn.Query (SignIn.Input (MemWiki MemDOM)) SignIn.Output -> IO a) -> IO a
-withSignIn s body = do
+-- And whether the shell runs a change of the user's password.
+withSignIn :: Session -> Bool -> (View SignIn.Query (SignIn.Input (MemWiki MemDOM)) SignIn.Output -> IO a) -> IO a
+withSignIn s changingPassword body = do
   wiki <- newMemWiki (demoState demoNow)
   let run :: MemWiki MemDOM a -> MemDOM a
       run = runMemWiki wiki
   router <- runMemDOM (run (Router.newRouter "/" Unknown route))
-  withView run SignIn.component SignIn.Input {accounts = refusing, session = s, avatar = Nothing, here = "/", router} $ \view -> do
+  withView run SignIn.component SignIn.Input {accounts = refusing, session = s, avatar = Nothing, here = "/", router, changingPassword} $ \view -> do
     settle view
     body view
 
--- | The section "How you sign in" alone, for this session, and whether
--- the shell runs a change of password for the user already. The user
--- has a password, except while the shell runs a change: then they have
--- none at first, so that the answer's methods are seen to be taken.
+-- | The section "How you sign in" alone ('methodsInput').
 withMethods :: Session -> Bool -> (View SignInMethods.Query (SignInMethods.Input MemDOM) SignInMethods.Output -> IO a) -> IO a
 withMethods s changing body =
-  withView identity SignInMethods.component SignInMethods.Input {accounts, session = s, here = "/", changing} $ \view -> do
+  withView identity SignInMethods.component (methodsInput s changing) $ \view -> do
     settle view
     body view
+
+-- | The input of the section "How you sign in", for this session, and
+-- whether the shell runs a change of password for the user already. The
+-- user has a password and a provider's account.
+methodsInput :: Session -> Bool -> SignInMethods.Input MemDOM
+methodsInput s changing = SignInMethods.Input {accounts, session = s, here = "/", changing}
   where
-    accounts = answering (Right SignInMethods {password = not changing, identities = []})
+    accounts = answering (Right SignInMethods {password = True, identities = [github]})
+    github = LinkedIdentity {provider = "github", email = Nothing, name = Nothing, linkedAt = UTCTime (fromGregorian 2026 1 1) 0}
 
 -- | Sign-in methods that refuse everything: the menu needs none of them.
 refusing :: (Applicative m) => Accounts m
@@ -212,7 +236,7 @@ answering methods =
     , acceptInvitation = \_ _ -> pure (Left refused)
     , identities = pure methods
     , unlinkIdentity = \_ -> pure (Left no)
-    , changePassword = \_ -> pure (Left refused)
+    , changePassword = \_ _ -> pure (Left refused)
     , confirmSecondFactor = \_ -> pure (Left refused)
     , beginPasskeySignIn = pure (Left refused)
     , finishPasskeySignIn = \_ -> pure (Left refused)

@@ -819,7 +819,7 @@ component =
       Nothing
         | st.world /= WorldReady -> Nothing
         | Just accounts <- st.accounts ->
-            Just (HH.slot "signIn" () SignInView.component SignInView.Input {accounts, session = st.session, avatar = ownAvatar st, here = Router.href st.router st.route, router = st.router} FromAccount)
+            Just (HH.slot "signIn" () SignInView.component SignInView.Input {accounts, session = st.session, avatar = ownAvatar st, here = Router.href st.router st.route, router = st.router, changingPassword = isJust st.passwordChange} FromAccount)
         | Just u <- st.session.user -> Just [hh|<span class="user-name">{{ avatar SmallAvatar (ownAvatar st) u.displayName }}{{ u.displayName }}</span>|]
         | otherwise -> Just [hh|<span class="user-name">Not signed in</span>|]
 
@@ -1733,20 +1733,25 @@ component =
       -- server's answer). The shell lasts as long as the page, so the
       -- change runs to its end, and the answer goes to the section if it
       -- is still mounted for the same user.
-      ChangePassword who (SignInMethodsView.ChangePassword ticket change) ->
-        gets (\st -> st.accounts)
-          >>= traverse_
-            ( \a -> do
-                modify (\st -> st {passwordChange = who})
-                -- A failure that throws is an answer too, so that neither
-                -- the shell nor the section waits for one for ever.
-                result <-
-                  H.try (H.async (changeOwnPassword a.changePassword change)) <&> \case
-                    Left (e :: SomeException) -> Left (SignInFailed (Invalid ("The password could not be changed: " <> show e)))
-                    Right answered -> answered
-                modify (\st -> st {passwordChange = if st.passwordChange == who then Nothing else st.passwordChange})
-                H.tell "signInMethods" who (SignInMethodsView.Answered ticket result)
-            )
+      --
+      -- The change is for the user it was asked for, whoever is signed in
+      -- by the time its requests go. In this tab, signing out waits for it
+      -- to end (the sign-in view's input 'changingPassword'). What this tab
+      -- cannot hold back (another tab's sign-out and sign-in, a session
+      -- that expired) the change itself refuses: the new password's record
+      -- is made only for this user ('Wiki.App.Vault.changeOwnPassword').
+      ChangePassword who (SignInMethodsView.ChangePassword ticket change) -> do
+        accounts <- gets (\st -> st.accounts)
+        for_ ((,) <$> accounts <*> who) $ \(a, u) -> do
+          modify (\st -> st {passwordChange = Just u})
+          -- A failure that throws is an answer too, so that neither the
+          -- shell nor the section waits for one for ever.
+          result <-
+            H.try (H.async (changeOwnPassword a.changePassword u change)) <&> \case
+              Left (e :: SomeException) -> Left (SignInFailed (Invalid ("The password could not be changed: " <> show e)))
+              Right answered -> answered
+          modify (\st -> st {passwordChange = if st.passwordChange == Just u then Nothing else st.passwordChange})
+          H.tell "signInMethods" who (SignInMethodsView.Answered ticket result)
       -- An invitation created its account and signed the new user in: the
       -- wiki as them, from its front page.
       FromInvite (InviteView.Accepted s) -> do

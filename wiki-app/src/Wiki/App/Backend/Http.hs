@@ -165,7 +165,7 @@ import Wiki.Core.Anchor (Anchor)
 import Wiki.Core.Attachment (Attachment (..), FileName (..), MimeType (..), Source (..), distinctAttachments, mimeEssence, parseFileName, shownInBrowser, uploadedMimeType)
 import Wiki.Core.Comment (Comment (..), Thread (..), checkCommentBody)
 import Wiki.Core.Encrypted (Chain (..), ChainProblem (..), Judged (..), Kept (..), KeyGrant (..), PageKey (..), SealedAnchor (..), SealedComment (..), SealedContent (..), SealedHeading (..), SealedMeta (..), Seen (..), VersionTag (..), anchorData, attachmentBytesData, attachmentMetaData, chainAfter, chainProblemText, commentData, encryptedPageTitle, firstChain, gapIn, headingOf, historyStart, judgeHead, linkedFrom)
-import Wiki.Core.Id (AttachmentId (..), BlobId (..), CommentId (..), CommentThreadId (..), PageId (..), SpaceId (..))
+import Wiki.Core.Id (AttachmentId (..), BlobId (..), CommentId (..), CommentThreadId (..), PageId (..), SpaceId (..), UserId (..))
 import Wiki.Core.Notification (Notification (..), PageLocation (..), WatchTarget (..), withTitle)
 import Wiki.Core.Offered qualified as Offered
 import Wiki.Core.Order (ChildOrder (..))
@@ -1291,13 +1291,15 @@ instance (MonadIO m) => MonadAccount (HttpWiki m) where
 
   -- The user stays the same, and so does what they may read: nothing
   -- cached is removed.
-  changePassword change =
+  changePassword u change =
     proven change.current >>= \case
       Left e -> pure (Left e)
       Right current ->
-        recordFor ForOwnPassword change.new >>= \case
+        ownRecord u change.new >>= \case
           Left e -> pure (Left e)
-          Right password -> withPassword (endpoints.account.changePassword PasswordRecordChange {current, password, vault = Nothing})
+          Right (password, key) -> do
+            liftIO (traverse_ forgetHeld key)
+            withPassword (endpoints.account.changePassword PasswordRecordChange {current, password, vault = Nothing})
 
   -- The end of a sign-in, like signing in. The cookie of the sign-in
   -- waiting for its code is sent with it, since the browser sends every
@@ -1368,11 +1370,11 @@ instance (MonadIO m) => MonadVault (HttpWiki m) where
     provenWith (Just password) <&> \case
       Left e -> Left e
       Right (_, key) -> Right key
-  changePasswordCarrying change rewrap =
+  changePasswordCarrying u change rewrap =
     proven change.current >>= \case
       Left e -> pure (Left e)
       Right current ->
-        recordWith ForOwnPassword change.new >>= \case
+        ownRecord u change.new >>= \case
           Left e -> pure (Left e)
           Right (password, key) -> do
             -- The vault key, wrapped for the new password at once; the key
@@ -1541,12 +1543,34 @@ recordFor purpose password =
 -- | 'recordFor', with the key the new password's export key gives the
 -- page, when the browser gives one: the caller keeps it or forgets it.
 recordWith :: (MonadIO m) => RegistrationFor -> Password -> HttpWiki m (Either SignInError (PasswordRecord, Maybe KeyRef))
-recordWith purpose password =
+recordWith purpose = recordChecked purpose (const Nothing)
+
+-- | 'recordWith' for the signed-in user's own password, and only for the
+-- user the change was begun for. The server names the record's
+-- credential after the session's user as the registration starts, and
+-- refuses the record for any other session's user afterwards. So when
+-- the session changed to another user before the registration started
+-- (a sign-out, then another sign-in, in this tab or another), the
+-- credential names that other user. The record is then not made, and
+-- nothing is sent: the change would set the other user's password from
+-- what the first one typed.
+ownRecord :: (MonadIO m) => UserId -> Password -> HttpWiki m (Either SignInError (PasswordRecord, Maybe KeyRef))
+ownRecord u = recordChecked ForOwnPassword $ \credential ->
+  if credential == u.text
+    then Nothing
+    else Just (SignInFailed (Conflict "You were signed out, or signed in as someone else, while the password was being changed: it was not changed."))
+
+-- | 'recordWith', with a check of the credential the server names: a
+-- refusal stops the registration before the record and its key are made.
+recordChecked :: (MonadIO m) => RegistrationFor -> (Text -> Maybe SignInError) -> Password -> HttpWiki m (Either SignInError (PasswordRecord, Maybe KeyRef))
+recordChecked purpose refused password =
   liftIO (Opaque.startRegistration password) >>= \case
     Nothing -> pure (Left (SignInFailed (Invalid "This password cannot be used: choose another.")))
     Just (st, request) ->
       withPassword (endpoints.passwordRegistration RegistrationStart {for = purpose, request}) >>= \case
         Left e -> pure (Left e)
+        Right challenge
+          | Just e <- refused challenge.credential -> pure (Left e)
         Right challenge -> case checkNewPassword password of
           Left why -> pure (Left (SignInFailed (Invalid why)))
           Right _ ->

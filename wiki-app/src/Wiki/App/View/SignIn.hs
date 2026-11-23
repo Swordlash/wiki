@@ -111,6 +111,10 @@ data Input m = Input
   -- a provider returns to.
   , router :: Router Route
   -- ^ For the menu's link to the settings.
+  , changingPassword :: Bool
+  -- ^ Whether the shell runs a change of the user's password. Signing
+  -- out waits for it to end: a change still under way after a sign-out
+  -- would go on in the session that comes after.
   }
 
 -- | Open the form, with the reason.
@@ -182,7 +186,7 @@ data State m = State
   }
 
 data Action
-  = Receive Session (Maybe Text) Text
+  = Receive Session (Maybe Text) Text Bool
   | Toggle
   | Close
   | TypedLogin Text
@@ -257,7 +261,7 @@ component =
     -- The input changes when the shell's session does; the form stays as
     -- it is.
     receive :: Input m -> Action
-    receive input = Receive input.session input.avatar input.here
+    receive input = Receive input.session input.avatar input.here input.changingPassword
 
     render :: State m -> H.ComponentHTML Action Empty m
     render st = case st.input.session of
@@ -272,7 +276,10 @@ component =
                     <a class="settings-entry" {{ Router.linkProps st.input.router Followed (UserSettings ProfileSection) }}>Settings</a>
                   </li>
                   <li>
-                    <button type="button" class="sign-out" disabled={{ st.busy }} onClick={{ const SignOut }}>Sign out</button>
+                    <button type="button" class="sign-out" disabled={{ st.busy || st.input.changingPassword }} onClick={{ const SignOut }}>Sign out</button>
+                    {% if st.input.changingPassword %}
+                      <p class="sign-out-note">Your password is being changed: you can sign out once that is done.</p>
+                    {% end %}
                   </li>
                 </ul>
               {% end %}
@@ -430,7 +437,7 @@ component =
 
     handleAction :: Action -> H.HalogenM (State m) Action Empty Output m ()
     handleAction = \case
-      Receive session face here -> do
+      Receive session face here changingPassword -> do
         -- The offer to unlock the keys with the password is the signed-in
         -- user's: another session (a sign-out, another user) drops it.
         offered <- gets (\st -> fst <$> st.keysOffer)
@@ -438,7 +445,7 @@ component =
         -- The menu is the signed-in user's too: another session closes it.
         before <- gets (\st -> (\u -> u.id) <$> st.input.session.user)
         shut <- if before /= ((\u -> u.id) <$> session.user) then shutMenu else pure identity
-        modify (shut . \st -> st {input = Input {accounts = st.input.accounts, session, avatar = face, here, router = st.input.router}})
+        modify (shut . \st -> st {input = Input {accounts = st.input.accounts, session, avatar = face, here, router = st.input.router, changingPassword}})
       Followed f -> do
         shutMenu >>= modify
         gets (\st -> st.input.router) >>= (`Router.follow` f)
@@ -610,7 +617,7 @@ component =
               settleAfter s
       SignOut -> do
         st <- get
-        unless st.busy $ do
+        unless (st.busy || st.input.changingPassword) $ do
           shut <- shutMenu
           modify (shut . \s -> s {busy = True})
           H.raise SigningOut

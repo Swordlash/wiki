@@ -541,23 +541,27 @@ setVaultAskEachTime u asking = holdingDeviceRecords $ runExceptT $ do
 -- unwrapped with it, and the change sends the vault key wrapped for the
 -- new password, which the server stores with the new password, both or
 -- neither. A vault the password does not unlock needs nothing.
-changeOwnPassword :: (MonadAssistant m, MonadVault m) => (PasswordChange -> m (Either SignInError SignInMethods)) -> PasswordChange -> m (Either SignInError SignInMethods)
-changeOwnPassword plain change =
+--
+-- The change is the given user's: the new password's record is made
+-- only for them ('Wiki.App.Backend.Http.ownRecord'), so a change that
+-- finds another user signed in by then changes nothing.
+changeOwnPassword :: (MonadAssistant m, MonadVault m) => (UserId -> PasswordChange -> m (Either SignInError SignInMethods)) -> UserId -> PasswordChange -> m (Either SignInError SignInMethods)
+changeOwnPassword plain u change =
   runExceptT fetched >>= \case
     Right (Just s)
       | Just w <- wrapFor ByPassword s.vault
       , Just current <- change.current ->
           provePassword current >>= \case
             Left e -> pure (Left e)
-            Right Nothing -> plain change
+            Right Nothing -> plain u change
             Right (Just k) ->
               runExceptT (forgetting k (unwrapWith' k s w True)) >>= \case
                 Left why -> pure (Left (SignInFailed (Invalid why)))
                 Right v -> do
-                  result <- changePasswordCarrying PasswordChange {current = Nothing, new = change.new} Rewrap {tag = s.tag, salt = s.vault.salt, vaultKey = v}
+                  result <- changePasswordCarrying u PasswordChange {current = Nothing, new = change.new} Rewrap {tag = s.tag, salt = s.vault.salt, vaultKey = v}
                   forgetKey v
                   pure result
-    _ -> plain change
+    _ -> plain u change
 
 -- | The server's vault, if the user has one.
 fetched :: (MonadVault m) => Step m (Maybe StoredVault)

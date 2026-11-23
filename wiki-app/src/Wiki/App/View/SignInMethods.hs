@@ -33,6 +33,13 @@
 -- browser makes while the wait is killed reaches no one who could forget
 -- it. So the change runs in the shell, which lasts as long as the page,
 -- to its end, and the section shows the answer if it is still there.
+--
+-- The sign-in methods shown come from one ask at a time: the section's
+-- first read, a disconnection, or the change this mount asked for. A
+-- section mounted again while the shell runs a change that another mount
+-- asked for reads nothing and offers nothing until the change ends
+-- ('changing'), then reads the methods. The answer to the other mount's
+-- change is not shown: it may come after a read that was asked later.
 module Wiki.App.View.SignInMethods
   ( Input (..)
   , Query (..)
@@ -172,7 +179,9 @@ component =
         providers = st.input.session.providers
         labelOf name = maybe name (\p -> p.label) (find (\p -> p.name == name) providers)
         body = case st.methods of
-          Nothing -> [hh|<p class="loading">Loading…</p>|]
+          Nothing
+            | st.input.changing -> [hh|<p class="loading" role="status">Your password is being changed. How you sign in is shown once that is done.</p>|]
+            | otherwise -> [hh|<p class="loading">Loading…</p>|]
           Just (Left e) -> [hh|<p class="error" role="alert">{{ errorMessage e }}</p>|]
           Just (Right m) ->
             [hh|
@@ -202,7 +211,7 @@ component =
                       <button
                         type="button"
                         class="identity-disconnect"
-                        disabled={{ st.busy || not (mayDisconnect i.provider m) }}
+                        disabled={{ st.busy || st.input.changing || not (mayDisconnect i.provider m) }}
                         title={{ if mayDisconnect i.provider m then "" else "Your only way to sign in" :: Text }}
                         onClick={{ const (Disconnect i.provider) }}
                       >
@@ -262,16 +271,20 @@ component =
 
     handleAction :: Action m -> H.HalogenM (State m) (Action m) Empty Output m ()
     handleAction = \case
-      Initialize -> do
-        accounts <- gets (\st -> st.input.accounts)
-        result <- H.async accounts.identities
-        modify (\x -> x {methods = Just result})
+      Initialize -> unlessM (gets (\st -> st.input.changing)) readMethods
       -- The session changes with the shell's (an avatar changed). The
-      -- shell mounts the section again for another user.
-      Receive input -> modify (\st -> st {input})
+      -- shell mounts the section again for another user. A change of
+      -- password that another mount asked for has ended: the methods it
+      -- left are read now.
+      Receive input -> do
+        st <- get
+        modify (\s -> s {input})
+        when (st.input.changing && not input.changing && isNothing st.asked) $ do
+          modify (\s -> s {methods = Nothing})
+          readMethods
       Disconnect provider -> do
         st <- get
-        unless st.busy $ do
+        unless (st.busy || st.input.changing) $ do
           modify (\s -> s {busy = True, problem = Nothing})
           H.async (st.input.accounts.unlinkIdentity provider) >>= \case
             Left e -> modify (\s -> s {busy = False, problem = Just (errorMessage e)})
@@ -301,8 +314,8 @@ component =
           _ -> pass
 
     -- The shell's answer to a change of password. An answer to another
-    -- mount's change (one the reader left) shows only the sign-in methods
-    -- it gives.
+    -- mount's change (one the reader left) is not shown: the section reads
+    -- the methods once that change has ended ('Receive').
     handleQuery :: Query a -> H.HalogenM (State m) (Action m) Empty Output m (Maybe a)
     handleQuery (Answered ticket result next) = do
       st <- get
@@ -321,9 +334,15 @@ component =
                         else "Your password is set: you may sign in with your login and it too."
                     )
               }
-        (False, _, Right after) -> modify (\s -> s {methods = Just (Right after)})
         _ -> pass
       pure (Just next)
+
+    -- Read the user's sign-in methods.
+    readMethods :: H.HalogenM (State m) (Action m) Empty Output m ()
+    readMethods = do
+      accounts <- gets (\st -> st.input.accounts)
+      result <- H.async accounts.identities
+      modify (\x -> x {methods = Just result})
 
     -- Close the form to change the password, and clear what was typed in
     -- it.

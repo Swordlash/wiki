@@ -2793,6 +2793,168 @@ memory than the budget is refused (401) as a wrong password is, and costs the
 server no more than one. Keys made in your own panel instead of a password,
 attachments, a page's sections and an MCP server are to come.
 
+##### From a shell, and for assistants
+
+`clients/wiki.sh` is a client of this API in one shell script, for a person
+at a terminal or an assistant that runs commands, with no build step: it
+needs `curl` and nothing else, and its MCP mode needs `jq` too. It is POSIX
+`sh`, so it runs under Linux's `sh` (dash), macOS's (bash 3.2) and any later
+bash. To install it, copy the one file to a directory on your `PATH`:
+
+```sh
+cp clients/wiki.sh ~/bin/wiki.sh && chmod +x ~/bin/wiki.sh
+```
+
+It reads where the wiki is and who signs in from the environment, `WIKI_URL`,
+`WIKI_USER` and `WIKI_PASSWORD`, or for what the environment does not set,
+from `~/.config/wiki/config` (another file with `WIKI_CONFIG`), which it
+reads only when nobody but you may read it (`chmod 600`):
+
+```text
+# ~/.config/wiki/config
+url = https://wiki.example
+user = editor
+password = my password
+```
+
+The password reaches curl through a file descriptor, never its command line,
+so the process list does not show it, and `sh -x wiki.sh ...` does not trace
+it.
+
+```text
+$ wiki.sh list team
+Space: Team  /s/team/
+  On-call  /s/team/p/on-call/
+  Space: Projects  /s/team/projects/
+    The wiki  /s/team/projects/p/the-wiki/
+      Roadmap  /s/team/projects/p/the-wiki/roadmap/  (presentation)
+
+$ wiki.sh search on-call rota
+On-call  /s/team/p/on-call/  (in Team)
+    …who is on call this week. The rota changes on Mondays…
+
+$ wiki.sh get /s/team/p/on-call/ --out on-call.md
+wiki.sh: wrote on-call.md; its version "2026-11-18T09:30:12.345678Z" is in on-call.md.version, for put --file on-call.md
+
+$ wiki.sh put /s/team/p/on-call/ --file on-call.md
+wiki.sh: wrote /s/team/p/on-call/; its version is now "2026-11-23T10:02:41.120934Z"
+
+$ wiki.sh reference --sections
+Sections of the wiki's Markdown reference (1093 lines); ask for one by its heading:
+- Writing pages (under 1 kB, the introduction)
+  - Text (2 kB)
+  - Math (9 kB)
+...
+```
+
+- **`wiki.sh list [SPACE] [--depth N]`** prints the tree of what you may read,
+  each line a title and its address; **`wiki.sh search WORDS... [--space
+  SPACE] [--limit N]`** the search's hits, best first, each with its address,
+  its space and the excerpt. With `--json`, both print the server's JSON as it
+  came.
+- **`wiki.sh get PAGE`** prints the page's Markdown, and its version on
+  standard error; `--out FILE` writes the Markdown to `FILE` and the version
+  to `FILE.version`, and `--version` prints the version alone.
+- **`wiki.sh put PAGE`** writes the page's whole Markdown, from `--file FILE`
+  or standard input, over a version, with `If-Match`: when someone has saved
+  the page since, nothing is written, and it exits with 5. The version is the
+  one given with `--if-match`, else the one `get --out` kept beside the file,
+  else the one the last `get` or `put` of that page gave. Each `get` and `put`
+  keeps the page's version in a file of its own under
+  `~/.local/state/wiki/` (`WIKI_STATE_DIR` names another directory), by the
+  wiki's address and the page's:
+  `~/.local/state/wiki/https_wiki.example/s/team/p/on-call/_version`. With no
+  version known, `put` refuses to write blind; `--force` writes without one.
+- **`wiki.sh reference`** prints the Markdown reference, `--sections` the list
+  of its sections, and `wiki.sh reference Math` one of them.
+
+`PAGE` is a page's address as the wiki writes it, `/s/team/projects/p/the-wiki/`
+(a space's home page, `/s/team/`), or a space's path and a page's apart,
+`team/projects the-wiki`, or the page's address in the browser, or its API
+address, pasted whole. A failure is one line on standard error, and its exit
+code tells the kinds apart: 2 a wrong use (or no version known for a `put`),
+3 the sign-in refused, 4 not found or not yours to read, 5 the page saved
+since your version, 6 refused (not allowed, an encrypted space), 7 too many
+failed sign-ins (the line says when to try again), 8 no connection, 1
+anything else.
+
+**For an assistant that takes MCP servers**, `wiki.sh mcp` is a Model Context
+Protocol server on standard input and output, with five tools: `wiki_list`,
+`wiki_search`, `wiki_read_page` (the Markdown and its version),
+`wiki_write_page` (the version read is required, so every write is
+conditional: a page saved since comes back as an error that tells the model
+to read it again and merge) and `wiki_markdown_reference` (the list of
+sections, or one section: the reference whole is 67 kB). It speaks the
+protocol's current revision, 2026-07-28, in which each request names its
+revision, and answers `initialize` for the earlier ones, 2025-11-25 and
+2025-06-18; a client that asks for another gets 2025-11-25. It needs `jq`
+(`apt install jq`, `brew install jq`; macOS 15 has it). The configuration is
+the commands' own, so with the configuration file a client needs only the
+command. In Claude Code:
+
+```sh
+claude mcp add wiki -- /home/me/bin/wiki.sh mcp
+```
+
+or in a project's `.mcp.json`, the same shape GitHub Copilot's CLI takes in
+`~/.copilot/mcp-config.json` (with `"type": "local"` and `"tools": ["*"]`
+beside `command`); the variables in `env` are given to the script, and here
+`${WIKI_PASSWORD}` is expanded by Claude Code from its own environment:
+
+```json
+{
+  "mcpServers": {
+    "wiki": {
+      "command": "/home/me/bin/wiki.sh",
+      "args": ["mcp"],
+      "env": {
+        "WIKI_URL": "https://wiki.example",
+        "WIKI_USER": "editor",
+        "WIKI_PASSWORD": "${WIKI_PASSWORD}"
+      }
+    }
+  }
+}
+```
+
+In VS Code, `.vscode/mcp.json` names the servers `servers`, and can ask for
+the password once instead of keeping it:
+
+```json
+{
+  "inputs": [{"type": "promptString", "id": "wiki-password", "description": "The wiki's password", "password": true}],
+  "servers": {
+    "wiki": {
+      "type": "stdio",
+      "command": "/home/me/bin/wiki.sh",
+      "args": ["mcp"],
+      "env": {"WIKI_URL": "https://wiki.example", "WIKI_USER": "editor", "WIKI_PASSWORD": "${input:wiki-password}"}
+    }
+  }
+}
+```
+
+These formats are from the clients' documentation (Claude Code's, VS Code's
+and GitHub Copilot CLI's, read in November 2026); the server's exchange is
+tested through a pipe, not yet with a running client.
+
+**For an assistant without MCP**, `clients/wiki-assistant.md` tells it the
+commands, to read a page before writing it and to write over the version it
+read, and to read the Markdown reference before writing the wiki's Markdown.
+Point the assistant at the file, or copy its text into the instructions the
+assistant reads (`AGENTS.md`, `.github/copilot-instructions.md`, `CLAUDE.md`);
+its front matter is a skill's, so it can also be Claude Code's skill
+`~/.claude/skills/wiki/SKILL.md`.
+
+When API keys exist, `WIKI_TOKEN` (or `token =` in the configuration file)
+will be sent as `Authorization: Bearer` in place of the login and password;
+the script sends it already, and the wiki refuses it (401) until then. The
+wiki's own MCP endpoint is planned after the keys, for clients that take an
+MCP server by its address; this script stays for those that start one by a
+command. The commands for what the API does not do yet (creating pages and
+spaces, a page's table of contents and its sections) will join it as the API
+gets them.
+
 #### Bringing the demo's pages into the server
 
 What you wrote in the demo lives in your browser (IndexedDB, kept per address), and
@@ -3608,6 +3770,7 @@ To run CI on a machine of your own (x86_64 Linux, Debian or Ubuntu):
 | [docs/](docs/) | | The authors' Markdown reference (`markdown.md`), the HTTP API (`api.md`), the export format (`export.md`), the plan of work (`PLAN.md`), and the README's screenshots. |
 | [web/](web/) | | The page around the application: `index.html`, `index.js` (loads `app.wasm`), CSS, and `bundle.sh`, which bundles the islands' libraries from `web/src/`; `licenses/`, the texts of TikZJax's licence and its fonts', which the bundle serves beside them. |
 | [toolchain/](toolchain/) | | Build, test and deploy scripts, adapted from haskell-halogen's, and `smoke-suite.sh`, which runs a suite of `wiki-smoke`. |
+| [clients/](clients/) | | What users copy to their own machines: `wiki.sh`, the API's client in one shell script and an MCP server for assistants, and `wiki-assistant.md`, its instructions for an assistant without MCP (the API's section above). |
 
 At the top, `Dockerfile` and `docker-compose.yml` run the server in Docker
 (above); `.dockerignore` keeps everything but the sources

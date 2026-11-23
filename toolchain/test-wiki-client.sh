@@ -208,6 +208,7 @@ cat "$FAKE_BODY" >"$out"
   printf 'HTTP/1.1 %s Fake\r\n' "$FAKE_STATUS"
   [ -z "$FAKE_TYPE" ] || printf 'Content-Type: %s\r\n' "$FAKE_TYPE"
   [ "$FAKE_ETAG" = none ] || printf 'ETag: %s\r\n' "$FAKE_ETAG"
+  [ -z "$FAKE_LOCATION" ] || printf 'Location: %s\r\n' "$FAKE_LOCATION"
   printf '\r\n'
 } >"$headers"
 printf '%s %s' "$FAKE_STATUS" "$(($(wc -c <"$FAKE_BODY")))"
@@ -296,7 +297,7 @@ suite() {
   lacks out "The wiki" "the cut tree leaves the pages below out"
   client list /s/team/projects/ --json
   expect 0 "list --json"
-  if "$real_jq" -e '.path == "team/projects" and (.pages | length) == 2' "$work/out" >/dev/null; then pass "list --json gives the server's JSON"; else fail "list --json gives the server's JSON"; fi
+  if "$real_jq" -e '.path == "team/projects" and any(.pages[]; .markdown == "/api/markdown/s/team/projects/p/the-wiki/")' "$work/out" >/dev/null; then pass "list --json gives the server's JSON"; else fail "list --json gives the server's JSON"; fi
   client list "$page"
   expect 2 "list of a page is a wrong use"
   client list --depth 0
@@ -556,6 +557,7 @@ suite() {
   wrong_answers
   answers_by_kind
   files_written
+  creating
   round_trip "$public_root" root
   round_trip "$public_wiki" base-path
   url=$public_root user=editor password=$editor_password state=$work/state-$1-a input=/dev/null
@@ -699,13 +701,13 @@ EOF
 # Answers that are not the wiki's, as a wrong WIKI_URL or a proxy gives
 # them with 200, from the answering fake curl: each command and each MCP
 # tool fails with the wrong-answer message, and a right answer passes.
-fake_status=200 fake_etag='"2026-11-23T00:00:00Z"'
+fake_status=200 fake_etag='"2026-11-23T00:00:00Z"' fake_location=''
 fake_answer() {
   printf '%s' "$1" >"$work/fake-body"
   fake_type=$2
   shift 2
   env -i PATH="$work/fakes/answer:$work/fakes/nojq:$PATH" HOME="$work/home" WIKI_URL=http://wiki.invalid WIKI_USER=editor WIKI_PASSWORD=x \
-    WIKI_STATE_DIR="$work/state-$shell-fake" FAKE_BODY="$work/fake-body" FAKE_TYPE="$fake_type" FAKE_STATUS="$fake_status" FAKE_ETAG="$fake_etag" \
+    WIKI_STATE_DIR="$work/state-$shell-fake" FAKE_BODY="$work/fake-body" FAKE_TYPE="$fake_type" FAKE_STATUS="$fake_status" FAKE_ETAG="$fake_etag" FAKE_LOCATION="$fake_location" \
     "$shell" "$client" "$@" </dev/null >"$work/out" 2>"$work/err"
   status=$?
 }
@@ -789,6 +791,33 @@ answers_by_kind() {
   fake_status=200 fake_etag=$v
   expect 0 "a put answered as the wiki answers succeeds"
   check "and its version is remembered" grep -qF '"2026-11-24T00:00:00Z"' "$state_file"
+  # A creation: 201, no body, an ETag and the address asked for as
+  # Location; a space's with its listing as the body.
+  fake_location=/api/markdown/s/team/p/new/
+  not_the_wikis "$html" text/html 200 "$v" create team new
+  not_the_wikis '' '' 204 "$v" create team new
+  not_the_wikis 'Created.' text/plain 201 "$v" create team new
+  not_the_wikis '' '' 201 none create team new
+  fake_location=/api/markdown/s/team/p/elsewhere/
+  not_the_wikis '' '' 201 "$v" create team new
+  fake_location=''
+  not_the_wikis '' '' 201 "$v" create team new
+  fake_location=/api/markdown/s/team/p/new/ fake_status=201
+  fake_answer '' '' create team new
+  expect 0 "create answered as the wiki answers succeeds"
+  fake_location=http://wiki.invalid/api/markdown/s/team/p/new/
+  fake_answer '' '' create team new
+  expect 0 "create answered with Location as a whole URL under WIKI_URL succeeds"
+  fake_location=/api/list/s/team/new/
+  not_the_wikis "$html" text/html 201 none create-space team/new
+  not_the_wikis "$login" application/json 201 none create-space team/new
+  not_the_wikis "$space" application/json 200 none create-space team/new
+  fake_location=/api/list/s/team/elsewhere/
+  not_the_wikis "$space" application/json 201 none create-space team/new
+  fake_location=/api/list/s/team/new/ fake_status=201
+  fake_answer "$space" application/json create-space team/new
+  expect 0 "create-space answered as the wiki answers succeeds"
+  fake_location='' fake_status=200
   # Through the MCP tools: each answer as above, one tool call each.
   for call in \
     "$html|text/html|200|$v|wiki_write_page|{\"page\":\"/s/team/p/x/\",\"version\":\"v\",\"content\":\"x\"}" \
@@ -818,6 +847,67 @@ EOF
     check "$tool, answered so, leaves the remembered version as it was" cmp -s "$state_file" "$work/fake-state.before"
   done
   fake_status=200 fake_etag=$v
+}
+
+# Creating, on the server at the root: create makes a page and never
+# writes over one; put writes a page that exists and never makes one, with
+# --force too; create-space makes a space.
+creating() {
+  url=$public_root user=editor password=$editor_password state=$work/state-$shell-create input=/dev/null
+  new=/s/team/projects/p/new-$shell/
+  printf '# A new page\n\nMade by %s.\n' "$shell" >"$work/new-text"
+  client create team/projects "new-$shell" --title "Zażółć, a new page ($shell)" --file "$work/new-text"
+  expect 0 "create a page"
+  has err "created $new" "create says it created the page"
+  client get "$new"
+  check "the new page has its text" cmp -s "$work/out" "$work/new-text"
+  client list team/projects
+  has out "Zażółć, a new page ($shell)  $new" "the new page is listed with the title given"
+  printf 'A change after the creation.\n' >"$work/new-change"
+  input=$work/new-change
+  client put "$new"
+  expect 0 "a put after create, with the version create remembered"
+  input=$work/new-text
+  client create "$new"
+  expect 5 "create where a page is is refused"
+  has err "there is a page at $new already" "the refusal says a page is there"
+  input=/dev/null
+  client get "$new"
+  check "and nothing was written over it" cmp -s "$work/out" "$work/new-change"
+  client create team/projects "deck-$shell" --kind presentation
+  expect 0 "create a presentation, with no text"
+  client list team/projects
+  has out "/s/team/projects/p/deck-$shell/  (presentation)" "it is listed as a presentation"
+  client create team/projects "nothing-$shell/child"
+  expect 4 "create under a page that is not there is not found"
+  client create team/projects
+  expect 2 "create of a space's address is a wrong use"
+  client create team/projects "x-$shell" --kind poster
+  expect 2 "create of an unknown kind is a wrong use"
+  # put never creates, --force neither.
+  free=/s/team/projects/p/free-$shell/
+  input=$work/new-text
+  client put "$free"
+  expect 2 "put to a free address, with no version known, refuses"
+  client put "$free" --force
+  expect 4 "put --force to a free address is not found"
+  has err "wiki.sh create" "and says to create the page"
+  client put "$free" --if-match '"2026-01-01T00:00:00Z"'
+  expect 4 "put --if-match to a free address is not found"
+  input=/dev/null
+  client get "$free"
+  expect 4 "put made no page at the free address"
+  # Spaces.
+  client create-space "team/space-$shell" --title "Space of $shell"
+  expect 0 "create-space"
+  has err "created the space /s/team/space-$shell/" "create-space says so"
+  client list team
+  has out "Space: Space of $shell  /s/team/space-$shell/" "the new space is listed"
+  client create-space "team/space-$shell"
+  expect 6 "create-space where a space is is refused"
+  client create-space "nowhere-$shell/below"
+  expect 4 "create-space under a space that is not there is not found"
+  state=$work/state-$shell-a
 }
 
 # What get --out writes, where and with which mode: never through a name
@@ -1107,6 +1197,9 @@ Written through MCP: "quoted", back\slash, ż.
     "$real_jq" -nc --arg page "$second" --arg version "$second_version" --rawfile content "$work/big-mcp" \
       '{jsonrpc: "2.0", id: 22, method: "tools/call", params: {name: "wiki_write_page", arguments: {page: $page, version: $version, content: $content}}}'
     call 23 wiki_read_page "{\"page\":\"$second\"}"
+    call 24 wiki_create_page "{\"page\":\"/s/team/projects/p/mcp-new-$shell/\",\"title\":\"Made by MCP\",\"content\":\"# Made by MCP\\n\"}"
+    call 25 wiki_create_page "{\"page\":\"/s/team/projects/p/mcp-new-$shell/\",\"content\":\"over it\"}"
+    call 26 wiki_write_page "$("$real_jq" -nc --arg page "/s/team/projects/p/mcp-free-$shell/" --arg version "$version" '{page: $page, version: $version, content: "x"}')"
   } >"$work/mcp.in"
   printf -- '--- the MCP server under %s\n' "$shell"
   # Through a pipe, as a client starts it.
@@ -1120,7 +1213,7 @@ Written through MCP: "quoted", back\slash, ż.
     printf '%s' "$reply" | "$real_jq" -e 'type == "object" and .jsonrpc == "2.0"' >/dev/null 2>&1 || bad_lines=$((bad_lines + 1))
   done <"$work/mcp.out"
   check "every line on standard output is a JSON-RPC message ($bad_lines are not)" [ "$bad_lines" = 0 ]
-  check "one reply per request, none for the notifications ($(wc -l <"$work/mcp.out") replies)" [ "$(wc -l <"$work/mcp.out")" -eq 23 ]
+  check "one reply per request, none for the notifications ($(wc -l <"$work/mcp.out") replies)" [ "$(wc -l <"$work/mcp.out")" -eq 26 ]
   # A check of the replies, read as one array: jq's options, then the
   # filter.
   reply() {
@@ -1134,7 +1227,7 @@ Written through MCP: "quoted", back\slash, ż.
   }
   reply "initialize answers the client's revision, 2025-06-18" 'map(select(.id == 1))[0].result | .protocolVersion == "2025-06-18" and .serverInfo.name == "wiki.sh" and .capabilities.tools != null and (has("resultType") | not)'
   reply "ping answers an empty result" 'map(select(.id == 2))[0].result == {}'
-  reply "tools/list gives the five tools" 'map(select(.id == 3))[0].result.tools | map(.name) == ["wiki_list", "wiki_search", "wiki_read_page", "wiki_write_page", "wiki_markdown_reference"] and all(.inputSchema.type == "object")'
+  reply "tools/list gives the six tools" 'map(select(.id == 3))[0].result.tools | map(.name) == ["wiki_list", "wiki_search", "wiki_read_page", "wiki_write_page", "wiki_create_page", "wiki_markdown_reference"] and all(.inputSchema.type == "object")'
   reply "wiki_list lists a space" 'map(select(.id == 4))[0].result | .isError == false and (.content[0].text | contains("    The wiki  /s/team/projects/p/the-wiki/"))'
   reply "wiki_search finds the page" 'map(select(.id == 5))[0].result | .isError == false and (.content[0].text | contains("/s/team/projects/p/zazolc-gesla-jazn/"))'
   reply "wiki_read_page gives the version and the Markdown" --arg version "$version" "map(select(.id == 6))[0].result | .isError == false and (.content[0].text | contains(\$version)) and (.content[1].text | startswith(\"# The wiki\"))"
@@ -1152,9 +1245,19 @@ Written through MCP: "quoted", back\slash, ż.
   reply "a request without the client's capabilities is -32602" 'map(select(.id == 18))[0].error.code == -32602'
   reply "a batch is -32600" 'map(select(.error.code == -32600)) | length == 1'
   reply "initialize with a revision it does not speak answers its latest, 2025-11-25" 'map(select(.id == 20))[0].result.protocolVersion == "2025-11-25"'
-  reply "tools/list of the current revision carries its cache hints" 'map(select(.id == 21))[0].result | .resultType == "complete" and .ttlMs >= 0 and .cacheScope == "public" and (.tools | length) == 5'
+  reply "tools/list of the current revision carries its cache hints" 'map(select(.id == 21))[0].result | .resultType == "complete" and .ttlMs >= 0 and .cacheScope == "public" and (.tools | length) == 6'
   reply "wiki_write_page writes a page of 150 kB" 'map(select(.id == 22))[0].result.isError == false'
   reply "wiki_read_page reads it back byte for byte" --rawfile expected "$work/big-mcp" 'map(select(.id == 23))[0].result.content[1].text == $expected'
+  reply "wiki_create_page makes a new page" 'map(select(.id == 24))[0].result | .isError == false and (.content[0].text | startswith("Created /s/team/projects/p/mcp-new-"))'
+  reply "wiki_create_page where a page is refuses, and says to read and write it" 'map(select(.id == 25))[0].result | .isError == true and (.content[0].text | contains("there is a page at")) and (.content[0].text | contains("wiki_write_page"))'
+  reply "wiki_write_page to a free address creates nothing, and says to create" 'map(select(.id == 26))[0].result | .isError == true and (.content[0].text | contains("wiki_create_page"))'
+  saved_jq=$with_jq with_jq=''
+  client get "/s/team/projects/p/mcp-new-$shell/"
+  printf '# Made by MCP\n' >"$work/mcp-new"
+  check "the page wiki_create_page made has its text, not the second call's" cmp -s "$work/out" "$work/mcp-new"
+  client get "/s/team/projects/p/mcp-free-$shell/"
+  expect 4 "wiki_write_page made no page at the free address"
+  with_jq=$saved_jq
   with_jq=''
   client get "$second"
   check "the wiki holds the long page byte for byte" cmp -s "$work/out" "$work/big-mcp"

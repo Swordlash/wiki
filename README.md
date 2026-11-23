@@ -2892,7 +2892,21 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   gives; a `FILE` that is a symbolic link is refused. Everything else the
   script writes is private to you: the state files, and a directory of its
   own under `TMPDIR` that it removes when it ends. With no version known, `put` refuses
-  to write blind; `--force` writes without one.
+  to write blind; `--force` reads the page's version as it is now and writes
+  over that. A `put` writes a page that exists and never makes one: it always
+  sends `If-Match`, for which the wiki creates nothing, so at an address with
+  no page it is "not found" (exit 4), `--force` too, and says to use `create`.
+- **`wiki.sh create PAGE [--title TITLE] [--kind document|presentation]
+  [--file FILE]`** makes a new page with the Markdown of `FILE` or standard
+  input, with `If-None-Match: *`: where a page is already, nothing is written
+  and it exits with 5. The page above it, if any, must exist. Its version is
+  remembered for a later `put`. **`wiki.sh create-space SPACE [--title
+  TITLE]`** makes a space; one already there exits with 6.
+
+  ```sh
+  wiki.sh create team/projects release-notes --title 'Release notes' --file notes.md
+  wiki.sh create-space team/archive --title Archive
+  ```
 - **`wiki.sh reference`** prints the Markdown reference, `--sections` the list
   of its sections, and `wiki.sh reference Math` one of them.
 
@@ -2920,11 +2934,13 @@ failed sign-ins (the line says when to try again), 8 no connection, 1
 anything else.
 
 **For an assistant that takes MCP servers**, `wiki.sh mcp` is a Model Context
-Protocol server on standard input and output, with five tools: `wiki_list`,
+Protocol server on standard input and output, with six tools: `wiki_list`,
 `wiki_search`, `wiki_read_page` (the Markdown and its version),
 `wiki_write_page` (the version read is required, so every write is
 conditional: a page saved since comes back as an error that tells the model
-to read it again and merge) and `wiki_markdown_reference` (the list of
+to read it again and merge; it never creates a page), `wiki_create_page`
+(a new page, its title, kind and text; it never writes over a page) and
+`wiki_markdown_reference` (the list of
 sections, or one section: the reference whole is 67 kB). It speaks the
 protocol's current revision, 2026-07-28, in which each request names its
 revision, and answers `initialize` for the earlier ones, 2025-11-25 and
@@ -2992,9 +3008,8 @@ will be sent as `Authorization: Bearer` in place of the login and password;
 the script sends it already, and the wiki refuses it (401) until then. The
 wiki's own MCP endpoint is planned after the keys, for clients that take an
 MCP server by its address; this script stays for those that start one by a
-command. The commands for what the API does not do yet (creating pages and
-spaces, a page's table of contents and its sections) will join it as the API
-gets them.
+command. The commands for what the API does not do yet (a page's table of
+contents and its sections) will join it as the API gets them.
 
 #### Bringing the demo's pages into the server
 

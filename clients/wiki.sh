@@ -593,14 +593,24 @@ wrong_answer() {
 # (wiki-server/src/Wiki/Server/MarkdownApi.hs, markdownApplication, and
 # ListApi.hs, listApplication and searchApplication):
 #
-#   KIND       request                     status  Content-Type      body
-#   page       GET api/markdown/s/...      200     text/markdown     the page's
-#                                                                    text; an ETag
-#   written    PUT api/markdown/s/...      204     (none)            empty; an ETag
-#   reference  GET api/markdown/reference  200     text/markdown     the reference
-#   top        GET api/list/               200     application/json  {"spaces": [SPACE]}
-#   space      GET api/list/s/...          200     application/json  SPACE
-#   search     GET api/search?q=...        200     application/json  {"hits": [HIT]}
+#   KIND           request                     status  Content-Type      body
+#   page           GET api/markdown/s/...      200     text/markdown     the page's
+#                                                                        text; an ETag
+#   written        PUT api/markdown/s/...,     204     (none)            empty; an ETag
+#                  If-Match (a page there)
+#   created        PUT api/markdown/s/...,     201     (none)            empty; an ETag,
+#                  If-None-Match: * (none                                and Location the
+#                  there)                                                address asked for
+#   reference      GET api/markdown/reference  200     text/markdown     the reference
+#   top            GET api/list/               200     application/json  {"spaces": [SPACE]}
+#   space          GET api/list/s/...          200     application/json  SPACE
+#   space-created  PUT api/list/s/...          201     application/json  SPACE; Location
+#                                                                        the listing's
+#                                                                        address asked for
+#   search         GET api/search?q=...        200     application/json  {"hits": [HIT]}
+#
+# A Location is the address's path under WIKI_URL's path, as the server
+# writes it, or that path under WIKI_URL whole, as a proxy may rewrite it.
 #
 #   SPACE  an object: title, path (strings), encrypted (true or false);
 #          when given, list (an address under WIKI_URL's api/list/s/), home
@@ -611,14 +621,15 @@ wrong_answer() {
 #   HIT    an object: title, excerpt (strings), markdown (under
 #          api/markdown/s/), space (an object with path and title, strings)
 #
-# A create (201), when the API has one, joins this table. Anything else on
-# a 2xx (another status, another type, JSON not of this shape, a read with
-# no ETag, a write's 204 with a body or without an ETag, a proxy's 200 page)
-# is not the wiki's answer, and fails (wrong_answer).
+# Anything else on a 2xx (another status, another type, JSON not of this
+# shape, a read with no ETag, a write's 204 or a creation's 201 with a body
+# or without an ETag, a Location elsewhere, a proxy's 200 page) is not the
+# wiki's answer, and fails (wrong_answer).
 expect_answer() {
   kind=$1
   case $kind in
     written) want=204 ;;
+    created | space-created) want=201 ;;
     *) want=200 ;;
   esac
   if [ "$http_status" != "$want" ]; then
@@ -636,7 +647,7 @@ expect_answer() {
         return
       fi
       ;;
-    written)
+    written | created)
       if [ -s "$work/body" ]; then
         wrong_answer "a write's answer has a body"
         return
@@ -647,20 +658,32 @@ expect_answer() {
         wrong_answer "it is ${media:-of no type}, not JSON"
         return
       fi
-      if ! awk -v shape="$kind" -v mount="$wiki_mount" "$json_reader$answer_shapes" "$work/body" >/dev/null 2>"$work/shape-error"; then
+      shape=$kind
+      [ "$shape" != space-created ] || shape=space
+      if ! awk -v shape="$shape" -v mount="$wiki_mount" "$json_reader$answer_shapes" "$work/body" >/dev/null 2>"$work/shape-error"; then
         wrong_answer "$(head -n 1 "$work/shape-error")"
         return
       fi
       ;;
   esac
   case $kind in
-    page | written)
+    page | written | created)
       if [ -z "$(header_value etag)" ]; then
         wrong_answer "it has no version (ETag)"
         return
       fi
       ;;
   esac
+  case $kind in
+    created) located=api/markdown/$addr ;;
+    space-created) located=api/list/$addr ;;
+    *) return 0 ;;
+  esac
+  location=$(header_value location)
+  if [ "$location" != "$wiki_mount/$located" ] && [ "$location" != "$wiki_base/$located" ]; then
+    wrong_answer "it says the new one is at ${location:-no address}, not at $wiki_mount/$located"
+    return
+  fi
 }
 
 # The shapes of expect_answer's table, appended to json_reader: its END
@@ -1147,6 +1170,62 @@ store_page() {
   page_version=$(header_value etag)
 }
 
+# A value percent-encoded for a URL's query: every byte but the unreserved
+# characters.
+query_encode() {
+  printf '%s' "$1" | od -An -v -tu1 | awk '{
+    for (f = 1; f <= NF; f++) {
+      b = $f + 0
+      if ((b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 45 || b == 46 || b == 95 || b == 126)
+        printf "%c", b
+      else
+        printf "%%%02X", b
+    }
+  }'
+}
+
+# A new page at addr, the file's text, with TITLE and KIND (empty: the
+# wiki's own, a title from the slug and document). It is create-only
+# (If-None-Match: *): a page already there is refused (412) and nothing is
+# written over it. The new version is in page_version.
+create_page() {
+  query=''
+  [ -z "$2" ] || query="title=$(query_encode "$2")"
+  [ -z "$3" ] || query="${query:+$query&}kind=$3"
+  wiki_request PUT "api/markdown/$addr${query:+?$query}" -H 'Content-Type: text/markdown; charset=utf-8' -H 'If-None-Match: *' --data-binary "@$1" || return
+  if [ "$http_status" = 412 ]; then
+    fail "$EX_MOVED" "there is a page at $addr_shown already (412): nothing was written; read it with get, and write it with put"
+    return
+  fi
+  check_answer "$addr_shown, or the page above it," || return
+  expect_answer created || return
+  page_version=$(header_value etag)
+}
+
+# A new space at addr, with TITLE (empty: one from its slug). A space
+# already there is refused (409).
+create_space() {
+  case $1 in
+    *[[:cntrl:]]*)
+      fail "$EX_USAGE" "a title is one line, with no control characters"
+      return
+      ;;
+  esac
+  make_work
+  if [ -n "$1" ]; then
+    printf '{"title":"%s"}' "$(printf '%s' "$1" | sed 's/[\\"]/\\&/g')" >"$work/put-body"
+  else
+    : >"$work/put-body"
+  fi
+  wiki_request PUT "api/list/$addr" -H 'Content-Type: application/json' --data-binary "@$work/put-body" || return
+  if [ "$http_status" = 409 ]; then
+    fail "$EX_REFUSED" "there is a space at $addr_shown already (409): nothing was made"
+    return
+  fi
+  check_answer "the space above $addr_shown" || return
+  expect_answer space-created
+}
+
 # The listing of SPACE (empty: the whole wiki), DEPTH levels deep (empty:
 # all), as the server's JSON in $work/body.
 fetch_list() {
@@ -1435,24 +1514,16 @@ cmd_put() {
   done
   [ -n "$first" ] || { usage "put needs a page's address"; return; }
   if [ -n "$force" ] && [ -n "$if_match" ]; then
-    usage "--force writes without a version and --if-match with one: give one of them"
+    usage "--force writes over the page's version as it is now, and --if-match over the one given: give one of them"
     return
   fi
   load_config || return
   page_address "$first" "$second" || return
-  make_work
-  if [ -n "$file" ]; then
-    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
-      fail "$EX_USAGE" "cannot read $file"
-      return
-    fi
-    cp "$file" "$work/put-body" || { fail "$EX_ERROR" "cannot read $file"; return; }
-  elif [ -t 0 ]; then
+  if [ -z "$file" ] && [ -t 0 ]; then
     usage "put reads the page's new text from --file or standard input (wiki.sh put PAGE < text.md)"
     return
-  else
-    cat >"$work/put-body" || { fail "$EX_ERROR" "cannot read standard input"; return; }
   fi
+  read_text || return
   if [ ! -s "$work/put-body" ] && [ -z "$force" ]; then
     fail "$EX_USAGE" "the new text is empty: put --force writes an empty page"
     return
@@ -1460,10 +1531,23 @@ cmd_put() {
   # The version to write over: --if-match, else the one kept beside the file
   # by get --out when it is this page's, else the one remembered for the
   # page.
+  # A put writes a page that exists, and never makes one: it always sends
+  # If-Match, which the wiki never creates a page for (404 at a free
+  # address). --force reads the page's version now and writes over that,
+  # so that it too only writes a page that is there; between that read and
+  # the write, a save by someone else is still refused (412).
   version=''
   if [ -n "$if_match" ]; then
     version=$(quoted_version "$if_match")
-  elif [ -z "$force" ]; then
+  elif [ -n "$force" ]; then
+    fetch_page
+    put_status=$?
+    if [ "$put_status" != 0 ]; then
+      [ "$put_status" != "$EX_NOTFOUND" ] || no_page_to_put
+      return "$put_status"
+    fi
+    version=$page_version
+  else
     sidecar=$(sidecar_of "$file")
     if [ -n "$sidecar" ]; then
       version=$(head -n 1 "$sidecar")
@@ -1475,11 +1559,93 @@ cmd_put() {
       return
     fi
   fi
-  store_page "$work/put-body" "$version" || return
+  store_page "$work/put-body" "$version"
+  put_status=$?
+  if [ "$put_status" != 0 ]; then
+    [ "$put_status" != "$EX_NOTFOUND" ] || no_page_to_put
+    return "$put_status"
+  fi
   # Accepted: every record of the page follows, however the version sent
   # was chosen (the table above record_version).
   record_version "$page_version" "$file"
   note "wrote $addr_shown; its version is now $page_version"
+}
+
+# The message of a put at an address with no page.
+no_page_to_put() {
+  fail_message="there is no page at $addr_shown (or you may not read it): put writes a page that exists; make a new one with wiki.sh create $addr_shown"
+}
+
+# The text of a new page or a put, from --file or standard input, in
+# $work/put-body. With neither (standard input a terminal), EMPTY ok gives
+# an empty text, otherwise a wrong use.
+read_text() {
+  make_work
+  if [ -n "$file" ]; then
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+      fail "$EX_USAGE" "cannot read $file"
+      return
+    fi
+    cp "$file" "$work/put-body" || { fail "$EX_ERROR" "cannot read $file"; return; }
+  elif [ -t 0 ]; then
+    : >"$work/put-body"
+  else
+    cat >"$work/put-body" || { fail "$EX_ERROR" "cannot read standard input"; return; }
+  fi
+}
+
+cmd_create() {
+  first='' second='' file='' title='' kind=''
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --file) [ $# -ge 2 ] || { usage "--file needs a file"; return; }; file=$2; shift ;;
+      --file=*) file=${1#--file=} ;;
+      --title) [ $# -ge 2 ] || { usage "--title needs a title"; return; }; title=$2; shift ;;
+      --title=*) title=${1#--title=} ;;
+      --kind) [ $# -ge 2 ] || { usage "--kind needs document or presentation"; return; }; kind=$2; shift ;;
+      --kind=*) kind=${1#--kind=} ;;
+      -*) usage "create does not take $1"; return ;;
+      *) take_page_argument "$1" || return ;;
+    esac
+    shift
+  done
+  [ -n "$first" ] || { usage "create needs the new page's address, or a space's path and the new page's path"; return; }
+  case $kind in
+    '' | document | presentation) ;;
+    *) usage "--kind is document or presentation"; return ;;
+  esac
+  load_config || return
+  page_address "$first" "$second" || return
+  if [ -z "$pg" ]; then
+    fail "$EX_USAGE" "$addr_shown is a space: create makes a page in it, as wiki.sh create ${addr_space} new-page (and create-space makes a space)"
+    return
+  fi
+  read_text || return
+  create_page "$work/put-body" "$title" "$kind" || return
+  record_version "$page_version"
+  note "created $addr_shown; its version is $page_version"
+}
+
+cmd_create_space() {
+  first='' title=''
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --title) [ $# -ge 2 ] || { usage "--title needs a title"; return; }; title=$2; shift ;;
+      --title=*) title=${1#--title=} ;;
+      -*) usage "create-space does not take $1"; return ;;
+      *) [ -z "$first" ] || { usage "create-space takes one space's path"; return; }; first=$1 ;;
+    esac
+    shift
+  done
+  [ -n "$first" ] || { usage "create-space needs the new space's path (team/projects)"; return; }
+  load_config || return
+  page_address "$first" || return
+  if [ -n "$pg" ]; then
+    fail "$EX_USAGE" "$addr_shown is a page: create-space takes a space's path"
+    return
+  fi
+  create_space "$title" || return
+  note "created the space $addr_shown"
 }
 
 cmd_reference() {
@@ -1525,7 +1691,18 @@ wiki.sh: the wiki from a shell, through its API for programs.
       since the version it is sent with. That version is --if-match, else
       FILE.version from get --out FILE, else the one the last get or put of
       the page here gave. With none of them it refuses to write blind;
-      --force writes without a version, over whatever is there.
+      --force reads the page's version now and writes over it. A put
+      writes a page that exists and never makes one: at an address with no
+      page it is "not found" (exit 4).
+  wiki.sh create PAGE [--title TITLE] [--kind document|presentation] [--file FILE]
+      Make a new page at PAGE (/s/team/p/new-page/, or team new-page) with
+      the Markdown of FILE or standard input (none: empty). It only
+      creates: a page already there is refused (exit 5) and nothing is
+      written. The page above it, if any, must exist. Its version is
+      remembered for a later put.
+  wiki.sh create-space SPACE [--title TITLE]
+      Make a new space at SPACE (team/projects); the space above it, if
+      any, must exist. A space already there is refused (exit 6).
   wiki.sh reference [SECTION | --sections]
       The wiki's Markdown reference: read it before writing the wiki's
       Markdown. --sections lists its sections; SECTION (Math) gives one.
@@ -1541,8 +1718,8 @@ page's URL in the browser, or its API address (/api/markdown/s/...); or a
 space's path and a page's path apart, as the titles make them
 (team/projects the-wiki, team/edit history).
 
-Planned, once the server has them: creating pages and spaces, a page's table
-of contents, and one section of a page.
+Planned, once the server has them: a page's table of contents, and one
+section of a page.
 
 Configuration, from the environment or from ~/.config/wiki/config (another
 file with WIKI_CONFIG), which must be readable by you alone (chmod 600):
@@ -1565,9 +1742,11 @@ command line. Versions are remembered under WIKI_STATE_DIR (by default
 ~/.local/state/wiki), one file per page.
 
 Exit codes: 0 done; 1 another failure; 2 a wrong use (or no version known for
-a put); 3 sign-in refused; 4 not found (or not yours to read); 5 the page was
-saved since your version; 6 refused (not allowed, an encrypted space, a bad
-request); 7 too many failed sign-ins, try again later; 8 no connection.
+a put); 3 sign-in refused; 4 not found (or not yours to read; for a put, no
+page there); 5 the page was saved since your version (for a create, a page
+is there already); 6 refused (not allowed, an encrypted space, a bad request,
+a space there already); 7 too many failed sign-ins, try again later; 8 no
+connection.
 EOF
 }
 
@@ -1630,7 +1809,7 @@ mcp_tools='[
   {
     "name": "wiki_write_page",
     "title": "Write a page",
-    "description": "Replace a page'"'"'s whole Markdown with content. The write is conditional: version must be the version wiki_read_page returned. If someone saved the page since, nothing is written and the tool says so: read the page again, merge your change into its new text, and write with the new version. The page must exist; this does not create pages. Before writing, read the parts of wiki_markdown_reference you need: the wiki has its own Markdown.",
+    "description": "Replace a page'"'"'s whole Markdown with content. The write is conditional: version must be the version wiki_read_page returned. If someone saved the page since, nothing is written and the tool says so: read the page again, merge your change into its new text, and write with the new version. The page must exist: wiki_create_page makes new ones. Before writing, read the parts of wiki_markdown_reference you need: the wiki has its own Markdown.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1642,6 +1821,23 @@ mcp_tools='[
       "additionalProperties": false
     },
     "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
+  },
+  {
+    "name": "wiki_create_page",
+    "title": "Create a page",
+    "description": "Make a new page with content as its Markdown. It only creates: if a page is at the address already, nothing is written and the tool says so (read that page and change it with wiki_write_page). The page above it, if any, must exist. Returns the new page'"'"'s version. Read the parts of wiki_markdown_reference you need first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "page": {"type": "string", "description": "The new page'"'"'s address: its space'"'"'s address, then p/ and its slug (lower-case letters, digits and dashes), as /s/team/projects/p/release-notes/ or, under a page, /s/team/projects/p/release-notes/2026/."},
+        "title": {"type": "string", "description": "The page'"'"'s title. Omit for one made from the slug."},
+        "kind": {"type": "string", "enum": ["document", "presentation"], "description": "document (the default) or presentation."},
+        "content": {"type": "string", "description": "The new page'"'"'s Markdown, whole."}
+      },
+      "required": ["page", "content"],
+      "additionalProperties": false
+    },
+    "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
   },
   {
     "name": "wiki_markdown_reference",
@@ -1658,7 +1854,7 @@ mcp_tools='[
   }
 ]'
 
-mcp_instructions="The wiki at the address this server was started with: pages of Markdown in spaces. Find pages with wiki_list or wiki_search, read one with wiki_read_page, and change it with wiki_write_page, passing the version you read: a write over someone's newer save is refused, and you read again and merge. The wiki has its own Markdown: read the sections of wiki_markdown_reference you need before writing."
+mcp_instructions="The wiki at the address this server was started with: pages of Markdown in spaces. Find pages with wiki_list or wiki_search, read one with wiki_read_page, and change it with wiki_write_page, passing the version you read: a write over someone's newer save is refused, and you read again and merge. wiki_write_page only changes pages that exist; wiki_create_page makes a new one, and never writes over one. The wiki has its own Markdown: read the sections of wiki_markdown_reference you need before writing."
 
 mcp_log() {
   printf 'wiki.sh mcp: %s\n' "$1" >&2
@@ -1796,10 +1992,46 @@ mcp_call_tool() {
         record_version "$page_version"
         printf 'Wrote %s. Its version is now %s.' "$addr_shown" "$page_version" >"$work/tool-text"
         tool_answer false "$work/tool-text"
-      elif [ $? = "$EX_MOVED" ]; then
-        tool_failed "Nothing was written: the page $addr_shown has been saved by someone since version $version. Call wiki_read_page again, merge your change into the text it returns, and call wiki_write_page with the new version."
       else
-        tool_failed "$fail_message"
+        case $? in
+          "$EX_MOVED") tool_failed "Nothing was written: the page $addr_shown has been saved by someone since version $version. Call wiki_read_page again, merge your change into the text it returns, and call wiki_write_page with the new version." ;;
+          "$EX_NOTFOUND") tool_failed "Nothing was written: there is no page at $addr_shown (or you may not read it). wiki_write_page changes a page that exists; wiki_create_page makes a new one." ;;
+          *) tool_failed "$fail_message" ;;
+        esac
+      fi
+      ;;
+    wiki_create_page)
+      short_argument page string required || return
+      page=$arg
+      short_argument title string optional || return
+      title=$arg
+      short_argument kind string optional || return
+      kind=$arg
+      case $kind in
+        '' | document | presentation) ;;
+        *) tool_failed "kind is document or presentation."; return ;;
+      esac
+      tool_argument content string
+      case $? in
+        0) ;;
+        1) tool_failed "The argument content is missing."; return ;;
+        *) tool_failed "The argument content must be a string."; return ;;
+      esac
+      mv "$work/arg" "$work/content"
+      page_address "$page" || { tool_failed "$fail_message"; return; }
+      if [ -z "$pg" ]; then
+        tool_failed "$addr_shown is a space: give the new page's address in it, as ${addr_shown}p/new-page/."
+        return
+      fi
+      if create_page "$work/content" "$title" "$kind"; then
+        record_version "$page_version"
+        printf 'Created %s. Its version is %s.' "$addr_shown" "$page_version" >"$work/tool-text"
+        tool_answer false "$work/tool-text"
+      else
+        case $? in
+          "$EX_MOVED") tool_failed "Nothing was written: there is a page at $addr_shown already. Read it with wiki_read_page, and change it with wiki_write_page." ;;
+          *) tool_failed "$fail_message" ;;
+        esac
       fi
       ;;
     wiki_markdown_reference)
@@ -1934,7 +2166,7 @@ mcp_handle() {
       ;;
     '"tools/call"')
       case $tool_json in
-        '"wiki_list"' | '"wiki_search"' | '"wiki_read_page"' | '"wiki_write_page"' | '"wiki_markdown_reference"') ;;
+        '"wiki_list"' | '"wiki_search"' | '"wiki_read_page"' | '"wiki_write_page"' | '"wiki_create_page"' | '"wiki_markdown_reference"') ;;
         *)
           mcp_error -32602 "Unknown tool: $tool_json"
           return
@@ -1991,13 +2223,14 @@ main() {
     get) cmd_get "$@" ;;
     put) cmd_put "$@" ;;
     reference) cmd_reference "$@" ;;
+    create) cmd_create "$@" ;;
+    create-space) cmd_create_space "$@" ;;
     mcp)
       if [ $# = 0 ]; then cmd_mcp; else usage "mcp takes no arguments"; fi
       ;;
-    # The API's next endpoints (creating pages and spaces, a page's table of
-    # contents, one section of a page) get their commands here, each a
-    # cmd_ function as above, and a tool of the same function in
-    # mcp_call_tool.
+    # The API's next endpoints (a page's table of contents, one section of
+    # a page) get their commands here, each a cmd_ function as above, and a
+    # tool of the same function in mcp_call_tool.
     help | --help | -h) cmd_help; exit 0 ;;
     *) usage "no command $command" ;;
   esac

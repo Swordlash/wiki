@@ -56,6 +56,12 @@
 -- inside it, the spoiler has no outline either; a heading whose line would
 -- not come after the line of the section before it is no section. The
 -- tests say neither happens on the pages they make.
+--
+-- = Writing a section
+--
+-- 'replaceSection' puts a new text in the place of one section, of its own
+-- part, or of the top, and refuses a text that would change any section
+-- outside that place: see its own documentation.
 module Wiki.Core.Markdown.Sections
   ( Outline (..)
   , Section (..)
@@ -66,10 +72,16 @@ module Wiki.Core.Markdown.Sections
   , sectionText
   , outlineSections
   , outlineAnchors
+
+    -- * Writing a section
+  , Target (..)
+  , Replaced (..)
+  , Refusal (..)
+  , replaceSection
   )
 where
 
-import Data.List (span)
+import Data.List (lookup, span)
 import Data.Map.Strict qualified as Map
 import Data.Sequence qualified as Seq
 import Data.Text qualified as T
@@ -224,3 +236,267 @@ outlineSections o = concatMap inSpoiler o.spoilers <> concatMap inSection o.sect
 -- | The anchors of every section of an outline, in the order of the text.
 outlineAnchors :: Outline -> [Text]
 outlineAnchors = map (\s -> s.id) . outlineSections
+
+-- | 'Target' is the part of a page that a write replaces: a section whole,
+-- by its anchor, its subsections included; a section's own part, by its
+-- anchor, its subsections left where they are; or the page's top, the text
+-- before its first section.
+data Target
+  = WholeSection Text
+  | OwnPart Text
+  | Top
+  deriving stock (Eq, Show)
+
+-- | 'Replaced' is a page after a write of one of its parts: its new text,
+-- and the anchor of the section written ('Nothing' for the top). The
+-- anchor can differ from the one asked for, since the body may change its
+-- heading's text.
+data Replaced = Replaced
+  { text :: Text
+  , anchor :: Maybe Text
+  }
+  deriving stock (Eq, Show)
+
+-- | 'Refusal' is why 'replaceSection' refused a body. A refused body
+-- changes nothing.
+data Refusal
+  = -- | No section of the page has the anchor.
+    NoSuchAnchor
+  | -- | The body for a section is empty: a section cannot be deleted by a
+    -- write of its text.
+    EmptyBody
+  | -- | The body does not start with a heading of the section's level,
+    -- this one.
+    NotAHeading Int
+  | -- | Written whole, the body has a heading of the section's level or a
+    -- higher one after its own, with this text and level: a section is
+    -- written alone.
+    AnotherSection Text Int
+  | -- | Written as a section's own part, the body has a subsection's
+    -- heading, with this text.
+    Subsection Text
+  | -- | Written as the top, the body has a heading, with this text.
+    SectionInTop Text
+  | -- | The body's heading has an id written out that an earlier section
+    -- has, this one: the anchor would name that section.
+    AnchorTaken Text
+  | -- | A section outside the part written would change its anchor, from
+    -- the first to the second, as a heading with the same text as another
+    -- one does.
+    AnchorChanges Text Text
+  | -- | A section's anchor, this one, would name another section.
+    AnchorMoves Text
+  | -- | A section outside the part written, by its anchor, would change,
+    -- move or no longer be one; after the part ('True') or before it.
+    SectionChanges Text Bool
+  | -- | A heading outside the part written, by its text, would become a
+    -- section; after the part ('True') or before it.
+    SectionAppears Text Bool
+  | -- | A block spoiler outside the part written would change its bounds,
+    -- or no longer have an outline; after the part ('True') or around it.
+    SpoilerChanges Bool
+  | -- | Something else outside the part written would change.
+    OutsideChanges
+  deriving stock (Eq, Show)
+
+-- | 'replaceSection' writes a body in the place of a part of a page: the
+-- new text of the page, or why the body is refused.
+--
+-- The body is ended with a line break when it has none. When text follows
+-- the part in the page and the body does not end with an empty line, one
+-- empty line is added, so that the block after the body stays apart: a
+-- paragraph line directly before a title underlined with @===@ would
+-- become that title's first line. Nothing else of the body changes. So a
+-- part written back as it was read gives the same page, unless the part
+-- did not end so (a heading or a spoiler's end marker on the line right
+-- after its last line, a page without a final line break): it gains that
+-- line break. An empty body is refused, but for the top, where it removes
+-- the top.
+--
+-- The new page's outline is then compared with the old one. Outside the
+-- part, every section stays as it was: its anchor, its level, its text,
+-- the section it is under, the spoilers it is in, its bounds once shifted
+-- by the change of length, and the section its anchor names. So do the
+-- block spoilers there. Inside the part:
+--
+-- * A section written whole is one section: the body starts with a
+--   heading of the section's level, in the same spoiler, and every other
+--   heading of the body is under it.
+-- * A section's own part is its heading and its own text: the body starts
+--   with a heading of the section's level, and has no other heading but
+--   in a block spoiler.
+-- * The top has no heading, but in a block spoiler.
+--
+-- That one comparison refuses a code fence or a spoiler left open (the
+-- sections after it change), a spoiler's end marker that closes the
+-- spoiler the section is in, a heading of another level, a second
+-- heading of the same level, and a new heading text that changes another
+-- heading's anchor (@notes@ and @notes-2@). The body may change its own
+-- heading's text; the new anchor is in the answer, unless an id written
+-- out (@{#x}@) is an earlier section's, which is refused.
+--
+-- Both texts are read by 'outline', the whole page every time, never the
+-- body alone.
+replaceSection :: Target -> Text -> Text -> Either Refusal Replaced
+replaceSection target page body = do
+  (a, b, wanted) <- case target of
+    Top -> Right (0, old.top, Nothing)
+    WholeSection anchor -> (\p -> (p.section.start, p.section.end, Just p)) <$> named anchor
+    OwnPart anchor -> (\p -> (p.section.start, p.section.ownEnd, Just p)) <$> named anchor
+  written <- ending (b < T.length page)
+  let new = T.take a page <> written <> T.drop b page
+      a' = a + T.length written
+      o' = outline new
+      newPlaced = placedIn o'
+      -- Offsets of each page as if the part had no width: before the part
+      -- as they are, after it moved back by its length, inside it none.
+      atOld p = if p <= a then At p else if p >= b then At (p - (b - a)) else Within
+      atNew p = if p <= a then At p else if p >= a' then At (p - (a' - a)) else Within
+      (oldSeen, oldBoxes, oldPage) = view atOld (\p -> p >= a && p < b) old
+      (newSeen, newBoxes, newPage) = view atNew (\p -> p >= a && p < a') o'
+      headingAt p = find (\x -> x.section.start == p) newPlaced
+      own = case target of
+        OwnPart _ -> True
+        _ -> False
+      -- The section the body starts with ('Nothing' for the top), or why
+      -- there is none; and whether the body is that section and nothing
+      -- more, or for the top, no section.
+      (opening, inside) = case wanted of
+        Nothing
+          | o'.top == a' -> (Right Nothing, True)
+          | otherwise -> (maybe (Right Nothing) (\x -> Left (SectionInTop x.section.text)) (headingAt o'.top), False)
+        Just w -> case headingAt a of
+          Just t
+            | t.section.level == w.section.level ->
+                let stop = if own then t.section.ownEnd else t.section.end
+                    beyond x = if own then Subsection x.section.text else AnotherSection x.section.text x.section.level
+                 in if stop == a' && map atNew t.spoilers == map atOld w.spoilers
+                      then (Right (Just t), True)
+                      else (maybe (Right (Just t)) (Left . beyond) (guard (stop < a') *> headingAt stop), False)
+          _ -> (Left (NotAHeading w.section.level), False)
+      -- Why the outside differs: the first section of the old page that
+      -- changed, then the first new one, then the spoilers.
+      outsideRefusal =
+        head
+          ( mapMaybe (\(raw, s) -> differs raw s (lookup s.shape.start [(n.shape.start, n) | (_, n) <- newSeen])) oldSeen
+              <> [SectionAppears n.shape.text (raw >= a') | (raw, n) <- newSeen, n.shape.start `notElem` map (\(_, s) -> s.shape.start) oldSeen]
+              <> [SpoilerChanges (raw >= b) | (raw, x) <- oldBoxes, x `notElem` map snd newBoxes]
+              <> [SpoilerChanges (raw >= a') | (raw, x) <- newBoxes, x `notElem` map snd oldBoxes]
+          )
+      differs raw s = \case
+        Nothing -> Just (SectionChanges s.anchor (raw >= b))
+        Just n
+          | n == s -> Nothing
+          | n.shape == s.shape && n.leads == s.leads -> Just (AnchorChanges s.anchor n.anchor)
+          | n.shape == s.shape && n.anchor == s.anchor -> Just (AnchorMoves s.anchor)
+          | otherwise -> Just (SectionChanges s.anchor (raw >= b))
+  section <- opening
+  unless (inside && map snd oldSeen == map snd newSeen && map snd oldBoxes == map snd newBoxes && oldPage == newPage) $
+    Left (fromMaybe OutsideChanges outsideRefusal)
+  case section of
+    Just t
+      | Just leading <- find (\x -> x.section.id == t.section.id) newPlaced
+      , leading.section.start /= a ->
+          Left (AnchorTaken t.section.id)
+    _ -> Right Replaced {text = new, anchor = (\t -> t.section.id) <$> section}
+  where
+    old = outline page
+    named anchor = maybeToRight NoSuchAnchor (find (\p -> p.section.id == anchor) (placedIn old))
+    ending follows
+      | T.null body = if target == Top then Right "" else Left EmptyBody
+      | otherwise =
+          let ended = if lineBreak (T.last body) then body else body <> "\n"
+           in Right (if follows && not (endsEmpty ended) then ended <> breakAfter ended else ended)
+    -- Whether a text that ends with a line break ends with an empty line:
+    -- its last line, before that break, has nothing but spaces and tabs.
+    endsEmpty t =
+      let before = fromMaybe (T.dropEnd 1 t) (T.stripSuffix "\r\n" t)
+       in T.all (\c -> c == ' ' || c == '\t') (T.takeWhileEnd (not . lineBreak) before)
+    -- The line break that makes an empty line after a text that ends with
+    -- one: a line feed, but after a carriage return alone another carriage
+    -- return, since a line feed there would make one line break of the two.
+    breakAfter t = if T.last t == '\r' then "\r" else "\n"
+    lineBreak c = c == '\n' || c == '\r'
+
+-- | 'Placed' is a section of an outline with where it is: the start of the
+-- section it is under ('Nothing' at the top level of its outline, the
+-- page's or a spoiler's), and the starts of the block spoilers it is in,
+-- the innermost first.
+data Placed = Placed
+  { section :: Section
+  , parent :: Maybe Int
+  , spoilers :: [Int]
+  }
+
+-- | Every section of an outline, in the order of 'outlineSections', with
+-- where it is.
+placedIn :: Outline -> [Placed]
+placedIn = inOutline []
+  where
+    inOutline around o = concatMap (inSpoiler around) o.spoilers <> concatMap (inSection Nothing around) o.sections
+    inSpoiler around sb = inOutline (sb.start : around) sb.outline
+    inSection parent around s = Placed s parent around : concatMap (inSpoiler around) s.spoilers <> concatMap (inSection (Just s.start) around) s.below
+
+-- | 'Pos' is an offset of a page with a part written, as 'replaceSection'
+-- compares them: the offset as if the part had no width, or 'Within' the
+-- part.
+data Pos = At Int | Within
+  deriving stock (Eq, Show)
+
+-- | 'Seen' is a section as 'replaceSection' compares it: its anchor, its
+-- 'Shape', and where the first section with its anchor starts, the one a
+-- link to the anchor names.
+data Seen = Seen
+  { anchor :: Text
+  , shape :: Shape
+  , leads :: Pos
+  }
+  deriving stock (Eq, Show)
+
+-- | 'Shape' is a section's place and heading, but its anchor: its level,
+-- its text, its bounds, the section it is under and the spoilers it is in.
+data Shape = Shape
+  { level :: Int
+  , text :: Text
+  , start :: Pos
+  , ownEnd :: Pos
+  , end :: Pos
+  , parent :: Maybe Pos
+  , spoilers :: [Pos]
+  }
+  deriving stock (Eq, Show)
+
+-- | 'Box' is a block spoiler with an outline, as 'replaceSection' compares
+-- it: where its start marker's line, its body, its body's top and its end
+-- marker's line start, and the spoilers it is in.
+data Box = Box
+  { start :: Pos
+  , from :: Pos
+  , top :: Pos
+  , to :: Pos
+  , spoilers :: [Pos]
+  }
+  deriving stock (Eq, Show)
+
+-- | An outline as 'replaceSection' compares it, its offsets through @at@:
+-- the sections and the block spoilers that do not start in the part
+-- written (@inPart@), each with its start in the page, and where the
+-- page's top and the page end.
+view :: (Int -> Pos) -> (Int -> Bool) -> Outline -> ([(Int, Seen)], [(Int, Box)], (Pos, Pos))
+view at inPart o =
+  ( [ (p.section.start, Seen {anchor = p.section.id, shape = shapeOf p, leads = leadsOf p.section.id})
+    | p <- ps
+    , not (inPart p.section.start)
+    ]
+  , [ (sb.start, Box {start = at sb.start, from = at sb.outline.from, top = at sb.outline.top, to = at sb.outline.to, spoilers = map at around})
+    | (sb, around) <- boxes [] o
+    , not (inPart sb.start)
+    ]
+  , (at o.top, at o.to)
+  )
+  where
+    ps = placedIn o
+    shapeOf p = Shape {level = p.section.level, text = p.section.text, start = at p.section.start, ownEnd = at p.section.ownEnd, end = at p.section.end, parent = at <$> p.parent, spoilers = map at p.spoilers}
+    leadsOf anchor = maybe Within (\p -> at p.section.start) (find (\p -> p.section.id == anchor) ps)
+    boxes around x = concatMap (\sb -> (sb, around) : boxes (sb.start : around) sb.outline) (x.spoilers <> concatMap (\s -> s.spoilers) (flat x.sections))
+    flat = concatMap (\s -> s : flat s.below)

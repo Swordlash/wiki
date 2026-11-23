@@ -9,7 +9,7 @@ import Protolude
 import Test.Cases (coverage)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
-import Test.QuickCheck (Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, listOf, oneof, vectorOf, (.&&.), (===))
+import Test.QuickCheck (Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, frequency, listOf, oneof, property, vectorOf, (.&&.), (===))
 import Test.Slides (aDeckWithBreaks)
 import Wiki.Core.Markdown.Ast (Block (..), SpoilerHead (..), SpoilerKind (..), SpoilerProblem (..), attribute, parseDeckSpans, plainText)
 import Wiki.Core.Markdown.Sections
@@ -189,7 +189,174 @@ spec = describe "Markdown.Sections" $ do
               firstHeading (sectionText source (s.start, s.ownEnd)) === Just (s.level, s.text)
           | s <- outlineSections (outline source)
           ]
+
+  describe "replaceSection" $ do
+    let page = "# A\n\nLead.\n\n## Install\n\nSteps.\n\n## Use\n\nRun it.\n"
+    it "ends a body with a line break, and with an empty line where text follows" $ do
+      replaceSection (WholeSection "use") page "## Use\n\nRun it twice."
+        `shouldBe` Right Replaced {text = "# A\n\nLead.\n\n## Install\n\nSteps.\n\n## Use\n\nRun it twice.\n", anchor = Just "use"}
+      replaceSection (WholeSection "install") page "## Install\n\nOther steps."
+        `shouldBe` Right Replaced {text = "# A\n\nLead.\n\n## Install\n\nOther steps.\n\n## Use\n\nRun it.\n", anchor = Just "install"}
+
+    it "keeps a body's last paragraph apart from a title underlined after it" $ do
+      let source = "## One\n\nA.\n\nTitle\n---\n\nB.\n"
+      -- Without the empty line, the paragraph's line would be the title's
+      -- first line: one heading, "New text Title".
+      headings "## One\n\nNew text\nTitle\n---\n\nB.\n" `shouldBe` [("one", 2, "One"), ("new-text-title", 2, "New text Title")]
+      replaceSection (WholeSection "one") source "## One\n\nNew text"
+        `shouldBe` Right Replaced {text = "## One\n\nNew text\n\nTitle\n---\n\nB.\n", anchor = Just "one"}
+
+    it "takes a new text for the section's heading, and answers its new anchor" $ do
+      let written = replaceSection (WholeSection "install") page "## Setup\n\nSteps.\n"
+      (\done -> done.anchor) <$> written `shouldBe` Right (Just "setup")
+      (\done -> part done.text "setup" False) <$> written `shouldBe` Right (Just "## Setup\n\nSteps.\n\n")
+      (\done -> outlineAnchors (outline done.text)) <$> written `shouldBe` Right ["a", "setup", "use"]
+
+    it "refuses a heading's new text that changes the anchor of another heading" $ do
+      let source = "## Notes\n\nA.\n\n## Use\n\nB.\n\n## Notes\n\nC.\n"
+      outlineAnchors (outline source) `shouldBe` ["notes", "use", "notes-2"]
+      replaceSection (WholeSection "use") source "## Notes\n\nB.\n" `shouldBe` Left (AnchorChanges "notes-2" "notes-3")
+
+    it "refuses a code fence left open, which takes in the sections after it" $
+      replaceSection (WholeSection "install") page "## Install\n\n```\nmake\n" `shouldBe` Left (SectionChanges "use" True)
+
+    it "refuses a heading of another level" $ do
+      replaceSection (WholeSection "install") page "### Install\n\nSteps.\n" `shouldBe` Left (NotAHeading 2)
+      replaceSection (WholeSection "install") page "Steps first.\n\n## Install\n" `shouldBe` Left (NotAHeading 2)
+
+    it "refuses a second heading of the section's level" $
+      replaceSection (WholeSection "install") page "## Install\n\nSteps.\n\n## Extra\n\nMore.\n" `shouldBe` Left (AnotherSection "Extra" 2)
+
+    it "refuses a subsection in a section's own part" $ do
+      replaceSection (OwnPart "a") page "# A\n\nLead.\n\n### Sub\n\nMore.\n" `shouldBe` Left (Subsection "Sub")
+      replaceSection (OwnPart "a") page "# A\n\nOther lead.\n"
+        `shouldBe` Right Replaced {text = "# A\n\nOther lead.\n\n## Install\n\nSteps.\n\n## Use\n\nRun it.\n", anchor = Just "a"}
+
+    let spoiled = "# A\n\n[[!spoiler]]{s}(More)\n## Hidden\n\nInside.\n[[/spoiler]]{s}\n\n## Next\n\nText.\n"
+    it "writes a section inside a spoiler, within the spoiler" $
+      replaceSection (WholeSection "hidden") spoiled "## Hidden\n\nChanged."
+        `shouldBe` Right Replaced {text = "# A\n\n[[!spoiler]]{s}(More)\n## Hidden\n\nChanged.\n\n[[/spoiler]]{s}\n\n## Next\n\nText.\n", anchor = Just "hidden"}
+
+    it "refuses a body that closes the spoiler the section is in" $
+      replaceSection (WholeSection "hidden") spoiled "## Hidden\n\nInside.\n[[/spoiler]]{s}\n\nOutside.\n" `shouldBe` Left (SpoilerChanges False)
+
+    it "refuses an empty body for a section, and takes one for the top" $ do
+      replaceSection (WholeSection "install") page "" `shouldBe` Left EmptyBody
+      replaceSection Top ("Intro.\n\n" <> page) "" `shouldBe` Right Replaced {text = page, anchor = Nothing}
+      replaceSection Top page "Intro." `shouldBe` Right Replaced {text = "Intro.\n\n" <> page, anchor = Nothing}
+      replaceSection Top page "Intro.\n\n# B\n" `shouldBe` Left (SectionInTop "B")
+
+    it "knows no section by an anchor the page does not have" $
+      replaceSection (WholeSection "nowhere") page "## Nowhere\n" `shouldBe` Left NoSuchAnchor
+
+  describe "replaceSection on generated pages, of both kinds" $ do
+    let pages = oneof [aPage, aSpoiledPage]
+    prop "takes back every part as it was read" $
+      coverage . forAll pages $ \source ->
+        let parts = targets source
+            unchanged = [t | t <- parts, Just (a, b) <- [rangeOf source t], normalised source (a, b) == sectionText source (a, b)]
+         in cover 5 (length unchanged == length parts) "every part the same page"
+              . cover 5 (length unchanged < length parts) "a part given an empty line or a line break"
+              . cover 5 (any inSpoiler parts) "a section inside a spoiler"
+              $ conjoin (map (writesBack source) parts)
+    prop "changes nothing outside the part written" $
+      coverage . forAll (pages >>= \source -> (source,) <$> elements (targets source)) $ \(source, target) ->
+        forAll (aBody source target) $ \body ->
+          let result = replaceSection target source body
+           in counterexample (show result)
+                . cover 25 (isRight result) "accepted"
+                . cover 1 (isRight result && inSpoiler target) "a section inside a spoiler written"
+                . cover 0.5 (result == Left EmptyBody) "an empty body"
+                . cover 1 (refusedFor (\case NotAHeading _ -> True; _ -> False) result) "not a heading"
+                . cover 2 (refusedFor (\case AnotherSection _ _ -> True; Subsection _ -> True; SectionInTop _ -> True; _ -> False) result) "a heading too many"
+                . cover 0.5 (refusedFor (\case SectionChanges _ _ -> True; _ -> False) result) "a section outside changes"
+                . cover 0.5 (refusedFor (\case AnchorChanges _ _ -> True; _ -> False) result) "an anchor outside changes"
+                $ either (const (property True)) (outsideKept source target) result
   where
+    refusedFor f = either f (const False)
+    -- Whether a part is a section inside a spoiler: in 'aSpoiledPage',
+    -- those headings have ids that start with @in-@.
+    inSpoiler = \case
+      WholeSection i -> "in-" `T.isPrefixOf` i
+      OwnPart i -> "in-" `T.isPrefixOf` i
+      Top -> False
+    -- Every part of a page that can be written: the top, and each section
+    -- by its anchor, whole and its own part.
+    targets :: Text -> [Target]
+    targets source = Top : concat [[WholeSection i, OwnPart i] | i <- ordNub (outlineAnchors (outline source))]
+    rangeOf source = \case
+      Top -> Just (topRange (outline source))
+      WholeSection i -> sectionRange (outline source) i False
+      OwnPart i -> sectionRange (outline source) i True
+    -- A part's text as a write ends it: with a line break, and with an
+    -- empty line where text follows. After a carriage return alone, the
+    -- empty line is one more carriage return, since a line feed would make
+    -- one line break of the two.
+    normalised :: Text -> (Int, Int) -> Text
+    normalised source (a, b) =
+      let t = sectionText source (a, b)
+          broken = if T.null t || T.last t `elem` ['\n', '\r'] then t else t <> "\n"
+          lastLine = T.takeWhileEnd (`notElem` ['\n', '\r']) (fromMaybe (T.dropEnd 1 broken) (T.stripSuffix "\r\n" broken))
+       in if T.null t || b >= T.length source || T.all (`elem` [' ', '\t']) lastLine then broken else broken <> (if T.last broken == '\r' then "\r" else "\n")
+    -- A part written back as it was read is taken, and the page is the
+    -- same, but for the ending of the part ('normalised'); the part read
+    -- again and written back gives the same page.
+    writesBack :: Text -> Target -> Property
+    writesBack source target = case rangeOf source target of
+      Nothing -> counterexample (show target <> " names nothing") False
+      Just (a, b) ->
+        let expectedText = T.take a source <> normalised source (a, b) <> T.drop b source
+            anchorOf = case target of
+              Top -> Nothing
+              WholeSection i -> Just i
+              OwnPart i -> Just i
+         in counterexample (show target) $ case replaceSection target source (sectionText source (a, b)) of
+              Left why -> counterexample ("refused: " <> show why) False
+              Right done ->
+                (done === Replaced {text = expectedText, anchor = anchorOf})
+                  .&&. ( fmap (\again -> replaceSection target done.text (sectionText done.text again)) (rangeOf done.text target)
+                           === Just (Right done)
+                       )
+    -- What a write took: outside the part, the text is the same character
+    -- for character, the sections are the same headings in the same order,
+    -- each anchor names a part whose text is the same (or, for a part
+    -- around the one written, the same with the new body in its place), and
+    -- the anchor answered names the body.
+    outsideKept :: Text -> Target -> Replaced -> Property
+    outsideKept source target done = case rangeOf source target of
+      Nothing -> counterexample "no part" False
+      Just (a, b) ->
+        let new = done.text
+            prefix = T.take a source
+            suffix = T.drop b source
+            middle = T.drop a (T.dropEnd (T.length suffix) new)
+            b' = a + T.length middle
+            old = outline source
+            o' = outline new
+            outside lo hi o = [(s.id, s.level, s.text) | s <- outlineSections o, s.start < lo || s.start >= hi]
+            -- The text a part of the old page has in the new one.
+            moved (s, e)
+              | (s, e) == (a, b) = middle
+              | e <= a = sectionText source (s, e)
+              | s >= b = sectionText source (s, e)
+              | s <= a && e >= b = sectionText source (s, a) <> middle <> sectionText source (b, e)
+              | otherwise = "a part across the edge of the part written"
+            ranges o i = [sectionRange o i own | own <- [False, True]]
+         in counterexample (show (old, o')) $
+              (T.isPrefixOf prefix new .&&. T.isSuffixOf suffix new .&&. T.length new >= T.length prefix + T.length suffix)
+                .&&. outside a b old === outside a b' o'
+                .&&. conjoin
+                  [ counterexample (show i) $ map (fmap (sectionText new)) (ranges o' i) === map (fmap moved) (ranges old i)
+                  | i <- ordNub [s.id | s <- outlineSections old, s.start < a || s.start >= b]
+                  , all (maybe True (\(s, _) -> s < a || s >= b)) (ranges old i)
+                  ]
+                .&&. (sectionText new (topRange o') === moved (topRange old))
+                .&&. ( case (target, done.anchor) of
+                         (Top, Nothing) -> topRange o' === (0, b')
+                         (WholeSection _, Just i) -> sectionRange o' i False === Just (a, b')
+                         (OwnPart _, Just i) -> sectionRange o' i True === Just (a, b')
+                         other -> counterexample (show other) False
+                     )
     -- For the page and for each spoiler's body: its top and its sections'
     -- own parts, in order, are the whole text, the page or the body.
     partsGiveBack :: Text -> Property
@@ -306,3 +473,49 @@ aSpoiledPage = do
       body <- vectorOf size (inside depth k)
       close <- elements ["\n[[/spoiler]]{" <> name <> "}", "\n[[/spoiler]]{" <> name <> "}", "\n[[/spoiler]]{" <> name <> "}\n---", "\n[[/spoiler]]{" <> name <> "}\n===", "\n[[/spoiler]]{" <> name <> "}", ""]
       pure ("[[!spoiler]]{" <> name <> "}(Show)" <> next <> "\n" <> T.intercalate "\n" body <> close)
+
+-- | A body to write in place of a part of a page: now and then nothing at
+-- all, else a start, then a few pieces, then an ending of no, one or two
+-- line breaks. For a section the
+-- start is mostly its heading as the page has it, its whole text as read,
+-- or a heading of its level with a new text; sometimes a heading of another
+-- level, a title underlined, a heading with another section's text, a
+-- paragraph, or nothing. For the top, mostly nothing, a paragraph or its
+-- text as read. The pieces are mostly plain (a paragraph, a closed code
+-- block, a deeper heading, a spoiler with a heading inside) and sometimes
+-- awkward: a code fence or a spoiler left open, an end marker of a
+-- spoiler the page has or of none, a heading of the same or a higher
+-- level, a title underlined, a lone @---@ or @===@.
+aBody :: Text -> Target -> Gen Text
+aBody source target = do
+  start <- case section of
+    Nothing -> frequency [(3, pure ""), (3, pure "Intro."), (2, pure original), (1, elements others)]
+    Just s ->
+      frequency
+        [ (4, pure heading)
+        , (2, pure original)
+        , (2, pure (marks s.level <> " Renamed"))
+        , (1, elements [marks (s.level + 1) <> " " <> s.text, marks (max 1 (s.level - 1)) <> " " <> s.text, s.text <> "\n===", s.text <> "\n---", "Text.", ""])
+        , (1, elements others)
+        ]
+  count <- choose (0, 3 :: Int)
+  pieces <- vectorOf count ((<>) <$> elements ["\n", "\n\n"] <*> frequency [(6, elements plain), (4, elements awkward)])
+  end <- elements ["", "\n", "\n\n"]
+  frequency [(1, pure ""), (19, pure (start <> T.concat pieces <> end))]
+  where
+    o = outline source
+    section = case target of
+      Top -> Nothing
+      WholeSection i -> find (\s -> s.id == i) (outlineSections o)
+      OwnPart i -> find (\s -> s.id == i) (outlineSections o)
+    level = maybe 2 (\s -> s.level) section
+    marks n = T.replicate n "#"
+    original = maybe (sectionText source (topRange o)) (\s -> sectionText source (s.start, if target == OwnPart s.id then s.ownEnd else s.end)) section
+    -- The heading's own lines in the page: one for a heading written with
+    -- #, two for a title underlined.
+    heading =
+      let ls = T.lines original
+       in T.intercalate "\n" (take (if maybe False ("#" `T.isPrefixOf`) (head ls) then 1 else 2) ls)
+    others = marks level <> " Alpha" : [marks level <> " " <> s.text | s <- outlineSections o, Just s.id /= ((\x -> x.id) <$> section)]
+    plain = ["Para.", "More text\nover two lines.", "```\ncode\n```", "[[!spoiler]]{q}(Q)\n" <> marks (level + 1) <> " Inner {#in-q}\n[[/spoiler]]{q}", marks (level + 1) <> " Deeper", "- a list"]
+    awkward = ["```\nopen", "[[!spoiler]]{z}(Z)\nnever closed", "[[/spoiler]]{s0}", "[[/spoiler]]{s}", "[[/spoiler]]{x}", marks level <> " Sibling", marks (max 1 (level - 1)) <> " Higher", "Alpha\n===", "Beta\n---", "---", "==="]

@@ -204,12 +204,25 @@ creation expected =
     , corExtensions = Nothing
     }
 
+-- | Why a passkey made on another origin is refused: the origin the
+-- browser wrote in the client data, and the one the wiki expected, with
+-- where that one comes from. A browser shows the page's own address, so
+-- naming only the received origin looks like naming the wiki's; the
+-- expected one shows which address an administrator has to correct.
+originRefusal :: NonEmpty M.Origin -> M.Origin -> Text
+originRefusal expected received =
+  "it was made on another site, "
+    <> M.unOrigin received
+    <> ", and this wiki takes passkeys on "
+    <> T.intercalate " or " (map M.unOrigin (toList expected))
+    <> " (its public address in the administration's Server section, or without one the address a proxy in front passes on in X-Forwarded-Host and X-Forwarded-Proto, else the Host; with the port when it is not the scheme's own)"
+
 -- | Why a registration is refused, as a sentence that completes "The
 -- passkey was refused: …".
 registrationRefusal :: RegistrationError -> Text
 registrationRefusal = \case
   RegistrationChallengeMismatch _ _ -> "it answers another challenge than the one the wiki gave"
-  RegistrationOriginMismatch _ origin -> "it was made on another site, " <> M.unOrigin origin
+  RegistrationOriginMismatch expected received -> originRefusal expected received
   RegistrationRpIdHashMismatch _ _ -> "it was made for another site than this wiki"
   RegistrationUserNotPresent -> "the authenticator does not say the user was present"
   RegistrationUserNotVerified -> "the authenticator does not say it verified the user"
@@ -317,7 +330,7 @@ challengeOf raw = decodeStrict raw >>= parseMaybe (withObject "client data" (.: 
 assertionRefusal :: AuthenticationError -> Text
 assertionRefusal = \case
   AuthenticationChallengeMismatch _ _ -> "it answers another challenge than the one the wiki gave"
-  AuthenticationOriginMismatch _ origin -> "it was made on another site, " <> M.unOrigin origin
+  AuthenticationOriginMismatch expected received -> originRefusal expected received
   AuthenticationRpIdHashMismatch _ _ -> "it was made for another site than this wiki"
   AuthenticationUserNotPresent -> "the authenticator does not say the user was present"
   AuthenticationUserNotVerified -> "the authenticator does not say it verified the user"

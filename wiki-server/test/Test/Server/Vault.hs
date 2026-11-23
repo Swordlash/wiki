@@ -272,6 +272,32 @@ vaultAndPasskeys backing = describe "the assistant's vault and passkeys, over HT
       siteFor Nothing (request []) `shouldBe` Site {rpId = "wiki.example.org", origins = ["http://wiki.example.org:8080"]}
       siteFor Nothing (request [("X-Forwarded-Host", "Docs.Example.net, inner"), ("X-Forwarded-Proto", "https")])
         `shouldBe` Site {rpId = "docs.example.net", origins = ["https://docs.example.net"]}
+    -- A browser writes an origin with its port when the port is not the
+    -- scheme's own, and without it when it is (issue 337).
+    it "keeps a port other than the scheme's own, and leaves the scheme's own out" $ do
+      siteFor (Just (Url "https://wiki.example.org:8443/")) (request []) `shouldBe` Site {rpId = "wiki.example.org", origins = ["https://wiki.example.org:8443"]}
+      siteFor (Just (Url "https://wiki.example.org:443/")) (request []) `shouldBe` Site {rpId = "wiki.example.org", origins = ["https://wiki.example.org"]}
+      siteFor (Just (Url "http://wiki.example.org:80/")) (request []) `shouldBe` Site {rpId = "wiki.example.org", origins = ["http://wiki.example.org"]}
+      siteFor Nothing (request [("X-Forwarded-Host", "wiki.example.org:443"), ("X-Forwarded-Proto", "https")])
+        `shouldBe` Site {rpId = "wiki.example.org", origins = ["https://wiki.example.org"]}
+      siteFor Nothing (request [("X-Forwarded-Host", "[::1]:8443"), ("X-Forwarded-Proto", "https")]) `shouldBe` Site {rpId = "::1", origins = ["https://[::1]:8443"]}
+
+  describe "a wiki on another port than the scheme's own, or with the scheme's own written out" $
+    for_ [("wiki.example.org:8443", "https://wiki.example.org:8443"), ("wiki.example.org:443", "https://wiki.example.org")] $ \(forwardedHost, origin) ->
+      it ("takes a passkey made on " <> toS origin <> " when a proxy forwards " <> toS forwardedHost) $ withSignedIn backing $ \r editor _ -> do
+        let proxied = [("X-Forwarded-Host", encodeUtf8 forwardedHost), ("X-Forwarded-Proto", "https")]
+            onPort = authenticator ("a passkey on " <> encodeUtf8 forwardedHost)
+        proved r editor
+        options :: RegistrationOptions <- call r (editor <> proxied) methodPost links.account.beginRegistration (Just editorsPassword) >>= jsonAs 200
+        options.rpId `shouldBe` "wiki.example.org"
+        _ :: PasskeyInfo <- register r (editor <> proxied) options onPort origin >>= jsonAs 200
+        _ :: PasskeyInfo <- use r (editor <> proxied) onPort 1 origin >>= jsonAs 200
+        signedIn :: SessionInfo <- signInFrom r proxied onPort 0x05 2 origin (Just "user-editor") >>= jsonAs 200
+        (\u -> u.login.text) <$> signedIn.user `shouldBe` Just "editor"
+        -- The refusal names both origins, so that the one to correct shows.
+        refused :: ApiError <- signInFrom r proxied onPort 0x05 3 "https://wiki.example.org:9443" (Just "user-editor") >>= jsonAs 400
+        refused `shouldSatisfy` says "made on another site, https://wiki.example.org:9443"
+        refused `shouldSatisfy` says ("takes passkeys on " <> origin)
   where
     passkey = authenticator "the editor's passkey"
     wrap = WrappedKey "bm9uY2UtMTJieXRl" "YSB2YXVsdCBrZXkgd3JhcHBlZCwgYW5kIHRoZSB0YWcgb2YgaXRzIHdyYXBwaW5n"
@@ -356,12 +382,17 @@ signInOptions r = send r methodPost (r.public <> "/" <> links.beginPasskeySignIn
 -- | Sign in with a passkey alone, its counter, origin and user handle as
 -- given, and the flags of its authenticator data: the answer, sent.
 signInWith :: Running -> Authenticator -> Word8 -> Word32 -> Text -> Maybe Text -> IO Reply
-signInWith r a flags counter origin userHandle = do
-  options <- signInOptions r
+signInWith r = signInFrom r []
+
+-- | 'signInWith', with these headers on both requests: those a proxy in
+-- front of the server adds.
+signInFrom :: Running -> [Header] -> Authenticator -> Word8 -> Word32 -> Text -> Maybe Text -> IO Reply
+signInFrom r headers a flags counter origin userHandle = do
+  options :: AssertionOptions <- send r methodPost (r.public <> "/" <> links.beginPasskeySignIn) headers "" >>= jsonAs 200
   options.allow `shouldBe` []
   challenge <- maybe (panic "no challenge") pure (fromBase64Url options.challenge)
   signed <- assertionFlagged flags a counter options.rpId origin challenge
-  send r methodPut (r.public <> "/" <> links.finishPasskeySignIn) jsonHeader (encode (answered a signed userHandle))
+  send r methodPut (r.public <> "/" <> links.finishPasskeySignIn) (headers <> jsonHeader) (encode (answered a signed userHandle))
 
 signing :: Backing -> Spec
 signing backing = describe "signing in with a passkey" $ do

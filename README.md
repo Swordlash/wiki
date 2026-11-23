@@ -705,7 +705,12 @@ page says so instead. A browser offers no encryption to such a page either:
 there the keys are kept in the browser as text, as the settings page warns. Behind a proxy that serves the wiki over HTTPS, set the
 wiki's public address in the administration, or have the proxy send
 `X-Forwarded-Proto: https`: the server checks that a passkey was used on the
-wiki's own origin. They need a browser with the PRF extension, which the
+wiki's own origin. On a port other than 443 the origin includes the port, so
+the public address carries it (`https://wiki.example.org:8443/`), and without
+one the proxy passes on the `Host` the browser sent, port included (nginx's
+`$http_host`, not `$host`, which drops it). A passkey refused as "made on
+another site" names the origin it was made on and the one the wiki expected.
+They need a browser with the PRF extension, which the
 browsers the wiki runs in have: Chrome and Edge 140 or later, Firefox 133 or
 later, Safari 18.2 or later. A passkey here does
 not sign you in; it only unlocks the assistant's keys.
@@ -1395,7 +1400,9 @@ cookies, and no firewall rule is opened; the deploy prints what the proxy must d
 It must pass WebSocket upgrades on (comments and notifications arrive live at
 `api/v1/events`), and send `X-Forwarded-Proto` and `X-Forwarded-Host` (or keep the
 `Host` the browser asked for), from which the server tells its public address and
-the origin passkeys are checked against. Caddy's `reverse_proxy` does all of it;
+the origin passkeys are checked against. On a port other than 443 the host
+it passes on keeps the port (`wiki.example.org:8443`; in nginx `$http_host`,
+not `$host`), or the administration's public address names it. Caddy's `reverse_proxy` does all of it;
 a whole Caddyfile, with the certificate from Let's Encrypt:
 
 ```
@@ -2475,9 +2482,10 @@ to the demo, keeping `data/`.
   change takes effect at once, with no deploy and no restart. The section has:
 
   - *the public address*, the wiki's address as people reach it
-    (`https://your-machine.tailnet.ts.net/`, `https://wiki.example.org/`), which
-    mailed links and the providers' redirect URIs start with; mail and providers need
-    it;
+    (`https://your-machine.tailnet.ts.net/`, `https://wiki.example.org/`), with its
+    port when that is not the scheme's own (`https://wiki.example.org:8443/`), which
+    mailed links and the providers' redirect URIs start with, and passkeys are
+    checked against; mail and providers need it;
   - *mail*: the SMTP server's host and port (587 is STARTTLS, 465 implicit TLS; "none"
     only for a relay on the same machine or network), the sender
     (`Wiki <wiki@example.org>`), the account and its password if it wants one; "Send a

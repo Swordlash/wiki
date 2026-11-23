@@ -109,12 +109,24 @@ data Site = Site
 -- ('requestOrigin': the host, and the scheme a proxy in front of the
 -- server says the browser used, else plain HTTP). A proxy that serves the
 -- wiki over HTTPS and does not say so with @X-Forwarded-Proto@ needs the
--- public address set, or the browser's origin is refused.
+-- public address set, or the browser's origin is refused. The same holds
+-- for a wiki on a port other than the scheme's own: the public address,
+-- or the host a proxy passes on, must carry that port.
+--
+-- The origin is written as a browser writes it in a passkey's client
+-- data, because the webauthn package compares the two as text: the port
+-- is left out when it is the scheme's own (443 for https, 80 for http),
+-- as in a public address typed @https:\/\/wiki.example.org:443\/@, and
+-- kept otherwise.
 siteFor :: Maybe Url -> Request -> Site
 siteFor publicUrl request = Site {rpId = hostOf (T.drop 3 (snd (T.breakOn "://" origin))), origins = [origin]}
   where
     asked = requestOrigin request
-    origin = fromMaybe (T.toLower asked) ((publicUrl >>= originOf . (\u -> u.text)) <|> originOf asked)
+    origin = withoutDefaultPort (fromMaybe (T.toLower asked) ((publicUrl >>= originOf . (\u -> u.text)) <|> originOf asked))
+    withoutDefaultPort o
+      | Just short <- T.stripSuffix ":443" o, "https://" `T.isPrefixOf` o = short
+      | Just short <- T.stripSuffix ":80" o, "http://" `T.isPrefixOf` o = short
+      | otherwise = o
     hostOf authority
       | "[" `T.isPrefixOf` authority = T.takeWhile (/= ']') (T.drop 1 authority)
       | otherwise = T.takeWhile (/= ':') authority

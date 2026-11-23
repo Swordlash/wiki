@@ -2649,6 +2649,78 @@ curl https://wiki.example/api/markdown/reference
   same text the writing assistant's prompt starts with, to anyone; in a
   closed wiki it needs a sign-in, as everything else there does.
 
+To find the pages, a program lists the spaces or searches, at `/api/list` and
+`/api/search`, signed in in the same way. Both answer JSON, with what you may
+read and nothing else, and take only `GET`.
+
+```sh
+# Every space you may read, from the top level down, with its pages.
+curl -u editor:'my password' https://wiki.example/api/list/
+
+# One space and what is under it, two levels down.
+curl -u editor:'my password' 'https://wiki.example/api/list/s/team/?depth=2'
+
+# The search of the search box; space= keeps to a space and its subspaces.
+curl -u editor:'my password' 'https://wiki.example/api/search?q=on-call+rota&space=team&limit=10'
+```
+
+- **`GET /api/list/`** lists the top level, `{"spaces": [...]}`, and
+  **`GET /api/list/s/<space path>/`** one space, as the object below. A space
+  has its `title`, its `path`, the address of its own listing (`list`), the
+  address of its home page's Markdown (`home`), whether it is `encrypted`, its
+  `subspaces` and its `pages`: the pages under its home page, each with its
+  `title`, its `kind` (`document` or `presentation`), the address of its
+  Markdown for `GET` and `PUT` (`markdown`), when it was last changed
+  (`updated`), whether it is a `template`, and the pages under it
+  (`children`). The addresses are paths from the wiki's address.
+
+  ```json
+  {"title": "Team", "path": "team", "list": "/api/list/s/team/",
+   "home": "/api/markdown/s/team/", "encrypted": false,
+   "subspaces": [{"title": "Projects", "path": "team/projects",
+                  "list": "/api/list/s/team/projects/",
+                  "home": "/api/markdown/s/team/projects/", "encrypted": false,
+                  "subspaces": [], "pages": []}],
+   "pages": [{"title": "On-call", "kind": "document",
+              "markdown": "/api/markdown/s/team/p/on-call/",
+              "updated": "2026-09-11T12:00:00Z", "template": false,
+              "children": []}]}
+  ```
+
+  The whole tree comes by default; `?depth=N` cuts it N levels down: `1` is
+  the space's subspaces and the pages under its home page, without what is
+  under them. Where the tree is cut, `subspaces`, `pages` and `children` are
+  left out; an empty list means there is nothing there. A space you may not
+  read is not listed, and its listing answers 404, as one that is not there.
+  The one exception is a space above one you may read, which is listed, as in
+  the wiki's sidebar, with its title, its path and its subspaces only. An
+  encrypted space is listed with `"encrypted": true` and no pages and no
+  `home`: the server cannot read their titles.
+- **`GET /api/search?q=<words>`** runs the wiki's own search, the one behind
+  the search box, with the same rules: what you may read, and no encrypted
+  space. `space=<space path>` keeps to that space and its subspaces (a space
+  you may not see finds nothing), and `limit` is the number of hits, 50 by
+  default and 200 at most. The hits come best first, each with the page's
+  `title`, its `space` (`path` and `title`), the address of its `markdown`,
+  and an `excerpt` of its text around the first match, as plain text. The
+  title and the excerpt come a second time, as `titleMarked` and
+  `excerptMarked`: lists of pieces `{"text", "match"}`, joined in order they
+  are the text, and a piece with `"match": true` is a word of the query. A
+  search without words is refused (400).
+
+  ```json
+  {"hits": [{"title": "Hello, world",
+             "titleMarked": [{"match": false, "text": "Hello, world"}],
+             "space": {"path": "blog", "title": "Blog"},
+             "markdown": "/api/markdown/s/blog/p/hello-world/",
+             "excerpt": "…a wiki. Every page is Markdown, written in a split view with the page rendered next to it…",
+             "excerptMarked": [{"match": false, "text": "…"},
+                               {"match": false, "text": "a wiki. Every page is Markdown, written in a "},
+                               {"match": true, "text": "split"},
+                               {"match": false, "text": " view with the page rendered next to it"},
+                               {"match": false, "text": "…"}]}]}
+  ```
+
 What is refused, each as a small JSON body in the shape the rest of the API
 uses (`{"error": "…", "message": "…"}`):
 
@@ -2676,8 +2748,7 @@ browser that registered the password, so the server runs at most a budget,
 Argon2id over 128 MiB). An account whose record asks for more passes or more
 memory than the budget is refused (401) as a wrong password is, and costs the
 server no more than one. Keys made in your own panel instead of a password,
-attachments, a space's list of pages, a page's sections, creating pages and
-an MCP server are to come.
+attachments, a page's sections, creating pages and an MCP server are to come.
 
 #### Bringing the demo's pages into the server
 

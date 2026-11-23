@@ -57,6 +57,7 @@ module Wiki.Server.Api
   , currentMailer
   , currentProviders
   , currentAssistantHosts
+  , searchFor
 
     -- * Errors
   , toApiError
@@ -869,9 +870,7 @@ handlers env caller =
           , content = \a name request respond -> liftIO (attachmentContent env caller.who a name request respond)
           }
     , search = \q space only limit templates ->
-        -- At most 200 hits, whatever is asked: the search box asks for a
-        -- few, and the results page for 50.
-        ask' (searchPages (clampLimit (searchQueryOf q space only limit templates)))
+        ask' (searchPages (searchFor q space only limit templates))
     , archive =
         ArchiveApi
           { export = \request respond -> do
@@ -1248,7 +1247,6 @@ handlers env caller =
       s <- ask' session
       unless (any (\g -> g.permission == Administer) s.grants.global) (refuse ApiError.Forbidden)
     notAnArchive reason = ApiError.Invalid ("This is not an archive this server can read: " <> reason)
-    clampLimit q = q {limit = max 0 (min 200 q.limit)}
     -- Answer a sign-in that just succeeded: end the browser's previous
     -- session, if any, and set the cookie of the new one.
     startedAs :: Signing -> User -> SessionToken -> Handler (WithCookie SessionInfo)
@@ -1729,3 +1727,14 @@ statusOfServer env = do
           , legacyPasswords
           }
     _ -> panic "four counts were asked for"
+
+-- | 'searchFor' is the search the application's search box and results page
+-- ask for, from the parameters of its address ('searchQueryOf'): every
+-- space, or one with or without its subspaces, @limit@ hits (50 when it is
+-- not given), templates or not. At most 200 hits, whatever is asked: the
+-- search box asks for a few, and the results page for 50. The API for
+-- programs ("Wiki.Server.ListApi") asks for the same search.
+searchFor :: Maybe Text -> Maybe SpaceId -> Bool -> Maybe Int -> Bool -> SearchQuery
+searchFor q space only limit templates = clamp (searchQueryOf q space only limit templates)
+  where
+    clamp query = query {limit = max 0 (min 200 query.limit)}

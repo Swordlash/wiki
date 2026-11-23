@@ -84,6 +84,7 @@ import Wiki.Server.Auth (authApplication)
 import Wiki.Server.Events (eventsApplication)
 import Wiki.Server.Feed (FeedKind (..), feedApplication, notificationFeedApplication, sitemapApplication)
 import Wiki.Server.Health (healthApplication, metricsApplication)
+import Wiki.Server.ListApi (listApplication, searchApplication)
 import Wiki.Server.Log (Logger, logRequests)
 import Wiki.Server.MarkdownApi (markdownApplication)
 import Wiki.Server.Metrics (observe)
@@ -282,6 +283,14 @@ listenerRoutes logger env site l caller request respond = do
           -- would be the administrator.
           "api" : "markdown" : endpoint -> case l.finding of
             BySession _ -> markdownApplication env l.mount caller.address endpoint request respond
+            EveryoneAdministers -> notFound
+          -- The listing and the search of the same API, signed in as it
+          -- is ("Wiki.Server.ListApi").
+          "api" : "list" : endpoint -> case l.finding of
+            BySession _ -> listApplication env l.mount caller.address endpoint request respond
+            EveryoneAdministers -> notFound
+          "api" : "search" : endpoint | endpoint `elem` [[], [""]] -> case l.finding of
+            BySession _ -> searchApplication env l.mount caller.address request respond
             EveryoneAdministers -> notFound
           rest@("api" : "v1" : endpoint)
             | shut, take 1 endpoint `notElem` map pure openToAnyone, not homeRead -> unauthenticated

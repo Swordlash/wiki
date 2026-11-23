@@ -87,7 +87,7 @@ import Data.Map.Strict qualified as Map
 import Data.Sequence qualified as Seq
 import Data.Text qualified as T
 import Protolude
-import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), Footnote (..), Inline (..), ListItem (..), SpoilerHead (..), SpoilerInside (..), SpoilerKind (..), attribute, parseDeckSpansAndInsides, plainText)
+import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), Footnote (..), Inline (..), ListItem (..), ParseError, SpoilerHead (..), SpoilerInside (..), SpoilerKind (..), attribute, parseDeckSpansAndInsides, plainText)
 import Wiki.Core.Slides (parserLineStarts)
 
 -- | 'Outline' is the sections of a text, the page's or a block spoiler's
@@ -139,7 +139,18 @@ data SpoilerBody = SpoilerBody
 -- | The outline of a page's Markdown. A text the parser does not read,
 -- which CommonMark makes rare, has no sections: all of it is the top.
 outline :: Text -> Outline
-outline source = case parseDeckSpansAndInsides source of
+outline source = outlineOf source (parseDeckSpansAndInsides source)
+
+-- | The outline and the element ids ('elementIds') of a page, from one
+-- parse of it: what a write of a part reads of each page.
+outlineAndIds :: Text -> (Outline, [(Text, Maybe Int)])
+outlineAndIds source =
+  let parsed = parseDeckSpansAndInsides source
+   in (outlineOf source parsed, elementIdsOf source parsed)
+
+-- | 'outline' of a page parsed already.
+outlineOf :: Text -> Either ParseError ([(Maybe (Int, Int), Block)], [SpoilerInside]) -> Outline
+outlineOf source parsed = case parsed of
   Left _ -> Outline {from = 0, top = total, to = total, spoilers = [], sections = []}
   Right (deck, insides) ->
     let table = Map.fromList [(l, (e, bs)) | SpoilerInside l e bs <- insides]
@@ -344,7 +355,11 @@ data Refusal
 -- not only the sections: a heading in a quotation, a list or a box, a box,
 -- a link. Outside the part each keeps its id, and a link to an id that
 -- lands on one of them lands on it still; the section written is where a
--- link to its anchor lands.
+-- link to its anchor lands. The footnotes' elements are judged apart, since
+-- the page shows the notes after its body wherever their definitions are
+-- written: a write may change them, but an id that lands in a note, and
+-- that a note still has after the write, may not come to land on an
+-- element of the body.
 --
 -- Both texts are read by 'outline', the whole page every time, never the
 -- body alone.
@@ -364,7 +379,7 @@ replaceSection target page body = do
       | otherwise -> Left why
     accepted -> accepted
   where
-    old = outline page
+    (old, oldElements) = outlineAndIds page
     named anchor = maybeToRight NoSuchAnchor (find (\p -> p.section.id == anchor) (placedIn old))
     -- The body ended with a line break, or refused when it is empty.
     ending
@@ -386,7 +401,7 @@ replaceSection target page body = do
     writeIn a b wanted written = do
       let new = T.take a page <> written <> T.drop b page
           a' = a + T.length written
-          o' = outline new
+          (o', newElements) = outlineAndIds new
           newPlaced = placedIn o'
           -- Offsets of each page as if the part had no width: before the part
           -- as they are, after it moved back by its length, inside it none.
@@ -441,25 +456,36 @@ replaceSection target page body = do
       for_ (head unnamed) (Left . AnchorMoves)
       -- Every element the page gives an id ('elementIds'), not only the
       -- sections: outside the part, each keeps its id, and a link to an
-      -- id that landed on one of them still lands on it.
-      let oldIds = inPartOrNot (\p -> p >= a && p < b) oldElements
-          newIds = inPartOrNot (\p -> p >= a && p < a') (elementIds new)
-          outsideIds xs = [i | (i, Just _) <- xs]
+      -- id that landed on one of them still lands on it. The footnotes'
+      -- elements are judged apart ('InNote'): a write may change them, but
+      -- an id that landed in a note and is still there may not come to
+      -- land on an element of the body.
+      let oldIds = whereIn (\p -> p >= a && p < b) oldElements
+          newIds = whereIn (\p -> p >= a && p < a') newElements
+          outsideIds xs = [i | (i, Outside _) <- xs]
           landing xs i = snd <$> find ((== i) . fst) xs
-          moved = [i | (i, Just k) <- oldIds, landing oldIds i == Just (Just k), landing newIds i /= Just (Just k)]
+          moved = [i | (i, Outside k) <- oldIds, landing oldIds i == Just (Outside k), landing newIds i /= Just (Outside k)]
+          leftNote = [i | (i, InNote) <- oldIds, landing oldIds i == Just InNote, (i, InNote) `elem` newIds, landing newIds i /= Just InNote]
       unless (outsideIds oldIds == outsideIds newIds) $
         Left (fromMaybe OutsideChanges (head [AnchorChanges o n | (o, n) <- zip (outsideIds oldIds) (outsideIds newIds), o /= n]))
-      for_ (head moved) (Left . AnchorMoves)
+      for_ (head (moved <> leftNote)) (Left . AnchorMoves)
       case section of
         Just t
           | Just leading <- find (\x -> x.section.id == t.section.id) newPlaced
-          , leading.section.start /= a || landing newIds t.section.id /= Just Nothing ->
+          , leading.section.start /= a || landing newIds t.section.id /= Just InPart ->
               Left (AnchorTaken t.section.id)
         _ -> Right Replaced {text = new, anchor = (\t -> t.section.id) <$> section}
-    oldElements = elementIds page
-    -- The ids of the elements, each with 'Nothing' for an element in the
-    -- part, or with its number among the elements outside it.
-    inPartOrNot inPart = snd . mapAccumL (\k (i, at) -> if maybe False inPart at then (k, (i, Nothing)) else (k + 1, (i, Just k))) (0 :: Int)
+    -- The ids of the elements, each with where its element is: in the
+    -- part, outside it (with its number among the elements outside it),
+    -- or in a note.
+    whereIn inPart = snd . mapAccumL (\k (i, at) -> maybe (k, (i, InNote)) (\p -> if inPart p then (k, (i, InPart)) else (k + 1, (i, Outside k))) at) (0 :: Int)
+
+-- | 'Where' is where an element with an id is, for 'replaceSection': in
+-- the part written, outside it (its number among the elements of the
+-- page's body outside the part), or in a footnote, which the page shows
+-- after its body whatever the place of the note's definition.
+data Where = InPart | Outside Int | InNote
+  deriving stock (Eq, Show)
 
 -- | 'elementIds' is every id the rendered page gives an element, in the
 -- order of the page, each with where the element's block starts (in
@@ -470,8 +496,12 @@ replaceSection target page body = do
 -- and de-duplicated ('Wiki.Core.Markdown.Ast.withHeadingIds'), in a
 -- quotation, a list, a box or a footnote too; a @[[!div]]@'s written id; a
 -- box's (@box-tip-3@); and those written after inline code, a link, an
--- embed or marked text. A code block's written id takes its name from the
--- headings but renders on no element.
+-- embed or marked text, where the page renders them: not in an embed's
+-- caption, which is plain text, nor in the description of a block spoiler
+-- with a problem, which shows none. A code block's written id takes its
+-- name from the headings but renders on no element. A test renders
+-- generated pages and requires the renderer's ids, in order, to be these
+-- ("Test.Markdown.Sections").
 --
 -- An element's block is placed by the same parse as the outline: a block
 -- of the page by its first line, a block inside a block spoiler with an
@@ -483,7 +513,11 @@ replaceSection target page body = do
 -- @fn-1@ and its references'), the ids raw HTML writes, and those inside
 -- an island (KaTeX, Mermaid), which are their own.
 elementIds :: Text -> [(Text, Maybe Int)]
-elementIds source = case parseDeckSpansAndInsides source of
+elementIds source = elementIdsOf source (parseDeckSpansAndInsides source)
+
+-- | 'elementIds' of a page parsed already.
+elementIdsOf :: Text -> Either ParseError ([(Maybe (Int, Int), Block)], [SpoilerInside]) -> [(Text, Maybe Int)]
+elementIdsOf source parsed = case parsed of
   Left _ -> []
   Right (deck, insides) ->
     let table = Map.fromList [(l, (e, bs)) | SpoilerInside l e bs <- insides]
@@ -503,7 +537,7 @@ elementIds source = case parseDeckSpansAndInsides source of
         , flat <- unsectioned bs
         , length read' == length flat
         , and (zipWith (\(_, r) f -> alike r f) read' flat) ->
-            [(i, Right (fst <$> at)) | i <- inlineIds h.description] <> concatMap (unit table) (zip (map fst read') flat)
+            [(i, Right (fst <$> at)) | i <- summaryIds h] <> concatMap (unit table) (zip (map fst read') flat)
       Footnotes _ -> [(i, Left ()) | i <- blockIds b]
       _ -> [(i, Right (fst <$> at)) | i <- blockIds b]
     -- An id with where its block starts: at its line, at the place of the
@@ -521,7 +555,7 @@ elementIds source = case parseDeckSpansAndInsides source of
       Table _ header rows -> concatMap inlineIds header <> concatMap (concatMap inlineIds) rows
       Div attrs bs -> ownIds attrs <> concatMap blockIds bs
       Alert _ box bs -> toList box.id <> maybe [] inlineIds box.title <> concatMap blockIds bs
-      Spoiler h bs -> inlineIds h.description <> concatMap blockIds bs
+      Spoiler h bs -> summaryIds h <> concatMap blockIds bs
       Footnotes notes -> concat [concatMap blockIds bs | Footnote _ _ bs <- notes]
       _ -> []
     inlineIds = concatMap $ \case
@@ -531,10 +565,14 @@ elementIds source = case parseDeckSpansAndInsides source of
       Hidden xs -> inlineIds xs
       Code attrs _ -> ownIds attrs
       Link attrs _ _ xs -> ownIds attrs <> inlineIds xs
-      Image attrs _ _ xs -> ownIds attrs <> inlineIds xs
+      -- An embed's caption is plain text in the page.
+      Image attrs _ _ _ -> ownIds attrs
       Marked attrs xs -> ownIds attrs <> inlineIds xs
       _ -> []
     ownIds attrs = [i | Just i <- [attribute "id" attrs], not (T.null i)]
+    -- A block spoiler's description is its summary, which a spoiler with
+    -- a problem does not show.
+    summaryIds h = if isNothing h.problem then inlineIds h.description else []
 
 -- | 'Placed' is a section of an outline with where it is: the start of the
 -- section it is under ('Nothing' at the top level of its outline, the

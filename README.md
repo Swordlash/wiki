@@ -2933,8 +2933,15 @@ curl -u editor:'my password' -X PUT -H 'If-Match: "2026-11-23T10:15:00.123456Z"'
   (`{#x}`) that another section has. The same holds for every id the page
   gives an element outside the section, not only a section's heading: a
   heading in a quotation, a list or a box, a box, a link with an id of its
-  own. Each keeps its id, and a link to it still leads to it. A section
-  inside a spoiler is written like any other, and stays inside it.
+  own. Each keeps its id, and a link to it still leads to it. Footnotes
+  are judged apart, since the page shows them after its text wherever
+  their definitions are written: a write may add, change or take out what
+  is in the notes, but an id that a link takes into a note, and that a
+  note still has, may not be given to an element of the text. Not
+  covered: the ids the page numbers itself for the footnotes (`fn-2`,
+  `fnref-2`), which a new footnote renumbers, and ids written in raw HTML.
+  A section inside a spoiler is written like any other, and stays inside
+  it.
 
 The text between a page's `# Title` and its first `##` is the title's own
 section, `?section=<the title's anchor>&own=true`. Without `own`, a section

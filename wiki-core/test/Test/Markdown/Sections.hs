@@ -6,12 +6,18 @@ module Test.Markdown.Sections (spec) where
 
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import Halogen.HTML.Core (HTML (..))
+import Halogen.VDom.DOM.Monad.Class (PropValue (..))
+import Halogen.VDom.DOM.Prop (Prop (..))
+import Halogen.VDom.Types (VDom (..), runGraft)
 import Protolude
 import Test.Cases (coverage)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
-import Test.QuickCheck (Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, frequency, listOf, oneof, property, tabulate, vectorOf, (.&&.), (===))
+import Test.QuickCheck (Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, frequency, listOf, oneof, property, resize, shuffle, tabulate, vectorOf, (.&&.), (===))
 import Test.Slides (aDeckWithBreaks)
+import Web.HTML.Common (AttrName (..), PropName (..))
+import Wiki.Core.Markdown (Options, defaultOptions, renderMarkdown)
 import Wiki.Core.Markdown.Ast (Block (..), SpoilerHead (..), SpoilerKind (..), SpoilerProblem (..), attribute, parseDeckSpans, plainText)
 import Wiki.Core.Markdown.Sections
 
@@ -244,6 +250,17 @@ spec = describe "Markdown.Sections" $ do
       let source = "# A\n\n# B\n\n> ## Notes\n"
       replaceSection (WholeSection "a") source "# A\n\n> ## Notes\n" `shouldBe` Left (AnchorChanges "notes" "notes-2")
 
+    it "counts no id in an embed's caption, which the page renders as plain text" $ do
+      let source = "# A\n\n![`Caption`{#x}](a.png)\n\n# B {#x}\n"
+      replaceSection (WholeSection "a") source "# A\n\n`code`{#x}\n" `shouldBe` Left (AnchorMoves "x")
+
+    it "lets a part change or take out a footnote's elements, judged apart from the page's body" $ do
+      replaceSection Top "A[^n]\n\n[^n]: # Note\n" "" `shouldBe` Right Replaced {text = "", anchor = Nothing}
+      replaceSection (WholeSection "a") "# A\n\nB[^n]\n\n[^n]: # Note\n" "# A\n\nB[^n]\n\n[^n]: # Other\n" `shouldSatisfy` isRight
+      -- An element of the body may not take an id a note's element keeps:
+      -- a link to it would leave the note for the body.
+      replaceSection (WholeSection "a") "# A\n\nB[^n]\n\n# C\n\n[^n]: Text.\n\n    ## Note {#x}\n" "# A\n\n> # Q {#x}\n\nB[^n]\n" `shouldBe` Left (AnchorMoves "x")
+
     it "refuses a code fence left open, which takes in the sections after it" $
       replaceSection (WholeSection "install") page "## Install\n\n```\nmake\n" `shouldBe` Left (SectionChanges "use" True)
 
@@ -276,29 +293,43 @@ spec = describe "Markdown.Sections" $ do
     it "knows no section by an anchor the page does not have" $
       replaceSection (WholeSection "nowhere") page "## Nowhere\n" `shouldBe` Left NoSuchAnchor
 
+  describe "elementIds" $
+    prop "gives the ids the rendered page gives its elements, in the page's order, but the footnotes' own" $
+      forAll anIdPage $ \source ->
+        counterexample (show (elementIds source)) $
+          map fst (elementIds source) === filter (not . footnoteOwn) (renderedIds source)
+
   describe "replaceSection on generated pages, of both kinds" $ do
-    let pages = oneof [aPage, aSpoiledPage]
+    -- Pages of up to some forty pieces: a write reads the whole page
+    -- twice, and a longer page shows nothing a shorter one does not.
+    let pages = resize 40 (oneof [aPage, aSpoiledPage])
     prop "takes back every part as it was read" $
-      coverage . forAll pages $ \source ->
-        let parts = targets source
-            unchanged = [t | t <- parts, Just (a, b) <- [rangeOf source t], normalised source (a, b) == sectionText source (a, b)]
+      -- Three of the page's parts, the top and its sections whole and their
+      -- own parts, so that a long page costs no more than a short one.
+      coverage . forAll (pages >>= \source -> (source,) . take 3 <$> shuffle (targets source)) $ \(source, parts) ->
+        let unchanged = [t | t <- parts, Just (a, b) <- [rangeOf source t], normalised source (a, b) == sectionText source (a, b)]
          in cover 5 (length unchanged == length parts) "every part the same page"
               . cover 2 (length unchanged < length parts) "a last part given a final line break"
-              . cover 5 (any inSpoiler parts) "a section inside a spoiler"
+              . cover 2 (any inSpoiler parts) "a section inside a spoiler"
               $ conjoin (map (writesBack source) parts)
     prop "changes nothing outside the part written" $
-      coverage . forAll (pages >>= \source -> (source,) <$> elements (targets source)) $ \(source, target) ->
+      -- Pages with spoilers among awkward neighbours, whose headings have
+      -- ids written out, and a section inside a spoiler, are chosen more
+      -- often than the others: a body that takes an id written out after
+      -- the part, and a section in a spoiler written, then come often
+      -- enough to be counted in a short run.
+      coverage . forAll (resize 40 (frequency [(1, aPage), (3, aSpoiledPage)]) >>= \source -> (source,) <$> frequency [(if inSpoiler t then 4 else 1, pure t) | t <- targets source]) $ \(source, target) ->
         forAll (aBody source target) $ \body ->
           let result = replaceSection target source body
            in counterexample (show result)
                 . tabulate "answers" [either (T.unpack . T.takeWhile (/= ' ') . show) (const "accepted") result]
-                . cover 25 (isRight result) "accepted"
-                . cover 1 (isRight result && inSpoiler target) "a section inside a spoiler written"
-                . cover 0.5 (result == Left EmptyBody) "an empty body"
-                . cover 1 (refusedFor (\case NotAHeading _ -> True; _ -> False) result) "not a heading"
-                . cover 2 (refusedFor (\case AnotherSection _ _ -> True; Subsection _ -> True; SectionInTop _ -> True; _ -> False) result) "a heading too many"
-                . cover 0.5 (refusedFor (\case SectionChanges _ _ -> True; _ -> False) result) "a section outside changes"
-                . cover 0.5 (refusedFor (\case AnchorChanges _ _ -> True; _ -> False) result) "an anchor outside changes"
+                . cover 10 (isRight result) "accepted"
+                . cover 0.3 (isRight result && inSpoiler target) "a section inside a spoiler written"
+                . cover 0.3 (result == Left EmptyBody) "an empty body"
+                . cover 2 (refusedFor (\case NotAHeading _ -> True; _ -> False) result) "not a heading"
+                . cover 3 (refusedFor (\case AnotherSection _ _ -> True; Subsection _ -> True; SectionInTop _ -> True; _ -> False) result) "a heading too many"
+                . cover 0.3 (refusedFor (\case SectionChanges _ _ -> True; _ -> False) result) "a section outside changes"
+                . cover 0.3 (refusedFor (\case AnchorChanges _ _ -> True; _ -> False) result) "an anchor outside changes"
                 . cover 0.3 (refusedFor (\case AnchorMoves _ -> True; _ -> False) result) "an id outside taken by the body"
                 $ either (const (property True)) (outsideKept source target) result
   where
@@ -339,8 +370,12 @@ spec = describe "Markdown.Sections" $ do
               Left why -> counterexample ("refused: " <> show why) False
               Right done ->
                 (done === Replaced {text = expectedText, anchor = anchorOf})
-                  .&&. ( fmap (\again -> replaceSection target done.text (sectionText done.text again)) (rangeOf done.text target)
-                           === Just (Right done)
+                  -- Read again and written back, a part that gained a
+                  -- line break gives the same page; one that did not is
+                  -- the first write again.
+                  .&&. ( done.text == source
+                           || fmap (\again -> replaceSection target done.text (sectionText done.text again)) (rangeOf done.text target)
+                             == Just (Right done)
                        )
     -- What a write took: outside the part, the text is the same character
     -- for character, the sections are the same headings in the same order,
@@ -368,12 +403,28 @@ spec = describe "Markdown.Sections" $ do
               | otherwise = "a part across the edge of the part written"
             ranges o i = [sectionRange o i own | own <- [False, True]]
             -- Each element with an id ('elementIds'): 'Nothing' in the
-            -- part, or its number among those outside it.
-            numbered lo hi t = snd (mapAccumL (\k (i, at) -> if maybe False (\p -> p >= lo && p < hi) at then (k, (i, Nothing)) else (k + 1, (i, Just k))) (0 :: Int) (elementIds t))
-            idsOutside xs = [i | (i, Just _) <- xs]
+            -- part, 'Left' in a note, or its number among those of the
+            -- page's body outside the part.
+            numbered lo hi t =
+              snd
+                ( mapAccumL
+                    ( \k (i, at) -> case at of
+                        Nothing -> (k, (i, Just (Left ())))
+                        Just p
+                          | p >= lo && p < hi -> (k, (i, Nothing))
+                          | otherwise -> (k + 1, (i, Just (Right k)))
+                    )
+                    (0 :: Int)
+                    (elementIds t)
+                )
+            idsOutside xs = [i | (i, Just (Right _)) <- xs]
             -- The outside element each id lands on: the first element with
             -- the id, for the ids whose first element is outside the part.
-            landings xs = Map.mapMaybe identity (Map.fromListWith (\_ first' -> first') xs)
+            firsts xs = Map.fromListWith (\_ first' -> first') xs
+            landings xs = Map.mapMaybe (>>= rightToMaybe) (firsts xs)
+            -- The ids that landed in a note and are still in one: they
+            -- land in a note still.
+            stayInNotes = and [Map.lookup i (firsts after') == Just (Just (Left ())) | (i, Just (Left ())) <- before', Map.lookup i (firsts before') == Just (Just (Left ())), (i, Just (Left ())) `elem` after']
             before' = numbered a b source
             after' = numbered a b' new
          in counterexample (show (old, o')) $
@@ -391,6 +442,7 @@ spec = describe "Markdown.Sections" $ do
                 -- id), which mends a link; one that landed outside lands
                 -- there still.
                 .&&. counterexample ("where the ids of the elements outside the part land: " <> show (landings before', landings after')) (landings before' `Map.isSubmapOf` landings after')
+                .&&. counterexample "an id that landed in a note, and is still in one, lands there" stayInNotes
                 .&&. ( case (target, done.anchor) of
                          (Top, Nothing) -> topRange o' === (0, b')
                          (WholeSection _, Just i) -> sectionRange o' i False === Just (a, b')
@@ -514,9 +566,15 @@ aSpoiledPage = do
       close <- elements ["\n[[/spoiler]]{" <> name <> "}", "\n[[/spoiler]]{" <> name <> "}", "\n[[/spoiler]]{" <> name <> "}\n---", "\n[[/spoiler]]{" <> name <> "}\n===", "\n[[/spoiler]]{" <> name <> "}", ""]
       pure ("[[!spoiler]]{" <> name <> "}(Show)" <> next <> "\n" <> T.intercalate "\n" body <> close)
 
--- | A body to write in place of a part of a page: now and then nothing at
--- all, else a start, then a few pieces, then an ending of no, one or two
--- line breaks. For a section the
+-- | A body to write in place of a part of a page. Each kind of body that
+-- a write refuses comes often enough to be counted, without a long run:
+-- nothing at all; the part's heading and a code fence left open; for a
+-- section, a heading of another level, its heading and a second one of
+-- its level, a heading with the text of a heading after it, and, when an
+-- element after it has an id written out, its heading and a heading in a
+-- quotation or a list that takes that id. The rest, the most, are a
+-- start, then a few pieces, then an ending of no, one or two line
+-- breaks. For a section the
 -- start is mostly its heading as the page has it, its whole text as read,
 -- or a heading of its level with a new text; sometimes a heading of another
 -- level, a title underlined, a heading with another section's text, a
@@ -541,9 +599,20 @@ aBody source target = do
         , (1, elements others)
         ]
   count <- choose (0, 3 :: Int)
-  pieces <- vectorOf count ((<>) <$> elements ["\n", "\n\n"] <*> frequency ([(6, elements plain), (4, elements awkward)] <> [(3, elements taking) | not (null later)]))
+  pieces <- vectorOf count ((<>) <$> elements ["\n", "\n\n"] <*> frequency ([(6, elements plain), (4, elements awkward), (2, pure "```\nopen")] <> [(6, elements taking) | not (null later)]))
   end <- elements ["", "\n", "\n\n"]
-  frequency [(1, pure ""), (19, pure (start <> T.concat pieces <> end))]
+  taken <- elements (if null taking then [""] else taking)
+  frequency
+    ( [(4, pure (start <> T.concat pieces <> end)), (1, pure ""), (1, pure (heading <> "\n\n```\nopen\n"))]
+        <> concat
+          [ [ (1, pure (marks (s.level + 1) <> " " <> s.text <> "\n"))
+            , (1, pure (heading <> "\n\nText.\n\n" <> marks s.level <> " Sibling\n"))
+            ]
+              <> [(1, (\t -> marks s.level <> " " <> t <> "\n") <$> elements textsAfter) | not (null textsAfter)]
+              <> [(3, pure (heading <> "\n\n" <> taken <> "\n")) | not (null taking)]
+          | Just s <- [section]
+          ]
+    )
   where
     o = outline source
     section = case target of
@@ -567,3 +636,86 @@ aBody source target = do
     taking = concat [["> # Quoted {#" <> i <> "}", "- ## Listed {#" <> i <> "}"] | i <- take 3 (ordNub later)]
     later = [i | (i, Just p) <- elementIds source, p >= partEnd, ("{#" <> i <> "}") `T.isInfixOf` source]
     partEnd = maybe (snd (topRange o)) (\s -> if target == OwnPart s.id then s.ownEnd else s.end) section
+    -- The texts of the headings after the part.
+    textsAfter = [s.text | s <- outlineSections o, s.start >= partEnd]
+
+-- | The ids of the elements of a page as the renderer makes them
+-- ("Wiki.Core.Markdown.Render"): every @id@ of the rendered tree, in the
+-- order of the document, as a link to @#id@ meets them.
+renderedIds :: Text -> [Text]
+renderedIds source = either (const []) (concatMap (\(HTML tree) -> go tree)) (renderMarkdown (defaultOptions :: Options Text () ()) source)
+  where
+    go = \case
+      Elem _ _ props children -> concatMap own props <> concatMap go children
+      Keyed _ _ props children -> concatMap own props <> concatMap (go . snd) children
+      Grafted graft -> go (runGraft graft)
+      _ -> []
+    own = \case
+      Property (PropName "id") v -> case v of
+        TxtProp t -> [t]
+        ViaTxtProp shown a -> [shown a]
+        _ -> []
+      Attribute _ (AttrName "id") t -> [t]
+      _ -> []
+
+-- | Whether an id is one the renderer numbers for the footnotes: a note's
+-- (@fn-2@) or a reference's to it (@fnref-2@, @fnref-2-3@). 'elementIds'
+-- leaves them out on purpose: their numbers follow the references' order.
+footnoteOwn :: Text -> Bool
+footnoteOwn i = case T.stripPrefix "fn-" i of
+  Just n -> numeral n
+  Nothing -> maybe False (all numeral . T.splitOn "-") (T.stripPrefix "fnref-" i)
+  where
+    numeral n = not (T.null n) && T.all isDigit n
+
+-- | A page with an element that has an id in every place one can be: inline
+-- code, a link and an embed with an id, in a paragraph, a heading, an
+-- embed's caption, a link's text, emphasis, an inline spoiler, a table's
+-- cell, a list's item, a quotation, a box with a title and without, a
+-- @[[!div]]@, a block spoiler's text and its description, a heading
+-- spoiler, a footnote's definition; headings with an id written out in a
+-- quotation, a list, a box, a spoiler, one never closed and a footnote;
+-- a @[[!div]]@ and a code block with an id; and the table of contents.
+-- The ids are few, so that two elements often share one. Raw HTML, whose
+-- ids the renderer passes through, is not made. Marked text is a
+-- presentation's, which the parser never makes in a page.
+anIdPage :: Gen Text
+anIdPage = do
+  count <- choose (1, 6 :: Int)
+  T.intercalate "\n\n" <$> vectorOf count block
+  where
+    ident = elements ["x", "y", "z"]
+    inline = do
+      k <- ident
+      elements
+        [ "`c`{#" <> k <> "}"
+        , "[l](/y){#" <> k <> "}"
+        , "![c](a.png){#" <> k <> "}"
+        , "![`c`{#" <> k <> "} cap](a.png)"
+        , "[`c`{#" <> k <> "} t](/y)"
+        , "*`c`{#" <> k <> "}*"
+        , "||`c`{#" <> k <> "}||"
+        ]
+    block = do
+      k <- ident
+      i <- inline
+      j <- inline
+      elements
+        [ "Text " <> i <> " and " <> j
+        , "## H " <> i
+        , "## H {#" <> k <> "}"
+        , "H " <> i <> "\n---"
+        , "| a | b |\n|---|---|\n| " <> i <> " | " <> j <> " |"
+        , "- " <> i <> "\n- ## L {#" <> k <> "}"
+        , "> " <> i <> "\n>\n> # Q {#" <> k <> "}"
+        , "> [!NOTE]\n> " <> i
+        , "> [!TIP] Title " <> i <> "\n> Body " <> j
+        , "[[!div]]{#" <> k <> "}\nText.\n[[/div]]"
+        , "[[!div]]{.box}\n" <> i <> "\n\n# Boxed {#" <> k <> "}\n[[/div]]"
+        , "[[!spoiler]]{s}(D " <> i <> ")\nText " <> j <> "\n\n## In {#" <> k <> "}\n[[/spoiler]]{s}"
+        , "## [[!spoiler]] Q " <> i <> "\n\nAnswer " <> j
+        , "[[!spoiler]]{u}(D)\n## Open {#" <> k <> "}"
+        , "Ref[^n].\n\n[^n]: Note " <> i <> "\n\n    ## In note {#" <> k <> "}"
+        , "[[!toc]]"
+        , "```{#" <> k <> "}\ncode\n```"
+        ]

@@ -2255,9 +2255,30 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   "servant-openapi3"), served by the wiki and checked in a test
   against the routes, so that it cannot drift; if `servant-openapi3`
   does not build on GHC 9.14, another maintained package, said in the
-  report; an MCP client or server (to find out whether the
-  wiki's server can be the MCP server; Hackage's `mcp`), with clients
-  in Haskell, Python and `curl`. Attachments are his earlier list's
+  report; MCP. **For MCP the session looked into the options (2026-11-23,
+  from the specification, Hackage and the clients' documentation):
+  the wiki's own server is the MCP server.** One endpoint, `POST
+  /mcp`, on the public listener, built on Hackage's `mcp-server`
+  (builds on GHC 9.14.1, speaks the current revision of the protocol
+  and the older handshake, needs no sessions, is a WAI application,
+  and gives every handler the caller's identity). Sign-in by the API
+  keys only, as `Authorization: Bearer` (the owner: the same sign-in
+  as the API; the specification makes authorization optional and
+  OAuth a recommendation, and Claude Code and Codex take a static
+  header), so MCP comes after the keys. Each tool calls the domain
+  functions the API's endpoints call, never the wiki's own HTTP:
+  first `wiki_list`, `wiki_search`, `wiki_read_page` (with the
+  version), `wiki_write_page` (the version read is required, so every
+  write is conditional, and a page that moved on comes back as an
+  error telling the model to read again), and the Markdown reference
+  by section (whole, it is 66,746 bytes, past what Claude Code keeps
+  in a result). Not in the first version: OAuth (which claude.ai's
+  and Desktop's connectors need, with a public address: a package of
+  its own), resources, prompts, attachments, deleting or moving,
+  administration. Hackage's `mcp` does not resolve on GHC 9.14. "Bash
+  via curl" is the README's `curl` section and perhaps a skill file,
+  not MCP; a Python script over stdio is needed only for a client
+  that can only start local programs. Attachments are his earlier list's
   and not in the issue.
 - **WP5.132 to WP5.134 What the pin's bump opened, before plugins
   (the owner, 2026-11-17: "Halogena odpalaj, niech będzie czysto

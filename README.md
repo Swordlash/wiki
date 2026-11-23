@@ -2930,8 +2930,11 @@ curl -u editor:'my password' -X PUT -H 'If-Match: "2026-11-23T10:15:00.123456Z"'
   own heading: the answer gives the new anchor. A new heading text that would
   change the anchor of another heading (`notes-2` becoming `notes-3`) is
   refused, since an anchor is a section's address; so is an id written out
-  (`{#x}`) that another section has. A section inside a spoiler
-  is written like any other, and stays inside it.
+  (`{#x}`) that another section has. The same holds for every id the page
+  gives an element outside the section, not only a section's heading: a
+  heading in a quotation, a list or a box, a box, a link with an id of its
+  own. Each keeps its id, and a link to it still leads to it. A section
+  inside a spoiler is written like any other, and stays inside it.
 
 The text between a page's `# Title` and its first `##` is the title's own
 section, `?section=<the title's anchor>&own=true`. Without `own`, a section

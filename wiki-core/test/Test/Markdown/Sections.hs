@@ -4,6 +4,7 @@
 -- headings within the spoiler's body. These run on both backends.
 module Test.Markdown.Sections (spec) where
 
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Protolude
 import Test.Cases (coverage)
@@ -225,6 +226,24 @@ spec = describe "Markdown.Sections" $ do
       replaceSection (WholeSection "a") onSecond "# A {#x}\n\nOne.\n" `shouldBe` Left (AnchorMoves "x")
       replaceSection (WholeSection "x") both "# A\n\nOne.\n\n" `shouldBe` Right Replaced {text = onSecond, anchor = Just "a"}
 
+    it "refuses a body that takes an id an element outside has, through a heading or a block that is no section" $ do
+      let source = "# A\n\n# B {#x}\n"
+      -- A quotation's, a list item's or a box's heading is no section, and
+      -- the outline leaves it out; the page renders its id all the same,
+      -- and a link to #x would land on it, before B.
+      replaceSection (WholeSection "a") source "# A\n\n> # C {#x}\n" `shouldBe` Left (AnchorMoves "x")
+      replaceSection (WholeSection "a") source "# A\n\n- # C {#x}\n" `shouldBe` Left (AnchorMoves "x")
+      replaceSection (WholeSection "a") source "# A\n\n[[!div]]{.box}\n# C {#x}\n[[/div]]\n" `shouldBe` Left (AnchorMoves "x")
+      -- A box with an id of its own, and a link with one.
+      replaceSection (WholeSection "a") source "# A\n\n[[!div]]{#x}\nText.\n[[/div]]\n" `shouldBe` Left (AnchorMoves "x")
+      replaceSection (WholeSection "a") source "# A\n\nSee [this](/y){#x}.\n" `shouldBe` Left (AnchorMoves "x")
+      -- An id the body does not repeat is taken.
+      (\done -> done.text) <$> replaceSection (WholeSection "a") source "# A\n\n> # C {#y}\n" `shouldBe` Right "# A\n\n> # C {#y}\n# B {#x}\n"
+
+    it "refuses a body that changes the id of a heading outside that is no section" $ do
+      let source = "# A\n\n# B\n\n> ## Notes\n"
+      replaceSection (WholeSection "a") source "# A\n\n> ## Notes\n" `shouldBe` Left (AnchorChanges "notes" "notes-2")
+
     it "refuses a code fence left open, which takes in the sections after it" $
       replaceSection (WholeSection "install") page "## Install\n\n```\nmake\n" `shouldBe` Left (SectionChanges "use" True)
 
@@ -280,6 +299,7 @@ spec = describe "Markdown.Sections" $ do
                 . cover 2 (refusedFor (\case AnotherSection _ _ -> True; Subsection _ -> True; SectionInTop _ -> True; _ -> False) result) "a heading too many"
                 . cover 0.5 (refusedFor (\case SectionChanges _ _ -> True; _ -> False) result) "a section outside changes"
                 . cover 0.5 (refusedFor (\case AnchorChanges _ _ -> True; _ -> False) result) "an anchor outside changes"
+                . cover 0.3 (refusedFor (\case AnchorMoves _ -> True; _ -> False) result) "an id outside taken by the body"
                 $ either (const (property True)) (outsideKept source target) result
   where
     refusedFor f = either f (const False)
@@ -347,6 +367,15 @@ spec = describe "Markdown.Sections" $ do
               | s <= a && e >= b = sectionText source (s, a) <> middle <> sectionText source (b, e)
               | otherwise = "a part across the edge of the part written"
             ranges o i = [sectionRange o i own | own <- [False, True]]
+            -- Each element with an id ('elementIds'): 'Nothing' in the
+            -- part, or its number among those outside it.
+            numbered lo hi t = snd (mapAccumL (\k (i, at) -> if maybe False (\p -> p >= lo && p < hi) at then (k, (i, Nothing)) else (k + 1, (i, Just k))) (0 :: Int) (elementIds t))
+            idsOutside xs = [i | (i, Just _) <- xs]
+            -- The outside element each id lands on: the first element with
+            -- the id, for the ids whose first element is outside the part.
+            landings xs = Map.mapMaybe identity (Map.fromListWith (\_ first' -> first') xs)
+            before' = numbered a b source
+            after' = numbered a b' new
          in counterexample (show (old, o')) $
               (T.isPrefixOf prefix new .&&. T.isSuffixOf suffix new .&&. T.length new >= T.length prefix + T.length suffix)
                 .&&. outside a b old === outside a b' o'
@@ -356,6 +385,12 @@ spec = describe "Markdown.Sections" $ do
                   , all (maybe True (\(s, _) -> s < a || s >= b)) (ranges old i)
                   ]
                 .&&. (sectionText new (topRange o') === moved (topRange old))
+                .&&. counterexample "the elements with ids outside the part" (idsOutside before' === idsOutside after')
+                -- An id that landed on an element in the part may land on
+                -- one outside it now (the body gave its element another
+                -- id), which mends a link; one that landed outside lands
+                -- there still.
+                .&&. counterexample ("where the ids of the elements outside the part land: " <> show (landings before', landings after')) (landings before' `Map.isSubmapOf` landings after')
                 .&&. ( case (target, done.anchor) of
                          (Top, Nothing) -> topRange o' === (0, b')
                          (WholeSection _, Just i) -> sectionRange o' i False === Just (a, b')
@@ -490,7 +525,9 @@ aSpoiledPage = do
 -- block, a deeper heading, a spoiler with a heading inside) and sometimes
 -- awkward: a code fence or a spoiler left open, an end marker of a
 -- spoiler the page has or of none, a heading of the same or a higher
--- level, a title underlined, a lone @---@ or @===@.
+-- level, a title underlined, a lone @---@ or @===@, a heading in a
+-- quotation or a list with an id written out: @alpha@, or, more often,
+-- one an element after the part has written out, which it would take.
 aBody :: Text -> Target -> Gen Text
 aBody source target = do
   start <- case section of
@@ -504,7 +541,7 @@ aBody source target = do
         , (1, elements others)
         ]
   count <- choose (0, 3 :: Int)
-  pieces <- vectorOf count ((<>) <$> elements ["\n", "\n\n"] <*> frequency [(6, elements plain), (4, elements awkward)])
+  pieces <- vectorOf count ((<>) <$> elements ["\n", "\n\n"] <*> frequency ([(6, elements plain), (4, elements awkward)] <> [(3, elements taking) | not (null later)]))
   end <- elements ["", "\n", "\n\n"]
   frequency [(1, pure ""), (19, pure (start <> T.concat pieces <> end))]
   where
@@ -523,4 +560,10 @@ aBody source target = do
        in T.intercalate "\n" (take (if maybe False ("#" `T.isPrefixOf`) (head ls) then 1 else 2) ls)
     others = marks level <> " Alpha" : [marks level <> " " <> s.text | s <- outlineSections o, Just s.id /= ((\x -> x.id) <$> section)]
     plain = ["Para.", "More text\nover two lines.", "```\ncode\n```", "[[!spoiler]]{q}(Q)\n" <> marks (level + 1) <> " Inner {#in-q}\n[[/spoiler]]{q}", marks (level + 1) <> " Deeper", "- a list"]
-    awkward = ["```\nopen", "[[!spoiler]]{z}(Z)\nnever closed", "[[/spoiler]]{s0}", "[[/spoiler]]{s}", "[[/spoiler]]{x}", marks level <> " Sibling", marks (max 1 (level - 1)) <> " Higher", "Alpha\n===", "Beta\n---", "---", "==="]
+    awkward = ["```\nopen", "[[!spoiler]]{z}(Z)\nnever closed", "[[/spoiler]]{s0}", "[[/spoiler]]{s}", "[[/spoiler]]{x}", marks level <> " Sibling", marks (max 1 (level - 1)) <> " Higher", "Alpha\n===", "Beta\n---", "---", "===", "> # Quoted {#alpha}", "- ## Listed {#beta}"]
+    -- A heading in a quotation or a list, which is no section, written
+    -- with an id written out after the part, which the body's heading
+    -- would take.
+    taking = concat [["> # Quoted {#" <> i <> "}", "- ## Listed {#" <> i <> "}"] | i <- take 3 (ordNub later)]
+    later = [i | (i, Just p) <- elementIds source, p >= partEnd, ("{#" <> i <> "}") `T.isInfixOf` source]
+    partEnd = maybe (snd (topRange o)) (\s -> if target == OwnPart s.id then s.ownEnd else s.end) section

@@ -72,6 +72,7 @@ module Wiki.Core.Markdown.Sections
   , sectionText
   , outlineSections
   , outlineAnchors
+  , elementIds
 
     -- * Writing a section
   , Target (..)
@@ -86,7 +87,7 @@ import Data.Map.Strict qualified as Map
 import Data.Sequence qualified as Seq
 import Data.Text qualified as T
 import Protolude
-import Wiki.Core.Markdown.Ast (Block (..), SpoilerHead (..), SpoilerInside (..), SpoilerKind (..), attribute, parseDeckSpansAndInsides, plainText)
+import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), Footnote (..), Inline (..), ListItem (..), SpoilerHead (..), SpoilerInside (..), SpoilerKind (..), attribute, parseDeckSpansAndInsides, plainText)
 import Wiki.Core.Slides (parserLineStarts)
 
 -- | 'Outline' is the sections of a text, the page's or a block spoiler's
@@ -278,15 +279,15 @@ data Refusal
   | -- | Written as the top, the body has a heading, with this text.
     SectionInTop Text
   | -- | The body's heading has an id written out that an earlier section
-    -- has, this one: the anchor would name that section.
+    -- or element has, this one: the anchor would name that one.
     AnchorTaken Text
-  | -- | A section outside the part written would change its anchor, from
-    -- the first to the second, as a heading with the same text as another
-    -- one does.
+  | -- | A section, or another element with an id ('elementIds'), outside
+    -- the part written would change its id, from the first to the second,
+    -- as a heading with the same text as another one does.
     AnchorChanges Text Text
-  | -- | The anchor of a section outside the part written, this one, would
-    -- name a section of the body instead, whose heading has the same id
-    -- written out.
+  | -- | An id that names a section or another element outside the part
+    -- written, this one, would name an element of the body instead, which
+    -- has the same id.
     AnchorMoves Text
   | -- | A section outside the part written, by its anchor, would change,
     -- move or no longer be one; after the part ('True') or before it.
@@ -338,6 +339,12 @@ data Refusal
 -- (@{#x}@) that another section has is refused: an earlier section's,
 -- since the anchor would not name the section written, and a later one's,
 -- since that section would lose its address.
+--
+-- The same holds for every element the page gives an id ('elementIds'),
+-- not only the sections: a heading in a quotation, a list or a box, a box,
+-- a link. Outside the part each keeps its id, and a link to an id that
+-- lands on one of them lands on it still; the section written is where a
+-- link to its anchor lands.
 --
 -- Both texts are read by 'outline', the whole page every time, never the
 -- body alone.
@@ -432,12 +439,102 @@ replaceSection target page body = do
       unless (inside && and (zipWith (\(_, s) (_, n) -> sameAs n s) oldSeen newSeen) && length oldSeen == length newSeen && map snd oldBoxes == map snd newBoxes && oldPage == newPage) $
         Left (fromMaybe OutsideChanges outsideRefusal)
       for_ (head unnamed) (Left . AnchorMoves)
+      -- Every element the page gives an id ('elementIds'), not only the
+      -- sections: outside the part, each keeps its id, and a link to an
+      -- id that landed on one of them still lands on it.
+      let oldIds = inPartOrNot (\p -> p >= a && p < b) oldElements
+          newIds = inPartOrNot (\p -> p >= a && p < a') (elementIds new)
+          outsideIds xs = [i | (i, Just _) <- xs]
+          landing xs i = snd <$> find ((== i) . fst) xs
+          moved = [i | (i, Just k) <- oldIds, landing oldIds i == Just (Just k), landing newIds i /= Just (Just k)]
+      unless (outsideIds oldIds == outsideIds newIds) $
+        Left (fromMaybe OutsideChanges (head [AnchorChanges o n | (o, n) <- zip (outsideIds oldIds) (outsideIds newIds), o /= n]))
+      for_ (head moved) (Left . AnchorMoves)
       case section of
         Just t
           | Just leading <- find (\x -> x.section.id == t.section.id) newPlaced
-          , leading.section.start /= a ->
+          , leading.section.start /= a || landing newIds t.section.id /= Just Nothing ->
               Left (AnchorTaken t.section.id)
         _ -> Right Replaced {text = new, anchor = (\t -> t.section.id) <$> section}
+    oldElements = elementIds page
+    -- The ids of the elements, each with 'Nothing' for an element in the
+    -- part, or with its number among the elements outside it.
+    inPartOrNot inPart = snd . mapAccumL (\k (i, at) -> if maybe False inPart at then (k, (i, Nothing)) else (k + 1, (i, Just k))) (0 :: Int)
+
+-- | 'elementIds' is every id the rendered page gives an element, in the
+-- order of the page, each with where the element's block starts (in
+-- characters from the page's start), as a link to @#id@ meets them: the
+-- first element with an id is the one the link lands on. The ids are those
+-- the parser leaves in the tree for the renderer ("Wiki.Core.Markdown.Render"
+-- writes them as they are): a heading's, written or made from its text
+-- and de-duplicated ('Wiki.Core.Markdown.Ast.withHeadingIds'), in a
+-- quotation, a list, a box or a footnote too; a @[[!div]]@'s written id; a
+-- box's (@box-tip-3@); and those written after inline code, a link, an
+-- embed or marked text. A code block's written id takes its name from the
+-- headings but renders on no element.
+--
+-- An element's block is placed by the same parse as the outline: a block
+-- of the page by its first line, a block inside a block spoiler with an
+-- outline by its own first line there, and a block the parser gave no line
+-- by the block before it. The footnotes, which the page shows at its end
+-- whatever their definitions' places, are 'Nothing'.
+--
+-- Not seen here: the ids the renderer numbers itself (a footnote's
+-- @fn-1@ and its references'), the ids raw HTML writes, and those inside
+-- an island (KaTeX, Mermaid), which are their own.
+elementIds :: Text -> [(Text, Maybe Int)]
+elementIds source = case parseDeckSpansAndInsides source of
+  Left _ -> []
+  Right (deck, insides) ->
+    let table = Map.fromList [(l, (e, bs)) | SpoilerInside l e bs <- insides]
+     in snd (mapAccumL place 0 (concatMap (unit table) (concatMap (\(at, b) -> zip (at : repeat Nothing) (unsectioned [b])) deck)))
+  where
+    total = T.length source
+    lineStarts = Seq.fromList (parserLineStarts source)
+    lineStart n = fromMaybe total (Seq.lookup (n - 1) lineStarts)
+    -- A block's ids, each with the block's first line if it is known,
+    -- and whether the block is the footnotes. A block spoiler with an
+    -- outline is its description's ids, then its blocks', each with its
+    -- own line, as 'outline' reads them.
+    unit table (at, b) = case b of
+      Spoiler h bs
+        | h.kind /= OnHeading
+        , Just (Just _, read') <- Map.lookup h.line table
+        , flat <- unsectioned bs
+        , length read' == length flat
+        , and (zipWith (\(_, r) f -> alike r f) read' flat) ->
+            [(i, Right (fst <$> at)) | i <- inlineIds h.description] <> concatMap (unit table) (zip (map fst read') flat)
+      Footnotes _ -> [(i, Left ()) | i <- blockIds b]
+      _ -> [(i, Right (fst <$> at)) | i <- blockIds b]
+    -- An id with where its block starts: at its line, at the place of the
+    -- block before it when its line is not known, nowhere for a footnote.
+    place last' = \case
+      (i, Right (Just l)) -> let p = lineStart l in (p, (i, Just p))
+      (i, Right Nothing) -> (last', (i, Just last'))
+      (i, Left ()) -> (last', (i, Nothing))
+    blockIds = \case
+      Para xs -> inlineIds xs
+      Plain xs -> inlineIds xs
+      Heading _ attrs xs -> ownIds attrs <> inlineIds xs
+      BlockQuote bs -> concatMap blockIds bs
+      List _ items -> concat [concatMap blockIds bs | ListItem _ bs <- items]
+      Table _ header rows -> concatMap inlineIds header <> concatMap (concatMap inlineIds) rows
+      Div attrs bs -> ownIds attrs <> concatMap blockIds bs
+      Alert _ box bs -> toList box.id <> maybe [] inlineIds box.title <> concatMap blockIds bs
+      Spoiler h bs -> inlineIds h.description <> concatMap blockIds bs
+      Footnotes notes -> concat [concatMap blockIds bs | Footnote _ _ bs <- notes]
+      _ -> []
+    inlineIds = concatMap $ \case
+      Emph xs -> inlineIds xs
+      Strong xs -> inlineIds xs
+      Strikeout xs -> inlineIds xs
+      Hidden xs -> inlineIds xs
+      Code attrs _ -> ownIds attrs
+      Link attrs _ _ xs -> ownIds attrs <> inlineIds xs
+      Image attrs _ _ xs -> ownIds attrs <> inlineIds xs
+      Marked attrs xs -> ownIds attrs <> inlineIds xs
+      _ -> []
+    ownIds attrs = [i | Just i <- [attribute "id" attrs], not (T.null i)]
 
 -- | 'Placed' is a section of an outline with where it is: the start of the
 -- section it is under ('Nothing' at the top level of its outline, the

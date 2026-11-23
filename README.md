@@ -2856,7 +2856,8 @@ browser that registered the password, so the server runs at most a budget,
 Argon2id over 128 MiB). An account whose record asks for more passes or more
 memory than the budget is refused (401) as a wrong password is, and costs the
 server no more than one. Keys made in your own panel instead of a password,
-attachments, a page's sections and an MCP server are to come.
+attachments and an MCP server are to come; writing a single section of a page
+is not offered yet (write the page whole).
 
 #### Bringing the demo's pages into the server
 

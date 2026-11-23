@@ -45,11 +45,10 @@ module Wiki.Server.ContentsApi
   )
 where
 
-import Data.Aeson (Options (..), ToJSON (..), defaultOptions, encode, genericToEncoding, genericToJSON, object, (.=))
+import Data.Aeson (Options (..), ToJSON (..), defaultOptions, encode, genericToEncoding, genericToJSON)
 import Data.ByteString qualified as BS
 import Data.List (lookup)
 import Data.Text qualified as T
-import Halogen.Router.Duplex qualified as Duplex
 import Network.HTTP.Types (Header, hAllow, hCacheControl, hContentType, methodGet, methodHead, status200, status400, status404, status405, status500)
 import Network.HTTP.Types.URI (urlEncode)
 import Network.Wai (Application, Request (..), Response, responseLBS)
@@ -64,7 +63,7 @@ import Wiki.Core.Page (Page (..))
 import Wiki.Core.Slug (Slug)
 import Wiki.Core.Space (Space (id))
 import Wiki.Server.Api (Env)
-import Wiki.Server.MarkdownApi (markdownMediaType, notAllowed, refusal, runAs, signedInBasic, wikiRefusal)
+import Wiki.Server.MarkdownApi (addressUnder, markdownMediaType, notAllowed, parameter, refusal, refusalWith, runAs, signedInBasic, wikiRefusal)
 import Wiki.Server.Render (routeOf)
 
 -- | A page's table of contents, as the API gives it. @top@ is left out of
@@ -124,7 +123,7 @@ contentsApplication env mount address request respond =
         pageAt env address u "api/contents" mount request >>= \case
           Left refused -> respond refused
           Right (r, p) -> withOutline respond p $ \o ->
-            let markdown = mount <> "api/markdown" <> Duplex.print Route.route r
+            let markdown = addressUnder mount "api/markdown" r
                 sectionAt anchor = markdown <> "?section=" <> decodeUtf8 (urlEncode True (encodeUtf8 anchor))
                 heading s = Heading {level = s.level, text = s.text, anchor = s.id, section = sectionAt s.id, children = map heading s.below}
                 contents =
@@ -159,11 +158,13 @@ sectionApplication env mount address request respond =
   where
     -- The anchor of the section asked for, from @section@.
     anchorOf :: Either Text Text
-    anchorOf = case join (lookup "section" (queryString request)) of
-      Nothing -> Left ("Give the section's anchor: ?section=anchor, one of the anchors of the page's contents, or " <> topAnchor <> ".")
-      Just bytes -> first (const "The parameter section is not UTF-8 text.") (decodeUtf8' bytes)
+    anchorOf =
+      parameter request "section"
+        >>= maybe (Left ("Give the section's anchor: ?section=anchor, one of the anchors of the page's contents, or " <> topAnchor <> ".")) Right
     -- Whether only the section's own part is asked for: @own@ alone, or
-    -- @own=true@; @own=false@ and no @own@ ask for the section whole.
+    -- @own=true@; @own=false@ and no @own@ ask for the section whole. Read
+    -- here rather than by 'parameter', which takes @own@ alone for no
+    -- @own@.
     own :: Either Text Bool
     own = case lookup "own" (queryString request) of
       Nothing -> Right False
@@ -201,11 +202,7 @@ withOutline respond p continue = case outline p.body of
 -- since a section cannot be written yet. The request is not passed on to
 -- the page's Markdown, whose PUT would write the body over the whole page.
 writeRefused :: Response
-writeRefused =
-  responseLBS
-    status405
-    [(hAllow, "GET, HEAD"), (hContentType, "application/json"), (hCacheControl, "no-store")]
-    (encode (object ["error" .= ("Invalid" :: Text), "message" .= ("A section cannot be written yet: write the page whole, at its address without ?section=." :: Text)]))
+writeRefused = refusalWith status405 [(hAllow, "GET, HEAD")] "Invalid" (Just "A section cannot be written yet: write the page whole, at its address without ?section=.")
 
 -- | The answer's header with the page's version.
 etag :: Page -> Header

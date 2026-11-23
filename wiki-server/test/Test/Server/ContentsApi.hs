@@ -209,6 +209,9 @@ refusals backing = describe "refusals" $ do
     (.status) <$> request r methodGet "api/markdown/s/team/projects/p/the-wiki/?section=milestones" [rita] "" `shouldReturn` 200
     (.status) <$> request r methodGet "api/contents/s/team/p/team-handbook/" [rita] "" `shouldReturn` 404
     (.status) <$> request r methodGet "api/contents/s/team/p/no-such-page/" [ada] "" `shouldReturn` 404
+    -- A section of a page that is not there is the page's 404.
+    missing <- request r methodGet "api/markdown/s/team/p/no-such-page/?section=~top" [ada] ""
+    (missing.status, errorName missing) `shouldBe` (404, Just "NotFound")
 
   it "refuses a page of an encrypted space, which the server cannot read" $ withPasswords backing $ \r -> do
     slug <- encryptedSpace r
@@ -224,6 +227,10 @@ refusals backing = describe "refusals" $ do
     written <- request r methodPut "api/markdown/s/blog/p/hello-world/?section=why-a-wiki" [edgar] "## Why a wiki\n\nReplaced.\n"
     (written.status, header "Allow" written) `shouldBe` (405, Just "GET, HEAD")
     (.body) <$> request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] "" `shouldReturn` unchanged.body
+    -- A PUT to a free address creates a page there, but not with ?section=.
+    nowhere <- request r methodPut "api/markdown/s/blog/p/new-page/?section=x" [edgar] "# New page\n"
+    (nowhere.status, header "Allow" nowhere) `shouldBe` (405, Just "GET, HEAD")
+    (.status) <$> request r methodGet "api/markdown/s/blog/p/new-page/" [edgar] "" `shouldReturn` 404
 
 -- | A space the admin has encrypted, with its home page, as the browser
 -- encrypts one (the ciphertexts are bytes of no meaning): its slug. The

@@ -2495,7 +2495,10 @@ withAncestors = go mempty
 -- asked for, or, for 'Nothing', one made from its name, as the
 -- application's "New space" makes it. A slug asked for that a sibling has
 -- already is a 'Conflict', checked after the right to create the space; a
--- slug made from the name takes a number instead ('freshSlug').
+-- slug made from the name takes a number instead ('freshSlug'). A sibling
+-- the caller may not view is 'NotFound' instead, as a read of its path
+-- answers them: a space they may not view is one that is not there, and no
+-- answer says "there is one here".
 createSpaceTx :: Maybe SpaceId -> Maybe Slug -> Text -> Tx Space
 createSpaceTx parent asked name = do
   ctx <- ask
@@ -2505,7 +2508,10 @@ createSpaceTx parent asked name = do
       taken = isJust . findChild others parent
   slug <- case asked of
     Just a
-      | taken a -> failWith (Conflict ("There is a space with the slug " <> slugText a <> " there already."))
+      | Just sibling <- findChild others parent a ->
+          if canView ctx.principal ctx.grants (chainOf ctx sibling.id)
+            then failWith (Conflict ("There is a space with the slug " <> slugText a <> " there already."))
+            else failWith NotFound
       | otherwise -> pure a
     Nothing -> pure (freshSlug taken (fromMaybe (fallbackSlug "space") (slugify n)))
   i <- newId

@@ -630,6 +630,16 @@ creatingSpaces backing = describe "creating a space" $ do
     blog :: Listed <- follow r editor "/api/list/s/blog/" >>= answerOf 200
     blog.title `shouldBe` "Blog"
 
+  it "answers a path taken by a space the user may not view as a read of it does, and makes nothing" $ withPasswords backing $ \r -> do
+    let paths = map (\s -> s.path) . everySpace . (\t -> t.spaces) <$> (follow r ada "/api/list/" >>= answerOf @TopLevel 200)
+    listed <- paths
+    -- The editor may create spaces at the top, and may not view Team.
+    read' <- follow r editor "/api/list/s/team/"
+    put' <- putSpace r editor "team/" "{\"title\": \"Team again\"}"
+    (put'.status, put'.body) `shouldBe` (read'.status, read'.body)
+    (put'.status, put'.body) `shouldBe` (404, encode NotFound)
+    paths `shouldReturn` listed
+
   it "refuses a plain space inside an encrypted one" $ withPasswords backing $ \r -> do
     slug <- encryptedSpace r
     reply <- putSpace r ada (slug <> "/inside/") ""

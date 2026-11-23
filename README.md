@@ -2731,7 +2731,9 @@ curl -u editor:'my password' 'https://wiki.example/api/search?q=on-call+rota&spa
   title is then made from the slug, as for a page. It answers 201, with the
   space's listing as `Location` and as the body. A space already at the
   path is refused with 409: the `PUT` only creates, and never changes a
-  space. So is a space inside an encrypted one. An encrypted space cannot be
+  space. So is a space inside an encrypted one. A path can be taken by a
+  space you may not see: the `PUT` then answers 404, as reading that path
+  does, and creates nothing. An encrypted space cannot be
   made here (`"encrypted": true` is refused with 400): its keys are made in
   the browser, and the server has none.
 - **`GET /api/search?q=<words>`** runs the wiki's own search, the one behind

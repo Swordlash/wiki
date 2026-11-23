@@ -261,6 +261,13 @@ slugsAskedFor backing = describe "a page or a space created with its slug given"
         >>= (`shouldSatisfy` \case Left (Conflict _) -> True; _ -> False)
         . fmap (const ())
       count `shouldReturn` before'
+      -- The editor may create spaces at the top, and may not view Team:
+      -- its slug is answered as a space that is not there.
+      editor <- whoFor st (As "editor")
+      runStoredWiki st editor (createSpaceAt Nothing (slug "team") "Team again")
+        >>= (`shouldBe` Left NotFound)
+        . fmap (const ())
+      count `shouldReturn` before'
       made <- asAdmin st (createSpaceAt (Just blog.id) (slug "blog") "Another blog") >>= ok
       (made.slug, made.name, made.parent) `shouldBe` (slug "blog", "Another blog", Just blog.id)
       count `shouldReturn` (before' + 1)

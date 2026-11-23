@@ -19,7 +19,9 @@
 -- 'draftDelay' after the typing stops, so that a closed tab or a crash
 -- loses little; a quiet grey "Draft saved" confirms it. Both notices show
 -- in a corner under the editor's top bar, out of the bar's flow, so that
--- their coming and going never moves the buttons (issue #193).
+-- their coming and going never moves the buttons (issue #193). While the
+-- search's panel is open over the text, they hang under the panel instead,
+-- whose buttons they would otherwise cover (issue #339).
 -- Saving the page discards the draft. Cancel, with unsaved changes or a
 -- draft, asks whether to keep the draft. Opening the editor on a page that
 -- has a draft of its current version loads the draft and says so, with a
@@ -1325,7 +1327,7 @@ component =
             </div>
           </div>
           {{ toolbar st.menuHolder Bar {menuOpen = st.menu, twoPanes = st.sideBySide, textSize = st.fontStep, detached = livePreviewHref st.input, kinds = boxChoices st.input.context.session.boxes, newKind = mayDefineKinds st.input.context, macrosShown = st.macrosOpen, emojiSearch = st.emojiQuery, deck = deckBar st, textless = not (writesAtCursor st)} }}
-          {{ cornerNotices st }}
+          {% if not (noticesUnderSearch st) %}{{ cornerNotices st }}{% end %}
           </div>
           <div class="editor-notices">
             {{ presenceView st }}
@@ -1370,6 +1372,10 @@ component =
     -- child of the editor's top, and the stylesheet hangs them under its
     -- bottom right corner, out of the flow. So they cover none of the
     -- top's controls, and a notice that appears moves none of its buttons.
+    -- While the search's panel is shown, the panel sticks under the top,
+    -- where the notices would hang over its buttons (issue #339): the
+    -- notices are then the last child of the panel's holder instead
+    -- ('searchHolder'), and hang under the panel's bottom right corner.
     -- Both elements are always there, empty when there is nothing to say:
     -- "Saved" is a live region, and a screen reader has to know the region
     -- before the word arrives in it.
@@ -1974,7 +1980,7 @@ component =
             -- and while CodeMirror is put in place again (a reload): the
             -- search is the editor's state ('searchFor'), which the panel is
             -- drawn from and CodeMirror is given ('EditorReady').
-            <> [("search", searchPanel st) | st.searchOpen]
+            <> [("search", searchHolder st) | st.searchOpen]
             <> [
                  ( "cm"
                  , [hh|
@@ -2017,6 +2023,17 @@ component =
                ]
             <> [("slides", HH.div [HP.class_ "editor-slides-holder"] [slideList st, HH.p [HP.class_ "visually-hidden editor-slides-status", attr "role" "status"] [HH.text st.announcement]]) | slidesShown st]
         )
+
+    -- The search's panel in its holder, which sticks under the editor's
+    -- top while the text scrolls. While the text is shown, the notices of
+    -- saves are the holder's last child ('noticesUnderSearch'), and the
+    -- stylesheet hangs them under the holder's bottom right corner as it
+    -- hangs them under the top's.
+    searchHolder :: State -> H.ComponentHTML Action Slots m
+    searchHolder st =
+      HH.div
+        [HP.class_ "editor-search-holder"]
+        (searchPanel st : [cornerNotices st | noticesUnderSearch st])
 
     -- The search's panel, above CodeMirror's host: above the text in the
     -- raw Markdown, and above the rows slide by slide, where the text is
@@ -3649,6 +3666,13 @@ homeChoiceOf h = HomeChoice {withSpaces = h.showSpaces, withRecent = h.showRecen
 -- document, to an administrator, who alone may change them.
 editsHomeOptions :: Input -> Bool
 editsHomeOptions input = input.home && hasGlobalPermission (principalOf input.context) (grantsOf input.context) Administer
+
+-- | Whether the notices of saves hang under the search's panel rather than
+-- under the editor's top: while the panel is open and shown. With the
+-- preview shown alone the panel is hidden with the text, and the notices
+-- stay under the top.
+noticesUnderSearch :: State -> Bool
+noticesUnderSearch st = st.searchOpen && st.mode /= Previewing
 
 -- | What the grey notice under the editor's top bar says about the draft.
 draftStatus :: DraftNews -> Text

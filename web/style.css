@@ -3402,7 +3402,12 @@ body:has(.slides-view) {
    none of its buttons. On a wide screen they keep clear of the writing
    assistant's bubbles, which hang at the right edge of the text; with the
    preview alone, or with two panes, the text's right edge is elsewhere and
-   the notices go to the corner. Clicks go through them to the text. */
+   the notices go to the corner. Clicks go through them to the text.
+   While the search's panel is open over the text, the panel sticks under
+   the top, and the notices are the last child of the panel's holder
+   instead (.editor-search-holder): they hang under the panel's bottom
+   right corner by the same rules, so that they never cover its buttons
+   (issue #339). */
 .editor-corner {
   position: absolute;
   top: calc(100% + 0.4rem);
@@ -3613,11 +3618,22 @@ body:has(.slides-view) {
    as Enter steps from match to match, rows opening far down. Two lines:
    the text to find, its toggles, the count, Previous, Next and Close; the
    replacement and its two buttons. On a phone the editor's top does not
-   stay, but its toolbar does: the panel stays under the toolbar. */
-.editor-search {
+   stay, but its toolbar does: the panel stays under the toolbar. What
+   sticks is the panel's holder, which also holds the notices of saves
+   while the panel is open (.editor-corner above). */
+.editor-search-holder {
   position: sticky;
   top: calc(var(--header-height) + var(--editor-top-height, 0px));
   z-index: 3;
+}
+
+@media (max-width: 760px) {
+  .editor-search-holder {
+    top: calc(var(--header-height) + var(--editor-toolbar-height, 0px));
+  }
+}
+
+.editor-search {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
@@ -3625,12 +3641,6 @@ body:has(.slides-view) {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
-}
-
-@media (max-width: 760px) {
-  .editor-search {
-    top: calc(var(--header-height) + var(--editor-toolbar-height, 0px));
-  }
 }
 
 /* The providers' bubbles float over the text's right edge: the panel

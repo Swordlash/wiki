@@ -48,3 +48,24 @@ function wiki_test_transitions_done(selector, ms) {
   const ended = Promise.all(element.getAnimations().map((animation) => animation.finished.catch(() => null))).then(() => true);
   return Promise.race([ended, new Promise((resolve) => setTimeout(() => resolve(false), ms))]);
 }
+
+// Wait until the selector finds an element in the page: true at once when
+// it does already, else on the first change of the page after which it
+// does, false at the deadline. For what a library draws on a timer of its
+// own (CodeMirror's hover tooltips, after the mouse has rested).
+function wiki_test_until_found(selector, ms) {
+  if (document.querySelector(selector) !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const observer = new MutationObserver(() => {
+      if (document.querySelector(selector) === null) return;
+      observer.disconnect();
+      clearTimeout(timer);
+      resolve(true);
+    });
+    observer.observe(document.documentElement, { subtree: true, childList: true });
+    const timer = setTimeout(() => {
+      observer.disconnect();
+      resolve(false);
+    }, ms);
+  });
+}

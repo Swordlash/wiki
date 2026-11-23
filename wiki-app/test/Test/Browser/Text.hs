@@ -14,6 +14,8 @@ module Test.Browser.Text
   , movedBy
   , completing
   , listReady
+  , completionAnswered
+  , untilListTakesKeys
   , setMarkdown
   , insertText
   , clearBody
@@ -28,8 +30,10 @@ module Test.Browser.Text
 where
 
 import Data.Aeson (FromJSON (..), decodeStrict, withObject, (.:))
-import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
-import Protolude hiding (find)
+import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
+import Halogen.JSBits.Promise (Promise (..), wait)
+import Protolude hiding (find, wait)
+import Test.Browser.Outside (watchdogMs)
 import Test.Hspec.Halogen
 import Web.DOM.Internal.Types qualified as Web
 
@@ -41,6 +45,8 @@ $( browserJS
      , ("js_jump", "wiki_test_editor_jump", Safe, [t|IO JSText|])
      , ("js_completing", "wiki_test_editor_completing", Safe, [t|IO JSText|])
      , ("js_completion_ready", "wiki_test_editor_completion_ready", Safe, [t|IO Bool|])
+     , ("js_completion_answeredPromise", "wiki_test_editor_completion_answered", Safe, [t|Int -> IO (Promise JSText)|])
+     , ("js_completion_takes_keysPromise", "wiki_test_editor_completion_takes_keys", Safe, [t|Int -> IO (Promise JSText)|])
      , ("js_set", "wiki_test_editor_set", Safe, [t|JSText -> IO ()|])
      , ("js_insert", "wiki_test_editor_insert", Safe, [t|Int -> JSText -> IO ()|])
      , ("js_clear_body", "wiki_test_editor_clear_body", Safe, [t|IO ()|])
@@ -103,6 +109,44 @@ listReady :: Mounted s q o m -> PageM s ()
 listReady ui = do
   _ <- editorText ui
   eventually (unsafeIOToPageM js_completion_ready `shouldReturn` True)
+
+js_completion_answered :: Int -> IO JSText
+js_completion_answered ms = if inBrowser then wait =<< js_completion_answeredPromise ms else pure inert
+
+js_completion_takes_keys :: Int -> IO JSText
+js_completion_takes_keys ms = if inBrowser then wait =<< js_completion_takes_keysPromise ms else pure inert
+
+-- | Wait until the editor's completion has its answer, and give where it is
+-- then ('completing'): @"active"@ with a list shown, or @""@ for none. The
+-- library asks for the list on a timer of its own a moment after the last
+-- key, which the program does not know of, so a test waits for it here,
+-- on the library's own state, rather than for the program. What the answer
+-- set off in the program has run when it returns. It fails at the suite's
+-- watchdog ('watchdogMs').
+--
+-- 'completing' read after typing may still be @"pending"@; this is its
+-- sibling for the groups whose reads look once ('readsOnce').
+completionAnswered :: (HasCallStack) => Mounted s q o m -> PageM s Text
+completionAnswered ui = do
+  _ <- editorText ui
+  status <- fromJSText <$> perform (js_completion_answered watchdogMs)
+  when (status == "pending" || status == "no editor") . expectationFailure $
+    "after " <> show watchdogMs <> " ms, the editor's completion had no answer: " <> status
+  pure status
+
+-- | Wait until the editor's completion has its answer and shows a list
+-- that takes its keys, failing if the answer shows none: 'listReady' for
+-- the groups whose reads look once ('readsOnce'). The library takes Enter,
+-- Tab and the arrows only once a list has been shown for a moment (its
+-- @interactionDelay@, by the clock, with no event to say so), and this
+-- waits out what is left of it, where 'listReady' reads again and again.
+untilListTakesKeys :: (HasCallStack) => Mounted s q o m -> PageM s ()
+untilListTakesKeys ui = do
+  _ <- editorText ui
+  status <- fromJSText <$> perform (js_completion_takes_keys watchdogMs)
+  unless (status == "ready") . expectationFailure $ case status of
+    "no list" -> "the editor's completion answered with no list"
+    _ -> "after " <> show watchdogMs <> " ms, the editor's completion showed no list that takes its keys: " <> status
 
 -- | Make the editor's text this, as one edit.
 setMarkdown :: Mounted s q o m -> Text -> PageM s ()

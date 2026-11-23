@@ -2189,7 +2189,7 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   selection** read at quiet before CodeMirror had recorded a change
   of focus, which it does on a 10 ms timer of its own (found on
   #349's CI): `focusTaken` in `web/src/editor.js` gives a promise the
-  test waits on: open (#354, stacked on #349); the slide rows wait
+  test waits on: merged (#354); the slide rows wait
   out the same timer with `eventually` still. Seen in the library and left: Playwright's own test "the
   DevTools protocol slows a page's processor down" depends on the
   machine's speed (it failed at a load of 40 on 16 cores).** What is
@@ -2252,7 +2252,7 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   under the search's panel while it is open. #340 (the user's
   settings on a page of their own, the menu under the login keeping
   only Settings, the demo's switch of users and Sign out; confirmed
-  with him): open (#349), sections at `/settings/profile/`,
+  with him): merged (#349), sections at `/settings/profile/`,
   `/settings/security/`, `/settings/notifications/` and
   `/settings/assistant/` (the old `/assistant/` redirects). Its CI
   found a fault of the program: the offer to unlock the keys covered
@@ -2354,8 +2354,11 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   address; making a key asks for the proof adding a passkey asks for
   (the session's choice: a stolen session must not mint a key that
   never expires); `wiki-server keys list|add|revoke`. A new password
-  and "Sign out everywhere" leave keys working. Their panel goes
-  into the settings page of #340 once both are merged. **MCP: open
+  and "Sign out everywhere" leave keys working. **Their panel is
+  being built** (branch `api-keys-panel`): a fifth section of the
+  settings, `/settings/api-keys/`, a machine over three calls of
+  `MonadSecurity`, the key shown once with examples for `curl` and
+  `wiki.sh`; the example for MCP is added when #353 is merged. **MCP: open
   (#353, stacked on #352)**, as recommended below, with eight tools
   (the five below, `wiki_page_outline`, `wiki_read_section`,
   `wiki_create_page`); the library's callback is given the token

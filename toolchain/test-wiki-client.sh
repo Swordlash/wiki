@@ -76,6 +76,10 @@ check() {
 }
 is_file() { [ -f "$1" ]; }
 first_line_matches() { head -n 1 "$1" | grep -q -- "$2"; }
+# A file's mode as ls writes it (-rw-r--r--): ls is the one portable reader
+# of a mode, stat and find differing between GNU and BSD; no name is parsed.
+# shellcheck disable=SC2012
+mode_text() { ls -ld -- "$1" | cut -c1-10; }
 # Stop at once: what follows depends on it.
 die() {
   printf 'test-wiki-client: %s\n' "$1" >&2
@@ -84,7 +88,12 @@ die() {
 }
 
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck "$client" "$0"; then pass "shellcheck finds nothing"; else fail "shellcheck"; fi
+  if shellcheck "$client" "$0" >"$work/shellcheck.out" 2>&1; then
+    pass "shellcheck finds nothing"
+  else
+    fail "shellcheck finds this:"
+    sed 's/^/  /' "$work/shellcheck.out" >&2
+  fi
 else
   printf 'skipped: shellcheck is not installed\n'
 fi
@@ -93,7 +102,7 @@ fi
 # ASCII, each a way to break quoting. "wörd" is in each, and is looked for
 # wherever a password must not be.
 dq='"'
-bs=$(printf '\\')
+bs=$(printf '\134')
 editor_password="Editor ${dq}wörd${dq} $bs one:two"
 reader_password="Reader ${dq}wörd${dq} $bs three"
 locked_password="Locked ${dq}wörd${dq} password"
@@ -187,7 +196,7 @@ esac
 mkdir -p "$work/fakes/curl" "$work/fakes/nojq" "$work/fakes/answer"
 cat >"$work/fakes/curl/curl" <<EOF
 #!/bin/sh
-ulimit -S -f unlimited
+ulimit -S -f unlimited 2>/dev/null
 printf '%s\n' "\$*" >>"$work/curl.args"
 exec "$real_curl" "\$@"
 EOF
@@ -1073,13 +1082,13 @@ files_written() {
   ( umask 022 && fake_answer "$page_text" text/markdown get /s/team/p/x/ --out "$out" && exit "$status" )
   status=$?
   expect 0 "get --out over a private file"
-  check "the file keeps its mode 600" [ "$(ls -l "$out" | cut -c1-10)" = -rw------- ]
-  check "its version keeps its mode 600" [ "$(ls -l "$out.version" | cut -c1-10)" = -rw------- ]
+  check "the file keeps its mode 600" [ "$(mode_text "$out")" = -rw------- ]
+  check "its version keeps its mode 600" [ "$(mode_text "$out.version")" = -rw------- ]
   rm -f "$out" "$out.version"
   ( umask 022 && fake_answer "$page_text" text/markdown get /s/team/p/x/ --out "$out" && exit "$status" )
   status=$?
   expect 0 "get --out to a new file"
-  check "the new file has the mode the umask gives (644)" [ "$(ls -l "$out" | cut -c1-10)" = -rw-r--r-- ]
+  check "the new file has the mode the umask gives (644)" [ "$(mode_text "$out")" = -rw-r--r-- ]
   check "nothing is left beside it after success" [ -z "$(find "$work/shared-$shell" -name '.wiki-sh.*')" ]
   # A link given as the file is refused, and nothing is written through it.
   rm -f "$out"
@@ -1184,29 +1193,38 @@ versions_follow_delivery() {
   # alone: the recording curl lifts it for itself) leaves FILE and
   # FILE.version as they were, and no file beside them.
   big_text "for the file size limit" >"$work/limited-text"
-  input=$work/limited-text
-  client put "$second" --force
-  expect 0 "a page longer than the file size limit"
-  input=/dev/null
-  client get "$second" --out "$work/limited.md"
-  printf 'An edit made in the file, before the next get.\n' >>"$work/limited.md"
-  cp "$work/limited.md" "$work/limited.before"
-  cp "$work/limited.md.version" "$work/limited.version.before"
-  (
-    ulimit -S -f 1
-    exec env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" \
-      "$shell" "$client" get "$second" --out "$work/limited.md"
-  ) </dev/null >"$work/out" 2>"$work/err"
-  status=$?
-  expect 1 "get --out under a file size limit fails"
-  has err "cannot write $work/limited.md whole" "it fails at the file, after the answer came whole"
-  check "the file is as it was" cmp -s "$work/limited.md" "$work/limited.before"
-  check "its version beside it is as it was" cmp -s "$work/limited.md.version" "$work/limited.version.before"
-  check "no file is left beside it" [ -z "$(find "$work" -maxdepth 1 -name '.wiki-sh.*')" ]
-  client put "$second" --file "$work/limited.md"
-  expect 0 "its put goes over the version beside it"
-  client get "$second"
-  check "the page has the file's whole text, the edit included" cmp -s "$work/out" "$work/limited.before"
+  # A soft limit (ulimit -S) is not in POSIX sh; dash, bash and zsh have it.
+  # Where the test's shell has none, these checks are skipped, and say so.
+  # shellcheck disable=SC3045
+  if (ulimit -S -f unlimited) 2>/dev/null; then
+    input=$work/limited-text
+    client put "$second" --force
+    expect 0 "a page longer than the file size limit"
+    input=/dev/null
+    client get "$second" --out "$work/limited.md"
+    printf 'An edit made in the file, before the next get.\n' >>"$work/limited.md"
+    cp "$work/limited.md" "$work/limited.before"
+    cp "$work/limited.md.version" "$work/limited.version.before"
+    (
+      # Guarded by the test above.
+      # shellcheck disable=SC3045
+      ulimit -S -f 1
+      exec env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" \
+        "$shell" "$client" get "$second" --out "$work/limited.md"
+    ) </dev/null >"$work/out" 2>"$work/err"
+    status=$?
+    expect 1 "get --out under a file size limit fails"
+    has err "cannot write $work/limited.md whole" "it fails at the file, after the answer came whole"
+    check "the file is as it was" cmp -s "$work/limited.md" "$work/limited.before"
+    check "its version beside it is as it was" cmp -s "$work/limited.md.version" "$work/limited.version.before"
+    check "no file is left beside it" [ -z "$(find "$work" -maxdepth 1 -name '.wiki-sh.*')" ]
+    client put "$second" --file "$work/limited.md"
+    expect 0 "its put goes over the version beside it"
+    client get "$second"
+    check "the page has the file's whole text, the edit included" cmp -s "$work/out" "$work/limited.before"
+  else
+    printf 'skipped: the test'"'"'s shell has no soft limits (ulimit -S), for get --out under a file size limit\n'
+  fi
   # A put --file with --if-match, or --force, moves the file's sidecar
   # with the state file: the next ordinary put --file goes through.
   client get "$page" --out "$work/sidecar.md"
@@ -1259,7 +1277,7 @@ round_trip() {
   check "Team's home page is as it was ($2)" cmp -s "$work/out" "$work/team-home"
   # The page History, through its listed address.
   word=kumquat$shell$2
-  word=$(printf '%s' "$word" | tr -d -c 'a-z')
+  word=$(printf '%s' "$word" | tr -d -c '[:lower:]')
   printf 'History, written %s: %s.\n' "$2" "$word" >"$work/history"
   client get "$history_address"
   expect 0 "get of the listed address of History ($2)"

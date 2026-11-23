@@ -645,7 +645,7 @@ expect_answer() {
     wrong_answer "it answered $http_status, where the wiki answers $want"
     return
   fi
-  media=$(header_value content-type | tr 'A-Z' 'a-z')
+  media=$(header_value content-type | tr '[:upper:]' '[:lower:]')
   media=${media%%;*}
   trim "$media"
   media=$trimmed
@@ -1132,6 +1132,9 @@ own_directory() {
 # way stock Linux and macOS agree on): -rw-r----- is u=rw,g=r,o=. Set-id
 # and sticky bits count as x.
 mode_of() {
+  # ls is the one portable reader of a mode (stat and find differ between
+  # GNU and BSD); the name is never parsed, only the first field.
+  # shellcheck disable=SC2012
   ls -ld -- "$1" 2>/dev/null | awk '{
     m = $1
     split("u g o", who, " ")

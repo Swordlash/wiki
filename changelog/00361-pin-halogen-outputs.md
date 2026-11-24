@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 361
 title: The browser tests hear a component from the start of its mount
 technical: true
 ---

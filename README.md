@@ -598,6 +598,21 @@ It is [these nine slides](https://swordlash.github.io/wiki/s/docs/p/markdown-gui
   what changed in it since, so that the conversation, which goes whole with
   each message, holds one copy and Anthropic's cache covers all of it. Over `wiki-server`, the keys follow you
   to your other devices, unlocked by a passkey ([below](#keys-across-devices)).
+- **Plugins**: the writing assistant and the marking of formulas and
+  diagrams that cannot be drawn ("Errors of formulas and diagrams") are the
+  wiki's two built-in plugins, both on unless turned off. **Settings**,
+  **Plugins** lists them, each with a switch: turned off, the assistant's
+  buttons and panel leave the editor, and the errors of formulas, Mermaid
+  diagrams and TikZ pictures are no longer marked or counted in the text
+  (the preview still shows each in red where it is). **Back to the default**
+  undoes your choice. The assistant's row links to its settings, which stay
+  under **Writing assistant**. An administrator turns a plugin off for
+  everyone in **Administration**, **Permissions**, under **Plugins**; it is
+  then off whatever each user chose, its switch in their settings disabled
+  with the reason, and each user's choice is kept for when it is turned on
+  again. A change applies at once in the tab it is made in, and in other
+  tabs and for other users the next time they load the wiki or sign in.
+  In the demo the choices last as long as the tab.
 - **Slides** made of any page, presented, printed and exported
   ([above](#presentations)).
 - **History**: every save a version, its changes shown word by word, and any

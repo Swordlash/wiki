@@ -17,6 +17,7 @@
 module Test.SettingsDom (spec) where
 
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Time (UTCTime (..), fromGregorian)
 import Halogen.Router qualified as Router
 import Halogen.Subscription qualified as HS
@@ -27,6 +28,7 @@ import Test.Harness.MemDom (View, click, clickOutside, find, findAll, outputs, s
 import Test.Hspec
 import Wiki.Api.Account (LinkedIdentity (..), SignInMethods (..))
 import Wiki.Api.Account qualified as Account (PasswordChange (..))
+import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..))
 import Wiki.App (component, input)
 import Wiki.App.Account (Accounts (..), SignInError (..))
 import Wiki.App.Backend (Session, WikiError (..), anonymousIn, session)
@@ -70,6 +72,21 @@ spec = describe "Wiki.App.View.SignIn and Wiki.App.Shell, the way to the setting
         textOf view ".settings-nav-link[aria-current=page]" `shouldReturn` "Profile"
         textOf view ".settings-reading" `shouldReturn` "Reading your settings…"
         (length <$> findAll view ".user-menu") `shouldReturn` 0
+
+    -- The writing assistant's settings are its options, there whether
+    -- the plugin is on or off. Natively the options themselves are not
+    -- mounted (the browser suite mounts them); the line is the shell's.
+    it "says on the assistant's section that the assistant is off, by the user or for the wiki, with the way to Plugins" $ do
+      let offLine = "The assistant is off: its button does not show in the editor. Turn it on in Plugins."
+          byUser st = st {pluginChoices = Map.fromList [(UserId "user-editor", Map.fromList [(PluginId "assistant", PluginChoice {state = PluginOff, options = Nothing})])]}
+          forWiki st = st {pluginsOff = Set.fromList [PluginId "assistant"]}
+      for_ [byUser, forWiki] $ \off ->
+        withShellOn off (Just "user-editor") (UserSettings AssistantSection) $ \view -> do
+          textOf view ".settings-view h1" `shouldReturn` "Writing assistant"
+          textOf view ".settings-plugin-off" `shouldReturn` offLine
+          hrefOf view ".settings-plugin-off-link" `shouldReturn` Just "/settings/plugins/"
+      withShell (Just "user-editor") (UserSettings AssistantSection) $ \view ->
+        (length <$> findAll view ".settings-plugin-off") `shouldReturn` 0
 
     it "shows the section chosen, and asks nobody signed in to choose who they are" $ do
       withShell (Just "user-editor") (UserSettings NotificationsSection) $ \view -> do
@@ -174,8 +191,12 @@ spec = describe "Wiki.App.View.SignIn and Wiki.App.Shell, the way to the setting
 -- | The shell over the demo, as someone (by user id, or nobody), at a
 -- route.
 withShell :: Maybe Text -> Route -> (View Shell.Query (Shell.Input (MemWiki MemDOM)) Void -> IO a) -> IO a
-withShell who at body = do
-  wiki <- newMemWiki (demoState demoNow) {current = UserId <$> who}
+withShell = withShellOn identity
+
+-- | 'withShell' over the demo's wiki changed first.
+withShellOn :: (MemState -> MemState) -> Maybe Text -> Route -> (View Shell.Query (Shell.Input (MemWiki MemDOM)) Void -> IO a) -> IO a
+withShellOn change who at body = do
+  wiki <- newMemWiki (change (demoState demoNow)) {current = UserId <$> who}
   let run :: MemWiki MemDOM a -> MemDOM a
       run = runMemWiki wiki
   router <- runMemDOM (run (Router.newRouter "/" Unknown route))

@@ -38,13 +38,18 @@ newtype State = State {machine :: Machine.Machine () Event Model}
 data Action
   = Initialize
   | Finalize
+  | Receive Int
   | Happen Event
 
-component :: forall query input m. (MonadPlugins m) => H.Component query input ViewOutput m
+-- | The view, given the number of the session signed in
+-- ("Wiki.App.View.Common"'s @sessionNumber@): another number is another
+-- session, whose set the view reads afresh, and to which nothing the
+-- earlier one wanted goes.
+component :: forall query m. (MonadPlugins m) => H.Component query Int ViewOutput m
 component =
   H.mkComponent
     H.ComponentSpec
-      { initialState = \_ -> pure State {machine = Machine.new initial}
+      { initialState = \session -> pure State {machine = Machine.new (initial session)}
       , render
       , eval =
           H.mkEval
@@ -52,6 +57,7 @@ component =
               { H.handleAction = handleAction
               , H.initialize = Just Initialize
               , H.finalize = Just Finalize
+              , H.receive = Just . Receive
               }
       }
   where
@@ -94,6 +100,7 @@ component =
     handleAction = \case
       Initialize -> happen Started
       Finalize -> Machine.finish machineSpec Finished
+      Receive session -> happen (Given session)
       Happen e -> happen e
 
     happen :: Event -> H.HalogenM State Action Empty ViewOutput m ()

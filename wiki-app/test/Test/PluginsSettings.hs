@@ -222,13 +222,18 @@ data World = World
   -- on, what it knows is the server's.
   , clicked :: [(Int, PluginId, PluginState)]
   -- ^ The states chosen, with the session they were chosen in.
+  , told :: Maybe Plugins
+  -- ^ What the section last told the shell it holds ('Tell').
+  , lastWrite :: Map PluginId Bool
+  -- ^ Whether the last answer to a write of each plugin taken in this
+  -- session was a success.
   , seen :: [Text]
   , trace :: [Text]
   , faults :: [Text]
   }
 
 start :: World
-start = afterEvent "mounted" Started World {section = initial 0, backend = as "editor", outs = [], turn = 0, finished = False, losing = False, changes = 0, fresh = False, clicked = [], seen = [], trace = [], faults = []}
+start = afterEvent "mounted" Started World {section = initial 0, backend = as "editor", outs = [], turn = 0, finished = False, losing = False, changes = 0, fresh = False, clicked = [], told = Nothing, lastWrite = mempty, seen = [], trace = [], faults = []}
 
 play :: World -> Step -> World
 play w = \case
@@ -260,7 +265,7 @@ play w = \case
                     Right _ -> "a write taken"
                     Left (Invalid _) -> "a write refused"
                     Left _ -> "a write lost"
-               in afterEvent "a write comes back" (Written t p r) w' {seen = [tag | ours] <> w'.seen}
+               in afterEvent "a write comes back" (Written t p r) w' {seen = [tag | ours] <> w'.seen, lastWrite = if ours then Map.insert p (isRight r) w'.lastWrite else w'.lastWrite}
             _ -> w'
     Nothing -> w
   WikiOff i isOff -> case atMay ids i of
@@ -284,7 +289,7 @@ play w = \case
     | w.finished -> w
     | otherwise ->
         let next = w.turn + 1
-         in afterEvent ("reader " <> readerOf next <> " signs in") (Given next) w {turn = next, fresh = False, seen = ["a switch with an ask out" | any (\o -> o.inSession == w.turn) w.outs] <> w.seen}
+         in afterEvent ("reader " <> readerOf next <> " signs in") (Given next) w {turn = next, fresh = False, lastWrite = mempty, seen = ["a switch with an ask out" | any (\o -> o.inSession == w.turn) w.outs] <> w.seen}
   Finish -> afterEvent "goes away" Finished w {finished = True}
   where
     lostAnswer = \case
@@ -309,19 +314,21 @@ afterEvent what event w =
     $ w
       { section
       , outs = outs'
+      , told = if Tell `elem` effects then section.known >>= rightToMaybe else w.told
       , faults =
           w.faults
             <> [what <> ": " <> show effects <> " after the section went away" | w.finished, not (null effects)]
             <> [what <> ": two asks out at once: " <> show (map (\o -> o.effect) live) | length live > 1]
             <> [what <> ": writes " <> p.text <> " " <> show s <> ", not chosen in this session" | Write _ p s <- effects, (w.turn, p, s) `notElem` w.clicked]
-            <> [what <> ": tells the shell with no write taken" | Tell `elem` effects, not (tookWrite event)]
+            <> [what <> ": tells the shell with no answer taken" | Tell `elem` effects, not (answered event)]
       }
   where
     (section, effects) = step event w.section
     outs' = w.outs <> [Out {effect = e, reader = readerOf w.turn, inSession = w.turn, answer = Nothing, changesSeen = 0} | e <- effects, isJust (askOf e)]
     live = [o | o <- outs', Just t <- [askOf o.effect], t `madeAfter` section.sessionFrom, o.inSession == w.turn]
-    tookWrite = \case
-      Written _ _ (Right _) -> True
+    answered = \case
+      Written {} -> True
+      Loaded {} -> True
       _ -> False
 
 -- | The rules, checked after every step: once the section has read what
@@ -342,6 +349,18 @@ checked w = w {faults = w.faults <> if w.finished then [] else settledRule, seen
         <> [ "settled, but its switches show writes not out: " <> show w.section.writing
            | quiet
            , not (Map.null w.section.writing)
+           ]
+        -- What it holds, once read, the shell has been told: the editor
+        -- runs the plugins the switches show.
+        <> [ "holds " <> show held <> ", but told the shell " <> show w.told
+           | Just held <- [w.section.known >>= rightToMaybe]
+           , w.told /= Just held
+           ]
+        -- A refusal stays only while the last answer about its plugin is
+        -- one.
+        <> [ "shows a refusal for " <> p.text <> ", whose last write succeeded"
+           | (p, True) <- Map.toList w.lastWrite
+           , Map.member p w.section.refused
            ]
 
 runOf :: [Step] -> World
@@ -405,10 +424,15 @@ wikiSwitch = describe "the administration's switch" $ do
   let ticket e = fromMaybe (panic "no ask") (Wiki.askOf e)
       run' :: [Wiki.Event] -> Wiki.Model -> (Wiki.Model, [Wiki.Effect])
       run' es m0 = foldl' (\(m, fx) e -> let (m', fx') = Wiki.step e m in (m', fx <> fx')) (m0, []) es
-  it "reads the set, saves the set ticked, and tells the shell once the server took it" $ do
-    let (m1, load) = second onlyEffect (Wiki.step Wiki.Started Wiki.initial)
-        (m2, _) = Wiki.step (Wiki.Loaded (ticket load) (Right WikiPlugins {off = mempty})) m1
-        (m3, save) = second onlyEffect (Wiki.step (Wiki.Ticked errors True) m2)
+      -- The view mounted in session 0, its first read answered with a set.
+      readWith off =
+        let (m1, load) = second onlyEffect (Wiki.step Wiki.Started (Wiki.initial 0))
+            (m2, fx) = Wiki.step (Wiki.Loaded (ticket load) (Right WikiPlugins {off})) m1
+         in (m2, fx)
+  it "reads the set and tells the shell, saves the set ticked, and tells the shell once the server took it" $ do
+    let (m2, told) = readWith mempty
+    told `shouldBe` [Wiki.Tell]
+    let (m3, save) = second onlyEffect (Wiki.step (Wiki.Ticked errors True) m2)
     save `shouldSatisfy` \case
       Wiki.Save _ s -> s == Set.fromList [errors]
       _ -> False
@@ -419,25 +443,49 @@ wikiSwitch = describe "the administration's switch" $ do
     m4.wantedOff `shouldBe` Nothing
 
   it "saves once at a time, the last set wanted, and keeps ids it does not list" $ do
-    let (m1, load) = second onlyEffect (Wiki.step Wiki.Started Wiki.initial)
-        (m2, _) = Wiki.step (Wiki.Loaded (ticket load) (Right WikiPlugins {off = Set.fromList [PluginId "elsewhere"]})) m1
+    let (m2, _) = readWith (Set.fromList [PluginId "elsewhere"])
         (m3, save) = second onlyEffect (Wiki.step (Wiki.Ticked errors True) m2)
         (m4, more) = run' [Wiki.Ticked assistant True, Wiki.Ticked errors False] m3
     more `shouldBe` []
-    m4.queued `shouldBe` Just (Set.fromList [PluginId "elsewhere", assistant])
+    m4.queued `shouldBe` Just (0, Set.fromList [PluginId "elsewhere", assistant])
     let (_, next) = Wiki.step (Wiki.Saved (ticket save) (Left (Unreachable "lost"))) m4
     -- The set that waits goes next; the read the failure wants follows it.
     next `shouldSatisfy` \case
       [Wiki.Save _ s] -> s == Set.fromList [PluginId "elsewhere", assistant]
       _ -> False
 
-  it "shows a refusal, and reads again" $ do
-    let (m1, load) = second onlyEffect (Wiki.step Wiki.Started Wiki.initial)
-        (m2, _) = Wiki.step (Wiki.Loaded (ticket load) (Right WikiPlugins {off = mempty})) m1
+  it "shows a refusal, reads again, and tells the shell when that read finds the save done" $ do
+    let (m2, _) = readWith mempty
         (m3, save) = second onlyEffect (Wiki.step (Wiki.Ticked errors True) m2)
-        (m4, fx) = Wiki.step (Wiki.Saved (ticket save) (Left Forbidden)) m3
-    m4.problem `shouldBe` Just Forbidden
+        (m4, load) = second onlyEffect (Wiki.step (Wiki.Saved (ticket save) (Left (Unreachable "lost"))) m3)
+    m4.problem `shouldBe` Just (Unreachable "lost")
     Wiki.shownOff m4 `shouldBe` Just mempty
-    fx `shouldSatisfy` \case
+    -- The save was done all the same: the read says so, and the shell hears it.
+    let (m5, fx) = Wiki.step (Wiki.Loaded (ticket load) (Right WikiPlugins {off = Set.fromList [errors]})) m4
+    fx `shouldBe` [Wiki.Tell]
+    m5.off `shouldBe` Just (Right (Set.fromList [errors]))
+
+  it "clears a refusal once a later save succeeds" $ do
+    let (m2, _) = readWith mempty
+        (m3, save) = second onlyEffect (Wiki.step (Wiki.Ticked errors True) m2)
+        -- Ticked again while the save is out: it waits.
+        (m4, _) = Wiki.step (Wiki.Ticked assistant True) m3
+        (m5, again) = second onlyEffect (Wiki.step (Wiki.Saved (ticket save) (Left (Invalid "no"))) m4)
+    m5.problem `shouldBe` Just (Invalid "no")
+    let (m6, _) = Wiki.step (Wiki.Saved (ticket again) (Right WikiPlugins {off = Set.fromList [errors, assistant]})) m5
+    m6.problem `shouldBe` Nothing
+
+  it "drops a save queued by the session before, and sends nothing for it" $ do
+    let (m2, _) = readWith mempty
+        (m3, save) = second onlyEffect (Wiki.step (Wiki.Ticked errors True) m2)
+        (m4, _) = Wiki.step (Wiki.Ticked assistant True) m3
+        -- Another administrator signs in: the view reads afresh.
+        (m5, fresh) = Wiki.step (Wiki.Given 1) m4
+    fresh `shouldSatisfy` \case
       [Wiki.Load _] -> True
       _ -> False
+    m5.queued `shouldBe` Nothing
+    -- The former session's save answers: nothing is sent, nothing taken.
+    let (m6, fx) = Wiki.step (Wiki.Saved (ticket save) (Right WikiPlugins {off = Set.fromList [errors]})) m5
+    fx `shouldBe` []
+    m6.off `shouldBe` Nothing

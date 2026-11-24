@@ -1,9 +1,9 @@
 -- | 'Model' is what the administration's switch of plugins
 -- ("Wiki.App.View.WikiPlugins") knows, and 'step' is the one place it
 -- changes (decision 82 of docs/PLAN.md). Every input is an 'Event': a
--- checkbox ticked, an answer of the backend, the view going away. Every
--- output is an 'Effect': read the plugins off for the wiki, save them,
--- tell the shell that they changed.
+-- checkbox ticked, an answer of the backend, a change of the session, the
+-- view going away. Every output is an 'Effect': read the plugins off for
+-- the wiki, save them, tell the shell that they changed.
 --
 -- A read and a save are one flight: while one of them is out, no other is
 -- sent ('flight'). A save replaces the whole set on the server, so only
@@ -11,11 +11,18 @@
 -- the set that waits ('queued'), which is saved when the ask out answers,
 -- failed or not. The boxes show the set last wanted until its save has
 -- answered ('wantedOff'). A save refused is shown, and a read follows: a
--- save whose answer was lost may have been done. An answer is taken only
--- if no answer to a later ask was taken already ("Wiki.App.View.Latest").
+-- save whose answer was lost may have been done. A save that succeeds
+-- clears the refusal shown. An answer is taken only if no answer to a
+-- later ask was taken already ("Wiki.App.View.Latest"), and an answer
+-- taken that changes the set held is told to the shell ('Tell'), a read's
+-- as a save's.
 --
--- The view is mounted for one user ("Wiki.App.Shell" keys it by the
--- user), so it has no change of session to follow.
+-- The view belongs to the session signed in, by its number
+-- ("Wiki.App.View.Common"'s @sessionNumber@). When it changes, the step
+-- that takes it forgets the set, what waits and the refusal, puts the asks
+-- out behind it, and reads again: a save the former administrator queued
+-- never goes out under the new one, and an answer to an ask of the
+-- earlier session changes nothing.
 module Wiki.App.View.WikiPlugins.Machine
   ( Model (..)
   , Event (..)
@@ -31,7 +38,7 @@ import Data.Set qualified as Set
 import Protolude
 import Wiki.Api.Plugins (PluginId, WikiPlugins (..))
 import Wiki.App.Backend (WikiError)
-import Wiki.App.View.Latest (Ask, Asks, newAsk, noAsks, takes)
+import Wiki.App.View.Latest (Ask, Asks, madeAfter, newAsk, noAsks, supersede, takes)
 
 -- | 'Model' is the view's state.
 data Model = Model
@@ -43,12 +50,17 @@ data Model = Model
   -- ^ The last ask sent, until its answer comes.
   , wanted :: Bool
   -- ^ Whether a read was wanted while that ask was out.
-  , queued :: Maybe (Set PluginId)
-  -- ^ The set to save once the ask out has answered.
+  , queued :: Maybe (Int, Set PluginId)
+  -- ^ The set to save once the ask out has answered, with the session it
+  -- was wanted in.
   , wantedOff :: Maybe (Set PluginId)
   -- ^ The set last wanted, while its save is out or waits.
   , problem :: Maybe WikiError
   -- ^ Why the last save failed.
+  , session :: Int
+  -- ^ The number of the session the view was last given.
+  , sessionFrom :: Asks
+  -- ^ The asks as they were when that session began.
   , closed :: Bool
   }
   deriving stock (Eq, Show)
@@ -57,6 +69,8 @@ data Model = Model
 data Event
   = Started
   | Finished
+  | -- | The view was given the number of the session signed in.
+    Given Int
   | -- | The answer to the read made under this ticket.
     Loaded Ask (Either WikiError WikiPlugins)
   | -- | The administrator ticked a plugin's box "off for everyone"
@@ -74,27 +88,47 @@ data Effect
     Tell
   deriving stock (Eq, Show)
 
-initial :: Model
-initial = Model {off = Nothing, asks = noAsks, flight = Nothing, wanted = False, queued = Nothing, wantedOff = Nothing, problem = Nothing, closed = False}
+-- | The view before it is mounted, for a session.
+initial :: Int -> Model
+initial session = Model {off = Nothing, asks = noAsks, flight = Nothing, wanted = False, queued = Nothing, wantedOff = Nothing, problem = Nothing, session, sessionFrom = noAsks, closed = False}
 
+-- | The view after an event, and what it asks to be done.
 step :: Event -> Model -> (Model, [Effect])
-step event m
+step event m =
+  let (m', fx) = stepping event m
+   in (m', fx <> [Tell | not m.closed, held m' /= held m, isJust (held m')])
+
+-- | The set held, once read.
+held :: Model -> Maybe (Set PluginId)
+held m = m.off >>= rightToMaybe
+
+stepping :: Event -> Model -> (Model, [Effect])
+stepping event m
   | m.closed = (m, [])
   | otherwise = case event of
       Started -> reading m
       Finished -> (m {closed = True}, [])
-      Loaded asked answer -> landed asked (taking asked (fmap (\w -> w.off) answer) m)
+      Given session
+        | session /= m.session ->
+            let behind = supersede m.asks
+             in reading (initial session) {asks = behind, sessionFrom = behind}
+        | otherwise -> (m, [])
+      Loaded asked answer
+        | ofSession asked m -> landed asked (taking asked (fmap (\w -> w.off) answer) m)
+        | otherwise -> landed asked m
       Ticked p isOff -> case shownOff m of
         Just now'
           | Set.member p now' /= isOff ->
               let next = (if isOff then Set.insert else Set.delete) p now'
                in saving next m {wantedOff = Just next, problem = Nothing}
         _ -> (m, [])
+      Saved asked _
+        | not (ofSession asked m) -> landed asked m
       Saved asked answer ->
         let m1 = if isJust m.queued then m else m {wantedOff = Nothing}
             (m2, fx1) = case answer of
               Right w -> case takes asked m1.asks of
-                Just after -> (m1 {asks = after, off = Just (Right w.off)}, [Tell])
+                Just after -> (m1 {asks = after, off = Just (Right w.off), problem = Nothing}, [])
                 Nothing -> (m1, [])
               Left e -> reading m1 {problem = Just e}
             (m3, fx2) = landed asked m2
@@ -103,7 +137,7 @@ step event m
 -- | The set the boxes show: the one last wanted while its save is out or
 -- waits, and otherwise the server's; 'Nothing' before it was read.
 shownOff :: Model -> Maybe (Set PluginId)
-shownOff m = m.wantedOff <|> (m.off >>= rightToMaybe)
+shownOff m = m.wantedOff <|> held m
 
 taking :: Ask -> Either WikiError (Set PluginId) -> Model -> Model
 taking asked answer m = case takes asked m.asks of
@@ -112,12 +146,18 @@ taking asked answer m = case takes asked m.asks of
     (Left _, Just (Right _)) -> m {asks = after}
     _ -> m {asks = after, off = Just answer}
 
+-- | The view after the answer to an ask came: when it was the ask out,
+-- the set waiting of this session is saved next, or else the read wanted.
 landed :: Ask -> Model -> (Model, [Effect])
 landed asked m
   | m.flight /= Just asked = (m, [])
-  | Just next <- m.queued = send next m {flight = Nothing, queued = Nothing}
-  | m.wanted = sendRead m {flight = Nothing}
-  | otherwise = (m {flight = Nothing}, [])
+  | Just (s, next) <- m.queued, s == m.session = send next m {flight = Nothing, queued = Nothing}
+  | m.wanted = sendRead m {flight = Nothing, queued = Nothing}
+  | otherwise = (m {flight = Nothing, queued = Nothing}, [])
+
+-- | Whether an ask was made in the session the view is in.
+ofSession :: Ask -> Model -> Bool
+ofSession asked m = asked `madeAfter` m.sessionFrom
 
 inFlight :: Model -> Bool
 inFlight m = maybe False (\a -> isJust (takes a m.asks)) m.flight
@@ -129,7 +169,7 @@ reading m
 
 saving :: Set PluginId -> Model -> (Model, [Effect])
 saving next m
-  | inFlight m = (m {queued = Just next}, [])
+  | inFlight m = (m {queued = Just (m.session, next)}, [])
   | otherwise = send next m
 
 sendRead :: Model -> (Model, [Effect])

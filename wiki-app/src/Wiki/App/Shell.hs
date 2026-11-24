@@ -135,6 +135,7 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
 import Data.Map.Strict qualified as Map
 import Data.Row.Internal (LT (..), Row (R))
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -176,7 +177,7 @@ import Wiki.App.Live (Feed (..), Live (..))
 import Wiki.App.Offline (browserOnline, install, installAvailable, installChanges, offlineCopy)
 import Wiki.App.Plugin (Options (..), OptionsInput (..))
 import Wiki.App.Plugin.Host (capabilities)
-import Wiki.App.Plugin.Registry (Contributed (..), assistantId, contributed, plugins, pluginsOn)
+import Wiki.App.Plugin.Registry (assistantId, optionsOf, plugins, pluginsOn)
 import Wiki.App.Recent (rememberVisit)
 import Wiki.App.Route (AdminSection, Route (..), SettingsSection (..), adminSections, locationRoute, sectionName, sectionTitle, settingsName, settingsSections, settingsTitle, settledRoute)
 import Wiki.App.Route qualified as R
@@ -325,7 +326,8 @@ data ViewSlot
     -- "Permissions". Mounted in a browser only, after the first render, as
     -- the settings' sections are ('settingsShown'): it reads the wiki's set
     -- as it starts, which a page the server prerenders does not carry.
-    WikiPluginsSlot
+    -- Keyed by the user, as the settings' views are.
+    WikiPluginsSlot (Maybe UserId)
   | EncryptedSlot
   deriving stock (Eq, Ord)
 
@@ -933,7 +935,7 @@ component =
           <div class="admin-permissions-and-plugins">
             {{ HH.slot "view" AccessSlot AccessView.component AccessView.Input {context = ctx} FromView }}
             {% if st.settingsShown %}
-              {{ HH.slot "view" WikiPluginsSlot WikiPluginsView.component () FromView }}
+              {{ HH.slot "view" (WikiPluginsSlot ((\u -> u.id) <$> st.session.user)) WikiPluginsView.component st.sessionNumber FromView }}
             {% end %}
           </div>
         |]
@@ -986,6 +988,14 @@ component =
             <section class="settings-view settings-page-{{ settingsName section }}">
               {% if section /= AssistantSection || not st.settingsShown %}
                 <h1>{{ settingsTitle section }}</h1>
+              {% end %}
+              {% if section == AssistantSection && assistantId `Set.notMember` pluginsOn (context st) %}
+                <p class="settings-plugin-off" role="note">
+                  {{ "The assistant is off: its button does not show in the editor. " :: Text }}
+                  {% if PluginsSection `elem` sections %}
+                    Turn it on in <a class="settings-plugin-off-link" {{ Router.linkProps st.router Followed (UserSettings PluginsSection) }}>Plugins</a>.
+                  {% end %}
+                </p>
               {% end %}
               {% if st.settingsShown %}
                 {{ settingsSection st section }}
@@ -1050,8 +1060,9 @@ component =
             {{ HH.slot_ "part" (NotificationsSlot who) NotificationSettingsView.component () }}
           </div>
         |]
-      -- The writing assistant's settings are its plugin's options.
-      AssistantSection -> case head [o | (i, o) <- (contributed (pluginsOn (context st)) plugins).options, i == assistantId] of
+      -- The writing assistant's settings are its plugin's options, which
+      -- are there whether the plugin is on or off.
+      AssistantSection -> case head [o | (i, o) <- optionsOf plugins, i == assistantId] of
         Just (Options options) -> HH.slot_ "part" (AssistantSettingsSlot who) options OptionsInput {user = who, can = capabilities (context st)}
         Nothing -> HH.text ""
       where

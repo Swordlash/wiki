@@ -129,9 +129,17 @@ initial session =
     , closed = False
     }
 
--- | The section after an event, and what it asks to be done.
+-- | The section after an event, and what it asks to be done. An answer
+-- taken that changes what the section holds about any plugin is told to
+-- the shell ('Tell'), whatever the ask was: a read that follows a write
+-- whose answer was lost may be the first to say the write was done.
 step :: Event -> Model -> (Model, [Effect])
-step event m
+step event m =
+  let (m', fx) = stepping event m
+   in (m', fx <> [Tell | not m.closed, known' m' /= known' m, isJust (known' m')])
+
+stepping :: Event -> Model -> (Model, [Effect])
+stepping event m
   | m.closed = (m, [])
   | otherwise = case event of
       Started -> reading m
@@ -154,8 +162,10 @@ step event m
             let waits = any (\(_, q, _) -> q == p) m.queued
                 m1 = m {writing = if waits then m.writing else Map.delete p m.writing}
                 (m2, fx1) = case answer of
+                  -- A success clears the plugin's refusal: the last answer
+                  -- about it is not one.
                   Right choice -> case takes asked m1.asks of
-                    Just after -> (m1 {asks = after, known = withChoice p choice <$> m1.known}, [Tell])
+                    Just after -> (m1 {asks = after, known = withChoice p choice <$> m1.known, refused = Map.delete p m1.refused}, [])
                     Nothing -> (m1, [])
                   -- A write that failed may have been done all the same
                   -- (its answer lost on the way): a read follows.

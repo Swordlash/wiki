@@ -124,17 +124,19 @@ section = describe "Wiki.App.View.Plugins, mounted on the in-memory DOM" $ do
     router <- runMemDOM (run (Router.newRouter "/" Unknown route))
     withView run Plugins.component Plugins.Input {session = 0, router} $ \view -> do
       settle view
+      -- What the section read is told to the shell once.
+      told view `shouldReturn` 1
       click view ".plugin[data-plugin=assistant] .plugin-toggle"
       settle view
       rows view `shouldReturn` [("assistant", False, False, False), ("errors", True, True, False)]
       mine `shouldReturn` Just (Map.fromList [(assistant, choice PluginOff)])
-      told view `shouldReturn` 1
+      told view `shouldReturn` 2
       click view ".plugin[data-plugin=assistant] .plugin-to-default"
       settle view
       rows view `shouldReturn` [("assistant", True, True, False), ("errors", True, True, False)]
       textOf view ".plugin[data-plugin=assistant] .plugin-default" `shouldReturn` "Default: on."
       mine `shouldReturn` Just mempty
-      told view `shouldReturn` 2
+      told view `shouldReturn` 3
     Router.stop router
   where
     told view = length . filter (\case PluginsChanged -> True; _ -> False) <$> outputs view

@@ -17,7 +17,7 @@ import Wiki.Api.Plugins (PluginChoice (..), PluginState (..), Plugins (..), noPl
 import Wiki.App.Plugin (AgentButton (..), Diagnostics (..), Drawn (..), Face (..), Manifest (..), Plugin (..), PluginId (..), builtin)
 import Wiki.App.Plugin.Assistant.Agent (buttonsOf)
 import Wiki.App.Plugin.Errors (errors, islandFailures)
-import Wiki.App.Plugin.Registry (Contributed (..), builtinIds, contributed, isOn, manifests, onAmong, plugins)
+import Wiki.App.Plugin.Registry (Contributed (..), builtinIds, contributed, isOn, manifests, onAmong, optionsOf, plugins)
 import Wiki.Core.Assistant (Provider (..), Settings, chooseProvider, defaultSettings, serviceName, settingsOf, withBaseUrl, withKey, withReached)
 import Wiki.Core.Markdown.Problems (Checked (..), IslandPlace (..), Problem (..), ProblemKind (..), Severity (..), allProblems, checkText)
 import Wiki.Core.Markdown.Render (IslandKey (..))
@@ -117,16 +117,20 @@ spec = describe "plugins" $ do
       onAmong manifests noPlugins {offForWiki = Set.fromList [PluginId "errors"]} `shouldBe` Set.fromList [PluginId "assistant"]
       onAmong manifests noPlugins {mine = Map.fromList [(PluginId "assistant", PluginChoice {state = PluginOff, options = Nothing})]} `shouldBe` Set.fromList [PluginId "errors"]
 
+  describe "optionsOf"
+    $ it "gives a plugin's options whether the plugin is on or off"
+    $
+    -- 'contributed' takes the set of plugins on; the options take none.
+    map fst (optionsOf builtins) `shouldBe` [PluginId "assistant"]
+
   describe "contributed" $ do
     it "gives every built-in plugin's contribution when every plugin is on" $ do
       let given = contributed builtinIds builtins
       length given.diagnostics `shouldBe` 1
       (\(m, _) -> m.id) <$> given.agent `shouldBe` Just (PluginId "assistant")
-      map fst given.options `shouldBe` [PluginId "assistant"]
+      map fst (optionsOf builtins) `shouldBe` [PluginId "assistant"]
     it "gives nothing of a plugin that is off" $ do
       length (contributed (Set.delete (PluginId "errors") builtinIds) builtins).diagnostics `shouldBe` 0
-      map fst (contributed (Set.delete (PluginId "errors") builtinIds) builtins).options `shouldBe` [PluginId "assistant"]
-      map fst (contributed (Set.delete (PluginId "assistant") builtinIds) builtins).options `shouldBe` []
       length (contributed (Set.delete (PluginId "assistant") builtinIds) builtins).diagnostics `shouldBe` 1
       isJust (contributed (Set.delete (PluginId "assistant") builtinIds) builtins).agent `shouldBe` False
       isJust (contributed (Set.delete (PluginId "errors") builtinIds) builtins).agent `shouldBe` True

@@ -20,6 +20,7 @@ module Wiki.App.Plugin.Registry
   , onAmong
   , Contributed (..)
   , contributed
+  , optionsOf
   , assistantId
   )
 where
@@ -71,13 +72,14 @@ isOn known m
       Just PluginDefault -> m.onByDefault
       Nothing -> m.onByDefault
 
--- | 'Contributed' is what the plugins that are on give the wiki, each kind
--- of contribution in the plugins' order. The editor has room for one
--- agent: the first plugin's that is on.
+-- | 'Contributed' is what the plugins that are on give the editor and the
+-- pages, each kind of contribution in the plugins' order. The editor has
+-- room for one agent: the first plugin's that is on. A plugin's options
+-- are not here: they are reachable whether the plugin is on or off
+-- ('optionsOf').
 data Contributed m = Contributed
   { diagnostics :: [Diagnostics]
   , agent :: Maybe (Manifest, Agent m)
-  , options :: [(PluginId, Options m)]
   }
 
 -- | What the plugins among the given ones whose ids are in the set
@@ -87,7 +89,13 @@ contributed chosenIds given =
   Contributed
     { diagnostics = mapMaybe (\p -> p.diagnostics) chosen
     , agent = head [(p.manifest, a) | p <- chosen, Just a <- [p.agent]]
-    , options = [(p.manifest.id, o) | p <- chosen, Just o <- [p.options]]
     }
   where
     chosen = filter (\p -> Set.member p.manifest.id chosenIds) given
+
+-- | The options of the given plugins that have any, by plugin, in the
+-- plugins' order, whether each plugin is on or off: turning a plugin off
+-- takes away what it gives the editor and the pages, not its settings,
+-- where the user may keep its keys and turn it on again.
+optionsOf :: [Plugin m] -> [(PluginId, Options m)]
+optionsOf given = [(p.manifest.id, o) | p <- given, Just o <- [p.options]]

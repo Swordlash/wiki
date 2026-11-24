@@ -3,16 +3,19 @@
 -- MCP server) use to read a page's Markdown and write it back. It lives
 -- under @api\/markdown\/@ on the public listener, beside the application's
 -- own API under @api\/v1\/@: the application's later versions would be
--- @api\/v2\/@ and so on, which @markdown@ can never be.
+-- @api\/v2\/@ and so on, which @markdown@ can never be. Its addresses are
+-- endpoints of the servant type of the API for programs
+-- ("Wiki.Server.ProgramApi"), and this module has their handlers.
 --
 -- = Addresses
 --
 -- * @GET api\/markdown\/s\/\<space path>\/p\/\<page path>\/@: the page's
---   Markdown, as stored, with its version as the @ETag@. A page's address
---   here is its reading address in the browser with @api\/markdown@ in
---   front, read by the application's own router ("Wiki.App.Route"), so
---   nested spaces, a space's home page (@s\/\<space path>\/@) and a slug
---   written with a @~@ are read exactly as the browser reads them.
+--   Markdown, as stored, with its version as the @ETag@ ('readPage'). A
+--   page's address here is its reading address in the browser with
+--   @api\/markdown@ in front, read by the application's own router
+--   ("Wiki.App.Route"), so nested spaces, a space's home page
+--   (@s\/\<space path>\/@) and a slug written with a @~@ are read exactly
+--   as the browser reads them.
 -- * @PUT@ at the same address: the request's body, UTF-8, becomes the
 --   page's whole Markdown, through the same 'savePage' as a save from the
 --   editor (the same new version in the history under the user's name, the
@@ -20,7 +23,7 @@
 --   title stays. An @If-Match@ with the version from the @ETag@ makes the
 --   write conditional: a page saved since is refused with 412 and nothing
 --   is written. Without it the write goes through. The answer is 204 with
---   the new @ETag@.
+--   the new @ETag@ ('writePage').
 -- * @PUT@ at the address of a page that does not exist creates it, as a
 --   program that writes a file does not first ask whether the file is
 --   there. The address's last slug is the new page's slug, and the slugs
@@ -37,6 +40,9 @@
 --   about the wiki's Markdown ('markdownReference', the same text its
 --   prompt sends), as @text\/markdown@. Anyone may read it, unless the wiki
 --   is closed; then it needs a sign-in, as everything else there does.
+--
+-- The same address with @?section=@ or @?top=@ reads and writes one part
+-- of the page ("Wiki.Server.ContentsApi").
 --
 -- = Signing in
 --
@@ -59,8 +65,14 @@
 -- members' browsers. A @PUT@ to an address with a segment that is not a
 -- slug is 400: no page can ever be there.
 module Wiki.Server.MarkdownApi
-  ( markdownApplication
-  , markdownMediaType
+  ( -- * The handlers
+    PageText (..)
+  , NewPageAt (..)
+  , readPage
+  , writePage
+  , readReference
+  , pageAt
+  , privateNoStore
 
     -- * A page's Markdown, read and written
   , findPage
@@ -74,34 +86,28 @@ module Wiki.Server.MarkdownApi
   , signedInProgram
   , signInWithKey
   , runAs
-  , refusal
-  , refusalWith
-  , wikiRefusal
-  , notAllowed
   , parameter
+  , pathAfter
   , addressUnder
   , titleOfSlug
   , notASlug
   )
 where
 
-import Data.Aeson (encode, object, (.=))
 import Data.ByteString qualified as BS
-import Data.List (lookup)
+import Data.SOP (I (..), NP (..))
 import Data.Text qualified as T
 import Data.Time (getCurrentTime)
 import Halogen.Router.Duplex qualified as Duplex
-import Network.HTTP.Types (Header, Status, hAllow, hAuthorization, hCacheControl, hContentType, hIfMatch, hIfNoneMatch, hLocation, methodGet, methodHead, methodPut, status200, status201, status204, status400, status401, status403, status404, status405, status412, status429)
-import Network.Wai (Application, Request (..), Response, ResponseReceived, responseLBS, strictRequestBody)
-import Protolude
-import Web.HttpApiData (parseHeader, toHeader)
-import Wiki.Api.Admin (WikiSettings (..))
+import Network.HTTP.Types (hAuthorization, status400, status401, status403, status404, status412, status429)
+import Network.Wai (Request (..))
+import Protolude hiding (Handler)
+import Servant (Handler)
+import Servant.API.MultiVerb (AsHeaders (..))
 import Wiki.Api.ApiKeys (ApiKeyId (..), KeyRight (..), rightName)
-import Wiki.Api.Error (ApiError, errorStatus)
 import Wiki.Api.Version (PageVersion (..), pageVersion)
 import Wiki.App.Backend (MonadWiki (getPage, getSpace, savePage), WikiError (..))
 import Wiki.App.Route qualified as Route
-import Wiki.Core.Access (Access (..))
 import Wiki.Core.Assistant.Reference (markdownReference)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Page (Page (..))
@@ -109,80 +115,110 @@ import Wiki.Core.PageKind (PageKind (..), pageKindOf)
 import Wiki.Core.Path (renderPath)
 import Wiki.Core.Slug (Slug, mkSlug, slugText, slugify)
 import Wiki.Core.Space (Space (id))
-import Wiki.Server.Api (Env (..), toApiError)
+import Wiki.Server.Api (Env (..))
 import Wiki.Server.ApiKeys (KeyHolder (..), KeyOutcome (..), allows, isAdministrator, refusalName, signInByKey)
 import Wiki.Server.BasicSignIn (Outcome (..), credentialsOf, signInBasic)
 import Wiki.Server.Log (Level (..), logWith)
+import Wiki.Server.ProgramApi.Combinators (CacheControl (..), Given, Refusal, Version (..), refusal, refusalWith, refuse, wikiRefusal)
 import Wiki.Server.Render (routeOf)
-import Wiki.Server.Storage (StoredWiki, Who (..), createPageAt, readSettings, runStoredWikiFrom)
+import Wiki.Server.Storage (StoredWiki, Who (..), createPageAt, runStoredWikiFrom)
 
--- | The media type of every Markdown this API sends.
-markdownMediaType :: ByteString
-markdownMediaType = "text/markdown; charset=utf-8"
+-- | 'PageText' is a page's Markdown as an answer, or a part of it: the
+-- text, and the page's version, which the answer gives as its @ETag@. It
+-- is what one user may read, so no cache keeps it.
+data PageText = PageText
+  { text :: Text
+  , version :: PageVersion
+  }
 
--- | The API for a page's Markdown, on a listener that serves the wiki
--- under this path (with a slash at each end), for a request from this
--- address, whose path after @api\/markdown@ is these segments.
-markdownApplication :: Env -> Text -> Asking -> [Text] -> Application
-markdownApplication env mount asking@Asking {address} segments request respond = case segments of
-  ["reference"]
-    | readOnly -> do
-        closed <- (\s -> s.access == Closed) <$> readSettings env.storage
-        if closed then signedIn (const reference) else reference
-    | otherwise -> respond (notAllowed [methodGet, methodHead])
-  _ -> signedIn $ \u ->
-    routeOf "/" pagePath >>= \case
-      Route.Page sp pp -> onPage u sp pp
-      Route.Space sp -> onPage u sp []
-      _
-        | requestMethod request == methodPut, Just why <- notASlug segments -> respond (refusal status400 "Invalid" (Just why))
-        | otherwise -> respond (refusal status404 "NotFound" Nothing)
+instance AsHeaders '[Version, CacheControl] Text PageText where
+  toHeaders p = (I (Version p.version) :* I privateNoStore :* Nil, p.text)
+  fromHeaders (I (Version v) :* _ :* Nil, t) = PageText {text = t, version = v}
+
+-- | 'NewPageAt' is the answer to a page created: its address, as
+-- @Location@, and its version, as the @ETag@.
+data NewPageAt = NewPageAt
+  { location :: Text
+  , version :: PageVersion
+  }
+
+instance AsHeaders '[Text, Version, CacheControl] () NewPageAt where
+  toHeaders p = (I p.location :* I (Version p.version) :* I (CacheControl "no-store") :* Nil, ())
+  fromHeaders (I l :* I (Version v) :* _ :* Nil, ()) = NewPageAt {location = l, version = v}
+
+-- | The @Cache-Control@ of an answer that is what one user may read: kept
+-- by no cache.
+privateNoStore :: CacheControl
+privateNoStore = CacheControl "private, no-store"
+
+-- | The page at an address of the API, with its route, as the user may see
+-- it, for a request from this address; or the refusal to answer with. The
+-- address is the path after the API's prefix (@api\/markdown@,
+-- @api\/contents@), as sent (percent-encoded), and for the whole page's
+-- Markdown its query too: what the application's router reads.
+pageAt :: Env -> Text -> UserId -> ByteString -> Handler (Route.Route, Page)
+pageAt env address u at =
+  liftIO (routeOf "/" at) >>= \case
+    r@(Route.Page sp pp) -> found r sp pp
+    r@(Route.Space sp) -> found r sp []
+    _ -> refuse (refusal status404 "NotFound" Nothing)
   where
-    readOnly = requestMethod request `elem` [methodGet, methodHead]
-    reference = respond (responseLBS status200 [(hContentType, markdownMediaType), (hCacheControl, "no-cache")] (toS (encodeUtf8 markdownReference)))
-    -- The path after the prefix, as sent (percent-encoded), with its query:
-    -- what the application's router reads.
-    prefix = encodeUtf8 mount <> "api/markdown"
-    pagePath = fromMaybe "/" (BS.stripPrefix prefix (rawPathInfo request)) <> rawQueryString request
-    signedIn = signedInProgram env asking request respond
-    onPage u sp pp
-      | readOnly =
-          findPage env address u sp pp >>= \case
-            Left e -> respond (wikiRefusal e)
-            Right p -> respond (responseLBS status200 [(hContentType, markdownMediaType), etag p, (hCacheControl, "private, no-store")] (toS (encodeUtf8 p.body)))
-      | requestMethod request == methodPut =
-          case (traverse (parseHeader @PageVersion) (lookup hIfMatch (requestHeaders request)), createOnlyOf (lookup hIfNoneMatch (requestHeaders request))) of
-            (Left why, _) -> respond (refusal status400 "Invalid" (Just ("The If-Match header is not a page's version from an ETag: " <> why)))
-            (_, Nothing) -> respond (refusal status400 "Invalid" (Just "The If-None-Match header here is * (create the page only if there is none), or nothing."))
-            (Right expected, Just createOnly) ->
-              decodeUtf8' . toS <$> strictRequestBody request >>= \case
-                Left _ -> respond (refusal status400 "Invalid" (Just "The body is not UTF-8 text."))
-                Right body -> putMarkdown env address u sp pp expected createOnly newPage body >>= respond . putAnswer sp pp
-      | otherwise = respond (notAllowed [methodGet, methodHead, methodPut])
+    found r sp pp = liftIO (findPage env address u sp pp) >>= either (refuse . wikiRefusal) (pure . (r,))
+
+-- | @GET@ of a page's whole Markdown, for a request from this address, at
+-- this address after the prefix ('pageAt').
+readPage :: Env -> Text -> UserId -> ByteString -> Handler PageText
+readPage env address u at = pageAt env address u at <&> \(_, p) -> PageText {text = p.body, version = pageVersion p}
+
+-- | @PUT@ of a page's whole Markdown, on a listener that serves the wiki
+-- under this path, for a request from this address, at this address
+-- after the prefix ('pageAt'), whose segments after @api\/markdown@ are
+-- these. The answer is a new page ('Left'), or the page's new version
+-- after a save ('Right'). The request's headers are read first, then its
+-- body; the title and the kind count only for a new page.
+writePage :: Env -> Text -> Text -> UserId -> ByteString -> [Text] -> Given -> Given -> Maybe (Either Text Version) -> Maybe (Either Text Text) -> LByteString -> Handler (Either NewPageAt PageVersion)
+writePage env mount address u at segments title kind ifMatch ifNoneMatch given =
+  liftIO (routeOf "/" at) >>= \case
+    Route.Page sp pp -> onPage sp pp
+    Route.Space sp -> onPage sp []
+    _ -> refuse (maybe (refusal status404 "NotFound" Nothing) (refusal status400 "Invalid" . Just) (notASlug segments))
+  where
+    onPage sp pp = case (traverse (fmap (\(Version v) -> v)) ifMatch, createOnly) of
+      (Left why, _) -> refuse (refusal status400 "Invalid" (Just ("The If-Match header is not a page's version from an ETag: " <> why)))
+      (_, Nothing) -> refuse (refusal status400 "Invalid" (Just "The If-None-Match header here is * (create the page only if there is none), or nothing."))
+      (Right expected, Just only) -> case decodeUtf8' (toS given) of
+        Left _ -> refuse (refusal status400 "Invalid" (Just "The body is not UTF-8 text."))
+        Right body -> liftIO (putMarkdown env address u sp pp expected only newPage body) >>= answer sp pp
     -- Whether an If-None-Match makes the PUT create only: 'Nothing' for a
-    -- value other than @*@, which this API does not take.
-    createOnlyOf = \case
+    -- value other than @*@, which this API does not take. A value that is
+    -- not UTF-8 is no @*@.
+    createOnly = case ifNoneMatch of
       Nothing -> Just False
-      Just v | T.strip (decodeUtf8With lenientDecode v) == "*" -> Just True
+      Just v | T.strip (either (const "") identity v) == "*" -> Just True
       Just _ -> Nothing
     -- The title and the kind of a page the PUT creates, from the query.
-    newPage = case (parameter request "title", parameter request "kind") of
+    newPage = case (parameter "title" title, parameter "kind" kind) of
       (Left why, _) -> Left why
       (_, Left why) -> Left why
-      (Right title, Right kind) -> Right (title, maybe Document pageKindOf kind)
-    -- The answer to a PUT: 204 for a save, 201 for a new page, each with
-    -- the page's new version; 412 for a page saved since the version in
-    -- If-Match, or for one there when If-None-Match: * creates only.
-    putAnswer sp pp = \case
-      Saved saved -> responseLBS status204 [etag saved] ""
-      Created page -> responseLBS status201 [(hLocation, encodeUtf8 (addressUnder mount "api/markdown" (Route.pageRoute sp pp))), etag page, (hCacheControl, "no-store")] ""
-      Moved -> refusal status412 "Conflict" (Just "The page has been saved since the version in If-Match: read it again, and write over that version.")
-      Exists -> refusal status412 "Conflict" (Just "There is a page here already, and If-None-Match: * asks to create one only where there is none.")
-      NoPage -> refusal status404 "NotFound" (Just "There is no page here, and If-Match names a version of a page that is: leave If-Match out to create the page.")
-      NoPageAbove above -> refusal status404 "NotFound" (Just ("The page above it, " <> renderPath above <> ", is not there: create that page first."))
-      NewPageInvalid why -> refusal status400 "Invalid" (Just why)
-      PutRefused e -> wikiRefusal e
-    etag p = ("ETag", toHeader (pageVersion p))
+      (Right t, Right k) -> Right (t, maybe Document pageKindOf k)
+    -- 204 for a save, 201 for a new page, each with the page's new
+    -- version; 412 for a page saved since the version in If-Match, or for
+    -- one there when If-None-Match: * creates only.
+    answer sp pp = \case
+      Saved saved -> pure (Right (pageVersion saved))
+      Created page -> pure (Left NewPageAt {location = addressUnder mount "api/markdown" (Route.pageRoute sp pp), version = pageVersion page})
+      Moved -> refuse (refusal status412 "Conflict" (Just "The page has been saved since the version in If-Match: read it again, and write over that version."))
+      Exists -> refuse (refusal status412 "Conflict" (Just "There is a page here already, and If-None-Match: * asks to create one only where there is none."))
+      NoPage -> refuse (refusal status404 "NotFound" (Just "There is no page here, and If-Match names a version of a page that is: leave If-Match out to create the page."))
+      NoPageAbove above -> refuse (refusal status404 "NotFound" (Just ("The page above it, " <> renderPath above <> ", is not there: create that page first.")))
+      NewPageInvalid why -> refuse (refusal status400 "Invalid" (Just why))
+      PutRefused e -> refuse (wikiRefusal e)
+
+-- | @GET@ of the Markdown reference: what the writing assistant is told
+-- about the wiki's Markdown, the same text its prompt sends. It is the
+-- same for everyone, and asked again each time it is used.
+readReference :: Handler (Text, CacheControl)
+readReference = pure (markdownReference, CacheControl "no-cache")
 
 -- | The page that a space's path and a page's path under its home page
 -- name, as a user may see it, for a request from this address. A space's
@@ -331,14 +367,14 @@ credentialOf request = case (named hAuthorization, named "X-API-Key") of
     text = T.strip . either (const "") identity . decodeUtf8'
     bearer = T.strip . T.dropWhile (/= ' ') . text
 
--- | 'signedInProgram' signs a request in to the API for programs, and goes
--- on as the user it signs in. Every address of that API signs in through
--- it: this module's, and the listing and the search of
--- "Wiki.Server.ListApi", so that none takes one credential and not the
--- other. A request signs in with the user's login and password (HTTP
--- Basic, "Wiki.Server.BasicSignIn") or with an API key
--- ("Wiki.Server.ApiKeys"), and with one of them only: a request with two
--- credentials is 400 ('credentialOf'). The session's cookie is never read.
+-- | 'signedInProgram' signs a request in to the API for programs: the user
+-- it signs in, or the refusal that answers it. It is the check of the API's
+-- sign-in ("Wiki.Server.ProgramApi.Combinators"' 'SignIn'), so that every
+-- address of that API takes the same credentials and refuses them alike. A
+-- request signs in with the user's login and password (HTTP Basic,
+-- "Wiki.Server.BasicSignIn") or with an API key ("Wiki.Server.ApiKeys"),
+-- and with one of them only: a request with two credentials is 400
+-- ('credentialOf'). The session's cookie is never read.
 --
 -- Without credentials, or with wrong ones, the answer is 401. A login with
 -- too many failed attempts from the address is 429, and so is an address
@@ -352,39 +388,39 @@ credentialOf request = case (named hAuthorization, named "X-API-Key") of
 -- The request's log line names the user signed in, and the key's id for
 -- a key ('Asking'). A refused key is logged with why, and with its id
 -- when the key was well formed; never the key itself.
-signedInProgram :: Env -> Asking -> Request -> (Response -> IO ResponseReceived) -> (UserId -> IO ResponseReceived) -> IO ResponseReceived
-signedInProgram env asking request respond continue = case credentialOf request of
-  Left why -> respond (refusal status400 "Invalid" (Just why))
-  Right NoCredential -> unauthenticated
-  Right Unreadable -> unauthenticated
+signedInProgram :: Env -> Asking -> Request -> IO (Either Refusal UserId)
+signedInProgram env asking request = case credentialOf request of
+  Left why -> pure (Left (refusal status400 "Invalid" (Just why)))
+  Right NoCredential -> pure (Left unauthenticated)
+  Right Unreadable -> pure (Left unauthenticated)
   Right (LoginPassword login password) -> do
     now <- getCurrentTime
     signInBasic env.storage env.limiter env.basicSignIns now asking.address login password >>= \case
       SignedIn u -> do
         asking.loggedAs [("principal", "user:" <> u.text)]
-        continue u
-      Refused -> unauthenticated
+        pure (Right u)
+      Refused -> pure (Left unauthenticated)
       Limited seconds ->
-        respond (refusalWith status429 [("Retry-After", show seconds)] "TooManyRequests" (Just ("Too many failed attempts to sign in as " <> T.strip login <> ": try again in " <> show seconds <> " seconds.")))
+        pure (Left (refusalWith status429 [("Retry-After", show seconds)] "TooManyRequests" (Just ("Too many failed attempts to sign in as " <> T.strip login <> ": try again in " <> show seconds <> " seconds."))))
       SecondFactorOn ->
-        respond (refusal status403 "Forbidden" (Just "This account signs in with a second factor, which a password alone cannot give: use an API key, which the account makes in its settings."))
+        pure (Left (refusal status403 "Forbidden" (Just "This account signs in with a second factor, which a password alone cannot give: use an API key, which the account makes in its settings.")))
   Right (Key presented) ->
-    signInWithKey env asking presented >>= \case
-      Left refused -> respond refused
+    signInWithKey env asking presented <&> \case
+      Left refused -> Left refused
       Right holder
         | not (allows holder.right (requestMethod request)) ->
-            respond . refusal status403 "Forbidden" . Just $
+            Left . refusal status403 "Forbidden" . Just $
               "This key has the right " <> rightName holder.right <> ", which only reads: a " <> decodeUtf8With lenientDecode (requestMethod request) <> " needs a key with the right write."
-        | otherwise -> continue holder.user
+        | otherwise -> Right holder.user
   where
-    unauthenticated = do
-      respond . refusalWith status401 [("WWW-Authenticate", "Basic realm=\"wiki\", charset=\"UTF-8\"")] "Unauthenticated" $
+    unauthenticated =
+      refusalWith status401 [("WWW-Authenticate", "Basic realm=\"wiki\", charset=\"UTF-8\"")] "Unauthenticated" $
         Just "Sign in with your login and password (HTTP Basic), or with an API key (Authorization: Bearer, or X-API-Key). The login and password are wrong, or the account cannot sign in with a password: an account with passkeys only, or one that has not signed in since the wiki moved to its present passwords (sign in once in the browser)."
 
 -- | 'signInWithKey' signs in the API key a request presents, as sent: for
 -- the API for programs ('signedInProgram') and for the MCP server
 -- ("Wiki.Server.McpApi"), so that a key is checked one way wherever it is
--- used. The result is who the key signed in, or the answer that refuses
+-- used. The result is who the key signed in, or the refusal that answers
 -- the request.
 --
 -- A key that does not sign in ("Wiki.Server.ApiKeys"' 'signInByKey') is
@@ -393,7 +429,7 @@ signedInProgram env asking request respond continue = case credentialOf request 
 -- no longer an administrator is 403. The request's log line names the
 -- key's user and the key's id ('Asking'). A refused key is logged with
 -- why, and with its id when the key was well formed; never the key itself.
-signInWithKey :: Env -> Asking -> Text -> IO (Either Response KeyHolder)
+signInWithKey :: Env -> Asking -> Text -> IO (Either Refusal KeyHolder)
 signInWithKey env asking presented = do
   now <- getCurrentTime
   signInByKey env.storage env.keyFailures now asking.address presented >>= \case
@@ -429,32 +465,18 @@ signInWithKey env asking presented = do
 runAs :: Env -> Text -> UserId -> StoredWiki IO a -> IO a
 runAs env address u = runStoredWikiFrom env.storage (AsUser u) address
 
--- | A refusal: the error's name, and why, as the application's API writes
--- an 'ApiError'.
-refusal :: Status -> Text -> Maybe Text -> Response
-refusal status = refusalWith status []
-
--- | 'refusal' with headers of its own (@Allow@, @Retry-After@).
-refusalWith :: Status -> [Header] -> Text -> Maybe Text -> Response
-refusalWith status hs name why =
-  responseLBS status ((hContentType, "application/json") : (hCacheControl, "no-store") : hs) (encode (object (("error" .= name) : maybe [] (\w -> ["message" .= w]) why)))
-
--- | A refusal of the wiki's domain, as the application's API answers it:
--- its 'ApiError', with that error's status.
-wikiRefusal :: WikiError -> Response
-wikiRefusal e = case toApiError e of
-  Just (apiError :: ApiError) -> responseLBS (toEnum (errorStatus apiError)) [(hContentType, "application/json"), (hCacheControl, "no-store")] (encode apiError)
-  Nothing -> refusal (toEnum 503) "Unreachable" (Just "The wiki's storage could not be reached.")
-
--- | A method the address does not take, with the ones it does.
-notAllowed :: [ByteString] -> Response
-notAllowed methods = refusalWith status405 [(hAllow, BS.intercalate ", " methods)] "Invalid" (Just "This address does not take that method.")
-
--- | The value of a parameter of the request's query, as UTF-8 text.
-parameter :: Request -> ByteString -> Either Text (Maybe Text)
-parameter request name = case join (lookup name (queryString request)) of
+-- | The value of a parameter of the query, with this name, as UTF-8 text:
+-- 'Nothing' for a parameter not there or without a value.
+parameter :: Text -> Given -> Either Text (Maybe Text)
+parameter name given = case join given of
   Nothing -> Right Nothing
-  Just bytes -> bimap (const ("The parameter " <> decodeUtf8 name <> " is not UTF-8 text.")) Just (decodeUtf8' bytes)
+  Just bytes -> bimap (const ("The parameter " <> name <> " is not UTF-8 text.")) Just (decodeUtf8' bytes)
+
+-- | A request's path after the API's prefix (@api\/markdown@,
+-- @api\/contents@, @api\/list@), on a listener that serves the wiki under
+-- this path: the address the application's router reads.
+pathAfter :: Text -> Text -> ByteString -> ByteString
+pathAfter mount prefix path = fromMaybe "/" (BS.stripPrefix (encodeUtf8 (mount <> prefix)) path)
 
 -- | The address of a route of the application under the API's prefix
 -- (@api\/list@, @api\/markdown@), on a listener that serves the wiki under

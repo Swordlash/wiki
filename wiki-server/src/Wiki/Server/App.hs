@@ -84,15 +84,15 @@ import Wiki.Server.Address (ownOrigin, ownOrigins)
 import Wiki.Server.Api (Caller (..), Env (..), Signing (..), apiApplication, currentAssistantHosts)
 import Wiki.Server.ApiKeys (carriesKey)
 import Wiki.Server.Auth (authApplication)
-import Wiki.Server.ContentsApi (asksForSection, contentsApplication, sectionApplication)
 import Wiki.Server.Events (eventsApplication)
 import Wiki.Server.Feed (FeedKind (..), feedApplication, notificationFeedApplication, sitemapApplication)
 import Wiki.Server.Health (healthApplication, metricsApplication)
-import Wiki.Server.ListApi (listApplication, searchApplication)
 import Wiki.Server.Log (Logger, logRequests)
-import Wiki.Server.MarkdownApi (Asking (..), markdownApplication, refusal)
+import Wiki.Server.MarkdownApi (Asking (..))
 import Wiki.Server.McpApi (mcpApplication)
 import Wiki.Server.Metrics (observe)
+import Wiki.Server.ProgramApi (programApplication)
+import Wiki.Server.ProgramApi.Combinators (refusal, refusalResponse)
 import Wiki.Server.Render (renderPage, routeAddress, routeOf)
 import Wiki.Server.Routes (routePattern)
 import Wiki.Server.SecondFactor (requestPending)
@@ -281,7 +281,7 @@ listenerRoutes logger env site l caller loggedAs request respond = do
       unauthenticated =
         respond (responseLBS status401 [(hContentType, "application/json"), (hCacheControl, "private, no-cache"), (hVary, "Cookie")] "{\"error\":\"Unauthenticated\"}")
       keyRefused =
-        respond . refusal status401 "Unauthenticated" $
+        respond . refusalResponse . refusal status401 "Unauthenticated" $
           Just "An API key signs in only to the API for programs (api/markdown, api/contents, api/list and api/search). The application's API, api/v1, takes the browser's session."
       asking = Asking {address = caller.address, loggedAs}
   if
@@ -292,30 +292,13 @@ listenerRoutes logger env site l caller loggedAs request respond = do
         case drop (length mounted) segments of
           -- The path itself without its trailing slash.
           [] | not (null mounted) -> redirect (encodeUtf8 l.mount)
-          -- The API for a page's Markdown, signed in by HTTP Basic or an
-          -- API key, never by the cookie ("Wiki.Server.MarkdownApi"): on the
-          -- public listener only, since on the admin listener everyone
-          -- would be the administrator.
-          -- One section of a page's Markdown, at the page's Markdown
-          -- address with ?section= ("Wiki.Server.ContentsApi"): every
-          -- method, so that a write there never reaches the whole page's.
-          "api" : "markdown" : _ | asksForSection request -> case l.finding of
-            BySession _ -> sectionApplication env l.mount asking request respond
-            EveryoneAdministers -> notFound
-          "api" : "markdown" : endpoint -> case l.finding of
-            BySession _ -> markdownApplication env l.mount asking endpoint request respond
-            EveryoneAdministers -> notFound
-          -- A page's table of contents, signed in as the Markdown's is.
-          "api" : "contents" : _ -> case l.finding of
-            BySession _ -> contentsApplication env l.mount asking request respond
-            EveryoneAdministers -> notFound
-          -- The listing and the search of the same API, signed in as it
-          -- is ("Wiki.Server.ListApi").
-          "api" : "list" : endpoint -> case l.finding of
-            BySession _ -> listApplication env l.mount asking endpoint request respond
-            EveryoneAdministers -> notFound
-          "api" : "search" : endpoint | endpoint `elem` [[], [""]] -> case l.finding of
-            BySession _ -> searchApplication env l.mount asking request respond
+          -- The API for programs, signed in by HTTP Basic or an API key,
+          -- never by the cookie ("Wiki.Server.ProgramApi"): a page's
+          -- Markdown, its contents, the listing, the search, and the API's
+          -- OpenAPI document. On the public listener only, since on the
+          -- admin listener everyone would be the administrator.
+          rest@("api" : endpoint) | programs endpoint -> case l.finding of
+            BySession _ -> programApplication env l.mount asking request {pathInfo = rest} respond
             EveryoneAdministers -> notFound
           -- The MCP server, signed in by an API key, never by the cookie
           -- ("Wiki.Server.McpApi"): on the public listener only, as the
@@ -370,3 +353,10 @@ listenerRoutes logger env site l caller loggedAs request respond = do
   where
     api = sameOrigin (apiApplication env caller)
     pages template = renderPage logger env caller.who l.mount template
+    -- The addresses of the API for programs, from @api@ on: everything
+    -- under @markdown@, @contents@ and @list@, the search, and the
+    -- document. An address under @search@ is none of them.
+    programs = \case
+      section : _ | section `elem` ["markdown", "contents", "list"] -> True
+      "search" : endpoint -> endpoint `elem` [[], [""]]
+      endpoint -> endpoint == ["openapi.json"]

@@ -80,7 +80,8 @@ import Wiki.Server.Api (Env (..))
 import Wiki.Server.ApiKeys (KeyHolder (..))
 import Wiki.Server.ContentsApi (contentsOf, sectionOf)
 import Wiki.Server.ListApi (Addresses (..), HitEntry (..), HitSpace (..), TopLevel (..), hasSearchWords, listing, searchSpace, searching)
-import Wiki.Server.MarkdownApi (Asking (..), Credential (..), Put (..), credentialOf, findPage, notASlug, putMarkdown, refusal, refusalWith, runAs, signInWithKey)
+import Wiki.Server.MarkdownApi (Asking (..), Credential (..), Put (..), credentialOf, findPage, notASlug, putMarkdown, runAs, signInWithKey)
+import Wiki.Server.ProgramApi.Combinators (refusal, refusalResponse, refusalWith)
 import Wiki.Server.Render (routeOf)
 
 -- | The MCP server, on a listener that serves the wiki under this path
@@ -90,11 +91,11 @@ import Wiki.Server.Render (routeOf)
 -- The listener routes @mcp@ under its path here.
 mcpApplication :: Env -> Text -> [Origin] -> Asking -> Application
 mcpApplication env mount own asking request respond = case bearerOf request of
-  Left why -> respond (refusal status400 "Invalid" (Just why))
-  Right Nothing -> respond noKey
+  Left why -> respond (refusalResponse (refusal status400 "Invalid" (Just why)))
+  Right Nothing -> respond (refusalResponse noKey)
   Right (Just presented) ->
     signInWithKey env asking presented >>= \case
-      Left refused -> respond refused
+      Left refused -> respond (refusalResponse refused)
       Right holder -> do
         app <- Mcp.mcpApplication config serverInfo Mcp.noHandlers {Mcp.tools = Just (toolHandlers env mount own asking.address holder)}
         app request respond

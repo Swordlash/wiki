@@ -1,6 +1,50 @@
 {
   "components": {
     "schemas": {
+      "AttachmentEntry": {
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "mediaType": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "mediaType",
+          "address",
+          "markdown"
+        ],
+        "type": "object"
+      },
+      "AttachmentList": {
+        "properties": {
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/AttachmentEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "attachments"
+        ],
+        "type": "object"
+      },
       "Contents": {
         "properties": {
           "headings": {
@@ -319,12 +363,497 @@
     }
   },
   "info": {
-    "description": "What a program on the user's own machine (a local assistant, a script) reads and writes in the wiki: a page's Markdown, whole or a section at a time, its table of contents, the listing of the spaces and their pages, and the search. Every request signs in with an API key of the user's (Authorization: Bearer, or X-API-Key) or with the user's login and password (HTTP Basic), and acts as the user: the spaces' permissions apply as they are. A key's right narrows what the user may do: read allows GET and HEAD, write the rest too. The session's cookie is never read here. Every refusal is JSON, {\"error\": name, \"message\": why}. The wiki's MCP server, for assistants, is at /mcp (POST, JSON-RPC over HTTP, signed in by a key as Bearer); it is not described here, as it is no REST API.",
+    "description": "What a program on the user's own machine (a local assistant, a script) reads and writes in the wiki: a page's Markdown, whole or a section at a time, its table of contents, its attachments, the listing of the spaces and their pages, and the search. Every request signs in with an API key of the user's (Authorization: Bearer, or X-API-Key) or with the user's login and password (HTTP Basic), and acts as the user: the spaces' permissions apply as they are. A key's right narrows what the user may do: read allows GET and HEAD, write the rest too. The session's cookie is never read here. Every refusal is JSON, {\"error\": name, \"message\": why}. The wiki's MCP server, for assistants, is at /mcp (POST, JSON-RPC over HTTP, signed in by a key as Bearer); it is not described here, as it is no REST API.",
     "title": "The wiki's API for programs",
     "version": "1"
   },
   "openapi": "3.0.0",
   "paths": {
+    "/api/attachments/s/{address}": {
+      "delete": {
+        "description": "The file goes from the page's attachments, as the browser's delete takes it off. A link to it in the page's text stays, and shows the file as missing.",
+        "operationId": "deleteAttachment",
+        "parameters": [
+          {
+            "description": "The page's address in the browser after /s/, as for its Markdown: team/projects/p/the-wiki/, or team/ for the space's home page. It may be sent with its slashes escaped, as for its Markdown. A file is named by the parameter name, never by a further segment: a segment after the page's address is a page under it.",
+            "in": "path",
+            "name": "address",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The file's name, exactly as stored, percent-encoded.",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The file is taken off the page."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "No name, or a name that is not UTF-8. Or the sign-in refused it: The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The user may read the page but not edit it. Or the sign-in refused it: A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "There is no page at the address, or one the user may not read: the same answer for both. With name, the page has no file of that name (the message gives the address of the page's list)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The page is in an encrypted space (Stale)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Take a file off a page"
+      },
+      "get": {
+        "description": "Without name, the page's attachments in the page's order, as JSON: each with its name, its size, its media type, its version (the ETag of its bytes, to send as If-Match), the address of its bytes, and the Markdown that refers to it in a page. With name, that file's bytes, as the browser's route serves them: of its media type, with X-Content-Type-Options: nosniff, a Content-Disposition that makes everything but images, video, audio and plain text a download, and a sandboxing Content-Security-Policy; the ETag is the hash of the bytes (If-None-Match with it answers 304), and Range is served.",
+        "operationId": "readAttachments",
+        "parameters": [
+          {
+            "description": "The page's address in the browser after /s/, as for its Markdown: team/projects/p/the-wiki/, or team/ for the space's home page. It may be sent with its slashes escaped, as for its Markdown. A file is named by the parameter name, never by a further segment: a segment after the page's address is a page under it.",
+            "in": "path",
+            "name": "address",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The file's name, exactly as stored (the list's name), percent-encoded: a space is %20, and a + is a plus (%2B also). Without it, the list.",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentList"
+                }
+              }
+            },
+            "description": "Without name: the page's attachments.\n\nWith name: the file's bytes, of its own media type, with its ETag."
+          },
+          "304": {
+            "description": "With name and If-None-Match: the bytes have not changed since that ETag."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The parameter name twice, without a value, or not UTF-8. Or the sign-in refused it: The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "There is no page at the address, or one the user may not read: the same answer for both. With name, the page has no file of that name (the message gives the address of the page's list)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The page is in an encrypted space: its files are encrypted in its members' browsers (Stale)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "List a page's attachments, or read one's bytes"
+      },
+      "put": {
+        "description": "The body is the file, and its Content-Type the media type stored (none is application/octet-stream), as the browser's upload attaches it, with the same rules: the user may edit the page, the file is at most 50 MB, and its name is not blank and has no slash, backslash or control character. A name is taken exactly as sent and never changed. The upload replaces a file of the same name, in its place, only over the version read: If-Match with its ETag replaces it (200), If-None-Match: * attaches only where there is none, and without either a taken name is refused (428). The page's text and its history do not change: write the answer's markdown into the page to show the file.",
+        "operationId": "writeAttachment",
+        "parameters": [
+          {
+            "description": "The page's address in the browser after /s/, as for its Markdown: team/projects/p/the-wiki/, or team/ for the space's home page. It may be sent with its slashes escaped, as for its Markdown. A file is named by the parameter name, never by a further segment: a segment after the page's address is a page under it.",
+            "in": "path",
+            "name": "address",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The file's name: what the page's Markdown refers to it by. Percent-encoded: a space is %20, and a + is a plus (%2B also).",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The version of the file to replace, its ETag as the list or a read gives it: a file replaced since is refused (412).",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "* attaches the file only where the page has none of its name (412 where it has).",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "*/*": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "description": "The file's bytes, as curl --data-binary @file sends them, with the file's media type as the Content-Type.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentEntry"
+                }
+              }
+            },
+            "description": "The file put in the place of the one of its name (If-Match): its entry in the list, with its new version, which is also the ETag.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentEntry"
+                }
+              }
+            },
+            "description": "The file attached under a new name: its entry in the list. The Location is the address of its bytes, and the ETag its version.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "No name, a name the wiki does not take (blank, with a slash, a backslash or a control character, or with white space at an end), If-Match that is not a version, If-None-Match other than *, both of them, or a Content-Type that is not UTF-8. Or the sign-in refused it: The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The user may read the page but not edit it. Or the sign-in refused it: A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "There is no page at the address, or one the user may not read: the same answer for both. With name, the page has no file of that name (the message gives the address of the page's list)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The page is in an encrypted space, whose files are encrypted in its members' browsers (Stale)."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "If-Match names a version the file no longer has, or a file the page does not have; or If-None-Match: * and the page has a file of the name. Nothing is written."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The file is over 50 MB: by its Content-Length, before anything is read, or once the body is past the limit. Nothing is written."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The Content-Type is a form's (application/x-www-form-urlencoded, which curl sends for --data-binary unless told otherwise, or multipart/form-data): the body is the file itself, of its own media type."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The page has a file of the name already, and the request names no version of it: send If-Match to replace it. Nothing is written."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Attach a file to a page, or replace one"
+      }
+    },
     "/api/contents/s/{address}": {
       "get": {
         "description": "The page's title, its version (the value of the Markdown's ETag, quotes included, to send as If-Match), the address of its Markdown, the address of its top when it has text before its first heading, and its headings in the page's order, nested by level, each with its anchor and the address of its section. The headings are those of the page's Contents list; a heading inside a block spoiler is listed under the heading whose section holds the spoiler, with inSpoiler true.",

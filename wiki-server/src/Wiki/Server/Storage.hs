@@ -164,6 +164,11 @@ module Wiki.Server.Storage
   , editingAs
   , threadsThen
   , uploadAttachmentFile
+  , Expected (..)
+  , Uploaded (..)
+  , uploadAttachmentFileIf
+  , attachingTo
+  , attachmentTooLarge
   , uploadSpaceIconFile
   , createPageAt
   , createSpaceAt
@@ -3291,30 +3296,88 @@ deletePageTx pid = do
 --------------------------------------------------------------------------------
 -- Attachments
 
--- | Attach a file, its bytes kept under their hash. The size is checked
--- before anything is hashed or written, so that a file too large costs
--- nothing but its reading.
 -- | Attach a file to a page. The file is this many bytes, which the last
 -- argument stores in the blob directory given to it, after the checks:
 -- bytes in memory ('uploadAttachment') or a file on disk
--- ('uploadAttachmentFile').
+-- ('uploadAttachmentFile'). The size is checked before anything is
+-- hashed or written, so that a file too large costs nothing but its
+-- reading. An attachment the page already has under the name is
+-- replaced, in its place among the page's.
 uploadAttachmentTx :: PageId -> Text -> Text -> Integer -> (FilePath -> IO BlobId) -> Tx Attachment
-uploadAttachmentTx pid name mediaType size store = do
+uploadAttachmentTx pid name mediaType size store =
+  uploadAttachmentIfTx AnyAttachment pid name mediaType size store >>= \case
+    Right done -> pure done.attachment
+    -- 'AnyAttachment' holds of every page.
+    Left _ -> failWith (Conflict "The attachment changed meanwhile.")
+
+-- | 'Expected' is what a page must have under an attachment's name for an
+-- upload to go ahead ('uploadAttachmentFileIf'): anything ('AnyAttachment',
+-- as the browser uploads), no attachment ('NoAttachment', an upload that
+-- only creates), or an attachment whose bytes are this blob
+-- ('AttachmentOf', a replace of the attachment that was read). The API for
+-- programs asks it, so that a replace is never made over bytes the
+-- program has not seen.
+data Expected = AnyAttachment | NoAttachment | AttachmentOf BlobId
+  deriving stock (Eq, Show)
+
+-- | 'Uploaded' is an attachment stored by an upload, and whether it took
+-- the place of one of the same name.
+data Uploaded = Uploaded
+  { attachment :: Attachment
+  , replaced :: Bool
+  }
+
+-- | 'uploadAttachmentTx' with what the page must have under the name
+-- ('Expected'), checked in the same transaction as the write, before the
+-- bytes are stored: 'Left' with what the page has under the name (an
+-- attachment, or 'Nothing') when the expectation does not hold, and
+-- nothing is written.
+uploadAttachmentIfTx :: Expected -> PageId -> Text -> Text -> Integer -> (FilePath -> IO BlobId) -> Tx (Either (Maybe Attachment) Uploaded)
+uploadAttachmentIfTx expected pid name mediaType size store = do
+  attachableTx pid
+  n <- either invalid pure (parseFileName name)
+  when (size > fromIntegral maxAttachmentSize) $
+    invalid attachmentTooLarge
+  there <- (>>= \p -> find (\a -> a.name == n) p.attachments) <$> db (loadPage pid)
+  let met = case (expected, there) of
+        (AnyAttachment, _) -> True
+        (NoAttachment, found) -> isNothing found
+        (AttachmentOf b, Just a) -> a.source == SourceBlob b
+        (AttachmentOf _, Nothing) -> False
+  if not met
+    then pure (Left there)
+    else do
+      let mt = uploadedMimeType mediaType
+      dir <- asks (\x -> x.blobs)
+      blob <- liftIO (store dir)
+      i <- newId
+      let attachment = Attachment {id = AttachmentId i, name = n, mediaType = mt, size = fromIntegral size, source = SourceBlob blob}
+      db (replaceAttachment pid attachment)
+      pure (Right Uploaded {attachment, replaced = isJust there})
+
+-- | What attaching a file to a page asks, before the file is looked at:
+-- the page, the right to change its attachments ('requireAttachTo'), and a
+-- space that takes plain attachments (an encrypted space does not, nor
+-- one being converted).
+attachableTx :: PageId -> Tx ()
+attachableTx pid = do
   p <- findNode pid
   c <- chainOfPage p
   requireAttachTo c pid
   requireOffered Offered.AttachPlain c
-  n <- either invalid pure (parseFileName name)
-  when (size > fromIntegral maxAttachmentSize) $
-    invalid ("An attachment can be at most " <> show (maxAttachmentSize `div` (1024 * 1024)) <> " MB.")
-  let mt = uploadedMimeType mediaType
-  dir <- asks (\x -> x.blobs)
-  blob <- liftIO (store dir)
-  i <- newId
-  let attachment = Attachment {id = AttachmentId i, name = n, mediaType = mt, size = fromIntegral size, source = SourceBlob blob}
-  -- One of the same name is replaced, in its place among the page's.
-  db (replaceAttachment pid attachment)
-  pure attachment
+
+-- | Whether the 'Who' may attach a file to a page now ('attachableTx'), or
+-- the 'WikiError' an upload would be refused with. The API for programs
+-- asks it before it reads an upload's body, so that a request the upload
+-- would refuse costs no transfer; the upload asks it again.
+attachingTo :: Storage -> Who -> PageId -> IO (Either WikiError ())
+attachingTo st who pid = transact st who Reads (attachableTx pid)
+
+-- | Why an attachment over 'maxAttachmentSize' is refused: the
+-- application's words, in every upload's refusal, by the browser's routes
+-- and the API for programs alike.
+attachmentTooLarge :: Text
+attachmentTooLarge = "An attachment can be at most " <> show (maxAttachmentSize `div` (1024 * 1024)) <> " MB."
 
 deleteAttachmentTx :: AttachmentId -> Tx ()
 deleteAttachmentTx aid = do
@@ -5210,7 +5273,7 @@ stageBytesTx pid aid lease size store = do
       metas <- db (loadSealedMetas pid)
       unless (Map.member aid metas) $ invalid "An attachment's name and media type are staged before its bytes."
       when (size > fromIntegral maxAttachmentSize + 16) $
-        invalid ("An attachment can be at most " <> show (maxAttachmentSize `div` (1024 * 1024)) <> " MB.")
+        invalid attachmentTooLarge
       blob <- liftIO (store dir)
       db (setSealedStagedBlob aid blob)
     Decrypting -> do
@@ -5218,7 +5281,7 @@ stageBytesTx pid aid lease size store = do
       unless (any (\r -> r.kind == "attachment" && r.item == aid.text) rows) $
         invalid "An attachment's name and media type are staged before its bytes."
       when (size > fromIntegral maxAttachmentSize) $
-        invalid ("An attachment can be at most " <> show (maxAttachmentSize `div` (1024 * 1024)) <> " MB.")
+        invalid attachmentTooLarge
       blob <- liftIO (store dir)
       db (setPlainStagedBlob pid aid blob)
 
@@ -5607,7 +5670,7 @@ uploadSealedAttachmentTx pid up size store = do
   unless (holdsBytes nonceBytes up.meta.bytesNonce.text) $
     invalid "This is not an attachment this wiki keeps: its nonce is not of its length."
   when (size > fromIntegral maxAttachmentSize + 16) $
-    invalid ("An attachment can be at most " <> show (maxAttachmentSize `div` (1024 * 1024)) <> " MB.")
+    invalid attachmentTooLarge
   page <- findPage pid
   when (any (\a -> a.id == up.id) page.attachments) $ failWith (Conflict "An attachment with this id exists already.")
   for_ up.replaces $ \old ->
@@ -6128,6 +6191,15 @@ uploadAttachmentFile :: (MonadIO m) => PageId -> Text -> Text -> FilePath -> Sto
 uploadAttachmentFile pid name mediaType file = do
   size <- liftIO (getFileSize file)
   run Writes (uploadAttachmentTx pid name mediaType size (\dir -> fst <$> storeBlobFile dir file))
+
+-- | 'uploadAttachmentFile' when the page has under the name what is
+-- 'Expected', checked in the upload's own transaction: 'Left' with what
+-- the page has under the name when it does not, and nothing is written.
+-- The API for programs uploads through it.
+uploadAttachmentFileIf :: (MonadIO m) => Expected -> PageId -> Text -> Text -> FilePath -> StoredWiki m (Either WikiError (Either (Maybe Attachment) Uploaded))
+uploadAttachmentFileIf expected pid name mediaType file = do
+  size <- liftIO (getFileSize file)
+  run Writes (uploadAttachmentIfTx expected pid name mediaType size (\dir -> fst <$> storeBlobFile dir file))
 
 -- | 'uploadSpaceIcon' with the image in a file, as 'uploadAttachmentFile'.
 uploadSpaceIconFile :: (MonadIO m) => SpaceId -> Text -> FilePath -> StoredWiki m (Either WikiError Space)

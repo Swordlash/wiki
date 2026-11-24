@@ -68,6 +68,11 @@ module Wiki.Server.Api
 
     -- * Uploads
   , uploadOptions
+
+    -- * An attachment's bytes
+  , Form (..)
+  , attachmentAnswer
+  , attachmentTag
   )
 where
 
@@ -1621,28 +1626,52 @@ attachmentContent env who aid name request respond
           if not present
             then respond (refusal ApiError.NotFound)
             else do
-              let plainTag = case a.source of
-                    SourceBlob b -> encodeUtf8 b.text
-                    SourceUrl _ -> ""
-                  asked = isJust (lookup (encodeUtf8 interactiveParameter) (queryString request))
+              let asked = isJust (lookup (encodeUtf8 interactiveParameter) (queryString request))
                   interactive = asked && framesInteractively a.mediaType.text && loadedByFrame request
-                  (shownAs, policy, tag)
-                    | interactive = (inlineDisposition a, encodeUtf8 interactiveSvgPolicy, quoted (interactiveTag plainTag))
-                    | otherwise = (disposition a, "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox", quoted plainTag)
-                  quoted t = "\"" <> t <> "\""
-                  headers =
-                    [ (hContentType, encodeUtf8 (safeMediaType a.mediaType))
-                    , ("X-Content-Type-Options", "nosniff")
-                    , ("Content-Disposition", shownAs)
-                    , ("Content-Security-Policy", policy)
-                    , (hCacheControl, keptPrivately)
-                    , (hETag, tag)
-                    ]
-                      <> [framedVary | asked]
-              if lookup hIfNoneMatch (requestHeaders request) == Just tag
-                then respond (responseLBS status304 headers "")
-                else respond (responseFile status200 headers file Nothing)
+              respond (attachmentAnswer (if interactive then Interactive else Plain) keptPrivately [framedVary | asked] a file request)
         Right _ -> respond (refusal ApiError.NotFound)
+
+-- | 'Form' is which answer an attachment's bytes are given in: the plain
+-- one, or an SVG's interactive one ('attachmentContent').
+data Form = Plain | Interactive
+
+-- | The answer with an attachment's bytes, from its file, which is there:
+-- in this form, with this @Cache-Control@ and these headers besides. The
+-- browser's route ('attachmentContent') and the API for programs
+-- ("Wiki.Server.AttachmentsApi") both answer with it, so that a stored
+-- file has the same media type and the same protective headers whichever
+-- address serves it: @nosniff@, the @Content-Disposition@ that makes all
+-- but the types a browser shows safely a download, and the sandboxing
+-- @Content-Security-Policy@. The @ETag@ is the bytes' hash (the blob's id),
+-- and a request with that tag in @If-None-Match@ is answered 304. Warp
+-- serves a range of the file when one is asked for.
+attachmentAnswer :: Form -> ByteString -> [Header] -> Attachment -> FilePath -> Request -> Response
+attachmentAnswer form cacheControl more a file request =
+  if lookup hIfNoneMatch (requestHeaders request) == Just tag
+    then responseLBS status304 headers ""
+    else responseFile status200 headers file Nothing
+  where
+    plainTag = attachmentTag a
+    (shownAs, policy, tag) = case form of
+      Interactive -> (inlineDisposition a, encodeUtf8 interactiveSvgPolicy, quoted (interactiveTag plainTag))
+      Plain -> (disposition a, "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox", quoted plainTag)
+    quoted t = "\"" <> t <> "\""
+    headers =
+      [ (hContentType, encodeUtf8 (safeMediaType a.mediaType))
+      , ("X-Content-Type-Options", "nosniff")
+      , ("Content-Disposition", shownAs)
+      , ("Content-Security-Policy", policy)
+      , (hCacheControl, cacheControl)
+      , (hETag, tag)
+      ]
+        <> more
+
+-- | What identifies an attachment's bytes, unquoted: the hash its blob is
+-- named by, or nothing for an attachment on the web.
+attachmentTag :: Attachment -> ByteString
+attachmentTag a = case a.source of
+  SourceBlob b -> encodeUtf8 b.text
+  SourceUrl _ -> ""
 
 -- | The bytes a conversion staged for an attachment of a page, for the
 -- browser converting it to read back ('stagedBytesFile'): as they are, of

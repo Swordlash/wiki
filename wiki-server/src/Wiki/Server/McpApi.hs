@@ -8,9 +8,9 @@
 -- protocol's eras, the revision of 2026-07-28 and the older @initialize@
 -- handshake. The wiki writes only its tools. Each tool calls the function
 -- the HTTP API's handler calls for the same thing ('findPage',
--- 'putMarkdown', 'listing', 'searching', 'contentsOf', 'sectionOf'), as
--- the key's user ('runAs'): the spaces' permissions hold as in the
--- browser, and a page the user may not read is not found.
+-- 'putMarkdown', 'listing', 'searching', 'contentsOf', 'sectionOf',
+-- 'putSection'), as the key's user ('runAs'): the spaces' permissions hold
+-- as in the browser, and a page the user may not read is not found.
 --
 -- = Signing in
 --
@@ -42,9 +42,10 @@
 -- A failure a model can act on is a tool's result marked @isError@, with a
 -- sentence that says what to do: a page that is not there, one the user
 -- may not write, an encrypted space, a path or a version that is not one,
--- and a page saved since the version a write names. A JSON-RPC error is
--- left for a request that is not a tool's call at all: an unknown tool,
--- or a request the library cannot read. Every result is at most
+-- a page saved since the version a write names, and a section's body that
+-- would change the page outside the section (with the HTTP API's
+-- sentence). A JSON-RPC error is left for a request that is not a tool's
+-- call at all: an unknown tool, or a request the library cannot read. Every result is at most
 -- 'maxResult' characters, or says how to ask for less.
 module Wiki.Server.McpApi
   ( mcpApplication
@@ -70,7 +71,7 @@ import Wiki.Api.Version (PageVersion (..), VersionTime (..), pageVersion)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Route qualified as Route
 import Wiki.Core.Assistant.Reference (markdownReference)
-import Wiki.Core.Markdown.Sections (Outline (..), Section (..), outline, outlineAnchors, sectionRange, sectionText)
+import Wiki.Core.Markdown.Sections (Outline (..), Section (..), Target (..), outline, outlineAnchors, sectionRange, sectionText)
 import Wiki.Core.Page (Page (..))
 import Wiki.Core.PageKind (PageKind (..))
 import Wiki.Core.Path (renderPath)
@@ -78,7 +79,8 @@ import Wiki.Core.Slug (Slug)
 import Wiki.Server.Address (Origin, originOfUri)
 import Wiki.Server.Api (Env (..))
 import Wiki.Server.ApiKeys (KeyHolder (..))
-import Wiki.Server.ContentsApi (contentsOf, sectionOf)
+import Wiki.Server.ContentsApi (SectionPut (..), contentsOf, putSection, sectionOf)
+import Wiki.Server.ContentsApi qualified as Contents
 import Wiki.Server.ListApi (Addresses (..), HitEntry (..), HitSpace (..), TopLevel (..), hasSearchWords, listing, searchSpace, searching)
 import Wiki.Server.MarkdownApi (Asking (..), Credential (..), Put (..), credentialOf, findPage, notASlug, putMarkdown, runAs, signInWithKey)
 import Wiki.Server.ProgramApi.Combinators (refusal, refusalResponse, refusalWith)
@@ -135,7 +137,7 @@ instructions =
     , ""
     , "A page is named by its path, the one the browser's address bar shows: /s/<space path>/p/<page path>/, such as /s/team/p/on-call/. A subspace's path follows its space's (/s/team/projects/p/roadmap/), and a page under another page adds its own slug (/s/team/p/on-call/rota/). A space's home page is /s/<space path>/. A full address of the wiki, https://wiki.example/s/team/p/on-call/, is taken too. Find pages with wiki_list and wiki_search."
     , ""
-    , "Read before you write, and pass the version. wiki_read_page gives a page's Markdown and its version. wiki_write_page replaces the whole page, and takes base_version, the version you read: if the page has been saved since, nothing is written, and you read it again, merge your change into what it says now, and write with its new version. For a long page, read its outline (wiki_page_outline), then one section at a time (wiki_read_section), and the text before its first heading with top true."
+    , "Read before you write, and pass the version. wiki_read_page gives a page's Markdown and its version. wiki_write_page replaces the whole page, and takes base_version, the version you read: if the page has been saved since, nothing is written, and you read it again, merge your change into what it says now, and write with its new version. For a long page, read its outline (wiki_page_outline), then one section at a time (wiki_read_section), and the text before its first heading with top true. To change one section, write that section alone with wiki_write_section, from its heading on, over the version read: nothing outside it can change."
     , ""
     , "Look a construct of the wiki's Markdown up in wiki_markdown_reference before using it: a box, math, a diagram, a spoiler, a link to another page, a presentation. Called without a section, it lists the reference's sections; with one, it gives that section."
     , ""
@@ -269,7 +271,7 @@ tools env mount own address holder =
       }
   , Tool
       { name = "wiki_read_section"
-      , description = "Read one part of a page: a section by its anchor, its Markdown from its heading to the next heading of the same or a higher level, its subsections included, or with own true only to the next heading of any level; or, with top true instead of section, the text before the first heading. Also the page's version, to pass as base_version when you write the page."
+      , description = "Read one part of a page: a section by its anchor, its Markdown from its heading to the next heading of the same or a higher level, its subsections included, or with own true only to the next heading of any level; or, with top true instead of section, the text before the first heading. Also the page's version, to pass as base_version when you write the section (wiki_write_section) or the page."
       , arguments =
           [ pathArgument "The page's path, such as /s/team/p/on-call/."
           , ("section", Mcp.describedSchema "The section's anchor, from the page's outline (wiki_page_outline). Give section or top, not both." (Mcp.SchemaString Nothing))
@@ -284,9 +286,7 @@ tools env mount own address holder =
             findPage env address holder.user sp pp <&> \case
               Left e -> Mcp.toolError (refusalText at e)
               Right p -> case sectionOf p.body asked ownOnly of
-                Nothing ->
-                  let anchors = outlineAnchors (outline p.body)
-                   in Mcp.toolError ("The page at " <> at <> " has no section with the anchor " <> show (fromMaybe "" asked) <> ". Its anchors: " <> (if null anchors then "none" else T.intercalate ", " anchors) <> ".")
+                Nothing -> noSection at (fromMaybe "" asked) (outline p.body)
                 Just part -> withText (object (["path" .= at, "title" .= p.title] <> maybe ["top" .= True] (\anchor -> ["section" .= anchor]) asked <> ["version" .= versionOf p])) part
       }
   , Tool
@@ -311,6 +311,29 @@ tools env mount own address holder =
               NoPageAbove above -> Mcp.toolError ("The page above it, " <> pathOf sp above <> ", is not there.")
               NewPageInvalid why -> Mcp.toolError why
               PutRefused e -> Mcp.toolError (refusalText at e)
+      }
+  , Tool
+      { name = "wiki_write_section"
+      , description = "Replace one part of a page: a section by its anchor, or with top true the text before the first heading. Prefer it to wiki_write_page for a change to one section of a long page: it sends fewer tokens, and the other sections cannot be damaged. markdown is the whole section, starting with its heading at the same level as the section's (it may change the heading's text), its subsections included, or with own true without them; for top, the text before the first heading, with no heading. A write that would change anything outside the part is refused, and nothing is written: the error says why and what to do. base_version is the version you read (wiki_read_section or wiki_page_outline): if the page has been saved since, nothing is written, and you read the section again and write with the page's new version. The result is the section's anchor after the write and the page's new version."
+      , arguments =
+          [ pathArgument "The page's path, such as /s/team/p/on-call/."
+          , ("section", Mcp.describedSchema "The section's anchor, from the page's outline (wiki_page_outline). Give section or top, not both." (Mcp.SchemaString Nothing))
+          , ("own", Mcp.describedSchema "True to write the section's own text only, its subsections staying as they are: markdown then has no subsections." Mcp.SchemaBoolean)
+          , ("top", Mcp.describedSchema "True to write the text before the first heading, in place of section." Mcp.SchemaBoolean)
+          , ("markdown", Mcp.describedSchema "The part's whole new Markdown: for a section, from its heading on." (Mcp.SchemaString Nothing))
+          , ("base_version", Mcp.describedSchema "The version you read the page at, as the reading tools give it." (Mcp.SchemaString Nothing))
+          ]
+      , required = ["path", "markdown", "base_version"]
+      , writes = True
+      , tooLong = const "The answer is too long."
+      , run = \args -> withArguments ((,,) <$> partArgument args <*> requiredArgument "markdown" (textArgument "markdown" args) <*> (requiredArgument "base_version" (textArgument "base_version" args) >>= versionArgument)) $ \((asked, ownOnly), body, base) ->
+          withPage args $ \at sp pp ->
+            putSection env address holder.user sp pp (maybe Top (if ownOnly then OwnPart else WholeSection) asked) (Just base) body <&> \case
+              SectionSaved anchor p -> jsonResult (object (["path" .= at] <> maybe ["top" .= True] (const ["section" .= anchor]) asked <> ["version" .= versionOf p]))
+              SectionMoved -> Mcp.toolError ("The page at " <> at <> " has been saved since the version " <> decodeUtf8 (toHeader base) <> ", and nothing was written. Read the section again with wiki_read_section, write your change into what it says now, and write with the page's new version.")
+              SectionNotThere anchor o -> noSection at anchor o
+              SectionRefused why -> Mcp.toolError (Contents.refusalText why <> " Nothing was written.")
+              SectionPutRefused e -> Mcp.toolError (refusalText at e)
       }
   , Tool
       { name = "wiki_create_page"
@@ -369,10 +392,10 @@ tools env mount own address holder =
         Route.Space sp -> continue (pathOf sp []) sp []
         _ -> pure (Mcp.toolError (fromMaybe (show given <> " is not a page's path: a page's path is /s/<space path>/p/<page path>/, such as /s/team/p/on-call/, and a space's home page is /s/<space path>/.") (notASlug (pathSegments given))))
 
--- | The part of a page that @wiki_read_section@ asks for: a section by
--- its anchor, or the text before the first heading ('Nothing', from
--- @top@), and whether only the section's own text is asked for. Exactly
--- one of @section@ and @top@.
+-- | The part of a page that @wiki_read_section@ reads and
+-- @wiki_write_section@ writes: a section by its anchor, or the text before
+-- the first heading ('Nothing', from @top@), and whether only the
+-- section's own text is asked for. Exactly one of @section@ and @top@.
 partArgument :: Arguments -> Either Text (Maybe Text, Bool)
 partArgument args = do
   anchor <- textArgument "section" args
@@ -385,6 +408,14 @@ partArgument args = do
       | otherwise -> Right (Nothing, False)
     (Just _, True) -> Left "Give section or top, not both."
     (Nothing, False) -> Left "Give section, a section's anchor from the page's outline, or top true for the text before the first heading."
+
+-- | Why an anchor names no section of the page at a path, whose outline is
+-- this: the page's anchors.
+noSection :: Text -> Text -> Outline -> Mcp.ToolResult
+noSection at anchor o =
+  Mcp.toolError ("The page at " <> at <> " has no section with the anchor " <> show anchor <> ". Its anchors: " <> (if null anchors then "none" else T.intercalate ", " anchors) <> ".")
+  where
+    anchors = outlineAnchors o
 
 -- | A page's outline as the tools give it, with @topCharacters@: how long
 -- the text before the first heading is, 0 when it is blank, so that a

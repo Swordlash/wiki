@@ -47,7 +47,9 @@
 --   section, is 422 with a message that says what would change, and
 --   nothing is saved. The answer is 200 with JSON: the section's anchor
 --   (the body may change its heading) and address, or the top's address,
---   and the page's new version, which is also the @ETag@.
+--   and the page's new version, which is also the @ETag@. The MCP
+--   server's @wiki_write_section@ writes through the same function
+--   ('putSection').
 --
 -- The sections and their anchors are "Wiki.Core.Markdown.Sections"', from
 -- the same table of contents the page shows, so an anchor here is the
@@ -90,6 +92,11 @@ module Wiki.Server.ContentsApi
   , Written (..)
   , contentsOf
   , sectionOf
+
+    -- * Writing a part of a page
+  , SectionPut (..)
+  , putSection
+  , refusalText
   )
 where
 
@@ -110,8 +117,9 @@ import Wiki.App.Route qualified as Route
 import Wiki.Core.Id (UserId)
 import Wiki.Core.Markdown.Sections (Outline (..), Refusal (..), Replaced (..), Section (..), SpoilerBody (..), Target (..), outline, outlineAnchors, replaceSection, sectionRange, sectionText, topRange)
 import Wiki.Core.Page (Page (..))
+import Wiki.Core.Slug (Slug)
 import Wiki.Server.Api (Env (..))
-import Wiki.Server.MarkdownApi (NewPageAt, PageText (..), addressUnder, pageAt, parameter, pathAfter, privateNoStore, readPage, runAs, writePage)
+import Wiki.Server.MarkdownApi (NewPageAt, PageText (..), addressUnder, findPage, pageAt, parameter, pathAfter, privateNoStore, readPage, runAs, writePage)
 import Wiki.Server.ProgramApi.Combinators (CacheControl (..), Given, Json, Sent (..), Version (..), refusal, refuse, wikiRefusal)
 import Wiki.Server.Render (routeOf)
 import Wiki.Server.Storage (Who (..), editingAs)
@@ -312,47 +320,92 @@ writeMarkdown env mount address u sent segments section own top title kind ifMat
             Left why -> refuse (refusal status400 "Invalid" (Just ("The If-Match header is not a page's version from an ETag: " <> why)))
             Right expected -> case decodeUtf8' (toS given) of
               Left _ -> refuse (refusal status400 "Invalid" (Just "The body is not UTF-8 text."))
-              Right body -> SectionWritten <$> save (maybe Top (if ownOnly then OwnPart else WholeSection) asked) expected body (3 :: Int)
+              Right body -> SectionWritten <$> write (maybe Top (if ownOnly then OwnPart else WholeSection) asked) expected body
   where
     at = pathAfter mount "api/markdown" sent.path
-    -- Read the page, write the body in place of the part
-    -- ('replaceSection'), and save the page against the version read, as a
-    -- whole page's PUT does. A save between that read and this one is a
-    -- conflict: with If-Match the answer is 412; without it the page is
-    -- read again and the body written in the page as it is now, a few
-    -- times, so that the other save is never written over.
-    save target expected body tries = do
-      (r, p) <- pageAt env address u at
-      when (maybe False (/= pageVersion p) expected) (refuse moved)
-      -- The right to edit the page is asked before the body is judged, by
-      -- the rule the save asks first ('editingAs'), so that a write the
-      -- save would refuse (no right to edit, a conversion of the space
-      -- running) is refused as a whole page's PUT refuses it, whatever the
-      -- body. The save asks it again.
-      liftIO (editingAs env.storage (AsUser u) p.id) >>= either (refuse . wikiRefusal) (const pass)
-      done <- case replaceSection target p.body body of
-        Left NoSuchAnchor -> refuse (refusal status404 "NotFound" (Just (noSection (anchorOf target) (outline p.body))))
-        Left why -> refuse (refusal status422 "Invalid" (Just (refusalText why)))
-        Right done -> pure done
-      liftIO (runAs env address u (savePage p.id p.updatedAt p.title done.text)) >>= \case
-        Right saved ->
-          let markdown = addressUnder mount "api/markdown" r
-           in pure
-                SectionWrite
-                  { written =
-                      Written
-                        { anchor = done.anchor
-                        , section = sectionAt markdown <$> done.anchor
-                        , top = guard (target == Top) $> topAt markdown
-                        , version = versionOf saved
-                        }
-                  , version = pageVersion saved
-                  }
-        Left (Conflict _)
-          | isJust expected -> refuse moved
-          | tries > 1 -> save target expected body (tries - 1)
-        Left e -> refuse (wikiRefusal e)
-    moved = refusal status412 "Conflict" (Just "The page has been saved since the version in If-Match: read it again, and write over that version.")
+    -- The route is read here, as 'pageAt' reads it, so that the answer's
+    -- addresses are printed from the route the request named.
+    write target expected body =
+      liftIO (routeOf "/" at) >>= \case
+        r@(Route.Page sp pp) -> answer r target =<< liftIO (putSection env address u sp pp target expected body)
+        r@(Route.Space sp) -> answer r target =<< liftIO (putSection env address u sp [] target expected body)
+        _ -> refuse (refusal status404 "NotFound" Nothing)
+    answer r target = \case
+      SectionSaved anchor saved ->
+        let markdown = addressUnder mount "api/markdown" r
+         in pure
+              SectionWrite
+                { written =
+                    Written
+                      { anchor
+                      , section = sectionAt markdown <$> anchor
+                      , top = guard (target == Top) $> topAt markdown
+                      , version = versionOf saved
+                      }
+                , version = pageVersion saved
+                }
+      SectionMoved -> refuse (refusal status412 "Conflict" (Just "The page has been saved since the version in If-Match: read it again, and write over that version."))
+      SectionNotThere anchor o -> refuse (refusal status404 "NotFound" (Just (noSection anchor o)))
+      SectionRefused why -> refuse (refusal status422 "Invalid" (Just (refusalText why)))
+      SectionPutRefused e -> refuse (wikiRefusal e)
+
+-- | 'SectionPut' is what a write of one part of a page came to
+-- ('putSection'). Only 'SectionSaved' wrote anything.
+data SectionPut
+  = -- | Saved: the anchor of the section written ('Nothing' for the top),
+    -- which the body's heading may have changed, and the page after the
+    -- save.
+    SectionSaved (Maybe Text) Page
+  | -- | The page has been saved since the version the write named.
+    SectionMoved
+  | -- | No section of the page has this anchor; the page's outline, for
+    -- the anchors it has.
+    SectionNotThere Text Outline
+  | -- | 'replaceSection' refused the body: why.
+    SectionRefused Refusal
+  | -- | The wiki refused: not found, forbidden, an encrypted space, a
+    -- conversion of the space running.
+    SectionPutRefused WikiError
+
+-- | 'putSection' writes one part of a page at a space's path and a page's
+-- path, as a user, for a request from this address. The HTTP API's
+-- section @PUT@ ('writeMarkdown') and the MCP server's @wiki_write_section@
+-- ("Wiki.Server.McpApi") both write through it, so that the rule, the
+-- checks, the save and the refusals are the same whoever asks.
+--
+-- The page is read, the body takes the place of the part
+-- ('replaceSection'), and the page is saved against the version read,
+-- through the same 'savePage' as a whole page's write. A version ('Just')
+-- makes the write conditional: a page saved since is 'SectionMoved', and
+-- nothing is saved. Without a version, a save between the read and this
+-- save makes the page be read again and the body written in the page as
+-- it is now, a few times, so that the other save is never written over.
+putSection :: Env -> Text -> UserId -> [Slug] -> [Slug] -> Target -> Maybe PageVersion -> Text -> IO SectionPut
+putSection env address u sp pp target expected body = attempt (3 :: Int)
+  where
+    attempt tries =
+      findPage env address u sp pp >>= \case
+        Left e -> pure (SectionPutRefused e)
+        Right p
+          | maybe False (/= pageVersion p) expected -> pure SectionMoved
+          | otherwise ->
+              -- The right to edit the page is asked before the body is
+              -- judged, by the rule the save asks first ('editingAs'), so
+              -- that a write the save would refuse (no right to edit, a
+              -- conversion of the space running) is refused as a whole
+              -- page's write is, whatever the body. The save asks it again.
+              editingAs env.storage (AsUser u) p.id >>= \case
+                Left e -> pure (SectionPutRefused e)
+                Right _ -> case replaceSection target p.body body of
+                  Left NoSuchAnchor -> pure (SectionNotThere (anchorOf target) (outline p.body))
+                  Left why -> pure (SectionRefused why)
+                  Right done ->
+                    runAs env address u (savePage p.id p.updatedAt p.title done.text) >>= \case
+                      Right saved -> pure (SectionSaved done.anchor saved)
+                      Left (Conflict _)
+                        | isJust expected -> pure SectionMoved
+                        | tries > 1 -> attempt (tries - 1)
+                      Left e -> pure (SectionPutRefused e)
     anchorOf = \case
       WholeSection a -> a
       OwnPart a -> a
@@ -427,7 +480,8 @@ topAt markdown = markdown <> "?top=true"
 versionOf :: Page -> Text
 versionOf p = decodeUtf8 (toHeader (pageVersion p))
 
--- | Why a body was refused, in plain words, for the 422's message.
+-- | Why a body was refused, in plain words, for the 422's message and for
+-- the MCP server's @wiki_write_section@.
 refusalText :: Refusal -> Text
 refusalText = \case
   NoSuchAnchor -> "This page has no section with that anchor."

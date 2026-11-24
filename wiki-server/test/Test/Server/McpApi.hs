@@ -62,6 +62,7 @@ spec backing = describe "the MCP server" $ do
   keyRights backing
   tools backing
   writing' backing
+  sections backing
   hidden backing
   logging backing
   underBasePath backing
@@ -209,7 +210,7 @@ eras backing = describe "both of the protocol's eras" $ do
   it "lists and calls the tools in the current revision, each request on its own" $ withPasswords backing $ \r -> do
     k <- keyOf r "user-editor" WriteRight
     names <- toolNames r k
-    names `shouldBe` ["wiki_list", "wiki_search", "wiki_read_page", "wiki_page_outline", "wiki_read_section", "wiki_write_page", "wiki_create_page", "wiki_markdown_reference"]
+    names `shouldBe` ["wiki_list", "wiki_search", "wiki_read_page", "wiki_page_outline", "wiki_read_section", "wiki_write_page", "wiki_write_section", "wiki_create_page", "wiki_markdown_reference"]
     page <- api r k "markdown/s/blog/p/hello-world/"
     texts <- okCall r k "wiki_read_page" ["path" .= ("/s/blog/p/hello-world/" :: Text)]
     drop 1 texts `shouldBe` [bodyText page]
@@ -232,7 +233,7 @@ eras backing = describe "both of the protocol's eras" $ do
     KeyMap.lookup "instructions" initialized `shouldBe` Nothing
     listed <- post r legacy (rpc "tools/list" (object [])) >>= resultOf
     case KeyMap.lookup "tools" listed of
-      Just (Array ts) -> length ts `shouldBe` 8
+      Just (Array ts) -> length ts `shouldBe` 9
       other -> expectationFailure ("no tools: " <> show other)
     page <- api r k "markdown/s/blog/p/hello-world/"
     called <- post r legacy (rpc "tools/call" (object ["name" .= ("wiki_read_page" :: Text), "arguments" .= object ["path" .= ("/s/blog/p/hello-world/" :: Text)]])) >>= calledOf
@@ -304,6 +305,10 @@ keyRights backing = describe "a key's right" $ do
     refused `shouldSatisfy` T.isInfixOf "the right read"
     later <- api r k "markdown/s/blog/p/hello-world/"
     (later.body, header "ETag" later) `shouldBe` (unchanged.body, header "ETag" unchanged)
+    section <- failedCall r k "wiki_write_section" ["path" .= ("/s/blog/p/hello-world/" :: Text), "top" .= True, "markdown" .= ("Not with this key.\n" :: Text), "base_version" .= version]
+    section `shouldSatisfy` T.isInfixOf "the right read"
+    later' <- api r k "markdown/s/blog/p/hello-world/"
+    (later'.body, header "ETag" later') `shouldBe` (unchanged.body, header "ETag" unchanged)
     _ <- failedCall r k "wiki_create_page" ["path" .= ("/s/blog/p/hello-world/by-reader/" :: Text), "markdown" .= ("Not with this key." :: Text)]
     (.status) <$> api r k "markdown/s/blog/p/hello-world/by-reader/" `shouldReturn` 404
 
@@ -449,16 +454,141 @@ writing' backing = describe "writing a page" $ do
     _ <- failedCall r k "wiki_write_page" [path, "markdown" .= ("x" :: Text), "base_version" .= ("yesterday" :: Text)]
     _ <- failedCall r k "wiki_write_page" [path, "markdown" .= ("x" :: Text)]
     (.body) <$> api r k "markdown/s/blog/p/hello-world/" `shouldReturn` "# Hello\n\nAgain.\n"
+
+-- | The history of Blog's Hello world, newest first, as the application
+-- lists it to the editor's session.
+versionsOf :: Running -> IO [VersionInfo]
+versionsOf r = do
+  session <- cookie <$> signInAs r "editor" "editor's password"
+  blog :: SpaceId <- (\(s :: S.Space) -> s.id) <$> ok200 (getUrlWith r (r.public <> "/" <> links.spaces.atPath (slugs "blog")) [session])
+  page :: P.Page <- ok200 (getUrlWith r (r.public <> "/" <> links.spaces.pageAt blog (slugs "hello-world")) [session])
+  ok200 (getUrlWith r (r.public <> "/" <> links.pages.versions page.id Nothing Nothing) [session])
   where
-    -- The page's history, newest first, as the application lists it to
-    -- the editor's session.
-    versionsOf :: Running -> IO [VersionInfo]
-    versionsOf r = do
-      session <- cookie <$> signInAs r "editor" "editor's password"
-      blog :: SpaceId <- (\(s :: S.Space) -> s.id) <$> ok200 (getUrlWith r (r.public <> "/" <> links.spaces.atPath (slugs "blog")) [session])
-      page :: P.Page <- ok200 (getUrlWith r (r.public <> "/" <> links.spaces.pageAt blog (slugs "hello-world")) [session])
-      ok200 (getUrlWith r (r.public <> "/" <> links.pages.versions page.id Nothing Nothing) [session])
     slugs = either (panic . show) identity . parsePath
+
+sections :: Backing -> Spec
+sections backing = describe "writing a section" $ do
+  it "writes a section, its own part or the top, read back by the tool and the HTTP API, the other sections untouched, each a new version" $ withPasswords backing $ \r -> do
+    k <- start r
+    history0 <- length <$> versionsOf r
+    -- A section with its subsections.
+    version0 <- versionNow r k
+    written <- okCall r k "wiki_write_section" [hello, "section" .= ("install" :: Text), "markdown" .= ("## Install\n\nOther steps.\n\n" :: Text), "base_version" .= version0]
+    page1 <- api r k "markdown/s/blog/p/hello-world/"
+    let version1 = maybe "" decodeUtf8 (header "ETag" page1)
+    bodyText page1 `shouldBe` "Intro.\n\n# Hello\n\nText.\n\n## Install\n\nOther steps.\n\n## Use\n\nRun it.\n"
+    traverse jsonOf written `shouldReturn` [object ["path" .= ("/s/blog/p/hello-world/" :: Text), "section" .= ("install" :: Text), "version" .= version1]]
+    readBack r k "section=install" ["section" .= ("install" :: Text)] `shouldReturn` ("## Install\n\nOther steps.\n\n", "## Install\n\nOther steps.\n\n")
+    history1 <- versionsOf r
+    length history1 `shouldBe` history0 + 1
+    map (\v -> (decodeUtf8 (toHeader (PageVersion v.updatedAt)), (\a -> a.id) <$> v.author)) (take 1 history1) `shouldBe` [(version1, Just (UserId "user-editor"))]
+    -- The section's own part: its subsections stay.
+    _ <- okCall r k "wiki_write_section" [hello, "section" .= ("hello" :: Text), "own" .= True, "markdown" .= ("# Hello\n\nNew lead.\n\n" :: Text), "base_version" .= version1]
+    pageText r k `shouldReturn` "Intro.\n\n# Hello\n\nNew lead.\n\n## Install\n\nOther steps.\n\n## Use\n\nRun it.\n"
+    readBack r k "section=hello&own=true" ["section" .= ("hello" :: Text), "own" .= True] `shouldReturn` ("# Hello\n\nNew lead.\n\n", "# Hello\n\nNew lead.\n\n")
+    -- The text before the first heading.
+    version2 <- versionNow r k
+    top <- okCall r k "wiki_write_section" [hello, "top" .= True, "markdown" .= ("Before.\n\n" :: Text), "base_version" .= version2]
+    version3 <- versionNow r k
+    traverse jsonOf top `shouldReturn` [object ["path" .= ("/s/blog/p/hello-world/" :: Text), "top" .= True, "version" .= version3]]
+    pageText r k `shouldReturn` "Before.\n\n# Hello\n\nNew lead.\n\n## Install\n\nOther steps.\n\n## Use\n\nRun it.\n"
+    readBack r k "top=true" ["top" .= True] `shouldReturn` ("Before.\n\n", "Before.\n\n")
+    length <$> versionsOf r `shouldReturn` history0 + 3
+
+  it "answers the new anchor of a heading the body renames, which reads the section" $ withPasswords backing $ \r -> do
+    k <- start r
+    version0 <- versionNow r k
+    written <- okCall r k "wiki_write_section" [hello, "section" .= ("install" :: Text), "markdown" .= ("## Setup\n\nSteps.\n\n" :: Text), "base_version" .= version0] >>= traverse jsonOf
+    map (field "section") written `shouldBe` [Just "setup"]
+    readBack r k "section=setup" ["section" .= ("setup" :: Text)] `shouldReturn` ("## Setup\n\nSteps.\n\n", "## Setup\n\nSteps.\n\n")
+    gone <- failedCall r k "wiki_read_section" [hello, "section" .= ("install" :: Text)]
+    gone `shouldSatisfy` T.isInfixOf "hello, setup, use"
+
+  -- With putSection's comparison of the version read with base_version
+  -- taken out, the stale write below is saved, and the check of the page
+  -- and its history after it fails.
+  it "writes nothing over a version saved since" $ withPasswords backing $ \r -> do
+    k <- start r
+    version0 <- versionNow r k
+    _ <- okCall r k "wiki_write_section" [hello, "section" .= ("use" :: Text), "markdown" .= ("## Use\n\nFirst.\n" :: Text), "base_version" .= version0]
+    saved <- api r k "markdown/s/blog/p/hello-world/"
+    history <- length <$> versionsOf r
+    stale <- call r k "wiki_write_section" [hello, "section" .= ("install" :: Text), "markdown" .= ("## Install\n\nSecond.\n\n" :: Text), "base_version" .= version0]
+    later <- api r k "markdown/s/blog/p/hello-world/"
+    afterwards <- length <$> versionsOf r
+    (stale.failed, later.body, header "ETag" later, afterwards) `shouldBe` (True, saved.body, header "ETag" saved, history)
+    T.unwords stale.texts `shouldSatisfy` T.isInfixOf "has been saved since the version"
+    T.unwords stale.texts `shouldSatisfy` T.isInfixOf "wiki_read_section"
+
+  it "refuses a body that would change the page outside its section with the HTTP API's sentence, and saves nothing" $ withPasswords backing $ \r -> do
+    k <- start r
+    version0 <- versionNow r k
+    history <- length <$> versionsOf r
+    for_ [("## Install\n\n```\nmake\n", "code fence"), ("### Install\n", "must start with a level 2 heading")] $ \(body, about) -> do
+      refused <- failedCall r k "wiki_write_section" [hello, "section" .= ("install" :: Text), "markdown" .= (body :: Text), "base_version" .= version0]
+      http <- sendBare r methodPut (r.public <> "/api/markdown/s/blog/p/hello-world/?section=install") [bearer k, ("If-Match", encodeUtf8 version0)] (toS (encodeUtf8 body))
+      http.status `shouldBe` 422
+      message <- field "message" <$> jsonOf (bodyText http)
+      (Just refused, about `T.isInfixOf` refused) `shouldBe` ((<> " Nothing was written.") <$> message, True)
+    missing <- failedCall r k "wiki_write_section" [hello, "section" .= ("nowhere" :: Text), "markdown" .= ("## Nowhere\n" :: Text), "base_version" .= version0]
+    missing `shouldSatisfy` T.isInfixOf "Its anchors: hello, install, use."
+    pageText r k `shouldReturn` source
+    versionNow r k `shouldReturn` version0
+    length <$> versionsOf r `shouldReturn` history
+
+  it "refuses a page the user may read and not edit, and an encrypted space, writing nothing" $ withPasswords backing $ \r -> do
+    k <- keyOf r "user-editor" WriteRight
+    tour <- api r k "markdown/s/docs/p/tour/"
+    refused <- failedCall r k "wiki_write_section" ["path" .= ("/s/docs/p/tour/" :: Text), "top" .= True, "markdown" .= ("Not mine to write.\n" :: Text), "base_version" .= maybe "" decodeUtf8 (header "ETag" tour)]
+    refused `shouldSatisfy` T.isInfixOf "not write it"
+    later <- api r k "markdown/s/docs/p/tour/"
+    (later.body, header "ETag" later) `shouldBe` (tour.body, header "ETag" tour)
+    slug <- encryptedSpace r
+    admin <- keyOf r "user-admin" AdminRight
+    sealed <- failedCall r admin "wiki_write_section" ["path" .= ("/s/" <> slug <> "/"), "top" .= True, "markdown" .= ("Plain.\n" :: Text), "base_version" .= ("\"2026-11-18T09:30:12.345678Z\"" :: Text)]
+    sealed `shouldSatisfy` T.isInfixOf "encrypted"
+
+  it "refuses arguments that name no part, no page or no version, writing nothing" $ withPasswords backing $ \r -> do
+    k <- start r
+    version0 <- versionNow r k
+    let body = "markdown" .= ("## Install\n\nOther.\n" :: Text)
+        base = "base_version" .= version0
+        install = "section" .= ("install" :: Text)
+        -- One row per call: what is wrong with it, its arguments, and a
+        -- part of the sentence it is refused with.
+        table :: [(Text, [Pair], Text)]
+        table =
+          [ ("both section and top", [hello, install, "top" .= True, body, base], "not both")
+          , ("neither section nor top", [hello, body, base], "Give section")
+          , ("own with top", [hello, "top" .= True, "own" .= True, body, base], "own goes with a section")
+          , ("a version that is not one", [hello, install, body, "base_version" .= ("yesterday" :: Text)], "is not a page's version")
+          , ("no version", [hello, install, body], "base_version is required")
+          , ("no markdown", [hello, install, base], "markdown is required")
+          , ("a relative path", ["path" .= ("s/blog/p/hello-world/" :: Text), install, body, base], "starts with /")
+          , ("no path", [install, body, base], "path is required")
+          ]
+    for_ table $ \(what, args, sentence) -> do
+      refused <- call r k "wiki_write_section" args
+      (what, refused.failed, sentence `T.isInfixOf` T.unwords refused.texts) `shouldBe` (what, True, True)
+    pageText r k `shouldReturn` source
+    versionNow r k `shouldReturn` version0
+  where
+    source = "Intro.\n\n# Hello\n\nText.\n\n## Install\n\nSteps.\n\n## Use\n\nRun it.\n" :: Text
+    hello = "path" .= ("/s/blog/p/hello-world/" :: Text)
+    -- The editor's key, after Blog's Hello world is written whole with
+    -- 'source'.
+    start r = do
+      k <- keyOf r "user-editor" WriteRight
+      (.status) <$> putApi r k "markdown/s/blog/p/hello-world/" (toS (encodeUtf8 source)) `shouldReturn` 204
+      pure k
+    pageText r k = bodyText <$> api r k "markdown/s/blog/p/hello-world/"
+    versionNow r k = maybe "" decodeUtf8 . header "ETag" <$> api r k "markdown/s/blog/p/hello-world/"
+    -- One part of the page, as the HTTP API reads it (by this query) and
+    -- as wiki_read_section reads it (by these arguments).
+    readBack r k query args = do
+      http <- api r k ("markdown/s/blog/p/hello-world/?" <> query)
+      tool <- okCall r k "wiki_read_section" (hello : args)
+      pure (bodyText http, fromMaybe "" (lastMay tool))
 
 hidden :: Backing -> Spec
 hidden backing = describe "what the key's user may not read" $ do

@@ -4526,8 +4526,9 @@ it: what an island's library draws, a frame's own script or document, the
 service worker, a push over the WebSocket in another tab, something the
 server does by itself, an image decoded. An event the browser fires once a
 step through the history the page asked for has landed (the `popstate`
-after the page's own `history.back()`) needs nothing more: the driver's
-settle waits for it, so the action is followed by a plain read. An event
+after the page's own `history.back()`) is waited for by the driver's
+settle, up to half a second, so the action is followed by a plain read; a
+move slower than that would be waited for with `waitForEvent`. An event
 the browser fires with its next frame (a modal dialog's `close` after
 Escape) is waited for with the driver's `waitForEvent`, which listens for
 it before the action and settles after it: the settle waits for the next

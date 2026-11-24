@@ -903,13 +903,16 @@ render_contents() {
 }
 
 # Whether the text is the ETag of a file's bytes, as the wiki gives it:
-# their hash, lower-case hex, in quotes.
+# their SHA-256, 64 digits of lower-case hex, in quotes.
 is_file_tag() {
   case $1 in
-    \"\" | \"*[!0-9a-f]*\") return 1 ;;
-    \"*\") return 0 ;;
+    \"*\") tag_hex=${1#\"} tag_hex=${tag_hex%\"} ;;
+    *) return 1 ;;
   esac
-  return 1
+  case $tag_hex in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+  [ "${#tag_hex}" = 64 ]
 }
 
 # A page's files: each one's name, media type and size, then the Markdown
@@ -2723,6 +2726,11 @@ cmd_attachment() {
     case $1 in
       --out) [ $# -ge 2 ] || { usage "--out needs a file"; return; }; out=$2; shift ;;
       --out=*) out=${1#--out=} ;;
+      --)
+        shift
+        for given in "$@"; do take_page_and_name "$given" || return; done
+        break
+        ;;
       -*) usage "attachment does not take $1"; return ;;
       *) take_page_and_name "$1" || return ;;
     esac
@@ -2778,6 +2786,11 @@ cmd_attach() {
     case $1 in
       --name) [ $# -ge 2 ] || { usage "--name needs a file's name"; return; }; given_name=$2 name_given=1; shift ;;
       --name=*) given_name=${1#--name=} name_given=1 ;;
+      --)
+        shift
+        for given in "$@"; do take_page_and_name "$given" || return; done
+        break
+        ;;
       -*) usage "attach does not take $1"; return ;;
       *) take_page_and_name "$1" || return ;;
     esac
@@ -2831,6 +2844,11 @@ cmd_detach() {
   first='' second='' file_name='' name_taken=''
   while [ $# -gt 0 ]; do
     case $1 in
+      --)
+        shift
+        for given in "$@"; do take_page_and_name "$given" || return; done
+        break
+        ;;
       -*) usage "detach does not take $1"; return ;;
       *) take_page_and_name "$1" || return ;;
     esac
@@ -2926,7 +2944,8 @@ wiki.sh: the wiki from a shell, through its API for programs.
       is sent over it. The Markdown that shows it in a page is printed: put
       it in the page's text.
   wiki.sh detach PAGE NAME
-      Take the file NAME off the page.
+      Take the file NAME off the page. A NAME or FILE that starts with a dash
+      goes after --, as in wiki.sh detach PAGE -- -notes.txt.
   wiki.sh reference [SECTION | --sections]
       The wiki's Markdown reference: read it before writing the wiki's
       Markdown. --sections lists its sections; SECTION (Math) gives one.

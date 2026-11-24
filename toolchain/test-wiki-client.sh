@@ -894,6 +894,39 @@ answers_by_kind() {
   fake_answer "$space" application/json create-space team/new
   expect 0 "create-space answered as the wiki answers succeeds"
   fake_location='' fake_status=200
+  # A file's bytes: 200 with the ETag of its SHA-256, 64 hex digits quoted.
+  hex=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  h="\"$hex\""
+  not_the_wikis 'bytes' application/octet-stream 200 none attachment /s/team/p/x/ a.txt
+  not_the_wikis 'bytes' application/octet-stream 200 '"abc"' attachment /s/team/p/x/ a.txt
+  not_the_wikis 'bytes' application/octet-stream 200 "$v" attachment /s/team/p/x/ a.txt
+  not_the_wikis 'bytes' application/octet-stream 206 "$h" attachment /s/team/p/x/ a.txt
+  fake_etag=$h
+  fake_answer 'bytes' application/octet-stream attachment /s/team/p/x/ a.txt
+  fake_etag=$v
+  expect 0 "attachment answered as the wiki answers succeeds"
+  # A file attached: 201, its entry named as asked, its version the ETag,
+  # and Location the address asked for.
+  entry="{\"name\":\"a.md\",\"size\":1,\"mediaType\":\"text/markdown\",\"version\":\"\\\"$hex\\\"\",\"address\":\"/api/attachments/s/team/p/x/?name=a.md\",\"markdown\":\"[a.md](attachment:a.md)\"}"
+  fake_location='/api/attachments/s/team/p/x/?name=a.md'
+  not_the_wikis "$entry" application/json 201 none attach /s/team/p/x/ "$work/fake.md" --name a.md
+  not_the_wikis "$entry" application/json 200 "$h" attach /s/team/p/x/ "$work/fake.md" --name a.md
+  not_the_wikis "$entry" application/json 201 "$h" attach /s/team/p/x/ "$work/fake.md" --name b.md
+  not_the_wikis '{"name":"a.md"}' application/json 201 "$h" attach /s/team/p/x/ "$work/fake.md" --name a.md
+  fake_location='/api/attachments/s/team/p/x/?name=b.md'
+  not_the_wikis "$entry" application/json 201 "$h" attach /s/team/p/x/ "$work/fake.md" --name a.md
+  fake_location='/api/attachments/s/team/p/x/?name=a.md' fake_status=201 fake_etag=$h
+  fake_answer "$entry" application/json attach /s/team/p/x/ "$work/fake.md" --name a.md
+  expect 0 "attach answered as the wiki answers succeeds"
+  has out "[a.md](attachment:a.md)" "attach prints the Markdown the wiki gave"
+  fake_location='' fake_status=200 fake_etag=$v
+  # A file taken off: 204 with no body.
+  not_the_wikis 'Gone.' text/plain 204 none detach /s/team/p/x/ a.md
+  not_the_wikis '' '' 200 none detach /s/team/p/x/ a.md
+  fake_status=204
+  fake_answer '' '' detach /s/team/p/x/ a.md
+  fake_status=200
+  expect 0 "detach answered as the wiki answers succeeds"
   # A page's contents: JSON of their shape, whose version is the ETag's.
   contents="{\"title\":\"X\",\"version\":\"\\\"2026-11-23T00:00:00Z\\\"\",\"markdown\":\"/api/markdown/s/team/p/x/\",\"headings\":[{\"level\":1,\"text\":\"X\",\"anchor\":\"x\",\"inSpoiler\":false,\"section\":\"/api/markdown/s/team/p/x/?section=x\",\"children\":[]}]}"
   not_the_wikis "$html" text/html 200 "$v" contents /s/team/p/x/
@@ -1492,6 +1525,16 @@ attaching() {
     check "attachment gives the bytes on standard output ($where)" cmp -s "$work/out" "$files/notes.txt"
     client attachment "$page" "every byte"
     expect 4 "attachment of a name the page does not have ($where)"
+    # A name that starts with a dash goes after --.
+    client attach "$page" "$files/notes.txt" --name -dash.txt
+    expect 0 "attach under a name that starts with a dash ($where)"
+    client attachment "$page" -dash.txt
+    expect 2 "without --, a name that starts with a dash is an option ($where)"
+    client attachment "$page" -- -dash.txt
+    expect 0 "attachment after -- ($where)"
+    check "attachment after -- gives the file ($where)" cmp -s "$work/out" "$files/notes.txt"
+    client detach "$page" -- -dash.txt
+    expect 0 "detach after -- ($where)"
     # A name taken: nothing is sent over it.
     client attach "$page" "$files/notes.txt" --name "every byte.bin"
     expect 5 "attach to a name taken is refused ($where)"

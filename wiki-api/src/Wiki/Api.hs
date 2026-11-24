@@ -106,6 +106,7 @@ import Wiki.Api.Import (ImportPlan, ImportSummary)
 import Wiki.Api.Info (ServerInfo)
 import Wiki.Api.Notifications (NotificationsApi (..))
 import Wiki.Api.Opaque (LoginChallenge, LoginFinish, LoginStart, NewAccountRecord, OldPasswordProof, PasswordRecord, PasswordRecordChange, ProofStart, RegistrationChallenge, RegistrationStart)
+import Wiki.Api.Plugins (PluginChoice, PluginId, PluginOptions, PluginStateChange, Plugins, WikiPlugins)
 import Wiki.Api.Security (CurrentPassword, EmailChange, EmailState, OneTimeCode, RecoveryCodes, ResetRequest, ResetToken, SecondFactorState, SessionRef, SessionSummary, TotpEnrolment, UnsubscribeToken, VerificationToken)
 import Wiki.Api.ServerSettings (HomePage, MailTest, MailTestResult, ProviderChange, ProviderCheck, ServerSettings, ServerSettingsChange)
 import Wiki.Api.Stars (StarsApi (..))
@@ -272,6 +273,13 @@ data WikiApi form mode = WikiApi
   , encrypted :: mode :- "encrypted" :> NamedRoutes (EncryptedApi form)
   -- ^ Encrypted spaces: their keys, and their pages as ciphertext
   -- ("Wiki.Api.Encrypted").
+  , plugins :: mode :- "plugins" :> Get '[JSON] Plugins
+  -- ^ Which plugins are on ("Wiki.Api.Plugins"): the plugins the
+  -- administrator turned off for the whole wiki, and the choices of the
+  -- user who asks. Anyone who may read the wiki may ask, signed in or
+  -- not; someone not signed in and the server's operator have no choices.
+  -- The addresses under @plugins\/\<id>\/@ are left to the plugins' own
+  -- server halves (decision 69 of docs/PLAN.md).
   }
   deriving stock (Generic)
 
@@ -728,6 +736,14 @@ data AdminApi mode = AdminApi
   , setSettings :: mode :- "settings" :> ReqBody '[JSON] WikiSettings :> Put '[JSON] WikiSettings
   -- ^ @setWikiSettings@: change the settings; the response is the settings
   -- after the change.
+  , plugins :: mode :- "plugins" :> Get '[JSON] WikiPlugins
+  -- ^ The plugins turned off for the whole wiki ("Wiki.Api.Plugins").
+  , setPlugins :: mode :- "plugins" :> ReqBody '[JSON] WikiPlugins :> Put '[JSON] WikiPlugins
+  -- ^ Replace the set of plugins turned off for the whole wiki; the
+  -- response is the set after the change. More than
+  -- 'Wiki.Api.Plugins.maxPluginsOff' plugins, or an id that is not one,
+  -- is 'Wiki.Api.Error.Invalid'. The users' own choices are kept, and
+  -- apply again to a plugin turned back on.
   , invitations :: mode :- "invitations" :> Get '[JSON] Invitations
   -- ^ @invitations@: the unused invitations, and whether the server sends them by mail.
   , invite :: mode :- "invitations" :> ReqBody '[JSON] NewInvitation :> PostCreated '[JSON] Invited
@@ -902,6 +918,21 @@ data AccountApi form mode = AccountApi
   -- again, and stays in the list as revoked. Revoking a revoked key
   -- changes nothing. The response is the user's keys after it; a key that
   -- is not the user's is 'Wiki.Api.Error.NotFound'.
+  , setPluginState :: mode :- "plugins" :> Capture "plugin" PluginId :> "state" :> ReqBody '[JSON] PluginStateChange :> Put '[JSON] PluginChoice
+  -- ^ Turn a plugin on or off for the user, or give it back to its
+  -- default ("Wiki.Api.Plugins"). The plugin's options are not touched.
+  -- The response is the user's choice for the plugin after it. An id that
+  -- is not one, or a first choice of a user who has choices for
+  -- 'Wiki.Api.Plugins.maxPluginsPerUser' plugins already, is
+  -- 'Wiki.Api.Error.Invalid'.
+  , setPluginOptions :: mode :- "plugins" :> Capture "plugin" PluginId :> "options" :> ReqBody '[JSON] PluginOptions :> Put '[JSON] PluginChoice
+  -- ^ Replace the user's options for a plugin with the body, a JSON value
+  -- other than @null@ of at most 'Wiki.Api.Plugins.maxOptionsBytes'
+  -- bytes. The plugin's state is not touched. The response and the other
+  -- refusals are 'setPluginState''s.
+  , clearPluginOptions :: mode :- "plugins" :> Capture "plugin" PluginId :> "options" :> Delete '[JSON] PluginChoice
+  -- ^ Clear the user's options for a plugin. The state is not touched.
+  -- The response is the user's choice for the plugin after it.
   , secondFactorState :: mode :- "second-factor" :> Get '[JSON] SecondFactorState
   -- ^ Whether the user has a second factor.
   , enrolTotp :: mode :- "second-factor" :> "totp" :> ReqBody '[JSON] CurrentPassword :> Post '[JSON] TotpEnrolment

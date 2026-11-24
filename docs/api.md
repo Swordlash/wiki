@@ -1146,6 +1146,38 @@ step of a password's sign-in (`session/second-factor/passkey`), the
 challenge is kept for the sign-in waiting, and a refused answer counts as a
 wrong code.
 
+### Plugins
+
+Which plugins are on (`Wiki.Api.Plugins`, `Wiki.Server.Plugins`; decision 69
+and WP5.84 of the plan). To the server a plugin is an id, the one its manifest
+gives it: 1 to 64 characters of lowercase letters, digits and `-`, starting
+with a letter (`assistant`, `errors`). The server takes any id of that form
+and knows no list of plugins; an id of another form is 400, with what an id
+is. The application knows which plugins exist and whether each is on when
+nobody chose.
+
+| Method | Path | Body | Response | Errors | |
+| ------ | ---- | ---- | -------- | ------ | - |
+| GET | `api/v1/plugins` | | `Plugins` `{"offForWiki", "mine"}`: the ids the administrator turned off for the whole wiki, and the asker's choices by id, each `PluginChoice` `{"state", "options"}`, `state` `"on"`, `"off"` or `"default"`, `options` any JSON value or `null` for none; someone not signed in and the operator get `"mine": {}` | 401 (a closed wiki, to someone not signed in) | (`plugins`) |
+| PUT | `api/v1/account/plugins/<id>/state` | `PluginStateChange` `{"state"}` | `PluginChoice` for the plugin after it; the options are not touched | 401, 400 (the operator; an id that is not one; a first choice of a user who has choices for 100 plugins already) | (`setPluginState`) |
+| PUT | `api/v1/account/plugins/<id>/options` | the options themselves, any JSON value but `null`, at most 16 kB (16384 bytes) as sent | `PluginChoice` after it; the state is not touched | 401, 400 (the operator; `null`; over 16 kB as sent, or as the server writes it out again; an id; the 100 plugins) | (`setPluginOptions`) |
+| DELETE | `api/v1/account/plugins/<id>/options` | | `PluginChoice` after it, with no options; the state is not touched | 401, 400 (the operator; an id) | (`clearPluginOptions`) |
+| GET | `api/v1/admin/plugins` | | `WikiPlugins` `{"off"}`: the ids off for the whole wiki | 403 | (`plugins`) |
+| PUT | `api/v1/admin/plugins` | `WikiPlugins`, the whole set, at most 100 ids | `WikiPlugins` as it now is; the activity log records `settings.plugins` with the ids off | 403, 400 | (`setPlugins`) |
+
+Whether a plugin is on for a reader is: off when the wiki has it off;
+otherwise the reader's `state`, unless it is `"default"` or the plugin is not
+in `mine`; otherwise the plugin's own default. A plugin the administrator
+turns off keeps each user's choice, which applies again when it is turned
+back on. A user's choice is kept only while it holds something: a plugin given
+back to `"default"` with its options cleared has no entry. The state and the
+options are changed by two requests, and each writes only its own, so two tabs
+of one user (one flipping the switch, the other saving the options) never undo
+each other. Options are kept in the clear and the server reads nothing inside
+them: a plugin's secrets, such as an assistant's API key, belong in the vault
+(above), never in its options. A user's choices go with their account; a
+user's own changes are not in the activity log.
+
 ### Encrypted spaces
 
 The pages of an encrypted space (WP5.74b2 and b3, `Wiki.Core.Encrypted`)

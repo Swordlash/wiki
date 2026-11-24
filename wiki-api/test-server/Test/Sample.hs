@@ -58,6 +58,8 @@ module Test.Sample
   , apiKeyInfo
   , revokedKeyInfo
   , madeApiKey
+  , plugins
+  , wikiPlugins
   , publicKeyEntry
   , registrationOptions
   , registrationResponse
@@ -66,6 +68,7 @@ module Test.Sample
   )
 where
 
+import Data.Aeson (object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Time (UTCTime (..), fromGregorian, picosecondsToDiffTime)
@@ -78,6 +81,7 @@ import Wiki.Api.Backups (BackupRecord (..), BackupSettingsChange, BackupSettings
 import Wiki.Api.Export (ExportFormat (..))
 import Wiki.Api.Import
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), Notifications (..), feedAddressOf)
+import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), WikiPlugins (..))
 import Wiki.Api.Security (AccountEmail (..), EmailState (..), SecondFactorState (..), SessionRef (..), SessionSummary (..), TotpEnrolment (..))
 import Wiki.Api.ServerSettings (AssistantApi (..), AssistantService (..), Discovered (..), MailSettingsOf (..), ProviderCheck (..), ProviderKind (..), ProviderSettingsOf (..), SecretState (..), Security (..), ServerSettings, ServerSettingsChange, ServerSettingsOf (..), defaultHomePage)
 import Wiki.Api.Stars (StarredPage (..))
@@ -714,6 +718,25 @@ revokedKeyInfo = ApiKeyInfo {id = ApiKeyId "b5c2t7yq4nx3wa6e", name = "Made on 2
 
 madeApiKey :: MadeApiKey
 madeApiKey = MadeApiKey {key = "wiki_m3k7q2xa9dwn4zrt_abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst", info = apiKeyInfo}
+
+-- | What is on for a user: the errors off for the whole wiki, and the
+-- user's own choices: the assistant on with options, the errors off, and
+-- a plugin left to its default with options.
+plugins :: Plugins
+plugins =
+  Plugins
+    { offForWiki = Set.fromList [PluginId "errors"]
+    , mine =
+        Map.fromList
+          [ (PluginId "assistant", PluginChoice {state = PluginOn, options = Just (object ["model" .= ("claude-opus" :: Text), "floating" .= True])})
+          , (PluginId "errors", PluginChoice {state = PluginOff, options = Nothing})
+          , (PluginId "word-count", PluginChoice {state = PluginDefault, options = Just (toJSON [1 :: Int, 2, 3])})
+          ]
+    }
+
+-- | The plugins off for the whole wiki, as the administration reads them.
+wikiPlugins :: WikiPlugins
+wikiPlugins = WikiPlugins {off = Set.fromList [PluginId "errors", PluginId "assistant"]}
 
 passkeyInfo :: PasskeyInfo
 passkeyInfo = PasskeyInfo {id = CredentialId "Y3JlZGVudGlhbC0x", name = "Added on 2026-10-28 at 09:30 UTC", createdAt = time, lastUsedAt = Just later, unlocks = True}

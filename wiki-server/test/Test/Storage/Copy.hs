@@ -337,6 +337,12 @@ everyTable = do
     [ ApiKeyRow {id = "copy-key-1", user_id = "copy-u1", secret_hash = "copy-hash-1", name = "Laptop ünïcode", access = "write", created_at = time 0, expires_at = Just (time 72), last_used_at = Just (time 2), revoked_at = Nothing}
     , ApiKeyRow {id = "copy-key-2", user_id = "copy-u1", secret_hash = "copy-hash-2", name = "Old", access = "read", created_at = time 0, expires_at = Nothing, last_used_at = Nothing, revoked_at = Just (time 1)}
     ]
+  row
+    wikiDb.user_plugins
+    [ UserPluginRow {user_id = "copy-u1", plugin_id = "assistant", state = Just "on", options = Just "{\"model\":\"ünïcode ✓\",\"n\":[1,2.5,null]}"}
+    , UserPluginRow {user_id = "copy-u1", plugin_id = "errors", state = Just "off", options = Nothing}
+    , UserPluginRow {user_id = "copy-u2", plugin_id = "assistant", state = Nothing, options = Just "true"}
+    ]
   row wikiDb.vaults [VaultRow {user_id = "copy-u1", salt = "salt", password_nonce = Just "nonce", password_key = Just "key", revision = 7, updated_at = time 2}]
   row wikiDb.vault_items [VaultItemRow {user_id = "copy-u1", name = "identity", key_id = Just "copy-key", nonce = "nonce", ciphertext = "ciphertext"}]
   row
@@ -421,6 +427,7 @@ comparedTables =
   , ("email_verifications", rowsIn wikiDb.email_verifications)
   , ("passkeys", rowsIn wikiDb.passkeys)
   , ("api_keys", rowsIn wikiDb.api_keys)
+  , ("user_plugins", rowsIn wikiDb.user_plugins)
   , ("vaults", rowsIn wikiDb.vaults)
   , ("vault_items", rowsIn wikiDb.vault_items)
   , ("public_keys", rowsIn wikiDb.public_keys)

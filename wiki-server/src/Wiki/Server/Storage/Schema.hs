@@ -44,6 +44,7 @@ module Wiki.Server.Storage.Schema
   , EmailVerifications (..)
   , Passkeys (..)
   , ApiKeys (..)
+  , UserPlugins (..)
   , Vaults (..)
   , VaultItems (..)
   , PublicKeys (..)
@@ -859,6 +860,10 @@ deriving stock instance Eq (ApiKeys Identity)
 
 deriving stock instance Show (ApiKeys Identity)
 
+deriving stock instance Eq (UserPlugins Identity)
+
+deriving stock instance Show (UserPlugins Identity)
+
 deriving stock instance Eq (EmailVerifications Identity)
 
 deriving stock instance Show (EmailVerifications Identity)
@@ -1137,6 +1142,25 @@ instance Table ApiKeys where
     deriving anyclass (Beamable)
   primaryKey r = ApiKeyKey r.id
 
+-- | A user's choice for a plugin (@user_plugins@, step 25,
+-- "Wiki.Server.Plugins"): the user, the plugin's id, its state (@on@ or
+-- @off@; 'Nothing' for the plugin's default), and its options as JSON
+-- text ('Nothing' for none). A row has a state or options, or both.
+data UserPlugins f = UserPluginRow
+  { user_id :: Columnar f Text
+  , plugin_id :: Columnar f Text
+  , state :: Columnar f (Maybe Text)
+  , options :: Columnar f (Maybe Text)
+  }
+  deriving stock (Generic)
+  deriving anyclass (Beamable)
+
+instance Table UserPlugins where
+  data PrimaryKey UserPlugins f = UserPluginKey (Columnar f Text) (Columnar f Text)
+    deriving stock (Generic)
+    deriving anyclass (Beamable)
+  primaryKey r = UserPluginKey r.user_id r.plugin_id
+
 --------------------------------------------------------------------------------
 -- The database
 
@@ -1182,6 +1206,7 @@ data WikiDb f = WikiDb
   , staged_plain :: f (TableEntity StagedPlain)
   , conversion_leases :: f (TableEntity ConversionLeases)
   , api_keys :: f (TableEntity ApiKeys)
+  , user_plugins :: f (TableEntity UserPlugins)
   }
   deriving stock (Generic)
   deriving anyclass (Database be)

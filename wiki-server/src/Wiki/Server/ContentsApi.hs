@@ -1,11 +1,11 @@
 -- | A page's table of contents and one section of a page, in the API for
 -- programs (WP5.138 of docs/PLAN.md, the owner's issue #338): what a
 -- program on a user's own machine (a local assistant, later an MCP server)
--- reads to take a part of a long page rather than all of it. Both sign in
--- as the API for a page's Markdown does ("Wiki.Server.MarkdownApi"), with
--- HTTP Basic or an API key ('signedInProgram'), and both only read: a key
--- with the right @read@ is enough, and a write under such a key is refused
--- for its right before it is refused here.
+-- reads to take a part of a long page rather than all of it, and writes to
+-- change that part alone. Both sign in as the API for a page's Markdown
+-- does ("Wiki.Server.MarkdownApi"), with HTTP Basic or an API key
+-- ('signedInProgram'): a key with the right @read@ reads, and a write
+-- needs one with the right @write@.
 --
 -- = Addresses
 --
@@ -28,6 +28,22 @@
 --   not a value of @section@, since a heading's id written out
 --   (@{id="~top"}@) can be any text: every value of @section@ is an
 --   anchor. Both together are 400.
+-- * @PUT api\/markdown\/…\/?section=\<anchor>@ (and @&own=true@, and
+--   @?top=true@): the body, UTF-8 Markdown, takes the place of that part
+--   of the page ('replaceSection'), and the page is saved through the same
+--   'savePage' as a whole page's @PUT@: a version in the history, the push,
+--   the notifications, the same refusals. An @If-Match@ with the page's
+--   version makes the write conditional (412 when the page has moved on);
+--   without it the body is written in the page as it is when the request
+--   comes. Either way the save is made against the version the body was
+--   written in, so that a save in between is never written over: without
+--   @If-Match@ the page is read again and the body written again, a few
+--   times. @If-None-Match@ is 400: a section is never created. A body that
+--   would change any section outside the part, or that is not that one
+--   section, is 422 with a message that says what would change, and
+--   nothing is saved. The answer is 200 with JSON: the section's anchor
+--   (the body may change its heading) and address, or the top's address,
+--   and the page's new version, which is also the @ETag@.
 --
 -- The sections and their anchors are "Wiki.Core.Markdown.Sections"', from
 -- the same table of contents the page shows, so an anchor here is the
@@ -39,18 +55,20 @@
 -- before the first heading), marked @inSpoiler@, with the headings of its
 -- own section inside the spoiler as its children.
 --
--- A section is read at the page's own Markdown address, as a part of that
--- resource, rather than at an address of its own: the application's
--- dispatch sends a request there with @section@ or @top@ in its query
--- here ('asksForSection'). Writing a section is not taken yet: a @PUT@
--- with either is 405, so that it never writes the section's text over the
--- whole page, nor makes a page where there is none.
+-- A section is read and written at the page's own Markdown address, as a
+-- part of that resource, rather than at an address of its own: the
+-- application's dispatch sends a request there with @section@ or @top@ in
+-- its query here ('asksForSection'), so that a @PUT@ with either never
+-- writes its body over the whole page, nor makes a page where there is
+-- none. Other methods are 405.
 --
 -- = Refusals
 --
 -- As the Markdown's: a page the user may not read is 404, as one that is
--- not there, and a page of an encrypted space is 409 @Stale@. An anchor
--- that names no section is 404, with the page's anchors in the message.
+-- not there, a write to a page the user may not edit is 403 whatever its
+-- body (the right is asked before the body is judged), and a page of
+-- an encrypted space is 409 @Stale@. An anchor that names no section is
+-- 404, with the page's anchors in the message.
 module Wiki.Server.ContentsApi
   ( contentsApplication
   , sectionApplication
@@ -62,22 +80,23 @@ import Data.Aeson (Options (..), ToJSON (..), defaultOptions, encode, genericToE
 import Data.ByteString qualified as BS
 import Data.List (lookup)
 import Data.Text qualified as T
-import Network.HTTP.Types (Header, hAllow, hCacheControl, hContentType, methodGet, methodHead, status200, status400, status404, status405)
+import Network.HTTP.Types (Header, hCacheControl, hContentType, hIfMatch, hIfNoneMatch, methodGet, methodHead, methodPut, status200, status400, status404, status412, status422)
 import Network.HTTP.Types.URI (urlEncode)
-import Network.Wai (Application, Request (..), Response, responseLBS)
+import Network.Wai (Application, Request (..), Response, responseLBS, strictRequestBody)
 import Protolude
-import Web.HttpApiData (toHeader)
-import Wiki.Api.Version (pageVersion)
-import Wiki.App.Backend (MonadWiki (getPage, getSpace), WikiError)
+import Web.HttpApiData (parseHeader, toHeader)
+import Wiki.Api.Version (PageVersion, pageVersion)
+import Wiki.App.Backend (MonadWiki (getPage, getSpace, savePage), WikiError (..))
 import Wiki.App.Route qualified as Route
 import Wiki.Core.Id (UserId)
-import Wiki.Core.Markdown.Sections (Outline (..), Section (..), SpoilerBody (..), outline, outlineAnchors, sectionRange, sectionText, topRange)
+import Wiki.Core.Markdown.Sections (Outline (..), Refusal (..), Replaced (..), Section (..), SpoilerBody (..), Target (..), outline, outlineAnchors, replaceSection, sectionRange, sectionText, topRange)
 import Wiki.Core.Page (Page (..))
 import Wiki.Core.Slug (Slug)
 import Wiki.Core.Space (Space (id))
-import Wiki.Server.Api (Env)
-import Wiki.Server.MarkdownApi (Asking (..), addressUnder, markdownMediaType, notAllowed, parameter, refusal, refusalWith, runAs, signedInProgram, wikiRefusal)
+import Wiki.Server.Api (Env (..))
+import Wiki.Server.MarkdownApi (Asking (..), addressUnder, markdownMediaType, notAllowed, parameter, refusal, runAs, signedInProgram, wikiRefusal)
 import Wiki.Server.Render (routeOf)
+import Wiki.Server.Storage (Who (..), editingAs)
 
 -- | A page's table of contents, as the API gives it. @top@ is left out of
 -- the JSON for a page whose text before its first heading is blank.
@@ -142,19 +161,18 @@ contentsApplication env mount asking@Asking {address} request respond =
           Right (r, p) ->
             let o = outline p.body
                 markdown = addressUnder mount "api/markdown" r
-                sectionAt anchor = markdown <> "?section=" <> decodeUtf8 (urlEncode True (encodeUtf8 anchor))
                 -- A section's heading, with the headings of the spoilers
                 -- in its own part, then those of its subsections.
-                heading hidden s = Heading {level = s.level, text = s.text, anchor = s.id, inSpoiler = hidden, section = sectionAt s.id, children = concatMap spoilerHeadings s.spoilers <> map (heading hidden) s.below}
+                heading hidden s = Heading {level = s.level, text = s.text, anchor = s.id, inSpoiler = hidden, section = sectionAt markdown s.id, children = concatMap spoilerHeadings s.spoilers <> map (heading hidden) s.below}
                 -- The headings of a spoiler's body: those of the spoilers
                 -- in its top, then its sections'.
                 spoilerHeadings sb = concatMap spoilerHeadings sb.outline.spoilers <> map (heading True) sb.outline.sections
                 contents =
                   Contents
                     { title = p.title
-                    , version = decodeUtf8 (toHeader (pageVersion p))
+                    , version = versionOf p
                     , markdown
-                    , top = guard (T.any (not . isSpace) (sectionText p.body (topRange o))) $> (markdown <> "?top=true")
+                    , top = guard (T.any (not . isSpace) (sectionText p.body (topRange o))) $> topAt markdown
                     , headings = concatMap spoilerHeadings o.spoilers <> map (heading False) o.sections
                     }
              in respond (responseLBS status200 [(hContentType, "application/json"), etag p, private] (encode contents))
@@ -165,20 +183,76 @@ contentsApplication env mount asking@Asking {address} request respond =
 sectionApplication :: Env -> Text -> Asking -> Application
 sectionApplication env mount asking@Asking {address} request respond =
   signedInProgram env asking request respond $ \u ->
-    if requestMethod request `notElem` [methodGet, methodHead]
-      then respond writeRefused
+    if requestMethod request `notElem` [methodGet, methodHead, methodPut]
+      then respond (notAllowed [methodGet, methodHead, methodPut])
       else case (partOf, own) of
         (Left why, _) -> respond (refusal status400 "Invalid" (Just why))
         (_, Left why) -> respond (refusal status400 "Invalid" (Just why))
-        (Right asked, Right ownOnly) ->
-          pageAt env address u "api/markdown" mount request >>= \case
-            Left refused -> respond refused
-            Right (_, p) ->
-              let o = outline p.body
-               in case maybe (Just (topRange o)) (\anchor -> sectionRange o anchor ownOnly) asked of
-                    Nothing -> respond (refusal status404 "NotFound" (Just (noSection (fromMaybe "" asked) o)))
-                    Just bounds -> respond (responseLBS status200 [(hContentType, markdownMediaType), etag p, private] (toS (encodeUtf8 (sectionText p.body bounds))))
+        (Right asked, Right ownOnly)
+          | requestMethod request == methodPut -> write u (maybe Top (if ownOnly then OwnPart else WholeSection) asked)
+          | otherwise ->
+              pageAt env address u "api/markdown" mount request >>= \case
+                Left refused -> respond refused
+                Right (_, p) ->
+                  let o = outline p.body
+                   in case maybe (Just (topRange o)) (\anchor -> sectionRange o anchor ownOnly) asked of
+                        Nothing -> respond (refusal status404 "NotFound" (Just (noSection (fromMaybe "" asked) o)))
+                        Just bounds -> respond (responseLBS status200 [(hContentType, markdownMediaType), etag p, private] (toS (encodeUtf8 (sectionText p.body bounds))))
   where
+    -- A PUT: the request's headers and body read, then the part written.
+    write u target
+      | isJust (lookup hIfNoneMatch (requestHeaders request)) =
+          respond (refusal status400 "Invalid" (Just "If-None-Match does not go with a section: a section is written in a page that is there. Send If-Match with the page's version, or neither."))
+      | otherwise = case traverse (parseHeader @PageVersion) (lookup hIfMatch (requestHeaders request)) of
+          Left why -> respond (refusal status400 "Invalid" (Just ("The If-Match header is not a page's version from an ETag: " <> why)))
+          Right expected ->
+            decodeUtf8' . toS <$> strictRequestBody request >>= \case
+              Left _ -> respond (refusal status400 "Invalid" (Just "The body is not UTF-8 text."))
+              Right body -> save u target expected body (3 :: Int)
+    -- Read the page, write the body in place of the part
+    -- ('replaceSection'), and save the page against the version read, as a
+    -- whole page's PUT does. A save between that read and this one is a
+    -- conflict: with If-Match the answer is 412; without it the page is
+    -- read again and the body written in the page as it is now, a few
+    -- times, so that the other save is never written over.
+    save u target expected body tries =
+      pageAt env address u "api/markdown" mount request >>= \case
+        Left refused -> respond refused
+        Right (r, p)
+          | Just v <- expected, v /= pageVersion p -> respond moved
+          | otherwise ->
+              -- The right to edit the page is asked before the body is
+              -- judged, by the rule the save asks first ('editingAs'), so
+              -- that a write the save would refuse (no right to edit, a
+              -- conversion of the space running) is refused as a whole
+              -- page's PUT refuses it, whatever the body. The save asks
+              -- it again.
+              editingAs env.storage (AsUser u) p.id >>= \case
+                Left e -> respond (wikiRefusal e)
+                Right _ -> case replaceSection target p.body body of
+                  Left NoSuchAnchor -> respond (refusal status404 "NotFound" (Just (noSection (anchorOf target) (outline p.body))))
+                  Left why -> respond (refusal status422 "Invalid" (Just (refusalText why)))
+                  Right done ->
+                    runAs env address u (savePage p.id p.updatedAt p.title done.text) >>= \case
+                      Right saved ->
+                        let markdown = addressUnder mount "api/markdown" r
+                            answer =
+                              Written
+                                { anchor = done.anchor
+                                , section = sectionAt markdown <$> done.anchor
+                                , top = guard (target == Top) $> topAt markdown
+                                , version = versionOf saved
+                                }
+                         in respond (responseLBS status200 [(hContentType, "application/json"), etag saved, (hCacheControl, "no-store")] (encode answer))
+                      Left (Conflict _)
+                        | isJust expected -> respond moved
+                        | tries > 1 -> save u target expected body (tries - 1)
+                      Left e -> respond (wikiRefusal e)
+    moved = refusal status412 "Conflict" (Just "The page has been saved since the version in If-Match: read it again, and write over that version.")
+    anchorOf = \case
+      WholeSection a -> a
+      OwnPart a -> a
+      Top -> ""
     -- The part asked for: a section by its anchor, from @section@, or the
     -- top ('Nothing'), from @top@.
     partOf :: Either Text (Maybe Text)
@@ -227,11 +301,64 @@ pageAt env address u prefix mount request = do
     pageOf :: [Slug] -> [Slug] -> IO (Either WikiError Page)
     pageOf sp pp = runAs env address u (getSpace sp) >>= either (pure . Left) (\s -> runAs env address u (getPage s.id pp))
 
--- | The answer to a method other than a read at a section's address: 405,
--- since a section cannot be written yet. The request is not passed on to
--- the page's Markdown, whose PUT would write the body over the whole page.
-writeRefused :: Response
-writeRefused = refusalWith status405 [(hAllow, "GET, HEAD")] "Invalid" (Just "A section cannot be written yet: write the page whole, at its address without ?section=.")
+-- | The answer to a section written: the section's anchor and address, or
+-- the address of the top, and the page's new version. Fields that are
+-- 'Nothing' are left out of the JSON.
+data Written = Written
+  { anchor :: Maybe Text
+  -- ^ The section's anchor, which the body's heading may have changed.
+  , section :: Maybe Text
+  -- ^ The address of the section, under its anchor now.
+  , top :: Maybe Text
+  -- ^ The address of the top, for a write of the top.
+  , version :: Text
+  -- ^ The page's new version, the value of the @ETag@.
+  }
+  deriving stock (Generic)
+
+instance ToJSON Written where
+  toJSON = genericToJSON contentsOptions
+  toEncoding = genericToEncoding contentsOptions
+
+-- | The address of a section, by its anchor, at the address of the page's
+-- Markdown.
+sectionAt :: Text -> Text -> Text
+sectionAt markdown anchor = markdown <> "?section=" <> decodeUtf8 (urlEncode True (encodeUtf8 anchor))
+
+-- | The address of the top, at the address of the page's Markdown.
+topAt :: Text -> Text
+topAt markdown = markdown <> "?top=true"
+
+-- | A page's version as the answers' JSON gives it: the value of its
+-- @ETag@, quotes included, to send back as @If-Match@.
+versionOf :: Page -> Text
+versionOf p = decodeUtf8 (toHeader (pageVersion p))
+
+-- | Why a body was refused, in plain words, for the 422's message.
+refusalText :: Refusal -> Text
+refusalText = \case
+  NoSuchAnchor -> "This page has no section with that anchor."
+  EmptyBody -> "The body is empty: a section cannot be deleted through this address. Send the section's heading and its text, or write the page whole."
+  NotAHeading level -> "The body must start with a level " <> show level <> " heading (" <> T.replicate level "#" <> " …), as the section does, on its first line."
+  AnotherSection text level -> "The body has a second heading of level " <> show level <> ", " <> quoted text <> ", after its own: write one section at a time, with its subsections under it."
+  Subsection text -> "With own=true the body is the section's heading and its own text, without subsections, and it has the heading " <> quoted text <> ". Leave own=true out to write the section with its subsections."
+  SectionInTop text -> "The text before the first heading has no heading, and the body has " <> quoted text <> "."
+  AnchorTaken anchor -> "The anchor " <> quoted anchor <> " is already an earlier heading's or element's, and a link to it would lead there: give the heading another id."
+  AnchorChanges anchor new -> "The id " <> quoted anchor <> " of a heading or another element outside the section would change to " <> quoted new <> ", since a heading of the body has the same text as that one: an id is what links lead to. Give the body's heading another text, or an id of its own ({#id})."
+  AnchorMoves anchor -> "The id " <> quoted anchor <> " is a heading's or another element's outside the section, and an element of the body has it too: links to it would lead into the body instead. Give the body's element another id."
+  SectionChanges anchor after -> "The body would change the section " <> quoted anchor <> place after <> ": check for a code fence or a spoiler left open, or a spoiler's end marker."
+  SectionAppears text after -> "The body would make a section of the heading " <> quoted text <> place after <> ": check for a spoiler's end marker."
+  SpoilerChanges after -> "The body would change the spoiler " <> (if after then "that follows" else "around the section") <> ": check for a spoiler's end marker, or a spoiler or a code fence left open."
+  BlockChanges anchor after ->
+    "The body would change how the page reads "
+      <> maybe "in the text before the first heading" (\a -> "in the section " <> quoted a) anchor
+      <> (if after then ", after it" else ", before it")
+      <> ": check for a link's definition ([name]: address) or a footnote's ([^name]: text) that the page uses there, or a code fence or a spoiler left open."
+  HeadingSpoilerChanges -> "With own=true the heading cannot become or stop being a spoiler, or change its spoiler's name, while the section has subsections, which a heading spoiler hides with it: write the section whole, without own=true."
+  OutsideChanges -> "The body would change the page outside the section: check for a code fence or a spoiler left open, or a spoiler's end marker."
+  where
+    quoted t = "'" <> t <> "'"
+    place after = if after then " that follows" else " before it"
 
 -- | The answer's header with the page's version.
 etag :: Page -> Header

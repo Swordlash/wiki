@@ -159,6 +159,7 @@ module Wiki.Server.Storage
   , mayReadPage
   , locatedFor
   , editorOf
+  , editingAs
   , threadsThen
   , uploadAttachmentFile
   , uploadSpaceIconFile
@@ -1798,18 +1799,28 @@ locatedFor st u n = fromRight Nothing <$> transact st (AsUser u) Reads (locatedT
 -- or if they have not signed in). The live channel checks this before it
 -- tells anyone that this person is editing the page.
 editorOf :: Storage -> Who -> PageId -> IO (Maybe Author)
-editorOf st who pid =
-  rightToMaybe
-    <$> transact
-      st
-      who
-      Reads
-      ( do
-          p <- findNode pid
-          c <- chainOfPage p
-          requireEditPage c pid
-          asks (\x -> x.user) >>= maybe (failWith Forbidden) (pure . authorOf)
-      )
+editorOf st who pid = rightToMaybe <$> editingAs st who pid
+
+-- | 'editingAs' asks whether someone may edit a page now, by the rule a
+-- save of it asks first ('requireEditPage'), without writing anything: the
+-- 'Author' they edit as, or the 'WikiError' a save would be refused with
+-- (the page not there, no right to edit it, a conversion of its space
+-- running). The API for programs asks it before it judges a section's new
+-- text ("Wiki.Server.ContentsApi"), so that a write it would refuse is
+-- answered as the save answers it; 'editorOf' asks it for the live
+-- channel.
+editingAs :: Storage -> Who -> PageId -> IO (Either WikiError Author)
+editingAs st who pid =
+  transact
+    st
+    who
+    Reads
+    ( do
+        p <- findNode pid
+        c <- chainOfPage p
+        requireEditPage c pid
+        asks (\x -> x.user) >>= maybe (failWith Forbidden) (pure . authorOf)
+    )
 
 -- | A page's threads, if the 'Who' may read them ('Left' if they may not,
 -- or the page does not exist), and an action run on them before any write

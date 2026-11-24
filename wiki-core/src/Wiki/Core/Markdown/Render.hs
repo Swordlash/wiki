@@ -183,6 +183,8 @@ module Wiki.Core.Markdown.Render
   , IslandKey (..)
   , defaultOptions
   , defaultResolveLink
+  , linkShown
+  , embedShown
   , presentationClass
   , renderBlocks
   , renderLines
@@ -359,6 +361,26 @@ defaultResolveLink :: Text -> LinkTarget page
 defaultResolveLink dest = case classifyDestination dest of
   ToAttachment _ -> Unresolved
   _ -> External dest
+
+-- | 'linkShown' is whether the renderer writes a link to this target as a
+-- link, with its attributes (its id among them), rather than as its text
+-- or a mark of a link that leads nowhere: a URL or an attachment it may
+-- follow ('safeHref'), or a page of the wiki.
+linkShown :: LinkTarget page -> Bool
+linkShown = \case
+  External url -> safeHref url
+  Page _ -> True
+  Attachment ref -> safeHref ref.downloadUrl
+  Unresolved -> False
+
+-- | 'embedShown' is whether the renderer shows an embed of a URL with its
+-- attributes (its id among them), rather than as its caption: a URL it
+-- may fetch ('safeSrc'). An embed of a page or an attachment depends on
+-- the page's options, and is decided where it is rendered.
+embedShown :: LinkTarget page -> Bool
+embedShown = \case
+  External url -> safeSrc url
+  _ -> False
 
 -- | The document's blocks as HTML, in order.
 renderBlocks :: Options page w i -> [Block] -> [HH.HTML w i]
@@ -690,13 +712,14 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
           anchor props = [PNode (HH.a (props <> titleProp title <> idAndClasses attrs []) inner)]
           -- What a link that may not be followed is shown as: its text.
           asText = pieces
-      pure $ case opts.resolveLink dest of
+      let target = opts.resolveLink dest
+      pure $ case target of
         External url
-          | safeHref url -> anchor (HP.href url : [HP.rel "noopener" | isExternal url])
+          | linkShown target -> anchor (HP.href url : [HP.rel "noopener" | isExternal url])
           | otherwise -> asText
         Page page -> anchor [HP.href (opts.pageHref page)]
         Attachment ref
-          | safeHref ref.downloadUrl -> anchor [HP.href ref.downloadUrl, HP.download ref.name]
+          | linkShown target -> anchor [HP.href ref.downloadUrl, HP.download ref.name]
           | otherwise -> asText
         Unresolved -> [PNode (HH.span [classesProp ["link-unresolved"], HP.title dest] inner)]
 
@@ -706,8 +729,8 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
     -- never reaches the link around it.
     renderEmbed :: Bool -> Attributes -> Text -> Text -> Text -> R [Piece w i]
     renderEmbed inLink attrs dest title caption = case opts.resolveLink dest of
-      External url
-        | safeSrc url -> pure [PNode (media (mediaKindOfPath url) url url Nothing)]
+      target@(External url)
+        | embedShown target -> pure [PNode (media (mediaKindOfPath url) url url Nothing)]
         | otherwise -> pure [PText caption]
       Attachment ref
         | not inLink

@@ -2827,11 +2827,12 @@ curl -u editor:'my password' 'https://wiki.example/api/search?q=on-call+rota&spa
                                {"match": false, "text": "…"}]}]}
   ```
 
-A long page can be read a part at a time: its table of contents at
-`/api/contents/` followed by the page's address, and one section at the
-page's Markdown address with `?section=` and the section's anchor. Both are
-signed in in the same way, with the permissions of reading the page, and take
-only `GET`.
+A long page can be read and written a part at a time: its table of contents
+at `/api/contents/` followed by the page's address, and one section at the
+page's Markdown address with `?section=` and the section's anchor, read with
+`GET` and written with `PUT`. Both are signed in in the same way, with the
+permissions of reading the page, and of editing it for a write (an API key
+with the right `write`).
 
 ```sh
 # The page's headings as a tree, each with the address of its section.
@@ -2845,6 +2846,10 @@ curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-ha
 
 # The text before the first heading.
 curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-handbook/?top=true'
+
+# A section written back, the rest of the page as it is, if the page has not changed since.
+curl -u editor:'my password' -X PUT -H 'If-Match: "2026-11-23T10:15:00.123456Z"' \
+  --data-binary @the-week.md 'https://wiki.example/api/markdown/s/team/p/team-handbook/?section=the-week'
 ```
 
 - **`GET /api/contents/s/<space path>/p/<page path>/`** (a space's home page
@@ -2894,9 +2899,60 @@ curl -u editor:'my password' 'https://wiki.example/api/markdown/s/team/p/team-ha
   and `top` is refused (400). So the top and every section with `own=true`,
   in order, are the whole page. The `ETag` is the page's: a section has no
   version of its own. An anchor the page does not have is 404, with the
-  page's anchors in the message. A section is only read: a `PUT` with
-  `?section=` or `?top=` is refused (405) and writes nothing; write the page
-  whole.
+  page's anchors in the message.
+- **`PUT /api/markdown/…/?section=<anchor>`** (and `&own=true`, and
+  `?top=true`) puts the body, Markdown in UTF-8, in the place of that part of
+  the page, and saves the page as a `PUT` of the whole page does: a new
+  version in the history, the page updated for its readers, the
+  notifications. `If-Match` with the page's version is optional, as for the
+  whole page: given, a page saved since is refused (412); left out, the body
+  goes in the page as it is when the request comes, and a save that comes in
+  between is never written over. `If-None-Match` is refused (400): a section
+  is written in a page that is there, never created, and a page not there is
+  404. The server ends the body with a line break when it has none. When
+  more of the page follows, the body does not end with an empty line, and
+  it would be refused as it is, the server adds an empty line and tries
+  again: a last line of text right before a title underlined with `===`
+  would otherwise run into that title. Nothing else of the body changes. So
+  a part read and written back as it was gives the same page, but at the
+  end of a page without a final line break, which gains one. An empty body
+  is refused (422), but for the top, which it takes out. The
+  answer is 200 with the page's new version as the `ETag` and as JSON:
+  `{"anchor": "the-week", "section": "/api/markdown/s/team/p/team-handbook/?section=the-week", "version": "…"}`
+  for a section, `{"top": "/api/markdown/…/?top=true", "version": "…"}` for
+  the top.
+
+  The body is that one part and changes nothing else of the page, or it is
+  refused with 422, saving nothing, and a message that says what would
+  change. A section's body starts with a heading of the section's level, and
+  every other heading in it is under that one; with `own=true` it has no
+  other heading, but inside a block spoiler; nor has the top's. Every
+  section outside the part keeps its heading, its level, its place and its
+  anchor. So a code fence or a spoiler left open, a spoiler's end marker that
+  closes the spoiler the section is in, a heading of another level and a
+  second heading of the section's level are refused. The body may change its
+  own heading: the answer gives the new anchor. A new heading text that would
+  change the anchor of another heading (`notes-2` becoming `notes-3`) is
+  refused, since an anchor is a section's address; so is an id written out
+  (`{#x}`) that another section has. The same holds for every id the page
+  gives an element outside the section, not only a section's heading: a
+  heading in a quotation, a list or a box, a box, a link with an id of its
+  own. Each keeps its id, and a link to it still leads to it. More
+  generally, nothing outside the section may read differently after the
+  write: a body that changes or takes out a link's definition
+  (`[name]: address`) or a footnote's (`[^name]: text`) that the page uses
+  elsewhere is refused. What the page numbers by position is not kept: a
+  numbered box added before another makes that one the next number (its
+  `box-tip-3` address with it), and footnotes are numbered again. Footnotes
+  are judged apart, since the page shows them after its text wherever
+  their definitions are written: a write may add, change or take out what
+  is in the notes, but an id that a link takes into a note, and that a
+  note still has, may not be given to an element of the text. Not
+  covered: ids written in raw HTML, and what the page draws from the whole
+  of it: the table of contents (`[[!toc]]`), a footnote's text shown over
+  its references, and a formula's macros defined in an earlier formula.
+  A section inside a spoiler is written like any other, and stays inside
+  it.
 
 The text between a page's `# Title` and its first `##` is the title's own
 section, `?section=<the title's anchor>&own=true`. Without `own`, a section
@@ -2916,8 +2972,8 @@ uses (`{"error": "…", "message": "…"}`):
   or two different keys.
 - 403 for an account with a second factor, which a password alone does not
   sign in (a key does), for a request a key's right does not allow, for a
-  write to a page you may read but not edit, and for a page or a space you
-  may not create there.
+  write to a page you may read but not edit (a section's too, whatever its
+  body), and for a page or a space you may not create there.
 - 404 for a page or a space that is not there or that you may not read,
   alike: for a page read, for one created in such a space or under such a
   page, and for a space created under such a space.
@@ -2937,8 +2993,7 @@ browser that registered the password, so the server runs at most a budget,
 Argon2id over 128 MiB). An account whose record asks for more passes or more
 memory than the budget is refused (401) as a wrong password is, and costs the
 server no more than one. A key costs a lookup and a SHA-256, and nothing is
-remembered of it. Attachments and an MCP server are to come; writing a single
-section of a page is not offered yet (write the page whole).
+remembered of it. Attachments and an MCP server are to come.
 
 ##### From a shell, and for assistants
 

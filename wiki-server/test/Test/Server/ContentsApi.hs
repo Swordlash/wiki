@@ -16,20 +16,25 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Network.HTTP.Types (Header, Method, hContentType, methodGet, methodPost, methodPut)
+import Network.HTTP.Types (Header, Method, hContentType, methodDelete, methodGet, methodPost, methodPut)
 import Protolude
 import Test.Database (Backing)
 import Test.Hspec
 import Test.Server.Fixture
-import Wiki.Api.Encrypted (EncryptSpace (..), NewGrant (..), NewSealedPage (..))
+import Wiki.Api (PagesApi (..), SpacesApi (..), WikiApi (..))
+import Wiki.Api.Encrypted (EncryptSpace (..), NewGrant (..), NewSealedPage (..), SpaceKeyStart (..), StartEncrypting (..))
+import Wiki.Api.Links (links)
 import Wiki.Api.Types qualified as Api
 import Wiki.Api.Vault (NewPublicKey (..), VaultChange (..))
 import Wiki.Core.Encrypted (Encapsulated (..), PageKey (..), SealedContent (..), VersionTag (..), firstChain)
 import Wiki.Core.Id (PageId (..), SpaceId (..), UserId (..))
+import Wiki.Core.Page qualified as P
 import Wiki.Core.PageKind qualified as Kind
+import Wiki.Core.Path (parsePath)
 import Wiki.Core.Slug (slugText)
 import Wiki.Core.Space qualified as S
 import Wiki.Core.Vault
+import Wiki.Core.Version (VersionInfo)
 import Wiki.Server.Vault (keyIdOf)
 import Wiki.Server.WebAuthn (toBase64Url)
 
@@ -37,6 +42,7 @@ spec :: Backing -> Spec
 spec backing = describe "a page's contents and sections, for programs" $ do
   contents backing
   sections backing
+  writing backing
   refusals backing
 
 -- | A page's table of contents, read back from its JSON. A key left out is
@@ -239,44 +245,178 @@ refusals backing = describe "refusals" $ do
     (missing.status, errorName missing) `shouldBe` (404, Just "NotFound")
 
   it "refuses a page of an encrypted space, which the server cannot read" $ withPasswords backing $ \r -> do
-    slug <- encryptedSpace r
+    slug <- encryptedSpace =<< adminWithVault r
     for_ ["api/contents/s/" <> slug <> "/", "api/markdown/s/" <> slug <> "/?top=true"] $ \path -> do
       reply <- request r methodGet path [ada] ""
       reply.status `shouldBe` 409
       errorName reply `shouldBe` Just "Stale"
 
-  it "only reads: 405 to another method, and a section's PUT writes nothing" $ withPasswords backing $ \r -> do
+  it "takes only the methods it names, and never makes a page with a section's PUT" $ withPasswords backing $ \r -> do
     posted <- request r methodPost "api/contents/s/blog/p/hello-world/" [edgar] ""
     (posted.status, header "Allow" posted) `shouldBe` (405, Just "GET, HEAD")
     unchanged <- request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] ""
-    written <- request r methodPut "api/markdown/s/blog/p/hello-world/?section=why-a-wiki" [edgar] "## Why a wiki\n\nReplaced.\n"
-    (written.status, header "Allow" written) `shouldBe` (405, Just "GET, HEAD")
+    deleted <- request r methodDelete "api/markdown/s/blog/p/hello-world/?section=why-a-wiki" [edgar] ""
+    (deleted.status, header "Allow" deleted) `shouldBe` (405, Just "GET, HEAD, PUT")
     (.body) <$> request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] "" `shouldReturn` unchanged.body
     -- A PUT to a free address creates a page there, but not with ?section=.
-    nowhere <- request r methodPut "api/markdown/s/blog/p/new-page/?section=x" [edgar] "# New page\n"
-    (nowhere.status, header "Allow" nowhere) `shouldBe` (405, Just "GET, HEAD")
-    (.status) <$> request r methodGet "api/markdown/s/blog/p/new-page/" [edgar] "" `shouldReturn` 404
-    (.status) <$> request r methodPut "api/markdown/s/blog/p/new-page/?top=true" [edgar] "# New page\n" `shouldReturn` 405
-    (.status) <$> request r methodGet "api/markdown/s/blog/p/new-page/" [edgar] "" `shouldReturn` 404
+    for_ ["api/markdown/s/blog/p/new-page/?section=x", "api/markdown/s/blog/p/new-page/?top=true"] $ \path -> do
+      nowhere <- request r methodPut path [edgar] "# New page\n"
+      (nowhere.status, errorName nowhere) `shouldBe` (404, Just "NotFound")
+      (.status) <$> request r methodGet "api/markdown/s/blog/p/new-page/" [edgar] "" `shouldReturn` 404
+
+-- | The answer to a section written, read back from its JSON.
+data Written = Written
+  { anchor :: Maybe Text
+  , section :: Maybe Text
+  , top :: Maybe Text
+  , version :: Text
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance FromJSON Written
+
+writing :: Backing -> Spec
+writing backing = describe "writing a section" $ do
+  it "writes a section, its own part or the top, the page's other sections untouched, each a new version" $ withPasswords backing $ \r -> do
+    start r
+    versions <- length <$> versionsOf r
+    written <- write r "?section=install" [] "## Install\n\nOther steps."
+    written.status `shouldBe` 200
+    answer <- decoded written
+    answer `shouldBe` Written {anchor = Just "install", section = Just (hello <> "?section=install"), top = Nothing, version = decodeUtf8 (fromMaybe "" (header "ETag" written))}
+    pageText r `shouldReturn` "Intro.\n\n# Hello\n\nText.\n\n## Install\n\nOther steps.\n## Use\n\nRun it.\n"
+    (bodyText <$> follow r edgar (fromMaybe "" answer.section)) `shouldReturn` "## Install\n\nOther steps.\n"
+    (header "ETag" <$> request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] "") `shouldReturn` header "ETag" written
+    (length <$> versionsOf r) `shouldReturn` versions + 1
+    -- Its own part, the subsections staying; then the top, taken out.
+    (.status) <$> write r "?section=hello&own=true" [] "# Hello\n\nNew lead.\n" `shouldReturn` 200
+    top <- write r "?top=true" [] ""
+    top.status `shouldBe` 200
+    decoded top `shouldReturn` Written {anchor = Nothing, section = Nothing, top = Just (hello <> "?top=true"), version = decodeUtf8 (fromMaybe "" (header "ETag" top))}
+    pageText r `shouldReturn` "# Hello\n\nNew lead.\n## Install\n\nOther steps.\n## Use\n\nRun it.\n"
+    (length <$> versionsOf r) `shouldReturn` versions + 3
+
+  it "answers the new anchor of a heading the body renames, an address that reads the section" $ withPasswords backing $ \r -> do
+    start r
+    answer <- write r "?section=install" [] "## Setup\n\nSteps.\n" >>= decoded
+    (answer.anchor, answer.section) `shouldBe` (Just "setup", Just (hello <> "?section=setup"))
+    (bodyText <$> follow r edgar (fromMaybe "" answer.section)) `shouldReturn` "## Setup\n\nSteps.\n"
+    (.status) <$> request r methodGet "api/markdown/s/blog/p/hello-world/?section=install" [edgar] "" `shouldReturn` 404
+
+  it "is not written over a version saved since, with If-Match" $ withPasswords backing $ \r -> do
+    start r
+    tag <- fromMaybe "" . header "ETag" <$> request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] ""
+    (.status) <$> write r "?section=use" [("If-Match", tag)] "## Use\n\nFirst.\n" `shouldReturn` 200
+    stale <- write r "?section=install" [("If-Match", tag)] "## Install\n\nSecond.\n"
+    (stale.status, errorName stale) `shouldBe` (412, Just "Conflict")
+    pageText r `shouldReturn` "Intro.\n\n# Hello\n\nText.\n\n## Install\n\nSteps.\n\n## Use\n\nFirst.\n"
+
+  it "refuses a body that would change the page outside its section with 422, and saves nothing" $ withPasswords backing $ \r -> do
+    start r
+    versions <- length <$> versionsOf r
+    open <- write r "?section=install" [] "## Install\n\n```\nmake\n"
+    (open.status, errorName open) `shouldBe` (422, Just "Invalid")
+    bodyText open `shouldSatisfy` T.isInfixOf "the section 'use' that follows: check for a code fence or a spoiler left open"
+    deeper <- write r "?section=install" [] "### Install\n"
+    (deeper.status, bodyText deeper) `shouldSatisfy` (\(s, t) -> s == 422 && "must start with a level 2 heading" `T.isInfixOf` t)
+    (.status) <$> write r "?section=install" [] "" `shouldReturn` 422
+    missing <- write r "?section=nowhere" [] "## Nowhere\n"
+    (missing.status, errorName missing) `shouldBe` (404, Just "NotFound")
+    pageText r `shouldReturn` source
+    (length <$> versionsOf r) `shouldReturn` versions
+
+  it "is refused as a whole page's PUT is: to a user who may not edit, a hidden page, an encrypted space, and with If-None-Match" $ withPasswords backing $ \r -> do
+    tour <- request r methodGet "api/markdown/s/docs/p/tour/?top=true" [edgar] ""
+    tour.status `shouldBe` 200
+    refused <- request r methodPut "api/markdown/s/docs/p/tour/?top=true" [edgar] "Not mine to write.\n"
+    (refused.status, errorName refused) `shouldBe` (403, Just "Forbidden")
+    -- The right to edit is asked first: a body that would be refused, or an
+    -- anchor not there, is 403 all the same.
+    (.status) <$> request r methodPut "api/markdown/s/docs/p/tour/?top=true" [edgar] "# A heading in the top\n" `shouldReturn` 403
+    (.status) <$> request r methodPut "api/markdown/s/docs/p/tour/?section=nowhere" [edgar] "" `shouldReturn` 403
+    (.body) <$> request r methodGet "api/markdown/s/docs/p/tour/?top=true" [edgar] "" `shouldReturn` tour.body
+    (.status) <$> request r methodPut "api/markdown/s/team/p/team-handbook/?top=true" [edgar] "Hidden.\n" `shouldReturn` 404
+    admin <- adminWithVault r
+    slug <- encryptedSpace admin
+    sealed <- request r methodPut ("api/markdown/s/" <> slug <> "/?top=true") [ada] "Plain text.\n"
+    (sealed.status, errorName sealed) `shouldBe` (409, Just "Stale")
+    -- While a space is being encrypted, its pages still read as plain
+    -- text, and a section's write is refused as the whole page's is.
+    turning <- convertingSpace admin
+    let home = "api/markdown/s/" <> turning <> "/"
+    unchanged <- request r methodGet home [ada] ""
+    unchanged.status `shouldBe` 200
+    whole <- request r methodPut home [ada] "Plain text.\n"
+    part <- request r methodPut (home <> "?top=true") [ada] "Plain text.\n"
+    (part.status, part.body) `shouldBe` (whole.status, whole.body)
+    (part.status, errorName part) `shouldBe` (409, Just "Stale")
+    (.body) <$> request r methodGet home [ada] "" `shouldReturn` unchanged.body
+    start r
+    (.status) <$> write r "?section=install" [("If-None-Match", "*")] "## Install\n\nOther.\n" `shouldReturn` 400
+    pageText r `shouldReturn` source
+  where
+    source = "Intro.\n\n# Hello\n\nText.\n\n## Install\n\nSteps.\n\n## Use\n\nRun it.\n" :: Text
+    hello = "/api/markdown/s/blog/p/hello-world/"
+    -- The editor's page, Blog's Hello world, written whole with 'source'.
+    start r = (.status) <$> request r methodPut "api/markdown/s/blog/p/hello-world/" [edgar] (toS (encodeUtf8 source)) `shouldReturn` 204
+    write r query hs = request r methodPut ("api/markdown/s/blog/p/hello-world/" <> query) (edgar : hs)
+    pageText r = bodyText <$> request r methodGet "api/markdown/s/blog/p/hello-world/" [edgar] ""
+    decoded :: Reply -> IO Written
+    decoded reply = either (\e -> expectationFailure e >> panic "unreachable") pure (eitherDecode reply.body)
+    -- The page's history, newest first, as the application lists it to the
+    -- editor's session.
+    versionsOf :: Running -> IO [VersionInfo]
+    versionsOf r = do
+      session <- cookie <$> signInAs r "editor" "editor's password"
+      blog :: SpaceId <- (\(s :: S.Space) -> s.id) <$> ok200 (getUrlWith r (r.public <> "/" <> links.spaces.atPath (slugs "blog")) [session])
+      page :: P.Page <- ok200 (getUrlWith r (r.public <> "/" <> links.spaces.pageAt blog (slugs "hello-world")) [session])
+      ok200 (getUrlWith r (r.public <> "/" <> links.pages.versions page.id Nothing Nothing) [session])
+    slugs = either (panic . show) identity . parsePath
 
 -- | A space the admin has encrypted, with its home page, as the browser
 -- encrypts one (the ciphertexts are bytes of no meaning): its slug. The
--- same as the Markdown's tests make ("Test.Server.MarkdownApi").
-encryptedSpace :: Running -> IO Text
-encryptedSpace r = do
-  token <- signInAs r "admin" "admin's password"
-  let as' method path body = send r method (r.public <> "/" <> path) [cookie token, (hContentType, "application/json")] body
-      bytesOf n c = toBase64Url (BS.replicate n c)
-      public = PublicKey (bytesOf 32 65)
-      keyId = fromMaybe (KeyId "") (keyIdOf public)
-      vault = Vault {format = vaultFormat, salt = Salt (bytesOf 32 1), items = Map.singleton identityItem Item {keyId = Just keyId, sealed = Sealed (Nonce (bytesOf 12 2)) (Ciphertext (bytesOf 64 3))}, wraps = Map.singleton ByPassword (WrappedKey (Nonce (bytesOf 12 4)) (Ciphertext (bytesOf 48 5)))}
-      spaceKey = KeyId (bytesOf 16 6)
-  (.status) <$> as' methodPut "api/v1/assistant/vault" (encode VaultChange {vault, publicKey = Just NewPublicKey {keyId, publicKey = public}}) `shouldReturn` 200
+-- same as the Markdown's tests make ("Test.Server.MarkdownApi"), through the
+-- admin's session with a vault ('adminWithVault'), which a test sets once.
+encryptedSpace :: (Method -> Text -> LByteString -> IO Reply, KeyId) -> IO Text
+encryptedSpace (as', keyId) = do
+  let spaceKey = KeyId (bytesOf 16 6)
   made :: S.Space <- as' methodPost "api/v1/spaces" (encode Api.NewSpace {parent = Nothing, name = "Vault room"}) >>= jsonAs 201
   (.status)
     <$> as'
       methodPost
       ("api/v1/encrypted/spaces/" <> made.id.text)
-      (encode EncryptSpace {keyId = spaceKey, grant = NewGrant {recipient = UserId "user-admin", recipientKeyId = keyId, enc = Encapsulated (bytesOf 32 7), sealed = Ciphertext (bytesOf 48 8)}, homePage = NewSealedPage {id = PageId "4c1a6d2f-3e5b-4f7c-9dae-1b2c3d4e5f60", parent = Nothing, pageKey = PageKey {keyId = KeyId (bytesOf 16 20), spaceKeyId = spaceKey, wrapped = WrappedKey (Nonce (bytesOf 12 21)) (Ciphertext (bytesOf 48 22))}, content = SealedContent {tag = VersionTag (bytesOf 16 23), keyId = KeyId (bytesOf 16 20), chain = Just (firstChain (VersionTag (bytesOf 16 30))), title = Sealed (Nonce (bytesOf 12 24)) (Ciphertext (bytesOf 40 25)), body = Sealed (Nonce (bytesOf 12 26)) (Ciphertext (bytesOf 60 27))}, kind = Kind.Document}})
+      (encode EncryptSpace {keyId = spaceKey, grant = grantTo keyId, homePage = NewSealedPage {id = PageId "4c1a6d2f-3e5b-4f7c-9dae-1b2c3d4e5f60", parent = Nothing, pageKey = PageKey {keyId = KeyId (bytesOf 16 20), spaceKeyId = spaceKey, wrapped = WrappedKey (Nonce (bytesOf 12 21)) (Ciphertext (bytesOf 48 22))}, content = SealedContent {tag = VersionTag (bytesOf 16 23), keyId = KeyId (bytesOf 16 20), chain = Just (firstChain (VersionTag (bytesOf 16 30))), title = Sealed (Nonce (bytesOf 12 24)) (Ciphertext (bytesOf 40 25)), body = Sealed (Nonce (bytesOf 12 26)) (Ciphertext (bytesOf 60 27))}, kind = Kind.Document}})
     `shouldReturn` 200
   pure (slugText made.slug)
+
+-- | A plain space of the admin's, with its home page, whose encryption the
+-- admin has started as the browser starts it, and not gone on with: its
+-- pages still read as plain text, and every write in it but the
+-- conversion's is refused. Its slug. Through the admin's session with a
+-- vault ('adminWithVault').
+convertingSpace :: (Method -> Text -> LByteString -> IO Reply, KeyId) -> IO Text
+convertingSpace (as', keyId) = do
+  made :: S.Space <- as' methodPost "api/v1/spaces" (encode Api.NewSpace {parent = Nothing, name = "Turning"}) >>= jsonAs 201
+  (.status) <$> as' methodPost ("api/v1/encrypted/spaces/" <> made.id.text <> "/conversion/encrypt") (encode StartEncrypting {keys = [SpaceKeyStart {space = made.id, keyId = KeyId (bytesOf 16 9), grant = grantTo keyId}]}) `shouldReturn` 200
+  pure (slugText made.slug)
+
+-- | The admin's session, as a way to send the application's API requests,
+-- with a vault and a public key given, as the browser gives them before it
+-- encrypts anything; and the public key's id.
+adminWithVault :: Running -> IO (Method -> Text -> LByteString -> IO Reply, KeyId)
+adminWithVault r = do
+  token <- signInAs r "admin" "admin's password"
+  let as' method path body = send r method (r.public <> "/" <> path) [cookie token, (hContentType, "application/json")] body
+      public = PublicKey (bytesOf 32 65)
+      keyId = fromMaybe (KeyId "") (keyIdOf public)
+      vault = Vault {format = vaultFormat, salt = Salt (bytesOf 32 1), items = Map.singleton identityItem Item {keyId = Just keyId, sealed = Sealed (Nonce (bytesOf 12 2)) (Ciphertext (bytesOf 64 3))}, wraps = Map.singleton ByPassword (WrappedKey (Nonce (bytesOf 12 4)) (Ciphertext (bytesOf 48 5)))}
+  (.status) <$> as' methodPut "api/v1/assistant/vault" (encode VaultChange {vault, publicKey = Just NewPublicKey {keyId, publicKey = public}}) `shouldReturn` 200
+  pure (as', keyId)
+
+-- | A space key sealed to the admin's public key, with bytes of no meaning.
+grantTo :: KeyId -> NewGrant
+grantTo keyId = NewGrant {recipient = UserId "user-admin", recipientKeyId = keyId, enc = Encapsulated (bytesOf 32 7), sealed = Ciphertext (bytesOf 48 8)}
+
+-- | Bytes of no meaning, all one value, as base64url.
+bytesOf :: Int -> Word8 -> Text
+bytesOf n c = toBase64Url (BS.replicate n c)

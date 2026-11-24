@@ -257,7 +257,7 @@ using backing = describe "used by a program" $ do
     (.status) <$> putAt r "list/s/blog/later/" [bearer made.key] "" `shouldReturn` 403
     (.body) <$> getAt r hello [bearer made.key] `shouldReturn` unchanged.body
 
-  it "with the right read, reads a page's contents and a section, and a write to a section is refused for the right first" $ withPasswords backing $ \r -> do
+  it "with the right read, reads a page's contents and a section but writes no section, which the right write does" $ withPasswords backing $ \r -> do
     token <- signInAs r "editor" "editor's password"
     writer <- makeKey r token "editor's password" WriteRight Nothing
     (.status) <$> putAt r hello [bearer writer.key] "# Hello\n\nText.\n" `shouldReturn` 204
@@ -266,12 +266,14 @@ using backing = describe "used by a program" $ do
     contents.status `shouldBe` 200
     bodyText contents `shouldSatisfy` T.isInfixOf "?section=hello"
     (bodyText <$> getAt r (hello <> "?section=hello") [bearer readOnly.key]) `shouldReturn` "# Hello\n\nText.\n"
-    -- A write to a section: refused for the key's right (403) before the
-    -- section's own refusal of every write (405), which the write key gets.
+    -- A write to a section: refused for the key's right, writing nothing;
+    -- the write key writes it.
     refused <- putAt r (hello <> "?section=hello") [bearer readOnly.key] "# Hello\n\nOther.\n"
     refused.status `shouldBe` 403
     bodyText refused `shouldSatisfy` T.isInfixOf "the right write"
-    (.status) <$> putAt r (hello <> "?section=hello") [bearer writer.key] "# Hello\n\nOther.\n" `shouldReturn` 405
+    (bodyText <$> getAt r hello [bearer readOnly.key]) `shouldReturn` "# Hello\n\nText.\n"
+    (.status) <$> putAt r (hello <> "?section=hello") [bearer writer.key] "# Hello\n\nOther.\n" `shouldReturn` 200
+    (bodyText <$> getAt r hello [bearer readOnly.key]) `shouldReturn` "# Hello\n\nOther.\n"
 
   it "with the right write, writes what its user may, and makes a space they may" $ withPasswords backing $ \r -> do
     token <- signInAs r "admin" "admin's password"

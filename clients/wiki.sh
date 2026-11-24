@@ -430,7 +430,7 @@ function value(p,   c) {
   c = substr(s, i, 1)
   if (c == "{") object(p)
   else if (c == "[") array(p)
-  else if (c == "\"") { v[p] = str(); t[p] = "s" }
+  else if (c == "\"") { v[p] = str(); t[p] = "s"; if (inexact) lost[p] = 1 }
   else if (c == "t") literal(p, "true", "bool")
   else if (c == "f") literal(p, "false", "bool")
   else if (c == "n") literal(p, "null", "null")
@@ -485,8 +485,13 @@ function utf8(c) {
   if (c < 65536) return sprintf("%c%c%c", 224 + int(c / 4096), 128 + int(c / 64) % 64, 128 + c % 64)
   return sprintf("%c%c%c%c", 240 + int(c / 262144), 128 + int(c / 4096) % 64, 128 + int(c / 64) % 64, 128 + c % 64)
 }
+# A string, its escapes read exactly: \" \\ \/ \b \f \n \r \t, and \uXXXX
+# as UTF-8, a surrogate pair as one character. Two cannot be held exactly,
+# \u0000 (awk ends a string there) and a surrogate without its pair (no
+# UTF-8 for it): the string is then marked inexact (lost[path]), and a
+# value read as data (json_exact) is refused rather than guessed.
 function str(   out, c, e, h, l) {
-  i++; out = ""
+  i++; out = ""; inexact = 0
   while (i <= n) {
     c = substr(s, i, 1)
     if (c == "\"") { i++; return out }
@@ -496,7 +501,8 @@ function str(   out, c, e, h, l) {
       if (e == "n") out = out "\n"
       else if (e == "t") out = out "\t"
       else if (e == "r") out = out "\r"
-      else if (e == "b" || e == "f") out = out " "
+      else if (e == "b") out = out "\b"
+      else if (e == "f") out = out "\f"
       else if (e == "\"" || e == "\\" || e == "/") out = out e
       else if (e == "u") {
         h = hex(substr(s, i, 4)); i += 4
@@ -505,6 +511,7 @@ function str(   out, c, e, h, l) {
           l = hex(substr(s, i + 2, 4))
           if (l >= 56320 && l < 57344) { h = 65536 + (h - 55296) * 1024 + (l - 56320); i += 6 }
         }
+        if (h == 0 || (h >= 55296 && h < 57344)) { inexact = 1; continue }
         out = out utf8(h)
       }
       else { broken(); return out }
@@ -515,7 +522,10 @@ function str(   out, c, e, h, l) {
   broken()
   return out
 }
-function one_line(x) { gsub(/[\r\n\t]+/, " ", x); return x }
+# A value as it is shown to a person: on one line, each run of control
+# characters (a tab, a line break, a backspace, ...) a space. Never for a
+# value that is compared, recorded or sent (json_exact).
+function one_line(x) { gsub(/[\001-\037\177]+/, " ", x); return x }
 function indent(d,   r) { r = ""; while (d-- > 0) r = r "  "; return r }
 # An address the server gave (a listing'"'"'s list, home and markdown, a hit'"'"'s
 # markdown) as this script prints it: the server'"'"'s own, with the path of
@@ -536,11 +546,32 @@ END {
 }
 '
 
-# A string field of the last answer's JSON, or nothing.
+# A string field of the last answer's JSON, or nothing, on one line: for
+# a message shown to a person.
 json_field() {
   [ -s "$work/body" ] || return 0
   awk -v key="$1" "$json_reader"'
     END { if (t["/" key] == "s") print one_line(v["/" key]) }' "$work/body" 2>/dev/null
+}
+
+# A string field of the last answer's JSON exactly, byte for byte, in
+# exact: for a value that is compared, recorded or sent (a section's
+# anchor). The status is 1, and exact empty, when the field is not a
+# string or holds what the reader cannot keep exactly (str above). The x
+# after it keeps a line break at its end through $(...).
+json_exact() {
+  exact=$(awk -v key="$1" "$json_reader"'
+    END { if (t["/" key] != "s" || lost["/" key]) exit 4; printf "%sx", v["/" key] }' "$work/body" 2>/dev/null) || {
+    exact=''
+    return 1
+  }
+  exact=${exact%x}
+}
+
+# A value as it is shown to a person, on one line: each control character
+# (a tab, a line break, a backspace, ...) a space.
+shown_line() {
+  printf '%s' "$1" | tr '\001-\037\177' '[ *]'
 }
 
 # The listing as an indented tree: each space and each page with the address
@@ -1654,11 +1685,12 @@ read_sidecar() {
 #                 ?want_query for a part
 #   want_named    the part in words, for the messages
 #   want_options  the part as the command line names it, for the hints
+#                 (on one line: shown_line)
 choose_part() {
   if [ -n "$3" ]; then
     want_query=top=true want_options=' --top'
   elif [ -n "$1" ]; then
-    want_query="section=$(query_encode "$1")" want_options=" --section $1"
+    want_query="section=$(query_encode "$1")" want_options=" --section $(shown_line "$1")"
     if [ -n "$2" ]; then
       want_query="$want_query&own=true" want_options="$want_options --own"
     fi
@@ -1687,7 +1719,7 @@ held_named() {
 }
 
 # A query's value as it was before query_encode, for a message: each %XX
-# as its byte, and a control character as ?.
+# as its byte, and a control character as a space, as shown_line shows it.
 query_decode() {
   printf '%s\n' "$1" | awk '
     function hexval(x,   k, r) { r = 0; x = tolower(x); for (k = 1; k <= 2; k++) r = r * 16 + index("0123456789abcdef", substr(x, k, 1)) - 1; return r }
@@ -1697,7 +1729,7 @@ query_decode() {
         c = substr($0, k, 1)
         if (c == "%" && substr($0, k + 1, 2) ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) {
           b = hexval(substr($0, k + 1, 2))
-          out = out (b < 32 || b == 127 ? "?" : sprintf("%c", b))
+          out = out (b < 32 || b == 127 ? " " : sprintf("%c", b))
           k += 2
         } else out = out c
       }
@@ -1833,7 +1865,15 @@ store_page() {
       top=true) expect_answer top-written ;;
       *) expect_answer section-written ;;
     esac || return
-    anchor_after=$(json_field anchor)
+    # The anchor is the section's identity: it is compared with the one
+    # asked for and recorded, so it is read exactly or not at all.
+    if [ "$3" != top=true ]; then
+      if ! json_exact anchor; then
+        fail "$EX_ERROR" "wrote $want_named (the page's version is now $(header_value etag)), but the wiki's answer gives the section's anchor in a form this script cannot read exactly (a \\u0000, or half of a surrogate pair), so nothing is remembered: list the anchors with wiki.sh contents $addr_shown, and get the section again"
+        return
+      fi
+      anchor_after=$exact
+    fi
   else
     check_answer "$addr_shown" || return
     expect_answer written || return
@@ -2406,7 +2446,10 @@ cmd_put() {
   else
     note "wrote $want_named; the page's version is now $page_version"
   fi
-  [ -z "$renamed" ] || note "the section is now at $anchor_after (wiki.sh get $addr_shown --section $anchor_after${own:+ --own})"
+  if [ -n "$renamed" ]; then
+    anchor_shown=$(shown_line "$anchor_after")
+    note "the section is now at $anchor_shown (wiki.sh get $addr_shown --section $anchor_shown${own:+ --own})"
+  fi
 }
 
 # The message of a put at an address with no page.
@@ -2907,7 +2950,11 @@ short_argument() {
   arg=''
   tool_argument "$1" "$2"
   case $? in
-    0) arg=$(cat "$work/arg") ;;
+    0)
+      # The x keeps a line break at the end through $(...).
+      arg=$(cat "$work/arg" && printf x)
+      arg=${arg%x}
+      ;;
     1) [ "$3" = optional ] || { tool_failed "The argument $1 is missing."; return 1; } ;;
     *) tool_failed "The argument $1 must be a$([ "$2" = integer ] && printf 'n') $2."; return 1 ;;
   esac

@@ -628,6 +628,7 @@ suite() {
   incomplete_pairs
   creating
   sections
+  odd_anchors
   round_trip "$public_root" root
   round_trip "$public_wiki" base-path
   url=$public_root user=editor password=$editor_password state=$work/state-$1-a input=/dev/null
@@ -925,6 +926,19 @@ answers_by_kind() {
   fake_etag=$v
   expect 0 "a section's put answered as the wiki answers succeeds"
   check "and the sidecar names its new version" [ "$(head -n 1 "$work/fake-section.md.version")" = '"2026-11-24T00:00:00Z"' ]
+  # An anchor the client cannot read exactly (a \u0000, half of a
+  # surrogate pair) is refused, and nothing is recorded: never a guess.
+  for odd in '\u0000' '\ud800'; do
+    cp "$state_file" "$work/fake-state.before"
+    cp "$work/fake-section.md.version" "$work/fake-sidecar.before"
+    fake_etag='"2026-11-24T00:00:00Z"'
+    fake_answer "{\"anchor\":\"x$odd\",\"section\":\"/api/markdown/s/team/p/x/?section=x\",\"version\":\"\\\"2026-11-24T00:00:00Z\\\"\"}" application/json put /s/team/p/x/ --section x --file "$work/fake-section.md"
+    fake_etag=$v
+    expect 1 "a section's put answered with the anchor x$odd fails"
+    has err "cannot read exactly" "the failure says the anchor x$odd cannot be read exactly"
+    check "after the anchor x$odd, the state file is as it was" cmp -s "$state_file" "$work/fake-state.before"
+    check "after the anchor x$odd, the sidecar is as it was" cmp -s "$work/fake-section.md.version" "$work/fake-sidecar.before"
+  done
   # Through the MCP tools: each answer as above, one tool call each.
   for call in \
     "$html|text/html|200|$v|wiki_write_page|{\"path\":\"/s/team/p/x/\",\"base_version\":\"2026-11-23T00:00:00Z\",\"markdown\":\"x\"}" \
@@ -1253,6 +1267,48 @@ EOF
   client put "$sp" --section time-off --file "$parts/holidays.md"
   expect 0 "the file put as the new anchor goes through"
   cp "$parts/time-off" "$parts/holidays"
+  state=$work/state-$shell-a
+}
+
+# An anchor is an identity, kept byte for byte: headings whose ids hold a
+# tab, a quote and a backslash, and a backspace and a form feed (the ids
+# the server takes: a quote only as &quot;). Each section is read into a
+# file and put back twice, unchanged: no rename is reported, the
+# sidecar's anchor stays as it was, and the page too. contents prints
+# each anchor on one line.
+odd_anchors() {
+  url=$public_root user=editor password=$editor_password state=$work/state-$shell-anchors input=/dev/null
+  ids=$work/ids-$shell
+  mkdir -p "$ids"
+  ip=/s/team/projects/p/ids-$shell/
+  printf '# Ids\n\n## Tab {id="a\tb"}\n\nA tab.\n\n## Quote {id="q&quot;b\\c"}\n\nA quote and a backslash.\n\n## Controls {id="c\bd\fe"}\n\nA backspace and a form feed.\n' >"$ids/page"
+  input=$ids/page
+  client create team/projects "ids-$shell" --title Ids
+  expect 0 "create a page with odd anchors"
+  input=/dev/null
+  client contents "$ip"
+  expect 0 "contents of the page with odd anchors"
+  has out "    h2  a b  Tab" "contents prints an anchor with a tab on one line"
+  has out "    h2  q\"b\\c  Quote" "contents prints an anchor with a quote and a backslash"
+  has out "    h2  c d e  Controls" "contents prints an anchor with a backspace and a form feed on one line"
+  for name in tab quote controls; do
+    case $name in
+      tab) anchor=$(printf 'a\tb') ;;
+      quote) anchor='q"b\c' ;;
+      controls) anchor=$(printf 'c\bd\fe') ;;
+    esac
+    client get "$ip" --section "$anchor" --out "$ids/$name.md"
+    expect 0 "get --section of the anchor with a $name"
+    held=$(sed -n 2p "$ids/$name.md.version")
+    client put "$ip" --section "$anchor" --file "$ids/$name.md"
+    expect 0 "put --section of the anchor with a $name, unchanged"
+    lacks err "the section is now at" "the put of the anchor with a $name reports no rename"
+    check "the sidecar of the anchor with a $name names it as before" [ "$(sed -n 2p "$ids/$name.md.version")" = "$held" ]
+    client put "$ip" --section "$anchor" --file "$ids/$name.md"
+    expect 0 "a second put --section of the anchor with a $name"
+  done
+  client get "$ip"
+  check "the page with odd anchors is as it was" cmp -s "$work/out" "$ids/page"
   state=$work/state-$shell-a
 }
 

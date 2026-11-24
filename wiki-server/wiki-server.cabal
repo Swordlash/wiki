@@ -21,6 +21,7 @@ extra-source-files: migrations/*.sql
                     changelog/*.md
                     changelog.stamp
                     test/schemas/*.rng
+                    test/golden/openapi.json
 
 -- haskell-halogen's examples' stanza: the warnings every package here is built
 -- with (cabal.project makes them errors) and the extensions its code assumes.
@@ -121,6 +122,9 @@ library
         Wiki.Server.Options
         Wiki.Server.Password
         Wiki.Server.Presence
+        Wiki.Server.ProgramApi
+        Wiki.Server.ProgramApi.Combinators
+        Wiki.Server.ProgramApi.Schemas
         Wiki.Server.Rehearsal
         Wiki.Server.Render
         Wiki.Server.Reset
@@ -182,19 +186,23 @@ library
         directory,
         file-embed,
         filepath,
+        generics-sop,
         haskell-halogen-core,
         haskell-halogen-router,
         http-api-data,
         http-client,
         http-client-tls,
+        http-media,
         http-types,
         ki >= 1.0.1.2 && < 1.1,
+        lens,
         mcp-server >= 0.3.0.1 && < 0.4,
         mime-mail,
         network,
         network-uri,
         one-time-password ==3.0.1.0,
         opaque-hs,
+        openapi3 >= 3.2.5 && < 3.3,
         optparse-applicative,
         pandoc,
         pandoc-types,
@@ -208,8 +216,11 @@ library
         serialise,
         servant-client-core,
         servant-multipart,
+        servant,
         servant-server,
+        servant-openapi3 >= 2.1 && < 2.2,
         smtp-mail >= 0.5.0.2,
+        sop-core,
         sqlite-simple,
         stm,
         template-haskell,
@@ -370,6 +381,7 @@ test-suite wiki-server-test
         Test.Server.Options
         Test.Server.Presence
         Test.Server.Program
+        Test.Server.ProgramApi
         Test.Server.Rehearsal
         Test.Server.Render
         Test.Server.Settings
@@ -401,7 +413,9 @@ test-suite wiki-server-test
         Test.Storage.Transactions
     build-depends:
         HUnit,
+        QuickCheck,
         aeson,
+        aeson-pretty,
         base,
         beam-core,
         bytestring,
@@ -418,9 +432,11 @@ test-suite wiki-server-test
         http-client-tls,
         http-types,
         ki,
+        lens,
         mcp-server,
         network,
         opaque-hs,
+        openapi3,
         optparse-applicative,
         pandoc-types,
         process,
@@ -428,6 +444,7 @@ test-suite wiki-server-test
         sel,
         ram,
         servant,
+        servant-openapi3,
         sqlite-simple,
         temporary,
         text,

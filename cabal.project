@@ -118,6 +118,13 @@ source-repository-package
 -- its executable, which the solver plans too, bounds optparse-applicative
 -- below ours. Kept to them, the solver would rebuild aeson, lens and pandoc
 -- with older versions for its sake alone. Its library builds with them.
+-- openapi3 3.2.5 (the OpenAPI document of the API for programs,
+-- Wiki.Server.ProgramApi) bounds aeson below 2.3 and QuickCheck below 2.19,
+-- and servant-openapi3 2.1.0.0 QuickCheck below 2.19, behind the aeson
+-- 2.3.2.0 and the QuickCheck 2.19 everything else is built with; kept to
+-- them, the solver would take aeson 2.2 and rebuild pandoc, servant and
+-- everything above aeson for the document's sake alone. Both build with
+-- them, and their checks of the schemas run in the server's tests.
 allow-newer:
   protolude:*,
   servant:QuickCheck,
@@ -139,7 +146,10 @@ allow-newer:
   webauthn:time,
   bytebuild:base,
   chronos:aeson,
-  one-time-password:optparse-applicative
+  one-time-password:optparse-applicative,
+  openapi3:aeson,
+  openapi3:QuickCheck,
+  servant-openapi3:QuickCheck
 
 -- A test suite's dependencies are optional goals unless this says otherwise:
 -- rather than report that it cannot satisfy them, the solver is free to hand

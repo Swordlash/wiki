@@ -1021,6 +1021,23 @@ out of the log. The links are the application's pages
 `reset-password/<secret>/` and `verify-email/<secret>/`, which a closed wiki
 shows to anyone, as an invitation's.
 
+### The API for programs
+
+Beside `/api/v1`, the public listener serves the API for programs (a local
+assistant, a script): `/api/markdown`, `/api/contents`, `/api/list` and
+`/api/search`, signed in by an API key or a login and password in each
+request, never by the cookie (the README's "The API"). It is a servant type
+of its own, `Wiki.Server.ProgramApi` in `wiki-server`, and describes itself:
+`GET /api/openapi.json` is its OpenAPI 3 document, made from that type by
+servant-openapi3, with every address, its methods, parameters, headers and
+answers by status, the three ways to sign in, and the schema of each JSON
+answer. Anyone may read it, unless the wiki is closed, as
+`/api/markdown/reference`; the admin listener has neither. Load it into a
+client generator, or give it to an assistant that is to use the wiki. The
+MCP server at `/mcp` is named in its description only, and `/api/v1` is not
+in it. `wiki-server/test/golden/openapi.json` holds the document, so that a
+change of the API shows in review.
+
 ### API keys
 
 A user's API keys (`Wiki.Api.ApiKeys`, issue #338) are what a program on
@@ -1507,7 +1524,7 @@ write-ahead log; on PostgreSQL what `pg_database_size` says),
   from the API's own router (`/api/v1/spaces/:space/name`), or
   `/api/v1/events`, `/api/markdown/page` (a page's Markdown read, written or created,
   or one section of it read or written), `/api/markdown/reference`, `/api/list` (a listing of the top level or of
-  any space, or a space created), `/api/contents` (a page's table of contents), `/api/search`, `/mcp` (the MCP server), `/auth/:provider/<step>`, `/static` (the build's files),
+  any space, or a space created), `/api/contents` (a page's table of contents), `/api/search`, `/api/openapi.json` (the API for programs' description), `/mcp` (the MCP server), `/auth/:provider/<step>`, `/static` (the build's files),
   `/page` (a page the server renders), `/healthz`, `/metrics`, and
   `/api/unmatched`, `/auth/unmatched`, `/unmatched` for what matches
   nothing; never an address, so ids make no series and no secret of an

@@ -1,0 +1,1550 @@
+{
+  "components": {
+    "schemas": {
+      "Contents": {
+        "properties": {
+          "headings": {
+            "items": {
+              "$ref": "#/components/schemas/Heading"
+            },
+            "type": "array"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "top": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "version",
+          "headings"
+        ],
+        "type": "object"
+      },
+      "Heading": {
+        "properties": {
+          "anchor": {
+            "type": "string"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/Heading"
+            },
+            "type": "array"
+          },
+          "inSpoiler": {
+            "type": "boolean"
+          },
+          "level": {
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer"
+          },
+          "section": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "level",
+          "text",
+          "anchor",
+          "inSpoiler",
+          "children"
+        ],
+        "type": "object"
+      },
+      "HitEntry": {
+        "properties": {
+          "excerpt": {
+            "type": "string"
+          },
+          "excerptMarked": {
+            "$ref": "#/components/schemas/Snippet"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "space": {
+            "$ref": "#/components/schemas/HitSpace"
+          },
+          "title": {
+            "type": "string"
+          },
+          "titleMarked": {
+            "$ref": "#/components/schemas/Snippet"
+          }
+        },
+        "required": [
+          "title",
+          "titleMarked",
+          "space",
+          "markdown",
+          "excerpt",
+          "excerptMarked"
+        ],
+        "type": "object"
+      },
+      "HitSpace": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "title"
+        ],
+        "type": "object"
+      },
+      "Hits": {
+        "properties": {
+          "hits": {
+            "items": {
+              "$ref": "#/components/schemas/HitEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "hits"
+        ],
+        "type": "object"
+      },
+      "NewSpace": {
+        "properties": {
+          "encrypted": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "OpenApiDocument": {
+        "additionalProperties": true,
+        "description": "An OpenAPI 3.0 document: https://spec.openapis.org/oas/v3.0.3",
+        "required": [
+          "openapi",
+          "info",
+          "paths"
+        ],
+        "type": "object"
+      },
+      "PageEntry": {
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/PageEntry"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PageKind"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "template": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated": {
+            "$ref": "#/components/schemas/UTCTime"
+          }
+        },
+        "required": [
+          "title",
+          "kind",
+          "markdown",
+          "updated",
+          "template"
+        ],
+        "type": "object"
+      },
+      "PageKind": {
+        "description": "A page's kind: document or presentation, or a kind another version of the wiki made, by its name.",
+        "type": "string"
+      },
+      "Piece": {
+        "properties": {
+          "match": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "match"
+        ],
+        "type": "object"
+      },
+      "RefusalBody": {
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "Snippet": {
+        "description": "Pieces of text that, joined in order, are the text; a piece with match true is a word of the query.",
+        "items": {
+          "$ref": "#/components/schemas/Piece"
+        },
+        "type": "array"
+      },
+      "SpaceEntry": {
+        "properties": {
+          "encrypted": {
+            "type": "boolean"
+          },
+          "home": {
+            "type": "string"
+          },
+          "list": {
+            "type": "string"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/PageEntry"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": "string"
+          },
+          "subspaces": {
+            "items": {
+              "$ref": "#/components/schemas/SpaceEntry"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "path",
+          "encrypted"
+        ],
+        "type": "object"
+      },
+      "TopLevel": {
+        "properties": {
+          "spaces": {
+            "items": {
+              "$ref": "#/components/schemas/SpaceEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "spaces"
+        ],
+        "type": "object"
+      },
+      "UTCTime": {
+        "example": "2016-07-22T00:00:00Z",
+        "format": "yyyy-mm-ddThh:MM:ssZ",
+        "type": "string"
+      },
+      "Written": {
+        "properties": {
+          "anchor": {
+            "type": "string"
+          },
+          "section": {
+            "type": "string"
+          },
+          "top": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "apiKey": {
+        "description": "An API key, as Bearer takes it, in a header of its own.",
+        "in": "header",
+        "name": "X-API-Key",
+        "type": "apiKey"
+      },
+      "basic": {
+        "description": "The user's login and password, as curl -u sends them.",
+        "scheme": "basic",
+        "type": "http"
+      },
+      "bearer": {
+        "bearerFormat": "wiki_<id>_<secret>",
+        "description": "An API key, made in the user's settings: Authorization: Bearer <key>.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "What a program on the user's own machine (a local assistant, a script) reads and writes in the wiki: a page's Markdown, whole or a section at a time, its table of contents, the listing of the spaces and their pages, and the search. Every request signs in with an API key of the user's (Authorization: Bearer, or X-API-Key) or with the user's login and password (HTTP Basic), and acts as the user: the spaces' permissions apply as they are. A key's right narrows what the user may do: read allows GET and HEAD, write the rest too. The session's cookie is never read here. Every refusal is JSON, {\"error\": name, \"message\": why}. The wiki's MCP server, for assistants, is at /mcp (POST, JSON-RPC over HTTP, signed in by a key as Bearer); it is not described here, as it is no REST API.",
+    "title": "The wiki's API for programs",
+    "version": "1"
+  },
+  "openapi": "3.0.0",
+  "paths": {
+    "/api/contents/s/{address}": {
+      "get": {
+        "description": "The page's title, its version (the value of the Markdown's ETag, quotes included, to send as If-Match), the address of its Markdown, the address of its top when it has text before its first heading, and its headings in the page's order, nested by level, each with its anchor and the address of its section. The headings are those of the page's Contents list; a heading inside a block spoiler is listed under the heading whose section holds the spoiler, with inSpoiler true.",
+        "operationId": "readContents",
+        "parameters": [
+          {
+            "description": "The page's address in the browser after /s/, as for its Markdown: team/projects/p/the-wiki/, or team/ for the space's home page. It may be sent with its slashes escaped, as for its Markdown.",
+            "in": "path",
+            "name": "address",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Contents"
+                }
+              }
+            },
+            "description": "The table of contents, with the page's version as the ETag.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "pattern": "^\"[^\"]+\"$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "There is no page at the address, or one the user may not read: the same answer for both."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The page is in an encrypted space, whose text the server cannot read (Stale)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Read a page's table of contents"
+      }
+    },
+    "/api/list": {
+      "get": {
+        "description": "Every space the user may read, from the top level down, each with its subspaces and the pages under its home page. A space above one the user may read is listed with its title, its path and its subspaces only. An encrypted space is listed with encrypted true and no pages.",
+        "operationId": "listSpaces",
+        "parameters": [
+          {
+            "description": "How many levels down the tree goes: 1 is the top level's spaces with neither their subspaces nor their pages. Without it, the whole tree. Where the tree is cut, subspaces, pages and children are left out.",
+            "in": "query",
+            "name": "depth",
+            "required": false,
+            "schema": {
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopLevel"
+                }
+              }
+            },
+            "description": "The spaces of the top level.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "depth is not a number from 1 up. Or the sign-in refused it: The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "List every space the user may read"
+      }
+    },
+    "/api/list/s/{space}": {
+      "get": {
+        "description": "One space, with its subspaces and the pages under its home page, as trees.",
+        "operationId": "listSpace",
+        "parameters": [
+          {
+            "description": "The space's path from the top level, its slugs separated by slashes and ending in a slash: team/projects/. It may be sent with its slashes escaped (team%2Fprojects%2F), as a client generated from this document sends a path parameter.",
+            "in": "path",
+            "name": "space",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "How many levels down the tree goes: 1 is the space's subspaces and the pages under its home page, without what is under them. Without it, the whole tree.",
+            "in": "query",
+            "name": "depth",
+            "required": false,
+            "schema": {
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceEntry"
+                }
+              }
+            },
+            "description": "The space.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "depth is not a number from 1 up. Or the sign-in refused it: The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "There is no space at the path, or one the user may not read: the same answer for both. For a PUT: no space above the path."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "List a space"
+      },
+      "put": {
+        "description": "Creates the space at the path, as the wiki's New space does: a private space with its home page, and the user its administrator. The path's last slug is the new space's slug, and the slugs before it name the space it goes under, which has to exist. A PUT here only creates: it never changes a space.",
+        "operationId": "createSpace",
+        "parameters": [
+          {
+            "description": "The space's path from the top level, its slugs separated by slashes and ending in a slash: team/projects/. It may be sent with its slashes escaped (team%2Fprojects%2F), as a client generated from this document sends a path parameter.",
+            "in": "path",
+            "name": "space",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewSpace"
+              }
+            }
+          },
+          "description": "The new space's title, or an empty body: the title is then made from the slug. A field of another name is refused."
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceEntry"
+                }
+              }
+            },
+            "description": "The space created: its listing, whose address is the Location.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The body is not a space's JSON, it asks for an encrypted space (made in the browser only), or a segment of the path is not a slug. Or the sign-in refused it: The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The user may not create a space there. Or the sign-in refused it: A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "There is no space at the path, or one the user may not read: the same answer for both. For a PUT: no space above the path."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "There is a space at the path already, or the space above it is encrypted."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Create a space"
+      }
+    },
+    "/api/markdown/reference": {
+      "get": {
+        "description": "What the writing assistant is told about the wiki's Markdown: the same text its prompt starts with. Anyone may read it, unless the wiki is closed to anyone who has not signed in.",
+        "operationId": "readReference",
+        "responses": {
+          "200": {
+            "content": {
+              "text/markdown;charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The reference, as text/markdown.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "In a wiki closed to anyone who has not signed in: The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "In a wiki closed to anyone who has not signed in: The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "In a wiki closed to anyone who has not signed in: A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "In a wiki closed to anyone who has not signed in: Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Read the wiki's Markdown reference"
+      }
+    },
+    "/api/markdown/s/{address}": {
+      "get": {
+        "description": "The page's Markdown as stored, with the page's version as the ETag. With section, one section of it, character for character: from its heading's line to the next heading of the same or a higher level, its subsections included, or with own=true to the next heading of any level. With top=true, the text before the first heading. The top and every section with own=true, in order, are the whole page. The ETag is the page's: a part has no version of its own.",
+        "operationId": "readMarkdown",
+        "parameters": [
+          {
+            "description": "The page's address in the browser after /s/: the space's path, then /p/ and the page's path under the space's home page, ending in a slash (team/projects/p/the-wiki/). The space's path alone (team/) is the space's home page. A slug that is one of the addresses' own words is written with a ~ (p/~history/). The address spans several segments, and may be sent with its slashes escaped (team%2Fprojects%2Fp%2Fthe-wiki%2F), as a client generated from this document sends a path parameter.",
+            "in": "path",
+            "name": "address",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The anchor of a section, one of the anchors of the page's contents (api/contents): that section is read instead of the whole page.",
+            "in": "query",
+            "name": "section",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "With section, true reads the section's own text only, without its subsections. Alone (?own) it is true.",
+            "in": "query",
+            "name": "own",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "true reads the text before the first heading instead of the whole page; not with section. Alone (?top) it is true.",
+            "in": "query",
+            "name": "top",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/markdown;charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The Markdown, as text/markdown, with the page's version as the ETag.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "pattern": "^\"[^\"]+\"$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "A parameter that does not do: section with top, own or top other than true or false, section or top without the other's value, a value that is not UTF-8. Or the sign-in refused it: The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "There is no page at the address, or one the user may not read: the same answer for both. A section's anchor the page does not have (the message names the page's anchors). For a PUT that would create a page: no page above the address (nothing is created on the way), or If-Match where there is no page."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The page is in an encrypted space: its text is encrypted in its members' browsers, and the server cannot read it (Stale)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Read a page's Markdown, or one part of it"
+      },
+      "put": {
+        "description": "The body becomes the page's whole Markdown, as a save in the editor: a new version in the history under the user's name, the change pushed to everyone with the page open, the same notifications; the title stays. Where there is no page, the PUT creates one, as the wiki's New page does: the address's last slug is its slug, and the slugs before it name the page above it, which has to exist. With section or top, the body takes the place of that part of the page alone, and the rest of the page stays as it is; the server ends the body with a line break when it has none. If-Match with the version from the ETag makes the write conditional: a page saved since is refused, and nothing is written. Without it, the write goes over whatever is there, and a part is written in the page as it is when the request comes.",
+        "operationId": "writeMarkdown",
+        "parameters": [
+          {
+            "description": "The page's address in the browser after /s/: the space's path, then /p/ and the page's path under the space's home page, ending in a slash (team/projects/p/the-wiki/). The space's path alone (team/) is the space's home page. A slug that is one of the addresses' own words is written with a ~ (p/~history/). The address spans several segments, and may be sent with its slashes escaped (team%2Fprojects%2Fp%2Fthe-wiki%2F), as a client generated from this document sends a path parameter.",
+            "in": "path",
+            "name": "address",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The anchor of the section to write instead of the whole page.",
+            "in": "query",
+            "name": "section",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "With section, true writes the section's own text only: the body has no subsections, and the section's subsections stay. Alone (?own) it is true.",
+            "in": "query",
+            "name": "own",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "true writes the text before the first heading; an empty body takes it out. Alone (?top) it is true.",
+            "in": "query",
+            "name": "top",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "A new page's title; without it, the title is made from the slug (release-notes is titled Release notes). Only for a page the PUT creates.",
+            "in": "query",
+            "name": "title",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A new page's kind: document (the default) or presentation. Only for a page the PUT creates.",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The version the write is made over, as the ETag gave it: a page saved since is refused (412). Never creates a page.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "pattern": "^\"[^\"]+\"$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "* creates the page only where there is none (412 where there is one). Not with a part.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "text/markdown": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "The Markdown, in UTF-8, whatever the Content-Type says."
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Written"
+                }
+              }
+            },
+            "description": "A section written, or the text before the first heading: its anchor, which the body's heading may have changed, its address, and the page's new version, which is also the ETag.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "pattern": "^\"[^\"]+\"$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "A page created where there was none: its address is the Location, and its version the ETag.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "pattern": "^\"[^\"]+\"$",
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The page saved: its new version is the ETag.",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "pattern": "^\"[^\"]+\"$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "A parameter or a header that does not do, as for the GET; If-Match that is not a version from an ETag; If-None-Match other than *, or any If-None-Match with a part; a body that is not UTF-8; a segment of the address that is not a slug; a title or a kind that a new page cannot have. Or the sign-in refused it: The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The user may read the page but not edit it, or may not create a page there. Or the sign-in refused it: A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "There is no page at the address, or one the user may not read: the same answer for both. A section's anchor the page does not have (the message names the page's anchors). For a PUT that would create a page: no page above the address (nothing is created on the way), or If-Match where there is no page."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The page, or the page above a new one, is in an encrypted space, whose text the server can neither read nor write (Stale)."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The page has been saved since the version in If-Match, or there is a page already and If-None-Match: * asks to create one only where there is none. Nothing is written."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "A part's body is not that one part, or would change the page outside it: the message says what would change, and nothing is saved. An empty body, but for the top."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Write a page's Markdown, one part of it, or a new page"
+      }
+    },
+    "/api/openapi.json": {
+      "get": {
+        "description": "This OpenAPI document, made from the server's own type of the API, so that it says what the server does. Anyone may read it, unless the wiki is closed to anyone who has not signed in.",
+        "operationId": "readDescription",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenApiDocument"
+                }
+              }
+            },
+            "description": "The OpenAPI 3 document.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "In a wiki closed to anyone who has not signed in: The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "In a wiki closed to anyone who has not signed in: The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "In a wiki closed to anyone who has not signed in: A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "In a wiki closed to anyone who has not signed in: Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Read this description of the API"
+      }
+    },
+    "/api/search": {
+      "get": {
+        "description": "The wiki's own search, the one behind its search box, with the same rules: what the user may read, and no encrypted space. The hits come best first, each with the page's title, its space, the address of its Markdown and an excerpt of its text around the first match, as plain text and as marked pieces.",
+        "operationId": "search",
+        "parameters": [
+          {
+            "description": "The words to search for.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A space's path (team/projects): the search keeps to that space and its subspaces. A space the user may not read finds nothing.",
+            "in": "query",
+            "name": "space",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "How many hits: 50 by default, 200 at most.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Hits"
+                }
+              }
+            },
+            "description": "The hits.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "No words to search for, a space that is not a space's path, or a limit that is not a number. Or the sign-in refused it: The request carries more than one credential: an API key beside a login and a password, two different keys, or one of the headers twice."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "The request has no credential, or one that does not sign in: a wrong login or password, an account that cannot sign in with a password (one with passkeys only), or an API key that is not this wiki's, has expired or has been revoked, or whose user cannot sign in. WWW-Authenticate says how to sign in.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "A password of an account with a second factor (an API key signs it in), a key whose right does not allow the method (read allows GET and HEAD), or a key with the right admin whose user is no longer an administrator."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefusalBody"
+                }
+              }
+            },
+            "description": "Too many failed sign-ins: of the login from the address, or of keys from the address. Retry-After says in how many seconds to try again.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basic": []
+          },
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Search the pages the user may read"
+      }
+    }
+  }
+}

@@ -462,6 +462,38 @@ administrator smoke loadsRef = do
     listed' `shouldReturn` 401
     nothingWrongOnServer page
 
+  -- A plugin turned off for everyone in the administration's
+  -- "Permissions": a user's settings show it off, its switch disabled,
+  -- with the reason; the activity log names the change. Turned on again
+  -- after, for the steps that follow.
+  step' "turns the errors of formulas off for everyone, which her settings show disabled with the reason" $ \w -> do
+    let page = w.page
+        errorsOff = "#app .admin-plugin[data-plugin=errors] .admin-plugin-off"
+        errorsRow = "#app .plugin[data-plugin=errors]"
+    visit page (address smoke "/admin/permissions/")
+    waitQuiet page
+    hasText (locator page "#app .admin-plugins h2") "Plugins"
+    check (locator page errorsOff)
+    waitQuiet page
+    off <- asAdmin smoke "GET" "admin/plugins" Nothing >>= apiJson
+    off `shouldBe` object ["off" .= ["errors" :: Text]]
+    visit page (address smoke "/settings/plugins/")
+    waitQuiet page
+    hasText (locator page "#app .settings-view h1") "Plugins"
+    getAttribute (locator page (errorsRow <> " .plugin-toggle")) "disabled" `shouldReturn` Just ""
+    textContent (locator page (errorsRow <> " .plugin-off-for-wiki")) >>= \t ->
+      expect ("An administrator has turned this plugin off for everyone" `Text.isPrefixOf` t) ("the reason given: " <> show t)
+    hasText (locator page (errorsRow <> " .plugin-state")) "Off"
+    visit page (address smoke "/admin/activity/")
+    waitQuiet page
+    hasText (locator page "#app .activity-what") "Changed which plugins are off for everyone"
+    visit page (address smoke "/admin/permissions/")
+    waitQuiet page
+    uncheck (locator page errorsOff)
+    waitQuiet page
+    asAdmin smoke "GET" "admin/plugins" Nothing >>= apiJson >>= (`shouldBe` object ["off" .= ([] :: [Text])])
+    nothingWrongOnServer page
+
 ----------------------------------------------------------------------
 -- 2: a visitor, a closed wiki, a provider
 

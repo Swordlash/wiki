@@ -81,6 +81,7 @@ import Wiki.Api.Events (ClientMessage (..), PageEvent (CommentAdded, Editing, Pa
 import Wiki.Api.Events qualified as Events
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), Notifications (..), NotificationsApi (..))
 import Wiki.Api.Opaque (RegistrationChallenge (..))
+import Wiki.Api.Plugins (noPlugins)
 import Wiki.Api.Security (SecondFactorState (..))
 import Wiki.Api.ServerSettings (HomePage (showAnonymous), ServerSettings, ServerSettingsOf (homePage), noServerSettings)
 import Wiki.Api.Stars (StarredPage)
@@ -99,6 +100,7 @@ import Wiki.App.Backend.Http.Preload (encodePreload, preloadId)
 import Wiki.App.Backend.Mem (newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Backend.Notifications (MonadNotifications (..))
+import Wiki.App.Backend.Plugins (MonadPlugins (..))
 import Wiki.App.Backend.Stars (MonadStars (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
@@ -394,6 +396,9 @@ serveDemo = do
       pure (named, watched, linking)
   answerWith "GET" (endpointUrl (\e -> e.notifications.list)) 200 Notifications {unread = 0, items = []}
   answerWith "GET" (endpointUrl (\e -> e.stars.list)) 200 ([] :: [StarredPage])
+  -- Which plugins are on, which the shell reads with the session: nothing
+  -- off and nothing chosen.
+  answerWith "GET" (endpointUrl (\e -> e.plugins)) 200 noPlugins
   for_ named $ \(logins, found) -> unless (null logins) (answerWith "GET" (endpointUrl (\e -> e.notifications.people logins)) 200 found)
   for_ watched $ \(url, w) -> answerWith "GET" url 200 w
   for_ linking $ \(url, listed) -> answerWith "GET" url 200 listed
@@ -534,7 +539,7 @@ testRouter = panic "the backend's browser tests run in a browser"
 #endif
 
 -- | A program against the server, through the page's fetch.
-overHttp :: HttpEnv -> (forall n. (MonadLoad n, MonadComments n, MonadNotifications n, MonadStars n) => n a) -> PageM s a
+overHttp :: HttpEnv -> (forall n. (MonadLoad n, MonadComments n, MonadNotifications n, MonadStars n, MonadPlugins n) => n a) -> PageM s a
 overHttp env program = unsafeIOToPageM (runHttpWiki env program)
 
 -- | The reads look once, with the program quiet ('readsOnce'). The
@@ -1262,6 +1267,8 @@ views m = describe "the application over it" $ do
         _ <- notifications
         -- The wiki's home, whose icon is the favicon away from the spaces.
         _ <- getHomeDocument
+        -- Which plugins are on, read with the session.
+        _ <- pluginsNow
         pure ((\p -> p.id) <$> rightToMaybe page)
     carried <- unsafeIOToPageM (cacheOf reading)
     serverStops
@@ -1454,6 +1461,8 @@ comments m = describe "a page's comments" $ do
       _ <- starred
       -- The wiki's home, whose icon is the wiki's favicon.
       _ <- getHomeDocument
+      -- Which plugins are on, read with the session.
+      _ <- pluginsNow
       pure (page, threads)
     carried <- unsafeIOToPageM (cacheOf reading)
     serverStops

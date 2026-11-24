@@ -93,9 +93,10 @@ spec site = do
       Just b -> expect (b.x >= 0 && b.x + b.width <= fromIntegral width && b.height <= fromIntegral height) ("the dialog of a user does not fit a phone's screen: " <> show b)
       Nothing -> expectationFailure "the dialog of a user is not drawn"
     -- Escape closes the dialog in the browser, which tells the program by
-    -- the dialog's close event, with the next frame: the press settles
-    -- after that frame and the program's handling of the event.
-    press page "Escape"
+    -- the dialog's close event, with the browser's next frame. The press's
+    -- settle waits for that frame only up to a bound, so the close event
+    -- is waited for: the call returns once the program has handled it.
+    waitForEvent (OnElement (locator page "#app .user-dialog")) "close" (press page "Escape")
     count (locator page "#app .user-dialog") `shouldReturn` 0
     -- The server's form, in its own section.
     _ <- load site gate page "/admin/server/"

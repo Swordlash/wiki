@@ -2747,6 +2747,11 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   at the top level, since it is built in; the plugins' list has its
   switch and a link to its options. An external plugin's options,
   when there are such plugins, are shown inside "Plugins".
+  **Merged: B (#368), A1 (#370), A2 (#372); the tag `1.0.0-alpha3`
+  was made before them (the owner's word).** In A2 the assistant's own
+  capabilities are `Wiki.App.Plugin.Capability.Assistant`, and the
+  test of imports lets only the assistant import them. **Left of the
+  first package: C.**
   **A is two pull requests:** A1 (branch `plugins-interface`: the
   interface as far as `diagnostics` needs it, the `errors` plugin,
   the registry, the pure function `contributed`, the test of imports)

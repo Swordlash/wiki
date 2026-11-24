@@ -3033,6 +3033,7 @@ path; a full address of the wiki, which does, is taken too.
 | `wiki_page_outline` | A page's headings as a tree, each with its anchor; how long the text before the first heading is (`topCharacters`); and the page's version. |
 | `wiki_read_section` | One section of a page by its anchor (`own` without its subsections), or with `top` the text before the first heading, and the page's version. |
 | `wiki_write_page` | Replaces a page's whole Markdown, over `base_version`, the version read: a page saved since is not written, and the assistant is told to read it again and merge. |
+| `wiki_write_section` | Replaces one section of a page by its anchor (`own` without its subsections), or with `top` the text before the first heading, over `base_version`, as the HTTP API's `PUT …?section=` does: the body is the whole section from its heading, a body that would change anything outside the section is refused with the API's sentence, and the result is the section's anchor after the write and the page's new version. For a change to one part of a long page, it sends less than `wiki_write_page` and cannot damage the other sections. |
 | `wiki_create_page` | Creates a page at a path where there is none, with its Markdown and a `title`. |
 | `wiki_markdown_reference` | The wiki's Markdown reference: its sections, or one of them. |
 
@@ -3043,7 +3044,8 @@ its outline, its sections and the text before its first heading, a tree one
 space at a time). A single section's own text, or the text before the first
 heading, longer than that cannot be read in smaller parts. The server's
 instructions to the assistant say how a page is named, to read before
-writing, and to look a construct up in the reference before using it.
+writing, to write one section alone when only it changes, and to look a
+construct up in the reference before using it.
 
 To add the wiki to **Claude Code** for yourself, with the key in a variable
 of your shell:

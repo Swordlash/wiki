@@ -21,7 +21,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (slugs, startOn, startWith)
-import Test.Browser.Text (completing, editorHost, editorSelection, editorText, inputsSeen, markdown, selectText, setMarkdown, utf16Length, watchEditor)
+import Test.Browser.Text (completing, completionAnswered, editorHost, editorSelection, editorText, inputsSeen, markdown, selectText, setMarkdown, utf16Length, watchEditor)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend (MonadWiki (..))
@@ -50,13 +50,34 @@ js_frames :: IO ()
 js_frames = if inBrowser then wait =<< js_framesPromise else pure inert
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
-spec m = do
+-- The reads look once, with the program idle ('readsOnce'): a group that
+-- types into the editor cannot read at quiet, which would sit out the
+-- editor's pause before it saves a draft after each change of the text.
+-- CodeMirror is put in place in a fork, which only quiet covers: each
+-- example waits for quiet once after its start ('editing', 'openDeck'),
+-- and again after what puts CodeMirror in place anew.
+--
+-- The search runs on CodeMirror at once, in the program's own steps: the
+-- query the panel asks for is counted and its matches marked in the
+-- transaction that sets it; a step or a Replace selects its match, and
+-- opens a fold the match is in, in a transaction of its own; and the
+-- count comes back to the component in an event that the same call
+-- dispatches (@web/src/editor.js@'s @search@, @searchStep@,
+-- @searchReplace@). So the reads wait for the program alone, but for two
+-- things that are CodeMirror's own: the completion's list, which comes on
+-- a timer of CodeMirror's ('completionAnswered'), and the scroll to a
+-- match, which CodeMirror does in its next measure ('masterSelectionSeen').
+-- After a change of the text with the panel open, the count comes on a
+-- timer of the editor's own (@countDelay@), which the program does not
+-- count: no example reads such a count. Each count read here follows a
+-- change of the query, a Replace, or the panel's opening.
+spec m = readsOnce Idle $ do
   it "finds from the text with Ctrl+F, the selection the text to find, and steps with Enter into a folded spoiler, which opens, and far down, the text scrolling to it, past the end and back; Escape gives the focus back at the match" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     setMarkdown ui page
     host <- editorHost ui
-    unsafeIOToPageM (foldLines host [(5, 7)])
-    unsafeIOToPageM (foldedLines host) `shouldReturn` [(5, 7)]
+    perform (foldLines host [(5, 7)])
+    folded ui `shouldReturn` [(5, 7)]
     watchEditor ui
     (atFirst, atHidden, atLast) <- case needles page of
       [a, b, c] -> pure (a, b, c)
@@ -65,44 +86,44 @@ spec m = do
     press "Control+f"
     field <- find ui ".editor-search-find"
     getProperty field "value" `shouldReturn` "needle"
-    searchFocus `shouldReturn` "find"
-    fieldSelection `shouldReturn` [0, 6, 6]
-    eventually $ said ui `shouldReturn` "1 of 3"
+    searchFocus ui `shouldReturn` "find"
+    fieldSelection ui `shouldReturn` [0, 6, 6]
+    said ui `shouldReturn` "1 of 3"
     -- The match in sight is marked as the current one; the others are not
     -- drawn.
-    eventually $ marks `shouldReturn` [(-1, "needle", True)]
+    marks ui `shouldReturn` [(-1, "needle", True)]
     -- Into the folded spoiler, which opens; the focus stays in the field.
     press "Enter"
-    eventually $ unsafeIOToPageM (foldedLines host) `shouldReturn` []
+    folded ui `shouldReturn` []
     editorSelection ui `shouldReturn` (atHidden, atHidden + 6)
-    eventually $ said ui `shouldReturn` "2 of 3"
-    searchFocus `shouldReturn` "find"
+    said ui `shouldReturn` "2 of 3"
+    searchFocus ui `shouldReturn` "find"
     -- Far down: the text scrolls to it.
     press "Enter"
     editorSelection ui `shouldReturn` (atLast, atLast + 6)
-    eventually $ said ui `shouldReturn` "3 of 3"
-    eventually $ unsafeIOToPageM js_master_selection_seen `shouldReturn` True
+    said ui `shouldReturn` "3 of 3"
+    masterSelectionSeen ui `shouldReturn` True
     -- Past the end to the start, and back with Shift+Enter and Shift+F3.
     press "Enter"
     editorSelection ui `shouldReturn` (atFirst, atFirst + 6)
-    eventually $ said ui `shouldReturn` "1 of 3, from the start"
+    said ui `shouldReturn` "1 of 3, from the start"
     press "Shift+Enter"
     editorSelection ui `shouldReturn` (atLast, atLast + 6)
-    eventually $ said ui `shouldReturn` "3 of 3, from the end"
+    said ui `shouldReturn` "3 of 3, from the end"
     press "Shift+F3"
     editorSelection ui `shouldReturn` (atHidden, atHidden + 6)
     -- Escape: the panel goes, the text has the focus at the match.
     press "Escape"
-    eventually $ length <$> findAll ui ".editor-search" `shouldReturn` 0
-    searchFocus `shouldReturn` "master"
+    length <$> findAll ui ".editor-search" `shouldReturn` 0
+    searchFocus ui `shouldReturn` "master"
     editorSelection ui `shouldReturn` (atHidden, atHidden + 6)
-    marks `shouldReturn` []
+    marks ui `shouldReturn` []
     -- The search changed nothing.
     inputsSeen ui `shouldReturn` 0
     markdown ui `shouldReturn` page
 
   it "opens with Ctrl+F anywhere in the editor and gives the focus back there when no step was made; Ctrl+F in its field selects the field's text; F3 opens it too" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     setMarkdown ui page
     -- From the editor's "Save and close": the browser's find does not
     -- open, the editor's does, with the text to find empty (nothing is
@@ -110,35 +131,35 @@ spec m = do
     find ui ".editor-save-close" >>= focus
     press "Control+f"
     field <- find ui ".editor-search-find"
-    searchFocus `shouldReturn` "find"
+    searchFocus ui `shouldReturn` "find"
     getProperty field "value" `shouldReturn` ""
     typeText field "needle"
-    eventually $ said ui `shouldReturn` "3 matches"
+    said ui `shouldReturn` "3 matches"
     -- Ctrl+F again in the field: the text is selected, to type over.
     press "Control+f"
-    fieldSelection `shouldReturn` [0, 6, 6]
+    fieldSelection ui `shouldReturn` [0, 6, 6]
     press "Escape"
-    eventually $ length <$> findAll ui ".editor-search" `shouldReturn` 0
-    searchFocus `shouldReturn` "elsewhere editor-save-close"
+    length <$> findAll ui ".editor-search" `shouldReturn` 0
+    searchFocus ui `shouldReturn` "elsewhere editor-save-close"
     -- A selection over two lines is not taken: the text to find stays.
     selectText ui 2 20
     press "F3"
     field' <- find ui ".editor-search-find"
     getProperty field' "value" `shouldReturn` "needle"
-    searchFocus `shouldReturn` "find"
+    searchFocus ui `shouldReturn` "find"
     press "Escape"
-    searchFocus `shouldReturn` "master"
+    searchFocus ui `shouldReturn` "master"
     editorSelection ui `shouldReturn` (2, 20)
 
   it "steps through matches of no length, line by line, and leaves Ctrl+F to the browser while the preview is shown alone" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     setMarkdown ui "# Hello, world\n\nA\nB\nC"
     selectText ui 2 2
     press "Control+f"
     find ui ".editor-search-regexp" >>= click
     find ui ".editor-search-find" >>= (`typeText` "^")
     -- Four: the line's start before the title line's "# " is none.
-    eventually $ said ui `shouldReturn` "4 matches"
+    said ui `shouldReturn` "4 matches"
     for_ [15, 16, 18, 20] $ \at -> do
       press "Enter"
       editorSelection ui `shouldReturn` (at, at)
@@ -146,7 +167,7 @@ spec m = do
     -- The preview shown alone: the text and the panel are hidden, and
     -- Ctrl+F is not the editor's.
     find ui ".editor-show-preview" >>= click
-    eventually $ find ui ".editor-back" >>= shouldBeVisible
+    find ui ".editor-back" >>= shouldBeVisible
     press "Control+f"
     length <$> findAll ui ".editor-search" `shouldReturn` 0
 
@@ -164,7 +185,7 @@ spec m = do
   -- none of "#|x": then nothing is stepped to or replaced.
   for_ [False, True] $ \bySlide ->
     it ("visits each match counted once in order and replaces as Replace all does, for every query of a table" <> (if bySlide then ", slide by slide" else ", in the raw Markdown")) $ runPage $ do
-      ui <- if bySlide then openDeck m "# Title\n\nax" else fst <$> startWith m (Just "user-editor") helloEditor
+      ui <- if bySlide then openDeck m "# Title\n\nax" else editing
       let case' text (whole, pattern') = do
             setMarkdown ui text
             selectText ui 2 2
@@ -175,8 +196,8 @@ spec m = do
             clear field
             typeText field pattern'
             let asked = pattern' <> (if whole then " (whole word)" else "")
-            n <- eventually $ do
-              shown <- said ui
+            shown <- said ui
+            n <-
               if shown == "No matches"
                 then pure 0
                 else maybe (expectationFailure (toS ("no count for " <> asked <> ": " <> shown)) >> pure 0) pure (lastMay (mapMaybe (readMaybe . T.unpack) (T.words shown)))
@@ -241,7 +262,7 @@ spec m = do
   -- of two digits, the first alone when there is no group of both); a
   -- plain query's replacement written as it is.
   it "expands a regular expression's replacement as JavaScript does, a group that did not take part as nothing, and writes a plain query's as it is" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     selectText ui 2 2
     press "Control+f"
     for_
@@ -264,9 +285,8 @@ spec m = do
         find ui ".editor-search-find" >>= (`typeText` pattern')
         find ui ".editor-search-replacement" >>= clear
         find ui ".editor-search-replacement" >>= (`typeText` replacement)
-        n <- eventually $ do
-          shown <- said ui
-          maybe (expectationFailure (toS ("no count: " <> shown)) >> pure 0) pure (lastMay (mapMaybe (readMaybe . T.unpack) (T.words shown)))
+        shown <- said ui
+        n <- maybe (expectationFailure (toS ("no count: " <> shown)) >> pure 0) pure (lastMay (mapMaybe (readMaybe . T.unpack) (T.words shown)))
         find ui ".editor-search-next" >>= click
         replaceButton <- find ui ".editor-search-replace"
         replicateM_ n (click replaceButton)
@@ -280,7 +300,7 @@ spec m = do
   -- search changed, nothing is remembered of the one before; and with the
   -- groups the match has in the text as it then is.
   it "replaces only a match of the search as it is now, with its groups in the text as it then is" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     setMarkdown ui "# T\n\ncat cat"
     selectText ui 2 2
     press "Control+f"
@@ -295,7 +315,7 @@ spec m = do
     find ui ".editor-search-find" >>= (`typeText` "wolf")
     find ui ".editor-search-replacement" >>= clear
     find ui ".editor-search-replacement" >>= (`typeText` "fox")
-    eventually $ said ui `shouldReturn` "No matches"
+    said ui `shouldReturn` "No matches"
     click replaceButton
     markdown ui `shouldReturn` "# T\n\ndog cat"
     -- A look behind: the second "b" follows an "a" once the first is
@@ -317,39 +337,45 @@ spec m = do
   -- discarded, which loads the page again) keeps it open, its panel
   -- showing what it searches, which is what it runs.
   it "keeps the search open through the text loaded again, the panel showing what it searches and runs" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     setMarkdown ui "# Hello, world\n\nHello again."
     find ui ".editor-cancel" >>= click
-    keep <- eventually (findAll ui ".editor-cancel-confirm button") >>= filterM (fmap (T.isInfixOf "Keep the draft") . textContent)
+    keep <- findAll ui ".editor-cancel-confirm button" >>= filterM (fmap (T.isInfixOf "Keep the draft") . textContent)
     maybe (expectationFailure "no Keep the draft") click (head keep)
-    eventually $ find ui ".page-view .actions a[href$='/edit/']" >>= click
-    eventually $ find ui ".editor-draft-found" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Restored your unsaved draft")
+    -- The draft kept and the page shown, each the backend's.
+    waitQuiet
+    find ui ".page-view .actions a[href$='/edit/']" >>= click
+    -- The page and its draft read, and CodeMirror put in place.
+    waitQuiet
+    find ui ".editor-draft-found" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Restored your unsaved draft")
     selectText ui 2 2
     press "Control+f"
     find ui ".editor-search-regexp" >>= click
     find ui ".editor-search-find" >>= (`typeText` "Hel+o")
     find ui ".editor-search-replacement" >>= (`typeText` "Bye")
-    eventually $ said ui `shouldReturn` "2 matches"
-    -- Back to the page as saved: CodeMirror is put in place again.
+    said ui `shouldReturn` "2 matches"
+    -- Back to the page as saved: the page read again and CodeMirror put
+    -- in place again, which searches as the panel asks.
     find ui ".editor-draft-discard" >>= click
-    eventually $ markdown ui >>= (`shouldSatisfy` (not . T.isInfixOf "Hello again."))
+    waitQuiet
+    markdown ui >>= (`shouldSatisfy` (not . T.isInfixOf "Hello again."))
     find ui ".editor-search-find" >>= (`getProperty` "value") >>= (`shouldBe` "Hel+o")
     find ui ".editor-search-replacement" >>= (`getProperty` "value") >>= (`shouldBe` "Bye")
     find ui ".editor-search-regexp" >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "true")
-    eventually $ said ui >>= (`shouldSatisfy` \shown -> " match" `T.isInfixOf` shown && shown /= "No matches")
+    said ui >>= (`shouldSatisfy` \shown -> " match" `T.isInfixOf` shown && shown /= "No matches")
     find ui ".editor-search-replace-all" >>= click
-    eventually $ markdown ui >>= (`shouldSatisfy` \text -> not ("Hello" `T.isInfixOf` text) && "Bye" `T.isInfixOf` text)
+    markdown ui >>= (`shouldSatisfy` \text -> not ("Hello" `T.isInfixOf` text) && "Bye" `T.isInfixOf` text)
 
   -- Escape closes the search from anywhere in the editor, after whatever
   -- is more inside has taken it: a completion's list open in the text
   -- closes first.
   it "closes the search on Escape in the text and on the toolbar, after a completion's list open in the text" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     setMarkdown ui "# T\n\nA needle."
     let opened = do
           press "Control+f"
-          eventually $ length <$> findAll ui ".editor-search" `shouldReturn` 1
-        closed = eventually $ length <$> findAll ui ".editor-search" `shouldReturn` 0
+          length <$> findAll ui ".editor-search" `shouldReturn` 1
+        closed = length <$> findAll ui ".editor-search" `shouldReturn` 0
     selectText ui 2 2
     opened
     find ui ".editor-search-find" >>= (`typeText` "needle")
@@ -357,7 +383,7 @@ spec m = do
     selectText ui 2 2
     press "Escape"
     closed
-    searchFocus `shouldReturn` "master"
+    searchFocus ui `shouldReturn` "master"
     -- On the toolbar.
     opened
     find ui ".editor-toolbar button.tool" >>= focus
@@ -368,15 +394,16 @@ spec m = do
     let end = T.length "# T\n\nA needle."
     selectText ui end end
     editorText ui >>= (`typeText` " :smi")
-    eventually $ completing ui `shouldReturn` "active"
+    -- The list comes on CodeMirror's own timer after the typing.
+    completionAnswered ui `shouldReturn` "active"
     press "Escape"
-    eventually $ completing ui `shouldReturn` ""
+    completing ui `shouldReturn` ""
     length <$> findAll ui ".editor-search" `shouldReturn` 1
     press "Escape"
     closed
 
   it "counts no match in the title line's guarded \"# \", steps to none and replaces none, and finds the title's own text, in the raw Markdown" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     let text = "# T\n\nA T here."
     setMarkdown ui text
     selectText ui (T.length text) (T.length text)
@@ -391,7 +418,7 @@ spec m = do
           typeText field asked
     for_ [(True, "^# T"), (False, "# "), (True, "#\\s*T"), (True, "^#")] $ \(regexp, asked) -> do
       asking regexp asked
-      eventually $ ((asked,) <$> said ui) `shouldReturn` (asked, "No matches")
+      ((asked,) <$> said ui) `shouldReturn` (asked, "No matches")
       press "Enter"
       editorSelection ui `shouldReturn` (T.length text, T.length text)
       find ui ".editor-search-replace" >>= click
@@ -399,10 +426,10 @@ spec m = do
       markdown ui `shouldReturn` text
     -- "T", the title's own text, is a match: the title's and the text's.
     asking False "T"
-    eventually $ said ui `shouldReturn` "2 matches"
+    said ui `shouldReturn` "2 matches"
     press "Enter"
     editorSelection ui `shouldReturn` (2, 3)
-    eventually $ said ui `shouldReturn` "1 of 2, from the start"
+    said ui `shouldReturn` "1 of 2, from the start"
     find ui ".editor-search-replace" >>= click
     markdown ui `shouldReturn` "# U\n\nA T here."
 
@@ -410,14 +437,16 @@ spec m = do
   -- editor closed in between gets it late, and reports it to nothing (its
   -- live preview's channel is closed then). A page error fails the suite.
   it "reports nothing of a scroll of its text that comes after it closed" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     setMarkdown ui page
+    -- Not 'perform', which settles: the frame it waits for would bring
+    -- the scroll's event before the editor closed.
     unsafeIOToPageM js_scroll_text_late
     unmount ui
     unsafeIOToPageM js_frames
 
   it "replaces matches of no length one after the other, and steps past the count's limit, both ways" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     setMarkdown ui "# Hello, world\n\nA\nB\nC"
     selectText ui 16 16
     press "Control+f"
@@ -435,7 +464,7 @@ spec m = do
     let lineAt k = 16 + 2 * (k - 2)
     selectText ui (lineAt 999) (lineAt 999)
     press "Control+f"
-    eventually $ said ui `shouldReturn` "1000+ matches"
+    said ui `shouldReturn` "1000+ matches"
     press "Enter"
     editorSelection ui `shouldReturn` (lineAt 1000, lineAt 1000)
     press "Enter"
@@ -444,29 +473,29 @@ spec m = do
     editorSelection ui `shouldReturn` (lineAt 1000, lineAt 1000)
 
   it "says a regular expression that is not one and matches nothing, matches case and whole words when asked, and stops counting at 1000" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     setMarkdown ui "# Hello, world\n\nCat cat category CAT.\n"
     selectText ui 2 2
     press "Control+f"
     field <- find ui ".editor-search-find"
     typeText field "cat"
-    eventually $ said ui `shouldReturn` "4 matches"
+    said ui `shouldReturn` "4 matches"
     find ui ".editor-search-case" >>= click
-    eventually $ said ui `shouldReturn` "2 matches"
+    said ui `shouldReturn` "2 matches"
     find ui ".editor-search-case" >>= (`getAttribute` "aria-pressed") >>= (`shouldBe` Just "true")
     find ui ".editor-search-word" >>= click
-    eventually $ said ui `shouldReturn` "1 match"
+    said ui `shouldReturn` "1 match"
     find ui ".editor-search-case" >>= click
-    eventually $ said ui `shouldReturn` "3 matches"
-    eventually $ marks `shouldReturn` [(-1, "Cat", False), (-1, "cat", False), (-1, "CAT", False)]
+    said ui `shouldReturn` "3 matches"
+    marks ui `shouldReturn` [(-1, "Cat", False), (-1, "cat", False), (-1, "CAT", False)]
     -- "cat(" as a regular expression is not one: said, marked on the field,
     -- and nothing is marked or selected.
     find ui ".editor-search-word" >>= click
     find ui ".editor-search-regexp" >>= click
     typeText field "("
-    eventually $ said ui `shouldReturn` "Not a valid regular expression"
+    said ui `shouldReturn` "Not a valid regular expression"
     getAttribute field "aria-invalid" `shouldReturn` Just "true"
-    eventually $ marks `shouldReturn` []
+    marks ui `shouldReturn` []
     press "Enter"
     editorSelection ui `shouldReturn` (2, 2)
     -- A thousand matches and more: counted to a thousand.
@@ -474,12 +503,12 @@ spec m = do
     setMarkdown ui ("# Hello, world\n\n" <> T.replicate 1100 "x ")
     selectText ui 16 17
     press "Control+f"
-    eventually $ said ui `shouldReturn` "1 of 1000+"
+    said ui `shouldReturn` "1 of 1000+"
     press "Enter"
-    eventually $ said ui `shouldReturn` "2 of 1000+"
+    said ui `shouldReturn` "2 of 1000+"
 
   it "replaces one match, then the next, and every match with a regular expression's groups, past an emoji, Replace all one step that Ctrl+Z takes back" $ runPage $ do
-    (ui, _) <- startWith m (Just "user-editor") helloEditor
+    ui <- editing
     let mails = "# Hello, world\n\n😀 a@example.org and b@example.org, not c@example.com.\n"
         firstAt = utf16Length "# Hello, world\n\n😀 "
         secondAt = utf16Length "# Hello, world\n\n😀 a@example.org and "
@@ -489,39 +518,45 @@ spec m = do
     find ui ".editor-search-regexp" >>= click
     find ui ".editor-search-find" >>= (`typeText` "(\\w+)@example\\.org")
     find ui ".editor-search-replacement" >>= (`typeText` "[[people/$1]]")
-    eventually $ said ui `shouldReturn` "2 matches"
+    said ui `shouldReturn` "2 matches"
     -- No match selected: Replace selects the next one and replaces nothing.
     find ui ".editor-search-replace" >>= click
     editorSelection ui `shouldReturn` (firstAt, firstAt + 13)
-    eventually $ said ui `shouldReturn` "1 of 2"
+    said ui `shouldReturn` "1 of 2"
     markdown ui `shouldReturn` mails
     -- Now it replaces it, and selects the next.
     find ui ".editor-search-replace" >>= click
     let once = T.replace "a@example.org" "[[people/a]]" mails
     markdown ui `shouldReturn` once
     editorSelection ui `shouldReturn` (secondAt - 1, secondAt - 1 + 13)
-    eventually $ said ui `shouldReturn` "1 of 1"
+    said ui `shouldReturn` "1 of 1"
     -- Escape after a step: the text has the focus at the match, and
     -- Ctrl+Z there takes the replacement back. Replace all: every match,
     -- one step of the history. (Opened with nothing selected, the search
-    -- keeps its regular expression.)
+    -- keeps its regular expression.) A replacement is a step of the
+    -- history of its own, however soon it follows the edit before it:
+    -- CodeMirror joins only typing and deleting into the step before.
     press "Escape"
-    searchFocus `shouldReturn` "master"
+    searchFocus ui `shouldReturn` "master"
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` mails
+    markdown ui `shouldReturn` mails
     selectText ui 2 2
     press "Control+f"
-    eventually $ said ui `shouldReturn` "2 matches"
+    said ui `shouldReturn` "2 matches"
     find ui ".editor-search-replace-all" >>= click
     let all' = T.replace "b@example.org" "[[people/b]]" (T.replace "a@example.org" "[[people/a]]" mails)
     markdown ui `shouldReturn` all'
-    eventually $ said ui `shouldReturn` "No matches, 2 replaced"
+    said ui `shouldReturn` "No matches, 2 replaced"
     press "Escape"
-    searchFocus `shouldReturn` "master"
+    searchFocus ui `shouldReturn` "master"
     press "Control+z"
-    eventually $ markdown ui `shouldReturn` mails
+    markdown ui `shouldReturn` mails
   where
     helloEditor = EditPage (slugs ["blog"]) (slugs ["hello-world"])
+    -- The demo's "Hello, world" open in the editor, CodeMirror in place:
+    -- it is put in place in a fork, which only quiet covers.
+    editing :: PageM s (Mounted s Shell.Query Void m)
+    editing = fst <$> startWith m (Just "user-editor") helloEditor <* waitQuiet
 
 -- | The demo's "Hello, world" made a presentation with this text, open in
 -- the editor, CodeMirror in place.
@@ -535,6 +570,8 @@ openDeck m text = do
     made <- either (panic . show) identity <$> setPageKind hello.id Kind.Presentation
     void (either (panic . show) identity <$> savePage made.id made.updatedAt "Deck" text)
   ui <- startOn m wiki (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
+  -- CodeMirror and the open row are put in place in forks.
+  waitQuiet
   _ <- editorText ui
   pure ui
 
@@ -556,15 +593,46 @@ needles text = [T.length before | (before, _) <- T.breakOnAll "needle" text]
 said :: Mounted s q o m -> PageM s Text
 said ui = find ui ".editor-search-count" >>= textContent
 
+-- The reads below go through the test's own JavaScript, which the group's
+-- 'readsOnce' does not cover. Each first finds the editor's text, a read
+-- that waits for the program's rest, and then reads once.
+
 -- | Where the focus is (test-search.js's wiki_test_search_focus).
-searchFocus :: PageM s Text
-searchFocus = unsafeIOToPageM (fromJSText <$> js_search_focus)
+searchFocus :: Mounted s q o m -> PageM s Text
+searchFocus ui = do
+  _ <- editorText ui
+  unsafeIOToPageM (fromJSText <$> js_search_focus)
 
 -- | The marks of the matches drawn: where (-1, the editor's own text),
--- the text marked, and whether it is the current match.
-marks :: PageM s [(Int, Text, Bool)]
-marks = fromMaybe [] . decodeStrict . encodeUtf8 <$> unsafeIOToPageM (fromJSText <$> js_search_marks)
+-- the text marked, and whether it is the current match. CodeMirror draws
+-- them in the transaction that changes the search or the selection.
+marks :: Mounted s q o m -> PageM s [(Int, Text, Bool)]
+marks ui = do
+  _ <- editorText ui
+  fromMaybe [] . decodeStrict . encodeUtf8 <$> unsafeIOToPageM (fromJSText <$> js_search_marks)
 
 -- | The selection in the panel's text to find, and the field's length.
-fieldSelection :: PageM s [Int]
-fieldSelection = fromMaybe [] . decodeStrict . encodeUtf8 <$> unsafeIOToPageM (fromJSText <$> js_search_field_selection)
+fieldSelection :: Mounted s q o m -> PageM s [Int]
+fieldSelection ui = do
+  _ <- editorText ui
+  fromMaybe [] . decodeStrict . encodeUtf8 <$> unsafeIOToPageM (fromJSText <$> js_search_field_selection)
+
+-- | The editor's folds, as their first and last lines. A step into a fold
+-- opens it in the step's own transaction: CodeMirror's fold state drops a
+-- fold that the selection's head is inside.
+folded :: Mounted s q o m -> PageM s [(Int, Int)]
+folded ui = editorHost ui >>= unsafeIOToPageM . foldedLines
+
+-- | Whether the editor's own text shows its selection's head, inside the
+-- box that scrolls it and inside the window (test-search.js's
+-- wiki_test_master_selection_seen). A step asks CodeMirror to scroll to
+-- its match, and CodeMirror scrolls in its next measure, which it runs in
+-- an animation frame of the browser's: on its own time, which the program
+-- does not count. The read needs no wait for it: it takes the head's
+-- place with CodeMirror's @coordsAtPos@, which first runs a measure that
+-- CodeMirror has scheduled and not run yet (@readMeasured@), and the
+-- scroll with it.
+masterSelectionSeen :: Mounted s q o m -> PageM s Bool
+masterSelectionSeen ui = do
+  _ <- editorText ui
+  unsafeIOToPageM js_master_selection_seen

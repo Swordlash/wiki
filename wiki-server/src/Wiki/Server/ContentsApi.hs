@@ -349,6 +349,11 @@ refusalText = \case
   SectionChanges anchor after -> "The body would change the section " <> quoted anchor <> place after <> ": check for a code fence or a spoiler left open, or a spoiler's end marker."
   SectionAppears text after -> "The body would make a section of the heading " <> quoted text <> place after <> ": check for a spoiler's end marker."
   SpoilerChanges after -> "The body would change the spoiler " <> (if after then "that follows" else "around the section") <> ": check for a spoiler's end marker, or a spoiler or a code fence left open."
+  BlockChanges anchor after ->
+    "The body would change how the page reads "
+      <> maybe "in the text before the first heading" (\a -> "in the section " <> quoted a) anchor
+      <> (if after then ", after it" else ", before it")
+      <> ": check for a link's definition ([name]: address) or a footnote's ([^name]: text) that the page uses there, or a code fence or a spoiler left open."
   OutsideChanges -> "The body would change the page outside the section: check for a code fence or a spoiler left open, or a spoiler's end marker."
   where
     quoted t = "'" <> t <> "'"

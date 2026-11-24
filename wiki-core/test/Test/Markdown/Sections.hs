@@ -261,6 +261,21 @@ spec = describe "Markdown.Sections" $ do
       -- a link to it would leave the note for the body.
       replaceSection (WholeSection "a") "# A\n\nB[^n]\n\n# C\n\n[^n]: Text.\n\n    ## Note {#x}\n" "# A\n\n> # Q {#x}\n\nB[^n]\n" `shouldBe` Left (AnchorMoves "x")
 
+    it "refuses a body that changes a block after it through a link's definition or a footnote's" $ do
+      -- B's link takes its target from A's definition: the target A gives
+      -- it now is B's link changed.
+      replaceSection (WholeSection "a") "# A\n\n[r]: https://example.com\n\n# B\n\n[link][r]{#x}\n" "# A\n\n[r]: javascript:alert\n"
+        `shouldBe` Left (BlockChanges (Just "b") True)
+      -- B refers to a note A defines: without it, B's reference is text.
+      replaceSection (WholeSection "a") "# A\n\nText.\n\n[^n]: The note.\n\n# B\n\nSee[^n].\n" "# A\n\nText.\n"
+        `shouldBe` Left (BlockChanges (Just "b") True)
+
+    it "takes a body that changes a definition nothing outside uses, or adds a numbered box before others" $ do
+      replaceSection (WholeSection "a") "# A\n\n[r]: /one\n\n# B\n\nText.\n" "# A\n\n[r]: /two\n" `shouldSatisfy` isRight
+      -- B's box is the first tip now, and is numbered so; that number,
+      -- and the id made from it, are not kept.
+      replaceSection (WholeSection "a") "# A\n\nText.\n\n# B\n\n> [!TIP]\n> Later.\n" "# A\n\n> [!TIP]\n> New.\n" `shouldSatisfy` isRight
+
     it "refuses a code fence left open, which takes in the sections after it" $
       replaceSection (WholeSection "install") page "## Install\n\n```\nmake\n" `shouldBe` Left (SectionChanges "use" True)
 
@@ -332,6 +347,15 @@ spec = describe "Markdown.Sections" $ do
                 . cover 0.3 (refusedFor (\case AnchorChanges _ _ -> True; _ -> False) result) "an anchor outside changes"
                 . cover 0.3 (refusedFor (\case AnchorMoves _ -> True; _ -> False) result) "an id outside taken by the body"
                 $ either (const (property True)) (outsideKept source target) result
+    prop "changes nothing outside the part written through a definition, the page's numbers aside" $
+      coverage . forAll aDefinedPage $ \(source, target, body) ->
+        let result = replaceSection target source body
+         in counterexample (show result)
+              . tabulate "answers" [either (T.unpack . T.takeWhile (/= ' ') . show) (const "accepted") result]
+              . cover 15 (isRight result) "accepted"
+              . cover 3 (isRight result && "[!TIP]" `T.isInfixOf` body && T.count "[!TIP]" source > T.count "[!TIP]" (fromMaybe "" (rangeOf source target >>= Just . sectionText source))) "a box written before another"
+              . cover 5 (refusedFor (\case BlockChanges _ _ -> True; _ -> False) result) "a block outside changes"
+              $ either (const (property True)) (outsideKept source target) result
   where
     refusedFor f = either f (const False)
     -- Whether a part is a section inside a spoiler: in 'aSpoiledPage',
@@ -415,8 +439,12 @@ spec = describe "Markdown.Sections" $ do
                           | otherwise -> (k + 1, (i, Just (Right k)))
                     )
                     (0 :: Int)
-                    (elementIds t)
+                    -- The ids a page numbers by position are not kept.
+                    [(i, at) | (blk, at) <- placedBlocks t, (i, False) <- blockIds blk]
                 )
+            -- The blocks outside the part, but for what the page numbers
+            -- by position ('settled').
+            blocksOutside lo hi t = [settled blk | (blk, Just p) <- placedBlocks t, p < lo || p >= hi]
             idsOutside xs = [i | (i, Just (Right _)) <- xs]
             -- The outside element each id lands on: the first element with
             -- the id, for the ids whose first element is outside the part.
@@ -443,6 +471,7 @@ spec = describe "Markdown.Sections" $ do
                 -- there still.
                 .&&. counterexample ("where the ids of the elements outside the part land: " <> show (landings before', landings after')) (landings before' `Map.isSubmapOf` landings after')
                 .&&. counterexample "an id that landed in a note, and is still in one, lands there" stayInNotes
+                .&&. counterexample "the blocks outside the part" (blocksOutside a b source === blocksOutside a b' new)
                 .&&. ( case (target, done.anchor) of
                          (Top, Nothing) -> topRange o' === (0, b')
                          (WholeSection _, Just i) -> sectionRange o' i False === Just (a, b')
@@ -493,7 +522,12 @@ spec = describe "Markdown.Sections" $ do
 -- | A page to cut into sections: headings of every level, written both
 -- ways, some the same; blocks that hold a heading that is no section (a
 -- quotation, a list, a box), and code with a @#@ in it; spoilers of both
--- kinds; with or without text before the first heading, its pieces apart
+-- kinds; a link's definition, a footnote's definition, a numbered box
+-- (the references to them are in 'aSpoiledPage', whose line breaks are
+-- all line feeds: here a reference could end up in a title underlined,
+-- which 'firstHeading' reads apart from its definition); with or without
+-- text before the first
+-- heading, its pieces apart
 -- by one to three line breaks, and its line breaks line feeds, carriage
 -- returns or both.
 aPage :: Gen Text
@@ -525,6 +559,9 @@ aPage = do
         , "[[!spoiler]]{t}(Open)\n" <> hashes <> " " <> word
         , "---"
         , "[[!toc]]"
+        , "[r]: /target"
+        , "[^n]: The note."
+        , "> [!TIP]\n> A tip."
         ]
 
 -- | A page whose headings sit in block spoilers among the neighbours that
@@ -540,7 +577,7 @@ aSpoiledPage = do
   parts <- vectorOf count (oneof [outside, spoiler (2 :: Int) (0 :: Int)])
   pure (top <> T.intercalate "\n" parts)
   where
-    outside = elements ["# Out", "## Out", "Text.", "Out\n---", "---", "[[/spoiler]]{x}\n---", "[[/spoiler]]{x}\n==="]
+    outside = elements ["# Out", "## Out", "Text.", "Out\n---", "---", "[[/spoiler]]{x}\n---", "[[/spoiler]]{x}\n===", "See [it][r].", "[r]: /target", "Note[^n].", "[^n]: The note.", "> [!TIP]\n> Tip."]
     inside depth k =
       oneof
         ( elements
@@ -572,7 +609,10 @@ aSpoiledPage = do
 -- section, a heading of another level, its heading and a second one of
 -- its level, a heading with the text of a heading after it, and, when an
 -- element after it has an id written out, its heading and a heading in a
--- quotation or a list that takes that id. The rest, the most, are a
+-- quotation or a list that takes that id; for a part with a link's or a
+-- footnote's definition, the part with the one changed and the other
+-- taken out; for a page with a link to a definition, its heading and a
+-- definition of that name. The rest, the most, are a
 -- start, then a few pieces, then an ending of no, one or two line
 -- breaks. For a section the
 -- start is mostly its heading as the page has it, its whole text as read,
@@ -608,8 +648,10 @@ aBody source target = do
           [ [ (1, pure (marks (s.level + 1) <> " " <> s.text <> "\n"))
             , (1, pure (heading <> "\n\nText.\n\n" <> marks s.level <> " Sibling\n"))
             ]
-              <> [(1, (\t -> marks s.level <> " " <> t <> "\n") <$> elements textsAfter) | not (null textsAfter)]
-              <> [(3, pure (heading <> "\n\n" <> taken <> "\n")) | not (null taking)]
+              <> [(2, (\t -> marks s.level <> " " <> t <> "\n") <$> elements textsAfter) | not (null textsAfter)]
+              <> [(5, pure (heading <> "\n\n" <> taken <> "\n")) | not (null taking)]
+              <> [(3, pure redefined) | redefined /= original]
+              <> [(6, pure (heading <> "\n\n[r]: /elsewhere\n")) | "[it][r]" `T.isInfixOf` source]
           | Just s <- [section]
           ]
     )
@@ -628,14 +670,17 @@ aBody source target = do
       let ls = T.lines original
        in T.intercalate "\n" (take (if maybe False ("#" `T.isPrefixOf`) (head ls) then 1 else 2) ls)
     others = marks level <> " Alpha" : [marks level <> " " <> s.text | s <- outlineSections o, Just s.id /= ((\x -> x.id) <$> section)]
-    plain = ["Para.", "More text\nover two lines.", "```\ncode\n```", "[[!spoiler]]{q}(Q)\n" <> marks (level + 1) <> " Inner {#in-q}\n[[/spoiler]]{q}", marks (level + 1) <> " Deeper", "- a list"]
-    awkward = ["```\nopen", "[[!spoiler]]{z}(Z)\nnever closed", "[[/spoiler]]{s0}", "[[/spoiler]]{s}", "[[/spoiler]]{x}", marks level <> " Sibling", marks (max 1 (level - 1)) <> " Higher", "Alpha\n===", "Beta\n---", "---", "===", "> # Quoted {#alpha}", "- ## Listed {#beta}"]
+    plain = ["Para.", "More text\nover two lines.", "```\ncode\n```", "[[!spoiler]]{q}(Q)\n" <> marks (level + 1) <> " Inner {#in-q}\n[[/spoiler]]{q}", marks (level + 1) <> " Deeper", "- a list", "> [!TIP]\n> Boxed.", "See [it][r]."]
+    awkward = ["[r]: /elsewhere", "[^n]: Another note.", "```\nopen", "[[!spoiler]]{z}(Z)\nnever closed", "[[/spoiler]]{s0}", "[[/spoiler]]{s}", "[[/spoiler]]{x}", marks level <> " Sibling", marks (max 1 (level - 1)) <> " Higher", "Alpha\n===", "Beta\n---", "---", "===", "> # Quoted {#alpha}", "- ## Listed {#beta}"]
     -- A heading in a quotation or a list, which is no section, written
     -- with an id written out after the part, which the body's heading
     -- would take.
     taking = concat [["> # Quoted {#" <> i <> "}", "- ## Listed {#" <> i <> "}"] | i <- take 3 (ordNub later)]
     later = [i | (i, Just p) <- elementIds source, p >= partEnd, ("{#" <> i <> "}") `T.isInfixOf` source]
     partEnd = maybe (snd (topRange o)) (\s -> if target == OwnPart s.id then s.ownEnd else s.end) section
+    -- The part as read, with its link's definition changed and its
+    -- footnote's taken out, which a reference outside it may use.
+    redefined = T.replace "[r]: /target" "[r]: /elsewhere" (T.replace "[^n]: The note." "" original)
     -- The texts of the headings after the part.
     textsAfter = [s.text | s <- outlineSections o, s.start >= partEnd]
 
@@ -719,3 +764,22 @@ anIdPage = do
         , "[[!toc]]"
         , "```{#" <> k <> "}\ncode\n```"
         ]
+
+-- | A page of three sections, each with a few of a link to a definition,
+-- a definition, a footnote's reference and its definition, a numbered box
+-- and text; one of its sections, whole; and a body for it: the section's
+-- heading and a few of the same, or of a definition with another target
+-- or another note. A body then often changes how a block of another
+-- section reads, or adds a box before another one, which a write takes.
+aDefinedPage :: Gen (Text, Target, Text)
+aDefinedPage = do
+  parts <- vectorOf 3 content
+  let source = T.concat [heading <> "\n\n" <> c <> "\n\n" | (heading, c) <- zip titles parts]
+  (anchor, heading) <- elements (zip ["a", "b", "c"] titles)
+  body <- content'
+  pure (source, WholeSection anchor, heading <> "\n\n" <> body <> "\n")
+  where
+    titles = ["# A", "# B", "# C"]
+    pieces = ["See [it][r].", "[r]: /one", "Note[^n].", "[^n]: The note.", "> [!TIP]\n> Tip.", "Text."]
+    content = T.intercalate "\n\n" <$> (choose (1, 3) >>= \count -> vectorOf count (elements pieces))
+    content' = T.intercalate "\n\n" <$> (choose (1, 3) >>= \count -> vectorOf count (elements (pieces <> ["[r]: /two", "[^n]: Another note."])))

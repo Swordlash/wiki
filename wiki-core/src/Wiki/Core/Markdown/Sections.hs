@@ -73,6 +73,9 @@ module Wiki.Core.Markdown.Sections
   , outlineSections
   , outlineAnchors
   , elementIds
+  , placedBlocks
+  , blockIds
+  , settled
 
     -- * Writing a section
   , Target (..)
@@ -141,12 +144,12 @@ data SpoilerBody = SpoilerBody
 outline :: Text -> Outline
 outline source = outlineOf source (parseDeckSpansAndInsides source)
 
--- | The outline and the element ids ('elementIds') of a page, from one
--- parse of it: what a write of a part reads of each page.
-outlineAndIds :: Text -> (Outline, [(Text, Maybe Int)])
-outlineAndIds source =
+-- | The outline and the placed blocks ('placedBlocksOf') of a page, from
+-- one parse of it: what a write of a part reads of each page.
+outlineAndBlocks :: Text -> (Outline, [(Block, Maybe Int)])
+outlineAndBlocks source =
   let parsed = parseDeckSpansAndInsides source
-   in (outlineOf source parsed, elementIdsOf source parsed)
+   in (outlineOf source parsed, placedBlocksOf source parsed)
 
 -- | 'outline' of a page parsed already.
 outlineOf :: Text -> Either ParseError ([(Maybe (Int, Int), Block)], [SpoilerInside]) -> Outline
@@ -309,6 +312,10 @@ data Refusal
   | -- | A block spoiler outside the part written would change its bounds,
     -- or no longer have an outline; after the part ('True') or around it.
     SpoilerChanges Bool
+  | -- | A block outside the part written would come out differently: in
+    -- the section with this anchor ('Nothing' for the top), after the part
+    -- ('True') or before it.
+    BlockChanges (Maybe Text) Bool
   | -- | Something else outside the part written would change.
     OutsideChanges
   deriving stock (Eq, Show)
@@ -351,18 +358,26 @@ data Refusal
 -- since the anchor would not name the section written, and a later one's,
 -- since that section would lose its address.
 --
--- The same holds for every element the page gives an id ('elementIds'),
--- not only the sections: a heading in a quotation, a list or a box, a box,
--- a link. Outside the part each keeps its id, and a link to an id that
--- lands on one of them lands on it still; the section written is where a
--- link to its anchor lands. The footnotes' elements are judged apart, since
--- the page shows the notes after its body wherever their definitions are
--- written: a write may change them, but an id that lands in a note, and
--- that a note still has after the write, may not come to land on an
--- element of the body.
+-- Beyond the sections, every block outside the part is, after the write,
+-- the block it was ('placedBlocks', compared 'settled'): the parser's
+-- finished block, which holds what the parser read across the page, a
+-- link's target taken from its definition, a footnote's reference to its
+-- note, each heading's id, written or made from its text. So a body that
+-- changes a block elsewhere through a definition, or takes out a note a
+-- block elsewhere refers to, is refused. What the page numbers by position
+-- is not kept: a footnote's number, a numbered box's number and the id made
+-- from it (@box-tip-3@), which a box added before it changes.
 --
--- Both texts are read by 'outline', the whole page every time, never the
--- body alone.
+-- A link to an id that lands on an element outside the part
+-- ('elementIds') lands on it still, but for the ids numbered by position;
+-- the section written is where a link to its anchor lands. The footnotes
+-- are judged apart, since the page shows the notes after its body wherever
+-- their definitions are written: a write may change them, but an id that
+-- lands in a note, and that a note still has after the write, may not come
+-- to land on an element of the body.
+--
+-- Both texts are read by one parse each, of the whole page, never the body
+-- alone.
 replaceSection :: Target -> Text -> Text -> Either Refusal Replaced
 replaceSection target page body = do
   (a, b, wanted) <- case target of
@@ -379,7 +394,7 @@ replaceSection target page body = do
       | otherwise -> Left why
     accepted -> accepted
   where
-    (old, oldElements) = outlineAndIds page
+    (old, oldBlocks) = outlineAndBlocks page
     named anchor = maybeToRight NoSuchAnchor (find (\p -> p.section.id == anchor) (placedIn old))
     -- The body ended with a line break, or refused when it is empty.
     ending
@@ -401,7 +416,7 @@ replaceSection target page body = do
     writeIn a b wanted written = do
       let new = T.take a page <> written <> T.drop b page
           a' = a + T.length written
-          (o', newElements) = outlineAndIds new
+          (o', newBlocks) = outlineAndBlocks new
           newPlaced = placedIn o'
           -- Offsets of each page as if the part had no width: before the part
           -- as they are, after it moved back by its length, inside it none.
@@ -454,20 +469,29 @@ replaceSection target page body = do
       unless (inside && and (zipWith (\(_, s) (_, n) -> sameAs n s) oldSeen newSeen) && length oldSeen == length newSeen && map snd oldBoxes == map snd newBoxes && oldPage == newPage) $
         Left (fromMaybe OutsideChanges outsideRefusal)
       for_ (head unnamed) (Left . AnchorMoves)
-      -- Every element the page gives an id ('elementIds'), not only the
-      -- sections: outside the part, each keeps its id, and a link to an
-      -- id that landed on one of them still lands on it. The footnotes'
-      -- elements are judged apart ('InNote'): a write may change them, but
-      -- an id that landed in a note and is still there may not come to
-      -- land on an element of the body.
-      let oldIds = whereIn (\p -> p >= a && p < b) oldElements
-          newIds = whereIn (\p -> p >= a && p < a') newElements
-          outsideIds xs = [i | (i, Outside _) <- xs]
+      -- Every block outside the part is the block it was ('settled'). The
+      -- parser's finished blocks hold what it read across the page (a
+      -- link's target from its definition, a footnote's reference, each
+      -- heading's id), so a body that changes a block outside through a
+      -- definition is refused as one that changes the block is. The
+      -- footnotes are judged apart, below.
+      let outsideBlocks inPart bs = [(settled blk, p) | (blk, Just p) <- bs, not (inPart p)]
+          oldOut = outsideBlocks (\p -> p >= a && p < b) oldBlocks
+          newOut = outsideBlocks (\p -> p >= a && p < a') newBlocks
+      unless (map fst oldOut == map fst newOut) $
+        Left (blockRefusal a oldOut newOut)
+      -- A link to an id that landed on an element outside the part lands
+      -- on it still. The ids a page numbers by position are left out:
+      -- they are not kept. The footnotes' elements are judged apart
+      -- ('InNote'): a write may change them, but an id that landed in a
+      -- note and is still there may not come to land on an element of the
+      -- body.
+      let ids bs = [(i, at) | (blk, at) <- bs, (i, False) <- blockIds blk]
+          oldIds = whereIn (\p -> p >= a && p < b) (ids oldBlocks)
+          newIds = whereIn (\p -> p >= a && p < a') (ids newBlocks)
           landing xs i = snd <$> find ((== i) . fst) xs
           moved = [i | (i, Outside k) <- oldIds, landing oldIds i == Just (Outside k), landing newIds i /= Just (Outside k)]
           leftNote = [i | (i, InNote) <- oldIds, landing oldIds i == Just InNote, (i, InNote) `elem` newIds, landing newIds i /= Just InNote]
-      unless (outsideIds oldIds == outsideIds newIds) $
-        Left (fromMaybe OutsideChanges (head [AnchorChanges o n | (o, n) <- zip (outsideIds oldIds) (outsideIds newIds), o /= n]))
       for_ (head (moved <> leftNote)) (Left . AnchorMoves)
       case section of
         Just t
@@ -475,6 +499,18 @@ replaceSection target page body = do
           , leading.section.start /= a || landing newIds t.section.id /= Just InPart ->
               Left (AnchorTaken t.section.id)
         _ -> Right Replaced {text = new, anchor = (\t -> t.section.id) <$> section}
+    -- Why the blocks outside the part differ: the first block that is not
+    -- what it was, by the section it is in; an id of its, when that is
+    -- what differs.
+    blockRefusal a oldOut newOut =
+      let pairs = zip oldOut newOut
+          differing = find (\((x, _), (y, _)) -> x /= y) pairs
+          at = maybe (maybe a snd (lastMay oldOut <|> lastMay newOut)) (\((_, p), _) -> p) (differing <|> ((\x -> (x, x)) <$> head (drop (length pairs) oldOut)))
+          idsOf blk = [i | (i, False) <- blockIds blk]
+       in case differing of
+            Just ((x, _), (y, _))
+              | Just (i, j) <- find (uncurry (/=)) (zip (idsOf x) (idsOf y)) -> AnchorChanges i j
+            _ -> BlockChanges ((\sec -> sec.id) <$> lastMay [sec | sec <- outlineSections old, sec.start <= at, at < sec.end]) (at >= a)
     -- The ids of the elements, each with where its element is: in the
     -- part, outside it (with its number among the elements outside it),
     -- or in a note.
@@ -516,8 +552,26 @@ elementIds :: Text -> [(Text, Maybe Int)]
 elementIds source = elementIdsOf source (parseDeckSpansAndInsides source)
 
 -- | 'elementIds' of a page parsed already.
+-- | 'placedBlocks' is a page's blocks as a write of a part compares them
+-- ('placedBlocksOf').
+placedBlocks :: Text -> [(Block, Maybe Int)]
+placedBlocks source = placedBlocksOf source (parseDeckSpansAndInsides source)
+
 elementIdsOf :: Text -> Either ParseError ([(Maybe (Int, Int), Block)], [SpoilerInside]) -> [(Text, Maybe Int)]
-elementIdsOf source parsed = case parsed of
+elementIdsOf source parsed = [(i, at) | (b, at) <- placedBlocksOf source parsed, (i, _) <- blockIds b]
+
+-- | A page's blocks as a write of a part compares them, each with where it
+-- starts (in characters from the page's start), in the order of the page:
+-- the blocks of the page, and of each block spoiler with an outline its
+-- marker (the spoiler without its blocks) and then its own blocks, each
+-- placed by its own line, so that a part inside a spoiler leaves the
+-- spoiler's other blocks outside it. A block the parser gave no line is
+-- placed by the block before it. The footnotes, which the page shows at
+-- its end whatever their definitions' places, are 'Nothing'. The blocks
+-- are the parser's finished ones: a link's target taken from its
+-- definition, a footnote's reference to its note, each heading's id.
+placedBlocksOf :: Text -> Either ParseError ([(Maybe (Int, Int), Block)], [SpoilerInside]) -> [(Block, Maybe Int)]
+placedBlocksOf source parsed = case parsed of
   Left _ -> []
   Right (deck, insides) ->
     let table = Map.fromList [(l, (e, bs)) | SpoilerInside l e bs <- insides]
@@ -526,10 +580,9 @@ elementIdsOf source parsed = case parsed of
     total = T.length source
     lineStarts = Seq.fromList (parserLineStarts source)
     lineStart n = fromMaybe total (Seq.lookup (n - 1) lineStarts)
-    -- A block's ids, each with the block's first line if it is known,
-    -- and whether the block is the footnotes. A block spoiler with an
-    -- outline is its description's ids, then its blocks', each with its
-    -- own line, as 'outline' reads them.
+    -- A block with its first line if it is known, or the footnotes. A
+    -- block spoiler with an outline is its marker, then its blocks, each
+    -- with its own line, as 'outline' reads them.
     unit table (at, b) = case b of
       Spoiler h bs
         | h.kind /= OnHeading
@@ -537,27 +590,34 @@ elementIdsOf source parsed = case parsed of
         , flat <- unsectioned bs
         , length read' == length flat
         , and (zipWith (\(_, r) f -> alike r f) read' flat) ->
-            [(i, Right (fst <$> at)) | i <- summaryIds h] <> concatMap (unit table) (zip (map fst read') flat)
-      Footnotes _ -> [(i, Left ()) | i <- blockIds b]
-      _ -> [(i, Right (fst <$> at)) | i <- blockIds b]
-    -- An id with where its block starts: at its line, at the place of the
-    -- block before it when its line is not known, nowhere for a footnote.
+            (Spoiler h [], Right (fst <$> at)) : concatMap (unit table) (zip (map fst read') flat)
+      Footnotes _ -> [(b, Left ())]
+      _ -> [(b, Right (fst <$> at))]
+    -- A block with where it starts: at its line, at the place of the block
+    -- before it when its line is not known, nowhere for the footnotes.
     place last' = \case
-      (i, Right (Just l)) -> let p = lineStart l in (p, (i, Just p))
-      (i, Right Nothing) -> (last', (i, Just last'))
-      (i, Left ()) -> (last', (i, Nothing))
-    blockIds = \case
-      Para xs -> inlineIds xs
-      Plain xs -> inlineIds xs
-      Heading _ attrs xs -> ownIds attrs <> inlineIds xs
-      BlockQuote bs -> concatMap blockIds bs
-      List _ items -> concat [concatMap blockIds bs | ListItem _ bs <- items]
-      Table _ header rows -> concatMap inlineIds header <> concatMap (concatMap inlineIds) rows
-      Div attrs bs -> ownIds attrs <> concatMap blockIds bs
-      Alert _ box bs -> toList box.id <> maybe [] inlineIds box.title <> concatMap blockIds bs
-      Spoiler h bs -> summaryIds h <> concatMap blockIds bs
-      Footnotes notes -> concat [concatMap blockIds bs | Footnote _ _ bs <- notes]
-      _ -> []
+      (b, Right (Just l)) -> let p = lineStart l in (p, (b, Just p))
+      (b, Right Nothing) -> (last', (b, Just last'))
+      (b, Left ()) -> (last', (b, Nothing))
+
+-- | The ids a block's elements have in the rendered page, in its order
+-- ('elementIds'), each with whether it is made from a number the page
+-- counts by position: a numbered box's (@box-tip-3@), which a box added
+-- before it changes.
+blockIds :: Block -> [(Text, Bool)]
+blockIds = \case
+  Para xs -> inlineIds xs
+  Plain xs -> inlineIds xs
+  Heading _ attrs xs -> ownIds attrs <> inlineIds xs
+  BlockQuote bs -> concatMap blockIds bs
+  List _ items -> concat [concatMap blockIds bs | ListItem _ bs <- items]
+  Table _ header rows -> concatMap inlineIds header <> concatMap (concatMap inlineIds) rows
+  Div attrs bs -> ownIds attrs <> concatMap blockIds bs
+  Alert _ box bs -> [(i, box.numbered) | i <- toList box.id] <> maybe [] inlineIds box.title <> concatMap blockIds bs
+  Spoiler h bs -> summaryIds h <> concatMap blockIds bs
+  Footnotes notes -> concat [concatMap blockIds bs | Footnote _ _ bs <- notes]
+  _ -> []
+  where
     inlineIds = concatMap $ \case
       Emph xs -> inlineIds xs
       Strong xs -> inlineIds xs
@@ -569,10 +629,44 @@ elementIdsOf source parsed = case parsed of
       Image attrs _ _ _ -> ownIds attrs
       Marked attrs xs -> ownIds attrs <> inlineIds xs
       _ -> []
-    ownIds attrs = [i | Just i <- [attribute "id" attrs], not (T.null i)]
+    ownIds attrs = [(i, False) | Just i <- [attribute "id" attrs], not (T.null i)]
     -- A block spoiler's description is its summary, which a spoiler with
     -- a problem does not show.
     summaryIds h = if isNothing h.problem then inlineIds h.description else []
+
+-- | A block as a write compares it outside its part: without what the page
+-- numbers by position, which a block added or taken out before it
+-- changes, and which a write does not keep. That is a footnote's number
+-- (in a reference to it), a numbered box's id (@box-tip-3@; its number is
+-- not in the block), and the lines of a spoiler's marker and of a pause.
+-- Everything else stays: a heading's id, made from its text or written,
+-- a link's target, an embed's, the text.
+settled :: Block -> Block
+settled = \case
+  Para xs -> Para (map inline xs)
+  Plain xs -> Plain (map inline xs)
+  Heading l attrs xs -> Heading l attrs (map inline xs)
+  BlockQuote bs -> BlockQuote (map settled bs)
+  List kind items -> List kind [ListItem task (map settled bs) | ListItem task bs <- items]
+  Table aligns header rows -> Table aligns (map (map inline) header) (map (map (map inline)) rows)
+  Div attrs bs -> Div attrs (map settled bs)
+  Alert kind box bs -> Alert kind box {id = if box.numbered then Nothing else box.id, title = map inline <$> box.title} (map settled bs)
+  Spoiler h bs -> Spoiler h {line = 0, description = map inline h.description} (map settled bs)
+  Footnotes notes -> Footnotes [Footnote 0 label (map settled bs) | Footnote _ label bs <- notes]
+  other -> other
+  where
+    inline = \case
+      Emph xs -> Emph (map inline xs)
+      Strong xs -> Strong (map inline xs)
+      Strikeout xs -> Strikeout (map inline xs)
+      Hidden xs -> Hidden (map inline xs)
+      Link attrs dest title xs -> Link attrs dest title (map inline xs)
+      Image attrs dest title xs -> Image attrs dest title (map inline xs)
+      Marked attrs xs -> Marked attrs (map inline xs)
+      FootnoteRef _ label -> FootnoteRef 0 label
+      InlinePause _ _ -> InlinePause 0 0
+      MisplacedPause _ _ why -> MisplacedPause 0 0 why
+      other -> other
 
 -- | 'Placed' is a section of an outline with where it is: the start of the
 -- section it is under ('Nothing' at the top level of its outline, the

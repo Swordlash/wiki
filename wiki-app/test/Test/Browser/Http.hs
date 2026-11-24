@@ -55,13 +55,16 @@ import Data.Text qualified as T
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Halogen qualified as H
-import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
+import Halogen.Activity.Control (advance, withTestClock)
+import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
+import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.Router (Router)
 import Halogen.Router qualified as Router
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
-import Protolude hiding (find)
+import Protolude hiding (find, wait)
 import Test.Browser.Mount (clickButton, signOut, slugs, start)
 import Test.Browser.Opaque (fakeChallenge, fakeRegistration)
+import Test.Browser.Outside (watchdogMs)
 import Test.Browser.Text (editorText, markdown)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (Database, MonadIndexedDB)
@@ -102,6 +105,7 @@ import Wiki.App.Route qualified as R
 import Wiki.App.Shell qualified as Shell
 import Wiki.App.View.Body qualified as Body
 import Wiki.App.View.Common (pagePathOf, spacePathOf)
+import Wiki.App.View.Editor (draftDelay)
 import Wiki.Core.Access (Access (Closed))
 import Wiki.Core.Attachment (Attachment (..), FileName (..), MimeType (..), Source (..))
 import Wiki.Core.Backlink qualified as Backlink
@@ -144,6 +148,11 @@ $( browserJS
      , ("js_server_tell", "wiki_test_server_tell", Safe, [t|JSText -> IO ()|])
      , ("js_server_hang_up", "wiki_test_server_hang_up", Safe, [t|IO ()|])
      , ("js_server_said", "wiki_test_server_said", Safe, [t|IO JSText|])
+     , ("js_server_sockets", "wiki_test_server_sockets", Safe, [t|IO Int|])
+     , ("js_server_until_saidPromise", "wiki_test_server_until_said", Safe, [t|JSText -> Int -> Int -> IO (Promise Bool)|])
+     , ("js_server_until_open_saidPromise", "wiki_test_server_until_open_said", Safe, [t|JSText -> Int -> IO (Promise Bool)|])
+     , ("js_server_until_askedPromise", "wiki_test_server_until_asked", Safe, [t|Int -> Int -> IO (Promise Bool)|])
+     , ("js_server_until_abortedPromise", "wiki_test_server_until_aborted", Safe, [t|Int -> Int -> IO (Promise Bool)|])
      , ("js_hide_clipboard", "wiki_test_hide_clipboard", Safe, [t|Bool -> IO ()|])
      , ("js_stub_clipboard", "wiki_test_stub_clipboard", Safe, [t|Bool -> IO ()|])
      , ("js_unstub_clipboard", "wiki_test_unstub_clipboard", Safe, [t|IO ()|])
@@ -153,6 +162,18 @@ $( browserJS
      , ("js_click_now", "wiki_test_click_now", Safe, [t|JSText -> IO ()|])
      ]
  )
+
+js_server_until_said :: JSText -> Int -> Int -> IO Bool
+js_server_until_said a1 a2 a3 = if inBrowser then wait =<< js_server_until_saidPromise a1 a2 a3 else pure inert
+
+js_server_until_open_said :: JSText -> Int -> IO Bool
+js_server_until_open_said a1 a2 = if inBrowser then wait =<< js_server_until_open_saidPromise a1 a2 else pure inert
+
+js_server_until_asked :: Int -> Int -> IO Bool
+js_server_until_asked a1 a2 = if inBrowser then wait =<< js_server_until_askedPromise a1 a2 else pure inert
+
+js_server_until_aborted :: Int -> Int -> IO Bool
+js_server_until_aborted a1 a2 = if inBrowser then wait =<< js_server_until_abortedPromise a1 a2 else pure inert
 
 -- | A request the server was asked.
 data Asked = Asked
@@ -293,9 +314,10 @@ offline = unsafeIOToPageM . js_server_offline
 
 -- | The browser saying that it has gone online ('True') or offline: the
 -- window's @online@ or @offline@ event, which a headless page never has
--- cause to dispatch itself.
+-- cause to dispatch itself. The program is settled after it: what it does
+-- on the event has been done.
 browserGoes :: Bool -> PageM s ()
-browserGoes = unsafeIOToPageM . js_network_event
+browserGoes = perform . js_network_event
 
 asked :: PageM s [Asked]
 asked = unsafeIOToPageM js_server_asked >>= either (\e -> panic ("the server's requests: " <> toS e)) pure . eitherDecodeStrict' . encodeUtf8 . fromJSText
@@ -483,8 +505,17 @@ testRouter = panic "the backend's browser tests run in a browser"
 overHttp :: HttpEnv -> (forall n. (MonadLoad n, MonadComments n, MonadNotifications n, MonadStars n) => n a) -> PageM s a
 overHttp env program = unsafeIOToPageM (runHttpWiki env program)
 
+-- | The reads look once, with the program quiet ('readsOnce'). The
+-- requests the stand-in server holds on purpose are counted where it holds
+-- them ('serverStartsWith'), so quiet means everything but those. What
+-- happens outside the program's loop, on the live channel's sockets and on
+-- threads a test forks itself, is waited for by the server's own signal
+-- ('untilSaid', 'untilOpenSaid', 'untilAsked', 'untilAborted'). The
+-- examples that open the editor run on the test's clock ('withTestClock'):
+-- its pauses, the draft's among them, sleep until the example advances the
+-- clock past them, and a quiet wait does not sit them out.
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
-spec m = do
+spec m = readsOnce Quiet $ do
   requests
   refusals
   views m
@@ -520,7 +551,7 @@ accounts m = describe "signing in and out" $ do
     find ui ".sign-in-toggle" >>= click
     find ui ".sign-in-form input[name=login]" >>= (`typeText` "ada")
     find ui ".sign-in-form input[name=password]" >>= (`typeText` "correct horse")
-    spacesBefore <- length . filter (\r -> r.url == "api/v1/spaces") <$> asked
+    spacesBefore <- length . filter (\r -> r.url == "api/v1/spaces") <$> askedNow
     find ui ".sign-in-form button[type=submit]" >>= click
     find ui ".account .user-name" >>= (`shouldHaveText` "Ada Admin")
     _ <- find ui ".account-toggle"
@@ -528,11 +559,11 @@ accounts m = describe "signing in and out" $ do
     -- The login field's offer of passkeys asks for a challenge of its own.
     -- This server answers OPAQUE as for an account from before it
     -- ('serveOpaque'): the old sign-in follows, naming the attempt.
-    [signIn] <- filter (\r -> r.method == "POST" && r.url == "api/v1/session") <$> asked
+    [signIn] <- filter (\r -> r.method == "POST" && r.url == "api/v1/session") <$> askedNow
     (signIn.url, signIn.body) `shouldBe` ("api/v1/session", "{\"attempt\":\"a1\",\"login\":\"ada\",\"password\":\"correct horse\"}")
     Map.lookup "X-Wiki-Request" signIn.headers `shouldBe` Just "1"
     -- Everything read as nobody is read again as Ada: the spaces were.
-    eventually $ (length . filter (\r -> r.url == "api/v1/spaces") <$> asked) >>= (`shouldSatisfy` (> spacesBefore))
+    (length . filter (\r -> r.url == "api/v1/spaces") <$> askedNow) >>= (`shouldSatisfy` (> spacesBefore))
     find ui ".admin-link" >>= (`shouldHaveText` "Administration")
     unmount ui
     serverStops
@@ -566,7 +597,7 @@ accounts m = describe "signing in and out" $ do
     _ <- find ui ".sign-in-toggle"
     find ui ".directory .empty" >>= (`shouldHaveText` "There are no spaces you can see.")
     length <$> findAll ui ".admin-link" `shouldReturn` 0
-    map (\r -> r.url) . filter (\r -> r.method == "DELETE") <$> asked `shouldReturn` ["api/v1/session"]
+    map (\r -> r.url) . filter (\r -> r.method == "DELETE") <$> askedNow `shouldReturn` ["api/v1/session"]
     unmount ui
     serverStops
 
@@ -592,7 +623,7 @@ accounts m = describe "signing in and out" $ do
 ownPassword :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
 ownPassword m = describe "one's own password" $ do
   let typeIn ui field text = find ui (".password-change input[name=" <> field <> "]") >>= (`typeText` text)
-      puts = filter (\r -> r.method == "PUT") <$> asked
+      puts = filter (\r -> r.method == "PUT") <$> askedNow
 
   it "is changed from the security settings, with the current one" $ runPage $ do
     serverStarts
@@ -726,22 +757,23 @@ notificationFeed m = describe "one's feed of notifications" $
       answerWith "POST" "api/v1/notifications/feed" 200 FeedAddress {address = Just "me/notifications.atom?token=second"}
       find ui ".notification-feed-renew" >>= (`shouldHaveText` "Make a new address")
       find ui ".notification-feed-renew" >>= click
-      eventually (find ui ".notification-feed-address" >>= (`getProperty` "value") >>= (`shouldSatisfy` T.isSuffixOf "/me/notifications.atom?token=second"))
-      posts <- filter (\r -> r.method == "POST" && r.url == "api/v1/notifications/feed") <$> asked
+      find ui ".notification-feed-address" >>= (`getProperty` "value") >>= (`shouldSatisfy` T.isSuffixOf "/me/notifications.atom?token=second")
+      posts <- filter (\r -> r.method == "POST" && r.url == "api/v1/notifications/feed") <$> askedNow
       length posts `shouldBe` 2
       -- Without the asynchronous clipboard, as over plain HTTP from another
       -- machine, the address in the field is selected whole and copied
       -- the old way.
       length <$> findAll ui ".notification-feed-copied" `shouldReturn` 0
-      unsafeIOToPageM (js_hide_clipboard True)
+      perform (js_hide_clipboard True)
       field <- find ui ".notification-feed-address"
       whole <- T.length <$> getProperty field "value"
       find ui ".notification-feed-copy" >>= click
-      eventually $ do
-        getProperty field "selectionStart" `shouldReturn` "0"
-        getProperty field "selectionEnd" `shouldReturn` show whole
-      eventually (find ui ".notification-feed-copied" >>= (`shouldHaveText` "Copied."))
-      unsafeIOToPageM (js_hide_clipboard False)
+      -- The copy runs off the component's loop ('Wiki.App.Browser.copyText'
+      -- in an @H.async@): the reads wait for it.
+      getProperty field "selectionStart" `shouldReturn` "0"
+      getProperty field "selectionEnd" `shouldReturn` show whole
+      find ui ".notification-feed-copied" >>= (`shouldHaveText` "Copied.")
+      perform (js_hide_clipboard False)
       unmount ui
       serverStops
 
@@ -752,71 +784,70 @@ shouldContainText element part = textContent element >>= (`shouldSatisfy` T.isIn
 -- stand-in server: a key made with the current password proved first, its
 -- expiry the end of a chosen day in the browser's time zone, the key shown
 -- once and copied to the clipboard (the test's own, in the browser's
--- place: "Test.Browser.CopyCode" says why), listed, and revoked. Each read
--- looks once, with the program quiet.
+-- place: "Test.Browser.CopyCode" says why), listed, and revoked.
 apiKeysPanel :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
 apiKeysPanel m = describe "one's API keys" $
-  readsOnce Quiet $
-    it "makes a key in the settings with the password proved, shows it once, copies it, lists it and revokes it" $
-      runPage $ do
-        let made = UTCTime (fromGregorian 2026 11 24) 0
-            info = ApiKeyInfo {id = ApiKeyId "m3k7q2xa9dwn4zrt", name = "laptop", right = ReadRight, createdAt = made, expiresAt = Nothing, lastUsedAt = Nothing, revokedAt = Nothing}
-            secret = "wiki_m3k7q2xa9dwn4zrt_" <> T.replicate 52 "q"
-            keysAt = "api/v1/account/api-keys"
-        serverStarts
-        serveDemo
-        rita <- unsafeIOToPageM (signedInAs "user-reader")
-        answerWith "GET" "api/v1/session" 200 rita
-        answerWith "GET" "api/v1/account/second-factor" 200 SecondFactorState {enabled = False, recoveryCodesLeft = 0, asksPassword = True}
-        answerWith "GET" keysAt 200 ([] :: [ApiKeyInfo])
-        answerWith "POST" keysAt 201 MadeApiKey {key = secret, info}
-        unsafeIOToPageM (js_stub_clipboard False)
-        ui <- startServer m (UserSettings ApiKeysSection)
-        find ui ".settings-view h1" >>= (`shouldHaveText` "API keys")
-        find ui ".api-keys-empty" >>= (`shouldHaveText` "You have no keys yet.")
-        find ui ".api-key-make input[name=api-key-name]" >>= (`typeText` "laptop")
-        -- "On a day…", the fifth expiry, from the keyboard, and a day set as
-        -- a date picker sets it.
-        menu <- find ui ".api-key-make select[name=api-key-expiry]"
-        focus menu
-        press "Home"
-        replicateM_ 4 (press "ArrowDown")
-        _ <- find ui ".api-key-make input[name=api-key-day]"
-        unsafeIOToPageM (js_set_field (toJSText (".api-key-make input[name=api-key-day]" :: Text)) (toJSText ("2027-06-30" :: Text))) >>= (`shouldBe` True)
-        find ui ".api-key-make input[name=api-key-password]" >>= (`typeText` "rita's password")
-        -- The list the read after the make answers.
-        answerWith "GET" keysAt 200 [info]
-        find ui ".api-key-make button[type=submit]" >>= click
-        -- The key, once.
-        find ui ".api-key-text" >>= (`getProperty` "value") >>= (`shouldBe` secret)
-        find ui ".api-key-made" >>= (`shouldContainText` "not shown again")
-        -- The password proved first, the old way the stand-in server asks
-        -- for ('serveOpaque'); the key's request carries none, and its expiry
-        -- is the end of the 30th of June in this browser's time zone.
-        sent <- asked
-        let made' = [r | r <- sent, r.method == "POST", r.url == keysAt]
-        map (\r -> r.url) (filter (\r -> "rita's password" `T.isInfixOf` r.body) sent) `shouldBe` ["api/v1/account/password/proof/old"]
-        end <- unsafeIOToPageM (js_local_moment (toJSText ("2027-07-01T00:00:00" :: Text)))
-        map (\r -> decodeStrict' (encodeUtf8 r.body)) made'
-          `shouldBe` [Just NewApiKey {name = "laptop", right = ReadRight, expiresAt = Just (posixSecondsToUTCTime (realToFrac (end / 1000))), password = Nothing}]
-        -- Copied whole to the clipboard.
-        find ui ".api-key-copy" >>= click
-        unsafeIOToPageM js_copied >>= (`shouldBe` Just [secret]) . decodeStrict' . encodeUtf8 . fromJSText
-        find ui ".api-key-copy" >>= (`shouldHaveText` "Copied")
-        -- Closed: the key is gone from the page, and listed.
-        find ui ".api-key-made-close" >>= click
-        length <$> findAll ui ".api-key-made, .api-key-text" `shouldReturn` 0
-        find ui ".api-key .api-key-name" >>= (`shouldHaveText` "laptop")
-        -- Revoked, after asking once more.
-        answerWith "POST" (keysAt <> "/m3k7q2xa9dwn4zrt/revoke") 200 [info {revokedAt = Just made}]
-        find ui ".api-key-revoke" >>= click
-        find ui ".api-key-confirm" >>= (`shouldContainText` "Revoke 'laptop'? Programs using it stop at once.")
-        find ui ".api-key-revoke-yes" >>= click
-        find ui ".api-key" >>= (`shouldHaveClass` "api-key-revoked")
-        length <$> findAll ui ".api-key-revoke" `shouldReturn` 0
-        unsafeIOToPageM js_unstub_clipboard
-        unmount ui
-        serverStops
+  it "makes a key in the settings with the password proved, shows it once, copies it, lists it and revokes it" $
+    runPage $ do
+      let made = UTCTime (fromGregorian 2026 11 24) 0
+          info = ApiKeyInfo {id = ApiKeyId "m3k7q2xa9dwn4zrt", name = "laptop", right = ReadRight, createdAt = made, expiresAt = Nothing, lastUsedAt = Nothing, revokedAt = Nothing}
+          secret = "wiki_m3k7q2xa9dwn4zrt_" <> T.replicate 52 "q"
+          keysAt = "api/v1/account/api-keys"
+      serverStarts
+      serveDemo
+      rita <- unsafeIOToPageM (signedInAs "user-reader")
+      answerWith "GET" "api/v1/session" 200 rita
+      answerWith "GET" "api/v1/account/second-factor" 200 SecondFactorState {enabled = False, recoveryCodesLeft = 0, asksPassword = True}
+      answerWith "GET" keysAt 200 ([] :: [ApiKeyInfo])
+      answerWith "POST" keysAt 201 MadeApiKey {key = secret, info}
+      perform (js_stub_clipboard False)
+      ui <- startServer m (UserSettings ApiKeysSection)
+      find ui ".settings-view h1" >>= (`shouldHaveText` "API keys")
+      find ui ".api-keys-empty" >>= (`shouldHaveText` "You have no keys yet.")
+      find ui ".api-key-make input[name=api-key-name]" >>= (`typeText` "laptop")
+      -- "On a day…", the fifth expiry, from the keyboard, and a day set as
+      -- a date picker sets it.
+      menu <- find ui ".api-key-make select[name=api-key-expiry]"
+      focus menu
+      press "Home"
+      replicateM_ 4 (press "ArrowDown")
+      _ <- find ui ".api-key-make input[name=api-key-day]"
+      perform (js_set_field (toJSText (".api-key-make input[name=api-key-day]" :: Text)) (toJSText ("2027-06-30" :: Text))) >>= (`shouldBe` True)
+      find ui ".api-key-make input[name=api-key-password]" >>= (`typeText` "rita's password")
+      -- The list the read after the make answers.
+      answerWith "GET" keysAt 200 [info]
+      find ui ".api-key-make button[type=submit]" >>= click
+      -- The key, once.
+      find ui ".api-key-text" >>= (`getProperty` "value") >>= (`shouldBe` secret)
+      find ui ".api-key-made" >>= (`shouldContainText` "not shown again")
+      -- The password proved first, the old way the stand-in server asks
+      -- for ('serveOpaque'); the key's request carries none, and its expiry
+      -- is the end of the 30th of June in this browser's time zone.
+      sent <- askedNow
+      let made' = [r | r <- sent, r.method == "POST", r.url == keysAt]
+      map (\r -> r.url) (filter (\r -> "rita's password" `T.isInfixOf` r.body) sent) `shouldBe` ["api/v1/account/password/proof/old"]
+      end <- unsafeIOToPageM (js_local_moment (toJSText ("2027-07-01T00:00:00" :: Text)))
+      map (\r -> decodeStrict' (encodeUtf8 r.body)) made'
+        `shouldBe` [Just NewApiKey {name = "laptop", right = ReadRight, expiresAt = Just (posixSecondsToUTCTime (realToFrac (end / 1000))), password = Nothing}]
+      -- Copied whole to the clipboard: the copy runs off the component's
+      -- loop, so the button's label, read at quiet, comes first.
+      find ui ".api-key-copy" >>= click
+      find ui ".api-key-copy" >>= (`shouldHaveText` "Copied")
+      unsafeIOToPageM js_copied >>= (`shouldBe` Just [secret]) . decodeStrict' . encodeUtf8 . fromJSText
+      -- Closed: the key is gone from the page, and listed.
+      find ui ".api-key-made-close" >>= click
+      length <$> findAll ui ".api-key-made, .api-key-text" `shouldReturn` 0
+      find ui ".api-key .api-key-name" >>= (`shouldHaveText` "laptop")
+      -- Revoked, after asking once more.
+      answerWith "POST" (keysAt <> "/m3k7q2xa9dwn4zrt/revoke") 200 [info {revokedAt = Just made}]
+      find ui ".api-key-revoke" >>= click
+      find ui ".api-key-confirm" >>= (`shouldContainText` "Revoke 'laptop'? Programs using it stop at once.")
+      find ui ".api-key-revoke-yes" >>= click
+      find ui ".api-key" >>= (`shouldHaveClass` "api-key-revoked")
+      length <$> findAll ui ".api-key-revoke" `shouldReturn` 0
+      perform js_unstub_clipboard
+      unmount ui
+      serverStops
 
 -- | Hello, world, from the demo.
 helloWorld :: IO P.Page
@@ -875,22 +906,29 @@ requests = describe "its requests, through fetch" $ do
     map (\r -> (r.method, r.url)) <$> asked `shouldReturn` [("DELETE", "api/v1/pages/page%201/draft")]
     serverStops
 
+  -- The request is made, and aborted, on a thread the test forks and
+  -- kills itself, not the program's: the test waits for each by the
+  -- server's signal.
   it "aborts a request whose wait is killed" $ runPage $ do
     serverStarts
-    unsafeIOToPageM js_server_hold
+    perform js_server_hold
     env <- unsafeIOToPageM (newHttpEnv browserTransport)
     waiting <- unsafeIOToPageM (forkIO (void (runHttpWiki env (getSpace (slugs ["team"])))))
-    eventually (map (\r -> (r.url, r.aborted)) <$> asked `shouldReturn` [(team, False)])
+    untilAsked 1
+    map (\r -> (r.url, r.aborted)) <$> asked `shouldReturn` [(team, False)]
     unsafeIOToPageM (killThread waiting)
-    eventually (map (\r -> (r.url, r.aborted)) <$> asked `shouldReturn` [(team, True)])
+    untilAborted 1
+    map (\r -> (r.url, r.aborted)) <$> asked `shouldReturn` [(team, True)]
     serverStops
 
   it "gives up on an answer that does not come in time, and aborts its request" $ runPage $ do
     serverStarts
-    unsafeIOToPageM js_server_hold
+    perform js_server_hold
     env <- unsafeIOToPageM (newHttpEnv (fetchTransport (const 300)))
     overHttp env (getSpace (slugs ["team"])) `shouldReturn` Left (Unreachable "no answer in 300 milliseconds")
-    eventually (map (\r -> (r.url, r.aborted)) <$> asked `shouldReturn` [(team, True)])
+    -- The time limit kills the wait on the thread that asked, and the
+    -- kill aborts the request there, before the answer above is given.
+    map (\r -> (r.url, r.aborted)) <$> asked `shouldReturn` [(team, True)]
     serverStops
   where
     team = endpointUrl (\e -> e.spaces.atPath (slugs ["team"]))
@@ -919,7 +957,7 @@ refusals = describe "its refusals, through fetch" $ do
     env <- unsafeIOToPageM (newHttpEnv browserTransport)
     answerRaw "GET" at 503 "<html>down for maintenance</html>"
     getTeam env `shouldReturn` Left (Unreachable "the server failed, with status 503")
-    unsafeIOToPageM (js_server_offline True)
+    perform (js_server_offline True)
     getTeam env `shouldReturn` Left (Unreachable "the network or the server is down")
     overHttp env (attempt listSpaces) `shouldReturn` Left (Unreachable "the network or the server is down")
     serverStops
@@ -930,11 +968,11 @@ views m = describe "the application over it" $ do
   it "shows that it is loading until the server answers, then the page" $ runPage $ do
     serverStarts
     serveDemo
-    unsafeIOToPageM js_server_hold
+    perform js_server_hold
     ui <- startServer m tour
     find ui ".wiki-content > .loading" >>= (`shouldHaveText` "Loading…")
     length <$> findAll ui ".breadcrumbs li" `shouldReturn` 0
-    unsafeIOToPageM js_server_release
+    perform js_server_release
     find ui ".page-body h1" >>= (`shouldHaveText` "Tour")
     -- The tour is Docs' home page: the space is its crumb.
     find ui ".breadcrumbs [aria-current=page]" >>= (`shouldHaveText` "Docs")
@@ -945,7 +983,7 @@ views m = describe "the application over it" $ do
     -- by itself, once.
     -- (The tour is Docs' home page, asked for at the empty path, which
     -- has no slash after it.)
-    let pagesAsked = map (\r -> r.url) . filter (\r -> "/pages/at" `T.isInfixOf` r.url) <$> asked
+    let pagesAsked = map (\r -> r.url) . filter (\r -> "/pages/at" `T.isInfixOf` r.url) <$> askedNow
     pagesAsked >>= (`shouldSatisfy` ((== 1) . length))
     unmount ui
     serverStops
@@ -961,21 +999,22 @@ views m = describe "the application over it" $ do
     find ui ".page-body h1" >>= (`shouldHaveText` "Tour")
     -- The tour is read at its path as it is now, the home page's empty one.
     let tourAt = endpointUrl (\e -> e.spaces.pageAt tourPage.space [])
-        fetchesOf url = length . filter (\r -> r.method == "GET" && r.url == url) <$> asked
-        listsAsked = length . filter (\r -> "/pages" `T.isSuffixOf` r.url) <$> asked
+        fetchesOf url = length . filter (\r -> r.method == "GET" && r.url == url) <$> askedNow
+        listsAsked = length . filter (\r -> "/pages" `T.isSuffixOf` r.url) <$> askedNow
     fetchesOf tourAt `shouldReturn` 1
     lists <- listsAsked
     -- Another page of the space: fetched, the space's list kept. It is the
     -- Markdown guide, whose load keeps the program busy for longer than an
-    -- action waits ('pressNow', 'guideLoaded').
+    -- action waits ('pressNow', 'guideLoaded'): the example waits for the
+    -- program quiet with a deadline of its own, and then reads.
     pressNow ui ".wiki-sidebar .page-tree a[href$='#/s/docs/p/markdown-guide/']"
-    eventuallyWithin guideLoaded $ find ui ".page-body h1" >>= (`shouldHaveText` "Markdown guide")
     waitQuietWithin guideLoaded
+    find ui ".page-body h1" >>= (`shouldHaveText` "Markdown guide")
     -- Someone else saves the tour meanwhile, in another session. Nothing
     -- tells this tab: it no longer shows the tour.
     answerWith "GET" tourAt 200 tourPage {P.body = "# Tour\n\nSaved by someone else."}
     find ui ".wiki-sidebar .space-home-link" >>= click
-    eventually $ (find ui ".page-view" >>= textContent) >>= (`shouldSatisfy` T.isInfixOf "Saved by someone else.")
+    (find ui ".page-view" >>= textContent) >>= (`shouldSatisfy` T.isInfixOf "Saved by someone else.")
     fetchesOf tourAt `shouldReturn` 2
     listsAsked `shouldReturn` lists
     unmount ui
@@ -984,23 +1023,23 @@ views m = describe "the application over it" $ do
   it "loads a page of the users from the server, and marks an administrator with a PUT" $ runPage $ do
     serverStarts
     serveDemo
-    unsafeIOToPageM js_server_hold
+    perform js_server_hold
     ui <- startServer m (Admin (R.Users allUsers))
     find ui ".wiki-content > .loading" >>= (`shouldHaveText` "Loading…")
-    unsafeIOToPageM js_server_release
-    eventually (length <$> findAll ui ".admin-users .user-row" `shouldReturn` 3)
+    perform js_server_release
+    length <$> findAll ui ".admin-users .user-row" `shouldReturn` 3
     answerRaw "PUT" "api/v1/admin/users/user-editor/administrator" 204 ""
     find ui ".user-row[data-login=editor] .user-manage" >>= click
     find ui ".user-dialog .administrator-switch" >>= click
     -- Read again once the change is made, as the shell reloads.
-    eventually (length . filter (\r -> "api/v1/admin/users?" `T.isPrefixOf` r.url) <$> asked `shouldReturn` 2)
-    _ <- eventually (find ui ".user-dialog .administrator-switch:not([disabled])")
-    marks <- filter (\r -> r.method == "PUT") <$> asked
+    length . filter (\r -> "api/v1/admin/users?" `T.isPrefixOf` r.url) <$> askedNow `shouldReturn` 2
+    _ <- find ui ".user-dialog .administrator-switch:not([disabled])"
+    marks <- filter (\r -> r.method == "PUT") <$> askedNow
     map (\r -> (r.url, r.body)) marks `shouldBe` [("api/v1/admin/users/user-editor/administrator", "{\"administrator\":true}")]
     unmount ui
     serverStops
 
-  it "opens the editor once the page and the draft have come, and saves against the page's version" $ runPage $ do
+  it "opens the editor once the page and the draft have come, and saves against the page's version" $ withTestClock $ \_ -> runPage $ do
     serverStarts
     serveDemo
     hello <- unsafeIOToPageM helloWorld
@@ -1009,7 +1048,7 @@ views m = describe "the application over it" $ do
     find ui ".editor-heading" >>= (`shouldHaveText` "Editing Hello, world")
     find ui ".editor-save" >>= click
     find ui ".editor-saved-notice" >>= (`shouldHaveText` "Saved")
-    saves <- filter (\r -> r.method == "PUT" && not ("/draft" `T.isSuffixOf` r.url)) <$> asked
+    saves <- filter (\r -> r.method == "PUT" && not ("/draft" `T.isSuffixOf` r.url)) <$> askedNow
     map (\r -> Map.lookup "If-Match" r.headers) saves `shouldBe` [Just "\"2026-09-01T12:00:00Z\""]
     unmount ui
     serverStops
@@ -1017,33 +1056,35 @@ views m = describe "the application over it" $ do
   -- The race the server's smoke test met on a slow machine: what is typed
   -- just after Ctrl+S, while the save is on its way, is the author's like
   -- any other keystroke, and was refused while the editor was read-only.
-  it "keeps what is typed while a save is on its way, unsaved, and keeps it as a draft" $ runPage $ do
+  it "keeps what is typed while a save is on its way, unsaved, and keeps it as a draft" $ withTestClock $ \clock -> runPage $ do
     serverStarts
     serveDemo
     hello <- unsafeIOToPageM helloWorld
     let saveAt = "api/v1/pages/" <> hello.id.text
         draftAt = endpointUrl (\e -> e.pages.saveDraft hello.id DraftEdit {base = hello.updatedAt, title = "", body = ""})
-        requestsTo url = filter (\r -> r.method == "PUT" && r.url == url) <$> asked
+        requestsTo url = filter (\r -> r.method == "PUT" && r.url == url) <$> askedNow
     answerWith "PUT" saveAt 200 hello
     answerWith "PUT" draftAt 200 Draft {page = hello.id, author = UserId "user-admin", title = hello.title, body = "", base = hello.updatedAt, savedAt = hello.updatedAt}
     ui <- startServer m (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
     text <- editorText ui
     typeText text "One."
-    unsafeIOToPageM (js_server_hold_at (toJSText "PUT") (toJSText saveAt))
+    perform (js_server_hold_at (toJSText "PUT") (toJSText saveAt))
     press "Control+s"
-    eventually $ length <$> requestsTo saveAt `shouldReturn` 1
+    -- Quiet once the server holds the save, which it counts as held.
+    length <$> requestsTo saveAt `shouldReturn` 1
     typeText text " Two."
-    unsafeIOToPageM js_server_release
+    perform js_server_release
     find ui ".editor-saved-notice" >>= (`shouldHaveText` "Saved")
     saved <- requestsTo saveAt
     map (\r -> "One. Two." `T.isInfixOf` r.body) saved `shouldBe` [False]
     markdown ui >>= (`shouldSatisfy` T.isInfixOf "One. Two.")
     -- Not saved: Cancel asks about it, and it is kept as a draft once the
-    -- typing has stopped.
+    -- typing has stopped: once the clock has passed the draft's pause, the
+    -- second time if the first found the text still changing.
     _ <- find ui "button.editor-cancel"
-    eventuallyWithin 6000 $ do
-      drafts <- requestsTo draftAt
-      map (\r -> "One. Two." `T.isInfixOf` r.body) drafts `shouldBe` [True]
+    perform (advance clock (2 * draftDelay))
+    drafts <- requestsTo draftAt
+    map (\r -> "One. Two." `T.isInfixOf` r.body) drafts `shouldBe` [True]
     unmount ui
     serverStops
 
@@ -1062,14 +1103,13 @@ views m = describe "the application over it" $ do
     versions <- traverse textContent =<< findAll ui ".version-list li > a"
     versions `shouldBe` ["Version 2 (current)", "Version 1"]
     (find ui ".diff-added .diff-text" >>= textContent) `shouldReturn` "# Hello"
-    fetched <- map (\r -> r.url) . filter (\r -> r.method == "GET") <$> asked
+    fetched <- map (\r -> r.url) . filter (\r -> r.method == "GET") <$> askedNow
     filter (T.isInfixOf "/versions") fetched `shouldBe` [endpointUrl (\e -> e.pages.versions hello.id Nothing Nothing), endpointUrl (\e -> e.pages.version hello.id (VersionTime older))]
     find ui "button.restore" >>= click
     find ui ".restore-confirm button.primary" >>= click
-    eventually $ do
-      restores <- filter (\r -> r.method == "POST") <$> asked
-      map (\r -> (r.url, Map.lookup "If-Match" r.headers)) restores
-        `shouldBe` [(endpointUrl (\e -> e.pages.restore hello.id (VersionTime older) (PageVersion hello.updatedAt)), Just "\"2026-09-01T12:00:00Z\"")]
+    restores <- filter (\r -> r.method == "POST") <$> askedNow
+    map (\r -> (r.url, Map.lookup "If-Match" r.headers)) restores
+      `shouldBe` [(endpointUrl (\e -> e.pages.restore hello.id (VersionTime older) (PageVersion hello.updatedAt)), Just "\"2026-09-01T12:00:00Z\"")]
     unmount ui
     serverStops
 
@@ -1078,13 +1118,14 @@ views m = describe "the application over it" $ do
     serveDemo
     hello <- unsafeIOToPageM helloWorld
     let versions = endpointUrl (\e -> e.pages.versions hello.id Nothing Nothing)
-    unsafeIOToPageM (js_server_hold_at (toJSText "GET") (toJSText versions))
+    perform (js_server_hold_at (toJSText "GET") (toJSText versions))
     ui <- startServer m (PageHistory (slugs ["blog"]) (slugs ["hello-world"]) Nothing AgainstPrevious)
-    eventually (map (\r -> r.aborted) . filter (\r -> r.url == versions) <$> asked `shouldReturn` [False])
+    -- Quiet once the server holds the request, which it counts as held.
+    map (\r -> r.aborted) . filter (\r -> r.url == versions) <$> askedNow `shouldReturn` [False]
     find ui ".all-spaces" >>= click
     find ui ".wiki-home .page-view h1" >>= (`shouldHaveText` "Spaces")
     -- The history view went with its fiber, and the request with them.
-    eventually (map (\r -> r.aborted) . filter (\r -> r.url == versions) <$> asked `shouldReturn` [True])
+    map (\r -> r.aborted) . filter (\r -> r.url == versions) <$> askedNow `shouldReturn` [True]
     unmount ui
     serverStops
 
@@ -1097,7 +1138,7 @@ views m = describe "the application over it" $ do
     browserGoes False
     find ui ".offline-notice" >>= (`shouldHaveText` "You are offline: the wiki cannot be reached until the connection is back.")
     browserGoes True
-    eventually (length <$> findAll ui ".offline-notice" `shouldReturn` 0)
+    length <$> findAll ui ".offline-notice" `shouldReturn` 0
     unmount ui
     serverStops
 
@@ -1120,7 +1161,7 @@ views m = describe "the application over it" $ do
     ui <- start m Nothing Home
     _ <- find ui ".wiki-sidebar"
     browserGoes False
-    -- Heard (the shell would have rendered by now), and not shown.
+    -- Heard ('browserGoes' settles the program), and not shown.
     _ <- find ui ".wiki-footer"
     length <$> findAll ui ".offline-notice" `shouldReturn` 0
     browserGoes True
@@ -1129,10 +1170,10 @@ views m = describe "the application over it" $ do
   it "says when the server cannot be reached, and tries again when asked" $ runPage $ do
     serverStarts
     serveDemo
-    unsafeIOToPageM (js_server_offline True)
+    perform (js_server_offline True)
     ui <- startServer m (SpacePages (slugs ["docs"]))
     find ui ".wiki-content .error-unreachable" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "could not be reached")
-    unsafeIOToPageM (js_server_offline False)
+    perform (js_server_offline False)
     find ui ".wiki-content .error-unreachable button.retry" >>= click
     find ui ".space-view h1" >>= (`shouldHaveText` "Docs")
     unmount ui
@@ -1141,7 +1182,7 @@ views m = describe "the application over it" $ do
   it "adopts the server's page with nothing to repair, then loads into it" $ runPage $ do
     serverStarts
     serveDemo
-    unsafeIOToPageM js_server_hold
+    perform js_server_hold
     -- The page as the server's build has it: the shell before anything
     -- has come, which is the same at every address.
     first' <- startServer m Home
@@ -1155,7 +1196,7 @@ views m = describe "the application over it" $ do
     after <- findAll ui "*"
     length after `shouldBe` length before
     zipWithM_ shouldBeSameElement after before
-    unsafeIOToPageM js_server_release
+    perform js_server_release
     find ui ".page-body h1" >>= (`shouldHaveText` "Tour")
     find ui ".wiki" >>= (`shouldBeSameElement` shell)
     unmount ui
@@ -1195,12 +1236,15 @@ views m = describe "the application over it" $ do
     -- A server that answers nothing from here on, and the page with what
     -- it carries.
     serverStarts
-    unsafeIOToPageM (js_embed (toJSText preloadId) (toJSText (encodePreload carried)))
+    perform (js_embed (toJSText preloadId) (toJSText (encodePreload carried)))
     rendering <- fromPage
     first' <- startServerOver m rendering tour
     find first' ".page-body h1" >>= (`shouldHaveText` "Tour")
     html <- fromJSText <$> unsafeIOToPageM js_markup
     unmount first'
+    -- How many times the first program subscribed to the tour: its socket,
+    -- if it opened, said it once; unmounted, it says it no more.
+    subscriptions <- length . filter (\c -> Just c == (Subscribe <$> tourId)) <$> said
     page <- htmlContainer html
     before <- findAllIn page adoptable
     adopting <- fromPage
@@ -1210,12 +1254,14 @@ views m = describe "the application over it" $ do
     zipWithM_ shouldBeSameElement after before
     find ui ".breadcrumbs [aria-current=page]" >>= (`shouldHaveText` "Docs")
     find ui ".user-name" >>= (`shouldHaveText` "Ada Admin")
-    asked `shouldReturn` []
+    askedNow `shouldReturn` []
     -- The page shown from the first render listens for its comments (the
-    -- first program, unmounted, stopped listening before).
-    eventually $ lastMay <$> said `shouldReturn` (Subscribe <$> tourId)
+    -- first program, unmounted, stopped listening before), once its socket
+    -- has opened.
+    for_ tourId $ \p -> untilSaid (subscriptions + 1) (Subscribe p)
+    lastMay <$> saidNow `shouldReturn` (Subscribe <$> tourId)
     unmount ui
-    unsafeIOToPageM (js_unembed (toJSText preloadId))
+    perform (js_unembed (toJSText preloadId))
     serverStops
   where
     -- Every element but what is inside an island, which its library fills
@@ -1228,13 +1274,76 @@ said = do
   messages <- unsafeIOToPageM js_server_said >>= either (\e -> panic ("what was said: " <> toS e)) pure . eitherDecodeStrict' . encodeUtf8 . fromJSText
   pure (mapMaybe (decodeStrict' . encodeUtf8) (messages :: [Text]))
 
--- | The server says this on the live channel, for the other specs.
+-- | The server says this on the live channel, for the other specs. It
+-- does not settle the program, as 'tell' does.
 tellServer :: ServerMessage -> PageM s ()
-tellServer = tell
+tellServer = unsafeIOToPageM . js_server_tell . toJSText . encodedText
 
--- | The server says this on the live channel.
+-- | The server says this on the live channel, and the program is settled
+-- after it: what the page does on the message has been done, but for
+-- what it waits for.
 tell :: ServerMessage -> PageM s ()
-tell = unsafeIOToPageM . js_server_tell . toJSText . decodeUtf8 . toS . encode
+tell = perform . js_server_tell . toJSText . encodedText
+
+-- | A message as JSON, as the page and the server write it on a socket.
+encodedText :: (ToJSON a) => a -> Text
+encodedText = decodeUtf8 . toS . encode
+
+-- | What the page has said on the live channel, read once the program is
+-- quiet: what a handler says (on a subscription's answer, on opening or
+-- leaving the editor) has been said by then.
+saidNow :: PageM s [ClientMessage]
+saidNow = waitQuiet *> said
+
+-- | Every request the server was asked, read once the program is quiet:
+-- every request a handler makes has been made by then, and answered but
+-- for those the server holds.
+askedNow :: PageM s [Asked]
+askedNow = waitQuiet *> asked
+
+-- | Wait until the page has said this message on the live channel this
+-- many times in all. For what the live channel says outside the program's
+-- loop, which no rest of the program covers: the subscriptions said when a
+-- socket opens (on the browser's timer, in the stand-in as from a real
+-- server), and those said again after the channel's own pause before it
+-- opens a socket again or asks again for a page the server refused (a
+-- @threadDelay@ of "Wiki.App.Live" on a thread of its own, which no tree
+-- counts). It hangs on each message said, the server's own signal, and
+-- fails only at the watchdog. Read 'saidNow' after it.
+untilSaid :: (HasCallStack) => Int -> ClientMessage -> PageM s ()
+untilSaid times message = do
+  came <- unsafeIOToPageM (js_server_until_said (toJSText (encodedText message)) times watchdogMs)
+  unless came $ do
+    got <- said
+    expectationFailure ("after " <> show watchdogMs <> " ms, the page had not said " <> show message <> " " <> show times <> " times, only " <> show got)
+
+-- | Wait until a socket of the page that is open now has said this
+-- message: what the server says from then on reaches the page on that
+-- socket. For a subscription after a sign-in, which restarts the channel:
+-- one said on the socket it closed is lost, and the server's message with
+-- it. As 'untilSaid', it hangs on the server's own signal.
+untilOpenSaid :: (HasCallStack) => ClientMessage -> PageM s ()
+untilOpenSaid message = do
+  came <- unsafeIOToPageM (js_server_until_open_said (toJSText (encodedText message)) watchdogMs)
+  unless came $ do
+    got <- said
+    expectationFailure ("after " <> show watchdogMs <> " ms, no open socket of the page had said " <> show message <> "; the page said " <> show got)
+
+-- | Wait until the server has been asked this many requests in all: for a
+-- request made by a thread the test forked itself, which is not the
+-- program's and which no rest of the program covers.
+untilAsked :: (HasCallStack) => Int -> PageM s ()
+untilAsked count = do
+  came <- unsafeIOToPageM (js_server_until_asked count watchdogMs)
+  unless came (expectationFailure ("after " <> show watchdogMs <> " ms, the server had not been asked " <> show count <> " requests"))
+
+-- | Wait until this many of the requests asked have been aborted: for an
+-- abort by a thread the test forked and killed itself, which runs on that
+-- thread after the kill returns.
+untilAborted :: (HasCallStack) => Int -> PageM s ()
+untilAborted count = do
+  came <- unsafeIOToPageM (js_server_until_aborted count watchdogMs)
+  unless came (expectationFailure ("after " <> show watchdogMs <> " ms, " <> show count <> " requests had not been aborted"))
 
 -- | A page's comments over the server's backend: read with the page, a new
 -- one sent, what another tab writes heard over the live channel, and, when
@@ -1256,7 +1365,8 @@ comments m = describe "a page's comments" $ do
         pure (page, threads)
     ui <- startServer m (Page (slugs ["blog"]) (slugs ["hello-world"]))
     find ui "mark.comment-mark[data-thread='thread-hello-1']" >>= (`shouldHaveText` "a blog that is also a wiki")
-    eventually $ said `shouldReturn` [Subscribe hello.id]
+    untilSaid 1 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id]
     -- A new comment about the page, sent to the server, shown as it answered.
     let ada = Author {id = UserId "user-admin", name = "Ada Admin", avatar = Nothing}
         comment' tid cid body = Comment {id = CommentId cid, thread = CommentThreadId tid, author = ada, body, createdAt = demoNow, editedAt = Nothing}
@@ -1269,22 +1379,23 @@ comments m = describe "a page's comments" $ do
     typeText text "Sent."
     clickButton ui ".page-comments .comment-new button" "Comment"
     find ui ".page-comments #comment-thread-thread-new .comment-body" >>= (`shouldHaveText` "Sent.")
-    posted <- filter (\r -> r.method == "POST") <$> asked
+    posted <- filter (\r -> r.method == "POST") <$> askedNow
     map (\r -> (r.url, eitherDecodeStrict' (encodeUtf8 r.body))) posted `shouldBe` [(endpointUrl (\e -> (e.comments hello.id).open NewThread {anchor = Nothing, body = ""}), Right NewThread {anchor = Nothing, body = "Sent."})]
     -- Another tab replies: heard, and shown.
     tell (Event hello.id (CommentAdded (comment' "thread-hello-3" "comment-elsewhere" "From another tab.")))
-    eventually $ (traverse textContent =<< findAll ui "#comment-thread-thread-hello-3 .comment-body") `shouldReturn` ["Welcome! Comments here are about the whole post; select some of its text to comment on that.", "Thanks, that works.", "From another tab."]
+    (traverse textContent =<< findAll ui "#comment-thread-thread-hello-3 .comment-body") `shouldReturn` ["Welcome! Comments here are about the whole post; select some of its text to comment on that.", "Thanks, that works.", "From another tab."]
     -- The connection is cut: opened again after a pause, and subscribed
     -- again; the server's answer has the comments as they are now, which
     -- the page shows without reading them itself (were they read, the
     -- demo's three threads would come back).
     let threadsAt = endpointUrl (\e -> (e.comments hello.id).list)
-        readsSoFar = length . filter (\r -> r.method == "GET" && r.url == threadsAt) <$> asked
+        readsSoFar = length . filter (\r -> r.method == "GET" && r.url == threadsAt) <$> askedNow
     before <- readsSoFar
-    unsafeIOToPageM js_server_hang_up
-    eventually $ said `shouldReturn` [Subscribe hello.id, Subscribe hello.id]
+    perform js_server_hang_up
+    untilSaid 2 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id, Subscribe hello.id]
     tell (Subscribed hello.id [made] [] Events.noReaders)
-    eventually $ length <$> findAll ui ".page-comments .comment-thread" `shouldReturn` 1
+    length <$> findAll ui ".page-comments .comment-thread" `shouldReturn` 1
     readsSoFar `shouldReturn` before
     length <$> findAll ui "mark.comment-mark" `shouldReturn` 0
     unmount ui
@@ -1317,11 +1428,12 @@ comments m = describe "a page's comments" $ do
     -- A server that answers nothing from here on, and the page with what
     -- it carries.
     serverStarts
-    unsafeIOToPageM (js_embed (toJSText preloadId) (toJSText (encodePreload carried)))
+    perform (js_embed (toJSText preloadId) (toJSText (encodePreload carried)))
     env <- fromPage
     ui <- startServerOver m env (Page (slugs ["blog"]) (slugs ["hello-world"]))
     find ui "mark.comment-mark[data-thread='thread-hello-1']" >>= (`shouldHaveText` "a blog that is also a wiki")
-    eventually $ said `shouldReturn` [Subscribe hello.id]
+    untilSaid 1 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id]
     -- Someone commented after the page was read and before the tab
     -- subscribed: the answer has it, and the page shows it.
     let grace = Author {id = UserId "user-editor", name = "Grace Editor", avatar = Nothing}
@@ -1337,9 +1449,9 @@ comments m = describe "a page's comments" $ do
     tell (Subscribed hello.id (preloaded <> [meanwhile]) [] Events.noReaders)
     find ui ".page-comments #comment-thread-thread-meanwhile .comment-body" >>= (`shouldHaveText` "Made meanwhile.")
     find ui "mark.comment-mark[data-thread='thread-hello-1']" >>= (`shouldHaveText` "a blog that is also a wiki")
-    asked `shouldReturn` []
+    askedNow `shouldReturn` []
     unmount ui
-    unsafeIOToPageM (js_unembed (toJSText preloadId))
+    perform (js_unembed (toJSText preloadId))
     serverStops
 
 -- | Who is editing a page, and its saves, over the live channel (WP4.12 of
@@ -1384,13 +1496,17 @@ presence m = describe "who is editing and reading" $ do
     answerWith "DELETE" "api/v1/session" 200 visitor
     ui <- startServer m Home
     _ <- find ui ".wiki-home .page-view"
+    -- Nobody signed in may read nothing of the wiki but its front page: the
+    -- page view has no live channel then, and no socket is opened to say
+    -- anything on.
+    unsafeIOToPageM js_server_sockets `shouldReturn` 0
     said `shouldReturn` []
     signIn ui
-    eventually $ (Subscribe home.id `elem`) <$> said `shouldReturn` True
-    -- The sign-in restarts the tab's channel, so the socket that said
-    -- this subscription may be closed by now: who edits the page is then
-    -- told again with the answer to the subscription on the new one, as
-    -- the server tells it (test-fetch.js's presence).
+    -- The sign-in restarts the tab's channel ('signIn' read at quiet, so
+    -- the restart is done): the new socket opens on the browser's timer and
+    -- subscribes, and from then on what the server says reaches the tab.
+    untilOpenSaid (Subscribe home.id)
+    (Subscribe home.id `elem`) <$> saidNow `shouldReturn` True
     tell (Event home.id (Editing [edgar]))
     find ui ".page-editors" >>= (`shouldHaveText` "Edgar Editor is editing this page.")
     let later = addUTCTime 60 home.updatedAt
@@ -1398,29 +1514,29 @@ presence m = describe "who is editing and reading" $ do
     answerWith "GET" (endpointUrl (\e -> e.homeDocument)) 200 (space, saved)
     answerWith "GET" (endpointUrl (\e -> e.spaces.pageAt space.id [])) 200 saved
     -- A save is told once, and no subscription's answer says it again: told
-    -- on a socket the restart closed, it is lost. The server tells it
-    -- again until the tab shows the version saved; once it does, the same
-    -- save told again changes nothing.
-    eventuallyWithin 10000 $ do
-      tell (Event home.id (PageChanged later))
-      settle
-      (traverse textContent =<< findAll ui ".page-body p") >>= (`shouldSatisfy` elem "Home saved in another tab.")
+    -- on a socket the restart closed, it would be lost. Told on the socket
+    -- open now, it is shown.
+    tell (Event home.id (PageChanged later))
+    (traverse textContent =<< findAll ui ".page-body p") >>= (`shouldSatisfy` elem "Home saved in another tab.")
     length <$> findAll ui ".comments-toggle, .page-comments" `shouldReturn` 0
     signOut ui
     _ <- find ui ".sign-in-toggle"
-    eventually $ length <$> findAll ui ".page-editors" `shouldReturn` 0
+    length <$> findAll ui ".page-editors" `shouldReturn` 0
     tell (Event home.id (Editing [rita]))
     length <$> findAll ui ".page-editors" `shouldReturn` 0
-    subscriptions <- length . filter (== Subscribe home.id) <$> said
+    subscriptions <- length . filter (== Subscribe home.id) <$> saidNow
     signIn ui
-    eventually $ (length . filter (== Subscribe home.id) <$> said) >>= (`shouldSatisfy` (> subscriptions))
+    untilOpenSaid (Subscribe home.id)
+    (length . filter (== Subscribe home.id) <$> saidNow) >>= (`shouldSatisfy` (> subscriptions))
     tell (Event home.id (Editing [rita]))
     find ui ".page-editors" >>= (`shouldHaveText` "Rita Reader is editing this page.")
     find ui ".space-card-link[href$='#/s/blog/']" >>= click
     find ui ".wiki-sidebar .page-tree a[href$='#/s/blog/p/hello-world/']" >>= click
     (hello, _) <- demoHello
     _ <- find ui ".comments-toggle"
-    eventually $ (Subscribe hello.id `elem`) <$> said `shouldReturn` True
+    -- Subscribed on the socket open since the sign-in, at once, since it
+    -- is open.
+    (Subscribe hello.id `elem`) <$> saidNow `shouldReturn` True
     let remote = Comment {id = CommentId "comment-after-home-sign-in", thread = CommentThreadId "thread-hello-3", author = rita, body = "Live comments still arrive.", createdAt = demoNow, editedAt = Nothing}
     tell (Event hello.id (CommentAdded remote))
     find ui ".page-comments #comment-thread-thread-hello-3 .comment:last-child .comment-body" >>= (`shouldHaveText` "Live comments still arrive.")
@@ -1435,27 +1551,28 @@ presence m = describe "who is editing and reading" $ do
     (hello, blogPages) <- demoHello
     ui <- startServer m (Page blog helloAt)
     _ <- find ui ".page-view .page-body"
-    eventually $ said `shouldReturn` [Subscribe hello.id]
+    untilSaid 1 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id]
     length <$> findAll ui ".page-live" `shouldReturn` 0
     tell (Event hello.id (Editing [edgar]))
     find ui ".page-actions .page-editors" >>= (`shouldHaveText` "Edgar Editor is editing this page.")
     tell (Event hello.id (Editing [edgar, rita]))
     find ui ".page-actions .page-editors" >>= (`shouldHaveText` "Edgar Editor and Rita Reader are editing this page.")
     tell (Event hello.id (Editing []))
-    eventually $ length <$> findAll ui ".page-live" `shouldReturn` 0
+    length <$> findAll ui ".page-live" `shouldReturn` 0
     -- Saved elsewhere: read again and shown, with no button to ask for it.
     let later = addUTCTime 60 hello.updatedAt
         saved = hello {P.body = "Saved in another tab.", P.updatedAt = later}
     answerWith "GET" (endpointUrl (\e -> e.spaces.listPages hello.space)) 200 [if p.id == hello.id then P.summaryOf saved else p | p <- blogPages]
     answerWith "GET" (endpointUrl (\e -> e.spaces.pageAt hello.space helloAt)) 200 saved
     tell (Event hello.id (PageChanged later))
-    eventuallyWithin 5000 $ (find ui ".page-view" >>= textContent) >>= (`shouldSatisfy` T.isInfixOf "Saved in another tab.")
+    (find ui ".page-view" >>= textContent) >>= (`shouldSatisfy` T.isInfixOf "Saved in another tab.")
     length <$> findAll ui ".page-changed" `shouldReturn` 0
     -- The tab's own version, told again, is not read again.
-    before <- length <$> asked
+    before <- length <$> askedNow
     tell (Event hello.id (PageChanged later))
     (find ui ".page-view" >>= textContent) >>= (`shouldSatisfy` T.isInfixOf "Saved in another tab.")
-    length <$> asked `shouldReturn` before
+    length <$> askedNow `shouldReturn` before
     -- Saved again while the reader renames the page: offered, not shown,
     -- until asked for.
     clickButton ui ".page-actions button" "Rename"
@@ -1469,8 +1586,8 @@ presence m = describe "who is editing and reading" $ do
     (find ui ".page-view" >>= textContent) >>= (`shouldSatisfy` T.isInfixOf "Saved in another tab.")
     _ <- find ui ".page-view .inline-form"
     clickButton ui ".page-actions .page-live button" "Changed since: show the new version"
-    eventuallyWithin 5000 $ (find ui ".page-view" >>= textContent) >>= (`shouldSatisfy` T.isInfixOf "Saved once more.")
-    eventually $ length <$> findAll ui ".page-live" `shouldReturn` 0
+    (find ui ".page-view" >>= textContent) >>= (`shouldSatisfy` T.isInfixOf "Saved once more.")
+    length <$> findAll ui ".page-live" `shouldReturn` 0
     unmount ui
     serverStops
 
@@ -1480,7 +1597,8 @@ presence m = describe "who is editing and reading" $ do
     (hello, _) <- demoHello
     ui <- startServer m (Page blog helloAt)
     _ <- find ui ".page-view .page-body"
-    eventually $ said `shouldReturn` [Subscribe hello.id]
+    untilSaid 1 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id]
     length <$> findAll ui ".page-readers" `shouldReturn` 0
     -- The answer to the subscription says who reads it.
     tell (Subscribed hello.id [] [] Events.Readers {some = [edgar, rita], total = 2, visitors = 0})
@@ -1493,7 +1611,7 @@ presence m = describe "who is editing and reading" $ do
     -- A crowd: five circles, then the rest counted, then the visitors.
     let crowd = [Author {id = UserId ("user-" <> show i), name = "Reader " <> show (10 + i), avatar = Nothing} | i <- [1 .. 15 :: Int]]
     tell (Event hello.id (Events.Reading Events.Readers {some = crowd, total = 20, visitors = 3}))
-    eventually $ length <$> findAll ui ".page-readers .page-reader" `shouldReturn` 7
+    length <$> findAll ui ".page-readers .page-reader" `shouldReturn` 7
     find ui ".page-readers-more" >>= (`shouldHaveText` "+15")
     visitors <- find ui ".page-readers-visitors"
     getAttribute visitors "title" `shouldReturn` Just "3 visitors not signed in"
@@ -1503,10 +1621,10 @@ presence m = describe "who is editing and reading" $ do
     find ui ".page-readers-list .page-readers-visitors-line" >>= (`shouldHaveText` "3 visitors not signed in")
     -- One visitor alone, then nobody.
     tell (Event hello.id (Events.Reading Events.Readers {some = [], total = 0, visitors = 1}))
-    eventually $ find ui ".page-readers-visitors" >>= \v -> getAttribute v "title" `shouldReturn` Just "1 visitor not signed in"
+    find ui ".page-readers-visitors" >>= \v -> getAttribute v "title" `shouldReturn` Just "1 visitor not signed in"
     length <$> findAll ui ".page-readers-more" `shouldReturn` 0
     tell (Event hello.id (Events.Reading Events.noReaders))
-    eventually $ length <$> findAll ui ".page-readers" `shouldReturn` 0
+    length <$> findAll ui ".page-readers" `shouldReturn` 0
     unmount ui
     serverStops
 
@@ -1516,65 +1634,75 @@ presence m = describe "who is editing and reading" $ do
     (hello, _) <- demoHello
     ui <- startServer m (Page blog helloAt)
     _ <- find ui ".page-view .page-body"
-    eventually $ said `shouldReturn` [Subscribe hello.id]
+    untilSaid 1 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id]
     tell (Subscribed hello.id [] [edgar] Events.Readers {some = [edgar, rita], total = 2, visitors = 0})
     _ <- find ui ".page-readers"
     find ui ".page-actions .page-editors" >>= (`shouldHaveText` "Edgar Editor is editing this page.")
     -- A permission changed and the user may no longer read the page: the
     -- server drops the subscription and says so.
     tell (Refused hello.id)
-    eventually $ length <$> findAll ui ".page-readers" `shouldReturn` 0
-    eventually $ length <$> findAll ui ".page-live" `shouldReturn` 0
+    length <$> findAll ui ".page-readers" `shouldReturn` 0
+    length <$> findAll ui ".page-live" `shouldReturn` 0
     -- The tab asks again after a pause, and again after a longer one
-    -- while the server keeps refusing.
-    eventuallyWithin 3000 $ said `shouldReturn` [Subscribe hello.id, Subscribe hello.id]
+    -- while the server keeps refusing: pauses of the live channel's own,
+    -- outside the program's loop ('untilSaid').
+    untilSaid 2 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id, Subscribe hello.id]
     tell (Refused hello.id)
-    eventuallyWithin 5000 $ said `shouldReturn` [Subscribe hello.id, Subscribe hello.id, Subscribe hello.id]
+    untilSaid 3 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id, Subscribe hello.id, Subscribe hello.id]
     -- The user may read it again: the answer brings back who reads it.
     tell (Subscribed hello.id [] [] Events.Readers {some = [rita], total = 1, visitors = 0})
     _ <- find ui ".page-readers"
     unmount ui
     serverStops
 
-  it "says again that it edits a page once a refused subscription is back" $ runPage $ do
+  it "says again that it edits a page once a refused subscription is back" $ withTestClock $ \_ -> runPage $ do
     serverStarts
     serveDemo
     (hello, _) <- demoHello
     ui <- startServer m (EditPage blog helloAt)
     find ui ".editor-heading" >>= (`shouldHaveText` "Editing Hello, world")
-    eventually $ said `shouldReturn` [Subscribe hello.id]
+    untilSaid 1 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id]
     tell (Subscribed hello.id [] [] Events.noReaders)
-    eventually $ said `shouldReturn` [Subscribe hello.id, StartEditing hello.id]
+    saidNow `shouldReturn` [Subscribe hello.id, StartEditing hello.id]
     -- The server drops the subscription, and with it the tab from the
-    -- page's editors. The tab asks again; once the server answers, the
-    -- tab says again that it edits the page.
+    -- page's editors. The tab asks again, after a pause of the live
+    -- channel's own; once the server answers, the tab says again that it
+    -- edits the page.
     tell (Refused hello.id)
-    eventuallyWithin 3000 $ said `shouldReturn` [Subscribe hello.id, StartEditing hello.id, Subscribe hello.id]
+    untilSaid 2 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id, StartEditing hello.id, Subscribe hello.id]
     tell (Subscribed hello.id [] [] Events.noReaders)
-    eventually $ said `shouldReturn` [Subscribe hello.id, StartEditing hello.id, Subscribe hello.id, StartEditing hello.id]
+    saidNow `shouldReturn` [Subscribe hello.id, StartEditing hello.id, Subscribe hello.id, StartEditing hello.id]
     unmount ui
     serverStops
 
-  it "asks before editing a page someone else edits, says it edits it once told to go on, and stops when it goes" $ runPage $ do
+  it "asks before editing a page someone else edits, says it edits it once told to go on, and stops when it goes" $ withTestClock $ \_ -> runPage $ do
     serverStarts
     serveDemo
     (hello, _) <- demoHello
     ui <- startServer m (EditPage blog helloAt)
     find ui ".editor-heading" >>= (`shouldHaveText` "Editing Hello, world")
-    eventually $ said `shouldReturn` [Subscribe hello.id]
+    untilSaid 1 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id]
     tell (Subscribed hello.id [] [edgar] Events.noReaders)
     find ui ".editor-presence-warning p" >>= (`shouldHaveText` "Edgar Editor is editing this page. Open the editor anyway?")
     -- Not said until the author goes on.
-    said `shouldReturn` [Subscribe hello.id]
+    saidNow `shouldReturn` [Subscribe hello.id]
     clickButton ui ".editor-presence-warning button" "Edit anyway"
-    eventually $ said `shouldReturn` [Subscribe hello.id, StartEditing hello.id]
+    saidNow `shouldReturn` [Subscribe hello.id, StartEditing hello.id]
     length <$> findAll ui ".editor-presence-warning" `shouldReturn` 0
     find ui ".editor-others" >>= (`shouldHaveText` "Edgar Editor is also editing this page.")
     tell (Event hello.id (Editing []))
-    eventually $ length <$> findAll ui ".editor-others" `shouldReturn` 0
-    -- A new connection is told again, after the subscription.
-    unsafeIOToPageM js_server_hang_up
-    eventually $ said `shouldReturn` [Subscribe hello.id, StartEditing hello.id, Subscribe hello.id, StartEditing hello.id]
+    length <$> findAll ui ".editor-others" `shouldReturn` 0
+    -- A new connection, opened after a pause of the live channel's own, is
+    -- told again, after the subscription.
+    perform js_server_hang_up
+    untilSaid 2 (StartEditing hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id, StartEditing hello.id, Subscribe hello.id, StartEditing hello.id]
     -- Saved by someone else meanwhile: said, and the work is left alone.
     text <- editorText ui
     typeText text "Mine."
@@ -1584,22 +1712,24 @@ presence m = describe "who is editing and reading" $ do
     -- Leaving the editor: it stops editing, and stops listening.
     find ui ".wiki-sidebar .page-tree a[href$='#/s/blog/p/notes-on-haskell/']" >>= click
     find ui ".leave-confirm button.danger" >>= click
-    eventually $ (\ms -> [msg | msg <- ms, msg `elem` [StopEditing hello.id, Events.Unsubscribe hello.id]]) <$> said `shouldReturn` [StopEditing hello.id, Events.Unsubscribe hello.id]
+    (\ms -> [msg | msg <- ms, msg `elem` [StopEditing hello.id, Events.Unsubscribe hello.id]]) <$> saidNow `shouldReturn` [StopEditing hello.id, Events.Unsubscribe hello.id]
     unmount ui
     serverStops
 
-  it "says at once that it edits a page nobody else edits" $ runPage $ do
+  it "says at once that it edits a page nobody else edits" $ withTestClock $ \_ -> runPage $ do
     serverStarts
     serveDemo
     (hello, _) <- demoHello
     ui <- startServer m (EditPage blog helloAt)
-    eventually $ said `shouldReturn` [Subscribe hello.id]
+    untilSaid 1 (Subscribe hello.id)
+    saidNow `shouldReturn` [Subscribe hello.id]
     tell (Subscribed hello.id [] [] Events.noReaders)
-    eventually $ said `shouldReturn` [Subscribe hello.id, StartEditing hello.id]
+    saidNow `shouldReturn` [Subscribe hello.id, StartEditing hello.id]
     length <$> findAll ui ".editor-presence-warning" `shouldReturn` 0
     length <$> findAll ui ".editor-others" `shouldReturn` 0
     unmount ui
-    eventually $ (StopEditing hello.id `elem`) <$> said `shouldReturn` True
+    -- Said by the editor's finalizer, which the unmount runs.
+    (StopEditing hello.id `elem`) <$> said `shouldReturn` True
     serverStops
 
 -- | Answers that come late (WP5.95 of docs/PLAN.md): two reloads of the
@@ -1680,23 +1810,25 @@ overtaken m space page at url change shown = do
   ui <- startServer m (Page space at)
   _ <- find ui ".page-view .page-body"
   let templateAt = "api/v1/pages/" <> page.id.text <> "/template"
-      readsAt = length . filter (\r -> r.method == "GET" && r.url == url) <$> asked
-      writes = length . filter (\r -> r.method == "PUT" && r.url == templateAt) <$> asked
+      readsAt = length . filter (\r -> r.method == "GET" && r.url == url) <$> askedNow
+      writes = length . filter (\r -> r.method == "PUT" && r.url == templateAt) <$> askedNow
   before <- readsAt
-  holdNext "GET" url
+  perform (js_server_hold_next (toJSText "GET") (toJSText url))
   find ui ".use-as-template" >>= click
-  eventually $ readsAt >>= (`shouldSatisfy` (> before))
+  -- Quiet once the server holds the first reload's read, which it counts
+  -- as held: the first write is answered by then.
+  readsAt >>= (`shouldSatisfy` (> before))
+  writes `shouldReturn` 1
   change
   -- The switch takes a click again once the first write is answered,
   -- which the page view says when its answer comes.
-  eventually $ do
-    whenM ((< 2) <$> writes) (find ui ".use-as-template" >>= click)
-    readsAt >>= (`shouldSatisfy` (> before + 1))
-  eventually (shown ui)
-  release
+  find ui ".use-as-template" >>= click
+  writes `shouldReturn` 2
+  readsAt >>= (`shouldSatisfy` (> before + 1))
+  shown ui
+  perform js_server_release
   -- Nothing on the page says the first answer was dropped: the check is
-  -- made once the program has taken it.
-  answersTaken 20000
+  -- made once the program has taken it, at quiet.
   shown ui
   unmount ui
 

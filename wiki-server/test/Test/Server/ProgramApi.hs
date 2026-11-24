@@ -206,9 +206,12 @@ spec backing = describe "the OpenAPI document of the API for programs, served" $
     [(step, p, e) | ((step, p), (_, e)) <- zip plain escaped, e /= p] `shouldBe` []
 
   -- An escaped percent sign is decoded once: %252F is a %2F in the
-  -- segment, no slug, and no slash.
+  -- segment, no slug, and no slash. Decoded twice, the first address would
+  -- be the page's. An escape's hex digits may be lowercase.
   it "decodes an address once" $ withDemoRunning backing identity $ \r -> do
     givePassword r "user-admin" "admin's password"
+    (.status) <$> sendBare r methodGet (r.public <> "/api/markdown/s/blog%252Fp%252Fhello-world%252F") [admin] "" `shouldReturn` 404
+    (.status) <$> sendBare r methodGet (r.public <> "/api/markdown/s/blog%2fp%2fhello-world%2f") [admin] "" `shouldReturn` 200
     let page = "/api/markdown/s/blog/p/hello-world%252Fx/"
     (.status) <$> sendBare r methodGet (r.public <> page) [admin] "" `shouldReturn` 404
     written <- sendBare r methodPut (r.public <> page) [admin] "# X\n"

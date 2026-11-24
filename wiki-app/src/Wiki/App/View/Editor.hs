@@ -382,10 +382,12 @@ import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Islands qualified as Islands
 import Wiki.App.Live (Feed (..))
 import Wiki.App.Live qualified as Live
-import Wiki.App.Plugin (Diagnostics (..), Drawn (..))
+import Wiki.App.Plugin (Capabilities (..), Diagnostics (..), Drawn (..))
+import Wiki.App.Plugin.Assistant.Panel qualified as Assistant
+import Wiki.App.Plugin.Capability.Assistant (AssistantCapabilities (..))
+import Wiki.App.Plugin.Host (capabilities, documentOf)
 import Wiki.App.Plugin.Registry (Contributed (..), contributed, plugins, pluginsOn)
 import Wiki.App.Route (Route (..), pageRoute)
-import Wiki.App.View.Assistant qualified as Assistant
 import Wiki.App.View.Body qualified as Body
 import Wiki.App.View.Common
 import Wiki.App.View.Diff (diffView, titleChange)
@@ -1156,7 +1158,7 @@ savedNoticeTime = 3
 
 component
   :: forall m
-   . (MonadLoad m, MonadAdmin m, MonadNotifications m, MonadIslands m, MonadAssistant m, MonadVault m, MonadUUID m, MonadBrowserDOM m, MonadUnliftIO m)
+   . (Typeable m, MonadLoad m, MonadAdmin m, MonadNotifications m, MonadIslands m, MonadAssistant m, MonadVault m, MonadUUID m, MonadBrowserDOM m, MonadUnliftIO m)
   => H.Component Query Input ViewOutput m
 component =
   H.mkComponent
@@ -1731,14 +1733,15 @@ component =
             |]
       | otherwise = Nothing
 
-    assistantInput :: State -> Work -> Assistant.Input
+    assistantInput :: State -> Work -> Assistant.Input m
     assistantInput st work =
       Assistant.Input
-        { context = st.input.context
+        { optionsLink = can.optionsLink
+        , models = can.assistant.models
         , settings = st.assistantSettings
         , problem = st.assistantProblem
         , checking = st.checking
-        , host = st.hostElement
+        , document = documentOf <$> st.hostElement
         , title = work.title
         , body = work.body
         , selection = st.selection
@@ -1746,6 +1749,8 @@ component =
         , decisions = st.decisions
         , encrypted = isJust st.input.space.encryption
         }
+      where
+        can = capabilities st.input.context
 
     previewPane :: State -> Work -> Maybe (H.ComponentHTML Action Slots m)
     previewPane st work

@@ -1,6 +1,6 @@
 // The writing assistant's side of the application's JavaScript, declared in
 // Wiki.App.Assistant (WP4.19 of docs/PLAN.md). It drives a chat with a
-// provider for the editor's assistant panel (Wiki.App.View.Assistant):
+// provider for the editor's assistant panel (Wiki.App.Plugin.Assistant.Panel):
 //
 // - a chat is opened with its provider, model, key, the address of
 //   another service than the provider's own if it is asked at one

@@ -1,8 +1,11 @@
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 -- | The assistant panel: the writing assistant's panel in the editor
 -- (WP4.19 of docs/PLAN.md), a chat with a model that edits the page, as
--- in code editors.
+-- in code editors. It is the assistant plugin's surface
+-- ("Wiki.App.Plugin.Assistant"), mounted by the plugin's agent
+-- ("Wiki.App.Plugin.Assistant.Agent") the first time the editor opens it.
 --
 -- The panel shows, under its header, the assistant's mode, Ask or Agent,
 -- and the provider's model and effort; then a list of messages, the
@@ -90,7 +93,7 @@
 -- unreachable, with "Try again" ('Retry'). A message that gets a response
 -- marks the provider as reachable again, and one that gets none marks it
 -- as unreachable ('Reached').
-module Wiki.App.View.Assistant
+module Wiki.App.Plugin.Assistant.Panel
   ( Input (..)
   , Query (..)
   , Output (..)
@@ -104,20 +107,19 @@ import Data.Map.Strict qualified as Map
 import Data.Row (Empty)
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Data.Time (NominalDiffTime, UTCTime, diffUTCTime, getCurrentTime)
+import Data.Time (NominalDiffTime, UTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Halogen qualified as H
 import Halogen.HTML.Events qualified as HE
-import Halogen.Router (Follow)
-import Halogen.Router qualified as Router
+import Halogen.JSBits (JSText, fromJSText, inBrowser)
+import Halogen.JSBits.Fields (inlineJS)
 import Halogen.Subscription qualified as HS
 import Halogen.TH (hh)
 import Protolude hiding (State)
-import Web.DOM.Internal.Types (Element)
 import Web.Event.Event (Event, EventType (..))
-import Wiki.App.Assistant (Heard (..), MonadAssistant (..), Opening (..), Talk, clockTime, closesPanel, sendsMessage)
-import Wiki.App.Editor.Browser (currentText, focusElement, focusText, proposeEdit, trackedChanges)
-import Wiki.App.Route (Route (UserSettings), SettingsSection (AssistantSection))
-import Wiki.App.View.Common (Context (..), attr)
+import Web.UIEvent.KeyboardEvent (KeyboardEvent (..))
+import Wiki.App.Plugin (Document (..), LinkClick, OptionsLink, attr, focusElement, followOptionsLink, optionsLinkProps)
+import Wiki.App.Plugin.Capability.Assistant (Heard (..), Models (..), Opening (..), Talk)
 import Wiki.Core.Assistant
   ( AssistantError (kind)
   , ErrorKind (BadKey, Unreachable)
@@ -178,19 +180,25 @@ import Wiki.Core.Assistant.Prompt
   )
 import Wiki.Core.Assistant.Prompt qualified as Prompt
 
--- | 'Input': what the editor passes to the panel. Where the page's text
--- is, its current title and Markdown, the selection in it, and the number
--- of the assistant's changes still to decide.
-data Input = Input
-  { context :: Context
+-- The time of day as the browser's language writes a short time: the one
+-- call with an options object, which no field takes.
+$(inlineJS "js_clock" "new Date($1).toLocaleTimeString(undefined, { timeStyle: \"short\" })" [t|Double -> IO JSText|])
+
+-- | 'Input': what the agent passes to the panel. The link to the
+-- assistant's settings, the providers, where the page's text is, its
+-- current title and Markdown, the selection in it, and the number of the
+-- assistant's changes still to decide.
+data Input m = Input
+  { optionsLink :: OptionsLink
+  , models :: Models m
   , settings :: Maybe (Either Text Settings)
   -- ^ The user's settings, once the editor has read them.
   , problem :: Maybe Text
   -- ^ Why storing a change of the settings failed, if it did.
   , checking :: Set Provider
   -- ^ The providers whose model lists the editor is fetching.
-  , host :: Maybe Element
-  -- ^ CodeMirror's host: the editor's text ("Wiki.App.Editor.Browser").
+  , document :: Maybe Document
+  -- ^ The editor's text, once CodeMirror is in place.
   , title :: Text
   , body :: Text
   , selection :: Maybe Span
@@ -307,8 +315,8 @@ working = (`elem` [Waiting, Writing, Editing])
 quietAfter :: NominalDiffTime
 quietAfter = 3
 
-data State = State
-  { input :: Input
+data State m = State
+  { input :: Input m
   , message :: Text
   , entries :: [Entry]
   , talk :: Maybe Talk
@@ -360,10 +368,10 @@ data State = State
   , field :: H.RefLabel
   }
 
-data Action
+data Action m
   = Initialize
   | Finalize
-  | Receive Input
+  | Receive (Input m)
   | Typed Text
   | Shortcut Shortcut
   | Send
@@ -372,7 +380,7 @@ data Action
   | FromTalk Heard
   | Decided Decision
   | Close
-  | Followed (Follow Route)
+  | Followed LinkClick
   | ChooseMode Mode
   | ChooseModel Text
   | TypedModel Text
@@ -381,7 +389,7 @@ data Action
   | NewConversation
   | Tick
 
-component :: forall m. (MonadAssistant m, MonadUUID m, MonadIO m) => H.Component Query Input Output m
+component :: forall m. (Typeable m, MonadUUID m, MonadIO m) => H.Component Query (Input m) Output m
 component =
   H.mkComponent
     H.ComponentSpec
@@ -422,14 +430,14 @@ component =
               }
       }
   where
-    render :: State -> H.ComponentHTML Action Empty m
+    render :: State m -> H.ComponentHTML (Action m) Empty m
     render st =
       [hh|
         <section class="assistant" aria-label="Writing assistant">
           <header class="assistant-head">
             <h2>Assistant</h2>
             <span class="assistant-using">{{ usingLine st }}</span>
-            <a class="assistant-settings-link" {{ Router.linkProps st.input.context.router Followed (UserSettings AssistantSection) }}>Settings</a>
+            <a class="assistant-settings-link" {{ optionsLinkProps st.input.optionsLink Followed }}>Settings</a>
             <button type="button" class="assistant-new" title="Start a new conversation" disabled={{ st.talking }} onClick={{ const NewConversation }}>New</button>
             <button type="button" class="assistant-close" title="Close the assistant (Escape)" onClick={{ const Close }}>Close</button>
           </header>
@@ -499,7 +507,7 @@ component =
     -- conversation only ('effortNow'). The models are grouped: the
     -- recommended ones, all the provider's other chat models, and
     -- "Other…", for any id typed in.
-    choicesView :: State -> Maybe (H.ComponentHTML Action Empty m)
+    choicesView :: State m -> Maybe (H.ComponentHTML (Action m) Empty m)
     choicesView st = case st.input.settings of
       Just (Right s) ->
         let ps = settingsOf s.provider s
@@ -565,7 +573,7 @@ component =
 
     -- Enter sends and Escape closes the panel; any other key goes to the
     -- message box.
-    sendKey :: Event -> Maybe Action
+    sendKey :: Event -> Maybe (Action m)
     sendKey ev
       | sendsMessage ev = Just Send
       | closesPanel ev = Just Close
@@ -573,7 +581,7 @@ component =
 
     -- The service the text goes to, named as the line above names it,
     -- for a page of an encrypted space.
-    leavesFor :: State -> Maybe Text
+    leavesFor :: State m -> Maybe Text
     leavesFor st = case st.input.settings of
       Just (Right s)
         | st.input.encrypted ->
@@ -581,7 +589,7 @@ component =
              in Just (if isJust (baseUrlOf s.provider ps) then serviceName s.provider ps else providerLabel s.provider)
       _ -> Nothing
 
-    usingLine :: State -> Text
+    usingLine :: State m -> Text
     usingLine st = case st.input.settings of
       Just (Right s) ->
         let ps = settingsOf s.provider s
@@ -591,7 +599,7 @@ component =
          in modelLabel s.provider ps (chosenModel s.provider ps) <> " \183 " <> service
       _ -> ""
 
-    setupNote :: State -> Maybe (H.ComponentHTML Action Empty m)
+    setupNote :: State m -> Maybe (H.ComponentHTML (Action m) Empty m)
     setupNote st = case st.input.settings of
       Nothing -> Just [hh|<p class="loading">Loading your settings…</p>|]
       Just (Left why) -> Just [hh|<p class="error assistant-setup" role="alert">{{ why }}</p>|]
@@ -612,14 +620,14 @@ component =
             [hh|
               <p class="assistant-setup">
                 {{ why <> " " }}
-                <a {{ Router.linkProps st.input.context.router Followed (UserSettings AssistantSection) }}>Open the assistant's settings</a>
+                <a {{ optionsLinkProps st.input.optionsLink Followed }}>Open the assistant's settings</a>
               </p>
             |]
         Right _ -> Nothing
 
     -- What is sent with the next message: the selection, with a button to
     -- detach it, or the page.
-    scopeView :: State -> H.ComponentHTML Action Empty m
+    scopeView :: State m -> H.ComponentHTML (Action m) Empty m
     scopeView st = case attached st of
       Just sp ->
         [hh|
@@ -630,7 +638,7 @@ component =
         |]
       Nothing -> [hh|<span class="assistant-whole">{{ scopeText (capNow st) (T.length st.input.body) (isJust st.sentCopy) }}</span>|]
 
-    entryView :: State -> Entry -> H.ComponentHTML Action Empty m
+    entryView :: State m -> Entry -> H.ComponentHTML (Action m) Empty m
     entryView st = \case
       FromUser m ->
         [hh|
@@ -694,7 +702,7 @@ component =
           <div class="error assistant-error assistant-key-refused" role="alert">
             <p>
               {{ meaning <> " " }}
-              <a class="assistant-settings-open" {{ Router.linkProps st.input.context.router Followed (UserSettings AssistantSection) }}>Open the assistant's settings</a>
+              <a class="assistant-settings-open" {{ optionsLinkProps st.input.optionsLink Followed }}>Open the assistant's settings</a>
             </p>
             {% if not (T.null detail) %}
               <p class="assistant-error-detail">{{ detail }}</p>
@@ -707,7 +715,7 @@ component =
         -- with the seconds waited once there are a few, and the summary of
         -- the model's thinking, if the provider sends one, collapsed under
         -- it.
-        thinkingView :: Reply -> H.ComponentHTML Action Empty m
+        thinkingView :: Reply -> H.ComponentHTML (Action m) Empty m
         thinkingView r
           | T.null r.thinking = [hh|<p class="assistant-thinking">Thinking{{ dots }}{{ waited r }}</p>|]
           | otherwise =
@@ -717,7 +725,7 @@ component =
                   <p class="assistant-thinking-text">{{ r.thinking }}</p>
                 </details>
               |]
-        waited :: Reply -> Maybe (H.ComponentHTML Action Empty m)
+        waited :: Reply -> Maybe (H.ComponentHTML (Action m) Empty m)
         waited r = case st.now of
           Just t
             | diffUTCTime t r.quietSince >= quietAfter ->
@@ -725,28 +733,28 @@ component =
           _ -> Nothing
         -- Three dots that blink in turn; hidden from screen readers, which
         -- would otherwise read them out.
-        dots :: H.ComponentHTML Action Empty m
+        dots :: H.ComponentHTML (Action m) Empty m
         dots = [hh|<span class="assistant-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>|]
 
-    noteView :: Note -> H.ComponentHTML Action Empty m
+    noteView :: Note -> H.ComponentHTML (Action m) Empty m
     noteView = \case
       Made what -> [hh|<li class="assistant-made">{{ what }}</li>|]
       NotMade what why -> [hh|<li class="assistant-not-made">{{ what }}: not made, {{ why }}</li>|]
 
-    handleQuery :: Query a -> H.HalogenM State Action Empty Output m (Maybe a)
+    handleQuery :: Query a -> H.HalogenM (State m) (Action m) Empty Output m (Maybe a)
     handleQuery = \case
       Hide next -> stop $> Just next
       UseProvider p next -> useProvider p $> Just next
 
-    handleAction :: Action -> H.HalogenM State Action Empty Output m ()
+    handleAction :: Action m -> H.HalogenM (State m) (Action m) Empty Output m ()
     handleAction = \case
       Initialize -> do
-        H.liftEffect prepareAssistant
+        gets (\st -> st.input.models) >>= \ms -> H.liftEffect ms.prepare
         channel <- H.sync (liftIO HS.create)
         void (H.subscribe (FromTalk <$> channel.emitter))
         modify (\st -> st {listener = Just channel.listener})
       Finalize -> do
-        gets (\st -> st.talk) >>= traverse_ (H.liftEffect . closeTalk)
+        gets (\st -> (st.input.models, st.talk)) >>= \(ms, talk) -> traverse_ (H.liftEffect . ms.close) talk
         endTurn
       Receive input -> modify $ \st ->
         -- A detached selection stays detached until another is made.
@@ -765,8 +773,8 @@ component =
         endTurn
         H.raise Closed
         -- Back to the page's text, where the user was before the panel.
-        gets (\st -> st.input.host) >>= traverse_ (H.liftEffect . focusText)
-      Followed f -> gets (\st -> st.input.context.router) >>= (`Router.follow` f)
+        gets (\st -> st.input.document) >>= traverse_ (\d -> H.liftEffect (liftIO d.focus))
+      Followed f -> gets (\st -> st.input.optionsLink) >>= (`followOptionsLink` f)
       ChooseMode md -> changeSettings (withMode md)
       ChooseModel "" -> modify (\st -> st {otherModel = True})
       ChooseModel m -> do
@@ -792,7 +800,7 @@ component =
     -- The provider the editor's button asked for (which the editor makes
     -- the assistant's provider). If the conversation was with another
     -- provider, it ends, and a new one starts with the next message.
-    useProvider :: Provider -> H.HalogenM State Action Empty Output m ()
+    useProvider :: Provider -> H.HalogenM (State m) (Action m) Empty Output m ()
     useProvider p = do
       st <- get
       -- The effort picked was for the other provider's conversation.
@@ -815,23 +823,23 @@ component =
     -- 'absorbed' are emptied. 'nextChange' stays, since a change's id must
     -- stay unique in the editor. The copy of the page last sent goes too,
     -- so that the new chat's first message carries the whole page.
-    endConversation :: H.HalogenM State Action Empty Output m ()
+    endConversation :: H.HalogenM (State m) (Action m) Empty Output m ()
     endConversation = do
       st <- get
-      for_ st.talk (H.liftEffect . closeTalk)
+      for_ st.talk (H.liftEffect . st.input.models.close)
       modify (\s' -> s' {talk = Nothing, using = Nothing, made = mempty, absorbed = [], sentCopy = Nothing, spent = []})
       when st.talking (finish Stopped)
 
     -- Change the user's settings (the model); the editor stores them.
-    changeSettings :: (Settings -> Settings) -> H.HalogenM State Action Empty Output m ()
+    changeSettings :: (Settings -> Settings) -> H.HalogenM (State m) (Action m) Empty Output m ()
     changeSettings = H.raise . ChangeSettings
 
-    stop :: H.HalogenM State Action Empty Output m ()
+    stop :: H.HalogenM (State m) (Action m) Empty Output m ()
     stop = do
       st <- get
-      when st.talking $ traverse_ (H.liftEffect . stopTalk) st.talk
+      when st.talking $ traverse_ (H.liftEffect . st.input.models.stop) st.talk
 
-    send :: H.HalogenM State Action Empty Output m ()
+    send :: H.HalogenM (State m) (Action m) Empty Output m ()
     send = do
       st <- get
       let text = T.strip st.message
@@ -850,17 +858,17 @@ component =
 
     -- Send the message to the model: the chat opened if none is, the
     -- page's context worked out, the turn begun.
-    sendMessage :: State -> Text -> H.HalogenM State Action Empty Output m ()
-    sendMessage st text = case (st.input.settings, st.input.host) of
-      (Just (Right s), Just host) -> case ready s of
+    sendMessage :: State m -> Text -> H.HalogenM (State m) (Action m) Empty Output m ()
+    sendMessage st text = case (st.input.settings, st.input.document) of
+      (Just (Right s), Just document) -> case ready s of
         Left why -> addEntry (Trouble why)
         Right kept -> do
           -- The effort of this conversation, which the settings do not
           -- keep.
           let r = Ready {provider = kept.provider, model = kept.model, key = kept.key, effort = effortNow st s, baseUrl = kept.baseUrl}
               md = s.chatMode
-          body <- H.liftEffect (currentText host)
-          decided <- outcomes host
+          body <- H.liftEffect (liftIO document.text)
+          decided <- outcomes document
           -- The clock read on the loop, without a wait ('H.liftEffect'):
           -- from the check above to the turn begun below is one step.
           -- Read through 'H.async', the second click of a double click
@@ -889,18 +897,18 @@ component =
               }
           startTicker
           countTurn
-          H.liftEffect (sayTo talk (requestFor md r) (userTurn md decided context text))
+          H.liftEffect (st.input.models.say talk (requestFor md r) (userTurn md decided context text))
       (Just (Left why), _) -> addEntry (Trouble why)
       _ -> pass
 
     -- The chat, opened with the settings' provider, model and key, its
     -- turn events handled by the panel.
-    open :: Mode -> Ready -> H.HalogenM State Action Empty Output m Talk
+    open :: Mode -> Ready -> H.HalogenM (State m) (Action m) Empty Output m Talk
     open md r = do
-      tell <- gets (\st -> maybe (const pass) HS.notify st.listener)
-      H.liftEffect (openTalk Opening {ready = r, request = requestFor md r} tell)
+      (tell, ms) <- gets (\st -> (maybe (const pass) HS.notify st.listener, st.input.models))
+      H.liftEffect (ms.open Opening {ready = r, request = requestFor md r} tell)
 
-    hear :: Heard -> H.HalogenM State Action Empty Output m ()
+    hear :: Heard -> H.HalogenM (State m) (Action m) Empty Output m ()
     hear = \case
       HeardText t -> modifyReply (\r -> (settle r) {said = r.said <> t, stage = Writing})
       HeardThinking t -> modifyReply (\r -> r {thinking = r.thinking <> t})
@@ -914,7 +922,7 @@ component =
         t <- H.sync (liftIO getCurrentTime)
         modifyReply (\r -> (settle r) {notes = r.notes <> [edited], stage = Waiting, quietSince = t})
         modify (\st -> st {now = Just t})
-        gets (\st -> st.talk) >>= traverse_ (\talk -> H.liftEffect (answerCall talk call told ok))
+        gets (\st -> (st.input.models, st.talk)) >>= \(ms, talk) -> traverse_ (\chat -> H.liftEffect (ms.answer chat call told ok)) talk
       HeardDone -> do
         finish Ended
         reached True
@@ -939,7 +947,7 @@ component =
 
     -- Report to the editor whether the conversation's provider was
     -- reached, when that changes what is known.
-    reached :: Bool -> H.HalogenM State Action Empty Output m ()
+    reached :: Bool -> H.HalogenM (State m) (Action m) Empty Output m ()
     reached yes = do
       st <- get
       for_ st.using $ \r -> case st.input.settings of
@@ -949,20 +957,20 @@ component =
     -- A tool call's edit, made in the editor as a tracked change. The
     -- result is the conversation's note on it, the tool result for the
     -- model, and whether the edit was made.
-    edit :: Text -> Value -> H.HalogenM State Action Empty Output m (Note, Text, Bool)
+    edit :: Text -> Value -> H.HalogenM (State m) (Action m) Empty Output m (Note, Text, Bool)
     edit name input = case parseEdit name input of
       Left why -> pure (NotMade ("A call of " <> name) (refusalWords why), answer (Left why :: Either Refusal ()), False)
       Right e -> do
         st <- get
-        case st.input.host of
+        case st.input.document of
           -- In Ask mode the tools are off; a model that calls one anyway
           -- is told so, and the page is left as it is.
           _
             | st.turnMode == Ask ->
                 pure (NotMade (describeEdit e) "edits are off in Ask mode", "Not applied: the user is in Ask mode, where you do not change the page. Answer in words, and quote any change you suggest.", False)
           Nothing -> pure (NotMade (describeEdit e) "the editor is not ready", "Not applied: the editor is not ready. Try again later.", False)
-          Just host ->
-            H.liftEffect (proposeEdit host st.nextChange e) >>= \case
+          Just document ->
+            H.liftEffect (liftIO (document.propose st.nextChange e)) >>= \case
               Left why -> pure (NotMade (describeEdit e) (refusalWords why), answer (Left why :: Either Refusal ()), False)
               Right (r, taken) -> do
                 modify $ \s ->
@@ -977,9 +985,9 @@ component =
     -- decided, or removed without a decision (undone, or edited away),
     -- each reported once. Pending changes wait, and changes absorbed by a
     -- later change need no mention.
-    outcomes :: Element -> H.HalogenM State Action Empty Output m [(Text, Outcome)]
-    outcomes host = do
-      pending <- map (\c -> c.id) <$> H.liftEffect (trackedChanges host)
+    outcomes :: Document -> H.HalogenM (State m) (Action m) Empty Output m [(Text, Outcome)]
+    outcomes document = do
+      pending <- map (\c -> c.id) <$> H.liftEffect (liftIO document.tracked)
       st <- get
       let gone = Map.filterWithKey (\i _ -> i `notElem` pending) st.made
           outcome i = case Map.lookup i st.input.decisions of
@@ -993,7 +1001,7 @@ component =
 
     -- The model's message ended (or was stopped): how long it took, and
     -- the ticker stopped.
-    finish :: Stage -> H.HalogenM State Action Empty Output m ()
+    finish :: Stage -> H.HalogenM (State m) (Action m) Empty Output m ()
     finish stage = do
       t <- H.sync (liftIO getCurrentTime)
       modifyReply (\r -> (settle r) {stage, took = Just (diffUTCTime t r.began)})
@@ -1013,7 +1021,7 @@ component =
     -- message in one step, so a Stop clicked right after finds the message
     -- sent, and stops its turn. Through 'H.async' the message went out
     -- after the wait, even when Stop had come in it.
-    countTurn :: H.HalogenM State Action Empty Output m ()
+    countTurn :: H.HalogenM (State m) (Action m) Empty Output m ()
     countTurn = do
       endTurn
       ended <- H.liftEffect (liftIO newEmptyMVar)
@@ -1021,14 +1029,14 @@ component =
       void (H.fork (H.async (liftIO (takeMVar ended))))
 
     -- Let the fork of 'countTurn' end, if a turn is counted.
-    endTurn :: H.HalogenM State Action Empty Output m ()
+    endTurn :: H.HalogenM (State m) (Action m) Empty Output m ()
     endTurn = do
       gets (\st -> st.ended) >>= traverse_ (\ended -> H.liftEffect (liftIO (void (tryPutMVar ended ()))))
       modify (\st -> st {ended = Nothing})
 
     -- Read the time every second while the model is at work, for the
     -- seconds counter.
-    startTicker :: H.HalogenM State Action Empty Output m ()
+    startTicker :: H.HalogenM (State m) (Action m) Empty Output m ()
     startTicker = do
       gets (\st -> st.ticker) >>= traverse_ H.kill
       ticker <- H.fork . forever $ do
@@ -1037,13 +1045,39 @@ component =
       modify (\st -> st {ticker = Just ticker})
 
     -- Modify the model's last message, if the last entry is one.
-    modifyReply :: (Reply -> Reply) -> H.HalogenM State Action Empty Output m ()
+    modifyReply :: (Reply -> Reply) -> H.HalogenM (State m) (Action m) Empty Output m ()
     modifyReply f = modify $ \st -> case unsnoc st.entries of
       Just (before, FromModel r) -> st {entries = before <> [FromModel (f r)]}
       _ -> st
 
-    addEntry :: Entry -> H.HalogenM State Action Empty Output m ()
+    addEntry :: Entry -> H.HalogenM (State m) (Action m) Empty Output m ()
     addEntry e = modify (\st -> st {entries = st.entries <> [e]})
+
+-- | Whether a keydown in the message box sends the message: Enter, but not
+-- with Shift (a new line) nor while a character is being composed. It is
+-- pure, so that the keydown listener can decide synchronously, and prevent
+-- Enter from inserting a new line.
+sendsMessage :: Event -> Bool
+sendsMessage event =
+  let key = KeyboardEvent event
+   in key.key == "Enter" && not key.shiftKey && not key.isComposing && not (key.ctrlKey || key.metaKey || key.altKey)
+
+-- | Whether a keydown in the message box closes the panel: Escape, but not
+-- in the middle of composing a character, where Escape cancels the
+-- composition.
+closesPanel :: Event -> Bool
+closesPanel event =
+  let key = KeyboardEvent event
+   in key.key == "Escape" && not key.isComposing
+
+-- | The time of day of a moment, as the chat shows it beside a message:
+-- in the browser's time zone, written the way the browser's language
+-- writes a short time ("14:32", or "2:32 PM"). Natively, where there is
+-- no browser, hours and minutes in UTC.
+clockTime :: (MonadIO m) => UTCTime -> m Text
+clockTime t
+  | inBrowser = liftIO (fromJSText <$> js_clock (realToFrac (utcTimeToPOSIXSeconds t) * 1000))
+  | otherwise = pure (toS (formatTime defaultTimeLocale "%H:%M" t))
 
 -- | The model's message once the model has gone on after a wait. The
 -- summary of the thinking done in the wait is added to the summaries
@@ -1057,7 +1091,7 @@ settle r
 -- | The effort the next message is sent with: the one picked in the
 -- panel for this conversation, if the provider offers it, or else
 -- the provider's default from the settings.
-effortNow :: State -> Settings -> Text
+effortNow :: State m -> Settings -> Text
 effortNow st s = case st.effortChoice of
   Just e | e `elem` efforts s.provider -> e
   _ -> effortOf (settingsOf s.provider s)
@@ -1071,7 +1105,7 @@ duration d
     seconds = floor d :: Int
 
 -- | The selection sent with the next message, unless it was detached.
-attached :: State -> Maybe Span
+attached :: State m -> Maybe Span
 attached st = mfilter (\sp -> Just sp /= st.detached && sp.to > sp.from) st.input.selection
 
 -- | The request a message is sent with, by provider, in a mode. The
@@ -1084,12 +1118,12 @@ requestFor md r = case r.provider of
 
 -- | The page's cap in force: the user's setting, once the settings are
 -- read.
-capNow :: State -> Int
+capNow :: State m -> Int
 capNow st = maybe defaultBodyCap pageCapOf (rightToMaybe =<< st.input.settings)
 
 -- | The mode the next message is sent in: the settings', once they are
 -- read.
-modeNow :: State -> Mode
+modeNow :: State m -> Mode
 modeNow st = maybe Agent (\s -> s.chatMode) (rightToMaybe =<< st.input.settings)
 
 -- | What a mode's button says on hover.

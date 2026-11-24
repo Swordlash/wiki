@@ -110,6 +110,7 @@ library
       Wiki.App.Plugin
       Wiki.App.Plugin.Assistant
       Wiki.App.Plugin.Assistant.Options
+      Wiki.App.Plugin.Assistant.Panel
       Wiki.App.Plugin.Capability.Assistant
       Wiki.App.Plugin.Errors
       Wiki.App.Plugin.Host
@@ -129,7 +130,6 @@ library
       Wiki.App.View.ApiKeys
       Wiki.App.View.ApiKeys.Machine
       Wiki.App.View.Activity
-      Wiki.App.View.Assistant
       Wiki.App.View.Backups
       Wiki.App.View.Invite
       Wiki.App.View.Bell

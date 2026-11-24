@@ -2624,6 +2624,19 @@ they are. A key or a password travels in the request, so use the API over
 HTTPS only. The session cookie is never read there: a page open in a browser
 cannot use these addresses with its reader's session.
 
+The API describes itself at `/api/openapi.json`: an OpenAPI 3 document of
+every address below, with its methods, parameters, headers and answers by
+status, the three ways to sign in, and the JSON of each answer. It is made
+from the server's own servant type of the API (`Wiki.Server.ProgramApi`), so
+it says what the server does, and a golden file in the tests shows every
+change of it. Anyone may read it, as the Markdown reference, unless the wiki
+is closed. Load it into a client generator or an HTTP client (Bruno,
+Postman), or hand it to an assistant that is to use the wiki:
+
+```sh
+curl https://wiki.example/api/openapi.json -o wiki-api.json
+```
+
 An **API key** is a long random string made for one program, which you can
 revoke without changing your password:
 `wiki_` and an id, an underscore, and a secret, such as

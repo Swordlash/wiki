@@ -54,10 +54,14 @@ tab=$(printf '\t')
 #                            moved over it under FILE's lock; a FILE or
 #                            FILE.version that is a symbolic link is
 #                            refused, so nothing is written through one
-#   attachment --out FILE    FILE alone, as get --out writes its FILE: only in
-#                            a directory of the user's own, through a file
+#   attachment --out FILE    FILE, as get --out writes its FILE: only in a
+#                            directory of the user's own, through a file
 #                            mktemp makes there, moved over it under its
-#                            lock; a FILE that is a symbolic link is refused
+#                            lock, after the old FILE.version is removed (a
+#                            file's bytes have no version, and a sidecar of a
+#                            page's text must not stay beside them); a FILE
+#                            or FILE.version that is a symbolic link is
+#                            refused
 #   put --file FILE          FILE.version, as get --out writes it, when it
 #                            names the page or the part written (the same
 #                            for get and put with --section or --top)
@@ -1320,6 +1324,13 @@ owner_and_mode() {
 #   create --file FILE        read     file_path   none                 none: create only
 #                                      (any
 #                                      directory)
+#   attachment --out FILE     bytes    file_path   FILE's, from before  (none: a read; the
+#                                      in an own   the request to after old FILE.version is
+#                                      directory   the bytes' move      removed, and none is
+#                                                                       written)
+#   attach FILE               read     file_path   none                 none: create only
+#                                      (any
+#                                      directory)
 #   get --section A --out     as get --out FILE, the sidecar naming the part
 #   FILE, get --top --out
 #   FILE
@@ -1368,6 +1379,16 @@ owner_and_mode() {
 #                            taken away first: the old and the new version
 #                            are both of this text's page, and the record is
 #                            replaced whole by a rename)
+#
+#   attachment --out FILE
+#   1 lock taken, request,   FILE and FILE.version as they were (lock left
+#     bytes staged           when killed; a staged .wiki-sh.XXXXXX beside
+#                            FILE, which nothing reads)
+#   2 FILE.version removed   FILE's old text, no version: put --file FILE is
+#                            refused (no version) unless --if-match or
+#                            --force, never sent as the page the sidecar
+#                            named
+#   3 bytes moved in         the file's bytes, no version: as in 2
 #
 #   create (--file FILE or standard input)
 #   1 request sent           nothing on disk changes; if the wiki made the
@@ -1510,10 +1531,12 @@ local_file() {
       ;;
     bytes)
       check_own_directory "$1" || return
-      if [ -L "$file_path" ] || [ -d "$file_path" ]; then
-        fail "$EX_USAGE" "$file_path is a symbolic link or a directory: give --out a plain file"
-        return
-      fi
+      for target in "$file_path" "$file_path.version"; do
+        if [ -L "$target" ] || [ -d "$target" ]; then
+          fail "$EX_USAGE" "$target is a symbolic link or a directory: give --out a plain file"
+          return
+        fi
+      done
       take_lock "$file_path" file_lock || return
       ;;
     update)
@@ -2700,7 +2723,16 @@ cmd_attachments() {
       return
     fi
   else
-    render_attachments || render_failed $?
+    # The list is rendered to a file first, so that a failure to write it
+    # out (a full disk) is told apart from an answer that is not the wiki's.
+    render_attachments >"$work/rendered" || {
+      render_failed $?
+      return
+    }
+    if ! cat "$work/rendered"; then
+      fail "$EX_ERROR" "the list could not be written out whole"
+      return
+    fi
   fi
 }
 
@@ -2761,6 +2793,10 @@ cmd_attachment() {
     fi
     return 0
   fi
+  # As get --out: the bytes are staged beside FILE and checked whole, the
+  # old FILE.version goes, and the bytes are moved in last, all under
+  # FILE's lock. A sidecar beside the bytes would name a page whose text
+  # FILE no longer holds, and put --file FILE would send the bytes as it.
   if ! stage "$out_path"; then
     fail "$EX_ERROR" "cannot make a file in the directory of $out: $out is as it was"
     return
@@ -2771,9 +2807,14 @@ cmd_attachment() {
     fail "$EX_ERROR" "cannot write $out whole (is the disk full, or a file size limit reached?): $out is as it was"
     return
   fi
+  if ! rm -f "$out_path.version" 2>/dev/null; then
+    rm -f "$staged"
+    fail "$EX_ERROR" "cannot remove $out.version: $out and its version are as they were"
+    return
+  fi
   if ! place_staged "$staged" "$out_path"; then
     rm -f "$staged"
-    fail "$EX_ERROR" "cannot move the file into $out: $out is as it was"
+    fail "$EX_ERROR" "cannot move the file into $out: $out has its old text and no version now"
     return
   fi
   release_lock file_lock
@@ -2815,10 +2856,14 @@ cmd_attach() {
   media_type=$(media_type_of "$attach_name")
   # Only where the page has no file of the name (If-None-Match: *), and
   # with Expect: 100-continue, so that a file the wiki refuses (too large,
-  # or not the user's to attach) is not sent at all.
+  # or not the user's to attach) is not sent at all. --upload-file streams
+  # the file from disk (--data-binary would read it into memory whole);
+  # curl adds the file's name to an address only when nothing follows its
+  # last slash, and here the query does (a name is never empty, and its
+  # slashes are escaped by query_encode).
   expect_header='Expect: 100-continue'
   wiki_request PUT "api/attachments/$addr?name=$(query_encode "$attach_name")" \
-    -H "Content-Type: $media_type" -H 'If-None-Match: *' --data-binary "@$file_path"
+    -H "Content-Type: $media_type" -H 'If-None-Match: *' --upload-file "$file_path"
   request_status=$?
   expect_header='Expect:'
   [ "$request_status" = 0 ] || return "$request_status"
@@ -2836,7 +2881,10 @@ cmd_attach() {
     wrong_answer "its Markdown cannot be read exactly"
     return
   }
-  printf '%s\n' "$exact"
+  if ! printf '%s\n' "$exact"; then
+    fail "$EX_ERROR" "attached $attach_name to $addr_shown, but the Markdown that shows it could not be written to standard output: list it with wiki.sh attachments"
+    return
+  fi
   note "attached $attach_name to $addr_shown as $media_type; the Markdown that shows it is on standard output"
 }
 
@@ -2935,7 +2983,8 @@ wiki.sh: the wiki from a shell, through its API for programs.
   wiki.sh attachment PAGE NAME [--out FILE]
       The bytes of the page's file NAME (exactly as attachments lists it), on
       standard output when that is not a terminal, or into FILE, which must
-      be in a directory of your own, as for get --out.
+      be in a directory of your own, as for get --out. A FILE.version beside
+      FILE is removed first: FILE no longer holds the text it named.
   wiki.sh attach PAGE FILE [--name NAME]
       Attach FILE, a regular file, to the page, under its own name or NAME,
       with the media type its extension gives (.png is image/png; one the

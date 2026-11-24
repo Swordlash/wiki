@@ -1600,6 +1600,79 @@ attaching() {
     else
       fail "mcp: wiki_list_attachments of a page not there is the tool's error ($where)"
     fi
+    # attachment --out over a page's file takes its sidecar away, so that
+    # the bytes are never put back as the page.
+    client get "$page" --out "$files/page.md"
+    expect 0 "get --out of the page before the file goes over it ($where)"
+    client attachment "$page" "every byte.bin" --out "$files/page.md"
+    expect 0 "attachment --out over a page's file ($where)"
+    check "attachment --out took the page's sidecar away ($where)" [ ! -e "$files/page.md.version" ]
+    check "attachment --out wrote the bytes ($where)" cmp -s "$files/page.md" "$files/every byte.bin"
+    : >"$work/curl.args"
+    client put "$page" --file "$files/page.md"
+    expect 2 "put --file of the file's bytes, with no sidecar, is refused ($where)"
+    check "nothing was sent for that put ($where)" [ ! -s "$work/curl.args" ]
+    # attach streams the file (--upload-file), never reading it into memory
+    # (--data-binary @).
+    : >"$work/curl.args"
+    client attach "$page" "$files/chart.png" --name streamed.png
+    expect 0 "attach of a file, streamed ($where)"
+    check "attach sends the file with --upload-file ($where)" grep -q -- "--upload-file $files/chart.png" "$work/curl.args"
+    if grep -q -- "--data-binary" "$work/curl.args"; then fail "attach does not read the file with --data-binary ($where)"; else pass "attach does not read the file with --data-binary ($where)"; fi
+    client attachment "$page" streamed.png
+    check "the streamed file reads back byte for byte ($where)" cmp -s "$work/out" "$files/chart.png"
+    client detach "$page" streamed.png
+    expect 0 "detach of the streamed file ($where)"
+    # A file over the wiki's limit, sparse on disk, under a limit of 100 MB
+    # of the client's memory (curl's --data-binary needs more than that for
+    # it): the wiki refuses it, and nothing is stored.
+    dd if=/dev/zero of="$files/big.bin" bs=1048576 count=0 seek=60 2>/dev/null
+    client attachments "$page" --json
+    cp "$work/out" "$work/before-big.json"
+    # ulimit -v is dash's and bash's, not POSIX's: tried first, and the
+    # check runs without it where the shell has none.
+    # shellcheck disable=SC3045
+    if (ulimit -v 100000) 2>/dev/null; then
+      status=$(
+        # shellcheck disable=SC3045
+        ulimit -v 100000
+        client attach "$page" "$files/big.bin"
+        printf '%s' "$status"
+      )
+      expect 6 "attach of a file over the limit, in 100 MB of memory, is refused by the wiki ($where)"
+      has err "(413)" "the refusal of a file over the limit is the wiki's 413 ($where)"
+    else
+      client attach "$page" "$files/big.bin"
+      expect 6 "attach of a file over the limit is refused by the wiki ($where)"
+      printf 'not run: ulimit -v under %s\n' "$shell"
+    fi
+    client attachments "$page" --json
+    check "nothing was stored for the file over the limit ($where)" cmp -s "$work/out" "$work/before-big.json"
+    rm -f "$files/big.bin"
+    # Standard output that cannot be written (a full disk) fails with a
+    # sentence, never as a success.
+    if [ -c /dev/full ]; then
+      full() {
+        env -i PATH="$curl_path" HOME="$home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" \
+          "$shell" "$client" "$@" </dev/null >/dev/full 2>"$work/err"
+        status=$?
+      }
+      full attach "$page" "$files/notes.txt" --name full.txt
+      expect 1 "attach to a full standard output fails ($where)"
+      has err "attached full.txt to $page, but the Markdown that shows it could not be written" "the failure says the file was attached ($where)"
+      full attachments "$page"
+      expect 1 "attachments to a full standard output fails ($where)"
+      has err "could not be written out whole" "attachments says what failed ($where)"
+      full attachments "$page" --json
+      expect 1 "attachments --json to a full standard output fails ($where)"
+      full attachment "$page" full.txt
+      expect 1 "attachment to a full standard output fails ($where)"
+      has err "could not be written out whole" "attachment says what failed ($where)"
+      client detach "$page" full.txt
+      expect 0 "detach of the file attached to a full output ($where)"
+    else
+      printf 'not run: /dev/full is not there\n'
+    fi
     # Taken off.
     for name in "every byte.bin" chart.png 'a+b ż.txt'; do
       client detach "$page" "$name"

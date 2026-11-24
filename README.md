@@ -3362,14 +3362,15 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   the bytes of the file `NAME`, exactly as `attachments` lists it, to
   standard output when that is not a terminal, or with `--out FILE` writes
   them to `FILE`, as `get --out` writes its text (a directory of your own,
-  never through a symbolic link). **`wiki.sh attach PAGE FILE [--name
+  never through a symbolic link), and takes a `FILE.version` beside it away,
+  so that the bytes are never put back as the page it named. **`wiki.sh attach PAGE FILE [--name
   NAME]`** attaches a regular file under its own name or `NAME`, with the
   media type its extension gives (`.png` is `image/png`; one the client does
   not know is `application/octet-stream`), and prints the Markdown that
   shows it, to put in the page's text. It only adds (`If-None-Match: *`): a
   file of the name on the page already is refused (exit 5) and nothing is
   sent over it; a file over the wiki's limit is refused before it is sent
-  (exit 6). **`wiki.sh detach PAGE NAME`** takes a file off the page.
+  (exit 6). The file is streamed from disk, never read into memory whole. **`wiki.sh detach PAGE NAME`** takes a file off the page.
 
   ```text
   $ wiki.sh attach /s/team/p/on-call/ rota.png

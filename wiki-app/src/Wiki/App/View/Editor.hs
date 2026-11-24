@@ -382,6 +382,8 @@ import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Islands qualified as Islands
 import Wiki.App.Live (Feed (..))
 import Wiki.App.Live qualified as Live
+import Wiki.App.Plugin (Diagnostics (..), Drawn (..))
+import Wiki.App.Plugin.Registry (Contributed (..), contributed, plugins, pluginsOn)
 import Wiki.App.Route (Route (..), pageRoute)
 import Wiki.App.View.Assistant qualified as Assistant
 import Wiki.App.View.Body qualified as Body
@@ -587,7 +589,8 @@ data State = State
   -- ^ The preview's islands whose libraries failed, by key, with their
   -- messages. A failure is kept while the text the preview has drawn
   -- holds its key, since its island is still there ('keepDrawnFailures');
-  -- only those whose key is in the checked text are marked.
+  -- the plugins that are on make problems of those whose key is in the
+  -- checked text ('problemsOf').
   , problemCount :: Int
   -- ^ How many problems the text is marked with.
   , edits :: Int
@@ -1010,12 +1013,16 @@ swallowedOf st text rows = case st.checked.openers of
   Just starts | text == st.checkedText -> SlideRows.swallowedFrom starts rows
   _ -> SlideRows.swallowed rows
 
--- | The problems the editor marks: the last check's, the failed islands'
--- in its text, the slides that do not fit, and the rows a block left open
--- takes into the slide above (given by 'swallowedOf' of the rows, which
--- are read only when the rows hold the text checked).
+-- | The problems the editor marks: the last check's, those the plugins
+-- that are on find in its text ('Diagnostics': the failed islands', from
+-- "Wiki.App.Plugin.Errors"), the slides that do not fit, and the rows a
+-- block left open takes into the slide above (given by 'swallowedOf' of
+-- the rows, which are read only when the rows hold the text checked).
 problemsOf :: State -> Maybe [(Int, Int)] -> [Problems.Problem]
-problemsOf st taken = sort (Problems.allProblems st.checked st.failedIslands <> fitProblems st <> swallowProblems st taken)
+problemsOf st taken = sort (st.checked.problems <> diagnosed <> fitProblems st <> swallowProblems st taken)
+  where
+    drawn = Drawn {text = st.checkedText, islands = st.checked.islands, failures = st.failedIslands}
+    diagnosed = concatMap (\d -> d.diagnose drawn) (contributed (pluginsOn st.input.context) plugins).diagnostics
 
 -- | A problem on the line that opens a block left open (a code fence, a
 -- box, an HTML comment) in a row, which takes the rows below it into its

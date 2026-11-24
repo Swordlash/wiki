@@ -266,7 +266,10 @@ component =
             <button type="button" class="api-key-copy" onClick={{ const (Happen CopyClicked) }}>{{ copyLabel }}</button>
           </div>
           <p class="account-note">Use it like this:</p>
-          {% for e in examples st.input.address made.key %}
+          {% for (label, e) in examples st.input.address made.key %}
+            {% for l in maybeToList label %}
+              <p class="account-note api-key-example-label">{{ l }}</p>
+            {% end %}
             <pre class="api-key-example"><code>{{ e }}</code></pre>
           {% end %}
           <button type="button" class="api-key-made-close" onClick={{ const (Happen KeyClosed) }}>I have copied it</button>
@@ -396,23 +399,38 @@ refusalText = \case
 -- scheme and host, @https:\/\/wiki.example@) and the path the wiki is
 -- served under, which the router's front page names (@\/@, or
 -- @\/wiki\/@ for a wiki served with @--base-path \/wiki\/@), without a
--- final slash. The API is served under the same path, so the examples
--- written with it reach the API whatever the wiki's base path is.
+-- final slash. The API and the MCP server are served under the same path,
+-- so the examples written with it reach them whatever the wiki's base path
+-- is.
 programAddress :: Text -> Router Route -> Text
 programAddress origin router = T.dropWhileEnd (== '/') (T.dropWhileEnd (== '/') origin <> Router.href router Home)
 
--- | The examples of a key's use shown with it: a request with @curl@, and
--- the wiki's shell client (@clients\/wiki.sh@), at the wiki's address.
-examples :: Text -> Text -> [Text]
+-- | The examples of a key's use shown with it, each with a label when the
+-- command alone does not say what it is for: a request with @curl@, the
+-- wiki's shell client (@clients\/wiki.sh@), and the line that adds the
+-- wiki's MCP server (@\/mcp@) to Claude Code. All three are at the wiki's
+-- address. Every value taken from the address or the key goes through
+-- 'shellWord', so a pasted example stays one command whatever characters
+-- the wiki's base path holds (@&@, @;@, a single quote).
+examples :: Text -> Text -> [(Maybe Text, Text)]
 examples given key =
-  [ "curl -H 'Authorization: Bearer " <> key <> "' '" <> address <> "/api/list/'"
-  , "WIKI_TOKEN='" <> key <> "' WIKI_URL='" <> address <> "' sh wiki.sh list"
-  -- The line that adds the wiki's MCP server to an assistant
-  -- (@claude mcp add --transport http … --header@) goes here once the
-  -- wiki serves MCP and the README describes it.
+  [ (Nothing, "curl -H " <> shellWord bearer <> " " <> shellWord (address <> "/api/list/"))
+  , (Nothing, "WIKI_TOKEN=" <> shellWord key <> " WIKI_URL=" <> shellWord address <> " sh wiki.sh list")
+  ,
+    ( Just "For an assistant such as Claude Code, through this wiki's MCP server:"
+    , "claude mcp add --transport http wiki " <> shellWord (address <> "/mcp") <> " --header " <> shellWord bearer
+    )
   ]
   where
     address = T.dropWhileEnd (== '/') given
+    bearer = "Authorization: Bearer " <> key
+
+-- | A text as one word of a POSIX shell's command line: in single quotes,
+-- where nothing is special, and each single quote of the text written as
+-- @'\\''@ (the quoted part closed, a quote escaped, a new quoted part
+-- opened).
+shellWord :: Text -> Text
+shellWord t = "'" <> T.replace "'" "'\\''" t <> "'"
 
 -- | A time, in words for a person to read, in UTC, as the security panel
 -- writes it.

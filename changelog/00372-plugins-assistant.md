@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 372
 title: The writing assistant is a built-in plugin
 technical: true
 ---

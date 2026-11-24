@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 359
 title: A new API key shows how to add the wiki to Claude Code
 ---
 

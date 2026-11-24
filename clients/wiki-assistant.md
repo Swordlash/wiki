@@ -26,6 +26,10 @@ wiki.sh search rota --space team      # only in a space and its subspaces
 wiki.sh get /s/team/p/on-call/        # the page's Markdown on standard output
 wiki.sh get /s/team/p/on-call/ --out on-call.md   # into a file, its version in on-call.md.version
 wiki.sh put /s/team/p/on-call/ --file on-call.md  # write the whole page back
+wiki.sh contents /s/team/p/handbook/  # the headings, each with its anchor
+wiki.sh get /s/team/p/handbook/ --section the-week --out week.md  # one section
+wiki.sh put /s/team/p/handbook/ --section the-week --file week.md  # that section back
+wiki.sh get /s/team/p/handbook/ --top  # the text before the first heading
 wiki.sh create team release-notes --title 'Release notes' --file notes.md  # a new page
 wiki.sh create-space team/archive --title Archive   # a new space
 wiki.sh reference --sections          # the sections of the wiki's Markdown reference
@@ -46,7 +50,17 @@ wiki.sh reference Math                # one section
    Mermaid and TikZ diagrams, links between pages, presentations. Before
    writing, run `wiki.sh reference --sections` and read the sections you
    need (`wiki.sh reference "Links"`).
-4. **`put` changes, `create` makes.** `put` changes a page that exists; at an
+4. **On a long page, change one section.** Run `contents` for the anchors,
+   `get --section ANCHOR --out FILE` for the section, edit `FILE`, and
+   `put --section ANCHOR --file FILE`: the rest of the page stays as it is.
+   The text starts with the section's heading and keeps its subsections
+   (`--own` reads and writes the section's own text without them; `--top`
+   the text before the first heading). A file is put back only as the part
+   it was read as. A text that would change the page outside the section,
+   such as a code fence left open, is refused (exit code 6) with the
+   reason, and nothing is written. If you change the heading's text, the
+   section gets a new anchor, which `put` prints.
+5. **`put` changes, `create` makes.** `put` changes a page that exists; at an
    address with no page it is "not found" (exit code 4). `create` makes a new
    page (its slug is the last part of its address: lower-case letters, digits
    and dashes) and never writes over one: where a page is already, it exits
@@ -54,8 +68,11 @@ wiki.sh reference Math                # one section
 
 ## Exit codes
 
-0 done; 2 a wrong use, or no version known for `put` (run `get` first); 3 the
-sign-in was refused; 4 not found, or not yours to read; 5 the page was saved
-since your version (for `create`: a page is there already); 6 refused (not
-allowed; for `create-space`: a space is there already); 7 too many failed sign-ins, wait;
+0 done; 2 a wrong use, or no version known for `put` (run `get` first), or a
+file put as another part than the one it was read as; 3 the sign-in was
+refused; 4 not found, or not yours to read (for `--section`: no such anchor;
+the message lists them); 5 the page was saved since your version (for
+`create`: a page is there already); 6 refused (not allowed; for
+`create-space`: a space is there already; for a section: the text would
+change the page outside it); 7 too many failed sign-ins, wait;
 8 no connection to the wiki. The message on standard error says what to do.

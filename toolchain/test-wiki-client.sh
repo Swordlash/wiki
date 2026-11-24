@@ -627,11 +627,15 @@ suite() {
   one_file_one_path
   incomplete_pairs
   creating
+  sections
+  odd_anchors
   round_trip "$public_root" root
   round_trip "$public_wiki" base-path
   url=$public_root user=editor password=$editor_password state=$work/state-$1-a input=/dev/null
 
   mcp_exchange
+  mcp_sections
+  mcp_whole_arguments
 }
 
 # What the client takes as an address, as a table: each malformed one is
@@ -723,14 +727,14 @@ $url/s/team/edit/|/api/markdown/s/team/
 team/edit|/api/markdown/s/team/~edit/
 EOF
 
-  # The same through the MCP tools: wiki_read_page's page and wiki_list's
+  # The same through the MCP tools: wiki_read_page's path and wiki_list's
   # space.
   {
     printf '%s\n' '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
     id=0
     while IFS= read -r given; do
       id=$((id + 1))
-      "$real_jq" -nc --argjson id "$id" --arg page "$given" '{jsonrpc: "2.0", id: $id, method: "tools/call", params: {name: "wiki_read_page", arguments: {page: $page}}}'
+      "$real_jq" -nc --argjson id "$id" --arg page "$given" '{jsonrpc: "2.0", id: $id, method: "tools/call", params: {name: "wiki_read_page", arguments: {path: $page}}}'
     done <<EOF
 /s/team/p/
 /s//p/x/
@@ -745,8 +749,8 @@ http://wiki.example/s/team/
 EOF
     "$real_jq" -nc '{jsonrpc: "2.0", id: 100, method: "tools/call", params: {name: "wiki_list", arguments: {space: "/s/team/p/"}}}'
     "$real_jq" -nc '{jsonrpc: "2.0", id: 101, method: "tools/call", params: {name: "wiki_search", arguments: {query: "x", space: "/s/Team/"}}}'
-    "$real_jq" -nc '{jsonrpc: "2.0", id: 200, method: "tools/call", params: {name: "wiki_read_page", arguments: {page: "/s/team/~edit/p/~history/"}}}'
-    "$real_jq" -nc --arg page "$url/s/team/projects/p/the-wiki/edit/" '{jsonrpc: "2.0", id: 201, method: "tools/call", params: {name: "wiki_read_page", arguments: {page: $page}}}'
+    "$real_jq" -nc '{jsonrpc: "2.0", id: 200, method: "tools/call", params: {name: "wiki_read_page", arguments: {path: "/s/team/~edit/p/~history/"}}}'
+    "$real_jq" -nc --arg page "$url/s/team/projects/p/the-wiki/edit/" '{jsonrpc: "2.0", id: 201, method: "tools/call", params: {name: "wiki_read_page", arguments: {path: $page}}}'
     "$real_jq" -nc '{jsonrpc: "2.0", id: 202, method: "tools/call", params: {name: "wiki_list", arguments: {space: "team/edit"}}}'
   } >"$work/mcp-addresses.in"
   : >"$work/curl.args"
@@ -889,11 +893,61 @@ answers_by_kind() {
   fake_answer "$space" application/json create-space team/new
   expect 0 "create-space answered as the wiki answers succeeds"
   fake_location='' fake_status=200
+  # A page's contents: JSON of their shape, whose version is the ETag's.
+  contents="{\"title\":\"X\",\"version\":\"\\\"2026-11-23T00:00:00Z\\\"\",\"markdown\":\"/api/markdown/s/team/p/x/\",\"headings\":[{\"level\":1,\"text\":\"X\",\"anchor\":\"x\",\"inSpoiler\":false,\"section\":\"/api/markdown/s/team/p/x/?section=x\",\"children\":[]}]}"
+  not_the_wikis "$html" text/html 200 "$v" contents /s/team/p/x/
+  not_the_wikis "$login" application/json 200 "$v" contents /s/team/p/x/
+  not_the_wikis "$contents" application/json 200 none contents /s/team/p/x/
+  not_the_wikis "$contents" application/json 200 '"2026-11-24T00:00:00Z"' contents /s/team/p/x/
+  not_the_wikis '{"title":"X","version":"\"2026-11-23T00:00:00Z\"","markdown":"/api/markdown/s/team/p/x/","headings":[{"level":1,"text":"X"}]}' application/json 200 "$v" contents /s/team/p/x/
+  not_the_wikis '' application/json 204 "$v" contents /s/team/p/x/
+  fake_answer "$contents" application/json contents /s/team/p/x/
+  expect 0 "contents answered as the wiki answers succeeds"
+  # A section's Markdown, as a page's.
+  not_the_wikis "$html" text/html 200 "$v" get /s/team/p/x/ --section x
+  not_the_wikis "$page_text" 'text/markdown; charset=utf-8' 200 none get /s/team/p/x/ --section x
+  # A section's write: its records, the state file and the sidecar, stay
+  # as they were. A 204, the answer to a write of the whole page, is not
+  # the answer to a section's.
+  fake_answer "$page_text" 'text/markdown; charset=utf-8' get /s/team/p/x/ --section x --out "$work/fake-section.md"
+  expect 0 "get --section --out, for the section put's records"
+  cp "$state_file" "$work/fake-state.before"
+  cp "$work/fake-section.md.version" "$work/fake-sidecar.before"
+  written='{"anchor":"x","section":"/api/markdown/s/team/p/x/?section=x","version":"\"2026-11-24T00:00:00Z\""}'
+  not_the_wikis '' '' 204 '"2026-11-24T00:00:00Z"' put /s/team/p/x/ --section x --file "$work/fake-section.md"
+  has err "look at its history" "a 204 to a section's put says the page may hold only that part"
+  not_the_wikis "$html" text/html 200 '"2026-11-24T00:00:00Z"' put /s/team/p/x/ --section x --file "$work/fake-section.md"
+  not_the_wikis "$written" application/json 200 none put /s/team/p/x/ --section x --file "$work/fake-section.md"
+  not_the_wikis "$written" application/json 200 '"2026-11-25T00:00:00Z"' put /s/team/p/x/ --section x --file "$work/fake-section.md"
+  not_the_wikis '{"version":"\"2026-11-24T00:00:00Z\""}' application/json 200 '"2026-11-24T00:00:00Z"' put /s/team/p/x/ --section x --file "$work/fake-section.md"
+  check "after the wrong answers to a section's put, the state file is as it was" cmp -s "$state_file" "$work/fake-state.before"
+  check "after the wrong answers to a section's put, the sidecar is as it was" cmp -s "$work/fake-section.md.version" "$work/fake-sidecar.before"
+  fake_etag='"2026-11-24T00:00:00Z"'
+  fake_answer "$written" application/json put /s/team/p/x/ --section x --file "$work/fake-section.md"
+  fake_etag=$v
+  expect 0 "a section's put answered as the wiki answers succeeds"
+  check "and the sidecar names its new version" [ "$(head -n 1 "$work/fake-section.md.version")" = '"2026-11-24T00:00:00Z"' ]
+  # An anchor the client cannot read exactly (a \u0000, half of a
+  # surrogate pair) is refused, and nothing is recorded: never a guess.
+  for odd in '\u0000' '\ud800'; do
+    cp "$state_file" "$work/fake-state.before"
+    cp "$work/fake-section.md.version" "$work/fake-sidecar.before"
+    fake_etag='"2026-11-24T00:00:00Z"'
+    fake_answer "{\"anchor\":\"x$odd\",\"section\":\"/api/markdown/s/team/p/x/?section=x\",\"version\":\"\\\"2026-11-24T00:00:00Z\\\"\"}" application/json put /s/team/p/x/ --section x --file "$work/fake-section.md"
+    fake_etag=$v
+    expect 1 "a section's put answered with the anchor x$odd fails"
+    has err "cannot read exactly" "the failure says the anchor x$odd cannot be read exactly"
+    check "after the anchor x$odd, the state file is as it was" cmp -s "$state_file" "$work/fake-state.before"
+    check "after the anchor x$odd, the sidecar is as it was" cmp -s "$work/fake-section.md.version" "$work/fake-sidecar.before"
+  done
   # Through the MCP tools: each answer as above, one tool call each.
   for call in \
-    "$html|text/html|200|$v|wiki_write_page|{\"page\":\"/s/team/p/x/\",\"version\":\"2026-11-23T00:00:00Z\",\"content\":\"x\"}" \
-    "|text/plain|200|$v|wiki_write_page|{\"page\":\"/s/team/p/x/\",\"version\":\"2026-11-23T00:00:00Z\",\"content\":\"x\"}" \
-    "$page_text|text/markdown|200|none|wiki_read_page|{\"page\":\"/s/team/p/x/\"}" \
+    "$html|text/html|200|$v|wiki_write_page|{\"path\":\"/s/team/p/x/\",\"base_version\":\"2026-11-23T00:00:00Z\",\"markdown\":\"x\"}" \
+    "|text/plain|200|$v|wiki_write_page|{\"path\":\"/s/team/p/x/\",\"base_version\":\"2026-11-23T00:00:00Z\",\"markdown\":\"x\"}" \
+    "$page_text|text/markdown|200|none|wiki_read_page|{\"path\":\"/s/team/p/x/\"}" \
+    "$page_text|text/markdown|200|none|wiki_read_section|{\"path\":\"/s/team/p/x/\",\"section\":\"x\"}" \
+    "$login|application/json|200|$v|wiki_page_outline|{\"path\":\"/s/team/p/x/\"}" \
+    "|text/plain|204|$v|wiki_write_section|{\"path\":\"/s/team/p/x/\",\"section\":\"x\",\"markdown\":\"# X\",\"base_version\":\"2026-11-23T00:00:00Z\"}" \
     "$login|application/json|200|none|wiki_list|{}" \
     "{\"hits\":{}}|application/json|200|none|wiki_search|{\"query\":\"x\"}" \
     "|text/markdown|204|none|wiki_markdown_reference|{}"; do
@@ -979,6 +1033,411 @@ creating() {
   client create-space "nowhere-$shell/below"
   expect 4 "create-space under a space that is not there is not found"
   state=$work/state-$shell-a
+}
+
+# A page's contents and its parts, on the server at the root: contents,
+# plain and as JSON; get and put of a section, of a section's own text and
+# of the text before the first heading, to and from standard output and
+# files; a renamed heading; and every refusal, each with nothing sent or
+# nothing written, checked by reading the page back. The page has text
+# before its first heading, nested headings and a heading inside a block
+# spoiler.
+sections() {
+  url=$public_root user=editor password=$editor_password state=$work/state-$shell-sections input=/dev/null
+  parts=$work/parts-$shell
+  mkdir -p "$parts"
+  sp=/s/team/projects/p/sections-$shell/
+  printf 'Some words before the first heading.\n\n' >"$parts/top"
+  printf '# Handbook\n\nThe handbook'"'"'s own text, with "quotes" and ż.\n\n' >"$parts/own"
+  printf '## The week\n\nStand-up at nine.\n\n### Mondays\n\nThe rota changes.\n\n' >"$parts/week"
+  printf '## Holidays\n\nAsk first.\n\n[[!spoiler]]{faq}(Questions)\n### How many days?\n\nTwenty-six.\n[[/spoiler]]{faq}\n' >"$parts/holidays"
+  cat "$parts/top" "$parts/own" "$parts/week" "$parts/holidays" >"$parts/page"
+  input=$parts/page
+  client create team/projects "sections-$shell" --title Handbook
+  expect 0 "create the page of sections"
+  input=/dev/null
+  # The contents.
+  cp "$state"/*/s/team/projects/p/"sections-$shell"/_version "$parts/state-before"
+  client contents "$sp"
+  expect 0 "contents"
+  has out "Handbook  $sp" "contents starts with the title and the address"
+  has out "  (text before the first heading: wiki.sh get $sp --top)" "contents says there is text before the first heading"
+  has out "  h1  handbook  Handbook" "contents shows the title's level, anchor and text"
+  has out "    h2  the-week  The week" "contents shows a section, indented under the title"
+  has out "      h3  mondays  Mondays" "contents shows a subsection, indented under its section"
+  has out "      h3  how-many-days  How many days?  (in a spoiler)" "contents marks a heading inside a spoiler"
+  client get "$sp" --version
+  sections_version=$(cat "$work/out")
+  client contents "$sp" --json
+  expect 0 "contents --json"
+  if "$real_jq" -e --arg version "$sections_version" '.version == $version and (.top | endswith("?top=true")) and (.headings[0].children | map(.anchor)) == ["the-week", "holidays"] and .headings[0].children[1].children[0].inSpoiler == true' "$work/out" >/dev/null; then
+    pass "contents --json gives the server's JSON"
+  else
+    fail "contents --json gives the server's JSON"
+  fi
+  check "contents leave the version remembered as it was" cmp -s "$state"/*/s/team/projects/p/"sections-$shell"/_version "$parts/state-before"
+  # Each part, to standard output and to a file.
+  for row in "the-week||week|section=the-week" "handbook|--own|own|section=handbook&own=true" "|--top|top|top=true"; do
+    IFS='|' read -r anchor option name query <<EOF
+$row
+EOF
+    # An empty option is no word, on purpose.
+    # shellcheck disable=SC2086
+    if [ -n "$anchor" ]; then set -- --section "$anchor" $option; else set -- $option; fi
+    client get "$sp" "$@"
+    expect 0 "get $*"
+    check "get $* gives the part byte for byte" cmp -s "$work/out" "$parts/$name"
+    has err "version $sections_version" "get $* shows the page's version"
+    client get "$sp" "$@" --out "$parts/$name.md"
+    expect 0 "get $* --out"
+    check "get $* --out writes the part" cmp -s "$parts/$name.md" "$parts/$name"
+    printf '%s\n%s\n' "$sections_version" "$sp?$query" >"$work/expected-version"
+    check "get $* --out keeps the version and the part beside the file" cmp -s "$parts/$name.md.version" "$work/expected-version"
+  done
+  client get "$sp" --out "$parts/page.md"
+  expect 0 "get --out of the whole page, for the cross-uses"
+  # A section put back as it was: the same page, a new version.
+  client put "$sp" --section the-week --file "$parts/week.md"
+  expect 0 "put --section of the file get --section wrote, unchanged"
+  has err "wrote the section the-week of $sp" "put --section says which part it wrote"
+  client get "$sp"
+  check "the page is byte for byte as it was" cmp -s "$work/out" "$parts/page"
+  client get "$sp" --version
+  check "and it has a new version" [ "$(cat "$work/out")" != "$sections_version" ]
+  check "the file's sidecar names the new version" [ "$(head -n 1 "$parts/week.md.version")" = "$(cat "$work/out")" ]
+  # A section edited: only that section changes.
+  printf 'Bring tea.\n\n' >>"$parts/week.md"
+  client put "$sp" --section the-week --file "$parts/week.md"
+  expect 0 "put --section of an edited section"
+  cat "$parts/top" "$parts/own" "$parts/week.md" "$parts/holidays" >"$parts/page"
+  client get "$sp"
+  check "the page has the edit in that section, and the rest as it was" cmp -s "$work/out" "$parts/page"
+  # The text before the first heading and a section's own text, put back.
+  client get "$sp" --top --out "$parts/top.md"
+  printf 'Other words before the first heading.\n\n' >"$parts/top"
+  cp "$parts/top" "$parts/top.md"
+  client put "$sp" --top --file "$parts/top.md"
+  expect 0 "put --top"
+  client get "$sp" --section handbook --own --out "$parts/own.md"
+  client put "$sp" --section handbook --own --file "$parts/own.md"
+  expect 0 "put --section --own of its own text"
+  cat "$parts/top" "$parts/own" "$parts/week.md" "$parts/holidays" >"$parts/page"
+  client get "$sp"
+  check "the page has the new top, and the rest as it was" cmp -s "$work/out" "$parts/page"
+  # Each cross-use of a file refused, before anything is sent.
+  client get "$sp" --section the-week --out "$parts/week.md"
+  client get "$sp" --out "$parts/page.md"
+  client get "$sp" --version
+  current=$(cat "$work/out")
+  for row in \
+    "a section's file as the page|week.md|" \
+    "a section's file as the page, with --force|week.md|--force" \
+    "a section's file as the page, with --if-match|week.md|--if-match $current" \
+    "the page's file as a section|page.md|--section the-week" \
+    "the page's file as a section, with --if-match|page.md|--section the-week --if-match $current" \
+    "a section's file as another section|week.md|--section holidays" \
+    "a section's file as its own text|week.md|--section the-week --own" \
+    "an own text's file as the whole section|own.md|--section handbook" \
+    "the top's file as a section|top.md|--section handbook"; do
+    IFS='|' read -r description name options <<EOF
+$row
+EOF
+    : >"$work/curl.args"
+    # The options are split into words on purpose.
+    # shellcheck disable=SC2086
+    client put "$sp" --file "$parts/$name" $options
+    expect 2 "$description is refused"
+    has err "holds the " "the refusal of $description says what the file holds"
+    check "nothing was sent for $description" [ ! -s "$work/curl.args" ]
+  done
+  client get "$sp"
+  check "after the cross-uses, the page is as it was" cmp -s "$work/out" "$parts/page"
+  # A version that moved on: refused, nothing written.
+  client get "$sp" --section the-week --out "$parts/week.md"
+  client get "$sp" --top --out "$parts/top.md"
+  printf 'Words saved in between.\n\n' >"$parts/top"
+  cp "$parts/top" "$parts/top.md"
+  client put "$sp" --top --file "$parts/top.md"
+  expect 0 "a save of the top in between"
+  cat "$parts/top" "$parts/own" "$parts/week.md" "$parts/holidays" >"$parts/page"
+  printf 'An edit over an older version.\n\n' >>"$parts/week.md"
+  client put "$sp" --section the-week --file "$parts/week.md"
+  expect 5 "put --section over a version that moved on is refused"
+  has err "read the section the-week of $sp again" "the refusal says to read the section again"
+  client get "$sp"
+  check "the refused section wrote nothing" cmp -s "$work/out" "$parts/page"
+  # A body that would change the page outside its section (an open code
+  # fence): the server's sentence, nothing written.
+  client get "$sp" --section the-week
+  printf '## The week\n\n```\nA fence never closed.\n' >"$parts/open-fence"
+  input=$parts/open-fence
+  client put "$sp" --section the-week
+  expect 6 "put --section of a body with an open code fence is refused"
+  has err "(422)" "the refusal says the wiki refused it"
+  has err "code fence" "the refusal gives the server's sentence"
+  input=/dev/null
+  client get "$sp"
+  check "the refused body wrote nothing" cmp -s "$work/out" "$parts/page"
+  # An anchor the page does not have, and --force with a part.
+  client get "$sp" --section no-such-anchor
+  expect 4 "get --section of an unknown anchor is not found"
+  has err "Its anchors: handbook, the-week, mondays, holidays, how-many-days" "the refusal lists the page's anchors"
+  input=$parts/week
+  for options in "--section the-week --force" "--top --force"; do
+    : >"$work/curl.args"
+    # shellcheck disable=SC2086
+    client put "$sp" $options
+    expect 2 "put $options is refused"
+    check "nothing was sent for put $options" [ ! -s "$work/curl.args" ]
+  done
+  # A section from standard input, over the version its get remembered,
+  # twice in a row; and over --if-match, the page's version now and an
+  # older one.
+  client get "$sp" --section the-week
+  cp "$work/out" "$parts/week-now"
+  input=$parts/week-now
+  client put "$sp" --section the-week
+  expect 0 "put --section from standard input, with the version its get remembered"
+  client put "$sp" --section the-week
+  expect 0 "a second put --section in a row, with the version the first gave"
+  client get "$sp" --version
+  current=$(cat "$work/out")
+  client put "$sp" --section the-week --if-match "$current"
+  expect 0 "put --section --if-match the page's version now"
+  client put "$sp" --section the-week --if-match "$sections_version"
+  expect 5 "put --section --if-match an older version is refused"
+  input=/dev/null
+  client get "$sp"
+  check "the section put from standard input left the page as it was" cmp -s "$work/out" "$parts/page"
+  # A state file of one line, as an older wiki.sh wrote it, is a record of
+  # the whole page.
+  cp "$work/out" "$parts/page-now"
+  vf=$(find "$state" -name _version -path "*/s/team/projects/p/sections-$shell/*")
+  head -n 1 "$vf" >"$parts/one-line"
+  cp "$parts/one-line" "$vf"
+  input=$parts/page-now
+  client put "$sp"
+  expect 0 "a put of the page from standard input over a state file of one line"
+  input=/dev/null
+  # The version remembered names what was read: a section's version does
+  # not let the whole page be written from standard input.
+  client get "$sp" --section the-week
+  input=$parts/page
+  : >"$work/curl.args"
+  client put "$sp"
+  expect 2 "a put of the page from standard input after a get of a section is refused"
+  has err "came with the section the-week" "the refusal says what the version came with"
+  check "nothing was sent for it" [ ! -s "$work/curl.args" ]
+  # The contents change nothing remembered: a get of a section, then the
+  # contents, then a put of that section from standard input writes; the
+  # contents alone let no put through, and nothing is sent.
+  client get "$sp" --section the-week
+  cp "$work/out" "$parts/week-now"
+  client contents "$sp"
+  input=$parts/week-now
+  client put "$sp" --section the-week
+  expect 0 "get --section, then contents, then put --section from standard input writes"
+  state=$work/state-$shell-contents-only
+  client contents "$sp"
+  expect 0 "contents, with nothing remembered before"
+  for options in "--section the-week" ""; do
+    : >"$work/curl.args"
+    # An empty option is no word, on purpose.
+    # shellcheck disable=SC2086
+    client put "$sp" $options
+    expect 2 "a put ${options:-of the page} after contents alone is refused"
+    check "nothing was sent for a put ${options:-of the page} after contents alone" [ ! -s "$work/curl.args" ]
+  done
+  state=$work/state-$shell-sections
+  input=/dev/null
+  # A heading renamed: the new anchor is printed and reads back, and the
+  # file's sidecar names it, not the old one.
+  client get "$sp" --section holidays --out "$parts/holidays.md"
+  sed 's/^## Holidays$/## Time off/' "$parts/holidays.md" >"$parts/time-off"
+  cp "$parts/time-off" "$parts/holidays.md"
+  client put "$sp" --section holidays --file "$parts/holidays.md"
+  expect 0 "put --section of a body that renames its heading"
+  has err "the section is now at time-off" "the put says the section's new anchor"
+  client get "$sp" --section time-off
+  check "the section reads back at its new anchor" cmp -s "$work/out" "$parts/time-off"
+  check "the sidecar names the new anchor" [ "$(sed -n 2p "$parts/holidays.md.version")" = "$sp?section=time-off" ]
+  : >"$work/curl.args"
+  client put "$sp" --section holidays --file "$parts/holidays.md"
+  expect 2 "the file put as the old anchor is refused"
+  check "nothing was sent for it" [ ! -s "$work/curl.args" ]
+  client put "$sp" --section time-off --file "$parts/holidays.md"
+  expect 0 "the file put as the new anchor goes through"
+  cp "$parts/time-off" "$parts/holidays"
+  state=$work/state-$shell-a
+}
+
+# An anchor is an identity, kept byte for byte: headings whose ids hold a
+# tab, a quote and a backslash, and a backspace and a form feed (the ids
+# the server takes: a quote only as &quot;). Each section is read into a
+# file and put back twice, unchanged: no rename is reported, the
+# sidecar's anchor stays as it was, and the page too. contents prints
+# each anchor on one line.
+odd_anchors() {
+  url=$public_root user=editor password=$editor_password state=$work/state-$shell-anchors input=/dev/null
+  ids=$work/ids-$shell
+  mkdir -p "$ids"
+  ip=/s/team/projects/p/ids-$shell/
+  printf '# Ids\n\n## Tab {id="a\tb"}\n\nA tab.\n\n## Quote {id="q&quot;b\\c"}\n\nA quote and a backslash.\n\n## Controls {id="c\bd\fe"}\n\nA backspace and a form feed.\n' >"$ids/page"
+  input=$ids/page
+  client create team/projects "ids-$shell" --title Ids
+  expect 0 "create a page with odd anchors"
+  input=/dev/null
+  client contents "$ip"
+  expect 0 "contents of the page with odd anchors"
+  has out "    h2  a b  Tab" "contents prints an anchor with a tab on one line"
+  has out "    h2  q\"b\\c  Quote" "contents prints an anchor with a quote and a backslash"
+  has out "    h2  c d e  Controls" "contents prints an anchor with a backspace and a form feed on one line"
+  for name in tab quote controls; do
+    case $name in
+      tab) anchor=$(printf 'a\tb') ;;
+      quote) anchor='q"b\c' ;;
+      controls) anchor=$(printf 'c\bd\fe') ;;
+    esac
+    client get "$ip" --section "$anchor" --out "$ids/$name.md"
+    expect 0 "get --section of the anchor with a $name"
+    held=$(sed -n 2p "$ids/$name.md.version")
+    client put "$ip" --section "$anchor" --file "$ids/$name.md"
+    expect 0 "put --section of the anchor with a $name, unchanged"
+    lacks err "the section is now at" "the put of the anchor with a $name reports no rename"
+    check "the sidecar of the anchor with a $name names it as before" [ "$(sed -n 2p "$ids/$name.md.version")" = "$held" ]
+    client put "$ip" --section "$anchor" --file "$ids/$name.md"
+    expect 0 "a second put --section of the anchor with a $name"
+  done
+  client get "$ip"
+  check "the page with odd anchors is as it was" cmp -s "$work/out" "$ids/page"
+  state=$work/state-$shell-a
+}
+
+# The section tools of the MCP server through a pipe, on the page of
+# sections: the outline, a section read, a section written, and the
+# write's refusals as the tool's error, nothing written.
+mcp_sections() {
+  sp=/s/team/projects/p/sections-$shell/
+  client get "$sp" --version
+  v=$(cat "$work/out")
+  client get "$sp" --section the-week
+  cp "$work/out" "$work/mcp-week-before"
+  week_new='## The week
+
+Stand-up at half past nine.
+
+### Mondays
+
+The rota changes.
+
+'
+  call() {
+    "$real_jq" -nc --argjson id "$1" --arg name "$2" --argjson arguments "$3" '{jsonrpc: "2.0", id: $id, method: "tools/call", params: {name: $name, arguments: $arguments}}'
+  }
+  {
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+    call 2 wiki_page_outline "{\"path\":\"$sp\"}"
+    call 3 wiki_read_section "{\"path\":\"$sp\",\"section\":\"the-week\"}"
+    call 4 wiki_read_section "{\"path\":\"$sp\",\"top\":true}"
+    call 5 wiki_write_section "$("$real_jq" -nc --arg path "$sp" --arg v "$v" '{path: $path, section: "the-week", markdown: "## The week\n\n```\nA fence never closed.\n", base_version: $v}')"
+    call 6 wiki_write_section "$("$real_jq" -nc --arg path "$sp" --arg v "$v" --arg markdown "$week_new" '{path: $path, section: "the-week", markdown: $markdown, base_version: $v}')"
+    call 7 wiki_write_section "$("$real_jq" -nc --arg path "$sp" --arg v "$v" '{path: $path, section: "the-week", markdown: "## The week\n\nToo late.\n\n", base_version: $v}')"
+    call 8 wiki_read_section "{\"path\":\"$sp\",\"section\":\"the-week\",\"top\":true}"
+    call 9 wiki_create_page "{\"path\":\"/s/team/projects/p/mcp-kind-$shell/\",\"markdown\":\"x\",\"kind\":\"presentation\"}"
+    printf '%s\n' '{"jsonrpc":"2.0","id":10,"method":"tools/list"}'
+  } >"$work/mcp-sections.in"
+  env -i PATH="$curl_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-mcp" \
+    "$shell" "$client" mcp <"$work/mcp-sections.in" >"$work/mcp-sections.out" 2>"$work/mcp-sections.err"
+  status=$?
+  expect 0 "mcp with the section tools ends when its input ends"
+  sections_reply() {
+    description=$1
+    shift
+    if "$real_jq" -e -s "$@" "$work/mcp-sections.out" >/dev/null; then pass "mcp: $description"; else
+      fail "mcp: $description"
+      sed 's/^/  reply: /' "$work/mcp-sections.out" | cut -c1-300 >&2
+    fi
+  }
+  sections_reply "wiki_page_outline gives the headings, the version and the top's length" --arg v "$v" --rawfile top "$parts/top" \
+    'map(select(.id == 2))[0].result | .isError == false and (.content[0].text | fromjson | .version == $v and .topCharacters == ($top | length) and (.headings[0].children | map(.anchor)) == ["the-week", "time-off"] and .headings[0].children[1].children[0].inSpoiler == true and (.headings[0] | has("section") | not))'
+  sections_reply "wiki_read_section gives the version and the section" --arg v "$v" --rawfile week "$work/mcp-week-before" \
+    'map(select(.id == 3))[0].result | .isError == false and (.content[0].text | contains($v)) and .content[1].text == $week'
+  sections_reply "wiki_read_section with top gives the text before the first heading" --rawfile top "$parts/top" \
+    'map(select(.id == 4))[0].result | .isError == false and .content[1].text == $top'
+  sections_reply "wiki_write_section of a body with an open fence is the tool's error, with the server's sentence" \
+    'map(select(.id == 5))[0].result | .isError == true and (.content[0].text | contains("code fence")) and (.content[0].text | endswith("Nothing was written."))'
+  sections_reply "wiki_write_section writes over the version read" \
+    'map(select(.id == 6))[0].result | .isError == false and (.content[0].text | startswith("Wrote the section the-week"))'
+  sections_reply "wiki_write_section over a version that moved on tells the model to read the section again" \
+    'map(select(.id == 7))[0].result | .isError == true and (.content[0].text | contains("Read the section again with wiki_read_section"))'
+  sections_reply "wiki_read_section with both section and top is the tool's error" \
+    'map(select(.id == 8))[0].result | .isError == true and (.content[0].text | contains("not both"))'
+  sections_reply "an argument a tool does not have is the tool's error, as on the wiki's own server" \
+    'map(select(.id == 9))[0].result | .isError == true and (.content[0].text | startswith("The tool wiki_create_page has no argument kind. Its arguments are path, markdown, title."))'
+  sections_reply "each tool's arguments and required ones are the wiki's own MCP server's" \
+    'map(select(.id == 10))[0].result.tools | map([.name, (.inputSchema.properties | keys_unsorted), (.inputSchema.required // [])]) == [
+      ["wiki_list", ["space", "depth"], []],
+      ["wiki_search", ["query", "space", "limit"], ["query"]],
+      ["wiki_read_page", ["path"], ["path"]],
+      ["wiki_page_outline", ["path"], ["path"]],
+      ["wiki_read_section", ["path", "section", "own", "top"], ["path"]],
+      ["wiki_write_page", ["path", "markdown", "base_version"], ["path", "markdown", "base_version"]],
+      ["wiki_write_section", ["path", "section", "own", "top", "markdown", "base_version"], ["path", "markdown", "base_version"]],
+      ["wiki_create_page", ["path", "markdown", "title"], ["path", "markdown"]],
+      ["wiki_markdown_reference", ["section"], []]]'
+  client get "/s/team/projects/p/mcp-kind-$shell/"
+  expect 4 "the call with an unknown argument created nothing"
+  printf '%s' "$week_new" >"$work/mcp-week"
+  cat "$parts/top" "$parts/own" "$work/mcp-week" "$parts/holidays" >"$work/mcp-sections-after"
+  client get "$sp"
+  check "the page has the one section written through MCP, and the rest as it was" cmp -s "$work/out" "$work/mcp-sections-after"
+}
+
+# An MCP tool's argument that the client cannot carry exactly into a
+# shell variable is refused, never altered: a NUL in a section's anchor, a
+# page's path or a version, a lone surrogate (which jq would replace), and
+# a line that is not UTF-8. Each is the tool's error, or a parse error,
+# and the page is as it was.
+mcp_whole_arguments() {
+  sp=/s/team/projects/p/sections-$shell/
+  client get "$sp" --version
+  v=$(cat "$work/out")
+  client get "$sp"
+  cp "$work/out" "$work/whole-before"
+  {
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+    "$real_jq" -nc --arg path "$sp" --arg v "$v" '{jsonrpc: "2.0", id: 2, method: "tools/call", params: {name: "wiki_write_section", arguments: {path: $path, section: "the-\u0000week", markdown: "## The week\n\nWritten through a NUL.\n\n", base_version: $v}}}'
+    "$real_jq" -nc --arg path "$sp" '{jsonrpc: "2.0", id: 3, method: "tools/call", params: {name: "wiki_read_section", arguments: {path: $path, section: "the-\u0000week"}}}'
+    "$real_jq" -nc --arg path "$sp" '{jsonrpc: "2.0", id: 4, method: "tools/call", params: {name: "wiki_read_page", arguments: {path: ($path[0:3] + "\u0000" + $path[3:])}}}'
+    "$real_jq" -nc --arg path "$sp" --arg v "$v" '{jsonrpc: "2.0", id: 5, method: "tools/call", params: {name: "wiki_write_page", arguments: {path: $path, markdown: "Written through a NUL.\n", base_version: ($v[0:-2] + "\u0000" + $v[-2:])}}}'
+    printf '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"wiki_read_section","arguments":{"path":"%s","section":"the-week\\ud800"}}}\n' "$sp"
+    printf '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"wiki_read_section","arguments":{"path":"%s","section":"the-week\377"}}}\n' "$sp"
+    printf '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"wiki_read_section","arguments":{"path":"%s","section":"the-week\\\\ud800"}}}\n' "$sp"
+  } >"$work/mcp-whole.in"
+  env -i PATH="$curl_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-mcp" \
+    "$shell" "$client" mcp <"$work/mcp-whole.in" >"$work/mcp-whole.out" 2>"$work/mcp-whole.err"
+  status=$?
+  expect 0 "mcp with arguments it cannot carry ends when its input ends"
+  whole_reply() {
+    description=$1
+    shift
+    if "$real_jq" -e -s "$@" "$work/mcp-whole.out" >/dev/null; then pass "mcp: $description"; else
+      fail "mcp: $description"
+      sed 's/^/  reply: /' "$work/mcp-whole.out" | cut -c1-300 >&2
+    fi
+  }
+  for row in "2|wiki_write_section|section" "3|wiki_read_section|section" "4|wiki_read_page|path" "5|wiki_write_page|base_version" "6|wiki_read_section|section"; do
+    IFS='|' read -r id tool argument <<EOF
+$row
+EOF
+    whole_reply "$tool with what the client cannot carry in $argument (call $id) is the tool's error, naming the argument" --argjson id "$id" --arg argument "$argument" \
+      'map(select(.id == $id))[0].result | .isError == true and (.content[0].text | startswith("The argument \($argument) holds a NUL character") and contains("cannot pass on"))'
+  done
+  whole_reply "a line that is not UTF-8 is a parse error" 'map(select(.error.code == -32700)) | length == 1'
+  whole_reply "an escaped backslash before u is no surrogate: the section is just not there" \
+    'map(select(.id == 8))[0].result | .isError == true and (.content[0].text | contains("has no section"))'
+  client get "$sp"
+  check "the page is as it was after the arguments the client cannot carry" cmp -s "$work/out" "$work/whole-before"
 }
 
 # get --out and put --file write only in a directory of the user's own:
@@ -1354,7 +1813,7 @@ wrong_answers() {
       printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
       printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"wiki_search","arguments":{"query":"x"}}}'
       printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"wiki_list","arguments":{}}}'
-      printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"wiki_read_page","arguments":{"page":"/s/team/p/x/"}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"wiki_read_page","arguments":{"path":"/s/team/p/x/"}}}'
     } >"$work/mcp-wrong.in"
     env -i PATH="$work/fakes/answer:$PATH" HOME="$work/home" WIKI_URL=http://wiki.invalid WIKI_USER=editor WIKI_PASSWORD=x \
       WIKI_STATE_DIR="$work/state-$shell-fake" FAKE_BODY="$work/fake-body" FAKE_TYPE="${answer##*|}" FAKE_STATUS=200 FAKE_ETAG="$fake_etag" \
@@ -1551,9 +2010,9 @@ Written through MCP: "quoted", back\slash, ż.
     printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
     call 4 wiki_list '{"space":"team"}'
     call 5 wiki_search '{"query":"gęślą"}'
-    call 6 wiki_read_page "{\"page\":\"$page\"}"
-    call 7 wiki_write_page "$("$real_jq" -nc --arg page "$page" --arg version "$version" --arg content "$new_text" '{page: $page, version: $version, content: $content}')"
-    call 8 wiki_write_page "$("$real_jq" -nc --arg page "$page" --arg version "$version" --arg content "too late" '{page: $page, version: $version, content: $content}')"
+    call 6 wiki_read_page "{\"path\":\"$page\"}"
+    call 7 wiki_write_page "$("$real_jq" -nc --arg page "$page" --arg version "$version" --arg content "$new_text" '{path: $page, base_version: $version, markdown: $content}')"
+    call 8 wiki_write_page "$("$real_jq" -nc --arg page "$page" --arg version "$version" --arg content "too late" '{path: $page, base_version: $version, markdown: $content}')"
     call 9 wiki_markdown_reference '{}'
     call 10 wiki_markdown_reference '{"section":"math"}'
     printf '%s\n' '{"jsonrpc":"2.0","id":"eleven","method":"no/such/method"}'
@@ -1561,7 +2020,7 @@ Written through MCP: "quoted", back\slash, ż.
     call 13 no_such_tool '{}'
     call 14 wiki_read_page '{}'
     printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"server/discover\",\"params\":{\"_meta\":$meta}}"
-    printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"wiki_read_page\",\"arguments\":{\"page\":\"/s/team/projects/p/the-wiki\"},\"_meta\":$meta}}"
+    printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"wiki_read_page\",\"arguments\":{\"path\":\"/s/team/projects/p/the-wiki\"},\"_meta\":$meta}}"
     printf '%s\n' '{"jsonrpc":"2.0","id":17,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"1900-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}'
     printf '%s\n' '{"jsonrpc":"2.0","id":18,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}'
     printf '%s\n' '[{"jsonrpc":"2.0","id":19,"method":"ping"}]'
@@ -1569,11 +2028,11 @@ Written through MCP: "quoted", back\slash, ż.
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3}}'
     printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/list\",\"params\":{\"_meta\":$meta}}"
     "$real_jq" -nc --arg page "$second" --arg version "$second_version" --rawfile content "$work/big-mcp" \
-      '{jsonrpc: "2.0", id: 22, method: "tools/call", params: {name: "wiki_write_page", arguments: {page: $page, version: $version, content: $content}}}'
-    call 23 wiki_read_page "{\"page\":\"$second\"}"
-    call 24 wiki_create_page "{\"page\":\"/s/team/projects/p/mcp-new-$shell/\",\"title\":\"Made by MCP\",\"content\":\"# Made by MCP\\n\"}"
-    call 25 wiki_create_page "{\"page\":\"/s/team/projects/p/mcp-new-$shell/\",\"content\":\"over it\"}"
-    call 26 wiki_write_page "$("$real_jq" -nc --arg page "/s/team/projects/p/mcp-free-$shell/" --arg version "$version" '{page: $page, version: $version, content: "x"}')"
+      '{jsonrpc: "2.0", id: 22, method: "tools/call", params: {name: "wiki_write_page", arguments: {path: $page, base_version: $version, markdown: $content}}}'
+    call 23 wiki_read_page "{\"path\":\"$second\"}"
+    call 24 wiki_create_page "{\"path\":\"/s/team/projects/p/mcp-new-$shell/\",\"title\":\"Made by MCP\",\"markdown\":\"# Made by MCP\\n\"}"
+    call 25 wiki_create_page "{\"path\":\"/s/team/projects/p/mcp-new-$shell/\",\"markdown\":\"over it\"}"
+    call 26 wiki_write_page "$("$real_jq" -nc --arg page "/s/team/projects/p/mcp-free-$shell/" --arg version "$version" '{path: $page, base_version: $version, markdown: "x"}')"
   } >"$work/mcp.in"
   printf -- '--- the MCP server under %s\n' "$shell"
   # Through a pipe, as a client starts it.
@@ -1600,7 +2059,7 @@ Written through MCP: "quoted", back\slash, ż.
   }
   reply "initialize answers the client's revision, 2025-06-18" 'map(select(.id == 1))[0].result | .protocolVersion == "2025-06-18" and .serverInfo.name == "wiki.sh" and .capabilities.tools != null and (has("resultType") | not)'
   reply "ping answers an empty result" 'map(select(.id == 2))[0].result == {}'
-  reply "tools/list gives the six tools" 'map(select(.id == 3))[0].result.tools | map(.name) == ["wiki_list", "wiki_search", "wiki_read_page", "wiki_write_page", "wiki_create_page", "wiki_markdown_reference"] and all(.inputSchema.type == "object")'
+  reply "tools/list gives the nine tools" 'map(select(.id == 3))[0].result.tools | map(.name) == ["wiki_list", "wiki_search", "wiki_read_page", "wiki_page_outline", "wiki_read_section", "wiki_write_page", "wiki_write_section", "wiki_create_page", "wiki_markdown_reference"] and all(.inputSchema.type == "object")'
   reply "wiki_list lists a space" 'map(select(.id == 4))[0].result | .isError == false and (.content[0].text | contains("    The wiki  /s/team/projects/p/the-wiki/"))'
   reply "wiki_search finds the page" 'map(select(.id == 5))[0].result | .isError == false and (.content[0].text | contains("/s/team/projects/p/zazolc-gesla-jazn/"))'
   reply "wiki_read_page gives the version and the Markdown" --arg version "$version" "map(select(.id == 6))[0].result | .isError == false and (.content[0].text | contains(\$version)) and (.content[1].text | startswith(\"# The wiki\"))"
@@ -1611,14 +2070,14 @@ Written through MCP: "quoted", back\slash, ż.
   reply "an unknown method is -32601" 'map(select(.id == "eleven"))[0].error.code == -32601'
   reply "a line that is not JSON is -32700, with no id" 'map(select(has("id") | not))[0].error.code == -32700'
   reply "an unknown tool is -32602" 'map(select(.id == 13))[0].error.code == -32602'
-  reply "a missing argument is the tool's error" 'map(select(.id == 14))[0].result | .isError == true and (.content[0].text | contains("page is missing"))'
+  reply "a missing argument is the tool's error" 'map(select(.id == 14))[0].result | .isError == true and (.content[0].text | contains("path is missing"))'
   reply "server/discover names the current revision" 'map(select(.id == 15))[0].result | .supportedVersions == ["2026-07-28"] and .resultType == "complete" and .capabilities.tools != null and .ttlMs >= 0 and .cacheScope == "public" and ._meta["io.modelcontextprotocol/serverInfo"].name == "wiki.sh"'
   reply "a request of the current revision is answered statelessly" 'map(select(.id == 16))[0].result | .resultType == "complete" and .isError == false and (.content[1].text | contains("Written through MCP: \"quoted\", back\\slash, ż."))'
   reply "an unsupported revision is -32022 with the supported ones" 'map(select(.id == 17))[0].error | .code == -32022 and .data.supported == ["2026-07-28"] and .data.requested == "1900-01-01"'
   reply "a request without the client's capabilities is -32602" 'map(select(.id == 18))[0].error.code == -32602'
   reply "a batch is -32600" 'map(select(.error.code == -32600)) | length == 1'
   reply "initialize with a revision it does not speak answers its latest, 2025-11-25" 'map(select(.id == 20))[0].result.protocolVersion == "2025-11-25"'
-  reply "tools/list of the current revision carries its cache hints" 'map(select(.id == 21))[0].result | .resultType == "complete" and .ttlMs >= 0 and .cacheScope == "public" and (.tools | length) == 6'
+  reply "tools/list of the current revision carries its cache hints" 'map(select(.id == 21))[0].result | .resultType == "complete" and .ttlMs >= 0 and .cacheScope == "public" and (.tools | length) == 9'
   reply "wiki_write_page writes a page of 150 kB" 'map(select(.id == 22))[0].result.isError == false'
   reply "wiki_read_page reads it back byte for byte" --rawfile expected "$work/big-mcp" 'map(select(.id == 23))[0].result.content[1].text == $expected'
   reply "wiki_create_page makes a new page" 'map(select(.id == 24))[0].result | .isError == false and (.content[0].text | startswith("Created /s/team/projects/p/mcp-new-"))'

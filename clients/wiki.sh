@@ -3295,10 +3295,78 @@ mcp_handle() {
         tool_answer true "$work/tool-text"
         return
       fi
+      # A shell variable cannot hold a NUL, and $(...) drops it: a string
+      # argument with one (or with half of a surrogate pair, which
+      # mcp_exact_line made one) is refused here, where it is still whole,
+      # before any tool converts it, and nothing is sent.
+      holed=$(jq -r '.params.arguments // {} | to_entries[] | select((.value | type) == "string" and (.value | explode | any(. == 0))) | .key' "$work/msg" | head -n 1)
+      if [ -n "$holed" ]; then
+        printf 'The argument %s holds a NUL character (\\u0000) or half of a surrogate pair, which this client cannot pass on: nothing was sent.' "$holed" >"$work/tool-text"
+        tool_answer true "$work/tool-text"
+        return
+      fi
       mcp_call_tool
       ;;
   esac
 }
+
+# A line of the protocol made ready for jq without anything in it being
+# changed unseen. jq replaces what is not UTF-8, and an escaped half of a
+# surrogate pair (\ud800 alone), with U+FFFD, and a check after jq could
+# not tell that from a real U+FFFD. So, before jq reads the line: a line
+# that is not UTF-8 fails (status 3, a parse error), and each escaped
+# half of a surrogate pair becomes \u0000, which jq keeps, so that the
+# argument that held it is refused as one with a NUL (mcp_handle). An
+# escaped backslash (\\) before a u is no escape of a u. The line is read
+# in pieces between backslashes, so a long line costs one pass.
+mcp_exact_line='
+BEGIN { for (k = 1; k < 256; k++) ord[sprintf("%c", k)] = k }
+function hexv(x,   k, d, r) {
+  r = 0; x = tolower(x)
+  if (length(x) < 4) return -1
+  for (k = 1; k <= 4; k++) {
+    d = index("0123456789abcdef", substr(x, k, 1))
+    if (d == 0) return -1
+    r = r * 16 + d - 1
+  }
+  return r
+}
+{
+  s = $0; n = length(s); i = 1
+  while (i <= n) {
+    b = ord[substr(s, i, 1)]
+    if (b < 128) { i++; continue }
+    lo = 128; hi = 191
+    if (b >= 194 && b <= 223) need = 1
+    else if (b == 224) { need = 2; lo = 160 }
+    else if ((b >= 225 && b <= 236) || b == 238 || b == 239) need = 2
+    else if (b == 237) { need = 2; hi = 159 }
+    else if (b == 240) { need = 3; lo = 144 }
+    else if (b >= 241 && b <= 243) need = 3
+    else if (b == 244) { need = 3; hi = 143 }
+    else exit 3
+    c = ord[substr(s, i + 1, 1)] + 0
+    if (c < lo || c > hi) exit 3
+    for (k = 2; k <= need; k++) { c = ord[substr(s, i + k, 1)] + 0; if (c < 128 || c > 191) exit 3 }
+    i += need + 1
+  }
+  m = split(s, part, "\\")
+  out = part[1]; k = 2
+  while (k <= m) {
+    p = part[k]
+    if (p == "") { out = out "\\\\" part[k + 1]; k += 2; continue }
+    if (substr(p, 1, 1) != "u") { out = out "\\" p; k++; continue }
+    h = hexv(substr(p, 2, 4))
+    if (h >= 55296 && h < 56320 && length(p) == 5 && k < m && substr(part[k + 1], 1, 1) == "u") {
+      l = hexv(substr(part[k + 1], 2, 4))
+      if (l >= 56320 && l < 57344) { out = out "\\" p "\\" part[k + 1]; k += 2; continue }
+    }
+    if (h >= 55296 && h < 57344) out = out "\\u0000" substr(p, 6)
+    else out = out "\\" p
+    k++
+  }
+  print out
+}'
 
 cmd_mcp() {
   if ! jq -n 1 >/dev/null 2>&1; then
@@ -3321,8 +3389,12 @@ cmd_mcp() {
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%"$cr"}
     [ -n "$line" ] || continue
-    printf '%s\n' "$line" >"$work/msg"
-    mcp_handle >"$work/reply" </dev/null
+    if printf '%s\n' "$line" | awk "$mcp_exact_line" >"$work/msg"; then
+      mcp_handle >"$work/reply" </dev/null
+    else
+      msg_id=null
+      mcp_error -32700 "Parse error: the line is not UTF-8" >"$work/reply"
+    fi
     [ ! -s "$work/reply" ] || cat "$work/reply" >&4
   done
 }

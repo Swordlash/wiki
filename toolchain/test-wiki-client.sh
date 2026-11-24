@@ -635,6 +635,7 @@ suite() {
 
   mcp_exchange
   mcp_sections
+  mcp_whole_arguments
 }
 
 # What the client takes as an address, as a table: each malformed one is
@@ -1390,6 +1391,53 @@ The rota changes.
   cat "$parts/top" "$parts/own" "$work/mcp-week" "$parts/holidays" >"$work/mcp-sections-after"
   client get "$sp"
   check "the page has the one section written through MCP, and the rest as it was" cmp -s "$work/out" "$work/mcp-sections-after"
+}
+
+# An MCP tool's argument that the client cannot carry exactly into a
+# shell variable is refused, never altered: a NUL in a section's anchor, a
+# page's path or a version, a lone surrogate (which jq would replace), and
+# a line that is not UTF-8. Each is the tool's error, or a parse error,
+# and the page is as it was.
+mcp_whole_arguments() {
+  sp=/s/team/projects/p/sections-$shell/
+  client get "$sp" --version
+  v=$(cat "$work/out")
+  client get "$sp"
+  cp "$work/out" "$work/whole-before"
+  {
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+    "$real_jq" -nc --arg path "$sp" --arg v "$v" '{jsonrpc: "2.0", id: 2, method: "tools/call", params: {name: "wiki_write_section", arguments: {path: $path, section: "the-\u0000week", markdown: "## The week\n\nWritten through a NUL.\n\n", base_version: $v}}}'
+    "$real_jq" -nc --arg path "$sp" '{jsonrpc: "2.0", id: 3, method: "tools/call", params: {name: "wiki_read_section", arguments: {path: $path, section: "the-\u0000week"}}}'
+    "$real_jq" -nc --arg path "$sp" '{jsonrpc: "2.0", id: 4, method: "tools/call", params: {name: "wiki_read_page", arguments: {path: ($path[0:3] + "\u0000" + $path[3:])}}}'
+    "$real_jq" -nc --arg path "$sp" --arg v "$v" '{jsonrpc: "2.0", id: 5, method: "tools/call", params: {name: "wiki_write_page", arguments: {path: $path, markdown: "Written through a NUL.\n", base_version: ($v[0:-2] + "\u0000" + $v[-2:])}}}'
+    printf '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"wiki_read_section","arguments":{"path":"%s","section":"the-week\\ud800"}}}\n' "$sp"
+    printf '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"wiki_read_section","arguments":{"path":"%s","section":"the-week\377"}}}\n' "$sp"
+    printf '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"wiki_read_section","arguments":{"path":"%s","section":"the-week\\\\ud800"}}}\n' "$sp"
+  } >"$work/mcp-whole.in"
+  env -i PATH="$curl_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-mcp" \
+    "$shell" "$client" mcp <"$work/mcp-whole.in" >"$work/mcp-whole.out" 2>"$work/mcp-whole.err"
+  status=$?
+  expect 0 "mcp with arguments it cannot carry ends when its input ends"
+  whole_reply() {
+    description=$1
+    shift
+    if "$real_jq" -e -s "$@" "$work/mcp-whole.out" >/dev/null; then pass "mcp: $description"; else
+      fail "mcp: $description"
+      sed 's/^/  reply: /' "$work/mcp-whole.out" | cut -c1-300 >&2
+    fi
+  }
+  for row in "2|wiki_write_section|section" "3|wiki_read_section|section" "4|wiki_read_page|path" "5|wiki_write_page|base_version" "6|wiki_read_section|section"; do
+    IFS='|' read -r id tool argument <<EOF
+$row
+EOF
+    whole_reply "$tool with what the client cannot carry in $argument (call $id) is the tool's error, naming the argument" --argjson id "$id" --arg argument "$argument" \
+      'map(select(.id == $id))[0].result | .isError == true and (.content[0].text | startswith("The argument \($argument) holds a NUL character") and contains("cannot pass on"))'
+  done
+  whole_reply "a line that is not UTF-8 is a parse error" 'map(select(.error.code == -32700)) | length == 1'
+  whole_reply "an escaped backslash before u is no surrogate: the section is just not there" \
+    'map(select(.id == 8))[0].result | .isError == true and (.content[0].text | contains("has no section"))'
+  client get "$sp"
+  check "the page is as it was after the arguments the client cannot carry" cmp -s "$work/out" "$work/whole-before"
 }
 
 # get --out and put --file write only in a directory of the user's own:

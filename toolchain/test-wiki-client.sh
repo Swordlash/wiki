@@ -629,6 +629,7 @@ suite() {
   creating
   sections
   odd_anchors
+  attaching
   round_trip "$public_root" root
   round_trip "$public_wiki" base-path
   url=$public_root user=editor password=$editor_password state=$work/state-$1-a input=/dev/null
@@ -1384,6 +1385,7 @@ The rota changes.
       ["wiki_write_page", ["path", "markdown", "base_version"], ["path", "markdown", "base_version"]],
       ["wiki_write_section", ["path", "section", "own", "top", "markdown", "base_version"], ["path", "markdown", "base_version"]],
       ["wiki_create_page", ["path", "markdown", "title"], ["path", "markdown"]],
+      ["wiki_list_attachments", ["path"], ["path"]],
       ["wiki_markdown_reference", ["section"], []]]'
   client get "/s/team/projects/p/mcp-kind-$shell/"
   expect 4 "the call with an unknown argument created nothing"
@@ -1438,6 +1440,134 @@ EOF
     'map(select(.id == 8))[0].result | .isError == true and (.content[0].text | contains("has no section"))'
   client get "$sp"
   check "the page is as it was after the arguments the client cannot carry" cmp -s "$work/out" "$work/whole-before"
+}
+
+# A page's files: attached, listed, read back byte for byte (a file with
+# every byte value), a name taken, a file that is not a regular one, a
+# reader who may not attach, a file taken off, and the MCP server's
+# wiki_list_attachments against the list; at the root and under a base
+# path.
+attaching() {
+  files=$work/files-$shell
+  mkdir -p "$files"
+  chmod 700 "$files"
+  k=0
+  while [ "$k" -lt 256 ]; do
+    # shellcheck disable=SC2059
+    printf "\\$(printf '%03o' "$k")"
+    k=$((k + 1))
+  done >"$files/one of each"
+  cat "$files/one of each" "$files/one of each" "$files/one of each" "$files/one of each" >"$files/every byte.bin"
+  printf '\211PNG not really\n' >"$files/chart.png"
+  printf 'Notes, ż.\n' >"$files/notes.txt"
+  for at in "$public_root|root" "$public_wiki|base-path"; do
+    url=${at%|*} where=${at#*|}
+    user=editor password=$editor_password state=$work/state-$shell-files input=/dev/null
+    client attachments "$page"
+    expect 0 "attachments of a page with none ($where)"
+    has out "No files attached to $page." "attachments says there are none ($where)"
+    client attach "$page" "$files/every byte.bin"
+    expect 0 "attach a file with every byte value, its name with a space ($where)"
+    has out "[every byte.bin](<attachment:every byte.bin>)" "attach prints the Markdown that links to it ($where)"
+    has err "application/octet-stream" "attach says the media type it sent ($where)"
+    client attach team/projects the-wiki "$files/chart.png"
+    expect 0 "attach by a space's path and a page's path ($where)"
+    check "attach of a .png prints the Markdown that shows it as an image ($where)" first_line_matches "$work/out" '^!\[chart\.png\](attachment:chart\.png)$'
+    client attach "$page" "$files/notes.txt" --name 'a+b ż.txt'
+    expect 0 "attach under another name, with a plus and a letter outside ASCII ($where)"
+    client attachments "$page"
+    expect 0 "attachments ($where)"
+    has out "every byte.bin  (application/octet-stream, 1024 bytes)" "attachments shows a file's name, type and size ($where)"
+    has out "    ![chart.png](attachment:chart.png)" "attachments shows a file's Markdown, indented ($where)"
+    client attachments "$page" --json
+    expect 0 "attachments --json ($where)"
+    if "$real_jq" -e '.attachments | map(.name) == ["every byte.bin", "chart.png", "a+b ż.txt"]' "$work/out" >/dev/null; then pass "attachments --json gives the names byte for byte ($where)"; else fail "attachments --json gives the names byte for byte ($where)"; fi
+    cp "$work/out" "$work/attachments.json"
+    client attachment "$page" "every byte.bin" --out "$files/back.bin"
+    expect 0 "attachment --out ($where)"
+    check "attachment --out writes the file byte for byte ($where)" cmp -s "$files/back.bin" "$files/every byte.bin"
+    check "attachment --out writes no sidecar ($where)" [ ! -e "$files/back.bin.version" ]
+    client attachment team/projects the-wiki 'a+b ż.txt'
+    expect 0 "attachment to standard output, by a space's path, a page's path and a name ($where)"
+    check "attachment gives the bytes on standard output ($where)" cmp -s "$work/out" "$files/notes.txt"
+    client attachment "$page" "every byte"
+    expect 4 "attachment of a name the page does not have ($where)"
+    # A name taken: nothing is sent over it.
+    client attach "$page" "$files/notes.txt" --name "every byte.bin"
+    expect 5 "attach to a name taken is refused ($where)"
+    has err "detach" "the refusal says to detach it first ($where)"
+    client attachment "$page" "every byte.bin"
+    check "the file of the name taken is as it was ($where)" cmp -s "$work/out" "$files/every byte.bin"
+    # What is not a regular file is not sent.
+    mkfifo "$files/a pipe"
+    : >"$work/curl.args"
+    for odd in "$files" "$files/a pipe" "$files/no such file"; do
+      client attach "$page" "$odd"
+      expect 2 "attach of $odd, not a regular file, is refused"
+    done
+    check "nothing was sent for what is not a regular file ($where)" [ ! -s "$work/curl.args" ]
+    rm -f "$files/a pipe"
+    # attachment --out writes nowhere through a link, and in no shared directory.
+    ln -s "$files/elsewhere" "$files/link.bin"
+    client attachment "$page" "every byte.bin" --out "$files/link.bin"
+    expect 2 "attachment --out to a symbolic link is refused ($where)"
+    check "nothing was written through the link ($where)" [ ! -e "$files/elsewhere" ]
+    rm -f "$files/link.bin"
+    mkdir -p "$files/shared"
+    chmod 1777 "$files/shared"
+    client attachment "$page" "every byte.bin" --out "$files/shared/x.bin"
+    expect 2 "attachment --out into a directory others can write is refused ($where)"
+    chmod 700 "$files/shared"
+    # A reader who may read the guide and not edit it (at the root, where
+    # the reader is a user).
+    if [ "$where" = root ]; then
+      client attach /s/guide/ "$files/notes.txt" --name "the editor's.txt"
+      expect 0 "the editor attaches a file to the guide"
+      user=reader password=$reader_password
+      client attachments /s/guide/
+      expect 0 "the reader lists the guide's files"
+      has out "the editor's.txt  (text/plain, " "the reader sees the editor's file"
+      client attach /s/guide/ "$files/notes.txt" --name reader.txt
+      expect 6 "the reader may not attach"
+      client detach /s/guide/ "the editor's.txt"
+      expect 6 "the reader may not detach"
+      user=editor password=$editor_password
+      client detach /s/guide/ "the editor's.txt"
+      expect 0 "the editor takes the file off the guide"
+    fi
+    # The MCP server's tool gives what the list gives.
+    {
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+      "$real_jq" -nc --arg path "$page" '{jsonrpc: "2.0", id: 2, method: "tools/call", params: {name: "wiki_list_attachments", arguments: {path: $path}}}'
+      "$real_jq" -nc '{jsonrpc: "2.0", id: 3, method: "tools/call", params: {name: "wiki_list_attachments", arguments: {path: "/s/team/projects/p/no-such-page/"}}}'
+    } >"$work/mcp-files.in"
+    env -i PATH="$curl_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-mcp" \
+      "$shell" "$client" mcp <"$work/mcp-files.in" >"$work/mcp-files.out" 2>"$work/mcp-files.err"
+    status=$?
+    expect 0 "mcp with wiki_list_attachments ends when its input ends ($where)"
+    if "$real_jq" -e -s --slurpfile listed "$work/attachments.json" --arg page "$page" \
+      'map(select(.id == 2))[0].result | .isError == false and (.content[0].text | fromjson | .path == $page and .attachments == $listed[0].attachments)' "$work/mcp-files.out" >/dev/null; then
+      pass "mcp: wiki_list_attachments gives the list attachments --json gives ($where)"
+    else
+      fail "mcp: wiki_list_attachments gives the list attachments --json gives ($where)"
+      sed 's/^/  reply: /' "$work/mcp-files.out" | cut -c1-300 >&2
+    fi
+    if "$real_jq" -e -s 'map(select(.id == 3))[0].result | .isError == true and (.content[0].text | contains("not found"))' "$work/mcp-files.out" >/dev/null; then
+      pass "mcp: wiki_list_attachments of a page not there is the tool's error ($where)"
+    else
+      fail "mcp: wiki_list_attachments of a page not there is the tool's error ($where)"
+    fi
+    # Taken off.
+    for name in "every byte.bin" chart.png 'a+b ż.txt'; do
+      client detach "$page" "$name"
+      expect 0 "detach $name ($where)"
+    done
+    client detach "$page" chart.png
+    expect 4 "detach of a file taken off already ($where)"
+    client attachments "$page"
+    has out "No files attached to $page." "the page has no files once they are taken off ($where)"
+  done
+  url=$public_root user=editor password=$editor_password state=$work/state-$shell-a input=/dev/null
 }
 
 # get --out and put --file write only in a directory of the user's own:
@@ -1807,6 +1937,14 @@ wrong_answers() {
   done
   fake_answer '# A page' 'text/markdown; charset=utf-8' get /s/team/p/x/
   expect 0 "get, answered Markdown, succeeds"
+  for answer in '<html></html>|text/html' '{"attachments":[{"name":"x"}]}|application/json' '{"files":[]}|application/json'; do
+    body=${answer%|*} type=${answer##*|}
+    fake_answer "$body" "$type" attachments /s/team/p/x/
+    expect 1 "attachments, answered $body as ${type:-no type}, fails"
+    has err "is not the wiki's" "attachments, answered $body, says the answer is not the wiki's"
+  done
+  fake_answer '{"attachments":[]}' application/json attachments /s/team/p/x/
+  expect 0 "attachments, answered the wiki's own JSON, succeeds"
   for answer in 'ok|application/json' '<html></html>|text/html' '{"hits":[]} trailing|application/json' '{"hits":[]}|text/html'; do
     printf '%s' "${answer%|*}" >"$work/fake-body"
     {
@@ -2059,7 +2197,7 @@ Written through MCP: "quoted", back\slash, ż.
   }
   reply "initialize answers the client's revision, 2025-06-18" 'map(select(.id == 1))[0].result | .protocolVersion == "2025-06-18" and .serverInfo.name == "wiki.sh" and .capabilities.tools != null and (has("resultType") | not)'
   reply "ping answers an empty result" 'map(select(.id == 2))[0].result == {}'
-  reply "tools/list gives the nine tools" 'map(select(.id == 3))[0].result.tools | map(.name) == ["wiki_list", "wiki_search", "wiki_read_page", "wiki_page_outline", "wiki_read_section", "wiki_write_page", "wiki_write_section", "wiki_create_page", "wiki_markdown_reference"] and all(.inputSchema.type == "object")'
+  reply "tools/list gives the ten tools" 'map(select(.id == 3))[0].result.tools | map(.name) == ["wiki_list", "wiki_search", "wiki_read_page", "wiki_page_outline", "wiki_read_section", "wiki_write_page", "wiki_write_section", "wiki_create_page", "wiki_list_attachments", "wiki_markdown_reference"] and all(.inputSchema.type == "object")'
   reply "wiki_list lists a space" 'map(select(.id == 4))[0].result | .isError == false and (.content[0].text | contains("    The wiki  /s/team/projects/p/the-wiki/"))'
   reply "wiki_search finds the page" 'map(select(.id == 5))[0].result | .isError == false and (.content[0].text | contains("/s/team/projects/p/zazolc-gesla-jazn/"))'
   reply "wiki_read_page gives the version and the Markdown" --arg version "$version" "map(select(.id == 6))[0].result | .isError == false and (.content[0].text | contains(\$version)) and (.content[1].text | startswith(\"# The wiki\"))"
@@ -2077,7 +2215,7 @@ Written through MCP: "quoted", back\slash, ż.
   reply "a request without the client's capabilities is -32602" 'map(select(.id == 18))[0].error.code == -32602'
   reply "a batch is -32600" 'map(select(.error.code == -32600)) | length == 1'
   reply "initialize with a revision it does not speak answers its latest, 2025-11-25" 'map(select(.id == 20))[0].result.protocolVersion == "2025-11-25"'
-  reply "tools/list of the current revision carries its cache hints" 'map(select(.id == 21))[0].result | .resultType == "complete" and .ttlMs >= 0 and .cacheScope == "public" and (.tools | length) == 9'
+  reply "tools/list of the current revision carries its cache hints" 'map(select(.id == 21))[0].result | .resultType == "complete" and .ttlMs >= 0 and .cacheScope == "public" and (.tools | length) == 10'
   reply "wiki_write_page writes a page of 150 kB" 'map(select(.id == 22))[0].result.isError == false'
   reply "wiki_read_page reads it back byte for byte" --rawfile expected "$work/big-mcp" 'map(select(.id == 23))[0].result.content[1].text == $expected'
   reply "wiki_create_page makes a new page" 'map(select(.id == 24))[0].result | .isError == false and (.content[0].text | startswith("Created /s/team/projects/p/mcp-new-"))'

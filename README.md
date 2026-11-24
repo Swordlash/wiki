@@ -2653,7 +2653,8 @@ curl -H "X-API-Key: $WIKI_TOKEN" 'https://wiki.example/api/search?q=on-call'
 ```
 
 - **Rights.** A key has one right, which narrows what you may do: `read`
-  reads (`GET`), `write` also writes pages and creates spaces (`PUT`), and
+  reads (`GET`), `write` also writes pages, attaches and deletes files and
+  creates spaces (`PUT`, `DELETE`), and
   `admin` is for the administration through the API, which is to come:
   today it does what `write` does. Only an administrator may make an `admin`
   key, and it stops working when they stop being one. A key never does more
@@ -2671,7 +2672,8 @@ curl -H "X-API-Key: $WIKI_TOKEN" 'https://wiki.example/api/search?q=on-call'
   cannot sign in here: the key was made in a session the second factor or
   the passkey let in.
 - **Where.** On `/api/markdown` (with a page's sections), `/api/contents`,
-  `/api/list`, `/api/search` and the MCP server, `/mcp` ([MCP](#mcp)), only. The
+  `/api/attachments`, `/api/list`, `/api/search` and the MCP server, `/mcp`
+  ([MCP](#mcp)), only. The
   wiki's own API, `/api/v1`, refuses a request that carries one.
 - **Refusals.** A key the wiki does not take is refused with 401, the same
   answer whether it is unknown, wrong, expired or revoked, or your login is
@@ -2971,6 +2973,91 @@ The text between a page's `# Title` and its first `##` is the title's own
 section, `?section=<the title's anchor>&own=true`. Without `own`, a section
 takes its subsections in, so the title's is the page from its heading on.
 
+A page's attachments, the files attached to it, are at `/api/attachments/`
+followed by the page's address: listed with `GET`, one file's bytes read with
+`GET` and `?name=`, a file attached with `PUT` and taken off with `DELETE`,
+both with `?name=`. A file is named by the query, never by a further part of
+the address, which would be a page under the page. Each request runs as you,
+through what the browser's upload and delete do: the same rights (reading
+the page to list and read; editing it, and a key with the right `write`, to
+attach and delete), the same limit of 50 MB, and the same rules for a name.
+
+```sh
+# The page's files, each with the Markdown that shows it in a page.
+curl -u editor:'my password' https://wiki.example/api/attachments/s/team/p/on-call/
+
+# Attach a file; its Content-Type is the media type stored.
+curl -u editor:'my password' -X PUT -H 'Content-Type: image/png' --data-binary @rota.png \
+  'https://wiki.example/api/attachments/s/team/p/on-call/?name=rota.png'
+
+# Its bytes, as they were sent.
+curl -u editor:'my password' -o rota.png 'https://wiki.example/api/attachments/s/team/p/on-call/?name=rota.png'
+
+# Replace it, only if it is still the version read.
+curl -u editor:'my password' -X PUT -H 'Content-Type: image/png' \
+  -H 'If-Match: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"' \
+  --data-binary @rota-new.png 'https://wiki.example/api/attachments/s/team/p/on-call/?name=rota.png'
+
+# Take it off the page.
+curl -u editor:'my password' -X DELETE 'https://wiki.example/api/attachments/s/team/p/on-call/?name=rota.png'
+```
+
+- **`GET /api/attachments/s/<space path>/p/<page path>/`** (a space's home
+  page at `/api/attachments/s/<space path>/`) answers JSON, the page's files
+  in the page's order, each with its `name`, its `size` in bytes, its
+  `mediaType`, its `version` (the `ETag` of its bytes, quotes included, to
+  send as `If-Match`), the `address` of its bytes, and `markdown`: what the
+  editor writes into a page when a file is dropped on it, an image, a video
+  or a sound shown (`![rota.png](attachment:rota.png)`), any other file a
+  link to it (`[notes.pdf](attachment:notes.pdf)`). Paste it into the page's
+  text to show the file. The wiki keeps no time or person for a file, so the
+  list has neither.
+
+  ```json
+  {"attachments": [{"name": "rota.png", "size": 48213, "mediaType": "image/png",
+                    "version": "\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\"",
+                    "address": "/api/attachments/s/team/p/on-call/?name=rota.png",
+                    "markdown": "![rota.png](attachment:rota.png)"}]}
+  ```
+- **`GET …?name=<file name>`** answers the file's bytes as the browser's
+  address for them does: of the media type it was attached with, with
+  `X-Content-Type-Options: nosniff`, a `Content-Disposition` that makes
+  everything but images, video, sound and plain text a download, and a
+  `Content-Security-Policy` that sandboxes it, so that a file can never run
+  as one of the wiki's pages. The `ETag` is the SHA-256 of the bytes, which
+  is what the wiki stores them under: `If-None-Match` with it answers 304,
+  and `Range` asks for a part. `HEAD` gives the headers alone.
+- **`PUT …?name=<file name>`** attaches the request's body, as `curl
+  --data-binary @file` sends it, with its `Content-Type` as the media type
+  (none is `application/octet-stream`). The answer is 201 with the file's
+  entry of the list, its address as `Location` and its version as the `ETag`.
+  A form's types are refused (415): `application/x-www-form-urlencoded`,
+  which curl sends with `--data-binary` unless told the file's type, and
+  `multipart/form-data`. The page's text and its history do not change. The
+  browser's upload of a name the page has already replaces that file, in its
+  place; here a replace is made only over the version read: `If-Match` with
+  its `ETag` replaces it and answers 200 (412 when the file has been replaced
+  since, or there is no file of the name), `If-None-Match: *` attaches only
+  where there is none (412 where there is), and a `PUT` with neither to a
+  taken name is refused with 428, so that a program never writes over a file
+  it has not read. A file over 50 MB is refused with 413 and the application's
+  own words, by its `Content-Length` before anything of it is read (curl,
+  which sends `Expect: 100-continue` with a large file, then sends nothing),
+  or as soon as the body is past the limit; the body is written to a
+  temporary file as it comes, never held in memory, and nothing is stored.
+- **`DELETE …?name=<file name>`** takes the file off the page (204), as the
+  browser's delete does; a link to it in the page's text stays, and shows it
+  missing.
+
+A name is the file's identity: the value of `name` exactly as sent, decoded
+once from its percent-escapes, compared byte for byte, and never changed. A
+space in a name is `%20`, and a `+` is a plus (`%2B` also); two names that
+differ only in case are two files. A name the wiki does not take is refused
+(400) with the browser's words: a blank one, one with a slash, a backslash or
+a control character, and one with white space at an end, which the browser
+would trim. A page of an encrypted space is refused (409), as for its
+Markdown: its files are encrypted in its members' browsers.
+
 What is refused, each as a small JSON body in the shape the rest of the API
 uses (`{"error": "…", "message": "…"}`):
 
@@ -3006,7 +3093,7 @@ browser that registered the password, so the server runs at most a budget,
 Argon2id over 128 MiB). An account whose record asks for more passes or more
 memory than the budget is refused (401) as a wrong password is, and costs the
 server no more than one. A key costs a lookup and a SHA-256, and nothing is
-remembered of it. Attachments are to come.
+remembered of it.
 
 #### MCP
 
@@ -3035,6 +3122,7 @@ path; a full address of the wiki, which does, is taken too.
 | `wiki_write_page` | Replaces a page's whole Markdown, over `base_version`, the version read: a page saved since is not written, and the assistant is told to read it again and merge. |
 | `wiki_write_section` | Replaces one section of a page by its anchor (`own` without its subsections), or with `top` the text before the first heading, over `base_version`, as the HTTP API's `PUT …?section=` does: the body is the whole section from its heading, a body that would change anything outside the section is refused with the API's sentence, and the result is the section's anchor after the write and the page's new version. For a change to one part of a long page, it sends less than `wiki_write_page` and cannot damage the other sections. |
 | `wiki_create_page` | Creates a page at a path where there is none, with its Markdown and a `title`. |
+| `wiki_list_attachments` | A page's files: each one's name, size, media type, version, the address of its bytes in the HTTP API, and the Markdown that shows it in a page. The bytes themselves are fetched from that address with the same key, or with `wiki.sh attachment`. |
 | `wiki_markdown_reference` | The wiki's Markdown reference: its sections, or one of them. |
 
 Every write is a version in the page's history under the key's user, as a
@@ -3268,6 +3356,34 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   wiki.sh create team/projects release-notes --title 'Release notes' --file notes.md
   wiki.sh create-space team/archive --title Archive
   ```
+- **`wiki.sh attachments PAGE`** prints the page's files, each with its name,
+  media type and size and, under it, the Markdown that shows it in a page
+  (`--json`: the server's JSON). **`wiki.sh attachment PAGE NAME`** prints
+  the bytes of the file `NAME`, exactly as `attachments` lists it, to
+  standard output when that is not a terminal, or with `--out FILE` writes
+  them to `FILE`, as `get --out` writes its text (a directory of your own,
+  never through a symbolic link), and takes a `FILE.version` beside it away,
+  so that the bytes are never put back as the page it named. **`wiki.sh attach PAGE FILE [--name
+  NAME]`** attaches a regular file under its own name or `NAME`, with the
+  media type its extension gives (`.png` is `image/png`; one the client does
+  not know is `application/octet-stream`), and prints the Markdown that
+  shows it, to put in the page's text. It only adds (`If-None-Match: *`): a
+  file of the name on the page already is refused (exit 5) and nothing is
+  sent over it; a file over the wiki's limit is refused before it is sent
+  (exit 6). The file is streamed from disk, never read into memory whole. **`wiki.sh detach PAGE NAME`** takes a file off the page.
+
+  ```text
+  $ wiki.sh attach /s/team/p/on-call/ rota.png
+  ![rota.png](attachment:rota.png)
+  wiki.sh: attached rota.png to /s/team/p/on-call/ as image/png; the Markdown that shows it is on standard output
+
+  $ wiki.sh attachments /s/team/p/on-call/
+  rota.png  (image/png, 48213 bytes)
+      ![rota.png](attachment:rota.png)
+
+  $ wiki.sh attachment /s/team/p/on-call/ rota.png --out rota-copy.png
+  wiki.sh: wrote rota.png of /s/team/p/on-call/ to rota-copy.png (48213 bytes)
+  ```
 - **`wiki.sh reference`** prints the Markdown reference, `--sections` the list
   of its sections, and `wiki.sh reference Math` one of them.
 
@@ -3298,7 +3414,7 @@ failed sign-ins (the line says when to try again), 8 no connection, 1
 anything else.
 
 **For an assistant that takes MCP servers**, `wiki.sh mcp` is a Model Context
-Protocol server on standard input and output, with the nine tools of the
+Protocol server on standard input and output, with the ten tools of the
 wiki's own server ([MCP](#mcp)), their names, their arguments (`path`,
 `markdown`, `base_version`, …) and their descriptions: `wiki_list`,
 `wiki_search`, `wiki_read_page` (the Markdown and its version; not the
@@ -3309,7 +3425,8 @@ every write is conditional: a page saved since comes back as an error that
 tells the model to read it again and merge; neither creates a page; a part
 that would change the page outside it is refused with the wiki's sentence),
 `wiki_create_page` (a new page, its title and text; it never writes over a
-page) and `wiki_markdown_reference` (the list of sections, or one section:
+page), `wiki_list_attachments` (a page's files, as the server's tool lists
+them) and `wiki_markdown_reference` (the list of sections, or one section:
 the reference whole is 67 kB). An argument a tool does not have is refused,
 as there. The answers are this script's own: text, where the wiki's
 server answers JSON for `wiki_list`, `wiki_search` and the writes. It speaks the

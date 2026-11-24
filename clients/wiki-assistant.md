@@ -32,6 +32,10 @@ wiki.sh put /s/team/p/handbook/ --section the-week --file week.md  # that sectio
 wiki.sh get /s/team/p/handbook/ --top  # the text before the first heading
 wiki.sh create team release-notes --title 'Release notes' --file notes.md  # a new page
 wiki.sh create-space team/archive --title Archive   # a new space
+wiki.sh attachments /s/team/p/on-call/   # the page's files, each with the Markdown that shows it
+wiki.sh attach /s/team/p/on-call/ rota.png  # attach a file; prints the Markdown to put in the page
+wiki.sh attachment /s/team/p/on-call/ rota.png --out rota.png  # a file's bytes
+wiki.sh detach /s/team/p/on-call/ rota.png  # take a file off the page
 wiki.sh reference --sections          # the sections of the wiki's Markdown reference
 wiki.sh reference Math                # one section
 ```
@@ -65,6 +69,12 @@ wiki.sh reference Math                # one section
    page (its slug is the last part of its address: lower-case letters, digits
    and dashes) and never writes over one: where a page is already, it exits
    with 5, and you read that page instead.
+6. **A file shows in a page through its Markdown.** `attach` adds the file to
+   the page and prints the Markdown that shows it (`![rota.png](attachment:rota.png)`
+   for an image); the page's text does not change until you write that line
+   into it with `put`. A name is used exactly as given. A file of that name
+   already on the page is refused (exit code 5): `detach` it first, or
+   attach under another `--name`.
 
 ## Exit codes
 
@@ -72,7 +82,8 @@ wiki.sh reference Math                # one section
 file put as another part than the one it was read as; 3 the sign-in was
 refused; 4 not found, or not yours to read (for `--section`: no such anchor;
 the message lists them); 5 the page was saved since your version (for
-`create`: a page is there already); 6 refused (not allowed; for
+`create`: a page is there already; for `attach`: a file of that name is
+there already); 6 refused (not allowed, a file over the wiki's limit; for
 `create-space`: a space is there already; for a section: the text would
 change the page outside it); 7 too many failed sign-ins, wait;
 8 no connection to the wiki. The message on standard error says what to do.

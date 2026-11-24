@@ -210,7 +210,7 @@ eras backing = describe "both of the protocol's eras" $ do
   it "lists and calls the tools in the current revision, each request on its own" $ withPasswords backing $ \r -> do
     k <- keyOf r "user-editor" WriteRight
     names <- toolNames r k
-    names `shouldBe` ["wiki_list", "wiki_search", "wiki_read_page", "wiki_page_outline", "wiki_read_section", "wiki_write_page", "wiki_write_section", "wiki_create_page", "wiki_markdown_reference"]
+    names `shouldBe` ["wiki_list", "wiki_search", "wiki_read_page", "wiki_page_outline", "wiki_read_section", "wiki_write_page", "wiki_write_section", "wiki_create_page", "wiki_list_attachments", "wiki_markdown_reference"]
     page <- api r k "markdown/s/blog/p/hello-world/"
     texts <- okCall r k "wiki_read_page" ["path" .= ("/s/blog/p/hello-world/" :: Text)]
     drop 1 texts `shouldBe` [bodyText page]
@@ -233,7 +233,7 @@ eras backing = describe "both of the protocol's eras" $ do
     KeyMap.lookup "instructions" initialized `shouldBe` Nothing
     listed <- post r legacy (rpc "tools/list" (object [])) >>= resultOf
     case KeyMap.lookup "tools" listed of
-      Just (Array ts) -> length ts `shouldBe` 9
+      Just (Array ts) -> length ts `shouldBe` 10
       other -> expectationFailure ("no tools: " <> show other)
     page <- api r k "markdown/s/blog/p/hello-world/"
     called <- post r legacy (rpc "tools/call" (object ["name" .= ("wiki_read_page" :: Text), "arguments" .= object ["path" .= ("/s/blog/p/hello-world/" :: Text)]])) >>= calledOf
@@ -298,7 +298,7 @@ keyRights :: Backing -> Spec
 keyRights backing = describe "a key's right" $ do
   it "with the right read, lists the tools that read only, and refuses a write, writing nothing" $ withPasswords backing $ \r -> do
     k <- keyOf r "user-editor" ReadRight
-    toolNames r k `shouldReturn` ["wiki_list", "wiki_search", "wiki_read_page", "wiki_page_outline", "wiki_read_section", "wiki_markdown_reference"]
+    toolNames r k `shouldReturn` ["wiki_list", "wiki_search", "wiki_read_page", "wiki_page_outline", "wiki_read_section", "wiki_list_attachments", "wiki_markdown_reference"]
     unchanged <- api r k "markdown/s/blog/p/hello-world/"
     let version = maybe "" decodeUtf8 (header "ETag" unchanged)
     refused <- failedCall r k "wiki_write_page" ["path" .= ("/s/blog/p/hello-world/" :: Text), "markdown" .= ("Not with this key." :: Text), "base_version" .= version]
@@ -384,6 +384,28 @@ tools backing = describe "each tool gives what the HTTP API gives" $ do
         other -> expectationFailure ("not a section: " <> show other)
     missing <- failedCall r k "wiki_read_section" ["path" .= ("/s/blog/p/hello-world/" :: Text), "section" .= ("nowhere" :: Text)]
     missing `shouldSatisfy` T.isInfixOf "one, two"
+
+  it "lists a page's files, as the HTTP API lists them" $ withPasswords backing $ \r -> do
+    k <- keyOf r "user-editor" ReadRight
+    w <- keyOf r "user-editor" WriteRight
+    for_ [("chart.png", "image/png"), ("notes on it.txt", "text/plain")] $ \(n, t) ->
+      (.status) <$> sendBare r methodPut (r.public <> "/api/attachments/s/blog/p/hello-world/?name=" <> T.replace " " "%20" n) [bearer w, ("Content-Type", t)] "bytes" `shouldReturn` 201
+    listed <- okCall r k "wiki_list_attachments" ["path" .= ("/s/blog/p/hello-world/" :: Text)] >>= traverse jsonOf
+    http <- api r k "attachments/s/blog/p/hello-world/" >>= jsonAs 200
+    let attachmentsOf = \case
+          Object o -> KeyMap.lookup "attachments" o
+          _ -> Nothing
+    map attachmentsOf listed `shouldBe` [attachmentsOf http]
+    map (field "path") listed `shouldBe` [Just "/s/blog/p/hello-world/"]
+    -- Each file's address is where the HTTP API serves its bytes, with the
+    -- same key.
+    case attachmentsOf http of
+      Just (Array entries) -> for_ entries $ \e -> do
+        bytes <- sendBare r methodGet (r.public <> fromMaybe "" (field "address" e)) [bearer k] ""
+        (bytes.status, bytes.body) `shouldBe` (200, "bytes")
+      other -> expectationFailure ("no list: " <> show other)
+    missing <- failedCall r k "wiki_list_attachments" ["path" .= ("/s/blog/p/no-such-page/" :: Text)]
+    missing `shouldSatisfy` T.isInfixOf "There is no page at /s/blog/p/no-such-page/"
 
   it "says to read a page too long for one answer by its outline and sections" $ withPasswords backing $ \r -> do
     k <- keyOf r "user-editor" WriteRight

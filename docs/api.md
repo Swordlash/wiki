@@ -1024,8 +1024,8 @@ shows to anyone, as an invitation's.
 ### The API for programs
 
 Beside `/api/v1`, the public listener serves the API for programs (a local
-assistant, a script): `/api/markdown`, `/api/contents`, `/api/list` and
-`/api/search`, signed in by an API key or a login and password in each
+assistant, a script): `/api/markdown`, `/api/contents`, `/api/attachments`,
+`/api/list` and `/api/search`, signed in by an API key or a login and password in each
 request, never by the cookie (the README's "The API"). It is a servant type
 of its own, `Wiki.Server.ProgramApi` in `wiki-server`, and describes itself:
 `GET /api/openapi.json` is its OpenAPI 3 document, made from that type by
@@ -1037,6 +1037,30 @@ client generator, or give it to an assistant that is to use the wiki. The
 MCP server at `/mcp` is named in its description only, and `/api/v1` is not
 in it. `wiki-server/test/golden/openapi.json` holds the document, so that a
 change of the API shows in review.
+
+A page's attachments there (`Wiki.Server.AttachmentsApi`) go through the
+same storage calls as the routes above: the list is the page's `attachments`
+as `getPage` reads them, a file's bytes are served by the function that
+serves `api/v1/attachments/<attachment>/<name>` (the same `Content-Type`,
+`nosniff`, `Content-Disposition` and `Content-Security-Policy`, and the same
+`ETag`, the bytes' SHA-256; only `Cache-Control` differs, `private,
+no-cache`, since a name's file may be replaced), an upload goes through
+`uploadAttachmentFile`'s transaction with what the page must have under the
+name (`uploadAttachmentFileIf`: anything for the browser, none or the version
+read for the API), and a delete through `deleteAttachment`.
+
+| Method | Path | Body | Success | Errors |
+|---|---|---|---|---|
+| GET, HEAD | `api/attachments/s/<page address>` | | 200 `{"attachments": [{"name", "size", "mediaType", "version", "address", "markdown"}]}`, the page's order; `version` left out for a file on the web | 404, 409 |
+| GET, HEAD | `api/attachments/s/<page address>?name=<name>` | | the file's bytes, as above; 304 for `If-None-Match` with its `ETag`; a range for `Range` | 400, 404, 409 |
+| PUT | `api/attachments/s/<page address>?name=<name>` | the file, raw; its `Content-Type` the media type | 201 the file's entry, `Location` its address, `ETag` its version; 200 for a replace (`If-Match`) | 400, 403, 404, 409, 412, 413, 415, 428 |
+| DELETE | `api/attachments/s/<page address>?name=<name>` | | 204 | 400, 403, 404, 409 |
+
+`name` is taken from the query as sent, percent-decoded once, `+` kept as a
+plus. An upload is written to a temporary file in the data directory as it
+arrives, and stops at the first chunk past 50 MB; a `Content-Length` over
+that is refused (413) before the body is read, and the right to attach is
+asked before the body is read too.
 
 ### API keys
 

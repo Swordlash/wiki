@@ -5,7 +5,10 @@
 -- changes. The island is the one that tells its parent of its library's
 -- failures ('Islands.reporting'): a formula, a diagram and a picture that
 -- fail raise 'Islands.Failed' with the library's message, and the same
--- island drawn again without one raises 'Islands.Cleared'.
+-- island drawn again without one raises 'Islands.Cleared'. The test's
+-- parent ('harness') keeps what its island raises, and a test reads that
+-- list ('heard') when the program is at rest: after a query, which
+-- settles, or after 'drawn', which waits until the program is quiet.
 module Test.Browser.Islands (spec) where
 
 import Control.Monad.UUID (MonadUUID)
@@ -81,12 +84,12 @@ spec m = do
       find ui "div.wiki-tikz > pre.wiki-tikz-source" >>= (`shouldHaveText` source)
       count ui "div.wiki-tikz svg" `shouldReturn` 0
       -- The editor is told, with TeX's message.
-      eventually $ failures ui >>= (`shouldSatisfy` any (T.isInfixOf "Undefined control sequence"))
+      failures ui >>= (`shouldSatisfy` any (T.isInfixOf "Undefined control sequence"))
       -- And the worker goes on to the next picture.
       changeTo ui (Tikz "\\draw (0,0) -- (1,1);")
       _ <- waitForPicture ui
       count ui "div.wiki-tikz .wiki-island-error" `shouldReturn` 0
-      eventually $ lastOutput ui `shouldReturn` Just Islands.Cleared
+      lastOutput ui `shouldReturn` Just Islands.Cleared
 
   describe "MathInline" $ do
     it "is set by KaTeX, in the line" $ runPage $ do
@@ -97,7 +100,7 @@ spec m = do
       -- KaTeX's MathML copy carries the source, for screen readers.
       findIn island "annotation" >>= (`shouldHaveText` "x^2")
       -- A formula that parses says nothing to its parent.
-      outputs ui `shouldReturn` []
+      heard ui `shouldReturn` []
 
     it "is set again when its TeX changes" $ runPage $ do
       ui <- mount m harness (MathInline mempty "x^2")
@@ -108,21 +111,20 @@ spec m = do
       find ui "span.wiki-math-inline" >>= (`shouldBeSameElement` island)
 
     it "shows what KaTeX cannot parse as an error in its place" $ runPage $ do
-      -- Mounted with a formula that parses first: the outputs a test reads
-      -- are those raised after the mount.
+      -- Mounted with a formula that parses first, which raises nothing.
       ui <- mount m harness (MathInline mempty "x")
       _ <- find ui "span.wiki-math-inline .katex"
       changeTo ui (MathInline mempty "\\frac{")
       find ui "span.wiki-math-inline .katex-error" >>= (`shouldHaveText` "\\frac{")
       -- KaTeX's message goes to the parent; the formula fixed clears it.
-      eventually $ failures ui >>= (`shouldSatisfy` \case [message] -> "KaTeX parse error" `T.isPrefixOf` message; _ -> False)
+      failures ui >>= (`shouldSatisfy` \case [message] -> "KaTeX parse error" `T.isPrefixOf` message; _ -> False)
       changeTo ui (MathInline mempty "\\frac{1}{2}")
       _ <- find ui "span.wiki-math-inline .katex .mfrac"
-      eventually $ lastOutput ui `shouldReturn` Just Islands.Cleared
+      lastOutput ui `shouldReturn` Just Islands.Cleared
       -- Drawn again without a problem, it says nothing more.
       changeTo ui (MathInline mempty "\\frac{1}{3}")
       _ <- find ui "span.wiki-math-inline annotation"
-      eventually $ length <$> outputs ui `shouldReturn` 2
+      length <$> heard ui `shouldReturn` 2
 
   describe "MathDisplay" $
     it "is set by KaTeX, on its own" $
@@ -149,10 +151,10 @@ spec m = do
       _ <- drawn ui "div.wiki-mermaid .wiki-island-error"
       count ui "div.wiki-mermaid svg" `shouldReturn` 0
       -- Mermaid's message goes to the parent; the diagram fixed clears it.
-      eventually $ failures ui >>= (`shouldSatisfy` ((== 1) . length))
+      failures ui >>= (`shouldSatisfy` ((== 1) . length))
       changeTo ui (Mermaid "graph LR\n  first --> second")
       _ <- waitForDiagram ui
-      eventually $ lastOutput ui `shouldReturn` Just Islands.Cleared
+      lastOutput ui `shouldReturn` Just Islands.Cleared
 
   describe "CodeBlock" $ do
     it "is highlighted by highlight.js" $ runPage $ do
@@ -215,8 +217,10 @@ spec m = do
         count ui "pre" `shouldReturn` 0
   where
     changeTo ui island = void (query ui (H.mkTell (SetIsland island)))
-    failures ui = (\os -> [message | Islands.Failed message <- os]) <$> outputs ui
-    lastOutput ui = lastMay <$> outputs ui
+    -- What the island has raised, oldest first, as its parent keeps it.
+    heard ui = fromMaybe [] <$> query ui (H.mkRequest Heard)
+    failures ui = (\os -> [message | Islands.Failed message <- os]) <$> heard ui
+    lastOutput ui = lastMay <$> heard ui
     count ui selector = length <$> findAll ui selector
     countIn element selector = length <$> findAllIn element selector
     -- A diagram and a picture are drawn once the program is quiet: the
@@ -239,24 +243,43 @@ spec m = do
     shouldNotSatisfy' value p = value `shouldSatisfy` (not . p)
     shouldHaveText' element part = textContent element >>= (`shouldSatisfy` T.isInfixOf part)
 
--- | A parent for one island, whose input a test changes with 'SetIsland', as
--- a page re-rendered with a new source would.
-data Query a = SetIsland Island a
+-- | A query to the test's parent of one island: 'SetIsland' changes the
+-- island's input, as a page re-rendered with a new source would, and
+-- 'Heard' answers what the island has raised so far, oldest first.
+data Query a
+  = SetIsland Island a
+  | Heard ([Islands.Output] -> a)
+
+-- | The parent's state: the island's input, and what the island has raised.
+data Harness = Harness
+  { island :: Island
+  , heard :: [Islands.Output]
+  }
 
 type Slots = ("island" .== H.Slot (Const Void) Islands.Output ())
 
--- | Raises what its island raises.
-harness :: forall m. (MonadIslands m, MonadUUID m) => H.Component Query Island Islands.Output m
+-- | A parent for one island, which keeps what the island raises in its
+-- state, as a page's parent does. The parent's handler is on the slot from
+-- the first render, so it hears an output raised while 'mount' still runs:
+-- a diagram whose drawing ends before 'mount' returns, or a formula set in
+-- the island's initializer. hspec-halogen's 'outputs' does not see those:
+-- it listens to the parent only after 'mount' returns.
+harness :: forall m. (MonadIslands m, MonadUUID m) => H.Component Query Island Void m
 harness =
   H.mkComponent
     H.ComponentSpec
-      { initialState = pure
+      { initialState = \island -> pure Harness {island, heard = []}
       , render
-      , eval = H.mkEval H.defaultEval {H.handleQuery = handleQuery, H.handleAction = H.raise}
+      , eval = H.mkEval H.defaultEval {H.handleQuery = handleQuery, H.handleAction = handleAction}
       }
   where
-    render :: Island -> H.ComponentHTML Islands.Output Slots m
-    render island = HH.div_ [HH.slot "island" () Islands.reporting island identity]
+    render :: Harness -> H.ComponentHTML Islands.Output Slots m
+    render Harness {island} = HH.div_ [HH.slot "island" () Islands.reporting island identity]
 
-    handleQuery :: Query a -> H.HalogenM Island Islands.Output Slots Islands.Output m (Maybe a)
-    handleQuery (SetIsland island next) = put island $> Just next
+    handleAction :: Islands.Output -> H.HalogenM Harness Islands.Output Slots Void m ()
+    handleAction output = modify (\st -> st {heard = st.heard <> [output]})
+
+    handleQuery :: Query a -> H.HalogenM Harness Islands.Output Slots Void m (Maybe a)
+    handleQuery = \case
+      SetIsland island next -> modify (\st -> st {island}) $> Just next
+      Heard reply -> Just . reply <$> gets (\st -> st.heard)

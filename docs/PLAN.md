@@ -2410,8 +2410,8 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   alone, so the wiki signs in before it and builds the library's
   application for each request; the library puts the instructions
   where a client of the older handshake does not look, and prints to
-  stderr outside the wiki's logger (worth an issue upstream, on the
-  owner's word); a tool's `path` is exactly an absolute path or a
+  stderr outside the wiki's logger (no issue upstream: the owner,
+  2026-11-24); a tool's `path` is exactly an absolute path or a
   full address of the wiki's own origin, read with `network-uri`,
   everything else refused; a ninth tool, `wiki_write_section`, writes
   one section through the function the HTTP handler uses
@@ -2435,9 +2435,16 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   argument names. A file is sent only as what it holds (the sidecar's
   second line names the page or the part), an anchor is kept byte for
   byte, and an MCP argument the shell cannot carry exactly (a NUL) is
-  refused. **Open from #338 after this:** a tool and an endpoint for
-  attachments, clients in other languages (the OpenAPI document is
-  what a generator takes). **For MCP the session looked into the options (2026-11-23,
+  refused. **#338 is closed (the owner, 2026-11-24).** What was left
+  of it is #367, attachments through the API for programs, being
+  built (branch `api-attachments`): **the same rights as the user's**
+  (his word); how a file is sent was left to the session: the raw
+  body of a `PUT` at `/api/attachments/<page address>/?name=<file
+  name>`, the name in the query as a section's anchor is, never a
+  further path segment; the list gives the Markdown that refers to
+  each file; MCP lists attachments with their addresses and carries
+  no bytes. Clients in other languages are generated from the OpenAPI
+  document by whoever needs one. **For MCP the session looked into the options (2026-11-23,
   from the specification, Hackage and the clients' documentation):
   the wiki's own server is the MCP server.** One endpoint, `POST
   /mcp`, on the public listener, built on Hackage's `mcp-server`
@@ -2715,6 +2722,23 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   entries are edited in the day's Markdown. Dragging an entry to another
   time is a later package, since it rewrites a page's text. Notifications
   for tasks: later, as the issue says.
+- **WP5.84 is started (the owner, 2026-11-24: "myślę że można zacząć
+  pluginy").** Cut into three pull requests, each leaving `main` whole:
+  **A**, the application only: the interface, with the assistant and
+  the errors behind it, everything on, no change of behaviour, the
+  test of imports; its builder hands the interface back for review
+  before it moves code (what "errors" is today and what turning it
+  off removes; how the islands' failures reach `diagnostics`; what the
+  host draws for an `agent` and what is the plugin's surface; where
+  on and off enters, as one pure function). **B**, `wiki-api` and
+  `wiki-server` only (branch `plugins-server-state`, schema step 25):
+  a user's on and off and options by plugin id, the administrator's
+  set of plugins off for the whole wiki, one read for whoever asks.
+  **C**, stacked on both: the settings section "Plugins", the
+  in-memory backend's model, the wiring. The interface is free to
+  change while every plugin is built in. Asked of the owner, for C:
+  whether "Writing assistant" stays a section of the settings, linked
+  from the plugins' list (the session's default), or moves under it.
 - **WP5.84 Plugins, the first package (#186, decision 69; stage 4).** The
   registry of plugins in the application and the two interfaces of the
   first step, an editing agent and diagnostics. The assistant moves behind

@@ -2783,7 +2783,28 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   list (only external plugins will); the `html` frame stays the
   host's (it is the wiki's own Markdown and its security model,
   decision 72); the tree's `Mermaid` and `Tikz` constructors stay
-  until a block needs a generic one. **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
+  until a block needs a generic one.
+  **External plugins, designed (2026-11-24; tried in Chromium 153, the
+  scripts in the session's scratchpad):** a frame loaded from the
+  wiki's own address with `Content-Security-Policy: sandbox
+  allow-scripts; … connect-src <approved hosts>` has an opaque origin
+  (no cookie, storage, IndexedDB or parent's DOM; `fetch` only to the
+  listed hosts, with `Origin: null`; no WebSocket, popups or
+  navigation), over plain HTTP too. **A gap in decision 69:**
+  `RTCPeerConnection` in such a frame reaches any host (STUN packets
+  were received; `webrtc 'block'` is ignored), while a dedicated
+  worker inside the frame has no WebRTC and keeps to `connect-src`;
+  an endless loop on the frame's main thread freezes the page unless
+  the browser isolates the frame, while in a worker it does not. So
+  `diagnostics` runs the plugin's code in a worker (fully confined),
+  and an `agent` panel, which needs a DOM, cannot be confined from
+  WebRTC: asked of the owner whether v1 ships `diagnostics` only. The
+  bundle is one JavaScript file, pinned by its SHA-256, served inline
+  under a hash in `script-src`; a manifest checked by one pure
+  function; the administrator sets a policy (off, the wiki's only,
+  users may add their own); schema step 26; four pull requests
+  (E1 server and frame, E2 the bridge and `diagnostics`, E3 the
+  settings, E4 `agent`). **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
   requestować jakieś named keys per plugin z vaulta"):** named
   secrets per plugin in the vault as a general capability (get, put
   and remove by a name under the plugin's id, the names declared in

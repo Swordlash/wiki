@@ -2,10 +2,12 @@
 -- built-in plugin imports the plugins' interface ("Wiki.App.Plugin") and
 -- nothing else of the application's inside. Its modules are
 -- @Wiki.App.Plugin.\<Name\>@ and the modules under it. They may import the
--- interface and its capabilities (@Wiki.App.Plugin.Capability.*@), their
--- own plugin's modules, wiki-core (@Wiki.Core.*@) and packages that are
--- not the wiki's; not another module of the application, of wiki-api or
--- of the server, nor another plugin. The modules of the host under
+-- interface, the capabilities made for their own plugin
+-- (@Wiki.App.Plugin.Capability.\<Name\>@: today's shape for one plugin,
+-- which no other plugin is to come to depend on), their own plugin's
+-- modules, wiki-core (@Wiki.Core.*@) and packages that are not the wiki's;
+-- not another module of the application, of wiki-api or of the server,
+-- another plugin, nor another plugin's capabilities. The modules of the host under
 -- @Wiki.App.Plugin@ ('hostModules') are not plugins. The interface imports no plugin, and of the rest of the
 -- application only the registry does.
 --
@@ -44,7 +46,7 @@ forbidden name = filter (not . allowed)
     allowed imported = case pluginOf name of
       Just plugin ->
         imported == "Wiki.App.Plugin"
-          || "Wiki.App.Plugin.Capability." `T.isPrefixOf` imported
+          || imported == "Wiki.App.Plugin.Capability." <> plugin
           || imported == "Wiki.App.Plugin." <> plugin
           || ("Wiki.App.Plugin." <> plugin <> ".") `T.isPrefixOf` imported
           || "Wiki.Core." `T.isPrefixOf` imported
@@ -78,10 +80,11 @@ modulesUnder parts = do
 
 spec :: Spec
 spec = describe "the plugins' imports" $ do
-  it "forbid a plugin another module of the application, wiki-api, the server, and another plugin" $ do
+  it "forbid a plugin another module of the application, wiki-api, the server, another plugin and its capabilities" $ do
     forbidden "Wiki.App.Plugin.Errors" ["Protolude", "Wiki.App.Plugin", "Wiki.App.Plugin.Errors.Parts", "Wiki.Core.Markdown.Problems", "Wiki.App.View.Editor", "Wiki.App.Plugin.Registry", "Wiki.App.Plugin.Other", "Wiki.Api.Types", "Wiki.Server.Api", "Wiki.App.Plugins"]
       `shouldBe` ["Wiki.App.View.Editor", "Wiki.App.Plugin.Registry", "Wiki.App.Plugin.Other", "Wiki.Api.Types", "Wiki.Server.Api", "Wiki.App.Plugins"]
-    forbidden "Wiki.App.Plugin.Errors.Parts" ["Wiki.App.Plugin.Errors", "Wiki.App.Plugin.Assistant", "Wiki.App.Plugin.Capability.Assistant", "Wiki.App.Plugin.Host"] `shouldBe` ["Wiki.App.Plugin.Assistant", "Wiki.App.Plugin.Host"]
+    forbidden "Wiki.App.Plugin.Errors.Parts" ["Wiki.App.Plugin.Errors", "Wiki.App.Plugin.Assistant", "Wiki.App.Plugin.Capability.Assistant", "Wiki.App.Plugin.Host"] `shouldBe` ["Wiki.App.Plugin.Assistant", "Wiki.App.Plugin.Capability.Assistant", "Wiki.App.Plugin.Host"]
+    forbidden "Wiki.App.Plugin.Assistant.Panel" ["Wiki.App.Plugin.Capability.Assistant", "Wiki.App.Plugin.Capability.Errors"] `shouldBe` ["Wiki.App.Plugin.Capability.Errors"]
 
   it "forbid the interface and the host a plugin, but the registry" $ do
     forbidden "Wiki.App.Plugin" ["Wiki.App.Plugin.Errors", "Wiki.App.Plugin.Registry", "Wiki.App.View.Common"] `shouldBe` ["Wiki.App.Plugin.Errors"]

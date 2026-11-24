@@ -140,7 +140,7 @@ import Wiki.Api.Upload (ArchiveUpload (..), AttachmentUpload (..), ImportApply (
 import Wiki.Api.Vault (PublicKeyEntry (..), VaultChange (..))
 import Wiki.Api.Version (PageVersion (..), VersionTime (..))
 import Wiki.App.Account (MonadAccount (..), SignInError (..))
-import Wiki.App.Assistant (KeyRef, MonadAssistant, deviceKeyIO, forgetHeld, wrapForPassword)
+import Wiki.App.Assistant (KeyOwner, KeyRef, MonadAssistant, deviceKeyIO, forgetHeld, pageKeys, wrapForPassword)
 import Wiki.App.Assistant.Sync (Fetched (..), MonadVault (..), Rewrap (..))
 import Wiki.App.Backend (Document (..), ExportTarget (..), MonadLoad (..), MonadWiki (..), Session (..), Staleness (..), UrlOwner (..), WikiError (..), sessionPrincipal, withOwnUser)
 import Wiki.App.Backend.Admin (MonadAdmin (..))
@@ -1296,11 +1296,9 @@ instance (MonadIO m) => MonadAccount (HttpWiki m) where
     proven change.current >>= \case
       Left e -> pure (Left e)
       Right current ->
-        ownRecord u change.new >>= \case
+        ownRecord Nothing u change.new >>= \case
           Left e -> pure (Left e)
-          Right (password, key) -> do
-            liftIO (traverse_ forgetHeld key)
-            withPassword (endpoints.account.changePassword PasswordRecordChange {current, password, vault = Nothing})
+          Right (password, _) -> withPassword (endpoints.account.changePassword PasswordRecordChange {current, password, vault = Nothing})
 
   -- The end of a sign-in, like signing in. The cookie of the sign-in
   -- waiting for its code is sent with it, since the browser sends every
@@ -1375,15 +1373,15 @@ instance (MonadIO m) => MonadVault (HttpWiki m) where
   finishAssertion r = send (endpoints.assistant.finishAssertion r)
   dropPasskey c = send (endpoints.account.removePasskey c)
   takePasswordKey = HttpWiki (ask >>= \env -> liftIO (atomicModifyIORef' env.passwordKey (Nothing,)))
-  provePassword password =
-    provenWith (Just password) <&> \case
+  provePasswordBy owner password =
+    provenWith (Just owner) (Just password) <&> \case
       Left e -> Left e
       Right (_, key) -> Right key
   changePasswordCarrying u change rewrap =
     proven change.current >>= \case
       Left e -> pure (Left e)
       Right current ->
-        ownRecord u change.new >>= \case
+        ownRecord (Just pageKeys) u change.new >>= \case
           Left e -> pure (Left e)
           Right (password, key) -> do
             -- The vault key, wrapped for the new password at once; the key
@@ -1485,7 +1483,7 @@ passwordSignIn login password =
       withPassword (endpoints.startPasswordSignIn LoginStart {login, ke1}) >>= \case
         Left e -> pure (Left e)
         Right challenge ->
-          finished st password challenge >>= \case
+          finished (Just pageKeys) st password challenge >>= \case
             Just (ke3, key) -> withPassword (getResponse <$> endpoints.finishPasswordSignIn LoginFinish {attempt = challenge.attempt, ke3}) >>= keptAfter key
             Nothing
               | challenge.fallback -> oldWay (Just challenge.attempt)
@@ -1534,25 +1532,26 @@ started = \case
     pure (Right s)
 
 -- | The client's last message, if the password is right: 'Nothing' for a
--- wrong password, and for an account without a record.
-finished :: (MonadIO m) => Opaque.LoginState -> Password -> LoginChallenge -> m (Maybe (Message, Maybe KeyRef))
-finished st password challenge = liftIO (Opaque.finishLogin st password challenge.stretch challenge.ke2)
+-- wrong password, and for an account without a record. The key the export
+-- key gives is held under the owner given, or not at all without one.
+finished :: (MonadIO m) => Maybe KeyOwner -> Opaque.LoginState -> Password -> LoginChallenge -> m (Maybe (Message, Maybe KeyRef))
+finished owner st password challenge = liftIO (Opaque.finishLogin owner st password challenge.stretch challenge.ke2)
 
 -- | A record of a new password, for what the server's challenge is asked
 -- for. The password is checked by the rules here, since the server cannot
 -- check what it never sees; after the server has answered, so that a
 -- request the server refuses (someone who may not set it) is refused as
 -- the server says, whatever the password.
+--
+-- The key the new password's export key gives is not wanted, and is not
+-- held: nothing is left in the page if the registration is cut off.
 recordFor :: (MonadIO m) => RegistrationFor -> Password -> HttpWiki m (Either SignInError PasswordRecord)
-recordFor purpose password =
-  recordWith purpose password >>= \case
-    Left e -> pure (Left e)
-    Right (record, key) -> liftIO (traverse_ forgetHeld key) $> Right record
+recordFor purpose password = fmap fst <$> recordChecked Nothing purpose (const Nothing) password
 
 -- | 'recordFor', with the key the new password's export key gives the
 -- page, when the browser gives one: the caller keeps it or forgets it.
 recordWith :: (MonadIO m) => RegistrationFor -> Password -> HttpWiki m (Either SignInError (PasswordRecord, Maybe KeyRef))
-recordWith purpose = recordChecked purpose (const Nothing)
+recordWith purpose = recordChecked (Just pageKeys) purpose (const Nothing)
 
 -- | 'recordWith' for the signed-in user's own password, and only for the
 -- user the change was begun for. The server names the record's
@@ -1563,16 +1562,20 @@ recordWith purpose = recordChecked purpose (const Nothing)
 -- credential names that other user. The record is then not made, and
 -- nothing is sent: the change would set the other user's password from
 -- what the first one typed.
-ownRecord :: (MonadIO m) => UserId -> Password -> HttpWiki m (Either SignInError (PasswordRecord, Maybe KeyRef))
-ownRecord u = recordChecked ForOwnPassword $ \credential ->
+--
+-- The key the new password's export key gives is held under the owner
+-- given, or not at all without one.
+ownRecord :: (MonadIO m) => Maybe KeyOwner -> UserId -> Password -> HttpWiki m (Either SignInError (PasswordRecord, Maybe KeyRef))
+ownRecord owner u = recordChecked owner ForOwnPassword $ \credential ->
   if credential == u.text
     then Nothing
     else Just (SignInFailed (Conflict "You were signed out, or signed in as someone else, while the password was being changed: it was not changed."))
 
 -- | 'recordWith', with a check of the credential the server names: a
 -- refusal stops the registration before the record and its key are made.
-recordChecked :: (MonadIO m) => RegistrationFor -> (Text -> Maybe SignInError) -> Password -> HttpWiki m (Either SignInError (PasswordRecord, Maybe KeyRef))
-recordChecked purpose refused password =
+-- The key is held under the owner given, or not at all without one.
+recordChecked :: (MonadIO m) => Maybe KeyOwner -> RegistrationFor -> (Text -> Maybe SignInError) -> Password -> HttpWiki m (Either SignInError (PasswordRecord, Maybe KeyRef))
+recordChecked owner purpose refused password =
   liftIO (Opaque.startRegistration password) >>= \case
     Nothing -> pure (Left (SignInFailed (Invalid "This password cannot be used: choose another.")))
     Just (st, request) ->
@@ -1583,7 +1586,7 @@ recordChecked purpose refused password =
         Right challenge -> case checkNewPassword password of
           Left why -> pure (Left (SignInFailed (Invalid why)))
           Right _ ->
-            liftIO (Opaque.finishRegistration st password challenge.stretch challenge.response) <&> \case
+            liftIO (Opaque.finishRegistration owner st password challenge.stretch challenge.response) <&> \case
               Nothing -> Left (SignInFailed (Invalid "The server's answer to the new password was not valid: try again."))
               Just (record, key) -> Right (PasswordRecord {credential = challenge.credential, record, stretch = challenge.stretch}, key)
 
@@ -1593,20 +1596,22 @@ recordChecked purpose refused password =
 -- fails as a wrong password's does, proves the password itself once,
 -- naming the attempt that was counted ('proveOldPassword'), which leaves
 -- the same proof; the change then sends nothing either.
+--
+-- The key the export key gives is not wanted here, and is not held: an
+-- operation cut off while it proves the password leaves nothing in the
+-- page.
 proven :: (MonadIO m) => Maybe Password -> HttpWiki m (Either SignInError (Maybe Password))
-proven given =
-  provenWith given >>= \case
-    Left e -> pure (Left e)
-    Right (p, key) -> liftIO (traverse_ forgetHeld key) $> Right p
+proven given = fmap fst <$> provenWith Nothing given
 
 -- | 'proven', with the key the export key gives the page when the proof
--- went through OPAQUE in a browser: the caller keeps it or forgets it.
+-- went through OPAQUE in a browser, held under the owner given (none
+-- without one): the caller keeps it or forgets it.
 -- This is the wiki's re-authentication: a proof of the password by a
 -- user signed in already, which makes no session and changes no cookie,
 -- counted by the same limit as a sign-in, and gives the browser what its
 -- vault needs while the export key stays in the browser.
-provenWith :: (MonadIO m) => Maybe Password -> HttpWiki m (Either SignInError (Maybe Password, Maybe KeyRef))
-provenWith = \case
+provenWith :: (MonadIO m) => Maybe KeyOwner -> Maybe Password -> HttpWiki m (Either SignInError (Maybe Password, Maybe KeyRef))
+provenWith owner = \case
   Nothing -> pure (Right (Nothing, Nothing))
   Just password ->
     liftIO (Opaque.startLogin password) >>= \case
@@ -1615,7 +1620,7 @@ provenWith = \case
         withPassword (endpoints.account.startPasswordProof ProofStart {ke1}) >>= \case
           Left e -> pure (Left e)
           Right challenge ->
-            finished st password challenge >>= \case
+            finished owner st password challenge >>= \case
               Nothing
                 | challenge.fallback ->
                     withPassword (endpoints.account.proveOldPassword OldPasswordProof {attempt = challenge.attempt, password}) <&> \case

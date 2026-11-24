@@ -154,7 +154,7 @@ import Web.Storage.Storage qualified as Storage
 import Wiki.Api.Links (archiveExportUrl)
 import Wiki.Api.ServerSettings (HomePage (showAnonymous, title))
 import Wiki.App.Account (Accounts (..), SignInError (..))
-import Wiki.App.Assistant (MonadAssistant, announceSignIn, keysDroppedElsewhere, listenToOtherTabs)
+import Wiki.App.Assistant (MonadAssistant, announceSignIn, closeKeyOwnersOf, keysDroppedElsewhere, listenToOtherTabs)
 import Wiki.App.Assistant.Sync (MonadVault)
 import Wiki.App.Backend (MonadLoad (..), MonadWiki (..), Session (..), WikiError (..), anonymous, sameAsking, shutOut)
 import Wiki.App.Backend.Admin (MonadAdmin)
@@ -1816,10 +1816,17 @@ component =
 
     -- The user who was signed in is no longer: their vault key and private
     -- key leave this device, in every tab ('Wiki.App.Vault.forgetUserKeys').
+    -- First, in this step, the owners of the keys of the settings'
+    -- operations of theirs still under way are let go
+    -- ('Wiki.App.Assistant.KeyOwner'): their keys leave the page, and none
+    -- of those operations keeps a key on this device from now on, so that
+    -- none is kept after the deletion, which starts after.
     forgetFormer :: Session -> H.HalogenM (State m) Action Slots output m ()
     forgetFormer s = do
       before <- gets (\st -> st.session.user)
-      for_ before $ \u -> when (((\x -> x.id) <$> s.user) /= Just u.id) (H.async (forgetUserKeys u.id))
+      for_ before $ \u -> when (((\x -> x.id) <$> s.user) /= Just u.id) $ do
+        H.sync (liftIO (closeKeyOwnersOf u.id))
+        H.async (forgetUserKeys u.id)
 
     -- Open the live channel again, as the current user.
     restartFeed :: H.HalogenM (State m) Action Slots output m ()

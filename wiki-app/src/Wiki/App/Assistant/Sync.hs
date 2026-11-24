@@ -12,10 +12,16 @@ module Wiki.App.Assistant.Sync
   ( MonadVault (..)
   , Fetched (..)
   , Rewrap (..)
+  , Owned
+  , owned
+  , owning
+  , releaseOwners
   )
 where
 
-import Control.Monad.Trans.Class (MonadTrans)
+import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Control.Monad.Trans.Class (MonadTrans (..))
+import Data.Set qualified as Set
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
 import Halogen.Query.HalogenM qualified as H
@@ -25,7 +31,7 @@ import Protolude
 import Wiki.Api.Account (PasswordChange, SignInMethods)
 import Wiki.Api.Vault (AssertionOptions, AssertionResponse, PasskeyInfo, PublicKeyEntry, RegistrationOptions, RegistrationResponse, StoredVault, VaultChange)
 import Wiki.App.Account (SignInError (..))
-import Wiki.App.Assistant (KeyRef)
+import Wiki.App.Assistant (KeyOwner, KeyRef, MonadAssistant (..), closeKeyOwner, openKeyOwner, pageKeys)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Backend.Mem (MemWiki)
 import Wiki.Core.Assistant.Vault (CredentialId, Salt, Vault, VaultTag)
@@ -125,8 +131,12 @@ class (Monad m) => MonadVault m where
   -- the page, when the proof went through OPAQUE in a browser. The proof
   -- left on the session lets one change go without the password.
   provePassword :: Password -> m (Either SignInError (Maybe KeyRef))
-  default provePassword :: (MonadTrans t, m ~ t n, MonadVault n) => Password -> m (Either SignInError (Maybe KeyRef))
-  provePassword = lift . provePassword
+  provePassword = provePasswordBy pageKeys
+
+  -- | 'provePassword', with the key held under this owner ('KeyOwner').
+  provePasswordBy :: KeyOwner -> Password -> m (Either SignInError (Maybe KeyRef))
+  default provePasswordBy :: (MonadTrans t, m ~ t n, MonadVault n) => KeyOwner -> Password -> m (Either SignInError (Maybe KeyRef))
+  provePasswordBy o = lift . provePasswordBy o
 
   -- | Change the signed-in user's password and carry their vault along:
   -- the vault key, which the page holds and can export, is wrapped with
@@ -162,7 +172,7 @@ instance (MonadVault m) => MonadVault (HalogenM st act slots output m) where
   finishAssertion = H.async . finishAssertion
   dropPasskey = H.async . dropPasskey
   takePasswordKey = H.async takePasswordKey
-  provePassword = H.async . provePassword
+  provePasswordBy o = H.async . provePasswordBy o
   changePasswordCarrying u c = H.async . changePasswordCarrying u c
 
 instance (MonadVault m) => MonadVault (ReaderT r m)
@@ -183,7 +193,7 @@ instance (Monad m) => MonadVault (MemWiki m) where
   finishAssertion _ = pure (Left unavailable)
   dropPasskey _ = pure (Left unavailable)
   takePasswordKey = pure Nothing
-  provePassword _ = pure (Left (SignInFailed unavailable))
+  provePasswordBy _ _ = pure (Left (SignInFailed unavailable))
   changePasswordCarrying _ _ _ = pure (Left (SignInFailed unavailable))
 
 -- | The browser's DOM alone has no server either: what runs in it
@@ -203,7 +213,7 @@ instance MonadVault BrowserDOM where
   finishAssertion _ = pure (Left unavailable)
   dropPasskey _ = pure (Left unavailable)
   takePasswordKey = pure Nothing
-  provePassword _ = pure (Left (SignInFailed unavailable))
+  provePasswordBy _ _ = pure (Left (SignInFailed unavailable))
   changePasswordCarrying _ _ _ = pure (Left (SignInFailed unavailable))
 
 -- | Nor has the in-memory document of the prerender and the native tests.
@@ -221,9 +231,67 @@ instance MonadVault MemDOM where
   finishAssertion _ = pure (Left unavailable)
   dropPasskey _ = pure (Left unavailable)
   takePasswordKey = pure Nothing
-  provePassword _ = pure (Left (SignInFailed unavailable))
+  provePasswordBy _ _ = pure (Left (SignInFailed unavailable))
   changePasswordCarrying _ _ _ = pure (Left (SignInFailed unavailable))
 
 -- | The demo's refusal: syncing the keys is a server's.
 unavailable :: WikiError
 unavailable = Invalid "This demo has no server: the assistant's keys stay in this browser."
+
+-- | 'Owned' runs an operation of the vault with every key it registers in
+-- the page under one owner ('Wiki.App.Assistant.KeyOwner'): the methods
+-- that make a key, keep one on this device or prove the password, whatever
+-- owner they are given, are given this one. A settings' section runs each
+-- operation of its under an owner of its own ('owned'), and lets the owner
+-- go when the operation ends or the section closes: what the operation
+-- left in the page then goes, even when the close killed its worker.
+newtype Owned m a = Owned (ReaderT KeyOwner m a)
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO)
+
+instance MonadTrans Owned where
+  lift = Owned . lift
+
+-- | Run an operation with its keys under this owner.
+owned :: KeyOwner -> Owned m a -> m a
+owned o (Owned r) = runReaderT r o
+
+-- | The owner the operation runs under.
+owner :: (Monad m) => Owned m KeyOwner
+owner = Owned ask
+
+instance (MonadAssistant m) => MonadAssistant (Owned m) where
+  newVaultKeyBy _ exportable = owner >>= \o -> lift (newVaultKeyBy o exportable)
+  keepDeviceKeyBy _ user key onDisk = owner >>= \o -> lift (keepDeviceKeyBy o user key onDisk)
+  deviceKeyBy _ user = owner >>= \o -> lift (deviceKeyBy o user)
+  createPasskeyBy _ options salt info = owner >>= \o -> lift (createPasskeyBy o options salt info)
+  usePasskeyBy _ options salt info = owner >>= \o -> lift (usePasskeyBy o options salt info)
+  unwrapWithBy _ wrapping wrapped info exportable = owner >>= \o -> lift (unwrapWithBy o wrapping wrapped info exportable)
+  newIdentityBy _ key = owner >>= \o -> lift (newIdentityBy o key)
+  openIdentityBy _ key keyId sealed = owner >>= \o -> lift (openIdentityBy o key keyId sealed)
+  passwordKeyBy _ key salt = owner >>= \o -> lift (passwordKeyBy o key salt)
+
+instance (MonadVault m) => MonadVault (Owned m) where
+  provePasswordBy _ password = owner >>= \o -> lift (provePasswordBy o password)
+
+-- | An operation of a user's vault, waited for in a component's program,
+-- with the keys it registers in the page under an owner of its own
+-- ('Wiki.App.Assistant.KeyOwner'). The owner is made, and kept in the
+-- component's state (the set the two functions read and write), in one
+-- step before the wait, and let go after it. The component lets go of
+-- the owners in its state when it closes ('releaseOwners'), which kills
+-- the operation's worker: what the operation left in the page goes then.
+owning :: (MonadIO m) => (st -> Set KeyOwner) -> (Set KeyOwner -> st -> st) -> UserId -> Owned m a -> HalogenM st act slots output m a
+owning owners setOwners u act = do
+  o <- H.sync (liftIO (openKeyOwner u))
+  modify (\st -> setOwners (Set.insert o (owners st)) st)
+  -- Let go however the operation ends, a failure included; a close
+  -- kills the program instead, and 'releaseOwners' lets go then.
+  H.async (owned o act)
+    `H.finally` (H.sync (liftIO (closeKeyOwner o)) >> modify (\st -> setOwners (Set.delete o (owners st)) st))
+
+-- | Let go of the owners of keys in a component's state, as it closes:
+-- in this step, with the keys of the operations the close cuts off.
+releaseOwners :: (MonadIO m) => (st -> Set KeyOwner) -> (Set KeyOwner -> st -> st) -> HalogenM st act slots output m ()
+releaseOwners owners setOwners = do
+  gets owners >>= traverse_ (H.sync . liftIO . closeKeyOwner)
+  modify (setOwners Set.empty)

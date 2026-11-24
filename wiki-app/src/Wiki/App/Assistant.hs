@@ -58,6 +58,11 @@ module Wiki.App.Assistant
 
     -- * The vault in the browser
   , KeyRef
+  , KeyOwner (..)
+  , pageKeys
+  , openKeyOwner
+  , closeKeyOwner
+  , closeKeyOwnersOf
   , Made (..)
   , NewIdentity (..)
   , keyRefOf
@@ -136,14 +141,17 @@ $( browserJS
      , ("js_checkPromise", "wiki_assistant_check", Safe, [t|JSText -> IO (Promise JSText)|])
      , ("js_modelsPromise", "wiki_assistant_models", Safe, [t|JSText -> IO (Promise JSText)|])
      , ("js_prepare", "wiki_assistant_prepare", Safe, [t|IO ()|])
-     , ("js_new_keyPromise", "wiki_vault_new_key", Safe, [t|Bool -> IO (Promise Int)|])
+     , ("js_new_keyPromise", "wiki_vault_new_key", Safe, [t|Bool -> Int -> IO (Promise Int)|])
      , ("js_sealPromise", "wiki_vault_seal", Safe, [t|Int -> JSText -> JSText -> IO (Promise JSText)|])
      , ("js_open_sealedPromise", "wiki_vault_open", Safe, [t|Int -> JSText -> JSText -> JSText -> IO (Promise JSText)|])
      , ("js_forget_key", "wiki_vault_forget_key", Safe, [t|Int -> IO ()|])
-     , ("js_hold_key", "wiki_vault_hold_key", Safe, [t|JSVal -> IO Int|])
+     , ("js_hold_key", "wiki_vault_hold_key", Safe, [t|JSVal -> Int -> IO Int|])
+     , ("js_owner_open", "wiki_vault_owner_open", Safe, [t|JSText -> IO Int|])
+     , ("js_owner_close", "wiki_vault_owner_close", Safe, [t|Int -> IO ()|])
+     , ("js_owners_close", "wiki_vault_owners_close", Safe, [t|JSText -> IO ()|])
      , ("js_salt", "wiki_vault_salt", Safe, [t|IO JSText|])
-     , ("js_keep_keyPromise", "wiki_vault_keep_key", Safe, [t|JSText -> Int -> Bool -> IO (Promise JSText)|])
-     , ("js_device_keyPromise", "wiki_vault_device_key", Safe, [t|JSText -> IO (Promise Int)|])
+     , ("js_keep_keyPromise", "wiki_vault_keep_key", Safe, [t|JSText -> Int -> Bool -> Int -> IO (Promise JSText)|])
+     , ("js_device_keyPromise", "wiki_vault_device_key", Safe, [t|JSText -> Int -> IO (Promise Int)|])
      , ("js_drop_keyPromise", "wiki_vault_drop_key", Safe, [t|JSText -> IO (Promise ())|])
      , ("js_listen", "wiki_vault_listen", Safe, [t|IO ()|])
      , ("js_signed_in", "wiki_vault_signed_in", Safe, [t|IO ()|])
@@ -152,15 +160,15 @@ $( browserJS
      , ("js_drop_ifPromise", "wiki_vault_drop_if", Safe, [t|Int -> JSText -> IO (Promise Bool)|])
      , ("js_passkeys_here", "wiki_vault_passkeys_here", Safe, [t|IO Bool|])
      , ("js_sealing_here", "wiki_vault_sealing_here", Safe, [t|IO Bool|])
-     , ("js_createPromise", "wiki_vault_create", Safe, [t|JSText -> JSText -> JSText -> IO (Promise JSText)|])
-     , ("js_getPromise", "wiki_vault_get", Safe, [t|JSText -> JSText -> JSText -> IO (Promise JSText)|])
+     , ("js_createPromise", "wiki_vault_create", Safe, [t|JSText -> JSText -> JSText -> Int -> IO (Promise JSText)|])
+     , ("js_getPromise", "wiki_vault_get", Safe, [t|JSText -> JSText -> JSText -> Int -> IO (Promise JSText)|])
      , ("js_wrapPromise", "wiki_vault_wrap", Safe, [t|Int -> Int -> JSText -> IO (Promise JSText)|])
-     , ("js_unwrapPromise", "wiki_vault_unwrap", Safe, [t|Int -> JSText -> JSText -> JSText -> Bool -> IO (Promise JSText)|])
+     , ("js_unwrapPromise", "wiki_vault_unwrap", Safe, [t|Int -> JSText -> JSText -> JSText -> Bool -> Int -> IO (Promise JSText)|])
      , ("js_discardPromise", "wiki_vault_discard", Safe, [t|JSText -> JSText -> IO (Promise ())|])
-     , ("js_keys_generatePromise", "wiki_keys_generate", Safe, [t|Int -> JSText -> IO (Promise JSText)|])
-     , ("js_keys_openPromise", "wiki_keys_open", Safe, [t|Int -> JSText -> JSText -> JSText -> IO (Promise JSText)|])
+     , ("js_keys_generatePromise", "wiki_keys_generate", Safe, [t|Int -> JSText -> Int -> IO (Promise JSText)|])
+     , ("js_keys_openPromise", "wiki_keys_open", Safe, [t|Int -> JSText -> JSText -> JSText -> Int -> IO (Promise JSText)|])
      , ("js_keys_fingerprintPromise", "wiki_keys_fingerprint", Safe, [t|JSText -> IO (Promise JSText)|])
-     , ("js_password_keyPromise", "wiki_vault_password_key", Safe, [t|Int -> JSText -> JSText -> IO (Promise JSText)|])
+     , ("js_password_keyPromise", "wiki_vault_password_key", Safe, [t|Int -> JSText -> JSText -> Int -> IO (Promise JSText)|])
      , ("js_conditional_herePromise", "wiki_passkey_conditional_here", Safe, [t|IO (Promise Bool)|])
      , ("js_passkey_sign_inPromise", "wiki_passkey_sign_in", Safe, [t|JSText -> Bool -> Int -> IO (Promise JSText)|])
      , ("js_passkey_offer_ticket", "wiki_passkey_offer_ticket", Safe, [t|IO Int|])
@@ -201,8 +209,8 @@ js_check a1 = if inBrowser then wait =<< js_checkPromise a1 else pure inert
 js_models :: JSText -> IO JSText
 js_models a1 = if inBrowser then wait =<< js_modelsPromise a1 else pure inert
 
-js_new_key :: Bool -> IO Int
-js_new_key a1 = if inBrowser then wait =<< js_new_keyPromise a1 else pure inert
+js_new_key :: Bool -> Int -> IO Int
+js_new_key a1 a2 = if inBrowser then wait =<< js_new_keyPromise a1 a2 else pure inert
 
 js_seal :: Int -> JSText -> JSText -> IO JSText
 js_seal a1 a2 a3 = if inBrowser then wait =<< js_sealPromise a1 a2 a3 else pure inert
@@ -210,11 +218,11 @@ js_seal a1 a2 a3 = if inBrowser then wait =<< js_sealPromise a1 a2 a3 else pure 
 js_open_sealed :: Int -> JSText -> JSText -> JSText -> IO JSText
 js_open_sealed a1 a2 a3 a4 = if inBrowser then wait =<< js_open_sealedPromise a1 a2 a3 a4 else pure inert
 
-js_keep_key :: JSText -> Int -> Bool -> IO JSText
-js_keep_key a1 a2 a3 = if inBrowser then wait =<< js_keep_keyPromise a1 a2 a3 else pure inert
+js_keep_key :: JSText -> Int -> Bool -> Int -> IO JSText
+js_keep_key a1 a2 a3 a4 = if inBrowser then wait =<< js_keep_keyPromise a1 a2 a3 a4 else pure inert
 
-js_device_key :: JSText -> IO Int
-js_device_key a1 = if inBrowser then wait =<< js_device_keyPromise a1 else pure inert
+js_device_key :: JSText -> Int -> IO Int
+js_device_key a1 a2 = if inBrowser then wait =<< js_device_keyPromise a1 a2 else pure inert
 
 js_drop_key :: JSText -> IO ()
 js_drop_key a1 = if inBrowser then wait =<< js_drop_keyPromise a1 else pure inert
@@ -228,20 +236,20 @@ js_generation = if inBrowser then wait =<< js_generationPromise else pure inert
 js_drop_if :: Int -> JSText -> IO Bool
 js_drop_if a1 a2 = if inBrowser then wait =<< js_drop_ifPromise a1 a2 else pure inert
 
-js_create :: JSText -> JSText -> JSText -> IO JSText
-js_create a1 a2 a3 = if inBrowser then wait =<< js_createPromise a1 a2 a3 else pure inert
+js_create :: JSText -> JSText -> JSText -> Int -> IO JSText
+js_create a1 a2 a3 a4 = if inBrowser then wait =<< js_createPromise a1 a2 a3 a4 else pure inert
 
-js_get :: JSText -> JSText -> JSText -> IO JSText
-js_get a1 a2 a3 = if inBrowser then wait =<< js_getPromise a1 a2 a3 else pure inert
+js_get :: JSText -> JSText -> JSText -> Int -> IO JSText
+js_get a1 a2 a3 a4 = if inBrowser then wait =<< js_getPromise a1 a2 a3 a4 else pure inert
 
-js_keys_generate :: Int -> JSText -> IO JSText
-js_keys_generate a1 a2 = if inBrowser then wait =<< js_keys_generatePromise a1 a2 else pure inert
+js_keys_generate :: Int -> JSText -> Int -> IO JSText
+js_keys_generate a1 a2 a3 = if inBrowser then wait =<< js_keys_generatePromise a1 a2 a3 else pure inert
 
-js_keys_open :: Int -> JSText -> JSText -> JSText -> IO JSText
-js_keys_open a1 a2 a3 a4 = if inBrowser then wait =<< js_keys_openPromise a1 a2 a3 a4 else pure inert
+js_keys_open :: Int -> JSText -> JSText -> JSText -> Int -> IO JSText
+js_keys_open a1 a2 a3 a4 a5 = if inBrowser then wait =<< js_keys_openPromise a1 a2 a3 a4 a5 else pure inert
 
-js_password_key :: Int -> JSText -> JSText -> IO JSText
-js_password_key a1 a2 a3 = if inBrowser then wait =<< js_password_keyPromise a1 a2 a3 else pure inert
+js_password_key :: Int -> JSText -> JSText -> Int -> IO JSText
+js_password_key a1 a2 a3 a4 = if inBrowser then wait =<< js_password_keyPromise a1 a2 a3 a4 else pure inert
 
 js_keys_fingerprint :: JSText -> IO JSText
 js_keys_fingerprint a1 = if inBrowser then wait =<< js_keys_fingerprintPromise a1 else pure inert
@@ -249,8 +257,8 @@ js_keys_fingerprint a1 = if inBrowser then wait =<< js_keys_fingerprintPromise a
 js_wrap :: Int -> Int -> JSText -> IO JSText
 js_wrap a1 a2 a3 = if inBrowser then wait =<< js_wrapPromise a1 a2 a3 else pure inert
 
-js_unwrap :: Int -> JSText -> JSText -> JSText -> Bool -> IO JSText
-js_unwrap a1 a2 a3 a4 a5 = if inBrowser then wait =<< js_unwrapPromise a1 a2 a3 a4 a5 else pure inert
+js_unwrap :: Int -> JSText -> JSText -> JSText -> Bool -> Int -> IO JSText
+js_unwrap a1 a2 a3 a4 a5 a6 = if inBrowser then wait =<< js_unwrapPromise a1 a2 a3 a4 a5 a6 else pure inert
 
 js_discard :: JSText -> JSText -> IO ()
 js_discard a1 a2 = if inBrowser then wait =<< js_discardPromise a1 a2 else pure inert
@@ -266,6 +274,41 @@ js_passkey_sign_in a1 a2 a3 = if inBrowser then wait =<< js_passkey_sign_inPromi
 -- the browser.
 newtype KeyRef = KeyRef Int
   deriving stock (Eq, Show)
+
+-- | 'KeyOwner' is who holds the keys an operation of the vault registers
+-- in the page's registry of keys (@jsbits\/vault.js@), by its number. An
+-- operation of a settings' section holds them under an owner of its own
+-- ('openKeyOwner'), which the section lets go of when the operation ends
+-- or the section closes ('closeKeyOwner'), and the page when the user
+-- signs out ('closeKeyOwnersOf'). Letting an owner go deletes every key
+-- registered under it, even those of an operation whose worker was
+-- killed with the section, and keys made after it are not registered:
+-- no key of a step cut off stays in the page. 'pageKeys' is the page's,
+-- which is never let go.
+newtype KeyOwner = KeyOwner Int
+  deriving stock (Eq, Ord, Show)
+
+-- | The page's owner of keys: the keys of what lives as long as the page
+-- (the sign-in, the shell), which forget their keys themselves.
+pageKeys :: KeyOwner
+pageKeys = KeyOwner 0
+
+-- | A new owner of keys, for an operation of this user's ('KeyOwner'). It
+-- returns at once. Natively there is no registry, and it is 'pageKeys'.
+openKeyOwner :: UserId -> IO KeyOwner
+openKeyOwner u
+  | not inBrowser = pure pageKeys
+  | otherwise = KeyOwner <$> js_owner_open (toJSText u.text)
+
+-- | Let an owner of keys go: its keys leave the page, and none is
+-- registered under it any more. It returns at once.
+closeKeyOwner :: KeyOwner -> IO ()
+closeKeyOwner (KeyOwner o) = when (inBrowser && o /= 0) (js_owner_close o)
+
+-- | Let go of every owner of a user's keys, as their sign-out does, before
+-- their keys leave this device. It returns at once.
+closeKeyOwnersOf :: UserId -> IO ()
+closeKeyOwnersOf u = when inBrowser (js_owners_close (toJSText u.text))
 
 -- | 'Made': a passkey just made: the browser's answer for the server to
 -- check, whether the passkey has the PRF extension, and the key that
@@ -437,8 +480,12 @@ class (Monad m) => MonadAssistant m where
   -- | A new vault key (AES-GCM), which can be exported only if asked: to
   -- be wrapped for a passkey.
   newVaultKey :: Bool -> m KeyRef
-  default newVaultKey :: (MonadTrans t, MonadAssistant n, m ~ t n) => Bool -> m KeyRef
-  newVaultKey = lift . newVaultKey
+  newVaultKey = newVaultKeyBy pageKeys
+
+  -- | 'newVaultKey', with the keys it registers under this owner ('KeyOwner').
+  newVaultKeyBy :: KeyOwner -> Bool -> m KeyRef
+  default newVaultKeyBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> Bool -> m KeyRef
+  newVaultKeyBy o = lift . newVaultKeyBy o
 
   -- | Seal text with a vault key, authenticating the given data with it.
   sealWith :: KeyRef -> Text -> Text -> m (Either Text Sealed)
@@ -464,13 +511,21 @@ class (Monad m) => MonadAssistant m where
   -- and in IndexedDB too unless told not to ("ask for the passkey each
   -- time"), as a key that cannot be exported.
   keepDeviceKey :: UserId -> KeyRef -> Bool -> m (Either Text ())
-  default keepDeviceKey :: (MonadTrans t, MonadAssistant n, m ~ t n) => UserId -> KeyRef -> Bool -> m (Either Text ())
-  keepDeviceKey user key = lift . keepDeviceKey user key
+  keepDeviceKey = keepDeviceKeyBy pageKeys
+
+  -- | 'keepDeviceKey', with the keys it registers under this owner ('KeyOwner').
+  keepDeviceKeyBy :: KeyOwner -> UserId -> KeyRef -> Bool -> m (Either Text ())
+  default keepDeviceKeyBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> UserId -> KeyRef -> Bool -> m (Either Text ())
+  keepDeviceKeyBy o user key = lift . keepDeviceKeyBy o user key
 
   -- | The vault key this device holds for a user, if any.
   deviceKey :: UserId -> m (Maybe KeyRef)
-  default deviceKey :: (MonadTrans t, MonadAssistant n, m ~ t n) => UserId -> m (Maybe KeyRef)
-  deviceKey = lift . deviceKey
+  deviceKey = deviceKeyBy pageKeys
+
+  -- | 'deviceKey', with the keys it registers under this owner ('KeyOwner').
+  deviceKeyBy :: KeyOwner -> UserId -> m (Maybe KeyRef)
+  default deviceKeyBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> UserId -> m (Maybe KeyRef)
+  deviceKeyBy o = lift . deviceKeyBy o
 
   -- | Let go of this device's vault key for a user.
   dropDeviceKey :: UserId -> m ()
@@ -494,14 +549,22 @@ class (Monad m) => MonadAssistant m where
   -- | Make a passkey with the server's options, asking for its PRF on the
   -- salt, whose output gives the wrapping key with this HKDF info.
   createPasskey :: RegistrationOptions -> Text -> Text -> m (Either PasskeyRefusal Made)
-  default createPasskey :: (MonadTrans t, MonadAssistant n, m ~ t n) => RegistrationOptions -> Text -> Text -> m (Either PasskeyRefusal Made)
-  createPasskey options salt = lift . createPasskey options salt
+  createPasskey = createPasskeyBy pageKeys
+
+  -- | 'createPasskey', with the keys it registers under this owner ('KeyOwner').
+  createPasskeyBy :: KeyOwner -> RegistrationOptions -> Text -> Text -> m (Either PasskeyRefusal Made)
+  default createPasskeyBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> RegistrationOptions -> Text -> Text -> m (Either PasskeyRefusal Made)
+  createPasskeyBy o options salt = lift . createPasskeyBy o options salt
 
   -- | Use one of the user's passkeys, with the server's options, asking
   -- for its PRF on the salt, as 'createPasskey'.
   usePasskey :: AssertionOptions -> Text -> Text -> m (Either PasskeyRefusal Used)
-  default usePasskey :: (MonadTrans t, MonadAssistant n, m ~ t n) => AssertionOptions -> Text -> Text -> m (Either PasskeyRefusal Used)
-  usePasskey options salt = lift . usePasskey options salt
+  usePasskey = usePasskeyBy pageKeys
+
+  -- | 'usePasskey', with the keys it registers under this owner ('KeyOwner').
+  usePasskeyBy :: KeyOwner -> AssertionOptions -> Text -> Text -> m (Either PasskeyRefusal Used)
+  default usePasskeyBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> AssertionOptions -> Text -> Text -> m (Either PasskeyRefusal Used)
+  usePasskeyBy o options salt = lift . usePasskeyBy o options salt
 
   -- | Whether the browser offers saved passkeys in a login field
   -- (conditional mediation), for 'signInPasskey'.
@@ -543,29 +606,45 @@ class (Monad m) => MonadAssistant m where
   -- | Unwrap a vault key with a passkey's wrapping key, as one that can be
   -- exported only if asked.
   unwrapWith :: KeyRef -> WrappedKey -> Text -> Bool -> m (Either Text KeyRef)
-  default unwrapWith :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyRef -> WrappedKey -> Text -> Bool -> m (Either Text KeyRef)
-  unwrapWith wrapping wrapped info = lift . unwrapWith wrapping wrapped info
+  unwrapWith = unwrapWithBy pageKeys
+
+  -- | 'unwrapWith', with the keys it registers under this owner ('KeyOwner').
+  unwrapWithBy :: KeyOwner -> KeyRef -> WrappedKey -> Text -> Bool -> m (Either Text KeyRef)
+  default unwrapWithBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> KeyRef -> WrappedKey -> Text -> Bool -> m (Either Text KeyRef)
+  unwrapWithBy o wrapping wrapped info = lift . unwrapWithBy o wrapping wrapped info
 
   -- | A new key pair for the user (X25519), its private key sealed with
   -- the vault key under 'Wiki.Core.Vault.identityData' of its id. The
   -- private key the result holds cannot be exported; the PKCS #8 bytes
   -- exist in the page only while they are sealed.
   newIdentity :: KeyRef -> m (Either Text NewIdentity)
-  default newIdentity :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyRef -> m (Either Text NewIdentity)
-  newIdentity = lift . newIdentity
+  newIdentity = newIdentityBy pageKeys
+
+  -- | 'newIdentity', with the keys it registers under this owner ('KeyOwner').
+  newIdentityBy :: KeyOwner -> KeyRef -> m (Either Text NewIdentity)
+  default newIdentityBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> KeyRef -> m (Either Text NewIdentity)
+  newIdentityBy o = lift . newIdentityBy o
 
   -- | Open the user's sealed private key with the vault key: a key that
   -- cannot be exported.
   openIdentity :: KeyRef -> KeyId -> Sealed -> m (Either Text KeyRef)
-  default openIdentity :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyRef -> KeyId -> Sealed -> m (Either Text KeyRef)
-  openIdentity k i = lift . openIdentity k i
+  openIdentity = openIdentityBy pageKeys
+
+  -- | 'openIdentity', with the keys it registers under this owner ('KeyOwner').
+  openIdentityBy :: KeyOwner -> KeyRef -> KeyId -> Sealed -> m (Either Text KeyRef)
+  default openIdentityBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> KeyRef -> KeyId -> Sealed -> m (Either Text KeyRef)
+  openIdentityBy o k i = lift . openIdentityBy o k i
 
   -- | The key that wraps the vault key for the password, from the key
   -- OPAQUE's export key gave the page ("Wiki.App.Backend.Opaque") and the
   -- vault's salt: one that only wraps and unwraps.
   passwordKey :: KeyRef -> Salt -> m (Either Text KeyRef)
-  default passwordKey :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyRef -> Salt -> m (Either Text KeyRef)
-  passwordKey k = lift . passwordKey k
+  passwordKey = passwordKeyBy pageKeys
+
+  -- | 'passwordKey', with the keys it registers under this owner ('KeyOwner').
+  passwordKeyBy :: KeyOwner -> KeyRef -> Salt -> m (Either Text KeyRef)
+  default passwordKeyBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> KeyRef -> Salt -> m (Either Text KeyRef)
+  passwordKeyBy o k = lift . passwordKeyBy o k
 
   -- | A public key's fingerprint: SHA-256 of its bytes, in hexadecimal;
   -- empty where the browser cannot compute it.
@@ -647,7 +726,7 @@ instance MonadAssistant BrowserDOM where
   assistantHere = pure inBrowser
   deviceRecord = recordIn
   keepDeviceRecord = keepRecordIn
-  newVaultKey exportable = liftIO (KeyRef <$> (evaluate =<< js_new_key exportable))
+  newVaultKeyBy (KeyOwner owner) exportable = liftIO (KeyRef <$> (evaluate =<< js_new_key exportable owner))
   sealWith (KeyRef k) text info = liftIO $ do
     answer <- evaluate . fromJSText =<< js_seal k (toJSText text) (toJSText info)
     pure (answered (\o -> Sealed <$> o .: "nonce" <*> o .: "ciphertext") answer)
@@ -656,41 +735,41 @@ instance MonadAssistant BrowserDOM where
     pure (answered (.: "text") answer)
   forgetKey (KeyRef k) = liftIO (js_forget_key k)
   newSalt = liftIO (fromJSText <$> js_salt)
-  keepDeviceKey user (KeyRef k) onDisk = liftIO $ do
-    failure <- evaluate . fromJSText =<< js_keep_key (toJSText user.text) k onDisk
+  keepDeviceKeyBy (KeyOwner owner) user (KeyRef k) onDisk = liftIO $ do
+    failure <- evaluate . fromJSText =<< js_keep_key (toJSText user.text) k onDisk owner
     pure (if T.null failure then Right () else Left ("This browser could not keep the vault's key: " <> failure))
-  deviceKey user = liftIO $ do
-    k <- evaluate =<< js_device_key (toJSText user.text)
+  deviceKeyBy (KeyOwner owner) user = liftIO $ do
+    k <- evaluate =<< js_device_key (toJSText user.text) owner
     pure (if k == 0 then Nothing else Just (KeyRef k))
   dropDeviceKey user = liftIO (evaluate =<< js_drop_key (toJSText user.text))
   passkeysHere = liftIO js_passkeys_here
   sealingHere = liftIO js_sealing_here
-  createPasskey options salt info = liftIO $ do
-    answer <- evaluate . fromJSText =<< js_create (toJSText (json (toJSON options))) (toJSText salt) (toJSText info)
+  createPasskeyBy (KeyOwner owner) options salt info = liftIO $ do
+    answer <- evaluate . fromJSText =<< js_create (toJSText (json (toJSON options))) (toJSText salt) (toJSText info) owner
     pure . passkeyAnswer answer $ \o -> Made <$> o .: "response" <*> o .: "prf" <*> (keyRefOf <$> o .: "wrapping")
-  usePasskey options salt info = liftIO $ do
-    answer <- evaluate . fromJSText =<< js_get (toJSText (json (toJSON options))) (toJSText salt) (toJSText info)
+  usePasskeyBy (KeyOwner owner) options salt info = liftIO $ do
+    answer <- evaluate . fromJSText =<< js_get (toJSText (json (toJSON options))) (toJSText salt) (toJSText info) owner
     pure . passkeyAnswer answer $ \o -> Used <$> o .: "response" <*> (keyRefOf <$> o .: "wrapping")
   wrapWith (KeyRef wrapping) (KeyRef k) info = liftIO $ do
     answer <- evaluate . fromJSText =<< js_wrap wrapping k (toJSText info)
     pure (answered (\o -> WrappedKey <$> o .: "nonce" <*> o .: "key") answer)
-  unwrapWith (KeyRef wrapping) wrapped info exportable = liftIO $ do
-    answer <- evaluate . fromJSText =<< js_unwrap wrapping (toJSText wrapped.nonce.text) (toJSText wrapped.key.text) (toJSText info) exportable
+  unwrapWithBy (KeyOwner owner) (KeyRef wrapping) wrapped info exportable = liftIO $ do
+    answer <- evaluate . fromJSText =<< js_unwrap wrapping (toJSText wrapped.nonce.text) (toJSText wrapped.key.text) (toJSText info) exportable owner
     pure (answered (\o -> KeyRef <$> o .: "handle") answer)
   discardPasskey rpId credential = liftIO (evaluate =<< js_discard (toJSText rpId) (toJSText credential.text))
-  newIdentity (KeyRef v) = liftIO $ do
-    answer <- evaluate . fromJSText =<< js_keys_generate v (toJSText identityDataPrefix)
+  newIdentityBy (KeyOwner owner) (KeyRef v) = liftIO $ do
+    answer <- evaluate . fromJSText =<< js_keys_generate v (toJSText identityDataPrefix) owner
     pure . flip answered answer $ \o ->
       NewIdentity
         <$> (KeyRef <$> o .: "handle")
         <*> o .: "keyId"
         <*> o .: "publicKey"
         <*> (Sealed <$> o .: "nonce" <*> o .: "ciphertext")
-  openIdentity (KeyRef v) keyId sealed = liftIO $ do
-    answer <- evaluate . fromJSText =<< js_keys_open v (toJSText sealed.nonce.text) (toJSText sealed.ciphertext.text) (toJSText (identityData keyId))
+  openIdentityBy (KeyOwner owner) (KeyRef v) keyId sealed = liftIO $ do
+    answer <- evaluate . fromJSText =<< js_keys_open v (toJSText sealed.nonce.text) (toJSText sealed.ciphertext.text) (toJSText (identityData keyId)) owner
     pure (answered (\o -> KeyRef <$> o .: "handle") answer)
   fingerprintOf k = liftIO (fromJSText <$> (evaluate =<< js_keys_fingerprint (toJSText k.text)))
-  passwordKey base salt = liftIO (passwordKeyIO base salt)
+  passwordKeyBy owner base salt = liftIO (passwordKeyIn owner base salt)
   conditionalHere = liftIO (evaluate =<< js_conditional_here)
   passkeyTicket = liftIO (PasskeyTicket <$> js_passkey_offer_ticket)
   signInPasskey options conditional (PasskeyTicket ticket) = liftIO $ do
@@ -740,25 +819,25 @@ instance MonadAssistant MemDOM where
   assistantHere = pure False
   deviceRecord = recordIn
   keepDeviceRecord = keepRecordIn
-  newVaultKey _ = pure (KeyRef 0)
+  newVaultKeyBy _ _ = pure (KeyRef 0)
   sealWith _ _ _ = pure (Left noBrowser)
   openWith _ _ _ = pure (Left noBrowser)
   forgetKey _ = pass
   newSalt = pure ""
-  keepDeviceKey _ _ _ = pure (Left noBrowser)
-  deviceKey _ = pure Nothing
+  keepDeviceKeyBy _ _ _ _ = pure (Left noBrowser)
+  deviceKeyBy _ _ = pure Nothing
   dropDeviceKey _ = pass
   passkeysHere = pure False
   sealingHere = pure False
-  createPasskey _ _ _ = pure (Left (PasskeyFailed noBrowser))
-  usePasskey _ _ _ = pure (Left (PasskeyFailed noBrowser))
+  createPasskeyBy _ _ _ _ = pure (Left (PasskeyFailed noBrowser))
+  usePasskeyBy _ _ _ _ = pure (Left (PasskeyFailed noBrowser))
   wrapWith _ _ _ = pure (Left noBrowser)
-  unwrapWith _ _ _ _ = pure (Left noBrowser)
+  unwrapWithBy _ _ _ _ _ = pure (Left noBrowser)
   discardPasskey _ _ = pass
-  newIdentity _ = pure (Left noBrowser)
-  openIdentity _ _ _ = pure (Left noBrowser)
+  newIdentityBy _ _ = pure (Left noBrowser)
+  openIdentityBy _ _ _ _ = pure (Left noBrowser)
   fingerprintOf _ = pure ""
-  passwordKey _ _ = pure (Left noBrowser)
+  passwordKeyBy _ _ _ = pure (Left noBrowser)
   conditionalHere = pure False
   passkeyTicket = pure (PasskeyTicket 0)
   signInPasskey _ _ _ = pure (Left (PasskeyFailed noBrowser))
@@ -777,10 +856,14 @@ instance MonadAssistant MemDOM where
 -- | 'passwordKey' in IO, for the HTTP backend, which holds no
 -- 'MonadAssistant' ("Wiki.App.Backend.Http"). Natively there is no key.
 passwordKeyIO :: KeyRef -> Salt -> IO (Either Text KeyRef)
-passwordKeyIO (KeyRef base) salt
+passwordKeyIO = passwordKeyIn pageKeys
+
+-- | 'passwordKeyIO', with the key registered under this owner.
+passwordKeyIn :: KeyOwner -> KeyRef -> Salt -> IO (Either Text KeyRef)
+passwordKeyIn (KeyOwner owner) (KeyRef base) salt
   | not inBrowser = pure (Left noBrowser)
   | otherwise = do
-      answer <- evaluate . fromJSText =<< js_password_key base (toJSText salt.text) (toJSText passwordWrappingInfo)
+      answer <- evaluate . fromJSText =<< js_password_key base (toJSText salt.text) (toJSText passwordWrappingInfo) owner
       pure (answered (\o -> KeyRef <$> o .: "handle") answer)
 
 -- | Wrap a vault key (one that can be exported) for a new password: the
@@ -805,12 +888,13 @@ forgetHeld (KeyRef k) = when inBrowser (js_forget_key k)
 -- | 'holdKey' puts a WebCrypto key made outside @jsbits\/vault.js@ into the
 -- page's registry of keys, and gives its 'KeyRef'. It is for the key
 -- OPAQUE's export key gives, which opaque-hs's client imports into
--- WebCrypto ("Wiki.App.Backend.Opaque"). 'Nothing' for a value that is not
--- a @CryptoKey@, and natively.
-holdKey :: JSVal -> IO (Maybe KeyRef)
-holdKey key
+-- WebCrypto ("Wiki.App.Backend.Opaque"), under the owner given
+-- ('KeyOwner'). 'Nothing' for a value that is not a @CryptoKey@, under an
+-- owner let go, and natively.
+holdKey :: KeyOwner -> JSVal -> IO (Maybe KeyRef)
+holdKey (KeyOwner owner) key
   | not inBrowser = pure Nothing
-  | otherwise = keyRefOf <$> (evaluate =<< js_hold_key key)
+  | otherwise = keyRefOf <$> (evaluate =<< js_hold_key key owner)
 
 -- | A key's handle in the page's registry of keys, which every module of
 -- JavaScript that holds keys shares (@globalThis.wikiKeyRegistry@): for
@@ -825,7 +909,7 @@ heldHandle (KeyRef k) = k
 deviceKeyIO :: UserId -> IO (Maybe KeyRef)
 deviceKeyIO user
   | not inBrowser = pure Nothing
-  | otherwise = keyRefOf <$> (evaluate =<< js_device_key (toJSText user.text))
+  | otherwise = keyRefOf <$> (evaluate =<< js_device_key (toJSText user.text) 0)
 
 -- | Listen to the wiki's other tabs from now on: a key let go in one of them
 -- is let go here ('dropDeviceKey'), and a vault key or private key let go

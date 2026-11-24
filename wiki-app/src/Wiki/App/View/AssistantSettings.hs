@@ -84,9 +84,10 @@ import Halogen.TH (hh)
 import Protolude hiding (State)
 import Wiki.Api.ServerSettings (AssistantApi (..), AssistantService (..))
 import Wiki.Api.Vault (PasskeyInfo (..))
-import Wiki.App.Assistant (MonadAssistant (..))
+import Wiki.App.Assistant (KeyOwner, MonadAssistant (..))
 import Wiki.App.Assistant.Keys (Keys (..), addPasskey, changeKeys, loadKeys, readKeys, removePasskey, setAskEachTime, turnOffSync, turnOnSync, unlockKeys)
-import Wiki.App.Assistant.Sync (MonadVault (..))
+import Wiki.App.Assistant.Sync (MonadVault (..), Owned)
+import Wiki.App.Assistant.Sync qualified as Sync
 import Wiki.App.Backend (Session (..))
 import Wiki.App.Editor.Browser (clearField)
 import Wiki.App.View.Common (Context (..), attr)
@@ -197,6 +198,9 @@ data State = State
   , syncPasswordField :: H.RefLabel
   -- ^ The password typed to make a passkey, which signs the user in, so
   -- that the server asks for it ("Wiki.Api.Vault").
+  , keyOwners :: Set KeyOwner
+  -- ^ The owners of the keys of the view's operations of the vault under
+  -- way ('owning'), let go when each ends and when the view closes.
   }
 
 data Action
@@ -221,6 +225,7 @@ data Action
   | AskEachTime Bool
   | TypedCap Text
   | KeepCap Text
+  | Finalize
 
 component :: forall query output m. (MonadAssistant m, MonadVault m, MonadUUID m, MonadUnliftIO m) => H.Component query Input output m
 component =
@@ -247,6 +252,7 @@ component =
               , busy = False
               , sync = noSync
               , syncPassword = ""
+              , keyOwners = Set.empty
               }
       , render
       , eval =
@@ -255,6 +261,7 @@ component =
               { H.handleAction = handleAction
               , H.initialize = Just Initialize
               , H.receive = Just . Receive
+              , H.finalize = Just Finalize
               }
       }
   where
@@ -578,6 +585,8 @@ component =
     handleAction = \case
       -- On a page rendered ahead of the program, the page stays as first
       -- rendered, and the program adopts it.
+      -- The keys of the operations the close cut off go, in this step.
+      Finalize -> Sync.releaseOwners (\st -> st.keyOwners) (\keyOwners st -> st {keyOwners})
       Initialize -> whenM (H.liftEffect assistantHere) $ do
         secure <- H.liftEffect secureContext
         sealing <- H.liftEffect sealingHere
@@ -692,7 +701,7 @@ component =
           >>= traverse_
             ( \user -> do
                 modify (\st -> st {sync = st.sync {working = Just "Removing the passkey…", trouble = Nothing}})
-                result <- H.async (removePasskey user credential)
+                result <- owning user (removePasskey user credential)
                 modify $ \st -> case result of
                   Right left -> st {sync = st.sync {working = Nothing, passkeys = left}}
                   Left why -> st {sync = st.sync {working = Nothing, trouble = Just why}}
@@ -767,7 +776,7 @@ component =
       gets (\st -> st.user)
         >>= traverse_
           ( \user -> do
-              keys <- H.async (loadKeys user)
+              keys <- owning user (loadKeys user)
               offer <- offerHere
               passkeys <- case keys of
                 Right k | k.synced -> either (const []) identity <$> H.async listPasskeys
@@ -802,14 +811,14 @@ component =
       gets (\st -> st.syncPasswordField) >>= H.getRef >>= traverse_ (H.liftEffect . clearField)
       act (if T.null typed then Nothing else Just (Password typed))
 
-    syncStep :: Text -> (UserId -> m (Either Text Keys)) -> H.HalogenM State Action Empty output m ()
+    syncStep :: Text -> (UserId -> Owned m (Either Text Keys)) -> H.HalogenM State Action Empty output m ()
     syncStep saying step =
       gets (\st -> st.user)
         >>= traverse_
           ( \user -> do
               modify (\st -> st {sync = st.sync {working = Just saying, trouble = Nothing}})
-              result <- H.async (step user)
-              keys <- either (const (H.async (readKeys user))) (pure . Right) result
+              result <- owning user (step user)
+              keys <- either (const (owning user (readKeys user))) (pure . Right) result
               passkeys <- case keys of
                 Right k | k.synced -> either (const []) identity <$> H.async listPasskeys
                 _ -> pure []
@@ -818,6 +827,12 @@ component =
                 Right k -> st {settings = Just (Right k.settings), sync = (syncOf keys st.sync) {working = Nothing, passkeys, trouble}}
                 Left _ -> st {sync = st.sync {working = Nothing, trouble}}
           )
+
+    -- An operation of the user's keys, with the keys it registers in the
+    -- page under an owner of its own, which 'Finalize' lets go if the view
+    -- closes meanwhile ("Wiki.App.Assistant.Sync"'s 'Sync.owning').
+    owning :: UserId -> Owned m a -> H.HalogenM State Action Empty output m a
+    owning = Sync.owning (\st -> st.keyOwners) (\keyOwners st -> st {keyOwners})
 
     -- Change the settings, and store them immediately.
     change :: (Settings -> Settings) -> H.HalogenM State Action Empty output m ()
@@ -828,7 +843,7 @@ component =
           -- The change itself, not the settings it gives: when another
           -- device changed the settings meanwhile, it is made again on
           -- theirs.
-          result <- H.async (changeKeys user f)
+          result <- owning user (changeKeys user f)
           modify $ \st -> case result of
             Right k -> st {busy = False, settings = Just (Right k.settings), sync = syncOf result st.sync}
             Left why -> st {busy = False, problem = Just why}

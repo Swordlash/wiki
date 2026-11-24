@@ -128,6 +128,8 @@ module Wiki.Server.Storage
   , readSettings
   , readServerSettings
   , cacheServerSettings
+  , wikiPluginsOff
+  , setWikiPluginsOff
 
     -- * The backups
   , readBackups
@@ -255,6 +257,7 @@ import Wiki.Api.Info (Capabilities)
 import Wiki.Api.Links (interactiveForm)
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), NotificationSettingsChange (..), Notifications (..), ReadMark, feedAddressOf, maxPeopleFound, searchable)
 import Wiki.Api.Opaque (NewAccountRecord (..), PasswordRecord (..), Stretch)
+import Wiki.Api.Plugins (PluginId (..), WikiPlugins (..), maxPluginsOff)
 import Wiki.Api.Security (ResetToken (..), resetLifetime)
 import Wiki.Api.ServerSettings (HomePage, MailSettingsOf (..), ProviderSettingsOf (..), ServerSettingsChange, ServerSettingsOf (..), applyChange, checkHomePage, checkServerSettings, defaultHomePage, kindName, secretState, securityName)
 import Wiki.Api.ServerSettings qualified as SS
@@ -338,6 +341,7 @@ import Wiki.Server.Storage.Conversion
 import Wiki.Server.Storage.Layout (Database (..), PgDatabase (..), PgPrograms, attachmentsDir, backupsDir, defaultDatabase, defaultPgPrograms, postgresAt, temporaryDir)
 import Wiki.Server.Storage.Migrate (databaseVersion, knownVersion, migrateSaying, schemaVersion)
 import Wiki.Server.Storage.Notifications qualified as Notifications
+import Wiki.Server.Storage.Plugins (loadPluginsOff, storePluginsOff)
 import Wiki.Server.Storage.Renewal (noticeRenewals, readersIn, renewalDue)
 import Wiki.Server.Storage.Rows
 import Wiki.Server.Storage.Schema (StagedPlain (..))
@@ -1751,6 +1755,19 @@ instance (MonadIO m) => MonadAdmin (StoredWiki m) where
 -- or tried, and how many backups the data directory holds. It always says
 -- that no backup is running and none is due next, since only the server
 -- knows those ('Wiki.Server.Backups').
+-- | The plugins the administrator turned off for the whole wiki
+-- ("Wiki.Api.Plugins"), for the administration: only someone who
+-- administers the wiki may ask. Anyone else reads them with their own
+-- choices ("Wiki.Server.Plugins").
+wikiPluginsOff :: (MonadIO m) => StoredWiki m (Either WikiError WikiPlugins)
+wikiPluginsOff = run Reads (requireAdministrator >> WikiPlugins <$> db loadPluginsOff)
+
+-- | Replace the plugins off for the whole wiki, as an administrator. The
+-- users' own choices are not touched: a plugin turned back on is as each
+-- user left it. The change is written to the audit log.
+setWikiPluginsOff :: (MonadIO m) => WikiPlugins -> StoredWiki m (Either WikiError WikiPlugins)
+setWikiPluginsOff = run Writes . setWikiPluginsOffTx
+
 readBackups :: Storage -> Who -> IO (Either WikiError Backups)
 readBackups st who =
   transact st who Reads (requireAdministrator >> db ((,) <$> loadBackupSettings <*> loadLastBackup)) >>= \case
@@ -4386,6 +4403,20 @@ setWikiSettingsTx new = do
     , ("new accounts create spaces", yesNo new.newAccountsCreateSpaces)
     , ("administration creates accounts with a password", yesNo new.adminCreatesPasswordAccounts)
     ]
+  pure new
+
+-- | Check and store the plugins off for the whole wiki: at most
+-- 'maxPluginsOff' of them.
+setWikiPluginsOffTx :: WikiPlugins -> Tx WikiPlugins
+setWikiPluginsOffTx new = do
+  requireAdministrator
+  when (Set.size new.off > maxPluginsOff) $
+    invalid ("The wiki turns off at most " <> show maxPluginsOff <> " plugins.")
+  db (storePluginsOff new.off)
+  record
+    "settings.plugins"
+    (settingsSubject "the plugins off for everyone")
+    [("off", if Set.null new.off then "none" else T.intercalate ", " (map (\p -> p.text) (Set.toList new.off)))]
   pure new
 
 -- | Change only the shared front page, preserving other server settings.

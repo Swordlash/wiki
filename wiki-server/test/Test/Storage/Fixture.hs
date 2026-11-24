@@ -116,6 +116,7 @@ tableRows st = reading st rows
         , dump "email_verifications" wikiDb.email_verifications
         , dump "passkeys" wikiDb.passkeys
         , dump "api_keys" wikiDb.api_keys
+        , dump "user_plugins" wikiDb.user_plugins
         , dump "vaults" wikiDb.vaults
         , dump "vault_items" wikiDb.vault_items
         , dump "public_keys" wikiDb.public_keys

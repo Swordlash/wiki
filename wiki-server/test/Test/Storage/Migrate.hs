@@ -6,6 +6,7 @@
 module Test.Storage.Migrate (spec) where
 
 import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time (getCurrentTime)
 import Database.Beam (all_, insert, insertValues, runInsert, runSelectReturningList, select)
@@ -14,12 +15,14 @@ import Test.Database (Backing (..), forgetStep, withConnectionTo)
 import Test.Hspec
 import Test.Storage.Fixture (demoArchive, ok, withEmptyPlaceIn)
 import Wiki.Api.ApiKeys (ApiKeyInfo (..), KeyRight (..), MadeApiKey (..), NewApiKey (..))
+import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..))
 import Wiki.Api.Vault (StoredVault (..))
 import Wiki.Core.Assistant.Vault (Sealed (..), Vault (..), VaultTag (..), vaultFormat, withSealed)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Server.ApiKeys (KeyHolder (..), KeyOutcome (..), makeApiKey, signInByKey)
 import Wiki.Server.Limiter (defaultLimits, newLimiter)
-import Wiki.Server.Storage (CheckProblem (..), Checked (..), Migrated (..), Place, TableRead (..), checkDatabase, closeStorage, defaultConfig, importArchive, migrateDatabase, openStorage, withStorage)
+import Wiki.Server.Plugins (pluginsFor, setPluginState)
+import Wiki.Server.Storage (CheckProblem (..), Checked (..), Migrated (..), Place, TableRead (..), Who (..), checkDatabase, closeStorage, defaultConfig, importArchive, migrateDatabase, openStorage, withStorage)
 import Wiki.Server.Storage.Backend (Backend (..))
 import Wiki.Server.Storage.Migrate
 import Wiki.Server.Storage.Rows (micro)
@@ -65,6 +68,7 @@ wikiTables =
   , "stars"
   , "threads"
   , "totp"
+  , "user_plugins"
   , "users"
   , "vault_items"
   , "vaults"
@@ -137,6 +141,21 @@ spec backing = describe "the schema's versions" $ do
         limiter <- newLimiter defaultLimits
         signInByKey st limiter now "127.0.0.1" made.key
           `shouldReturn` KeySignedIn KeyHolder {user = UserId "user-editor", key = made.info.id, right = ReadRight}
+
+  -- Step 25 (the plugins' state per user), applied in the same way to a
+  -- wiki of the steps before it.
+  it "add the users' plugins' table to a wiki of the steps before, which keeps its users and whose users then choose" $
+    withEmptyPlaceIn backing $ \at -> do
+      withStorage defaultConfig at $ \st -> importArchive st demoArchive >>= ok
+      withConnectionTo at $ \c -> do
+        let known = knownVersion (schemaSuffix c)
+        forgetStep 25 ["DROP TABLE user_plugins;"] c
+        versionsOf c `shouldReturn` [1 .. known]
+        tablesOf c `shouldReturn` wikiTables
+      withStorage defaultConfig at $ \st -> do
+        _ <- setPluginState st (UserId "user-editor") (PluginId "assistant") PluginOff >>= ok
+        (\p -> p.mine) <$> pluginsFor st (AsUser (UserId "user-editor"))
+          `shouldReturn` Map.fromList [(PluginId "assistant", PluginChoice {state = PluginOff, options = Nothing})]
 
   it "apply nothing a second time, and change nothing" $
     withEmptyPlaceIn backing $ \at -> withConnectionTo at $ \c -> do

@@ -9,7 +9,7 @@
 -- that name, a search with a hit that spells out the query it read.
 module Test.Server (spec) where
 
-import Data.Aeson (FromJSON, ToJSON, decode, encode)
+import Data.Aeson (FromJSON, ToJSON, decode, encode, toJSON)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
 import Data.CaseInsensitive qualified as CI
@@ -39,6 +39,7 @@ import Wiki.Api.Info (Capabilities (..), SearchKind (..), ServerInfo (..))
 import Wiki.Api.Links (attachmentUrl, avatarUrl, links, pageExportUrl, searchQueryOf, searchUrl, spaceExportUrl, spaceIconUrl)
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), NotificationSettingsChange (..), Notifications (..), ReadMark (..), Watching (..), feedAddressOf)
 import Wiki.Api.Opaque (LoginChallenge (..), LoginFinish (..), LoginStart (..), Message (..), NewAccountRecord (..), OldPasswordProof (..), PasswordRecord (..), PasswordRecordChange (..), ProofStart (..), RegistrationChallenge (..), RegistrationFor (..), RegistrationStart (..), Stretch (..))
+import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginOptions (..), PluginState (..), PluginStateChange (..), WikiPlugins (..))
 import Wiki.Api.Security (CurrentPassword (..), EmailChange (..), EmailState (..), OneTimeCode (..), RecoveryCodes (..), ResetRequest (..), ResetToken (..), SecondFactorState (..), SessionRef (..), UnsubscribeToken (..), VerificationToken (..))
 import Wiki.Api.ServerSettings (MailTest (..), MailTestResult (..), ProviderChange, ProviderCheck (..), ProviderSettingsOf (..), SecretState (..), ServerSettingsOf (..))
 import Wiki.Api.Stars (StarredPage (..), Starring (..))
@@ -165,6 +166,11 @@ stubs =
           , apiKeys = pure [Sample.apiKeyInfo, Sample.revokedKeyInfo]
           , makeApiKey = \new -> if new.password /= Just (Password "secret") then refuse Unauthenticated else if new.right == AdminRight then refuse Forbidden else pure Sample.madeApiKey
           , revokeApiKey = \i -> if i == Sample.apiKeyInfo.id then pure [Sample.apiKeyInfo {revokedAt = Just Sample.later}, Sample.revokedKeyInfo] else refuse NotFound
+          , -- The assistant's options are the sample's; another plugin has
+            -- none, so each answer shows which plugin and what body arrived.
+            setPluginState = \p body -> pure PluginChoice {state = body.state, options = if p == PluginId "assistant" then Just "kept" else Nothing}
+          , setPluginOptions = \p body -> pure PluginChoice {state = if p == PluginId "assistant" then PluginOn else PluginDefault, options = Just body.value}
+          , clearPluginOptions = \p -> pure PluginChoice {state = if p == PluginId "assistant" then PluginOn else PluginDefault, options = Nothing}
           , secondFactorState = pure Sample.secondFactor
           , enrolTotp = \body -> if body.password == Just (Password "the current one") then pure Sample.enrolment else refuse Unauthenticated
           , confirmTotp = \body -> if body.code == "287082" then pure RecoveryCodes {codes = ["abcd-efgh-ijkl-mnop"]} else refuse Unauthenticated
@@ -308,6 +314,8 @@ stubs =
                     else refuse NotFound
           , settings = pure Sample.settings
           , setSettings = pure
+          , plugins = pure Sample.wikiPlugins
+          , setPlugins = pure
           , invitations = pure Sample.invitations
           , invite = \body -> pure (invitedAs body.email)
           , revokeInvitation = \i -> if i == InvitationId "i1" then pure NoContent else refuse NotFound
@@ -373,6 +381,7 @@ stubs =
           , beginAssertion = pure Sample.assertionOptions
           , finishAssertion = \_ -> pure Sample.passkeyInfo
           }
+    , plugins = pure Sample.plugins
     , -- The routes of encrypted spaces know no space: the server's own
       -- tests ("Test.Server.Encrypted" of wiki-server) answer them.
       encrypted =
@@ -662,6 +671,27 @@ spec = describe "a server of the API's type" $ do
       answers (sendJson methodPost k.makeApiKey NewApiKey {name = "", right = AdminRight, expiresAt = Nothing, password = Just (Password "secret")}) 403 Forbidden
       answers (request methodPost (k.revokeApiKey Sample.apiKeyInfo.id) [] "") 200 [Sample.apiKeyInfo {revokedAt = Just Sample.later}, Sample.revokedKeyInfo]
       answers (request methodPost (k.revokeApiKey (ApiKeyId "other")) [] "") 404 NotFound
+    it "reads what is on, sets a plugin's state and its options apart, and reads and sets the wiki's set" $ do
+      let k = links.account
+          assistant = PluginId "assistant"
+          jsonBodyOf = request methodPut (k.setPluginOptions assistant) [(hContentType, "application/json")]
+      (links.plugins, k.setPluginState assistant, k.setPluginOptions assistant, k.clearPluginOptions assistant, links.admin.plugins, links.admin.setPlugins)
+        `shouldBe` ("api/v1/plugins", "api/v1/account/plugins/assistant/state", "api/v1/account/plugins/assistant/options", "api/v1/account/plugins/assistant/options", "api/v1/admin/plugins", "api/v1/admin/plugins")
+      answers (getAt links.plugins) 200 Sample.plugins
+      answers (sendJson methodPut (k.setPluginState assistant) PluginStateChange {state = PluginOff}) 200 PluginChoice {state = PluginOff, options = Just "kept"}
+      answers (sendJson methodPut (k.setPluginState (PluginId "word-count")) PluginStateChange {state = PluginDefault}) 200 PluginChoice {state = PluginDefault, options = Nothing}
+      -- The options are the body itself, any JSON value but null, of at
+      -- most 16 kB as sent, spaces included.
+      answers (sendJson methodPut (k.setPluginOptions assistant) PluginOptions {value = toJSON [True, False]}) 200 PluginChoice {state = PluginOn, options = Just (toJSON [True, False])}
+      answers (request methodDelete (k.clearPluginOptions assistant) [] "") 200 PluginChoice {state = PluginOn, options = Nothing}
+      status <$> jsonBodyOf "null" `shouldReturn` 400
+      status <$> jsonBodyOf (BSL.fromStrict (BS.replicate (16 * 1024 - 2) 0x20) <> "{}") `shouldReturn` 200
+      status <$> jsonBodyOf (BSL.fromStrict (BS.replicate (16 * 1024 - 1) 0x20) <> "{}") `shouldReturn` 400
+      -- An id that is not one is refused before any handler.
+      status <$> request methodPut "api/v1/account/plugins/Assistant/state" [(hContentType, "application/json")] (encode PluginStateChange {state = PluginOn}) `shouldReturn` 400
+      answers (getAt links.admin.plugins) 200 Sample.wikiPlugins
+      answers (sendJson methodPut links.admin.setPlugins WikiPlugins {off = mempty}) 200 WikiPlugins {off = mempty}
+      status <$> request methodPut links.admin.setPlugins [(hContentType, "application/json")] "{\"off\": [\"9lives\"]}" `shouldReturn` 400
     it "signs in with a passkey, alone or as the second step, in two steps each" $ do
       (links.beginPasskeySignIn, links.beginSecondFactorPasskey) `shouldBe` ("api/v1/session/passkey", "api/v1/session/second-factor/passkey")
       answers (request methodPost links.beginPasskeySignIn [] "") 200 anyPasskey

@@ -109,6 +109,7 @@ import Wiki.Api.Links (interactiveParameter, searchQueryOf)
 import Wiki.Api.Notifications (Watching (..))
 import Wiki.Api.Opaque (LoginChallenge (..), LoginFinish (..), LoginStart (..), Message, NewAccountRecord (..), OldPasswordProof (..), PasswordRecordChange (..), ProofStart (..), RegistrationFor (..), RegistrationStart (..), Stretch)
 import Wiki.Api.Opaque qualified as Opaque
+import Wiki.Api.Plugins (PluginOptions (..), PluginStateChange (..))
 import Wiki.Api.Security (CurrentPassword (..), EmailChange (..), EmailState (..), OneTimeCode (..), RecoveryCodes (..), ResetRequest (..), ResetToken (..), TotpEnrolment (..), VerificationToken)
 import Wiki.Api.ServerSettings (Discovered (..), HomePage (showAnonymous), MailTest (..), MailTestResult (..), ProviderChange, ProviderCheck (..), ProviderSettingsOf (..), ServerSettingsOf (..), defaultHomePage, named, providerProblems, providerWith, redirectUri, secretState, serviceOrigin)
 import Wiki.Api.Stars (Starring (..))
@@ -156,6 +157,7 @@ import Wiki.Server.Metrics (Metrics)
 import Wiki.Server.Oidc (Endpoints (..), Flows, Provider, ProviderCache, endpointsOf, freshProvider, optionOf, providersFor, signInProvider)
 import Wiki.Server.Opaque (Attempt (..), Attempts, Proof (..), Proofs, attemptLifetime, holdAttempt, prove, recordFromStored, registrationChallenge, respondTo, takeAttempt, takeProof)
 import Wiki.Server.Password (SessionToken (..), newToken, tokenHash)
+import Wiki.Server.Plugins qualified as Plugins
 import Wiki.Server.Reset qualified as Reset
 import Wiki.Server.SecondFactor (CodeRefusal (..), PendingSignIn (..), PendingSignIns, PendingToken (..), checkCode, confirm, enrol, finishPending, holdSignIn, pendingCookie, pendingSignIn, secondFactorState, wrongCode)
 import Wiki.Server.SecondFactor qualified as SecondFactor
@@ -779,6 +781,15 @@ handlers env caller =
               u <- signedInUser
               now <- liftIO getCurrentTime
               liftIO (ApiKeys.revokeApiKey env.storage now u i) >>= either (throwError . wikiError) pure
+          , -- A user's own plugins ("Wiki.Server.Plugins"): each request
+            -- writes the state or the options, never both, so that a tab
+            -- that flips the switch does not write back the options another
+            -- tab saved meanwhile, nor the other way round. The operator,
+            -- who is no user, has none, and is refused as on the other
+            -- addresses of the account.
+            setPluginState = \p body -> signedInUser >>= \u -> liftIO (Plugins.setPluginState env.storage u p body.state) >>= either (throwError . wikiError) pure
+          , setPluginOptions = \p body -> signedInUser >>= \u -> liftIO (Plugins.setPluginOptions env.storage u p (Just body.value)) >>= either (throwError . wikiError) pure
+          , clearPluginOptions = \p -> signedInUser >>= \u -> liftIO (Plugins.setPluginOptions env.storage u p Nothing) >>= either (throwError . wikiError) pure
           , secondFactorState = signedInUser >>= liftIO . secondFactorState env.storage
           , enrolTotp = \body -> do
               u <- signedInUser
@@ -863,6 +874,10 @@ handlers env caller =
           , restore = \p at current -> versioned <$> wiki (restoreVersion p at.time current.time)
           , export = \p format request respond -> liftIO (exporting request respond (\key -> exportPage env.exports env.texEngine key env.storage who p format))
           }
+    , -- What is on, for whoever asks: someone not signed in and the
+      -- operator get the wiki's set with no choices of their own. A closed
+      -- wiki refuses someone not signed in before this ("Wiki.Server.App").
+      plugins = liftIO (Plugins.pluginsFor env.storage who)
     , encrypted =
         EncryptedApi
           { space = wiki . spaceEncryption
@@ -966,6 +981,8 @@ handlers env caller =
           , removeUser = \u -> wiki (removeUser u) $> NoContent
           , settings = wiki wikiSettings
           , setSettings = wiki . setWikiSettings
+          , plugins = wiki wikiPluginsOff
+          , setPlugins = wiki . setWikiPluginsOff
           , invitations = do
               listed <- wiki invitations
               mailing <- isJust <$> liftIO (currentMailer env)

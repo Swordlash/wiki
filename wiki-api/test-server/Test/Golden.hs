@@ -27,6 +27,7 @@ import Wiki.Api.Events (ClientMessage (..), PageEvent (..), Readers (..), Server
 import Wiki.Api.Info (Capabilities (..), Health (..), SearchKind (..), ServerInfo (..))
 import Wiki.Api.Notifications (NotificationSettingsChange (..), ReadMark (..), Watching (..))
 import Wiki.Api.Opaque (LoginChallenge (..), LoginFinish (..), LoginStart (..), Message (..), NewAccountRecord (..), PasswordRecord (..), PasswordRecordChange (..), ProofStart (..), RegistrationChallenge (..), RegistrationFor (..), RegistrationStart (..), Stretch (..))
+import Wiki.Api.Plugins (PluginState (..), PluginStateChange (..))
 import Wiki.Api.Security (CurrentPassword (..), EmailChange (..), OneTimeCode (..), RecoveryCodes (..), ResetRequest (..))
 import Wiki.Api.ServerSettings (MailTest (..), MailTestResult (..), ProviderCheck (..), SecretState (..), ServerSettingsChange, noServerSettings)
 import Wiki.Api.Stars (Starring (..))
@@ -70,6 +71,8 @@ spec = describe "golden JSON" $ do
     golden "passkeys" [Sample.passkeyInfo]
     golden "api-keys" [Sample.apiKeyInfo, Sample.revokedKeyInfo]
     golden "made-api-key" Sample.madeApiKey
+    golden "plugins" Sample.plugins
+    golden "wiki-plugins" Sample.wikiPlugins
     golden "registration-options" Sample.registrationOptions
     golden "assertion-options" Sample.assertionOptions
     golden "health" Health {status = "ok", schemaVersion = 9, lastBackupAgeSeconds = Just 3600}
@@ -150,6 +153,7 @@ spec = describe "golden JSON" $ do
     golden "error-second-factor-required" SecondFactorRequired
   describe "requests" $ do
     golden "new-space" NewSpace {parent = Just (SpaceId "s1"), name = "Guides"}
+    golden "plugin-state-change" PluginStateChange {state = PluginDefault}
     golden "new-api-key" NewApiKey {name = "Laptop assistant", right = WriteRight, expiresAt = Nothing, password = Just (Password "correct horse battery staple")}
     golden "space-name" SpaceName {name = "Guides"}
     golden "space-public" SpacePublic {public = True}

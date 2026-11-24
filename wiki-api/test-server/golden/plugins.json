@@ -1,0 +1,26 @@
+{
+  "mine": {
+    "assistant": {
+      "options": {
+        "floating": true,
+        "model": "claude-opus"
+      },
+      "state": "on"
+    },
+    "errors": {
+      "options": null,
+      "state": "off"
+    },
+    "word-count": {
+      "options": [
+        1,
+        2,
+        3
+      ],
+      "state": "default"
+    }
+  },
+  "offForWiki": [
+    "errors"
+  ]
+}

@@ -34,6 +34,7 @@ import Test.Server.Observability qualified as Observability
 import Test.Server.Oidc qualified as Oidc
 import Test.Server.Opaque qualified as Opaque
 import Test.Server.Options qualified as Options
+import Test.Server.Plugins qualified as Plugins
 import Test.Server.Presence qualified as Presence
 import Test.Server.ProgramApi qualified as ProgramApi
 import Test.Server.Rehearsal qualified as Rehearsal
@@ -131,6 +132,7 @@ main = secureMain $ do
           Backups.spec b
           BasicSignIn.spec b
           ApiKeys.spec b
+          Plugins.spec b
           McpApi.spec b
           Oidc.spec b
           Export.spec b

@@ -76,6 +76,7 @@ library
       Wiki.Api.Links
       Wiki.Api.Notifications
       Wiki.Api.Opaque
+      Wiki.Api.Plugins
       Wiki.Api.Security
       Wiki.Api.ServerSettings
       Wiki.Api.Stars

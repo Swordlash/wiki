@@ -7,6 +7,7 @@
 module Test.Storage.Audit (spec) where
 
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time (getCurrentTime)
 import Database.Beam (all_, insert, insertValues, runInsert, runSelectReturningList, select)
@@ -21,6 +22,7 @@ import Wiki.Api.Admin (Directory (..), Invitation (..), Invitations (..), WikiSe
 import Wiki.Api.Backups (BackupSettingsOf (..), DestinationOf (..), defaultBackupSettings)
 import Wiki.Api.Import (importEverything)
 import Wiki.Api.Opaque (Message (..), NewAccountRecord (..), PasswordRecord (..))
+import Wiki.Api.Plugins (PluginId (..), WikiPlugins (..))
 import Wiki.Api.ServerSettings (MailSettingsOf (..), Security (..), ServerSettingsOf (..), noServerSettings)
 import Wiki.App.Backend
 import Wiki.App.Backend.Admin (MonadAdmin (..))
@@ -179,6 +181,10 @@ eachWrite backing = describe "has one entry for each write of the administration
   it "the wiki's settings, and invitations made and revoked" $ withDemo backing $ \st -> do
     settings <- recordsOne st (as st "admin" (setWikiSettings WikiSettings {access = Closed, newAccountsCreateSpaces = True, adminCreatesPasswordAccounts = False}))
     summary settings `shouldBe` ("settings.wiki", "settings", "whom the wiki lets in", [("access", "closed"), ("administration creates accounts with a password", "no"), ("new accounts create spaces", "yes")])
+    plugins <- recordsOne st (as st "admin" (setWikiPluginsOff WikiPlugins {off = Set.fromList [PluginId "errors", PluginId "assistant"]}))
+    summary plugins `shouldBe` ("settings.plugins", "settings", "the plugins off for everyone", [("off", "assistant, errors")])
+    allOn <- recordsOne st (as st "admin" (setWikiPluginsOff WikiPlugins {off = Set.empty}))
+    summary allOn `shouldBe` ("settings.plugins", "settings", "the plugins off for everyone", [("off", "none")])
     invited <- recordsOne st (as st "admin" (invite "bea@example.org"))
     summary invited `shouldBe` ("invitation.create", "invitation", "bea@example.org", [])
     i <- as st "admin" invitations >>= ok >>= \is -> maybe (assertFailure "no invitation") pure (head is.invitations)

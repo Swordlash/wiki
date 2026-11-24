@@ -11,5 +11,5 @@ title: A new API key shows how to add the wiki to Claude Code
   the other two are:
 
   ```sh
-  claude mcp add --transport http wiki https://wiki.example/mcp --header "Authorization: Bearer wiki_m3k7q2xa9dwn4zrt_…"
+  claude mcp add --transport http wiki 'https://wiki.example/mcp' --header 'Authorization: Bearer wiki_m3k7q2xa9dwn4zrt_…'
   ```

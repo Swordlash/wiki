@@ -408,19 +408,29 @@ programAddress origin router = T.dropWhileEnd (== '/') (T.dropWhileEnd (== '/') 
 -- | The examples of a key's use shown with it, each with a label when the
 -- command alone does not say what it is for: a request with @curl@, the
 -- wiki's shell client (@clients\/wiki.sh@), and the line that adds the
--- wiki's MCP server (@\/mcp@) to Claude Code, as the README's "MCP" gives
--- it. All three are at the wiki's address.
+-- wiki's MCP server (@\/mcp@) to Claude Code. All three are at the wiki's
+-- address. Every value taken from the address or the key goes through
+-- 'shellWord', so a pasted example stays one command whatever characters
+-- the wiki's base path holds (@&@, @;@, a single quote).
 examples :: Text -> Text -> [(Maybe Text, Text)]
 examples given key =
-  [ (Nothing, "curl -H 'Authorization: Bearer " <> key <> "' '" <> address <> "/api/list/'")
-  , (Nothing, "WIKI_TOKEN='" <> key <> "' WIKI_URL='" <> address <> "' sh wiki.sh list")
+  [ (Nothing, "curl -H " <> shellWord bearer <> " " <> shellWord (address <> "/api/list/"))
+  , (Nothing, "WIKI_TOKEN=" <> shellWord key <> " WIKI_URL=" <> shellWord address <> " sh wiki.sh list")
   ,
     ( Just "For an assistant such as Claude Code, through this wiki's MCP server:"
-    , "claude mcp add --transport http wiki " <> address <> "/mcp --header \"Authorization: Bearer " <> key <> "\""
+    , "claude mcp add --transport http wiki " <> shellWord (address <> "/mcp") <> " --header " <> shellWord bearer
     )
   ]
   where
     address = T.dropWhileEnd (== '/') given
+    bearer = "Authorization: Bearer " <> key
+
+-- | A text as one word of a POSIX shell's command line: in single quotes,
+-- where nothing is special, and each single quote of the text written as
+-- @'\\''@ (the quoted part closed, a quote escaped, a new quoted part
+-- opened).
+shellWord :: Text -> Text
+shellWord t = "'" <> T.replace "'" "'\\''" t <> "'"
 
 -- | A time, in words for a person to read, in UTC, as the security panel
 -- writes it.

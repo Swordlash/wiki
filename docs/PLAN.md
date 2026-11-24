@@ -2333,7 +2333,7 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   either the whole section is inside the spoiler, where it may have
   subsections of its own, or a spoiler in a section's text has no
   sections in it; the headings inside a spoiler form an outline
-  confined to it. **Writing one section: #352, his decisions of the
+  confined to it. **Writing one section: merged (#352), his decisions of the
   same day:** the server adds a final line break; a write that
   changes anything outside its own part is refused (422); a body may
   change its own heading, and the answer gives the new anchor; a
@@ -2385,21 +2385,36 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   `MonadSecurity`, the key shown once with examples for `curl` and
   `wiki.sh`: merged (#356); the example for MCP is added when #353
   is merged, and the README's sentence "When API keys exist,
-  `WIKI_TOKEN` …" is stale. **MCP: open
-  (#353, stacked on #352)**, as recommended below, with eight tools
+  `WIKI_TOKEN` …" is stale (both on the branch
+  `keys-panel-mcp-example`). **MCP: merged (#353)**, as recommended
+  below, with eight tools
   (the five below, `wiki_page_outline`, `wiki_read_section`,
   `wiki_create_page`); the library's callback is given the token
   alone, so the wiki signs in before it and builds the library's
   application for each request; the library puts the instructions
   where a client of the older handshake does not look, and prints to
   stderr outside the wiki's logger (worth an issue upstream, on the
-  owner's word). Then the handlers moved to
-  servant-server, and with that an OpenAPI description of the API
-  generated from its servant type (the owner, 2026-11-23:
-  "servant-openapi3"), served by the wiki and checked in a test
-  against the routes, so that it cannot drift; if `servant-openapi3`
-  does not build on GHC 9.14, another maintained package, said in the
-  report; MCP. **For MCP the session looked into the options (2026-11-23,
+  owner's word); a tool's `path` is exactly an absolute path or a
+  full address of the wiki's own origin, read with `network-uri`,
+  everything else refused; a tool that writes one section is being
+  built (branch `mcp-write-section`). **The handlers are on
+  servant-server, with an OpenAPI description generated from the
+  API's type: merged (#357)** (the owner, 2026-11-23:
+  "servant-openapi3"): one servant type in `wiki-server`
+  (`Wiki.Server.ProgramApi`), a sign-in combinator of the wiki's own
+  that an endpoint cannot be added without, every old answer kept
+  byte for byte but two (the reference's address with a final slash
+  now answers; an address with its slashes escaped, as a generated
+  client sends it, now reads as the plain one), `GET
+  /api/openapi.json` with a golden file and a test that every
+  operation's real answer is among those the document lists.
+  `openapi3` and `servant-openapi3` build on GHC 9.14.1 under
+  `allow-newer` for aeson and QuickCheck; the wasm plan is unchanged.
+  The document cannot say that an address spans several segments.
+  **Open from #338 after this:** sections in `clients/wiki.sh` (its
+  commands and its local MCP mode know whole pages only), a tool and
+  an endpoint for attachments, clients in other languages (the
+  OpenAPI document is what a generator takes). **For MCP the session looked into the options (2026-11-23,
   from the specification, Hackage and the clients' documentation):
   the wiki's own server is the MCP server.** One endpoint, `POST
   /mcp`, on the public listener, built on Hackage's `mcp-server`

@@ -91,6 +91,7 @@ import Wiki.Server.Health (healthApplication, metricsApplication)
 import Wiki.Server.ListApi (listApplication, searchApplication)
 import Wiki.Server.Log (Logger, logRequests)
 import Wiki.Server.MarkdownApi (Asking (..), markdownApplication, refusal)
+import Wiki.Server.McpApi (mcpApplication)
 import Wiki.Server.Metrics (observe)
 import Wiki.Server.Render (renderPage, routeAddress, routeOf)
 import Wiki.Server.Routes (routePattern)
@@ -315,6 +316,12 @@ listenerRoutes logger env site l caller loggedAs request respond = do
             EveryoneAdministers -> notFound
           "api" : "search" : endpoint | endpoint `elem` [[], [""]] -> case l.finding of
             BySession _ -> searchApplication env l.mount asking request respond
+            EveryoneAdministers -> notFound
+          -- The MCP server, signed in by an API key, never by the cookie
+          -- ("Wiki.Server.McpApi"): on the public listener only, as the
+          -- API for programs is.
+          ["mcp"] -> case l.finding of
+            BySession _ -> mcpApplication env l.mount caller.origins asking request respond
             EveryoneAdministers -> notFound
           rest@("api" : "v1" : endpoint)
             -- An API key signs in only to the API for programs: here the

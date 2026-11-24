@@ -1,5 +1,3 @@
-{-# LANGUAGE MultiWayIf #-}
-
 -- | The API for a page's Markdown (WP5.138 of docs/PLAN.md, its first
 -- cut): what programs on a user's own machine (a local assistant, later an
 -- MCP server) use to read a page's Markdown and write it back. It lives
@@ -64,11 +62,17 @@ module Wiki.Server.MarkdownApi
   ( markdownApplication
   , markdownMediaType
 
+    -- * A page's Markdown, read and written
+  , findPage
+  , Put (..)
+  , putMarkdown
+
     -- * What the API for programs shares
   , Asking (..)
   , Credential (..)
   , credentialOf
   , signedInProgram
+  , signInWithKey
   , runAs
   , refusal
   , refusalWith
@@ -141,15 +145,9 @@ markdownApplication env mount asking@Asking {address} segments request respond =
     prefix = encodeUtf8 mount <> "api/markdown"
     pagePath = fromMaybe "/" (BS.stripPrefix prefix (rawPathInfo request)) <> rawQueryString request
     signedIn = signedInProgram env asking request respond
-    run :: UserId -> StoredWiki IO a -> IO a
-    run = runAs env address
-    -- The page a space's path and the page's path under its home page name,
-    -- as the user may see it.
-    pageOf :: UserId -> [Slug] -> [Slug] -> IO (Either WikiError Page)
-    pageOf u sp pp = run u (getSpace sp) >>= either (pure . Left) (\s -> run u (getPage s.id pp))
     onPage u sp pp
       | readOnly =
-          pageOf u sp pp >>= \case
+          findPage env address u sp pp >>= \case
             Left e -> respond (wikiRefusal e)
             Right p -> respond (responseLBS status200 [(hContentType, markdownMediaType), etag p, (hCacheControl, "private, no-store")] (toS (encodeUtf8 p.body)))
       | requestMethod request == methodPut =
@@ -159,7 +157,7 @@ markdownApplication env mount asking@Asking {address} segments request respond =
             (Right expected, Just createOnly) ->
               decodeUtf8' . toS <$> strictRequestBody request >>= \case
                 Left _ -> respond (refusal status400 "Invalid" (Just "The body is not UTF-8 text."))
-                Right body -> writeAt u sp pp expected createOnly body
+                Right body -> putMarkdown env address u sp pp expected createOnly newPage body >>= respond . putAnswer sp pp
       | otherwise = respond (notAllowed [methodGet, methodHead, methodPut])
     -- Whether an If-None-Match makes the PUT create only: 'Nothing' for a
     -- value other than @*@, which this API does not take.
@@ -167,66 +165,124 @@ markdownApplication env mount asking@Asking {address} segments request respond =
       Nothing -> Just False
       Just v | T.strip (decodeUtf8With lenientDecode v) == "*" -> Just True
       Just _ -> Nothing
-    -- Write the body at the address: over the page there, or as a new page
-    -- where there is none and nothing in the request forbids making one.
-    writeAt u sp pp expected createOnly body =
-      run u (getSpace sp) >>= \case
-        Left e -> respond (wikiRefusal e)
-        Right s ->
-          run u (getPage s.id pp) >>= \case
-            Right _
-              | createOnly -> respond exists
-              | otherwise -> write u sp pp expected body (3 :: Int)
-            Left NotFound
-              | Just slug <- lastMay pp ->
-                  if isJust expected
-                    then respond (refusal status404 "NotFound" (Just "There is no page here, and If-Match names a version of a page that is: leave If-Match out to create the page."))
-                    else create u s sp pp slug createOnly body
-            Left e -> respond (wikiRefusal e)
-    -- Create the page at the address, under the page that the slugs before
-    -- its own slug name. A page made at the address since the read above is
-    -- written over, as any page there is, unless the request creates only.
-    create u s sp pp slug createOnly body = case (parameter request "title", parameter request "kind") of
-      (Left why, _) -> respond (refusal status400 "Invalid" (Just why))
-      (_, Left why) -> respond (refusal status400 "Invalid" (Just why))
-      (Right title, Right kind) ->
-        parentOf u s pp >>= \case
-          Left refused -> respond refused
+    -- The title and the kind of a page the PUT creates, from the query.
+    newPage = case (parameter request "title", parameter request "kind") of
+      (Left why, _) -> Left why
+      (_, Left why) -> Left why
+      (Right title, Right kind) -> Right (title, maybe Document pageKindOf kind)
+    -- The answer to a PUT: 204 for a save, 201 for a new page, each with
+    -- the page's new version; 412 for a page saved since the version in
+    -- If-Match, or for one there when If-None-Match: * creates only.
+    putAnswer sp pp = \case
+      Saved saved -> responseLBS status204 [etag saved] ""
+      Created page -> responseLBS status201 [(hLocation, encodeUtf8 (addressUnder mount "api/markdown" (Route.pageRoute sp pp))), etag page, (hCacheControl, "no-store")] ""
+      Moved -> refusal status412 "Conflict" (Just "The page has been saved since the version in If-Match: read it again, and write over that version.")
+      Exists -> refusal status412 "Conflict" (Just "There is a page here already, and If-None-Match: * asks to create one only where there is none.")
+      NoPage -> refusal status404 "NotFound" (Just "There is no page here, and If-Match names a version of a page that is: leave If-Match out to create the page.")
+      NoPageAbove above -> refusal status404 "NotFound" (Just ("The page above it, " <> renderPath above <> ", is not there: create that page first."))
+      NewPageInvalid why -> refusal status400 "Invalid" (Just why)
+      PutRefused e -> wikiRefusal e
+    etag p = ("ETag", toHeader (pageVersion p))
+
+-- | The page that a space's path and a page's path under its home page
+-- name, as a user may see it, for a request from this address. A space's
+-- home page is the page at the empty path.
+findPage :: Env -> Text -> UserId -> [Slug] -> [Slug] -> IO (Either WikiError Page)
+findPage env address u sp pp = runAs env address u (getSpace sp) >>= either (pure . Left) (\s -> runAs env address u (getPage s.id pp))
+
+-- | 'Put' is what a write of a page's whole Markdown came to
+-- ('putMarkdown'). Only 'Saved' and 'Created' wrote anything.
+data Put
+  = -- | Saved over the page that was there: the page after the save.
+    Saved Page
+  | -- | Created where there was no page: the new page.
+    Created Page
+  | -- | The page has been saved since the version the write named.
+    Moved
+  | -- | A page is there, and the write asked to create one only.
+    Exists
+  | -- | No page is there, and the write named a version of one.
+    NoPage
+  | -- | No page is there, and neither is the page above the address, at
+    -- this path: nothing is created on the way.
+    NoPageAbove [Slug]
+  | -- | The title or the kind given for a new page is not valid: why.
+    NewPageInvalid Text
+  | -- | The wiki refused: not found, forbidden, an encrypted space.
+    PutRefused WikiError
+
+-- | 'putMarkdown' writes a page's whole Markdown at a space's path and a
+-- page's path, as a user, for a request from this address. The HTTP API's
+-- @PUT@ and the MCP server's tools ("Wiki.Server.McpApi") both write
+-- through it, so that a page is written one way whoever asks.
+--
+-- The body goes over the page there, through the same 'savePage' as a
+-- save from the editor, or makes a new page where there is none. A version
+-- ('Just') makes the write conditional: a page saved since is 'Moved', and
+-- nothing is written; a write with a version never creates. Without a
+-- version, the write goes over whatever is there: the page is read, and a
+-- save between that read and the write makes both be tried again, a few
+-- times. Create only ('True') writes nowhere a page already is.
+--
+-- A new page is made through 'createPageAt', the application's "New page"
+-- with the slug given (the address's last slug), under the page that the
+-- slugs before it name. Its title and kind are the ones given, or 'Left'
+-- why the ones given are not valid, which matters only when a page is
+-- created. Without a title, the title is made from the slug.
+putMarkdown :: Env -> Text -> UserId -> [Slug] -> [Slug] -> Maybe PageVersion -> Bool -> Either Text (Maybe Text, PageKind) -> Text -> IO Put
+putMarkdown env address u sp pp expected createOnly newPage body =
+  run (getSpace sp) >>= \case
+    Left e -> pure (PutRefused e)
+    Right s ->
+      run (getPage s.id pp) >>= \case
+        Right _
+          | createOnly -> pure Exists
+          | otherwise -> write (3 :: Int)
+        Left NotFound
+          | Just slug <- lastMay pp ->
+              if isJust expected then pure NoPage else create s slug
+        Left e -> pure (PutRefused e)
+  where
+    run :: StoredWiki IO a -> IO a
+    run = runAs env address u
+    -- Create the page at the address. A page made at the address since the
+    -- read above is written over, as any page there is, unless the write
+    -- creates only.
+    create s slug = case newPage of
+      Left why -> pure (NewPageInvalid why)
+      Right (title, kind) ->
+        parentOf s >>= \case
+          Left refused -> pure refused
           Right parent ->
-            run u (createPageAt (maybe Document pageKindOf kind) s.id parent slug (fromMaybe (titleOfSlug slug) title) body) >>= \case
-              Right page -> respond (responseLBS status201 [(hLocation, encodeUtf8 (addressUnder mount "api/markdown" (Route.pageRoute sp pp))), etag page, (hCacheControl, "no-store")] "")
+            run (createPageAt kind s.id parent slug (fromMaybe (titleOfSlug slug) title) body) >>= \case
+              Right page -> pure (Created page)
               Left (Conflict _)
-                | createOnly -> respond exists
-                | otherwise -> write u sp pp Nothing body (3 :: Int)
-              Left e -> respond (wikiRefusal e)
+                | createOnly -> pure Exists
+                | otherwise -> write 3
+              Left e -> pure (PutRefused e)
     -- The page above a new page's address: 'Nothing' for a page at the top
     -- of the space's pages, under its home page.
-    parentOf u s pp = case initMay pp of
+    parentOf s = case initMay pp of
       Just above@(_ : _) ->
-        run u (getPage s.id above) <&> \case
+        run (getPage s.id above) <&> \case
           Right p -> Right (Just p.id)
-          Left NotFound -> Left (refusal status404 "NotFound" (Just ("The page above it, " <> renderPath above <> ", is not there: create that page first.")))
-          Left e -> Left (wikiRefusal e)
+          Left NotFound -> Left (NoPageAbove above)
+          Left e -> Left (PutRefused e)
       _ -> pure (Right Nothing)
-    exists = refusal status412 "Conflict" (Just "There is a page here already, and If-None-Match: * asks to create one only where there is none.")
-    -- Save the body over the page, against the version in If-Match, or
-    -- against the version just read when there is none. A save between that
-    -- read and this write is a conflict: with If-Match the answer is 412,
-    -- without it the read and the write are tried again, a few times.
-    write u sp pp expected body tries =
-      pageOf u sp pp >>= \case
-        Left e -> respond (wikiRefusal e)
+    -- Save the body over the page, against the version given, or against
+    -- the version just read when there is none.
+    write tries =
+      findPage env address u sp pp >>= \case
+        Left e -> pure (PutRefused e)
         Right p
-          | Just v <- expected, v /= pageVersion p -> respond moved
+          | Just v <- expected, v /= pageVersion p -> pure Moved
           | otherwise ->
-              run u (savePage p.id (maybe p.updatedAt (\v -> v.time) expected) p.title body) >>= \case
-                Right saved -> respond (responseLBS status204 [etag saved] "")
+              run (savePage p.id (maybe p.updatedAt (\v -> v.time) expected) p.title body) >>= \case
+                Right saved -> pure (Saved saved)
                 Left (Conflict _)
-                  | isJust expected -> respond moved
-                  | tries > 1 -> write u sp pp expected body (tries - 1)
-                Left e -> respond (wikiRefusal e)
-    moved = refusal status412 "Conflict" (Just "The page has been saved since the version in If-Match: read it again, and write over that version.")
-    etag p = ("ETag", toHeader (pageVersion p))
+                  | isJust expected -> pure Moved
+                  | tries > 1 -> write (tries - 1)
+                Left e -> pure (PutRefused e)
 
 -- | 'Asking' is what the listener knows of a request to the API for
 -- programs before it is signed in: the address it came from, and how to
@@ -312,35 +368,55 @@ signedInProgram env asking request respond continue = case credentialOf request 
         respond (refusalWith status429 [("Retry-After", show seconds)] "TooManyRequests" (Just ("Too many failed attempts to sign in as " <> T.strip login <> ": try again in " <> show seconds <> " seconds.")))
       SecondFactorOn ->
         respond (refusal status403 "Forbidden" (Just "This account signs in with a second factor, which a password alone cannot give: use an API key, which the account makes in its settings."))
-  Right (Key presented) -> do
-    now <- getCurrentTime
-    signInByKey env.storage env.keyFailures now asking.address presented >>= \case
-      KeySignedIn holder -> do
-        asking.loggedAs [("principal", "user:" <> holder.user.text), ("key", holder.key.text)]
-        lapsed <- case holder.right of
-          AdminRight -> not <$> isAdministrator env.storage asking.address holder.user
-          _ -> pure False
-        if
-          | lapsed ->
-              respond (refusal status403 "Forbidden" (Just "This key has the right admin, which only an administrator's key has, and its user is not an administrator any more: make another key."))
-          | not (allows holder.right (requestMethod request)) ->
-              respond . refusal status403 "Forbidden" . Just $
-                "This key has the right " <> rightName holder.right <> ", which only reads: a " <> decodeUtf8With lenientDecode (requestMethod request) <> " needs a key with the right write."
-          | otherwise -> continue holder.user
-      KeyRefused i why -> do
-        refusedKey i why
-        keyUnauthenticated
-      KeyLimited i why seconds -> do
-        refusedKey i why
-        respond (refusalWith status429 [("Retry-After", show seconds)] "TooManyRequests" (Just ("Too many requests with a wrong API key from this address: try again in " <> show seconds <> " seconds.")))
+  Right (Key presented) ->
+    signInWithKey env asking presented >>= \case
+      Left refused -> respond refused
+      Right holder
+        | not (allows holder.right (requestMethod request)) ->
+            respond . refusal status403 "Forbidden" . Just $
+              "This key has the right " <> rightName holder.right <> ", which only reads: a " <> decodeUtf8With lenientDecode (requestMethod request) <> " needs a key with the right write."
+        | otherwise -> continue holder.user
   where
     unauthenticated = do
       respond . refusalWith status401 [("WWW-Authenticate", "Basic realm=\"wiki\", charset=\"UTF-8\"")] "Unauthenticated" $
         Just "Sign in with your login and password (HTTP Basic), or with an API key (Authorization: Bearer, or X-API-Key). The login and password are wrong, or the account cannot sign in with a password: an account with passkeys only, or one that has not signed in since the wiki moved to its present passwords (sign in once in the browser)."
+
+-- | 'signInWithKey' signs in the API key a request presents, as sent: for
+-- the API for programs ('signedInProgram') and for the MCP server
+-- ("Wiki.Server.McpApi"), so that a key is checked one way wherever it is
+-- used. The result is who the key signed in, or the answer that refuses
+-- the request.
+--
+-- A key that does not sign in ("Wiki.Server.ApiKeys"' 'signInByKey') is
+-- 401, with one answer for every reason, and 429 once the request's
+-- address has failed too often. A key with the right @admin@ whose user is
+-- no longer an administrator is 403. The request's log line names the
+-- key's user and the key's id ('Asking'). A refused key is logged with
+-- why, and with its id when the key was well formed; never the key itself.
+signInWithKey :: Env -> Asking -> Text -> IO (Either Response KeyHolder)
+signInWithKey env asking presented = do
+  now <- getCurrentTime
+  signInByKey env.storage env.keyFailures now asking.address presented >>= \case
+    KeySignedIn holder -> do
+      asking.loggedAs [("principal", "user:" <> holder.user.text), ("key", holder.key.text)]
+      lapsed <- case holder.right of
+        AdminRight -> not <$> isAdministrator env.storage asking.address holder.user
+        _ -> pure False
+      pure $
+        if lapsed
+          then Left (refusal status403 "Forbidden" (Just "This key has the right admin, which only an administrator's key has, and its user is not an administrator any more: make another key."))
+          else Right holder
+    KeyRefused i why -> do
+      refusedKey i why
+      pure (Left keyUnauthenticated)
+    KeyLimited i why seconds -> do
+      refusedKey i why
+      pure (Left (refusalWith status429 [("Retry-After", show seconds)] "TooManyRequests" (Just ("Too many requests with a wrong API key from this address: try again in " <> show seconds <> " seconds."))))
+  where
     -- One answer for every refused key: the caller is not told whether
     -- the key is unknown, wrong, expired or revoked, or its user disabled.
     keyUnauthenticated =
-      respond . refusalWith status401 [("WWW-Authenticate", "Bearer realm=\"wiki\", error=\"invalid_token\"")] "Unauthenticated" $
+      refusalWith status401 [("WWW-Authenticate", "Bearer realm=\"wiki\", error=\"invalid_token\"")] "Unauthenticated" $
         Just "This API key does not sign in: it is not a key of this wiki, or it has expired or been revoked, or its user cannot sign in."
     refusedKey i why =
       logWith env.logger Warning ([("event", "api-key-refused"), ("why", refusalName why)] <> [("key", k.text) | Just k <- [i]] <> [("from", asking.address)])

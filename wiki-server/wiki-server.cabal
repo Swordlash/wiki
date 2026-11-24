@@ -113,6 +113,7 @@ library
         Wiki.Server.Log
         Wiki.Server.Mail
         Wiki.Server.MarkdownApi
+        Wiki.Server.McpApi
         Wiki.Server.Metrics
         Wiki.Server.Notifier
         Wiki.Server.Oidc
@@ -188,6 +189,7 @@ library
         http-client-tls,
         http-types,
         ki >= 1.0.1.2 && < 1.1,
+        mcp-server >= 0.3.0.1 && < 0.4,
         mime-mail,
         network,
         network-uri,
@@ -359,6 +361,7 @@ test-suite wiki-server-test
         Test.Server.Import
         Test.Server.Mail
         Test.Server.MarkdownApi
+        Test.Server.McpApi
         Test.Server.Metrics
         Test.Server.Notifications
         Test.Server.Observability
@@ -415,6 +418,7 @@ test-suite wiki-server-test
         http-client-tls,
         http-types,
         ki,
+        mcp-server,
         network,
         opaque-hs,
         optparse-applicative,

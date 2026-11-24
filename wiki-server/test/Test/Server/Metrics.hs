@@ -104,6 +104,7 @@ patterns = describe "routePattern" $ do
     onPublic "api/list" `shouldBe` "/api/list"
     onPublic "api/list/s/team/projects/" `shouldBe` "/api/list"
     onPublic "api/search" `shouldBe` "/api/search"
+    onPublic "mcp" `shouldBe` "/mcp"
     onPublic "auth/github/callback" `shouldBe` "/auth/:provider/callback"
     onPublic "auth/github/elsewhere" `shouldBe` "/auth/unmatched"
     onPublic "app.wasm" `shouldBe` "/static"

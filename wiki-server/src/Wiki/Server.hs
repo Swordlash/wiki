@@ -34,6 +34,7 @@ import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text qualified as T
 import Data.Time (getCurrentTime)
 import Ki qualified
+import MCP.Server (ephemeralStateCodec)
 import Network.Socket (AddrInfo (..), AddrInfoFlag (..), Family (..), SockAddr (..), Socket, SocketOption (..), SocketType (..), bind, close, defaultHints, getAddrInfo, getSocketName, listen, openSocket, setSocketOption)
 import Network.Wai.Handler.Warp (defaultSettings, defaultShouldDisplayException, runSettingsSocket, setGracefulShutdownTimeout, setOnException)
 import Network.Wai.Handler.WarpTLS (runTLSSocket)
@@ -144,6 +145,8 @@ withServerUsing given raw sendMail action = do
   proofs <- newProofs
   basicSignIns <- newBasicSignIns options.apiStretchBudget
   ceremonies <- newCeremonies
+  -- The MCP server's key for the state of its requests ("Wiki.Server.McpApi").
+  mcpState <- ephemeralStateCodec
   events <- newHub
   wake <- newWake
   exports <- newExports
@@ -199,6 +202,7 @@ withServerUsing given raw sendMail action = do
               , assistantHosts = options.assistantHosts
               , ceremonies
               , whatsNew = if options.whatsNew then Just embeddedWhatsNew else Nothing
+              , mcpState
               }
           public =
             Listener

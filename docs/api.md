@@ -1025,8 +1025,8 @@ shows to anyone, as an invitation's.
 
 A user's API keys (`Wiki.Api.ApiKeys`, issue #338) are what a program on
 their machine signs in with to the API for programs (`/api/markdown`, a
-page's sections included, `/api/contents`, `/api/list`, `/api/search`; the
-README's "The API"), instead of their login
+page's sections included, `/api/contents`, `/api/list`, `/api/search`, and the MCP server at `/mcp`; the
+README's "The API" and "MCP"), instead of their login
 and password. They are made, listed and revoked here, by the signed-in
 session, and never sign a request in to `/api/v1` itself.
 
@@ -1507,7 +1507,7 @@ write-ahead log; on PostgreSQL what `pg_database_size` says),
   from the API's own router (`/api/v1/spaces/:space/name`), or
   `/api/v1/events`, `/api/markdown/page` (a page's Markdown read, written or created,
   or one section of it read or written), `/api/markdown/reference`, `/api/list` (a listing of the top level or of
-  any space, or a space created), `/api/contents` (a page's table of contents), `/api/search`, `/auth/:provider/<step>`, `/static` (the build's files),
+  any space, or a space created), `/api/contents` (a page's table of contents), `/api/search`, `/mcp` (the MCP server), `/auth/:provider/<step>`, `/static` (the build's files),
   `/page` (a page the server renders), `/healthz`, `/metrics`, and
   `/api/unmatched`, `/auth/unmatched`, `/unmatched` for what matches
   nothing; never an address, so ids make no series and no secret of an

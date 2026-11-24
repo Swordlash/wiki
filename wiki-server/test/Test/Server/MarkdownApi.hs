@@ -9,7 +9,7 @@
 -- server's: Blog and Docs public, Team private; the editor edits Blog
 -- through their group, the reader views Team's Projects; nobody has a
 -- password until the administrator gives one.
-module Test.Server.MarkdownApi (spec) where
+module Test.Server.MarkdownApi (spec, encryptedSpace) where
 
 import Crypto.OPAQUE qualified as O
 import Data.Aeson (FromJSON, Value (..), decodeStrict, eitherDecode, encode)

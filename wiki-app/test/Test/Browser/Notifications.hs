@@ -6,6 +6,16 @@
 -- settings, mail disabled in a demo. Over the backend over HTTP with a
 -- server in fetch's place: a notification told over the live channel
 -- counted at once, with no page subscribed to.
+--
+-- The reads look once, with the program quiet ('readsOnce'): the demo's
+-- backend, and every request to the stand-in server, are waited for by
+-- fibers of the program, which quiet covers; the requests the server holds
+-- on purpose are counted where it holds them ('serverStarts'). What is
+-- outside the program's loop, the bell's socket opening on the browser's
+-- timer or after the live channel's own pause, is waited for by the
+-- stand-in server's own signal ('listening'). The test's calls to the
+-- server's socket go through 'perform' ('tell', 'hangUp'), and a read of
+-- what the server was asked comes at quiet ('askedNow').
 module Test.Browser.Notifications (spec) where
 
 import Control.Monad.UUID (MonadUUID)
@@ -14,7 +24,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
-import Test.Browser.Http (Asked (..), answerWith, answersTaken, asked, hangUp, holdAt, listening, release, serveDemo, serverStarts, serverStops, startServer, tellServer)
+import Test.Browser.Http (Asked (..), answerWith, askedNow, hangUp, holdAt, listening, release, serveDemo, serverStarts, serverStops, startServer, tell)
 import Test.Browser.Mount (clickButton, slugs, start, startChanged)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
@@ -33,7 +43,7 @@ import Wiki.Core.Version (Author (..))
 type Specs m = (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m)
 
 spec :: forall m -> (Specs m) => Spec
-spec m = do
+spec m = readsOnce Quiet $ do
   demo m
   live m
 
@@ -73,7 +83,7 @@ demo m = describe "over the demo" $ do
     linked <- find ui ".notification-list a.notification-link"
     getAttribute linked "href" >>= (`shouldSatisfy` maybe False (T.isInfixOf "/s/blog/p/hello-world/#comment-thread-"))
     clickButton ui ".notification-list .notification-read" "Mark read"
-    eventually (length <$> findAll ui ".notifications-count" `shouldReturn` 0)
+    length <$> findAll ui ".notifications-count" `shouldReturn` 0
     length <$> findAll ui ".notification-list .notification.unread" `shouldReturn` 0
     unmount ui
 
@@ -115,36 +125,36 @@ demo m = describe "over the demo" $ do
     button <- find ui ".page-actions .watch-toggle"
     getAttribute button "aria-pressed" `shouldReturn` Just "false"
     click button
-    eventually (find ui ".page-actions .watch-toggle" >>= \b -> getAttribute b "aria-pressed" `shouldReturn` Just "true")
+    find ui ".page-actions .watch-toggle" >>= \b -> getAttribute b "aria-pressed" `shouldReturn` Just "true"
     find ui ".page-actions .watch-toggle" >>= (`shouldContainText` "Watching")
     unmount ui
     spaceUi <- start m (Just "user-reader") (SpacePages (slugs ["blog"]))
     spaceButton <- find spaceUi ".space-view .watch-toggle"
     getAttribute spaceButton "aria-pressed" `shouldReturn` Just "false"
     click spaceButton
-    eventually (find spaceUi ".space-view .watch-toggle" >>= \b -> getAttribute b "aria-pressed" `shouldReturn` Just "true")
+    find spaceUi ".space-view .watch-toggle" >>= \b -> getAttribute b "aria-pressed" `shouldReturn` Just "true"
     unmount spaceUi
     -- A space shown as a blog has the button too, among its actions.
     blogUi <- start m (Just "user-reader") (Space (slugs ["blog"]))
     blogButton <- find blogUi ".blog-view .actions .watch-toggle"
     was <- getAttribute blogButton "aria-pressed"
     click blogButton
-    eventually (find blogUi ".blog-view .watch-toggle" >>= \b -> getAttribute b "aria-pressed" >>= (`shouldNotBe` was))
+    find blogUi ".blog-view .watch-toggle" >>= \b -> getAttribute b "aria-pressed" >>= (`shouldNotBe` was)
     unmount blogUi
 
   it "shows the notification settings, with mail disabled in the demo" $ runPage $ do
     ui <- start m (Just "user-editor") (UserSettings NotificationsSection)
-    eventually (length <$> findAll ui ".notification-settings" `shouldReturn` 1)
+    length <$> findAll ui ".notification-settings" `shouldReturn` 1
     fieldset <- find ui ".notification-mail"
     getAttribute fieldset "disabled" `shouldReturn` Just ""
     find ui ".notification-mail-note" >>= (`shouldContainText` "sends no mail")
     -- The demo has no feed of notifications, and says why.
-    eventually (find ui ".notification-feed-note" >>= (`shouldContainText` "demo"))
+    find ui ".notification-feed-note" >>= (`shouldContainText` "demo")
     length <$> findAll ui ".notification-feed-renew" `shouldReturn` 0
     own <- find ui ".notification-watch-own input"
     getProperty own "checked" `shouldReturn` "true"
     click own
-    eventually (find ui ".notification-watch-own input" >>= (`getProperty` "checked") >>= (`shouldBe` "false"))
+    find ui ".notification-watch-own input" >>= (`getProperty` "checked") >>= (`shouldBe` "false")
     unmount ui
 
 live :: forall m -> (Specs m) => Spec
@@ -174,33 +184,37 @@ live m = describe "over the backend over HTTP" $ do
               , read = False
               , location = Just PageLocation {space = slugs ["blog"], page = slugs ["hello-world"]}
               }
-          fetches = length . filter (\r -> r.method == "GET" && "api/v1/notifications" `T.isSuffixOf` r.url) <$> asked
+          fetches = length . filter (\r -> r.method == "GET" && "api/v1/notifications" `T.isSuffixOf` r.url) <$> askedNow
       -- Told once the bell's socket is open: what the server says before
-      -- reaches nothing ('listening').
-      listening socketOpens
+      -- reaches nothing. The socket opens on the browser's timer, which
+      -- the program does not count ('listening').
+      listening
       -- Told, and left out of the server's list: the read that follows
       -- takes it away.
       before <- fetches
-      tellServer (Notified (told "n1" "Lost since"))
-      answersTaken 20000
+      tell (Notified (told "n1" "Lost since"))
       fetches >>= (`shouldSatisfy` (> before))
       length <$> findAll ui ".notifications-count" `shouldReturn` 0
       -- Told while the list is fetched: kept, and in the server's list.
+      -- The connection is cut; the live channel opens a socket again after
+      -- a pause of its own, on a thread no tree counts ('listening'), and
+      -- the bell reads its list again then, which the server holds.
       holdAt "GET" "api/v1/notifications"
       again <- fetches
       hangUp
-      eventuallyWithin 5000 (fetches >>= (`shouldSatisfy` (> again)))
-      listening socketOpens
+      listening
+      fetches >>= (`shouldSatisfy` (> again))
       answerWith "GET" "api/v1/notifications" 200 Notifications {unread = 1, items = [told "n2" "Told meanwhile"]}
-      tellServer (Notified (told "n2" "Told meanwhile"))
+      tell (Notified (told "n2" "Told meanwhile"))
       find ui ".notifications-count" >>= (`shouldHaveText` "1")
-      -- The answers taken, it is counted once.
+      -- The answers taken, it is counted once: 'release' does not settle,
+      -- and the read waits for quiet, the bell's held read answered and
+      -- the read it asked for meanwhile too.
       release
-      answersTaken 20000
       (traverse textContent =<< findAll ui ".notifications-count") `shouldReturn` ["1"]
       -- Opened, the list holds it once.
       find ui ".notifications-toggle" >>= click
-      eventually ((traverse textContent =<< findAll ui ".notification-page") `shouldReturn` ["Told meanwhile"])
+      (traverse textContent =<< findAll ui ".notification-page") `shouldReturn` ["Told meanwhile"]
       unmount ui
       serverStops
 
@@ -224,23 +238,16 @@ live m = describe "over the backend over HTTP" $ do
               , read = False
               , location = Just PageLocation {space = slugs ["blog"], page = slugs ["hello-world"]}
               }
-      listening socketOpens
+      -- Told once the bell's socket is open, which it does on the
+      -- browser's timer ('listening').
+      listening
       -- The server's list holds it once it is made. Told, it is counted at
       -- once; the read that follows (the backend's cache forgot its list)
       -- and the bell opened read it from the server.
       answerWith "GET" "api/v1/notifications" 200 Notifications {unread = 1, items = [told]}
-      tellServer (Notified told)
+      tell (Notified told)
       find ui ".notifications-count" >>= (`shouldHaveText` "1")
       find ui ".notifications-toggle" >>= click
       find ui ".notification-list .notification-what" >>= (`shouldHaveText` "Rita Reader replied in a thread of yours")
       unmount ui
       serverStops
-
--- | How long the bell's socket may take to open once the bell is shown, in
--- milliseconds. Measured under a load of a busy loop on every core, two
--- pages side by side: at most 0.87 s in 30 runs (0.22 s on average). The
--- example told its notification before it opened, and lost it (27
--- failures in 30 runs on the same load); 'find' then spent the outer
--- wait's two seconds on a count that could not come.
-socketOpens :: Int
-socketOpens = 3000

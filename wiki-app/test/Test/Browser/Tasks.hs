@@ -462,7 +462,7 @@ spec m = describe "tasks ticked in a page" $ do
     -- Nothing on the page says the answers were dropped: the check is
     -- made once the program has taken them.
     release
-    answersTaken 20000
+    answersTaken
     eventually $ length <$> findAll ui ".page-body input[data-task]" `shouldReturn` 2
     boxes ui `shouldReturn` ["true", "false"]
     length <$> findAll ui ".page-ticks-count, .page-ticks-note" `shouldReturn` 0
@@ -502,7 +502,7 @@ spec m = describe "tasks ticked in a page" $ do
     (find ui ".page-body" >>= textContent) >>= (`shouldSatisfy` T.isInfixOf "Added by another editor.")
     find ui ".page-body h1" >>= (`shouldHaveText` "Markdown guide, newer")
     release
-    answersTaken 20000
+    answersTaken
     (find ui ".page-body" >>= textContent) >>= (`shouldSatisfy` T.isInfixOf "Added by another editor.")
     serverStops
 

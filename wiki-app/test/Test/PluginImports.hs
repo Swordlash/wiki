@@ -2,11 +2,11 @@
 -- built-in plugin imports the plugins' interface ("Wiki.App.Plugin") and
 -- nothing else of the application's inside. Its modules are
 -- @Wiki.App.Plugin.\<Name\>@ and the modules under it. They may import the
--- interface, their own plugin's modules, wiki-core (@Wiki.Core.*@) and
--- packages that are not the wiki's; not another module of the
--- application, of wiki-api or of the server, nor another plugin. The
--- modules of the host under @Wiki.App.Plugin@ ('hostModules') are not
--- plugins. The interface imports no plugin, and of the rest of the
+-- interface and its capabilities (@Wiki.App.Plugin.Capability.*@), their
+-- own plugin's modules, wiki-core (@Wiki.Core.*@) and packages that are
+-- not the wiki's; not another module of the application, of wiki-api or
+-- of the server, nor another plugin. The modules of the host under
+-- @Wiki.App.Plugin@ ('hostModules') are not plugins. The interface imports no plugin, and of the rest of the
 -- application only the registry does.
 --
 -- The rule reads the sources' import lines, as fourmolu writes them: one
@@ -27,7 +27,7 @@ sources = "src"
 -- | The modules under @Wiki.App.Plugin@ that are the host's, not a
 -- plugin's.
 hostModules :: [Text]
-hostModules = ["Registry", "Host"]
+hostModules = ["Registry", "Host", "Capability"]
 
 -- | The plugin a module belongs to, if it belongs to one: @Errors@ for
 -- @Wiki.App.Plugin.Errors@ and the modules under it.
@@ -44,6 +44,7 @@ forbidden name = filter (not . allowed)
     allowed imported = case pluginOf name of
       Just plugin ->
         imported == "Wiki.App.Plugin"
+          || "Wiki.App.Plugin.Capability." `T.isPrefixOf` imported
           || imported == "Wiki.App.Plugin." <> plugin
           || ("Wiki.App.Plugin." <> plugin <> ".") `T.isPrefixOf` imported
           || "Wiki.Core." `T.isPrefixOf` imported
@@ -80,12 +81,13 @@ spec = describe "the plugins' imports" $ do
   it "forbid a plugin another module of the application, wiki-api, the server, and another plugin" $ do
     forbidden "Wiki.App.Plugin.Errors" ["Protolude", "Wiki.App.Plugin", "Wiki.App.Plugin.Errors.Parts", "Wiki.Core.Markdown.Problems", "Wiki.App.View.Editor", "Wiki.App.Plugin.Registry", "Wiki.App.Plugin.Other", "Wiki.Api.Types", "Wiki.Server.Api", "Wiki.App.Plugins"]
       `shouldBe` ["Wiki.App.View.Editor", "Wiki.App.Plugin.Registry", "Wiki.App.Plugin.Other", "Wiki.Api.Types", "Wiki.Server.Api", "Wiki.App.Plugins"]
-    forbidden "Wiki.App.Plugin.Errors.Parts" ["Wiki.App.Plugin.Errors", "Wiki.App.Plugin.Assistant"] `shouldBe` ["Wiki.App.Plugin.Assistant"]
+    forbidden "Wiki.App.Plugin.Errors.Parts" ["Wiki.App.Plugin.Errors", "Wiki.App.Plugin.Assistant", "Wiki.App.Plugin.Capability.Assistant", "Wiki.App.Plugin.Host"] `shouldBe` ["Wiki.App.Plugin.Assistant", "Wiki.App.Plugin.Host"]
 
   it "forbid the interface and the host a plugin, but the registry" $ do
     forbidden "Wiki.App.Plugin" ["Wiki.App.Plugin.Errors", "Wiki.App.Plugin.Registry", "Wiki.App.View.Common"] `shouldBe` ["Wiki.App.Plugin.Errors"]
     forbidden "Wiki.App.View.Editor" ["Wiki.App.Plugin", "Wiki.App.Plugin.Registry", "Wiki.App.Plugin.Errors"] `shouldBe` ["Wiki.App.Plugin.Errors"]
     forbidden "Wiki.App.Plugin.Registry" ["Wiki.App.Plugin.Errors", "Wiki.App.View.Common"] `shouldBe` []
+    forbidden "Wiki.App.Plugin.Capability.Assistant" ["Wiki.App.Assistant", "Wiki.App.Plugin.Assistant"] `shouldBe` ["Wiki.App.Plugin.Assistant"]
 
   it "read a module's imports from its source" $
     importsOf "module A where\n\nimport Data.Text qualified as T\nimport qualified Data.Map as M\nimport Protolude hiding (State)\n-- import Not.This\n"
@@ -94,7 +96,7 @@ spec = describe "the plugins' imports" $ do
   it "hold for every module of the application" $ do
     modules <- modulesUnder ["Wiki"]
     -- The scan reads the plugins themselves, not an empty directory.
-    let expected = ["Wiki.App.Plugin", "Wiki.App.Plugin.Errors", "Wiki.App.Plugin.Registry"]
+    let expected = ["Wiki.App.Plugin", "Wiki.App.Plugin.Capability.Assistant", "Wiki.App.Plugin.Errors", "Wiki.App.Plugin.Host", "Wiki.App.Plugin.Registry"]
     sort [name | (name, _) <- modules, name `elem` expected] `shouldBe` sort expected
     broken <- for modules $ \(name, path) -> do
       source <- decodeUtf8 <$> BS.readFile path

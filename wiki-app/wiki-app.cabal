@@ -108,7 +108,9 @@ library
       Wiki.App.Islands.Monad
       Wiki.App.Live
       Wiki.App.Plugin
+      Wiki.App.Plugin.Capability.Assistant
       Wiki.App.Plugin.Errors
+      Wiki.App.Plugin.Host
       Wiki.App.Plugin.Registry
       Wiki.App.Offline
       Wiki.App.Recent

@@ -1,12 +1,23 @@
--- | The plugins' interface: what a plugin is, and what it can give the
--- wiki (#186; decision 69 and WP5.84 of docs/PLAN.md).
+-- | The plugins' interface: what a plugin is, what it can give the wiki,
+-- and what it may ask of the wiki (#186; decision 69 and WP5.84 of
+-- docs/PLAN.md).
 --
 -- A plugin is a 'Manifest' and its contributions. A contribution is what
--- the plugin gives the wiki, and the host calls it: today 'Diagnostics',
--- problems the editor marks in the text. A built-in plugin is Haskell
--- compiled into the application, a value of 'Plugin' in the list of
--- "Wiki.App.Plugin.Registry". It imports this module and nothing else of
--- the application's inside: a test of the imports keeps that
+-- the plugin gives the wiki, and the host calls it: 'Diagnostics',
+-- problems the editor marks in the text; an 'Agent', which works on the
+-- page beside the author; and 'Options', the plugin's settings. A
+-- capability is what the plugin may ask of the host: read the document
+-- and propose a change to it, link to its settings ('Capabilities'). A
+-- surface is what the plugin draws itself: for a built-in plugin, a
+-- Halogen component. The small things are data that the host draws, so
+-- that they look like the wiki's own: an agent's buttons
+-- ('AgentButton'), and problems.
+--
+-- A built-in plugin is Haskell compiled into the application, a value of
+-- 'Plugin' in the list of "Wiki.App.Plugin.Registry". It imports this
+-- module, the capabilities under "Wiki.App.Plugin.Capability", its own
+-- modules, wiki-core and packages that are not the wiki's; nothing else of
+-- the application's inside. A test of the imports keeps that
 -- (@Test.PluginImports@). An external plugin, a later package, will
 -- implement the same names over messages, in a sandboxed frame.
 --
@@ -22,10 +33,49 @@ module Wiki.App.Plugin
     -- * Diagnostics
   , Diagnostics (..)
   , Drawn (..)
+
+    -- * An agent
+  , Agent (..)
+  , AgentQuery (..)
+  , AgentOutput (..)
+  , AgentInput (..)
+  , Editing (..)
+  , AgentButton (..)
+  , Face (..)
+
+    -- * Options
+  , Options (..)
+  , OptionsInput (..)
+
+    -- * Capabilities
+  , Capabilities (..)
+  , Document (..)
+  , OptionsLink
+  , optionsLinkTo
+  , LinkClick
+  , optionsLinkProps
+  , followOptionsLink
+
+    -- * Helpers for surfaces
+  , attr
+  , focusElement
+  , clearField
   )
 where
 
+import DOM.HTML.Indexed qualified as I
+import Halogen qualified as H
+import Halogen.HTML.Properties qualified as HP
+import Halogen.Router (Follow, Router)
+import Halogen.Router qualified as Router
 import Protolude
+import Wiki.App.Editor.Browser (clearField, focusElement)
+import Wiki.App.Plugin.Capability.Assistant (AssistantCapabilities)
+import Wiki.App.Route (Route)
+import Wiki.App.View.Common (attr)
+import Wiki.Core.Assistant.Edit (Change, Decision, Edit, Refusal, Replacement)
+import Wiki.Core.Assistant.Prompt (Span)
+import Wiki.Core.Id (UserId)
 import Wiki.Core.Markdown.Problems (IslandPlace, Problem)
 import Wiki.Core.Markdown.Render (IslandKey)
 
@@ -49,12 +99,18 @@ data Manifest = Manifest
 builtin :: Text -> Text -> Text -> Manifest
 builtin pluginId name description = Manifest {id = PluginId pluginId, name, description}
 
--- | 'Plugin' is a plugin: its manifest, and each contribution it makes,
--- or 'Nothing' for one it does not make.
-data Plugin = Plugin
+-- | 'Plugin' is a plugin, in the monad the application's components run
+-- in: its manifest, and each contribution it makes, or 'Nothing' for one
+-- it does not make.
+data Plugin m = Plugin
   { manifest :: Manifest
   , diagnostics :: Maybe Diagnostics
+  , agent :: Maybe (Agent m)
+  , options :: Maybe (Options m)
   }
+
+--------------------------------------------------------------------------------
+-- Diagnostics
 
 -- | 'Diagnostics' is a contribution of problems in the text being edited,
 -- which the editor marks, counts and steps through with the problems it
@@ -75,3 +131,143 @@ data Drawn = Drawn
   , islands :: Map IslandKey IslandPlace
   , failures :: Map IslandKey Text
   }
+
+--------------------------------------------------------------------------------
+-- An agent
+
+-- | 'Agent' is a contribution to the editor: something that works on the
+-- page beside the author, as the writing assistant does. Its 'surface' is
+-- mounted with the editor and kept until the editor closes. It draws
+-- nothing until its first button opens it; from then on it draws its
+-- panel, which the host holds in a frame of its own beside the text and
+-- hides while the agent is closed. The agent's buttons are data
+-- ('Buttons'), which the host draws over the text.
+newtype Agent m = Agent {surface :: H.Component AgentQuery (AgentInput m) AgentOutput m}
+
+-- | 'AgentQuery' is what the host tells an agent: one of its buttons was
+-- pressed ('AgentButton''s @key@), and whether the press opens the agent
+-- ('True') or closes it. The host has closed its own menus and shown the
+-- frame before it tells an opening, and hidden the frame before it tells
+-- a closing.
+data AgentQuery a = Press Text Bool a
+
+-- | 'AgentOutput' is what an agent tells the host: the buttons it has now;
+-- that it closed itself (its own close button, or Escape); or that the
+-- author accepted or rejected all of the changes it proposed.
+data AgentOutput
+  = Buttons [AgentButton]
+  | Closed
+  | DecideAll Decision
+
+-- | 'AgentInput' is what the host gives an agent each time the editor
+-- renders: who is signed in, the page being edited once it is loaded, and
+-- the capabilities.
+data AgentInput m = AgentInput
+  { user :: Maybe UserId
+  , editing :: Maybe Editing
+  , can :: Capabilities m
+  }
+
+-- | 'Editing' is the page being edited, as the editor holds it: its title
+-- and text as last typed, the selection, how many of the changes an agent
+-- proposed are still to decide, and what the author decided of each, by
+-- the change's number. 'encrypted' says the page is in an encrypted space,
+-- so that what an agent sends elsewhere leaves the browser decrypted.
+-- 'document' reaches the editor's text itself, once it is in place.
+data Editing = Editing
+  { title :: Text
+  , body :: Text
+  , selection :: Maybe Span
+  , pending :: Int
+  , decisions :: Map Int Decision
+  , encrypted :: Bool
+  , document :: Maybe Document
+  }
+
+-- | 'AgentButton' is a button of an agent's, which the host draws over the
+-- editor's text. 'key' names it in 'Press' and in the page's
+-- @data-provider@ attribute; 'label' is its text, shown on hover;
+-- 'title' and 'ariaLabel' are its tooltip and its name for screen
+-- readers; 'selected' says it is the one the agent uses now, which is
+-- pressed while the agent is open; 'unreachable' dims it, since what it
+-- reaches cannot be reached from here.
+data AgentButton = AgentButton
+  { key :: Text
+  , label :: Text
+  , title :: Text
+  , ariaLabel :: Text
+  , selected :: Bool
+  , unreachable :: Bool
+  , face :: Face
+  }
+  deriving stock (Eq, Show)
+
+-- | 'Face' is what an 'AgentButton' shows: a logo (one SVG path in a 24 by
+-- 24 box, in its colour or in the text's), the wiki's speech bubble, or a
+-- letter.
+data Face = Logo Text (Maybe Text) | ChatGlyph | Letter Text
+  deriving stock (Eq, Show)
+
+--------------------------------------------------------------------------------
+-- Options
+
+-- | 'Options' is a plugin's settings: a component the settings page shows
+-- in a section of its own.
+newtype Options m = Options {surface :: H.Component (Const Void) (OptionsInput m) Void m}
+
+-- | 'OptionsInput' is what the settings page gives a plugin's options: who
+-- is signed in, and the capabilities.
+data OptionsInput m = OptionsInput
+  { user :: Maybe UserId
+  , can :: Capabilities m
+  }
+
+--------------------------------------------------------------------------------
+-- Capabilities
+
+-- | 'Capabilities' is what a plugin may ask of the host, as functions:
+-- whether a browser is there to run it ('here'; a page rendered ahead of
+-- the program has none); whether the page is a secure context ('secure');
+-- a link to the plugin's settings ('optionsLink'); and the capabilities
+-- that only the writing assistant uses
+-- ("Wiki.App.Plugin.Capability.Assistant").
+data Capabilities m = Capabilities
+  { here :: m Bool
+  , secure :: m Bool
+  , optionsLink :: OptionsLink
+  , assistant :: AssistantCapabilities m
+  }
+
+-- | 'Document' is the editor's text, which an agent reads and changes:
+-- the text as it is now ('text'); the focus given back to it ('focus');
+-- a change proposed as a tracked change with the given number, which the
+-- author accepts or rejects ('propose': where it went and the numbers of
+-- the changes it merged, or why it cannot be made); and the proposed
+-- changes still undecided ('tracked'). Each returns at once.
+data Document = Document
+  { text :: IO Text
+  , focus :: IO ()
+  , propose :: Int -> Edit -> IO (Either Refusal (Replacement, [Int]))
+  , tracked :: IO [Change]
+  }
+
+-- | 'OptionsLink' is a link to a plugin's settings, which the application
+-- follows itself ('optionsLinkProps', 'followOptionsLink').
+data OptionsLink = OptionsLink (Router Route) Route
+
+-- | The link to a route of this router: for the host, which makes the
+-- capabilities.
+optionsLinkTo :: Router Route -> Route -> OptionsLink
+optionsLinkTo = OptionsLink
+
+-- | 'LinkClick' is a plain click on an 'OptionsLink', to follow.
+newtype LinkClick = LinkClick (Follow Route)
+
+-- | The properties of an @\<a>@ that links to a plugin's settings: its
+-- address, and its plain click, handed to the component as an action.
+optionsLinkProps :: OptionsLink -> (LinkClick -> action) -> [HP.IProp I.HTMLa action]
+optionsLinkProps (OptionsLink router route) onFollow = Router.linkProps router (onFollow . LinkClick) route
+
+-- | Follow a plain click on an 'OptionsLink'.
+followOptionsLink :: (MonadIO m) => OptionsLink -> LinkClick -> H.HalogenM st act slots output m ()
+followOptionsLink (OptionsLink router _) (LinkClick f) = Router.follow router f

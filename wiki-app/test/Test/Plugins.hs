@@ -19,15 +19,17 @@ import Wiki.Core.Markdown.Render (IslandKey (..))
 import Wiki.Core.PageKind (PageKind (..))
 
 -- | A plugin of the tests, whose diagnostics are one warning naming it.
-saying :: Text -> Plugin
+saying :: Text -> Plugin IO
 saying name =
   Plugin
     { manifest = builtin name name ""
     , diagnostics = Just (Diagnostics (const [Problem {from = 1, to = 1, kind = Marker, severity = Warning, message = name}]))
+    , agent = Nothing
+    , options = Nothing
     }
 
 -- | The messages of what some plugins diagnose.
-heard :: Set PluginId -> [Plugin] -> [Text]
+heard :: Set PluginId -> [Plugin IO] -> [Text]
 heard chosenIds given = [p.message | d <- (contributed chosenIds given).diagnostics, p <- d.diagnose (Drawn "" mempty mempty)]
 
 -- | What a text's islands look like to the editor: the text checked, and
@@ -63,16 +65,21 @@ failuresOf checked = do
   stale <- listOf (IslandKey <$> elements ["gone", "$z$"] <*> choose (0, 3))
   Map.fromList <$> traverse (\k -> (k,) <$> elements ["KaTeX parse error", "Parse error on line 1"]) (kept <> stale)
 
+-- | The built-in plugins, in the monad of the tests.
+builtins :: [Plugin IO]
+builtins = plugins
+
 spec :: Spec
 spec = describe "plugins" $ do
   describe "contributed" $ do
-    it "gives every built-in plugin's contribution when every plugin is on" $
-      length (contributed builtinIds plugins).diagnostics `shouldBe` 1
+    it "gives every built-in plugin's contribution when every plugin is on" $ do
+      let given = contributed builtinIds builtins
+      length given.diagnostics `shouldBe` 1
     it "gives nothing of a plugin that is off" $ do
-      length (contributed (Set.delete (PluginId "errors") builtinIds) plugins).diagnostics `shouldBe` 0
-      length (contributed Set.empty plugins).diagnostics `shouldBe` 0
+      length (contributed (Set.delete (PluginId "errors") builtinIds) builtins).diagnostics `shouldBe` 0
+      length (contributed Set.empty builtins).diagnostics `shouldBe` 0
     it "ignores an id that no plugin has" $
-      length (contributed (Set.fromList [PluginId "nothing"]) plugins).diagnostics `shouldBe` 0
+      length (contributed (Set.fromList [PluginId "nothing"]) builtins).diagnostics `shouldBe` 0
     it "keeps the plugins' order, whatever the set's" $ do
       let given = [saying "b", saying "a", saying "c"]
       heard (Set.fromList [PluginId "a", PluginId "b", PluginId "c"]) given `shouldBe` ["b", "a", "c"]
@@ -92,10 +99,10 @@ spec = describe "plugins" $ do
           formula = [k | (k, place) <- Map.toList checked.islands, place.kind == Formula]
       length formula `shouldBe` 1
       let (_, failed) = drawnOf text (Map.fromList [(k, "KaTeX parse error") | k <- formula])
-      [(p.from, p.to, p.kind, p.severity, p.message) | d <- (contributed builtinIds plugins).diagnostics, p <- d.diagnose failed]
+      [(p.from, p.to, p.kind, p.severity, p.message) | d <- (contributed builtinIds builtins).diagnostics, p <- d.diagnose failed]
         `shouldBe` [(5, 5, Formula, Error, "KaTeX parse error")]
       let (_, cleared) = drawnOf text mempty
-      [p | d <- (contributed builtinIds plugins).diagnostics, p <- d.diagnose cleared] `shouldBe` []
+      [p | d <- (contributed builtinIds builtins).diagnostics, p <- d.diagnose cleared] `shouldBe` []
     it "are none for a failure whose island the text checked does not have" $
       islandFailures (snd (drawnOf "Plain.\n" (Map.fromList [(IslandKey "$x$" 0, "KaTeX parse error")]))) `shouldBe` []
     it "are the plugin called errors" $

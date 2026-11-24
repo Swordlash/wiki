@@ -331,7 +331,7 @@
         "operationId": "readContents",
         "parameters": [
           {
-            "description": "The page's address in the browser after /s/, as for its Markdown: team/projects/p/the-wiki/, or team/ for the space's home page.",
+            "description": "The page's address in the browser after /s/, as for its Markdown: team/projects/p/the-wiki/, or team/ for the space's home page. It may be sent with its slashes escaped, as for its Markdown.",
             "in": "path",
             "name": "address",
             "required": true,
@@ -567,7 +567,7 @@
         "operationId": "listSpace",
         "parameters": [
           {
-            "description": "The space's path from the top level, its slugs separated by slashes and ending in a slash: team/projects/.",
+            "description": "The space's path from the top level, its slugs separated by slashes and ending in a slash: team/projects/. It may be sent with its slashes escaped (team%2Fprojects%2F), as a client generated from this document sends a path parameter.",
             "in": "path",
             "name": "space",
             "required": true,
@@ -690,7 +690,7 @@
         "operationId": "createSpace",
         "parameters": [
           {
-            "description": "The space's path from the top level, its slugs separated by slashes and ending in a slash: team/projects/.",
+            "description": "The space's path from the top level, its slugs separated by slashes and ending in a slash: team/projects/. It may be sent with its slashes escaped (team%2Fprojects%2F), as a client generated from this document sends a path parameter.",
             "in": "path",
             "name": "space",
             "required": true,
@@ -923,7 +923,7 @@
         "operationId": "readMarkdown",
         "parameters": [
           {
-            "description": "The page's address in the browser after /s/: the space's path, then /p/ and the page's path under the space's home page, ending in a slash (team/projects/p/the-wiki/). The space's path alone (team/) is the space's home page. A slug that is one of the addresses' own words is written with a ~ (p/~history/). The address spans several segments, which a path parameter cannot say.",
+            "description": "The page's address in the browser after /s/: the space's path, then /p/ and the page's path under the space's home page, ending in a slash (team/projects/p/the-wiki/). The space's path alone (team/) is the space's home page. A slug that is one of the addresses' own words is written with a ~ (p/~history/). The address spans several segments, and may be sent with its slashes escaped (team%2Fprojects%2Fp%2Fthe-wiki%2F), as a client generated from this document sends a path parameter.",
             "in": "path",
             "name": "address",
             "required": true,
@@ -1078,7 +1078,7 @@
         "operationId": "writeMarkdown",
         "parameters": [
           {
-            "description": "The page's address in the browser after /s/: the space's path, then /p/ and the page's path under the space's home page, ending in a slash (team/projects/p/the-wiki/). The space's path alone (team/) is the space's home page. A slug that is one of the addresses' own words is written with a ~ (p/~history/). The address spans several segments, which a path parameter cannot say.",
+            "description": "The page's address in the browser after /s/: the space's path, then /p/ and the page's path under the space's home page, ending in a slash (team/projects/p/the-wiki/). The space's path alone (team/) is the space's home page. A slug that is one of the addresses' own words is written with a ~ (p/~history/). The address spans several segments, and may be sent with its slashes escaped (team%2Fprojects%2Fp%2Fthe-wiki%2F), as a client generated from this document sends a path parameter.",
             "in": "path",
             "name": "address",
             "required": true,

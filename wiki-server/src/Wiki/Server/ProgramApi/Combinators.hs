@@ -22,7 +22,8 @@
 --   that is not UTF-8 is refused.
 -- * A capture gives the address's segments, decoded. Here the
 --   application's router also reads the address as sent, query included
---   ('AsSent'), as it always did.
+--   ('AsSent'), as it always did, with an escaped slash read as a plain
+--   one.
 -- * A body is read only with a @Content-Type@ the endpoint names, or
 --   refused with a 415. Here every body is taken, whatever its
 --   @Content-Type@, as @curl --data-binary@ sends it ('Body').
@@ -87,13 +88,14 @@ import Data.OpenApi.Declare (Declare, runDeclare)
 import Data.SOP (I (..), NP (..))
 import Data.Sequence qualified as Seq
 import Data.String (fromString)
+import Data.Text qualified as T
 import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Network.HTTP.Media ((//), (/:))
 import Network.HTTP.Types (Header, Method, Status (..), hAllow, hCacheControl, hContentType, status405)
 import Network.Wai (Request (..), responseLBS, strictRequestBody)
 import Network.Wai qualified as Wai
 import Protolude hiding (Handler, TypeError)
-import Servant (Accept (..), Handler, HasContextEntry (..), HasServer (..), MimeRender (..), ReflectMethod (..), ServerError (..), StdMethod, (:<|>), (:>))
+import Servant (Accept (..), CaptureAll, Handler, HasContextEntry (..), HasServer (..), MimeRender (..), ReflectMethod (..), ServerError (..), StdMethod, (:<|>), (:>))
 import Servant.API.MultiVerb (AsConstructor (..), MultiVerb, RespondAs, ResponseType, WithHeaders)
 import Servant.API.Status (KnownStatus, statusVal)
 import Servant.OpenApi (HasOpenApi (..))
@@ -364,16 +366,37 @@ data Sent = Sent
 -- | 'AsSent' gives the handler the request's path and query as sent
 -- ('Sent'): the application's router reads a page's or a space's address
 -- from it, so that the API has no grammar of its own for its addresses.
--- Put it before the capture of the rest of the address (a 'CaptureAll'
+-- It comes before the capture of the rest of the address (a 'CaptureAll'
 -- named @capture@), whose segments the handler is given too: the document
 -- describes that capture as @desc@ says, since a capture of servant's
 -- cannot be given a description.
+--
+-- An escaped slash (@%2F@) separates segments as a plain one does, in the
+-- path and in the segments alike ('plainSlashes'). A client generated from
+-- the document escapes a path parameter whole, the address's slashes
+-- included, and a slug never holds a slash, so this changes the meaning
+-- of no address that names something.
 data AsSent (capture :: Symbol) (desc :: Symbol)
 
-instance (HasServer api ctx) => HasServer (AsSent capture desc :> api) ctx where
-  type ServerT (AsSent capture desc :> api) m = Sent -> ServerT api m
-  hoistServerWithContext _ pc nt s = hoistServerWithContext (Proxy @api) pc nt . s
-  route _ ctx sub = route (Proxy @api) ctx (passToServer sub (\request -> Sent {path = rawPathInfo request, query = rawQueryString request}))
+instance (HasServer (CaptureAll capture Text :> api) ctx) => HasServer (AsSent capture desc :> CaptureAll capture Text :> api) ctx where
+  type ServerT (AsSent capture desc :> CaptureAll capture Text :> api) m = Sent -> ServerT (CaptureAll capture Text :> api) m
+  hoistServerWithContext _ pc nt s = hoistServerWithContext (Proxy @(CaptureAll capture Text :> api)) pc nt . s
+  route _ ctx sub = route (Proxy @(CaptureAll capture Text :> api)) ctx (passToServer sub sent <&> (. concatMap (T.splitOn "/")))
+    where
+      sent request = Sent {path = plainSlashes (rawPathInfo request), query = rawQueryString request}
+
+-- | 'plainSlashes' is a path as sent with each escaped slash (@%2F@ or
+-- @%2f@) written as a plain slash. No other escape is undone, so the
+-- router still decodes the path once: @%252F@ stays, and is a @%2F@ in a
+-- segment, which is no slug.
+plainSlashes :: ByteString -> ByteString
+plainSlashes p = case BS.elemIndex 37 p of
+  Nothing -> p
+  Just i ->
+    let (before, rest) = BS.splitAt i p
+     in if BS.take 3 rest `elem` ["%2F", "%2f"]
+          then before <> "/" <> plainSlashes (BS.drop 3 rest)
+          else before <> BS.take 1 rest <> plainSlashes (BS.drop 1 rest)
 
 instance (HasOpenApi api, KnownSymbol capture, KnownSymbol desc) => HasOpenApi (AsSent capture desc :> api) where
   toOpenApi _ = toOpenApi (Proxy @api) & O.allOperations . O.parameters . traverse %~ described

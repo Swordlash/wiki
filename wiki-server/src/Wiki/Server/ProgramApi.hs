@@ -80,7 +80,7 @@ type ListElsewhere =
 type MarkdownAddress =
   "s"
     :> Refuses 404 "There is no page at the address, or one the user may not read: the same answer for both. A section's anchor the page does not have (the message names the page's anchors). For a PUT that would create a page: no page above the address (nothing is created on the way), or If-Match where there is no page."
-    :> AsSent "address" "The page's address in the browser after /s/: the space's path, then /p/ and the page's path under the space's home page, ending in a slash (team/projects/p/the-wiki/). The space's path alone (team/) is the space's home page. A slug that is one of the addresses' own words is written with a ~ (p/~history/). The address spans several segments, which a path parameter cannot say."
+    :> AsSent "address" "The page's address in the browser after /s/: the space's path, then /p/ and the page's path under the space's home page, ending in a slash (team/projects/p/the-wiki/). The space's path alone (team/) is the space's home page. A slug that is one of the addresses' own words is written with a ~ (p/~history/). The address spans several segments, and may be sent with its slashes escaped (team%2Fprojects%2Fp%2Fthe-wiki%2F), as a client generated from this document sends a path parameter."
     :> CaptureAll "address" Text
     :> SignIn 'Always
     :> (ReadMarkdown :<|> WriteMarkdown :<|> OtherMethods '[ 'GET, 'HEAD, 'PUT])
@@ -132,7 +132,7 @@ type ReadReference =
 type ContentsAddress =
   "s"
     :> Refuses 404 "There is no page at the address, or one the user may not read: the same answer for both."
-    :> AsSent "address" "The page's address in the browser after /s/, as for its Markdown: team/projects/p/the-wiki/, or team/ for the space's home page."
+    :> AsSent "address" "The page's address in the browser after /s/, as for its Markdown: team/projects/p/the-wiki/, or team/ for the space's home page. It may be sent with its slashes escaped, as for its Markdown."
     :> CaptureAll "address" Text
     :> SignIn 'Always
     :> (ReadContents :<|> OtherMethods '[ 'GET, 'HEAD])
@@ -163,7 +163,7 @@ type ListTop =
 type ListSpaceAddress =
   "s"
     :> Refuses 404 "There is no space at the path, or one the user may not read: the same answer for both. For a PUT: no space above the path."
-    :> AsSent "space" "The space's path from the top level, its slugs separated by slashes and ending in a slash: team/projects/."
+    :> AsSent "space" "The space's path from the top level, its slugs separated by slashes and ending in a slash: team/projects/. It may be sent with its slashes escaped (team%2Fprojects%2F), as a client generated from this document sends a path parameter."
     :> CaptureAll "space" Text
     :> SignIn 'Always
     :> (ListSpace :<|> CreateSpace :<|> OtherMethods '[ 'GET, 'HEAD, 'PUT])

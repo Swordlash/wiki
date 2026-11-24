@@ -19,11 +19,13 @@
 module Test.Server.ProgramApi (unitSpec, spec) where
 
 import Control.Lens ((^.), (^..))
-import Data.Aeson (ToJSON, Value (..), eitherDecode, eitherDecodeFileStrict', toJSON)
+import Data.Aeson (ToJSON, Value (..), eitherDecode, eitherDecodeFileStrict', encode, toJSON)
 import Data.Aeson.Encode.Pretty (Config (..), Indent (..), defConfig, encodePretty')
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteArray.Encoding (Base (..), convertToBase)
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
+import Data.Char (isAsciiLower, isAsciiUpper)
 import Data.HashMap.Strict.InsOrd.Compat qualified as InsOrd
 import Data.List (lookup)
 import Data.OpenApi (OpenApi, Operation, PathItem, Referenced (..), ToSchema)
@@ -32,6 +34,7 @@ import Data.OpenApi.Declare (runDeclare)
 import Data.OpenApi.Schema.Validation (validateJSON, validateToJSON)
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
+import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Network.HTTP.Types (Header, methodGet, methodPost, methodPut)
 import Protolude
 import Servant.OpenApi.Internal.Test (maybeCounterExample, prettyValidateWith, props)
@@ -174,8 +177,117 @@ spec backing = describe "the OpenAPI document of the API for programs, served" $
       bare <- sendBare r methodGet (r.public <> address) [] ""
       (address, bare.status) `shouldBe` (address, 401)
       (.status) <$> asAdmin methodGet address [] "" `shouldReturn` 404
+
+  -- A client generated from the document escapes a path parameter whole,
+  -- with encodeURIComponent's rule: the slashes of an address too. Each
+  -- request is made on a demo of its own, once with the address as written
+  -- and once escaped, and the answers are the same.
+  it "takes an address with its slashes escaped, as a generated client sends it" $ do
+    plain <- withDemoRunning backing identity (addressed identity)
+    escaped <- withDemoRunning backing identity (addressed uriComponent)
+    map (\(step, a) -> (step, a.status)) plain
+      `shouldBe` [ ("read", 200)
+                 , ("contents", 200)
+                 , ("section", 200)
+                 , ("space", 200)
+                 , ("no page", 404)
+                 , ("history", 404)
+                 , ("other method", 405)
+                 , ("write a section", 200)
+                 , ("write", 204)
+                 , ("read written", 200)
+                 , ("create", 201)
+                 , ("create a space", 201)
+                 , ("not a slug", 400)
+                 , ("space not a slug", 400)
+                 ]
+    -- Each step whose answers differ, with the answer to the address as
+    -- written and the one to the address escaped.
+    [(step, p, e) | ((step, p), (_, e)) <- zip plain escaped, e /= p] `shouldBe` []
+
+  -- An escaped percent sign is decoded once: %252F is a %2F in the
+  -- segment, no slug, and no slash.
+  it "decodes an address once" $ withDemoRunning backing identity $ \r -> do
+    givePassword r "user-admin" "admin's password"
+    let page = "/api/markdown/s/blog/p/hello-world%252Fx/"
+    (.status) <$> sendBare r methodGet (r.public <> page) [admin] "" `shouldReturn` 404
+    written <- sendBare r methodPut (r.public <> page) [admin] "# X\n"
+    (written.status, written.body) `shouldBe` (400, "{\"error\":\"Invalid\",\"message\":\"The segment hello-world%2Fx is not a slug: a slug is lowercase ASCII letters, digits and single dashes between them, such as hello-world-2fx.\"}")
   where
     admin = ("Authorization", "Basic " <> convertToBase Base64 (encodeUtf8 ("admin:admin's password" :: Text)))
+    -- The answers to a request of each operation that takes an address, in
+    -- order, with the address written by this function: reads, writes,
+    -- then refusals. A write's answer names the time it was made at, in
+    -- its ETag or its JSON, and the Date header always does: they are left
+    -- out ('sameTimes').
+    addressed :: (Text -> Text) -> Running -> IO [(Text, Answer)]
+    addressed at r = do
+      givePassword r "user-admin" "admin's password"
+      let request step method prefix address query hs body = (step,) . answer <$> sendBare r method (r.public <> "/api/" <> prefix <> "/s/" <> at address <> query) (admin : hs) body
+          page = "blog/p/hello-world/"
+      read' <- request "read" methodGet "markdown" page "" [] ""
+      contents <- request "contents" methodGet "contents" page "" [] ""
+      section <- request "section" methodGet "markdown" page "?section=why-a-wiki" [] ""
+      reads' <-
+        sequence
+          [ request "space" methodGet "list" "blog/" "" [] ""
+          , request "no page" methodGet "markdown" "blog/p/no-such-page/" "" [] ""
+          , request "history" methodGet "markdown" (page <> "history/") "" [] ""
+          , request "other method" methodPost "markdown" page "" [] ""
+          ]
+      let version a = [("If-Match", v) | Just v <- [lookup "ETag" a.headers]]
+      sectionWritten <- request "write a section" methodPut "markdown" page "?section=why-a-wiki" (version (snd read')) ((snd section).body <> "\nMore.\n")
+      written <- request "write" methodPut "markdown" page "" (version (snd sectionWritten)) ((snd read').body <> "\nMore.\n")
+      writes <-
+        sequence
+          [ request "read written" methodGet "markdown" page "" [] ""
+          , request "create" methodPut "markdown" (page <> "escaped/") "" [("If-None-Match", "*")] "# Escaped\n"
+          , request "create a space" methodPut "list" "blog/notes/" "" [("Content-Type", "application/json")] "{\"title\": \"Notes\"}"
+          ]
+      refusals <-
+        sequence
+          [ request "not a slug" methodPut "markdown" "blog/p/Not_A_Slug/" "" [] "# No\n"
+          , request "space not a slug" methodPut "list" "Bad_Space/" "" [("Content-Type", "application/json")] "{}"
+          ]
+      pure (map (second withoutDate) ([read', contents, section] <> reads') <> map (second (withoutDate . sameTimes)) ([sectionWritten, written] <> writes) <> map (second withoutDate) refusals)
+    withoutDate (Answer s hs b) = Answer s (filter ((/= "Date") . fst) hs) b
+    -- A write's answer with its times written as one placeholder: the
+    -- ETag's version, and every time in a JSON body, a version in quotes
+    -- too.
+    sameTimes (Answer s hs b) =
+      Answer
+        s
+        (map (\(n, v) -> if n == "ETag" then (n, "\"time\"") else (n, v)) hs)
+        (either (const b) (encode . timesOut) (eitherDecode b :: Either [Char] Value))
+    answer reply = Answer {status = reply.status, headers = reply.headers, body = reply.body}
+    timesOut :: Value -> Value
+    timesOut = \case
+      String s | isJust (iso8601ParseM (toS (T.dropAround (== '"') s)) :: Maybe UTCTime) -> String "time"
+      Object o -> Object (map timesOut o)
+      Array xs -> Array (map timesOut xs)
+      v -> v
+
+-- | 'Answer' is the status, headers and body of an answer, to compare.
+data Answer = Answer
+  { status :: Int
+  , headers :: [Header]
+  , body :: LByteString
+  }
+  deriving stock (Eq, Show)
+
+-- | 'uriComponent' is a text escaped as JavaScript's encodeURIComponent
+-- escapes it: every byte of its UTF-8 as %XX, but for the letters and
+-- digits of ASCII and - _ . ! ~ * ' ( ). A client generated from the
+-- document sends a path parameter so.
+uriComponent :: Text -> Text
+uriComponent = foldMap escaped . BS.unpack . encodeUtf8
+  where
+    escaped b
+      | isAsciiUpper c || isAsciiLower c || isDigit c || c `elem` ("-_.!~*'()" :: [Char]) = T.singleton c
+      | otherwise = T.pack ['%', hex (b `div` 16), hex (b `mod` 16)]
+      where
+        c = chr (fromIntegral b)
+    hex n = "0123456789ABCDEF" `T.index` fromIntegral n
 
 -- | 'Asked' is a request of the demo's wiki for an operation of the
 -- document: its address, its headers besides the credential, its body,

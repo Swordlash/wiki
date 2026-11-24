@@ -2747,6 +2747,30 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   at the top level, since it is built in; the plugins' list has its
   switch and a link to its options. An external plugin's options,
   when there are such plugins, are shown inside "Plugins".
+  **A is two pull requests:** A1 (branch `plugins-interface`: the
+  interface as far as `diagnostics` needs it, the `errors` plugin,
+  the registry, the pure function `contributed`, the test of imports)
+  and A2 (`plugins-assistant`, stacked: the assistant's panel, options
+  and the editor's assistant code behind `agent`, the host drawing
+  the buttons from data). What the design found in the code: the
+  `errors` plugin is the islands' failures turned into the editor's
+  problems, and the pure checker and the error an island draws in
+  place stay the host's; `MonadAssistant` is the vault and the
+  provider's chat in one class, used far beyond the assistant, so
+  both stay the host's and the assistant reaches them through
+  capabilities (`Models`, `Secret`) that mirror its present needs.
+  **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
+  requestować jakieś named keys per plugin z vaulta"):** named
+  secrets per plugin in the vault as a general capability (get, put
+  and remove by a name under the plugin's id, the names declared in
+  the manifest, the host drawing the form and the unlock); the
+  assistant moves to it: its API keys become named secrets, its
+  provider, model and effort become the plugin's options on the
+  server, in the clear, as decision 69 has it (so the server then
+  sees which provider and model a user chose, which today it does
+  not: said to the owner); the one sealed record of today is migrated
+  at the first unlock; managing the vault itself (password, passkeys,
+  "ask each time") leaves the assistant's view for the host's.
 - **WP5.84 Plugins, the first package (#186, decision 69; stage 4).** The
   registry of plugins in the application and the two interfaces of the
   first step, an editing agent and diagnostics. The assistant moves behind

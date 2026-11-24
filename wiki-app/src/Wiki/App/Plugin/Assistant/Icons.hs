@@ -1,5 +1,6 @@
 -- | The two providers' logos, for the editor's buttons that open the
--- writing assistant with one or the other ("Wiki.App.View.Editor"): each
+-- writing assistant with one or the other
+-- ("Wiki.App.Plugin.Assistant.Agent"): each
 -- is an SVG path in a 24 by 24 box, drawn in the provider's colour or the
 -- text's colour.
 --
@@ -11,7 +12,7 @@
 -- permission to keep it (simple-icons pull request 13944). The logos are
 -- trademarks of their owners, shown only to name the provider a button
 -- uses; licenses.txt and the README's table of licences say so.
-module Wiki.App.View.ProviderIcons
+module Wiki.App.Plugin.Assistant.Icons
   ( claudePath
   , claudeColour
   , openAiPath

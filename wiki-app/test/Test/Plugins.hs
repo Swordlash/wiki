@@ -1,8 +1,10 @@
 -- | The registry of plugins ("Wiki.App.Plugin.Registry"): what the
--- plugins that are on contribute; and the errors of formulas and diagrams
+-- plugins that are on contribute; the errors of formulas and diagrams
 -- ("Wiki.App.Plugin.Errors"), whose diagnostics are the problems the
 -- editor marked for the islands' failures before the plugins
--- ('Wiki.Core.Markdown.Problems.allProblems').
+-- ('Wiki.Core.Markdown.Problems.allProblems'); and the writing
+-- assistant's buttons ("Wiki.App.Plugin.Assistant.Agent"), as the editor
+-- drew them before the plugins.
 module Test.Plugins (spec) where
 
 import Data.Map.Strict qualified as Map
@@ -11,9 +13,11 @@ import Data.Text qualified as T
 import Protolude
 import Test.Hspec
 import Test.QuickCheck
-import Wiki.App.Plugin (Diagnostics (..), Drawn (..), Manifest (..), Plugin (..), PluginId (..), builtin)
+import Wiki.App.Plugin (AgentButton (..), Diagnostics (..), Drawn (..), Face (..), Manifest (..), Plugin (..), PluginId (..), builtin)
+import Wiki.App.Plugin.Assistant.Agent (buttonsOf)
 import Wiki.App.Plugin.Errors (errors, islandFailures)
 import Wiki.App.Plugin.Registry (Contributed (..), builtinIds, contributed, plugins)
+import Wiki.Core.Assistant (Provider (..), Settings, chooseProvider, defaultSettings, serviceName, settingsOf, withBaseUrl, withKey, withReached)
 import Wiki.Core.Markdown.Problems (Checked (..), IslandPlace (..), Problem (..), ProblemKind (..), Severity (..), allProblems, checkText)
 import Wiki.Core.Markdown.Render (IslandKey (..))
 import Wiki.Core.PageKind (PageKind (..))
@@ -75,12 +79,15 @@ spec = describe "plugins" $ do
     it "gives every built-in plugin's contribution when every plugin is on" $ do
       let given = contributed builtinIds builtins
       length given.diagnostics `shouldBe` 1
+      (\(m, _) -> m.id) <$> given.agent `shouldBe` Just (PluginId "assistant")
       map fst given.options `shouldBe` [PluginId "assistant"]
     it "gives nothing of a plugin that is off" $ do
       length (contributed (Set.delete (PluginId "errors") builtinIds) builtins).diagnostics `shouldBe` 0
       map fst (contributed (Set.delete (PluginId "errors") builtinIds) builtins).options `shouldBe` [PluginId "assistant"]
       map fst (contributed (Set.delete (PluginId "assistant") builtinIds) builtins).options `shouldBe` []
       length (contributed (Set.delete (PluginId "assistant") builtinIds) builtins).diagnostics `shouldBe` 1
+      isJust (contributed (Set.delete (PluginId "assistant") builtinIds) builtins).agent `shouldBe` False
+      isJust (contributed (Set.delete (PluginId "errors") builtinIds) builtins).agent `shouldBe` True
       length (contributed Set.empty builtins).diagnostics `shouldBe` 0
     it "ignores an id that no plugin has" $
       length (contributed (Set.fromList [PluginId "nothing"]) builtins).diagnostics `shouldBe` 0
@@ -111,3 +118,33 @@ spec = describe "plugins" $ do
       islandFailures (snd (drawnOf "Plain.\n" (Map.fromList [(IslandKey "$x$" 0, "KaTeX parse error")]))) `shouldBe` []
     it "are the plugin called errors" $
       errors.manifest.id `shouldBe` PluginId "errors"
+
+  describe "the writing assistant's buttons" $ do
+    let neutral = AgentButton {key = "assistant", label = "Assistant", title = "Assistant", ariaLabel = "Assistant", selected = True, unreachable = False, face = ChatGlyph}
+        claude = withKey Anthropic (Just "a-key") defaultSettings
+        shown :: Settings -> [(Text, Text, Text, Bool, Bool)]
+        shown s = [(b.key, b.title, b.ariaLabel, b.selected, b.unreachable) | b <- buttonsOf False (Just (Right s))]
+    it "are none before the settings are read" $
+      buttonsOf False Nothing `shouldBe` []
+    it "are one button, \"Assistant\", without settings or without a key" $ do
+      buttonsOf False (Just (Left "Sign in to use the assistant.")) `shouldBe` [neutral]
+      buttonsOf False (Just (Right defaultSettings)) `shouldBe` [neutral]
+    it "are one per provider with a key, the provider in use selected" $ do
+      shown claude `shouldBe` [("anthropic", "Chat with Claude", "Chat with Claude", True, False)]
+      let both = withKey OpenAI (Just "o-key") claude
+      shown both `shouldBe` [("anthropic", "Chat with Claude", "Chat with Claude", True, False), ("openai", "Chat with ChatGPT", "Chat with ChatGPT", False, False)]
+      shown (chooseProvider OpenAI both) `shouldBe` [("anthropic", "Chat with Claude", "Chat with Claude", False, False), ("openai", "Chat with ChatGPT", "Chat with ChatGPT", True, False)]
+    it "say why a provider that could not be reached is dimmed" $ do
+      let blocked = withReached Anthropic False claude
+          cannot = "Cannot reach " <> serviceName Anthropic (settingsOf Anthropic blocked) <> " from this network"
+      shown blocked `shouldBe` [("anthropic", cannot, "Chat with Claude (" <> cannot <> ")", True, True)]
+    it "show each provider's face" $ do
+      [b.face | b <- buttonsOf False (Just (Right claude))] `shouldSatisfy` \case
+        [Logo _ (Just _)] -> True
+        _ -> False
+      [b.face | b <- buttonsOf False (Just (Right (withKey OpenAI (Just "o-key") defaultSettings)))] `shouldSatisfy` \case
+        [Logo _ Nothing] -> True
+        _ -> False
+      let gateway = withBaseUrl OpenAI "http://localhost:1234/v1" defaultSettings
+      [(b.key, b.label, b.face) | b <- buttonsOf False (Just (Right gateway))] `shouldBe` [("openai", "Chat through " <> serviceName OpenAI (settingsOf OpenAI gateway), ChatGlyph)]
+      [(b.key, b.label, b.face) | b <- buttonsOf True (Just (Right defaultSettings))] `shouldBe` [("scripted", "Chat with the scripted provider", Letter "S")]

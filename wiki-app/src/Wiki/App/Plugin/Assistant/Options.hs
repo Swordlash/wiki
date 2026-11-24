@@ -64,9 +64,8 @@
 -- ahead of the program (by the prerender or the server), which has no
 -- access to the settings, says that the settings are being read, and the
 -- program adopts that page unchanged.
-module Wiki.App.View.AssistantSettings
-  ( Input (..)
-  , component
+module Wiki.App.Plugin.Assistant.Options
+  ( component
   )
 where
 
@@ -82,15 +81,19 @@ import Halogen.HTML.Events qualified as HE
 import Halogen.HTML.Properties qualified as HP
 import Halogen.TH (hh)
 import Protolude hiding (State)
-import Wiki.Api.ServerSettings (AssistantApi (..), AssistantService (..))
-import Wiki.Api.Vault (PasskeyInfo (..))
-import Wiki.App.Assistant (KeyOwner, MonadAssistant (..))
-import Wiki.App.Assistant.Keys (Keys (..), addPasskey, changeKeys, loadKeys, readKeys, removePasskey, setAskEachTime, turnOffSync, turnOnSync, unlockKeys)
-import Wiki.App.Assistant.Sync (MonadVault (..), Owned)
-import Wiki.App.Assistant.Sync qualified as Sync
-import Wiki.App.Backend (Session (..))
-import Wiki.App.Editor.Browser (clearField)
-import Wiki.App.View.Common (Context (..), attr)
+import Wiki.App.Plugin (Capabilities (..), OptionsInput (..), attr, clearField)
+import Wiki.App.Plugin.Capability.Assistant
+  ( AssistantApi (..)
+  , AssistantCapabilities (..)
+  , AssistantService (..)
+  , KeyOwner
+  , Keys (..)
+  , Models (..)
+  , PasskeyInfo (..)
+  , Secret (..)
+  , Vaulted
+  )
+import Wiki.App.Plugin.Capability.Assistant qualified as Sync (owning, releaseOwners)
 import Wiki.Core.Assistant
   ( AssistantError (..)
   , ErrorKind (BadKey, Unreachable)
@@ -138,9 +141,10 @@ import Wiki.Core.Assistant.Reference (markdownReference)
 import Wiki.Core.Assistant.Vault (CredentialId)
 import Wiki.Core.Id (UserId)
 import Wiki.Core.Url (Url (..))
-import Wiki.Core.User (Password (..), User (id))
+import Wiki.Core.User (Password (..))
 
-newtype Input = Input {context :: Context}
+-- | What the settings page gives the view ('Wiki.App.Plugin.OptionsInput').
+type Input m = OptionsInput m
 
 -- | 'Check': the result of "Test the key", "Test the connection (no
 -- key)" or "Test and keep the key". 'Kept' is a typed key that worked and
@@ -173,8 +177,8 @@ data Sync = Sync
   -- ^ Why the last step failed, if it did.
   }
 
-data State = State
-  { input :: Input
+data State m = State
+  { input :: Input m
   , user :: Maybe UserId
   , settings :: Maybe (Either Text Settings)
   , secure :: Bool
@@ -203,9 +207,9 @@ data State = State
   -- way ('owning'), let go when each ends and when the view closes.
   }
 
-data Action
+data Action m
   = Initialize
-  | Receive Input
+  | Receive (Input m)
   | TypedKey Provider Text
   | TestAndKeep Provider
   | Forget Provider
@@ -227,7 +231,7 @@ data Action
   | KeepCap Text
   | Finalize
 
-component :: forall query output m. (MonadAssistant m, MonadVault m, MonadUUID m, MonadUnliftIO m) => H.Component query Input output m
+component :: forall query output m. (Typeable m, MonadUUID m, MonadUnliftIO m) => H.Component query (Input m) output m
 component =
   H.mkComponent
     H.ComponentSpec
@@ -265,7 +269,7 @@ component =
               }
       }
   where
-    render :: State -> H.ComponentHTML Action Empty m
+    render :: State m -> H.ComponentHTML (Action m) Empty m
     render st =
       [hh|
         <section class="assistant-settings">
@@ -282,7 +286,7 @@ component =
           (_, Just (Left why)) -> [hh|<p class="error" role="alert">{{ why }}</p>|]
           (_, Just (Right s)) -> settingsView st s
 
-    settingsView :: State -> Settings -> H.ComponentHTML Action Empty m
+    settingsView :: State m -> Settings -> H.ComponentHTML (Action m) Empty m
     settingsView st s =
       [hh|
         <div class="assistant-settings-body">
@@ -325,7 +329,7 @@ component =
 
     -- The page's cap: a number field, with the estimate of its tokens
     -- beside it as typed, or why what is typed cannot be kept.
-    capView :: State -> Settings -> H.ComponentHTML Action Empty m
+    capView :: State m -> Settings -> H.ComponentHTML (Action m) Empty m
     capView st s =
       [hh|
         <section class="assistant-page-cap-section" aria-label="The page's cap">
@@ -349,7 +353,7 @@ component =
         estimate = maybe (Right kept) pageCapFrom st.typedCap
 
     -- Sync across devices (WP5.21 of docs/PLAN.md, "Wiki.App.Assistant.Keys").
-    syncView :: H.RefLabel -> Sync -> H.ComponentHTML Action Empty m
+    syncView :: H.RefLabel -> Sync -> H.ComponentHTML (Action m) Empty m
     syncView field sy = case sy.offer of
       NoServer -> [hh|<span class="assistant-sync-none"></span>|]
       NotSecure ->
@@ -424,7 +428,7 @@ component =
             </label>
           |]
 
-    providerView :: State -> Settings -> Provider -> H.ComponentHTML Action Empty m
+    providerView :: State m -> Settings -> Provider -> H.ComponentHTML (Action m) Empty m
     providerView st s p =
       [hh|
         <section class="assistant-provider-settings" {{ attr "data-provider" (providerKey p) }} aria-label={{ providerLabel p }}>
@@ -544,7 +548,7 @@ component =
               else ""
         -- The session's services that speak this provider's API, and the
         -- base URL kept if none of them is at it.
-        offered = [service | service <- st.input.context.session.assistantServices, apiProvider service.api == p]
+        offered = [service | service <- st.input.can.assistant.services, apiProvider service.api == p]
         stale = mfilter (\url -> url `notElem` map (\service -> service.baseUrl) offered) ps.baseUrl
         ownService = (if p == OpenAI then "OpenAI's own" else "Anthropic's own") :: Text
         serviceHint :: Text
@@ -581,23 +585,24 @@ component =
           Just Kept -> Just [hh|<p class="assistant-check assistant-check-works assistant-check-kept" role="status">The key works and is kept.</p>|]
           Just (Fails why) -> Just [hh|<p class="error assistant-check assistant-check-fails" role="alert">{{ why }}</p>|]
 
-    handleAction :: Action -> H.HalogenM State Action Empty output m ()
+    handleAction :: Action m -> H.HalogenM (State m) (Action m) Empty output m ()
     handleAction = \case
       -- On a page rendered ahead of the program, the page stays as first
       -- rendered, and the program adopts it.
       -- The keys of the operations the close cut off go, in this step.
       Finalize -> Sync.releaseOwners (\st -> st.keyOwners) (\keyOwners st -> st {keyOwners})
-      Initialize -> whenM (H.liftEffect assistantHere) $ do
-        secure <- H.liftEffect secureContext
-        sealing <- H.liftEffect sealingHere
-        scripted <- H.liftEffect scriptedInstalled
+      Initialize -> whenM (H.liftEffect =<< gets (\st -> st.input.can.here)) $ do
+        can <- gets (\st -> st.input.can)
+        secure <- H.liftEffect can.secure
+        sealing <- H.liftEffect can.assistant.secret.sealingHere
+        scripted <- H.liftEffect can.assistant.models.scripted
         modify (\st -> st {secure, sealing, scripted})
         load
       Receive input -> do
         before <- gets (\st -> st.user)
         modify (\st -> st {input, user = userOf input})
         -- Another user signed in: load their settings, not the previous user's.
-        here <- H.liftEffect assistantHere
+        here <- H.liftEffect input.can.here
         when (here && userOf input /= before) $ do
           modify (\st -> st {settings = Nothing, typedKeys = mempty, typedModels = mempty, checks = mempty, listings = mempty, otherModels = mempty, problem = Nothing})
           load
@@ -638,7 +643,7 @@ component =
                   modify (\st -> st {checks = Map.insert p (Fails (errorText (serviceOf asked) (Just asked.key) e)) st.checks})
                   change (withReached p (e.kind /= Unreachable))
             now <- H.sync (liftIO getCurrentTime)
-            listed <- H.async (listModels asked)
+            listed <- askProvider (\ms -> ms.list asked)
             whenM same $ case listed of
               Left e | e.kind == BadKey -> do
                 modify (\st -> st {listings = Map.delete p st.listings})
@@ -682,7 +687,7 @@ component =
         gets (\st -> st.settings) >>= \case
           Just (Right s) | Right r <- readyFor p s -> do
             modify (\st -> st {checks = Map.insert p Checking st.checks})
-            result <- H.async (checkKey r)
+            result <- askProvider (\ms -> ms.check r)
             modify (\st -> st {checks = Map.insert p (maybe Works (Fails . errorText (serviceOf r) (Just r.key)) result) st.checks})
             -- Record whether the provider responded at all; and once the
             -- key is known to work, fetch its model list too.
@@ -690,18 +695,19 @@ component =
             when (isNothing result) (fetchModels p)
           _ -> pass
       Refresh p -> fetchModels p
-      TurnOn -> withSyncPassword (\p -> syncStep "Waiting for your passkey…" (`turnOnSync` p))
+      TurnOn -> withSyncPassword (\p -> syncStep "Waiting for your passkey…" (\sec u -> sec.turnOn u p))
       TypedSyncPassword t -> modify (\st -> st {syncPassword = t})
-      Unlock -> syncStep "Waiting for your passkey…" unlockKeys
-      AddPasskey -> withSyncPassword (\p -> syncStep "Waiting for a passkey you have, then for the new one…" (`addPasskey` p))
-      TurnOff -> syncStep "Turning syncing off…" turnOffSync
-      AskEachTime asking -> syncStep "Changing how this browser keeps the key…" (`setAskEachTime` asking)
+      Unlock -> syncStep "Waiting for your passkey…" (\sec -> sec.unlock)
+      AddPasskey -> withSyncPassword (\p -> syncStep "Waiting for a passkey you have, then for the new one…" (\sec u -> sec.addPasskey u p))
+      TurnOff -> syncStep "Turning syncing off…" (\sec -> sec.turnOff)
+      AskEachTime asking -> syncStep "Changing how this browser keeps the key…" (\sec u -> sec.askEachTime u asking)
       RemovePasskey credential ->
         gets (\st -> st.user)
           >>= traverse_
             ( \user -> do
                 modify (\st -> st {sync = st.sync {working = Just "Removing the passkey…", trouble = Nothing}})
-                result <- owning user (removePasskey user credential)
+                sec <- gets (\st -> st.input.can.assistant.secret)
+                result <- owning user (sec.removePasskey user credential)
                 modify $ \st -> case result of
                   Right left -> st {sync = st.sync {working = Nothing, passkeys = left}}
                   Left why -> st {sync = st.sync {working = Nothing, trouble = Just why}}
@@ -734,14 +740,14 @@ component =
       -> UserId
       -> Text
       -> Ready
-      -> H.HalogenM State Action Empty output m Bool
-      -> (AssistantError -> H.HalogenM State Action Empty output m ())
+      -> H.HalogenM (State m) (Action m) Empty output m Bool
+      -> (AssistantError -> H.HalogenM (State m) (Action m) Empty output m ())
       -> (Settings -> Settings)
       -> ModelName
-      -> H.HalogenM State Action Empty output m ()
+      -> H.HalogenM (State m) (Action m) Empty output m ()
     tryModel p user typed asked same refuse relisted model = do
       let r = Ready {provider = asked.provider, model, key = asked.key, effort = asked.effort, baseUrl = asked.baseUrl}
-      result <- H.async (checkKey r)
+      result <- askProvider (\ms -> ms.check r)
       whenM same $ case result of
         Just e -> refuse e
         Nothing -> do
@@ -755,13 +761,13 @@ component =
 
     -- Fetch a provider's model list with its key, and store it. The fetch
     -- also tells whether the provider can be reached from here.
-    fetchModels :: Provider -> H.HalogenM State Action Empty output m ()
+    fetchModels :: Provider -> H.HalogenM (State m) (Action m) Empty output m ()
     fetchModels p =
       gets (\st -> st.settings) >>= \case
         Just (Right s) | Right r <- readyFor p s -> do
           modify (\st -> st {listings = Map.insert p Listing st.listings})
           now <- H.sync (liftIO getCurrentTime)
-          result <- H.async (listModels r)
+          result <- askProvider (\ms -> ms.list r)
           case result of
             Left e -> do
               change (withReached p (e.kind /= Unreachable))
@@ -771,15 +777,16 @@ component =
               modify (\st -> st {listings = Map.insert p (Fetched (length listed)) st.listings})
         _ -> pass
 
-    load :: H.HalogenM State Action Empty output m ()
+    load :: H.HalogenM (State m) (Action m) Empty output m ()
     load =
       gets (\st -> st.user)
         >>= traverse_
           ( \user -> do
-              keys <- owning user (loadKeys user)
+              sec <- gets (\st -> st.input.can.assistant.secret)
+              keys <- owning user (sec.load user)
               offer <- offerHere
               passkeys <- case keys of
-                Right k | k.synced -> either (const []) identity <$> H.async listPasskeys
+                Right k | k.synced -> either (const []) identity <$> H.async sec.passkeys
                 _ -> pure []
               -- Only if the same user is still signed in.
               whenM (gets (\st -> st.user == Just user)) $
@@ -788,11 +795,11 @@ component =
 
     -- Whether this page can sync the keys: a server keeps vaults, and the
     -- browser offers passkeys here.
-    offerHere :: H.HalogenM State Action Empty output m Offer
+    offerHere :: H.HalogenM (State m) (Action m) Empty output m Offer
     offerHere =
-      H.async vaultSync >>= \case
+      (gets (\st -> st.input.can.assistant.secret) >>= \sec -> H.async sec.syncing) >>= \case
         False -> pure NoServer
-        True -> bool NotSecure Offered <$> H.liftEffect passkeysHere
+        True -> bool NotSecure Offered <$> (gets (\st -> st.input.can.assistant.secret) >>= \sec -> H.liftEffect sec.passkeysHere)
 
     -- A step of syncing, which may wait on the browser's passkey dialog:
     -- said while it runs, and then the settings and the passkeys as they
@@ -802,7 +809,7 @@ component =
     -- read again then.
     -- The password typed for a new passkey, if any (a user who signs in
     -- only with a provider has none), forgotten once used.
-    withSyncPassword :: (Maybe Password -> H.HalogenM State Action Empty output m ()) -> H.HalogenM State Action Empty output m ()
+    withSyncPassword :: (Maybe Password -> H.HalogenM (State m) (Action m) Empty output m ()) -> H.HalogenM (State m) (Action m) Empty output m ()
     withSyncPassword act = do
       typed <- gets (\st -> st.syncPassword)
       -- The field is emptied with the state, so that what it shows is what
@@ -811,16 +818,17 @@ component =
       gets (\st -> st.syncPasswordField) >>= H.getRef >>= traverse_ (H.liftEffect . clearField)
       act (if T.null typed then Nothing else Just (Password typed))
 
-    syncStep :: Text -> (UserId -> Owned m (Either Text Keys)) -> H.HalogenM State Action Empty output m ()
+    syncStep :: Text -> (Secret m -> UserId -> Vaulted m (Either Text Keys)) -> H.HalogenM (State m) (Action m) Empty output m ()
     syncStep saying step =
       gets (\st -> st.user)
         >>= traverse_
           ( \user -> do
               modify (\st -> st {sync = st.sync {working = Just saying, trouble = Nothing}})
-              result <- owning user (step user)
-              keys <- either (const (owning user (readKeys user))) (pure . Right) result
+              sec <- gets (\st -> st.input.can.assistant.secret)
+              result <- owning user (step sec user)
+              keys <- either (const (owning user (sec.read user))) (pure . Right) result
               passkeys <- case keys of
-                Right k | k.synced -> either (const []) identity <$> H.async listPasskeys
+                Right k | k.synced -> either (const []) identity <$> H.async sec.passkeys
                 _ -> pure []
               let trouble = either Just (const Nothing) result
               modify $ \st -> case keys of
@@ -828,14 +836,19 @@ component =
                 Left _ -> st {sync = st.sync {working = Nothing, trouble}}
           )
 
+    -- A request to a provider, through the capabilities the page gave,
+    -- waited for.
+    askProvider :: (Models m -> m a) -> H.HalogenM (State m) (Action m) Empty output m a
+    askProvider request = gets (\st -> st.input.can.assistant.models) >>= H.async . request
+
     -- An operation of the user's keys, with the keys it registers in the
     -- page under an owner of its own, which 'Finalize' lets go if the view
-    -- closes meanwhile ("Wiki.App.Assistant.Sync"'s 'Sync.owning').
-    owning :: UserId -> Owned m a -> H.HalogenM State Action Empty output m a
+    -- closes meanwhile ("Wiki.App.Plugin.Capability.Assistant"'s 'Sync.owning').
+    owning :: UserId -> Vaulted m a -> H.HalogenM (State m) (Action m) Empty output m a
     owning = Sync.owning (\st -> st.keyOwners) (\keyOwners st -> st {keyOwners})
 
     -- Change the settings, and store them immediately.
-    change :: (Settings -> Settings) -> H.HalogenM State Action Empty output m ()
+    change :: (Settings -> Settings) -> H.HalogenM (State m) (Action m) Empty output m ()
     change f =
       gets (\st -> (st.user, st.settings)) >>= \case
         (Just user, Just (Right _)) -> do
@@ -843,7 +856,8 @@ component =
           -- The change itself, not the settings it gives: when another
           -- device changed the settings meanwhile, it is made again on
           -- theirs.
-          result <- owning user (changeKeys user f)
+          sec <- gets (\st -> st.input.can.assistant.secret)
+          result <- owning user (sec.change user f)
           modify $ \st -> case result of
             Right k -> st {busy = False, settings = Just (Right k.settings), sync = syncOf result st.sync}
             Left why -> st {busy = False, problem = Just why}
@@ -855,8 +869,8 @@ apiProvider = \case
   AnthropicApi -> Anthropic
   OpenAiApi -> OpenAI
 
-userOf :: Input -> Maybe UserId
-userOf input = (\u -> u.id) <$> input.context.session.user
+userOf :: Input m -> Maybe UserId
+userOf input = input.user
 
 -- | Syncing before anything is known: not offered.
 noSync :: Sync

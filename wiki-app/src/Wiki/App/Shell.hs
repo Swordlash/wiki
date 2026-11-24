@@ -172,6 +172,9 @@ import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Islands qualified as Islands
 import Wiki.App.Live (Feed (..), Live (..))
 import Wiki.App.Offline (browserOnline, install, installAvailable, installChanges, offlineCopy)
+import Wiki.App.Plugin (Options (..), OptionsInput (..))
+import Wiki.App.Plugin.Host (capabilities)
+import Wiki.App.Plugin.Registry (Contributed (..), assistantId, contributed, plugins, pluginsOn)
 import Wiki.App.Recent (rememberVisit)
 import Wiki.App.Route (AdminSection, Route (..), SettingsSection (..), adminSections, locationRoute, sectionName, sectionTitle, settingsName, settingsSections, settingsTitle, settledRoute)
 import Wiki.App.Route qualified as R
@@ -180,7 +183,6 @@ import Wiki.App.Vault (changeOwnPassword, forgetEveryUsersKeys, forgetUserKeys)
 import Wiki.App.View.Access qualified as AccessView
 import Wiki.App.View.Activity qualified as ActivityView
 import Wiki.App.View.ApiKeys qualified as ApiKeysView
-import Wiki.App.View.AssistantSettings qualified as AssistantSettingsView
 import Wiki.App.View.Avatar qualified as AvatarView
 import Wiki.App.View.Backups qualified as BackupsView
 import Wiki.App.View.Bell qualified as BellView
@@ -1016,7 +1018,10 @@ component =
             {{ HH.slot_ "part" (NotificationsSlot who) NotificationSettingsView.component () }}
           </div>
         |]
-      AssistantSection -> HH.slot_ "part" (AssistantSettingsSlot who) AssistantSettingsView.component AssistantSettingsView.Input {context = context st}
+      -- The writing assistant's settings are its plugin's options.
+      AssistantSection -> case head [o | (i, o) <- (contributed (pluginsOn (context st)) plugins).options, i == assistantId] of
+        Just (Options options) -> HH.slot_ "part" (AssistantSettingsSlot who) options OptionsInput {user = who, can = capabilities (context st)}
+        Nothing -> HH.text ""
       where
         who = (\u -> u.id) <$> st.session.user
 

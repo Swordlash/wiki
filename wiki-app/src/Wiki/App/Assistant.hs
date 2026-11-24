@@ -52,9 +52,6 @@ module Wiki.App.Assistant
   , Talk
   , Opening (..)
   , Heard (..)
-  , sendsMessage
-  , closesPanel
-  , clockTime
 
     -- * The vault in the browser
   , KeyRef
@@ -96,11 +93,9 @@ import Data.Aeson (FromJSON (..), Object, ToJSON (..), Value (Object), eitherDec
 import Data.Aeson.Types (Pair, Parser, parseEither)
 import Data.ByteString.Lazy qualified as BSL
 import Data.Text qualified as T
-import Data.Time (UTCTime, defaultTimeLocale, formatTime)
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Data.Type.Equality (type (~))
 import Halogen.JSBits (Callback, Inert (..), JSText, JSVal, Safety (..), browserJS, freeCallback, fromJSText, inBrowser, jsValText, mkSyncCallback, toJSText)
-import Halogen.JSBits.Fields (Member (..), inlineJS, jsFields)
+import Halogen.JSBits.Fields (Member (..), jsFields)
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.Query.Event.Window qualified as WindowEvent
 import Halogen.Subscription (Emitter)
@@ -111,11 +106,10 @@ import Protolude hiding (wait)
 import System.IO.Unsafe (unsafePerformIO)
 import Web.DOM.Element qualified as Element
 import Web.DOM.Internal.Types (Window (..))
-import Web.Event.Event (Event (..), EventType (..))
+import Web.Event.Event (EventType (..))
 import Web.HTML.Window qualified as Window
 import Web.Storage.IndexedDB (Database (..), IndexedDBError (..), MonadIndexedDB)
 import Web.Storage.IndexedDB qualified as IDB
-import Web.UIEvent.KeyboardEvent (KeyboardEvent (..))
 import Wiki.Api.ContentPolicy (allowsConnect, extraHosts, originOf)
 import Wiki.Api.Vault (AssertionOptions, AssertionResponse, RegistrationOptions, RegistrationResponse)
 import Wiki.Core.Assistant (AssistantError (..), ErrorKind (..), Listed, Ready (..), Usage, providerKey)
@@ -175,10 +169,6 @@ $( browserJS
      , ("js_passkey_abort", "wiki_passkey_abort", Safe, [t|IO ()|])
      ]
  )
-
--- The time of day as the browser's language writes a short time: the one
--- call with an options object, which no field takes.
-$(inlineJS "js_clock" "new Date($1).toLocaleTimeString(undefined, { timeStyle: \"short\" })" [t|Double -> IO JSText|])
 
 -- | The window as the scripted provider's page adds to it (a test's):
 -- @wikiAssistantScript@, the script the provider answers with.
@@ -418,32 +408,6 @@ instance FromJSON Heard where
       "stopped" -> pure HeardStopped
       "error" -> HeardFailed <$> parseJSON (Object o)
       other -> pure (HeardFailed (AssistantError Failed Nothing ("An event of a kind not known: " <> other)))
-
--- | Whether a keydown in the message box sends the message: Enter, but not
--- with Shift (a new line) nor while a character is being composed. It is
--- pure, so that the keydown listener can decide synchronously, and prevent
--- Enter from inserting a new line.
-sendsMessage :: Event -> Bool
-sendsMessage event =
-  let key = KeyboardEvent event
-   in key.key == "Enter" && not key.shiftKey && not key.isComposing && not (key.ctrlKey || key.metaKey || key.altKey)
-
--- | Whether a keydown in the message box closes the panel: Escape, but not
--- in the middle of composing a character, where Escape cancels the
--- composition.
-closesPanel :: Event -> Bool
-closesPanel event =
-  let key = KeyboardEvent event
-   in key.key == "Escape" && not key.isComposing
-
--- | The time of day of a moment, as the chat shows it beside a message:
--- in the browser's time zone, written the way the browser's language
--- writes a short time ("14:32", or "2:32 PM"). Natively, where there is
--- no browser, hours and minutes in UTC.
-clockTime :: (MonadIO m) => UTCTime -> m Text
-clockTime t
-  | inBrowser = liftIO (fromJSText <$> js_clock (realToFrac (utcTimeToPOSIXSeconds t) * 1000))
-  | otherwise = pure (toS (formatTime defaultTimeLocale "%H:%M" t))
 
 -- | The writing assistant, in the monad a component runs in.
 --

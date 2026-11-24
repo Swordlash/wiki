@@ -1,6 +1,8 @@
 module Main (main) where
 
 import Protolude
+import Test.ApiKeys qualified as ApiKeys
+import Test.ApiKeysDom qualified as ApiKeysDom
 import Test.Assistant qualified as Assistant
 import Test.Backend.Http qualified as Http
 import Test.Backend.Mem qualified as Mem
@@ -72,6 +74,8 @@ main = do
       Live.spec
       Ticking.spec
       Bell.spec
+      ApiKeys.spec
+      ApiKeysDom.spec
       Threads.spec
       BellDom.spec
       CommentsDom.spec

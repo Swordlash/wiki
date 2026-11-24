@@ -42,6 +42,8 @@ module Wiki.App.Backend.Mem
   , switchUser
   , memUsers
   , MemState
+  , memQuery
+  , memWrite
 
     -- * Kept in the browser
   , MemStore
@@ -188,6 +190,16 @@ readStored = MemWiki (ask >>= \env -> liftIO (withOwnerNames <$> readIORef env.w
 -- | A read: a pure function applied to the wiki as it is now.
 query :: (MonadIO m) => (MemState -> a) -> MemWiki m a
 query f = f <$> readState
+
+-- | 'query', for a capability whose instance lives in its own module
+-- ("Wiki.App.Security").
+memQuery :: (MonadIO m) => (MemState -> a) -> MemWiki m a
+memQuery = query
+
+-- | 'write', for a capability whose instance lives in its own module
+-- ("Wiki.App.Security").
+memWrite :: (MonadIO m) => Write a -> MemWiki m (Either WikiError a)
+memWrite = write
 
 -- | A write, applied atomically: either the whole change or none of it.
 -- If the change was made, it is then saved.

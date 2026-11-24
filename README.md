@@ -2665,10 +2665,13 @@ curl -H "X-API-Key: $WIKI_TOKEN" 'https://wiki.example/api/search?q=on-call'
   disabled; the server's log says which. After thirty refused keys from an
   address in fifteen minutes, that address's wrong keys get 429; a right key
   still works, and the sign-in form's count is separate.
-- **Making one.** Your keys will be listed, made and revoked in your
-  settings, which are being moved to a page of their own; making one there
-  will ask for your password, as adding a passkey does. Until then the
-  server's console makes them, on the machine the wiki runs on (as the
+- **Making one.** Your keys are listed, made and revoked in your settings'
+  section "API keys" (`/settings/api-keys/`): making one asks for your
+  password, as adding a passkey does, and shows the key once, with a Copy
+  button and examples written with the wiki's address, under its base path
+  if it has one. A key that works has Revoke. In the demo the section keeps
+  keys for the tab, by the server's rules, and they sign in nowhere. The
+  server's console also makes them, on the machine the wiki runs on (as the
   `users` commands do):
 
   ```sh
@@ -2679,8 +2682,8 @@ curl -H "X-API-Key: $WIKI_TOKEN" 'https://wiki.example/api/search?q=on-call'
 
   `add` prints the key once. `--right` is `read` unless given, and
   `--expires` names the last day the key works, until its end in UTC; with
-  none, it never expires. The application's own endpoints for the settings
-  are in [docs/api.md](docs/api.md#api-keys).
+  none, it never expires. The endpoints the settings' section uses are in
+  [docs/api.md](docs/api.md#api-keys).
 
 A page's address is its address in the browser with `/api/markdown` in front:
 `/s/team/projects/p/the-wiki/` is read at `/api/markdown/s/team/projects/p/the-wiki/`,

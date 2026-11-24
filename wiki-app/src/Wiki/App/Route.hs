@@ -341,10 +341,13 @@ data SettingsSection
     -- sessions, the second factor, the passkeys, the user's keys and the
     -- e-mail address.
     SecuritySection
+  | -- | The user's API keys ("Wiki.App.View.ApiKeys"): what a program signs
+    -- in to the wiki's API with, as the user.
+    ApiKeysSection
   | -- | The notifications mailed, and the feed of them.
     NotificationsSection
   | -- | The writing assistant's settings (WP4.19 of docs/PLAN.md): the
-    -- user's API keys, and the provider and model to use.
+    -- user's keys for an AI provider, and the provider and model to use.
     AssistantSection
   deriving stock (Eq, Show, Enum, Bounded)
 
@@ -359,6 +362,7 @@ settingsName :: SettingsSection -> Text
 settingsName = \case
   ProfileSection -> "profile"
   SecuritySection -> "security"
+  ApiKeysSection -> "api-keys"
   NotificationsSection -> "notifications"
   AssistantSection -> "assistant"
 
@@ -368,6 +372,7 @@ settingsTitle :: SettingsSection -> Text
 settingsTitle = \case
   ProfileSection -> "Profile"
   SecuritySection -> "Security"
+  ApiKeysSection -> "API keys"
   NotificationsSection -> "Notifications"
   AssistantSection -> "Writing assistant"
 

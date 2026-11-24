@@ -52,7 +52,8 @@ import Data.Aeson (FromJSON (..), ToJSON, decodeStrict', eitherDecodeStrict', en
 import Data.Map.Strict qualified as Map
 import Data.NT (type (~>) (..))
 import Data.Text qualified as T
-import Data.Time (addUTCTime)
+import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Halogen qualified as H
 import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.Router (Router)
@@ -68,12 +69,14 @@ import Wiki.Api (AdminApi (..), PagesApi (..), SpacesApi (..), StarsApi (..), Wi
 import Wiki.Api.Account (SignInMethods (..))
 import Wiki.Api.Activity (Activity (..))
 import Wiki.Api.Admin (Directory, ServerStatus (..), UserQuery (..), firstUsers, pageOfDirectory)
+import Wiki.Api.ApiKeys (ApiKeyId (..), ApiKeyInfo (..), KeyRight (..), MadeApiKey (..), NewApiKey (..))
 import Wiki.Api.Backups (Backups (..), defaultBackupSettings)
 import Wiki.Api.Comments (CommentsApi (..), NewThread (..))
 import Wiki.Api.Events (ClientMessage (..), PageEvent (CommentAdded, Editing, PageChanged), ServerMessage (..))
 import Wiki.Api.Events qualified as Events
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), Notifications (..), NotificationsApi (..))
 import Wiki.Api.Opaque (RegistrationChallenge (..))
+import Wiki.Api.Security (SecondFactorState (..))
 import Wiki.Api.ServerSettings (HomePage (showAnonymous), ServerSettings, ServerSettingsOf (homePage), noServerSettings)
 import Wiki.Api.Stars (StarredPage)
 import Wiki.Api.Types (DraftEdit (..), SessionInfo (..))
@@ -120,7 +123,7 @@ import Wiki.App.Route (route)
 #endif
 
 $( browserJS
-     ["jsbits/test-fetch.js", "jsbits/test-markup.js", "jsbits/test-clipboard.js"]
+     ["jsbits/test-fetch.js", "jsbits/test-markup.js", "jsbits/test-clipboard.js", "jsbits/test-copy.js", "jsbits/test-api-keys.js"]
      [ ("js_server_start", "wiki_test_server_start", Safe, [t|IO ()|])
      , ("js_server_stop", "wiki_test_server_stop", Safe, [t|IO ()|])
      , ("js_server_answer", "wiki_test_server_answer", Safe, [t|JSText -> JSText -> Int -> JSText -> IO ()|])
@@ -142,6 +145,11 @@ $( browserJS
      , ("js_server_hang_up", "wiki_test_server_hang_up", Safe, [t|IO ()|])
      , ("js_server_said", "wiki_test_server_said", Safe, [t|IO JSText|])
      , ("js_hide_clipboard", "wiki_test_hide_clipboard", Safe, [t|Bool -> IO ()|])
+     , ("js_stub_clipboard", "wiki_test_stub_clipboard", Safe, [t|Bool -> IO ()|])
+     , ("js_unstub_clipboard", "wiki_test_unstub_clipboard", Safe, [t|IO ()|])
+     , ("js_copied", "wiki_test_copied", Safe, [t|IO JSText|])
+     , ("js_set_field", "wiki_test_set_field", Safe, [t|JSText -> JSText -> IO Bool|])
+     , ("js_local_moment", "wiki_test_local_moment", Safe, [t|JSText -> IO Double|])
      , ("js_click_now", "wiki_test_click_now", Safe, [t|JSText -> IO ()|])
      ]
  )
@@ -483,6 +491,7 @@ spec m = do
   accounts m
   ownPassword m
   notificationFeed m
+  apiKeysPanel m
   comments m
   presence m
   lateAnswers m
@@ -738,6 +747,76 @@ notificationFeed m = describe "one's feed of notifications" $
 
 shouldContainText :: Element s -> Text -> PageM s ()
 shouldContainText element part = textContent element >>= (`shouldSatisfy` T.isInfixOf part)
+
+-- | The settings' section "API keys" ("Wiki.App.View.ApiKeys") over the
+-- stand-in server: a key made with the current password proved first, its
+-- expiry the end of a chosen day in the browser's time zone, the key shown
+-- once and copied to the clipboard (the test's own, in the browser's
+-- place: "Test.Browser.CopyCode" says why), listed, and revoked. Each read
+-- looks once, with the program quiet.
+apiKeysPanel :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m) => Spec
+apiKeysPanel m = describe "one's API keys" $
+  readsOnce Quiet $
+    it "makes a key in the settings with the password proved, shows it once, copies it, lists it and revokes it" $
+      runPage $ do
+        let made = UTCTime (fromGregorian 2026 11 24) 0
+            info = ApiKeyInfo {id = ApiKeyId "m3k7q2xa9dwn4zrt", name = "laptop", right = ReadRight, createdAt = made, expiresAt = Nothing, lastUsedAt = Nothing, revokedAt = Nothing}
+            secret = "wiki_m3k7q2xa9dwn4zrt_" <> T.replicate 52 "q"
+            keysAt = "api/v1/account/api-keys"
+        serverStarts
+        serveDemo
+        rita <- unsafeIOToPageM (signedInAs "user-reader")
+        answerWith "GET" "api/v1/session" 200 rita
+        answerWith "GET" "api/v1/account/second-factor" 200 SecondFactorState {enabled = False, recoveryCodesLeft = 0, asksPassword = True}
+        answerWith "GET" keysAt 200 ([] :: [ApiKeyInfo])
+        answerWith "POST" keysAt 201 MadeApiKey {key = secret, info}
+        unsafeIOToPageM (js_stub_clipboard False)
+        ui <- startServer m (UserSettings ApiKeysSection)
+        find ui ".settings-view h1" >>= (`shouldHaveText` "API keys")
+        find ui ".api-keys-empty" >>= (`shouldHaveText` "You have no keys yet.")
+        find ui ".api-key-make input[name=api-key-name]" >>= (`typeText` "laptop")
+        -- "On a day…", the fifth expiry, from the keyboard, and a day set as
+        -- a date picker sets it.
+        menu <- find ui ".api-key-make select[name=api-key-expiry]"
+        focus menu
+        press "Home"
+        replicateM_ 4 (press "ArrowDown")
+        _ <- find ui ".api-key-make input[name=api-key-day]"
+        unsafeIOToPageM (js_set_field (toJSText (".api-key-make input[name=api-key-day]" :: Text)) (toJSText ("2027-06-30" :: Text))) >>= (`shouldBe` True)
+        find ui ".api-key-make input[name=api-key-password]" >>= (`typeText` "rita's password")
+        -- The list the read after the make answers.
+        answerWith "GET" keysAt 200 [info]
+        find ui ".api-key-make button[type=submit]" >>= click
+        -- The key, once.
+        find ui ".api-key-text" >>= (`getProperty` "value") >>= (`shouldBe` secret)
+        find ui ".api-key-made" >>= (`shouldContainText` "not shown again")
+        -- The password proved first, the old way the stand-in server asks
+        -- for ('serveOpaque'); the key's request carries none, and its expiry
+        -- is the end of the 30th of June in this browser's time zone.
+        sent <- asked
+        let made' = [r | r <- sent, r.method == "POST", r.url == keysAt]
+        map (\r -> r.url) (filter (\r -> "rita's password" `T.isInfixOf` r.body) sent) `shouldBe` ["api/v1/account/password/proof/old"]
+        end <- unsafeIOToPageM (js_local_moment (toJSText ("2027-07-01T00:00:00" :: Text)))
+        map (\r -> decodeStrict' (encodeUtf8 r.body)) made'
+          `shouldBe` [Just NewApiKey {name = "laptop", right = ReadRight, expiresAt = Just (posixSecondsToUTCTime (realToFrac (end / 1000))), password = Nothing}]
+        -- Copied whole to the clipboard.
+        find ui ".api-key-copy" >>= click
+        unsafeIOToPageM js_copied >>= (`shouldBe` Just [secret]) . decodeStrict' . encodeUtf8 . fromJSText
+        find ui ".api-key-copy" >>= (`shouldHaveText` "Copied")
+        -- Closed: the key is gone from the page, and listed.
+        find ui ".api-key-made-close" >>= click
+        length <$> findAll ui ".api-key-made, .api-key-text" `shouldReturn` 0
+        find ui ".api-key .api-key-name" >>= (`shouldHaveText` "laptop")
+        -- Revoked, after asking once more.
+        answerWith "POST" (keysAt <> "/m3k7q2xa9dwn4zrt/revoke") 200 [info {revokedAt = Just made}]
+        find ui ".api-key-revoke" >>= click
+        find ui ".api-key-confirm" >>= (`shouldContainText` "Revoke 'laptop'? Programs using it stop at once.")
+        find ui ".api-key-revoke-yes" >>= click
+        find ui ".api-key" >>= (`shouldHaveClass` "api-key-revoked")
+        length <$> findAll ui ".api-key-revoke" `shouldReturn` 0
+        unsafeIOToPageM js_unstub_clipboard
+        unmount ui
+        serverStops
 
 -- | Hello, world, from the demo.
 helloWorld :: IO P.Page

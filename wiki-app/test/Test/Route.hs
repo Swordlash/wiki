@@ -250,16 +250,17 @@ spec = describe "Wiki.App.Route" $ do
 
     it "writes the settings' sections under settings, and reads the first and the assistant's old address as sections" $ do
       map (print route . UserSettings) settingsSections
-        `shouldBe` ["/settings/profile/", "/settings/security/", "/settings/notifications/", "/settings/assistant/"]
+        `shouldBe` ["/settings/profile/", "/settings/security/", "/settings/api-keys/", "/settings/notifications/", "/settings/assistant/"]
       for_ settingsSections $ \s -> parse route (print route (UserSettings s)) `shouldBe` Right (UserSettings s)
       parse route "/settings/" `shouldBe` Right (UserSettings ProfileSection)
       parse route "/settings" `shouldBe` Right (UserSettings ProfileSection)
       parse route "/settings/security" `shouldBe` Right (UserSettings SecuritySection)
+      parse route "/settings/api-keys/" `shouldBe` Right (UserSettings ApiKeysSection)
       -- The assistant's settings' address from before they were a section.
       parse route "/assistant/" `shouldBe` Right (UserSettings AssistantSection)
       parse route "/assistant" `shouldBe` Right (UserSettings AssistantSection)
       parse route "/settings/no-such-section/" `shouldSatisfy` isLeft
-      map settingsTitle settingsSections `shouldBe` ["Profile", "Security", "Notifications", "Writing assistant"]
+      map settingsTitle settingsSections `shouldBe` ["Profile", "Security", "API keys", "Notifications", "Writing assistant"]
 
     it "keeps a space called admin apart from the administration" $ do
       print route (Space (slugs ["admin"])) `shouldBe` "/s/admin/"

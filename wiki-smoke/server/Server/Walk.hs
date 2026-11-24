@@ -434,6 +434,34 @@ administrator smoke loadsRef = do
     _ <- asAdmin smoke "POST" ("spaces/" <> escape publicSpace <> "/pages") (Just (object ["parent" .= Null, "title" .= ("Smoke post" :: Text), "body" .= ("The smoke test's *first* post." :: Text)])) >>= expectStatus 201 "the post"
     nothingWrongOnServer page
 
+  -- An API key, made in her settings' section "API keys" with her
+  -- password: a program's request with it is let in to the API for
+  -- programs, and after Revoke in the panel the same request is refused.
+  step' "makes an API key in her settings with her password, which signs a program's request in until she revokes it there" $ \w -> do
+    let page = w.page
+    visit page (address smoke "/settings/api-keys/")
+    waitQuiet page
+    hasText (locator page "#app .settings-view h1") "API keys"
+    fill (locator page "#app .api-key-make input[name=api-key-name]") "smoke"
+    fill (locator page "#app .api-key-make input[name=api-key-password]") adminPassword
+    click (locator page "#app .api-key-make button[type=submit]")
+    waitQuiet page
+    key <- inputValue (locator page "#app .api-key-text")
+    expect ("wiki_" `Text.isPrefixOf` key) ("the key shown is " <> show key)
+    let listed' = (.status) <$> fetchAs smoke.wiki Nothing False "GET" "/api/list/" [("Authorization", "Bearer " <> Text.encodeUtf8 key)] Nothing
+    listed' `shouldReturn` 200
+    click (locator page "#app .api-key-made-close")
+    waitQuiet page
+    count (locator page "#app .api-key-text") `shouldReturn` 0
+    hasText (locator page "#app .api-key .api-key-name") "smoke"
+    click (locator page "#app .api-key-revoke")
+    waitQuiet page
+    click (locator page "#app .api-key-revoke-yes")
+    waitQuiet page
+    count (locator page "#app .api-key.api-key-revoked") `shouldReturn` 1
+    listed' `shouldReturn` 401
+    nothingWrongOnServer page
+
 ----------------------------------------------------------------------
 -- 2: a visitor, a closed wiki, a provider
 

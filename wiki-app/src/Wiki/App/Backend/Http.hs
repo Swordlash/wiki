@@ -120,6 +120,7 @@ import Wiki.Api (AccountApi (..), AdminApi (..), ArchiveApi (..), AssistantApi (
 import Wiki.Api.Account (AccountDisabled (..), Credentials (..), NewAccount (..), PasswordChange (..), SignInMethods)
 import Wiki.Api.Activity (ActivityQuery (..), firstPage)
 import Wiki.Api.Admin (AdministratorFlag (..), CreateSpacesFlag (..), GroupName (..), NewInvitation (..), UserQuery (..))
+import Wiki.Api.ApiKeys (NewApiKey (..))
 import Wiki.Api.Backups (Backups (..))
 import Wiki.Api.Comments (CommentText (..), CommentsApi (..), NewThread (..), ThreadResolution (..))
 import Wiki.Api.Encrypted (ConversionCommit (..), ConversionInfo (..), ConversionLease (..), ConversionPage (..), EncryptSpace (..), HeadingsQuery (..), LeaseRequest (..), LeaseToken, NewEncryptedSubspace (..), NewGrant (..), NewGrants (..), NewSealedComment (..), NewSealedPage (..), NewSealedThread (..), PageHeading (..), PlainAnchor (..), PlainComment (..), PlainMeta (..), PlainVersion (..), RotatedPage (..), Rotation (..), RotationInfo (..), SealedAttachment (..), SealedCommentEdit (..), SealedCommentInfo (..), SealedEdit (..), SealedPage (..), SealedSummary (..), SealedThread (..), SealedThreads (..), SealedVersion (..), SealedVersionInfo (..), SpaceEncryption (..), SpaceEntry (..), SpaceKeyStart (..), StagedAnchor (..), StagedBlob (..), StagedComment (..), StagedMeta (..), StagedPage (..), StagedPlain (..), StagedSealed (..), StagedVersion (..), StartEncrypting (..), maxHeadings)
@@ -1325,8 +1326,8 @@ instance (MonadIO m) => MonadAccount (HttpWiki m) where
   verifyEmail token = send_ (endpoints.emailVerification token)
 
 -- | Account security, over the API's @account\/…@ endpoints. Nothing is
--- cached: the security panel fetches it each time it is opened, and none
--- of it changes what the wiki shows.
+-- cached: the security panel and the panel of API keys fetch it each time
+-- they are opened, and none of it changes what the wiki shows.
 instance (MonadIO m) => MonadSecurity (HttpWiki m) where
   securityAvailable = pure True
   ownSessions = send endpoints.account.sessions
@@ -1338,6 +1339,14 @@ instance (MonadIO m) => MonadSecurity (HttpWiki m) where
   removeOwnSecondFactor code = withPassword (endpoints.account.removeSecondFactor OneTimeCode {code})
   ownEmail = send endpoints.account.email
   setOwnEmail email password = proven password >>= either (pure . Left) (\p -> withPassword (endpoints.account.setEmail EmailChange {email, password = p}))
+  ownApiKeys = send endpoints.account.apiKeys
+
+  -- The password proved first, as for a passkey ('proven'): through
+  -- OPAQUE it leaves a proof on the session and goes nowhere; an account
+  -- from before OPAQUE proves it itself once. The request then carries
+  -- no password.
+  makeApiKey new = proven new.password >>= either (pure . Left) (\p -> withPassword (endpoints.account.makeApiKey NewApiKey {name = new.name, right = new.right, expiresAt = new.expiresAt, password = p}))
+  revokeApiKey i = send (endpoints.account.revokeApiKey i)
 
 -- | The assistant's vault, over the API's @assistant\/…@ endpoints, and
 -- the account's passkeys, over @account\/passkeys\/…@ ("Wiki.Api.Vault"). Nothing is cached: the vault is fetched

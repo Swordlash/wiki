@@ -75,6 +75,7 @@ import Control.Monad.UUID (MonadUUID)
 import Data.List qualified as L
 import Data.Map.Strict qualified as Map
 import Data.Row (Empty)
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time (UTCTime, defaultTimeLocale, formatTime)
 import Halogen qualified as H
@@ -92,8 +93,9 @@ import Wiki.Api.Vault
   , StoredVault (..)
   )
 import Wiki.App.Account (codeErrorText, passwordErrorText)
-import Wiki.App.Assistant (Made (..), MonadAssistant (..), PasskeyRefusal (..))
-import Wiki.App.Assistant.Sync (MonadVault (..))
+import Wiki.App.Assistant (KeyOwner, Made (..), MonadAssistant (..), PasskeyRefusal (..), pageKeys)
+import Wiki.App.Assistant.Sync (MonadVault (..), Owned, owned)
+import Wiki.App.Assistant.Sync qualified as Sync
 import Wiki.App.Backend (WikiError)
 import Wiki.App.Editor.Browser (clearField, focusElement)
 import Wiki.App.Security (MonadSecurity (..))
@@ -149,6 +151,11 @@ data State = State
   , typedVaultPassword :: Text
   , vaultPasswordField :: H.RefLabel
   , vaultProblem :: Maybe Text
+  , keyOwners :: Set KeyOwner
+  -- ^ The owners of the keys of the section's operations under way
+  -- ('owning'): each is let go when its operation ends, and all of them
+  -- when the section closes, so that an operation the close cut off
+  -- leaves no key in the page.
   , unregistered :: Maybe RegistrationResponse
   -- ^ A passkey the authenticator has made and the server has not yet
   -- answered for: named here in the step that takes the passkey, and
@@ -248,6 +255,7 @@ component =
               , typedVaultPassword = ""
               , vaultPasswordField
               , vaultProblem = Nothing
+              , keyOwners = Set.empty
               , unregistered = Nothing
               }
       , render
@@ -643,7 +651,7 @@ component =
             -- Showing the section brings this browser up to date with the
             -- vault: the private key unsealed, or the key pair made, when
             -- the browser holds the vault key.
-            vault <- H.async (settleKeys u)
+            vault <- owning u (settleKeys u)
             modify (\st -> st {userKeys = Just vault})
       TypedVaultPassword t -> modify (\st -> st {typedVaultPassword = t})
       MakeKeys -> withVaultPassword (\u p -> maybe (pure (Left "Type your current password.")) (createWithProvedPassword u) p)
@@ -669,7 +677,7 @@ component =
           Right options ->
             -- No salt: a passkey added here signs in, and wraps no vault
             -- key until the assistant asks it to.
-            H.async (createPasskey options "" "") >>= \case
+            ownedBy (createPasskey options "" "") >>= \case
               Left Cancelled -> pass
               Left (PasskeyFailed why) -> modify (\st -> st {keysProblem = Just why})
               Right made -> do
@@ -709,7 +717,9 @@ component =
       -- refused, leaving the new one's for its own answer: the first
       -- passkey stays on the authenticator unknown to the wiki, as before
       -- this was sent again).
-      Finalize ->
+      Finalize -> do
+        -- The keys of the operations the close cut off go, in this step.
+        Sync.releaseOwners (\st -> st.keyOwners) (\keyOwners st -> st {keyOwners})
         gets (\st -> st.unregistered) >>= traverse_ (\named -> void (H.async (finishRegistration named)))
       RemoveKey i -> busily $ do
         modify (\st -> st {keysProblem = Nothing})
@@ -772,13 +782,13 @@ component =
     -- A change to the user's vault, showing the keys after it, or why it
     -- failed; the passkeys are fetched again, since their wraps may have
     -- changed.
-    withVault :: (UserId -> m (Either Text UserKeys)) -> H.HalogenM State Action Empty output m ()
+    withVault :: (UserId -> Owned m (Either Text UserKeys)) -> H.HalogenM State Action Empty output m ()
     withVault act =
       gets (\st -> st.owner) >>= traverse_ (\u -> busily (changed u))
       where
         changed u = do
           modify (\st -> st {vaultProblem = Nothing})
-          H.async (act u) >>= \case
+          owning u (act u) >>= \case
             Left why -> modify (\st -> st {vaultProblem = Just why})
             Right k -> modify (\st -> st {userKeys = Just (Right k)})
           keys <- H.async listPasskeys
@@ -786,12 +796,23 @@ component =
 
     -- 'withVault', with the password typed, which goes with this one
     -- attempt however it ends, as the passkeys' does.
-    withVaultPassword :: (UserId -> Maybe Password -> m (Either Text UserKeys)) -> H.HalogenM State Action Empty output m ()
+    withVaultPassword :: (UserId -> Maybe Password -> Owned m (Either Text UserKeys)) -> H.HalogenM State Action Empty output m ()
     withVaultPassword act = do
       typed <- gets (\st -> st.typedVaultPassword)
       modify (\st -> st {typedVaultPassword = ""})
       gets (\st -> st.vaultPasswordField) >>= H.getRef >>= traverse_ (H.liftEffect . clearField)
       withVault (\u -> act u (if T.null typed then Nothing else Just (Password typed)))
+
+    -- An operation of the user's vault, with its keys under an owner of
+    -- its own, which 'Finalize' lets go if the section closes meanwhile
+    -- ("Wiki.App.Assistant.Sync"'s 'Sync.owning').
+    owning :: UserId -> Owned m a -> H.HalogenM State Action Empty output m a
+    owning = Sync.owning (\st -> st.keyOwners) (\keyOwners st -> st {keyOwners})
+
+    -- 'owning', for the signed-in user's; one the section shows nobody's
+    -- (the demo) has no keys, and runs it as it is.
+    ownedBy :: Owned m a -> H.HalogenM State Action Empty output m a
+    ownedBy act = gets (\st -> st.owner) >>= maybe (H.async (owned pageKeys act)) (`owning` act)
 
     busily :: H.HalogenM State Action Empty output m () -> H.HalogenM State Action Empty output m ()
     busily act =

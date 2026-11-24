@@ -21,8 +21,10 @@
 -- the browser they are "Crypto.OPAQUE.Client.WebCrypto"'s: the export key
 -- goes from serenity-kit straight into WebCrypto, as a key that cannot be
 -- exported and serves @deriveKey@ only, and its bytes never reach this
--- program. This module puts that key in the page's registry of keys and
--- gives its 'KeyRef'. A page with no WebCrypto (one served over plain
+-- program. This module puts that key in the page's registry of keys,
+-- under the owner the caller names ('KeyOwner'), and gives its 'KeyRef'; a
+-- caller that has no use for the key names none, and the key is dropped
+-- without entering the registry. A page with no WebCrypto (one served over plain
 -- HTTP) still signs in and sets passwords, and gets no key. Natively there
 -- is no WebCrypto: the export key is zeroed, and no key is given.
 --
@@ -45,7 +47,7 @@ where
 import Crypto.OPAQUE.Client qualified as O
 import Protolude
 import Wiki.Api.Opaque (Message (..), Stretch (..), bytesOf, messageOf)
-import Wiki.App.Assistant (KeyRef)
+import Wiki.App.Assistant (KeyOwner, KeyRef)
 import Wiki.App.Browser (consoleWarn)
 import Wiki.Core.User (Password (..))
 #if defined(wasm32_HOST_ARCH)
@@ -93,10 +95,10 @@ startLogin password =
 
 -- | 'finishLogin' is a sign-in's last step, with the server's KE2 and the
 -- stretching it named: KE3, the last message, and the page's key of the
--- export key, if any; or 'Nothing' for a wrong password (and for an
--- account without a record).
-finishLogin :: LoginState -> Password -> Stretch -> Message -> IO (Maybe (Message, Maybe KeyRef))
-finishLogin (LoginState st) _ stretch ke2 = do
+-- export key, held under the owner given, if any; or 'Nothing' for a
+-- wrong password (and for an account without a record).
+finishLogin :: Maybe KeyOwner -> LoginState -> Password -> Stretch -> Message -> IO (Maybe (Message, Maybe KeyRef))
+finishLogin owner (LoginState st) _ stretch ke2 = do
   result <- case bytesOf ke2 >>= rightToMaybe . O.decode of
     Nothing -> pure (Left O.DeserializeError)
     Just ke2' -> loginFinished (opaqueConfig stretch) st ke2'
@@ -105,7 +107,7 @@ finishLogin (LoginState st) _ stretch ke2 = do
     Right (ke3, sessionKey, exported) -> do
       O.scrub sessionKey
       ke3' <- evaluate (messageOf (O.encode ke3))
-      key <- held exported
+      key <- held owner exported
       pure (Just (ke3', key))
   O.scrub st
   pure finished
@@ -120,10 +122,10 @@ startRegistration password =
 
 -- | 'finishRegistration' is a registration's last step, with the server's
 -- response and the stretching it named: the record to send, and the
--- page's key of the export key, if any; or 'Nothing' when the response is
--- not valid.
-finishRegistration :: RegistrationState -> Password -> Stretch -> Message -> IO (Maybe (Message, Maybe KeyRef))
-finishRegistration (RegistrationState st) _ stretch response = do
+-- page's key of the export key, held under the owner given, if any; or
+-- 'Nothing' when the response is not valid.
+finishRegistration :: Maybe KeyOwner -> RegistrationState -> Password -> Stretch -> Message -> IO (Maybe (Message, Maybe KeyRef))
+finishRegistration owner (RegistrationState st) _ stretch response = do
   result <- case bytesOf response >>= rightToMaybe . O.decode of
     Nothing -> pure (Left O.DeserializeError)
     Just response' -> registrationFinished (opaqueConfig stretch) st response'
@@ -131,7 +133,7 @@ finishRegistration (RegistrationState st) _ stretch response = do
     Left e -> failed "the registration could not finish" e $> Nothing
     Right (record, exported) -> do
       record' <- evaluate (messageOf (O.encode record))
-      key <- held exported
+      key <- held owner exported
       pure (Just (record', key))
   O.scrub st
   pure made
@@ -145,8 +147,9 @@ loginFinished :: O.Config -> O.ClientLoginState -> O.KE2 -> IO (Either O.Error (
 registrationFinished :: O.Config -> O.ClientRegState -> O.RegistrationResponse -> IO (Either O.Error (O.RegistrationRecord, Exported))
 
 -- | 'held' is the page's key of an export key a finishing step gave, if
--- any. The export key itself is not kept.
-held :: Exported -> IO (Maybe KeyRef)
+-- any, under the owner given; with no owner, none. The export key itself
+-- is not kept.
+held :: Maybe KeyOwner -> Exported -> IO (Maybe KeyRef)
 
 #if defined(wasm32_HOST_ARCH)
 
@@ -159,9 +162,9 @@ loginFinished config st ke2 = clientFinishWebCrypto (DeriveKey :| []) config st 
 
 registrationFinished config st response = finalizeRegistrationWebCrypto (DeriveKey :| []) config st response O.defaultIdentities
 
-held = \case
+held owner = \case
   Nothing -> pure Nothing
-  Just (ExportCryptoKey key) -> holdKey key
+  Just (ExportCryptoKey key) -> maybe (pure Nothing) (`holdKey` key) owner
 
 #else
 
@@ -173,6 +176,6 @@ loginFinished config st ke2 = pure (O.clientFinish config st ke2 O.defaultIdenti
 
 registrationFinished config st response = O.finalizeRegistration config st response O.defaultIdentities
 
-held exportKey = O.scrub exportKey $> Nothing
+held _ exportKey = O.scrub exportKey $> Nothing
 
 #endif

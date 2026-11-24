@@ -68,8 +68,14 @@ function wikiVaultListen() {
     wikiVaultLetGo(slot);
     // A user's vault key or private key let go in another tab, as its
     // sign-out does: the page lets go of everything it opened with them
-    // (Wiki.App.Shell listens for this event).
-    if (slot.startsWith("vault:") || slot.startsWith("identity:")) globalThis.dispatchEvent?.(new CustomEvent("wiki-keys-dropped"));
+    // (Wiki.App.Shell listens for this event), and what this page's
+    // sections hold of theirs goes too, and keeps nothing more
+    // (wiki_vault_keep_key). The assistant's own key let go there (its
+    // syncing turned off) is no sign-out, and leaves the owners open.
+    if (slot.startsWith("vault:") || slot.startsWith("identity:")) {
+      wiki_vault_owners_close(wikiVaultSlotUser(slot));
+      globalThis.dispatchEvent?.(new CustomEvent("wiki-keys-dropped"));
+    }
   };
 }
 
@@ -182,10 +188,65 @@ function wikiVaultLetGo(slot) {
   globalThis.wikiVaultSlots.delete(slot);
 }
 
-function wikiVaultHandle(key) {
+// The owners of keys: an operation of the settings' sections registers
+// the keys it makes under its section's owner, by number (0 is the page's,
+// which is never let go). A section lets its owner go when it closes, and
+// the page lets go of a user's owners when the user signs out or another
+// signs in. Letting an owner go deletes from the registry every key
+// registered under it, in one step. An operation the section's close cut
+// off cannot let go of its keys itself: its worker was killed, maybe while
+// the browser was still making a key, which comes after. So a key made
+// under an owner already let go is not registered at all
+// (wikiVaultHandle), and a key is not kept on this device under one either
+// (wiki_vault_keep_key).
+function wikiVaultOwners() {
+  if (!globalThis.wikiKeyOwners) globalThis.wikiKeyOwners = { next: 0, open: new Map() };
+  return globalThis.wikiKeyOwners;
+}
+
+// A new owner for the user's keys: its number.
+function wiki_vault_owner_open(user) {
+  const owners = wikiVaultOwners();
+  const owner = ++owners.next;
+  owners.open.set(owner, { user: String(user), handles: new Set() });
+  return owner;
+}
+
+// Let an owner go: every key registered under it leaves the registry.
+function wiki_vault_owner_close(owner) {
+  const owners = wikiVaultOwners();
+  const held = owners.open.get(owner);
+  if (held === undefined) return;
+  owners.open.delete(owner);
+  const registry = wikiVaultRegistry();
+  for (const handle of held.handles) registry.keys.delete(handle);
+}
+
+// Let go of every owner of a user's keys.
+function wiki_vault_owners_close(user) {
+  for (const [owner, held] of [...wikiVaultOwners().open]) if (held.user === String(user)) wiki_vault_owner_close(owner);
+}
+
+// Whether keys may be registered under an owner: the page's always, a
+// section's until it is let go.
+function wikiVaultOwnerOpen(owner) {
+  return !owner || wikiVaultOwners().open.has(owner);
+}
+
+// The user a slot's key is of: "vault:<user>", "identity:<user>", or the
+// assistant's "<user>".
+function wikiVaultSlotUser(slot) {
+  return String(slot).replace(/^(?:vault|identity):/, "");
+}
+
+// Register a key under an owner (0, or none, for the page's): its handle.
+// Under an owner let go, the key is not registered, and this throws.
+function wikiVaultHandle(key, owner) {
+  if (!wikiVaultOwnerOpen(owner)) throw new Error("The step that asked for this key has ended.");
   const registry = wikiVaultRegistry();
   const handle = ++registry.next;
   registry.keys.set(handle, key);
+  if (owner) wikiVaultOwners().open.get(owner).handles.add(handle);
   return handle;
 }
 
@@ -217,10 +278,10 @@ function wikiVaultFailure(error) {
 // A new vault key: AES-GCM, 256 bits, which can be exported (to be
 // wrapped for a passkey) only when asked.
 // The handle, or 0 where the browser makes no key (no WebCrypto).
-async function wiki_vault_new_key(exportable) {
+async function wiki_vault_new_key(exportable, owner) {
   try {
     const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, Boolean(exportable), ["encrypt", "decrypt"]);
-    return wikiVaultHandle(key);
+    return wikiVaultHandle(key, owner);
   } catch {
     return 0;
   }
@@ -273,16 +334,16 @@ function wiki_vault_forget_key(handle) {
 // into WebCrypto for deriveKey only, so that its bytes never reach the
 // program (Wiki.App.Backend.Opaque). Its handle, or 0 for anything that is
 // not a CryptoKey.
-function wiki_vault_hold_key(key) {
-  if (typeof CryptoKey !== "function" || !(key instanceof CryptoKey)) return 0;
-  return wikiVaultHandle(key);
+function wiki_vault_hold_key(key, owner) {
+  if (typeof CryptoKey !== "function" || !(key instanceof CryptoKey) || !wikiVaultOwnerOpen(owner)) return 0;
+  return wikiVaultHandle(key, owner);
 }
 
 // The key that wraps the vault key for the password: HKDF-SHA256 over the
 // key OPAQUE's export key gave (wiki_vault_hold_key), with the vault's salt
 // and the format's info, to an AES-GCM key that only wraps and unwraps.
 // JSON {handle}, or {error}.
-async function wiki_vault_password_key(base, salt, info) {
+async function wiki_vault_password_key(base, salt, info, owner) {
   try {
     const key = await crypto.subtle.deriveKey(
       { name: "HKDF", hash: "SHA-256", salt: wikiVaultFromBase64(salt), info: wikiVaultText(info) },
@@ -291,7 +352,7 @@ async function wiki_vault_password_key(base, salt, info) {
       false,
       ["wrapKey", "unwrapKey"],
     );
-    return JSON.stringify({ handle: wikiVaultHandle(key) });
+    return JSON.stringify({ handle: wikiVaultHandle(key, owner) });
   } catch (error) {
     return wikiVaultFailure(error);
   }
@@ -331,27 +392,55 @@ async function wikiVaultStore(mode, act) {
 // asked, in IndexedDB too (as a key that cannot be exported, made so here
 // if it could be), or nowhere but the page ("ask each time"). "" when
 // done, or what failed.
-async function wiki_vault_keep_key(user, handle, onDisk) {
+//
+// Under an owner (a section's operation), the key is kept only while the
+// owner is open, checked in the step that keeps it in the page and starts
+// the transaction that stores it: a sign-out here lets the user's owners
+// go before it deletes their keys (Wiki.App.Shell), so the deletion's
+// transaction, which starts after, deletes a key stored before, and a key
+// not stored yet is not stored.
+async function wiki_vault_keep_key(user, handle, onDisk, owner) {
   try {
     let key = wikiVaultKey(handle);
     if (key.extractable) {
       const raw = await crypto.subtle.exportKey("raw", key);
       key = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
       new Uint8Array(raw).fill(0);
+    }
+    // A browser that stores nothing (some private windows) keeps the key
+    // in the page all the same, and says why it stored none.
+    let db = null;
+    let unstored = null;
+    try {
+      db = await wikiVaultDatabase();
+    } catch (error) {
+      unstored = error;
+    }
+    try {
+      if (!wikiVaultOwnerOpen(owner)) throw new Error("The step that asked to keep this key has ended.");
       // The handle holds the copy that cannot be exported from now on, so
       // that the exportable one is not left in the page.
-      wikiVaultRegistry().keys.set(handle, key);
+      if (wikiVaultRegistry().keys.has(handle)) wikiVaultRegistry().keys.set(handle, key);
+      wikiVaultPageKeys().set(String(user), key);
+      wikiVaultSlotHandles(String(user)).add(handle);
+      if (db === null) throw unstored;
+      // The store's generation moves on in the same transaction as the key
+      // is kept: a page about to let go of every user's keys, which read
+      // the generation before, lets go of none (wiki_vault_drop_if).
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction("keys", "readwrite");
+        const store = transaction.objectStore("keys");
+        const g = store.get("generation");
+        g.onsuccess = () => store.put((typeof g.result === "number" ? g.result : 0) + 1, "generation");
+        if (onDisk) store.put(key, String(user));
+        else store.delete(String(user));
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
+      });
+    } finally {
+      db?.close();
     }
-    wikiVaultPageKeys().set(String(user), key);
-    wikiVaultSlotHandles(String(user)).add(handle);
-    // The store's generation moves on in the same transaction as the key
-    // is kept: a page about to let go of every user's keys, which read the
-    // generation before, lets go of none (wiki_vault_drop_if).
-    await wikiVaultStore("readwrite", (store) => {
-      const g = store.get("generation");
-      g.onsuccess = () => store.put((typeof g.result === "number" ? g.result : 0) + 1, "generation");
-      return onDisk ? store.put(key, String(user)) : store.delete(String(user));
-    });
     return "";
   } catch (error) {
     return String(error?.message ?? error);
@@ -362,12 +451,13 @@ async function wiki_vault_keep_key(user, handle, onDisk) {
 // the page's (asked for each time); its handle, or 0 for none. The stored
 // key comes first because another tab may have stored a new one (syncing
 // turned on or unlocked there), and the page's would then be out of date.
-async function wiki_vault_device_key(user) {
+async function wiki_vault_device_key(user, owner) {
   try {
     const stored = await wikiVaultStore("readonly", (store) => store.get(String(user)));
     if (stored instanceof CryptoKey) {
+      if (!wikiVaultOwnerOpen(owner)) return 0;
       wikiVaultPageKeys().set(String(user), stored);
-      const handle = wikiVaultHandle(stored);
+      const handle = wikiVaultHandle(stored, owner);
       wikiVaultSlotHandles(String(user)).add(handle);
       return handle;
     }
@@ -375,8 +465,8 @@ async function wiki_vault_device_key(user) {
     // No database, as in some private windows: the page's key, if any.
   }
   const held = wikiVaultPageKeys().get(String(user));
-  if (held === undefined) return 0;
-  const handle = wikiVaultHandle(held);
+  if (held === undefined || !wikiVaultOwnerOpen(owner)) return 0;
+  const handle = wikiVaultHandle(held, owner);
   wikiVaultSlotHandles(String(user)).add(handle);
   return handle;
 }
@@ -426,7 +516,7 @@ async function wikiVaultWrappingKey(output, salt, info) {
 // and wrapping the handle of the key its PRF output gives, when the
 // authenticator gave the output at once (0 otherwise: a use of the
 // passkey gives it). Or {error, cancelled}.
-async function wiki_vault_create(options, salt, info) {
+async function wiki_vault_create(options, salt, info, owner) {
   try {
     const o = JSON.parse(options);
     const credential = await navigator.credentials.create({
@@ -454,7 +544,7 @@ async function wiki_vault_create(options, salt, info) {
     });
     const prf = credential.getClientExtensionResults().prf ?? {};
     const output = prf.results?.first;
-    const wrapping = output ? wikiVaultHandle(await wikiVaultWrappingKey(output, salt, info)) : 0;
+    const wrapping = output ? wikiVaultHandle(await wikiVaultWrappingKey(output, salt, info), owner) : 0;
     return JSON.stringify({
       response: {
         id: wikiVaultToBase64(credential.rawId),
@@ -474,7 +564,7 @@ async function wiki_vault_create(options, salt, info) {
 // response is what the server checks (AssertionResponse) and wrapping the
 // handle of the key the PRF output gives, or 0 when the passkey gave
 // none. Or {error, cancelled}.
-async function wiki_vault_get(options, salt, info) {
+async function wiki_vault_get(options, salt, info, owner) {
   try {
     const o = JSON.parse(options);
     const assertion = await navigator.credentials.get({
@@ -488,7 +578,7 @@ async function wiki_vault_get(options, salt, info) {
       },
     });
     const output = assertion.getClientExtensionResults().prf?.results?.first;
-    const wrapping = output ? wikiVaultHandle(await wikiVaultWrappingKey(output, salt, info)) : 0;
+    const wrapping = output ? wikiVaultHandle(await wikiVaultWrappingKey(output, salt, info), owner) : 0;
     return JSON.stringify({
       response: {
         id: wikiVaultToBase64(assertion.rawId),
@@ -522,7 +612,7 @@ async function wiki_vault_wrap(wrapping, handle, data) {
 
 // Unwrap a vault key with a passkey's wrapping key, exportable only when
 // asked (to wrap it for another passkey): JSON {handle}, or {error}.
-async function wiki_vault_unwrap(wrapping, nonce, key, data, exportable) {
+async function wiki_vault_unwrap(wrapping, nonce, key, data, exportable, owner) {
   try {
     const unwrapped = await crypto.subtle.unwrapKey(
       "raw",
@@ -533,7 +623,7 @@ async function wiki_vault_unwrap(wrapping, nonce, key, data, exportable) {
       Boolean(exportable),
       ["encrypt", "decrypt"],
     );
-    return JSON.stringify({ handle: wikiVaultHandle(unwrapped) });
+    return JSON.stringify({ handle: wikiVaultHandle(unwrapped, owner) });
   } catch (error) {
     return JSON.stringify({ error: error?.name === "OperationError" ? "This passkey's copy of the vault key does not open." : String(error?.message ?? error) });
   }
@@ -555,7 +645,7 @@ async function wikiKeysIdOf(raw) {
 // keyId, publicKey, nonce, ciphertext}, where handle is the private key,
 // which cannot be exported; or {error}. The PKCS #8 bytes exist only while
 // they are sealed, and are overwritten then.
-async function wiki_keys_generate(vaultHandle, data) {
+async function wiki_keys_generate(vaultHandle, data, owner) {
   try {
     const pair = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
     const raw = await crypto.subtle.exportKey("raw", pair.publicKey);
@@ -566,7 +656,7 @@ async function wiki_keys_generate(vaultHandle, data) {
       const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: wikiVaultText(data + keyId) }, wikiVaultKey(vaultHandle), pkcs8);
       const kept = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "X25519" }, false, ["deriveBits"]);
       return JSON.stringify({
-        handle: wikiVaultHandle(kept),
+        handle: wikiVaultHandle(kept, owner),
         keyId,
         publicKey: wikiVaultToBase64(raw),
         nonce: wikiVaultToBase64(nonce),
@@ -582,7 +672,7 @@ async function wiki_keys_generate(vaultHandle, data) {
 
 // Open the user's sealed private key with the vault key: JSON {handle},
 // a key that cannot be exported, or {error}.
-async function wiki_keys_open(vaultHandle, nonce, ciphertext, data) {
+async function wiki_keys_open(vaultHandle, nonce, ciphertext, data, owner) {
   let pkcs8 = null;
   try {
     pkcs8 = new Uint8Array(
@@ -593,7 +683,7 @@ async function wiki_keys_open(vaultHandle, nonce, ciphertext, data) {
       ),
     );
     const key = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "X25519" }, false, ["deriveBits"]);
-    return JSON.stringify({ handle: wikiVaultHandle(key) });
+    return JSON.stringify({ handle: wikiVaultHandle(key, owner) });
   } catch (error) {
     return JSON.stringify({ error: error?.name === "OperationError" ? "The vault key does not open this key pair." : String(error?.message ?? error) });
   } finally {

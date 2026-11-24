@@ -84,6 +84,8 @@ $( browserJS
      , ("js_keys_mark", "wiki_test_keys_mark", Safe, [t|IO ()|])
      , ("js_keys_checked", "wiki_test_keys_checked", Safe, [t|IO JSText|])
      , ("js_password_keys", "wiki_test_password_keys", Safe, [t|IO Int|])
+     , ("js_loose_keys", "wiki_test_loose_keys", Safe, [t|IO Int|])
+     , ("js_key_ownersPromise", "wiki_test_key_owners", Safe, [t|IO (Promise JSText)|])
      , ("js_existing", "wiki_test_passkeys_existing", Safe, [t|IO JSText|])
      , ("js_unregistered", "wiki_test_passkeys_unregistered", Safe, [t|IO JSText|])
      , ("js_offered", "wiki_test_passkeys_offered", Safe, [t|IO Bool|])
@@ -975,6 +977,144 @@ userKeys m = describe "the user's keys" $ do
     identityExport `shouldReturn` "refused"
     closed again
 
+  -- The operations of the settings that hold keys while they wait for the
+  -- server. Each is begun, the server's answer held, the section left for
+  -- another (which unmounts it, and kills its workers), and the answer let
+  -- go: no key the operation registered stays in the page ('cutOff').
+  -- The mechanism the examples below rest on, in the page's registry
+  -- itself (jsbits/vault.js): what an owner of keys holds goes with it,
+  -- even a key made after it went, and nothing is kept under it then.
+  it "lets an owner's keys go with it, registers no key made after, and keeps none under it" $ runOwn $ do
+    found <- unsafeIOToPageM (if inBrowser then fromJSText <$> (wait =<< js_key_ownersPromise) else pure "")
+    decodeStrict (encodeUtf8 found)
+      `shouldBe` Just
+        ( Aeson.object
+            [ "heldWhileOpen" Aeson..= True
+            , "goneWithOwner" Aeson..= True
+            , "lateHandle" Aeson..= (0 :: Int)
+            , "lateRegistered" Aeson..= False
+            , "keepRefused" Aeson..= True
+            , "storedAfter" Aeson..= (0 :: Int)
+            , "allGone" Aeson..= True
+            , "keptByOtherDrop" Aeson..= True
+            , "goneBySignOut" Aeson..= True
+            ]
+        )
+
+  describe "an operation of the settings left before the server's answer leaves no key in the page" $ do
+    it "making the keys with the password" $ runOwn $ do
+      ui <- withoutKeys pass
+      find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
+      cutOff ui "PUT" "api/v1/assistant/vault" (find ui ".keys-make" >>= click)
+      closed ui
+
+    it "making the keys with a passkey" $ runOwn $ do
+      -- A user the second factor asks no password of has none to give:
+      -- the keys are made with a passkey.
+      ui <- withoutKeys (answerWith "GET" "api/v1/account/second-factor" 200 (Aeson.object ["enabled" Aeson..= False, "recoveryCodesLeft" Aeson..= (0 :: Int), "asksPassword" Aeson..= False]))
+      cutOff ui "PUT" "api/v1/assistant/vault" (find ui ".keys-make-passkey" >>= click)
+      closed ui
+
+    it "unlocking with the password" $ runOwn $ do
+      ui <- signedOut "editor's password"
+      signIn ui "editor's password"
+      _ <- madeKeys
+      -- Another device's page: the vault, and no key here.
+      unsafeIOToPageM (evaluate =<< js_new_device)
+      openSettings ui SecuritySection
+      find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
+      cutOff ui "PUT" "api/v1/account/password/proof" (find ui ".keys-unlock-password-button" >>= click)
+      closed ui
+
+    it "unlocking with a passkey" $ runOwn $ do
+      ui <- withPasskeyUnlock
+      unsafeIOToPageM (evaluate =<< js_new_device)
+      showSection ui ProfileSection
+      showSection ui SecuritySection
+      cutOff ui "PUT" "api/v1/assistant/passkeys/assertion" (find ui ".keys-unlock-passkey-button" >>= click)
+      closed ui
+
+    it "unlocking with a passkey too" $ runOwn $ do
+      ui <- signedOut "editor's password"
+      signIn ui "editor's password"
+      _ <- madeKeys
+      openSettings ui SecuritySection
+      find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
+      cutOff ui "PUT" "api/v1/assistant/vault" (find ui ".keys-passkey-add" >>= click)
+      closed ui
+
+    it "unlocking with the password too" $ runOwn $ do
+      ui <- withPasskeyUnlock
+      find ui ".keys-password-remove" >>= click
+      length <$> findAll ui ".keys-unlock-password" `shouldReturn` 0
+      find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
+      cutOff ui "PUT" "api/v1/assistant/vault" (find ui ".keys-password-add" >>= click)
+      closed ui
+
+    it "adding a passkey to sign in with" $ runOwn $ do
+      ui <- signedOut "editor's password"
+      signIn ui "editor's password"
+      _ <- madeKeys
+      openSettings ui SecuritySection
+      find ui ".passkey-add input[name=passkey-password]" >>= (`typeText` "editor's password")
+      cutOff ui "PUT" "api/v1/account/password/proof" (find ui ".passkey-add button[type=submit]" >>= click)
+      closed ui
+
+    it "setting up a second factor" $ runOwn $ do
+      ui <- signedOut "editor's password"
+      signIn ui "editor's password"
+      _ <- madeKeys
+      openSettings ui SecuritySection
+      find ui ".second-factor-start" >>= click
+      find ui ".totp-password-form input[name=password]" >>= (`typeText` "editor's password")
+      cutOff ui "PUT" "api/v1/account/password/proof" (find ui ".totp-password-form button[type=submit]" >>= click)
+      closed ui
+
+    it "giving an e-mail address" $ runOwn $ do
+      ui <- signedOut "editor's password"
+      signIn ui "editor's password"
+      _ <- madeKeys
+      -- A server that sends mail, where an address can be given.
+      answerWith "GET" "api/v1/account/email" 200 (Aeson.object ["email" Aeson..= Aeson.Null, "verified" Aeson..= False, "mailing" Aeson..= True, "mailError" Aeson..= Aeson.Null, "asksPassword" Aeson..= True])
+      openSettings ui SecuritySection
+      find ui ".email-edit" >>= click
+      find ui ".email-form input[name=email]" >>= (`typeText` "editor@example.org")
+      find ui ".email-form input[name=password]" >>= (`typeText` "editor's password")
+      cutOff ui "PUT" "api/v1/account/password/proof" (find ui ".email-form button[type=submit]" >>= click)
+      closed ui
+
+    -- Left by signing out: the operation's keys go, and none of the
+    -- user's is kept on this device after the sign-out let go of them.
+    it "unlocking with a passkey too, left by signing out" $ runOwn $ do
+      ui <- signedOut "editor's password"
+      signIn ui "editor's password"
+      _ <- madeKeys
+      openSettings ui SecuritySection
+      find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
+      before <- looseKeys
+      holdAt "PUT" "api/v1/assistant/vault"
+      find ui ".keys-passkey-add" >>= click
+      -- Quiet once the server holds the request, which it counts as held.
+      waitQuiet
+      answerWith "DELETE" "api/v1/session" 200 nobody
+      signOut ui
+      _ <- find ui ".sign-in-toggle"
+      release
+      looseKeys `shouldReturn` before
+      stored "vault:user-editor" `shouldReturn` False
+      closed ui
+
+    it "making an API key" $ runOwn $ do
+      ui <- signedOut "editor's password"
+      signIn ui "editor's password"
+      _ <- madeKeys
+      answerWith "GET" "api/v1/account/api-keys" 200 ([] :: [Text])
+      openSettings ui ApiKeysSection
+      find ui ".api-key-make input[name=api-key-name]" >>= (`typeText` "laptop")
+      find ui ".api-key-make input[name=api-key-password]" >>= (`typeText` "editor's password")
+      cutOff ui "PUT" "api/v1/account/password/proof" (find ui ".api-key-make button[type=submit]" >>= click)
+      closed ui
+
   it "makes a new key pair after a reset of the password that alone unlocked the keys, after saying what is lost" $ runOwn $ do
     ui <- signedOut "editor's password"
     signIn ui "editor's password"
@@ -1306,6 +1446,50 @@ userKeys m = describe "the user's keys" $ do
     -- Leave the settings for the front page, as the panel they were once
     -- in was closed: their views are unmounted.
     leaveSettings ui = find ui ".wiki-brand" >>= click
+    -- An operation begun ('start') with the server's answer to this
+    -- request held, the section left for another meanwhile (it is
+    -- unmounted, and its workers killed), and the answer let go: the keys
+    -- the page holds loose (no slot of the device's tracks them) are as
+    -- many as before.
+    cutOff :: Mounted s Shell.Query Void m -> Text -> Text -> PageM s () -> PageM s ()
+    cutOff ui method url start = do
+      before <- looseKeys
+      holdAt method url
+      start
+      -- Quiet once the server holds the request, which it counts as held.
+      waitQuiet
+      showSection ui ProfileSection
+      _ <- find ui ".account-avatar"
+      release
+      looseKeys `shouldReturn` before
+    looseKeys :: PageM s Int
+    looseKeys = waitQuiet *> unsafeIOToPageM js_loose_keys
+    -- Signed in with the password, with no vault anywhere and no key on
+    -- this device: the section "Security" offers to make the keys, once
+    -- the server is told what else to answer ('answering').
+    withoutKeys :: PageM s () -> PageM s (Mounted s Shell.Query Void m)
+    withoutKeys answering = do
+      ui <- signedOut "editor's password"
+      signIn ui "editor's password"
+      _ <- madeKeys
+      unsafeIOToPageM js_stash
+      unsafeIOToPageM (evaluate =<< js_new_device)
+      answering
+      openSettings ui SecuritySection
+      _ <- find ui ".keys-none"
+      pure ui
+    -- Signed in with the password, the vault unlocked with a passkey too,
+    -- in the section "Security".
+    withPasskeyUnlock :: PageM s (Mounted s Shell.Query Void m)
+    withPasskeyUnlock = do
+      ui <- signedOut "editor's password"
+      signIn ui "editor's password"
+      _ <- madeKeys
+      openSettings ui SecuritySection
+      find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
+      find ui ".keys-passkey-add" >>= click
+      length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
+      pure ui
     -- Every test ends with no key of its own in the page that can be
     -- exported ('runOwn' counts from the test's start). A step still
     -- running (a vault being made after a sign-in) is waited for: stopped

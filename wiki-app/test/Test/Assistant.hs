@@ -13,7 +13,7 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Data.Aeson (encode)
 import Data.ByteString.Lazy qualified as BSL
-import Data.IORef (IORef, atomicModifyIORef', newIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.Time (UTCTime (..), fromGregorian)
 import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
@@ -23,10 +23,10 @@ import Test.Hspec
 import Web.Storage.IndexedDB (Database (..))
 import Web.Storage.IndexedDB qualified as IDB
 import Wiki.Api.Vault (StoredVault (..))
-import Wiki.App.Assistant (MonadAssistant (..), assistantDatabase, readRecord, writeRecord)
+import Wiki.App.Assistant (KeyOwner (..), MonadAssistant (..), assistantDatabase, pageKeys, readRecord, writeRecord)
 import Wiki.App.Assistant.Keys (Keys (..), changeKeys, readKeys)
-import Wiki.App.Assistant.Sync (Fetched (..), MonadVault (..))
-import Wiki.App.Vault (VaultDevice (..), readDevice, setVaultAskEachTime, settleKeys)
+import Wiki.App.Assistant.Sync (Fetched (..), MonadVault (..), owned)
+import Wiki.App.Vault (VaultDevice (..), readDevice, setVaultAskEachTime, settleKeys, unlockWithPassword)
 import Wiki.Core.Assistant
   ( AssistantError (..)
   , ErrorKind (..)
@@ -44,12 +44,14 @@ import Wiki.Core.Assistant
   )
 import Wiki.Core.Assistant.Vault (emptyRecord)
 import Wiki.Core.Id (UserId (..))
-import Wiki.Core.Vault (Item (..), KeyId (..), Sealed (..), Vault (..), VaultTag (..), identityItem, vaultFormat)
+import Wiki.Core.User (Password (..))
+import Wiki.Core.Vault (Item (..), KeyId (..), Sealed (..), Unlock (..), Vault (..), VaultTag (..), WrappedKey (..), identityItem, vaultFormat)
 
 spec :: Spec
 spec = do
   settings
   device
+  owners
 
 settings :: Spec
 settings = describe "Wiki.App.Assistant's settings" $ do
@@ -172,6 +174,76 @@ device = describe "Wiki.App.Vault's record of this device" $
     recorded <- unlocked (readDevice carol)
     (recorded.held, recorded.askEachTime) `shouldBe` (Just keyId, True)
 
+-- | The owner of keys an operation runs under ('owned',
+-- "Wiki.App.Assistant.Sync"): every key the operation makes, unwraps,
+-- opens, derives or keeps on this device, and the password's key, is
+-- asked for under that owner, whatever the vault's code passes; and under
+-- the page's without one. That the browser's registry lets an owner's
+-- keys go, and refuses a key made under an owner let go, is the browser
+-- suite's (Test.Browser.Vault).
+owners :: Spec
+owners = describe "Wiki.App.Assistant.Sync's owners of keys" $ do
+  let carol = UserId "user-carol-owners"
+      keyId = KeyId "test-key-pair"
+      stored =
+        StoredVault
+          { tag = VaultTag "1"
+          , vault =
+              Vault
+                { format = vaultFormat
+                , salt = "salt"
+                , items = Map.singleton identityItem Item {keyId = Just keyId, sealed = Sealed {nonce = "nonce", ciphertext = "sealed"}}
+                , wraps = Map.singleton ByPassword WrappedKey {nonce = "nonce", key = "wrapped"}
+                }
+          }
+      -- The owners asked for, in order, and what the operation gave.
+      recording :: Recorded (Unlocked MemDOM) a -> IO (a, [KeyOwner])
+      recording (Recorded r) = do
+        asked <- newIORef []
+        a <- let Unlocked u = runReaderT r asked in runMemDOM (runReaderT u stored)
+        (a,) . reverse <$> readIORef asked
+  it "asks for every key of an operation under the owner it runs under" $ do
+    (settled, asked) <- recording (owned (KeyOwner 7) (settleKeys carol))
+    void settled `shouldBe` Right ()
+    asked `shouldSatisfy` (not . null)
+    asked `shouldSatisfy` all (== KeyOwner 7)
+    (unlocked, askedToo) <- recording (owned (KeyOwner 8) (unlockWithPassword carol (Password "carol's password")))
+    void unlocked `shouldBe` Right ()
+    -- The password's key, the key it gives, the vault key it unwraps.
+    askedToo `shouldSatisfy` (\os -> length os >= 3 && all (== KeyOwner 8) os)
+  it "asks under the page's owner what runs under none" $ do
+    (settled, asked) <- recording (settleKeys carol)
+    void settled `shouldBe` Right ()
+    asked `shouldSatisfy` (not . null)
+    asked `shouldSatisfy` all (== pageKeys)
+
+-- | A monad that records the owner of keys each method of the vault is
+-- given, of those that register a key or keep one. Everything else is the
+-- monad's below.
+newtype Recorded m a = Recorded (ReaderT (IORef [KeyOwner]) m a)
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO)
+
+instance MonadTrans Recorded where
+  lift = Recorded . lift
+
+-- | Note the owner asked for.
+asking :: (MonadIO m) => KeyOwner -> Recorded m ()
+asking o = Recorded (ask >>= \ref -> liftIO (atomicModifyIORef' ref (\os -> (o : os, ()))))
+
+instance (MonadAssistant m, MonadIO m) => MonadAssistant (Recorded m) where
+  newVaultKeyBy o e = asking o >> lift (newVaultKeyBy o e)
+  keepDeviceKeyBy o u k d = asking o >> lift (keepDeviceKeyBy o u k d)
+  deviceKeyBy o u = asking o >> lift (deviceKeyBy o u)
+  createPasskeyBy o a b c = asking o >> lift (createPasskeyBy o a b c)
+  usePasskeyBy o a b c = asking o >> lift (usePasskeyBy o a b c)
+  unwrapWithBy o a b c d = asking o >> lift (unwrapWithBy o a b c d)
+  newIdentityBy o k = asking o >> lift (newIdentityBy o k)
+  openIdentityBy o k i s = asking o >> lift (openIdentityBy o k i s)
+  passwordKeyBy o k s = asking o >> lift (passwordKeyBy o k s)
+
+instance (MonadVault m, MonadIO m) => MonadVault (Recorded m) where
+  provePasswordBy o p = asking o >> lift (provePasswordBy o p)
+
 -- | A monad with an action run before its next write of a device record
 -- ('keepDeviceRecord'), once: where a test puts another change between a
 -- change's read and its write. Everything else is the monad's below.
@@ -190,8 +262,9 @@ instance (MonadAssistant m, MonadIO m) => MonadAssistant (Hooked m) where
 instance (MonadVault m) => MonadVault (Hooked m)
 
 -- | A browser's unlocked vault, as far as the record of the device needs
--- one: the server's vault is the one given, every slot holds a key, and
--- every key opens the user's key pair and is kept. The in-memory document
+-- one: the server's vault is the one given, every slot holds a key, every
+-- key opens the user's key pair and is kept, and the password proved
+-- gives a key that unwraps the vault key. The in-memory document
 -- has no WebCrypto to do these.
 newtype Unlocked m a = Unlocked (ReaderT StoredVault m a)
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO)
@@ -200,12 +273,15 @@ instance MonadTrans Unlocked where
   lift = Unlocked . lift
 
 instance (MonadAssistant m) => MonadAssistant (Unlocked m) where
-  deviceKey _ = Just <$> lift (newVaultKey False)
-  openIdentity _ _ _ = Right <$> lift (newVaultKey False)
-  keepDeviceKey _ _ _ = pure (Right ())
+  deviceKeyBy _ _ = Just <$> lift (newVaultKey False)
+  openIdentityBy _ _ _ _ = Right <$> lift (newVaultKey False)
+  keepDeviceKeyBy _ _ _ _ = pure (Right ())
+  passwordKeyBy _ _ _ = Right <$> lift (newVaultKey False)
+  unwrapWithBy _ _ _ _ _ = Right <$> lift (newVaultKey False)
 
-instance (MonadVault m) => MonadVault (Unlocked m) where
+instance (MonadVault m, MonadAssistant m) => MonadVault (Unlocked m) where
   fetchVault _ = Unlocked (asks (Right . Fetched))
+  provePasswordBy _ _ = Right . Just <$> lift (newVaultKey False)
 
 -- | Wait until a thread has finished, or waits for an MVar: a change of
 -- the keys that waits for another to end. Nothing else in the in-memory

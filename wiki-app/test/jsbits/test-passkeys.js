@@ -832,6 +832,79 @@ function wiki_test_export_key_traces() {
 // holds that a password gave: the HKDF keys that OPAQUE's export key is
 // held as (wiki_vault_hold_key), which a sign-in with the password hands
 // to the vault and which can unwrap the vault for the password.
+// How many keys the page's registry holds, of those given out since the
+// example's mark (wiki_test_keys_mark), that no slot of this device's keys
+// tracks (wikiVaultSlots): keys an operation registered and has not let
+// go of. A key a slot tracks is the device's, held for the page's life.
+function wiki_test_loose_keys() {
+  const registry = globalThis.wikiKeyRegistry;
+  if (!registry) return 0;
+  const from = globalThis.wikiTestKeysFrom ?? 0;
+  const tracked = new Set();
+  for (const handles of (globalThis.wikiVaultSlots ?? new Map()).values()) for (const handle of handles) tracked.add(handle);
+  return [...registry.keys.keys()].filter((handle) => handle > from && !tracked.has(handle)).length;
+}
+
+// The owners of keys of the page's registry (jsbits/vault.js), through the
+// vault's own functions: a key made under an owner leaves the registry with
+// the owner; a key whose making ends after its owner was let go is not
+// registered; a key is not kept on this device under an owner let go. What
+// was found, as JSON.
+async function wiki_test_key_owners() {
+  const vault = Object.getOwnPropertySymbols(globalThis)
+    .map((symbol) => globalThis[symbol])
+    .find((namespace) => typeof namespace?.wiki_vault_owner_open === "function" && typeof namespace?.wiki_vault_new_key === "function");
+  if (vault === undefined) throw new Error("The vault's functions are not in this page.");
+  const registry = globalThis.wikiKeyRegistry;
+  const user = "user-key-owners";
+  const owner = vault.wiki_vault_owner_open(user);
+  const made = await vault.wiki_vault_new_key(true, owner);
+  const heldWhileOpen = made !== 0 && registry.keys.has(made);
+  vault.wiki_vault_owner_close(owner);
+  const goneWithOwner = !registry.keys.has(made);
+  // The key is still being made when its owner goes.
+  const late = vault.wiki_vault_owner_open(user);
+  const before = registry.next;
+  const making = vault.wiki_vault_new_key(true, late);
+  vault.wiki_vault_owner_close(late);
+  const lateHandle = await making;
+  const lateRegistered = registry.next !== before;
+  // A key kept under an owner let go is not kept.
+  const key = await vault.wiki_vault_new_key(false, 0);
+  const closed = vault.wiki_vault_owner_open(user);
+  vault.wiki_vault_owner_close(closed);
+  const keepRefused = (await vault.wiki_vault_keep_key(user, key, true, closed)) !== "";
+  vault.wiki_vault_forget_key(key);
+  const storedAfter = await vault.wiki_vault_device_key(user, 0);
+  if (storedAfter !== 0) vault.wiki_vault_forget_key(storedAfter);
+  // And the user's owners all go at once, as at a sign-out.
+  const first = vault.wiki_vault_owner_open(user);
+  const second = vault.wiki_vault_owner_open(user);
+  const one = await vault.wiki_vault_new_key(true, first);
+  const two = await vault.wiki_vault_new_key(true, second);
+  vault.wiki_vault_owners_close(user);
+  const allGone = !registry.keys.has(one) && !registry.keys.has(two);
+  // Another tab's sign-out of a user lets go of that user's owners here,
+  // and the assistant's own key let go there (no sign-out) of none: told
+  // in that order, from one channel, the second heard last, when the page
+  // says a user's keys were let go elsewhere.
+  vault.wiki_vault_listen();
+  const kept = vault.wiki_vault_owner_open("user-key-owners-kept");
+  const signedOut = vault.wiki_vault_owner_open("user-key-owners-gone");
+  const heard = new Promise((resolve) => globalThis.addEventListener("wiki-keys-dropped", resolve, { once: true }));
+  const other = new BroadcastChannel("wiki-assistant-keys");
+  other.postMessage({ dropped: "user-key-owners-kept" });
+  other.postMessage({ dropped: "vault:user-key-owners-gone" });
+  other.close();
+  await heard;
+  const keptKey = await vault.wiki_vault_new_key(false, kept);
+  const keptByOtherDrop = keptKey !== 0;
+  if (keptByOtherDrop) vault.wiki_vault_forget_key(keptKey);
+  vault.wiki_vault_owner_close(kept);
+  const goneBySignOut = (await vault.wiki_vault_new_key(false, signedOut)) === 0;
+  return JSON.stringify({ heldWhileOpen, goneWithOwner, lateHandle, lateRegistered, keepRefused, storedAfter, allGone, keptByOtherDrop, goneBySignOut });
+}
+
 function wiki_test_password_keys() {
   const registry = globalThis.wikiKeyRegistry;
   if (!registry) return 0;

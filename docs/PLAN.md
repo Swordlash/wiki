@@ -2383,10 +2383,9 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   and "Sign out everywhere" leave keys working. **Their panel**: a fifth section of the
   settings, `/settings/api-keys/`, a machine over three calls of
   `MonadSecurity`, the key shown once with examples for `curl` and
-  `wiki.sh`: merged (#356); the example for MCP is added when #353
-  is merged, and the README's sentence "When API keys exist,
-  `WIKI_TOKEN` …" is stale (both on the branch
-  `keys-panel-mcp-example`). **MCP: merged (#353)**, as recommended
+  `wiki.sh`: merged (#356), and a third for Claude Code through the
+  wiki's MCP server (#359), every value quoted for the shell by one
+  function. **MCP: merged (#353)**, as recommended
   below, with eight tools
   (the five below, `wiki_page_outline`, `wiki_read_section`,
   `wiki_create_page`); the library's callback is given the token
@@ -2396,8 +2395,9 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   stderr outside the wiki's logger (worth an issue upstream, on the
   owner's word); a tool's `path` is exactly an absolute path or a
   full address of the wiki's own origin, read with `network-uri`,
-  everything else refused; a tool that writes one section is being
-  built (branch `mcp-write-section`). **The handlers are on
+  everything else refused; a ninth tool, `wiki_write_section`, writes
+  one section through the function the HTTP handler uses
+  (`putSection`), `base_version` required (#360). **The handlers are on
   servant-server, with an OpenAPI description generated from the
   API's type: merged (#357)** (the owner, 2026-11-23:
   "servant-openapi3"): one servant type in `wiki-server`

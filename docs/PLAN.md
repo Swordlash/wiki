@@ -2804,7 +2804,14 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   function; the administrator sets a policy (off, the wiki's only,
   users may add their own); schema step 26; four pull requests
   (E1 server and frame, E2 the bridge and `diagnostics`, E3 the
-  settings, E4 `agent`). **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
+  settings, E4 `agent`).
+  **The owner's decisions (2026-11-24, "Ok" to the session's three
+  proposals):** (1) a plugin's secrets go into the vault whenever the
+  user has one, so they follow the user across devices, sealed, and
+  "sync off" goes away for them; (2) "ask each time" covers the
+  assistant too (an unlock once a visit before it uses a key); (3) the
+  first version of external plugins has `diagnostics` only, run in a
+  worker; an external `agent` panel waits until it can be confined. **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
   requestować jakieś named keys per plugin z vaulta"):** named
   secrets per plugin in the vault as a general capability (get, put
   and remove by a name under the plugin's id, the names declared in

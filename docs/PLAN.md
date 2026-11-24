@@ -2214,7 +2214,13 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   (`countDelay` in `editor.js`), which the program does not count;
   no example reads it. Not moved yet: the helpers `listening` and
   `answersTaken` of `Http.hs` that other groups use, the editor's
-  remaining `eventually`s, the groups not named in this entry. Seen in the library and left: Playwright's own test "the
+  remaining `eventually`s, the groups not named in this entry. **A cut-off operation of
+  the settings leaves no key in the page (#364):** each operation
+  runs under an owner of keys (`KeyOwner`; `vault.js` deletes an
+  owner's keys in one step, registers no key whose owner has gone and
+  keeps none on the device under a closed owner), let go when the
+  operation ends, the section closes or the user changes; this closes
+  the gap #349 left. Seen in the library and left: Playwright's own test "the
   DevTools protocol slows a page's processor down" depends on the
   machine's speed (it failed at a load of 40 on 16 cores).** What is
   left, each a
@@ -2736,9 +2742,11 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   set of plugins off for the whole wiki, one read for whoever asks.
   **C**, stacked on both: the settings section "Plugins", the
   in-memory backend's model, the wiring. The interface is free to
-  change while every plugin is built in. Asked of the owner, for C:
-  whether "Writing assistant" stays a section of the settings, linked
-  from the plugins' list (the session's default), or moves under it.
+  change while every plugin is built in. **For C (the owner,
+  2026-11-24):** "Writing assistant" stays a section of the settings
+  at the top level, since it is built in; the plugins' list has its
+  switch and a link to its options. An external plugin's options,
+  when there are such plugins, are shown inside "Plugins".
 - **WP5.84 Plugins, the first package (#186, decision 69; stage 4).** The
   registry of plugins in the application and the two interfaces of the
   first step, an editing agent and diagnostics. The assistant moves behind

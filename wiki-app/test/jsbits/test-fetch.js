@@ -36,17 +36,23 @@ class WikiTestSocket extends EventTarget {
     this.readyState = 0;
     this.protocol = "";
     this.binaryType = "blob";
+    // What the page has said on this socket, as wikiTestServer.said keeps
+    // what it has said on all of them.
+    this.said = [];
     wikiTestServer.sockets.push(this);
     setTimeout(() => {
       if (this.readyState !== 0) return;
       this.readyState = 1;
       this.dispatchEvent(new Event("open"));
+      wikiTestServerChanged();
     }, 0);
   }
 
   send(data) {
     if (this.readyState !== 1) throw new DOMException("Still in CONNECTING state.", "InvalidStateError");
     wikiTestServer.said.push(String(data));
+    this.said.push(String(data));
+    wikiTestServerChanged();
     let page = null;
     try {
       page = JSON.parse(String(data)).subscribe ?? null;
@@ -70,6 +76,7 @@ class WikiTestSocket extends EventTarget {
   hangUp(code) {
     if (this.readyState >= 2) return;
     this.readyState = 3;
+    wikiTestServerChanged();
     setTimeout(() => this.dispatchEvent(new CloseEvent("close", { code, reason: "", wasClean: code !== 1006 })), 0);
   }
 }
@@ -92,6 +99,7 @@ function wiki_test_server_start() {
     for (const byte of init.body == null ? [] : new Uint8Array(init.body)) binary += String.fromCharCode(byte);
     const request = { method, url: String(url), headers, body, bytes: btoa(binary), aborted: false };
     wikiTestServer.asked.push(request);
+    wikiTestServerChanged();
     const signal = init.signal;
     const abortError = () => new DOMException("The operation was aborted.", "AbortError");
     const aborted = new Promise((_, reject) => {
@@ -99,6 +107,7 @@ function wiki_test_server_start() {
         "abort",
         () => {
           request.aborted = true;
+          wikiTestServerChanged();
           reject(abortError());
         },
         { once: true },
@@ -236,6 +245,61 @@ function wiki_test_server_said() {
 // How many sockets the page has opened.
 function wiki_test_server_sockets() {
   return wikiTestServer.sockets.length;
+}
+
+// The test's waits on this server's own signals (Test.Browser.Http's
+// 'untilSaid', 'untilOpenSaid', 'untilAsked', 'untilAborted'), for what
+// happens outside the program's loop: a socket that opens on the browser's
+// timer and what the live channel says on it, the live channel's own
+// pauses before it opens a socket again or asks again for a refused page,
+// and a request of a thread the test forked itself. Each waiter is a
+// check, run again at every change the server sees (a request asked or
+// aborted, a message said, a socket opened or closed). It resolves true
+// once the check holds, or false at the deadline it is given, the suite's
+// watchdog.
+const wikiTestServerWaiters = new Set();
+
+function wikiTestServerUntil(holds, ms) {
+  if (holds()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const waiter = { holds, resolve, timer: null };
+    waiter.timer = setTimeout(() => {
+      wikiTestServerWaiters.delete(waiter);
+      resolve(false);
+    }, ms);
+    wikiTestServerWaiters.add(waiter);
+  });
+}
+
+function wikiTestServerChanged() {
+  for (const waiter of [...wikiTestServerWaiters]) {
+    if (!waiter.holds()) continue;
+    clearTimeout(waiter.timer);
+    wikiTestServerWaiters.delete(waiter);
+    waiter.resolve(true);
+  }
+}
+
+// Wait until the page has said this message (JSON, as the page writes it)
+// this many times in all, on any of its sockets.
+function wiki_test_server_until_said(message, times, ms) {
+  return wikiTestServerUntil(() => wikiTestServer.said.filter((said) => said === message).length >= times, ms);
+}
+
+// Wait until a socket of the page that is open now has said this message:
+// what the server says from then on reaches the page on that socket.
+function wiki_test_server_until_open_said(message, ms) {
+  return wikiTestServerUntil(() => wikiTestServer.sockets.some((socket) => socket.readyState === 1 && socket.said.includes(message)), ms);
+}
+
+// Wait until the server has been asked this many requests in all.
+function wiki_test_server_until_asked(count, ms) {
+  return wikiTestServerUntil(() => wikiTestServer.asked.length >= count, ms);
+}
+
+// Wait until this many of the requests asked have been aborted.
+function wiki_test_server_until_aborted(count, ms) {
+  return wikiTestServerUntil(() => wikiTestServer.asked.filter((request) => request.aborted).length >= count, ms);
 }
 
 function wiki_test_server_answer(method, url, status, body) {

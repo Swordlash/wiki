@@ -2205,9 +2205,16 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   "nothing said" that could pass by reading before a socket opened.
   Left: the live channel's back-off is a raw `threadDelay` on a
   thread of its own, which neither quiet nor the test's clock sees.
-  Not moved yet: `EditorSearch.hs`, the helpers `listening` and
+  **The editor's find and replace is moved (#365)**, to `readsOnce
+  Idle`, 47 `eventually`s down to none, the test alone changed: run
+  with the report of retries first, one wait of the 47 had ever
+  retried (the completion's), and the search itself is synchronous in
+  CodeMirror. Left there: after a change of the text with the panel
+  open, the count comes after the editor's own 150 ms `setTimeout`
+  (`countDelay` in `editor.js`), which the program does not count;
+  no example reads it. Not moved yet: the helpers `listening` and
   `answersTaken` of `Http.hs` that other groups use, the editor's
-  remaining `eventually`s. Seen in the library and left: Playwright's own test "the
+  remaining `eventually`s, the groups not named in this entry. Seen in the library and left: Playwright's own test "the
   DevTools protocol slows a page's processor down" depends on the
   machine's speed (it failed at a load of 40 on 16 cores).** What is
   left, each a
@@ -4196,7 +4203,21 @@ needs. Each was true when its package merged; check before relying on one.
   refuses `waitForFunction`). Every suite was read for it: the demo's
   (38 pairs of an action and a read that does not wait, 3 fixed, #268)
   and the server's, the passkeys' and the shared modules (218
-  actions, 7 such pairs, 1 fixed, #270).
+  actions, 7 such pairs, 1 fixed, #270). **Again in #366 (found on
+  #364's CI run):** the driver's settle has since waited for the next
+  frame, but only up to 100 ms (20 ms on a page that missed a frame),
+  and the README had come to say that this covers a dialog's `close`;
+  on a slow runner the frame came later and the user's dialog was
+  still counted after Escape. The four places that close it with
+  Escape wait for the `close` event itself (`waitForEvent`). The
+  failure read as a missing file: the driver adds the page's console
+  to every failure, the demo's `/admin/` is answered by `404.html`
+  with a 404 by design, and the driver leaves a console error's
+  address out when it is the page's own. **For the library, the
+  session's own pull requests:** the Playwright driver's settle waits
+  for a frame by a clock; its failure text should name the page's
+  own address. Not read for the same shape: the browser suite's
+  Escapes on dialogs (`Security.hs`, `Avatars.hs`).
 - **The browser suite's waits, after #281.** Four examples that failed
   by chance under load (27, 6, 3 and 2 runs of 30) were faults of the
   tests, each raced for its own reason: a notification told before the

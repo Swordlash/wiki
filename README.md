@@ -3207,6 +3207,55 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   over that. A `put` writes a page that exists and never makes one: it always
   sends `If-Match`, for which the wiki creates nothing, so at an address with
   no page it is "not found" (exit 4), `--force` too, and says to use `create`.
+- **`wiki.sh contents PAGE`** prints the page's headings as a tree, each with
+  its level, its anchor and its text, `(in a spoiler)` after one inside a
+  block spoiler, and a first line when the page has text before its first
+  heading; `--json` prints the server's JSON as it came. The page's version
+  is remembered as the contents' version: a `put` from standard input still
+  needs a `get` of what it writes (below).
+
+  ```text
+  $ wiki.sh contents /s/team/p/team-handbook/
+  Team handbook  /s/team/p/team-handbook/
+    (text before the first heading: wiki.sh get /s/team/p/team-handbook/ --top)
+    h1  team-handbook  Team handbook
+      h2  the-week  The week
+        h3  mondays  Mondays
+      h2  faq  FAQ
+        h3  how-many-days  How many days?  (in a spoiler)
+  ```
+- **`wiki.sh get PAGE --section ANCHOR [--own]`** and **`wiki.sh get PAGE
+  --top`** print one part of the page, as `get` prints the page, `--out FILE`
+  too: the section with that anchor and its subsections (with `--own`, its
+  own text without them), or the text before the first heading. **`wiki.sh
+  put PAGE --section ANCHOR [--own]`** and **`wiki.sh put PAGE --top`** write
+  that part back from `--file FILE` or standard input, the rest of the page
+  as it is, always over a version: `--if-match`, else `FILE.version`, else
+  the one the last `get` of that same part gave; `--force` does not go with a
+  part. A section's text starts with its heading, which may change: then the
+  section's new anchor is printed ("the section is now at …"), and
+  `FILE.version` names it. A text that would change the page outside the
+  part (a code fence left open) is refused with the wiki's sentence, exit 6,
+  and nothing is written; an anchor the page does not have is "not found"
+  (exit 4), with the page's anchors; a page saved since is exit 5, and you
+  read the part again.
+
+  ```sh
+  wiki.sh get /s/team/p/team-handbook/ --section the-week --out the-week.md
+  wiki.sh put /s/team/p/team-handbook/ --section the-week --file the-week.md
+  ```
+
+  `FILE.version` says what `FILE` holds: its second line is the page's
+  address for the whole page, as it always was, or the part's, as the API
+  writes it (`/s/team/p/team-handbook/?section=the-week`, with `&own=true`,
+  or `?top=true`). A file is put back only as what it holds, whatever
+  `--if-match` or `--force` say: a section's file as the page, the page's as
+  a section, one section's as another's, or a section's own text as the
+  whole section is refused (exit 2) before anything is sent. A version
+  remembered under `~/.local/state/wiki/` names what was read the same way,
+  so a `put` from standard input writes the whole page only after a `get` of
+  the page, and a part only after a `get` of that part; after `contents`,
+  which carries no text, neither.
 - **`wiki.sh create PAGE [--title TITLE] [--kind document|presentation]
   [--file FILE]`** makes a new page with the Markdown of `FILE` or standard
   input, with `If-None-Match: *`: where a page is already, nothing is written
@@ -3235,18 +3284,26 @@ unknown `~word`, a bare `edit` outside a browser's URL, or no page after
 answer that is not the wiki's fails with exit 1 and says so, and changes
 nothing that is remembered: each request has one answer the wiki gives on
 success (a read 200 with its content type, a listing or a search in the
-shape the server writes it, a page with its version; a write 204 with its new
-version and no body), and anything else (a wrong `WIKI_URL`, a proxy's page,
+shape the server writes it, a page or its contents with its version; a write
+204 with its new version and no body, a part's write 200 with the JSON of
+what was written and the same version), and anything else (a wrong `WIKI_URL`, a proxy's page,
 a JSON error with 200) is not taken for it. A failure is one line on standard error, and its exit
-code tells the kinds apart: 2 a wrong use (or no version known for a `put`),
-3 the sign-in refused, 4 not found or not yours to read, 5 the page saved
-since your version, 6 refused (not allowed, an encrypted space), 7 too many
+code tells the kinds apart: 2 a wrong use (or no version known for a `put`,
+or a file that holds another part than the one named), 3 the sign-in
+refused, 4 not found or not yours to read (or no section with that anchor),
+5 the page saved since your version, 6 refused (not allowed, an encrypted
+space, a part's text that would change the page outside it), 7 too many
 failed sign-ins (the line says when to try again), 8 no connection, 1
 anything else.
 
 **For an assistant that takes MCP servers**, `wiki.sh mcp` is a Model Context
-Protocol server on standard input and output, with six tools: `wiki_list`,
+Protocol server on standard input and output, with nine tools: `wiki_list`,
 `wiki_search`, `wiki_read_page` (the Markdown and its version),
+`wiki_page_outline`, `wiki_read_section` and `wiki_write_section` (the
+wiki's own server's, with their arguments and descriptions: a page's
+headings and the length of its text before the first heading, one part
+read, one part written over `base_version`, a body that would change the
+page outside the part refused with the wiki's sentence),
 `wiki_write_page` (the version read is required, so every write is
 conditional: a page saved since comes back as an error that tells the model
 to read it again and merge; it never creates a page), `wiki_create_page`
@@ -3320,9 +3377,7 @@ To sign in with an API key ([The API](#the-api)), set `WIKI_TOKEN` (or
 password, which it then does not send. A key the wiki does not take is
 refused (401, exit 3). A client that takes an MCP server by its address
 needs no script: the wiki's own server ([MCP](#mcp)) is there for it; this
-script is for clients that start one by a command. The API's table of
-contents and sections (`/api/contents/`, `?section=`) have no commands in
-the script yet.
+script is for clients that start one by a command.
 
 #### Bringing the demo's pages into the server
 

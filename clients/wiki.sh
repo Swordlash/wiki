@@ -55,7 +55,8 @@ tab=$(printf '\t')
 #                            FILE.version that is a symbolic link is
 #                            refused, so nothing is written through one
 #   put --file FILE          FILE.version, as get --out writes it, when it
-#                            names the page written
+#                            names the page or the part written (the same
+#                            for get and put with --section or --top)
 #   the locks                FILE.wiki-sh-lock beside FILE, and one beside
 #                            each state file (take_lock): directories made
 #                            by mkdir, removed when the run ends
@@ -585,7 +586,7 @@ render_list() {
 # that stopped early), which needs no message.
 render_failed() {
   case $1 in
-    3) wrong_answer "it is not the JSON of a listing or a search" ;;
+    3) wrong_answer "it is not the JSON of a listing, a search or a page's contents" ;;
     *) fail "$1" '' ;;
   esac
 }
@@ -617,6 +618,17 @@ wrong_answer() {
 #                                                                        the listing's
 #                                                                        address asked for
 #   search         GET api/search?q=...        200     application/json  {"hits": [HIT]}
+#   contents       GET api/contents/s/...      200     application/json  CONTENTS; an ETag,
+#                                                                        its version
+#   page           GET api/markdown/s/...      200     text/markdown     the part's text,
+#                  ?section=A[&own=true]                                 empty for an
+#                  or ?top=true                                          empty top; an
+#                                                                        ETag, the page's
+#   section-       PUT api/markdown/s/...      200     application/json  WRITTEN with
+#   written        ?section=A[&own=true],                                anchor; an ETag
+#                  If-Match
+#   top-written    PUT api/markdown/s/...      200     application/json  WRITTEN with
+#                  ?top=true, If-Match                                   top; an ETag
 #
 # A Location is the address's path under WIKI_URL's path, as the server
 # writes it, or that path under WIKI_URL whole, as a proxy may rewrite it.
@@ -629,11 +641,23 @@ wrong_answer() {
 #          children ([PAGE])
 #   HIT    an object: title, excerpt (strings), markdown (under
 #          api/markdown/s/), space (an object with path and title, strings)
+#   CONTENTS  an object: title, version (strings; the version is the
+#          ETag's), markdown (under api/markdown/s/), headings ([HEADING]);
+#          when given, top (under api/markdown/s/)
+#   HEADING  an object: level (a number), text, anchor (strings),
+#          inSpoiler (true or false), section (under api/markdown/s/),
+#          children ([HEADING])
+#   WRITTEN  an object: version (a string, the ETag's); for a section,
+#          anchor (a string) and section (under api/markdown/s/); for the
+#          top, top (under api/markdown/s/)
 #
 # Anything else on a 2xx (another status, another type, JSON not of this
 # shape, a read with no ETag, a write's 204 or a creation's 201 with a body
 # or without an ETag, a Location elsewhere, a proxy's 200 page) is not the
-# wiki's answer, and fails (wrong_answer).
+# wiki's answer, and fails (wrong_answer). A 204 to a section's PUT is the
+# answer to a write of the whole page: something on the way dropped the
+# query and may have written the section as the page, and the message
+# says to look at the page's history.
 expect_answer() {
   kind=$1
   case $kind in
@@ -641,6 +665,10 @@ expect_answer() {
     created | space-created) want=201 ;;
     *) want=200 ;;
   esac
+  if [ "$http_status" = 204 ] && { [ "$kind" = section-written ] || [ "$kind" = top-written ]; }; then
+    wrong_answer "it answered 204, the answer to a write of the whole page, where the wiki answers a part's write with 200: the page may now hold only this part, so look at its history in the browser"
+    return
+  fi
   if [ "$http_status" != "$want" ]; then
     wrong_answer "it answered $http_status, where the wiki answers $want"
     return
@@ -669,14 +697,14 @@ expect_answer() {
       fi
       shape=$kind
       [ "$shape" != space-created ] || shape=space
-      if ! awk -v shape="$shape" -v mount="$wiki_mount" "$json_reader$answer_shapes" "$work/body" >/dev/null 2>"$work/shape-error"; then
+      if ! awk -v shape="$shape" -v mount="$wiki_mount" -v etag="$(header_value etag)" "$json_reader$answer_shapes" "$work/body" >/dev/null 2>"$work/shape-error"; then
         wrong_answer "$(head -n 1 "$work/shape-error")"
         return
       fi
       ;;
   esac
   case $kind in
-    page | written | created)
+    page | written | created | contents | section-written | top-written)
       if ! is_version "$(header_value etag)"; then
         wrong_answer "it has no version (ETag) of the wiki's shape"
         return
@@ -725,6 +753,16 @@ function hit_shape(p) {
   need(p "/markdown", "s", "a string"); under(p "/markdown", "/api/markdown/s/")
   need(p "/space", "o", "an object"); need(p "/space/path", "s", "a string"); need(p "/space/title", "s", "a string")
 }
+function heading_shape(p,   k) {
+  need(p, "o", "an object")
+  need(p "/level", "num", "a number"); need(p "/text", "s", "a string"); need(p "/anchor", "s", "a string")
+  need(p "/inSpoiler", "bool", "true or false")
+  need(p "/section", "s", "a string"); under(p "/section", "/api/markdown/s/")
+  need(p "/children", "a", "an array")
+  for (k = 0; k < len[p "/children"] + 0; k++) heading_shape(p "/children/" k)
+}
+# The version in the JSON is the one of the answer'"'"'s ETag.
+function same_version() { if (v["/version"] != etag) wrong_at("/version", "the version of the answer'"'"'s ETag") }
 END {
   if (shape == "top") {
     need("", "o", "an object"); need("/spaces", "a", "an array of spaces")
@@ -733,6 +771,20 @@ END {
   else if (shape == "search") {
     need("", "o", "an object"); need("/hits", "a", "an array of hits")
     for (k = 0; k < len["/hits"] + 0; k++) hit_shape("/hits/" k)
+  } else if (shape == "contents") {
+    need("", "o", "an object")
+    need("/title", "s", "a string"); need("/version", "s", "a string"); same_version()
+    need("/markdown", "s", "a string"); under("/markdown", "/api/markdown/s/"); under("/top", "/api/markdown/s/")
+    need("/headings", "a", "an array of headings")
+    for (k = 0; k < len["/headings"] + 0; k++) heading_shape("/headings/" k)
+  } else if (shape == "section-written") {
+    need("", "o", "an object")
+    need("/version", "s", "a string"); same_version()
+    need("/anchor", "s", "a string"); need("/section", "s", "a string"); under("/section", "/api/markdown/s/")
+  } else if (shape == "top-written") {
+    need("", "o", "an object")
+    need("/version", "s", "a string"); same_version()
+    need("/top", "s", "a string"); under("/top", "/api/markdown/s/")
   }
   if (problem != "") { print "it is JSON, but " problem > "/dev/stderr"; exit 3 }
 }
@@ -750,6 +802,27 @@ render_search() {
         print one_line(v[h "/title"]) "  " a "  (in " one_line(v[h "/space/title"]) ")"
         if (v[h "/excerpt"] != "") print "    " one_line(v[h "/excerpt"])
       }
+    }' "$work/body"
+}
+
+# A page's table of contents: its title and address, a line for the text
+# before its first heading when it has some, then its headings as a tree,
+# each with its level (h2), its anchor (what get --section takes) and its
+# text, and a mark on a heading inside a block spoiler.
+render_contents() {
+  awk -v mount="$wiki_mount" "$json_reader"'
+    function heading(p, d,   k, note) {
+      note = v[p "/inSpoiler"] == "true" ? "  (in a spoiler)" : ""
+      print indent(d) "h" v[p "/level"] "  " one_line(v[p "/anchor"]) "  " one_line(v[p "/text"]) note
+      for (k = 0; k < len[p "/children"] + 0; k++) heading(p "/children/" k, d + 1)
+    }
+    END {
+      if (t[""] != "o") exit 3
+      a = shown(v["/markdown"])
+      print one_line(v["/title"]) "  " a
+      if ("/top" in t) print "  (text before the first heading: wiki.sh get " a " --top)"
+      if (len["/headings"] + 0 == 0) print "  No headings."
+      for (k = 0; k < len["/headings"] + 0; k++) heading("/headings/" k, 1)
     }' "$work/body"
 }
 
@@ -984,11 +1057,40 @@ page_address_found() {
 # A page's remembered version says: the text this script last delivered
 # whole, or sent whole and saw accepted, was this version. It is kept in
 # two records: the state file (version_file), one per page and wiki, and
-# the sidecar FILE.version that get --out FILE writes beside the text
-# (the version, then the page's address). A put takes the version from
-# --if-match, else from the sidecar of its --file when the sidecar names
-# this page, else from the state file; with none, it refuses to write
-# unless --force.
+# the sidecar FILE.version that get --out FILE writes beside the text.
+# Each record is two lines: the version, then what the text was, in the
+# form of the API's address of it under WIKI_URL's path:
+#
+#   /s/team/p/x/                         the whole page
+#   /s/team/p/x/?section=A               the section with the anchor A,
+#                                        its subsections included (A as
+#                                        query_encode writes it)
+#   /s/team/p/x/?section=A&own=true      the section's own text, without
+#                                        its subsections
+#   /s/team/p/x/?top=true                the text before the first heading
+#   /s/team/p/x/?contents                (the state file only) the page's
+#                                        contents, which carry no text
+#
+# A whole page's record is what this script has always written, so a
+# sidecar or a state file of an older wiki.sh reads as a whole page (a
+# state file of one line too). A part's second line is not the page's
+# address, so an older wiki.sh, which compares the second line with the
+# page's address, takes a part's sidecar for another page's and refuses
+# to send the file as the page, unless --if-match or --force is given, as
+# for another page's file.
+#
+# A record is used only for exactly what it names (want_held, from
+# choose_part): a put of the whole page takes the version of a record of
+# the whole page, and a put of a part the version of a record of that
+# same part. A put takes the version from --if-match, else from the
+# sidecar of its --file when the sidecar names what is put, else from the
+# state file when it names what is put; with none, it refuses to write
+# unless --force (for the whole page only). A sidecar that names a part,
+# and any sidecar beside a part's put, must name exactly what is put,
+# whatever version is given: otherwise the put is refused before any
+# request (exit 2), with what the file holds. Only a sidecar of another
+# page's whole text may stand beside a page's put with --if-match or
+# --force, as it always could.
 #
 # Every path that reads or writes a version, and what it changes:
 #
@@ -1033,10 +1135,27 @@ page_address_found() {
 #                                  accepted write and the records, they keep
 #                                  the older version, and the next put is
 #                                  refused (412), never written over an edit
-#   wiki_read_page (MCP)           nothing: the model keeps the version it
-#                                  was given and passes it back
-#   wiki_write_page (MCP)          the state file, once the wiki accepted
-#                                  the write
+#   get PAGE --section A [--own],  as get PAGE and get PAGE --out FILE, the
+#   get PAGE --top                 records naming the part; --version, nothing
+#   contents PAGE                  the state file, naming the contents, once
+#                                  they are written out without an error: a
+#                                  put from standard input then needs a get
+#                                  of what it writes, since no text came
+#   put PAGE --section A [--own],  as put PAGE and put PAGE --file FILE; the
+#   put PAGE --top                 records name the part as it is after the
+#                                  write: when the body renamed the section
+#                                  to B, the state file and FILE.version
+#                                  name B (one write each, the version and
+#                                  the name together), so that nothing names
+#                                  A at a version where A is gone
+#   ... a 422 (a body that would   nothing: the wiki wrote nothing
+#   change the page elsewhere)
+#   wiki_read_page,                nothing: the model keeps the version it
+#   wiki_page_outline,             was given and passes it back
+#   wiki_read_section (MCP)
+#   wiki_write_page,               the state file, once the wiki accepted
+#   wiki_write_section (MCP)       the write, naming the page or the part
+#                                  written
 #
 # Each record is written to a file mktemp makes beside it and moved into
 # place (stage and place_staged), so an interrupted write leaves the record
@@ -1099,6 +1218,12 @@ owner_and_mode() {
 #   create --file FILE        read     file_path   none                 none: create only
 #                                      (any
 #                                      directory)
+#   get --section A --out     as get --out FILE, the sidecar naming the part
+#   FILE, get --top --out
+#   FILE
+#   put --section A --file    as put --file FILE; FILE.version must name the part (else
+#   FILE, put --top --file    refused, exit 2, whatever is given), and with no FILE.version
+#   FILE                      only --if-match sends it (--force does not go with a part)
 #
 # A file to read (ACCESS read) may be in any directory, another user's too
 # (someone's draft): it is read once, through its resolved path, and
@@ -1151,6 +1276,52 @@ owner_and_mode() {
 #   get to standard output, put from standard input: only the state file
 #   is written, last, whole, by a rename; a stop before leaves the one
 #   before, which a put refuses (412) if the page moved on.
+#
+# A part's file (get --section A [--own] --out FILE, get --top --out FILE)
+# goes through the same steps as a page's, the same lock and the same
+# moves; only the sidecar's second line differs (a part's address, as
+# "Versions remembered between a get and a put" writes it). What each state of FILE and FILE.version
+# lets the next put send, where "put P" is put PAGE --file FILE for the
+# whole page, and "put A" put PAGE --section A --file FILE (likewise
+# --own and --top):
+#
+#   on disk                       put P               put A
+#   1 the page's text, its        sent over that      refused (exit 2):
+#     sidecar naming the page     version             the file holds the
+#                                                     whole page
+#   2 A's text, its sidecar       refused (exit 2):   sent over that
+#     naming A                    the file holds A    version
+#   3 A's own text, its sidecar   refused             refused (exit 2):
+#     naming A with own=true                          the file holds A's
+#                                                     own text; only put
+#                                                     A --own sends it
+#   4 get --section A --out       refused: no         refused: no
+#     FILE stopped after the      version, unless     version, unless
+#     old sidecar was removed     --if-match or       --if-match
+#     (old text, or A's text,     --force
+#     no sidecar)
+#   5 get --section A --out       as 2                as 2
+#     FILE done (A's text and
+#     its sidecar, moved last)
+#   6 put A sent, accepted, and   as 2, for A at      refused (412): the
+#     stopped before the sidecar  the older version   sidecar's version is
+#     moved on                                        older than the page;
+#                                                     get A again
+#   7 put A accepted, the body    refused, as 2       refused: the sidecar
+#     renamed A to B, the                             names B now (put B
+#     sidecar moved on (one                           sends it), or in 6,
+#     write: version and name)                        412 for A at the
+#                                                     older version
+#
+# So a part's file is never sent as the page, nor the page's file as a
+# part, nor one part's as another's, nor an own text as a whole section,
+# whatever --if-match or --force say: the sidecar's name is checked under
+# FILE's lock before the version is chosen and before any request. Where
+# there is no sidecar (4), the text may be anything, and --if-match sends
+# it as what the command names, as for a page; for a part, the wiki then
+# refuses a body that is not that one part (422). --force does not go
+# with a part: a part's write without a version is the wiki's own retry
+# road, which this client does not take.
 
 # FILE's path with its directory resolved (cd -P, pwd -P: every link in it
 # followed), in file_path, and that directory in resolved_dir.
@@ -1322,7 +1493,7 @@ write_record() {
 #                                         and FILE.version are read to after
 #                                         the version is moved on
 #   a page's state file (every get,       the state file's own lock,
-#   put, create, MCP write)               STATE.wiki-sh-lock, around its write
+#   put, create, contents, MCP write)     STATE.wiki-sh-lock, around its write
 #   the run's own directory               none: it is the run's alone
 file_lock='' state_lock=''
 
@@ -1356,30 +1527,35 @@ release_lock() {
   esac
 }
 
-# The sidecar of FILE, when it is this page's: FILE.version, else nothing.
-# A sidecar that is a symbolic link is never this page's: nothing is
-# written through one.
+# The sidecar of FILE, when it names HELD (a record's second line, as
+# "Versions remembered between a get and a put" writes it): FILE.version, else nothing. A sidecar
+# that is a symbolic link names nothing: nothing is written through one.
 sidecar_of() {
-  if [ -n "$1" ] && [ -f "$1.version" ] && [ ! -L "$1.version" ] && [ "$(sed -n 2p "$1.version")" = "$addr_shown" ]; then
+  if [ -n "$1" ] && [ -f "$1.version" ] && [ ! -L "$1.version" ] && [ "$(sed -n 2p "$1.version")" = "$2" ]; then
     printf '%s' "$1.version"
   fi
 }
 
 # The page at addr is at VERSION, by a text delivered or a write accepted:
 # its state file says so, and the sidecar of FILE (if given, a path in a
-# directory check_own_directory has checked, and if the sidecar is this page's).
-# Each is written under its lock; the status is 1 (with the failure's
-# message) when a lock is held by another wiki.sh, and nothing of that
-# record is written.
+# directory check_own_directory has checked, and if the sidecar names
+# BEFORE). The records name AFTER from then on: BEFORE and AFTER are a
+# record's second line (the table above), the page's address when not
+# given, and differ only when a write renamed a section. Each record is
+# rewritten whole, the version and the name in one write. Each is written
+# under its lock; the status is 1 (with the failure's message) when a
+# lock is held by another wiki.sh, and nothing of that record is written.
 record_version() {
+  held_before=${3:-$addr_shown}
+  held_after=${4:-$held_before}
   vf=$(version_file)
   mkdir -p "${vf%/*}" 2>/dev/null
   take_lock "$vf" state_lock || return
-  if ! write_record "$vf" "$1$nl" private; then
+  if ! write_record "$vf" "$1$nl$held_after$nl" private; then
     note "cannot keep the version in $vf"
   fi
   release_lock state_lock
-  sidecar=$(sidecar_of "${2:-}")
+  sidecar=$(sidecar_of "${2:-}" "$held_before")
   [ -n "$sidecar" ] || return 0
   if [ -z "$file_lock" ]; then
     take_lock "$2" file_lock || return
@@ -1387,7 +1563,7 @@ record_version() {
   else
     taken_here=''
   fi
-  if ! write_record "$sidecar" "$1$nl$addr_shown$nl"; then
+  if ! write_record "$sidecar" "$1$nl$held_after$nl"; then
     note "cannot keep the version in $sidecar"
   fi
   [ -z "$taken_here" ] || release_lock file_lock
@@ -1420,27 +1596,43 @@ is_version() {
   return 1
 }
 
-# The page's version from its state file, if the file holds one; a damaged
-# state file is said and counts as none.
-remembered_version() {
+# The page's state file as a record of HELD (what a put sends: the page,
+# or a part), in remembered_state: none (no file, or a damaged one, which
+# is said), other (a record of another part, or of the page's contents,
+# named in remembered_held), or ok, with the version in remembered. A state
+# file of one line, an older wiki.sh's, is a record of the whole page.
+read_remembered() {
+  remembered_state=none remembered='' remembered_held=''
   vf=$(version_file)
   [ -r "$vf" ] || return 0
   remembered=$(head -n 1 "$vf")
-  if is_version "$remembered"; then
-    printf '%s' "$remembered"
-  else
+  remembered_held=$(sed -n 2p "$vf")
+  [ -n "$remembered_held" ] || remembered_held=$addr_shown
+  if ! is_version "$remembered"; then
     note "the version remembered in $vf is damaged; it is not used"
+    remembered=''
+  elif [ "$remembered_held" != "$1" ]; then
+    remembered_state=other remembered=''
+  else
+    remembered_state=ok
   fi
 }
 
-# FILE.version as a record of this page, in sidecar_state: none (no
-# file), other (another page's), damaged (this page's, with no version in
-# the shape the wiki writes), or ok, with the version in sidecar_version.
+# FILE.version as a record of HELD (what a put sends), in sidecar_state:
+# none (no file); mismatch (it names a part, or HELD is one, and it is not
+# HELD: refused whatever version is given); other (another page's whole
+# text, or nothing wiki.sh writes); damaged (it names HELD, with no version
+# in the shape the wiki writes); or ok, with the version in
+# sidecar_version. Its second line is in sidecar_held.
 read_sidecar() {
-  sidecar_state=none sidecar_version=''
+  sidecar_state=none sidecar_version='' sidecar_held=''
   [ -n "$1" ] && [ -f "$1.version" ] && [ ! -L "$1.version" ] || return 0
-  if [ "$(sed -n 2p "$1.version")" != "$addr_shown" ]; then
-    sidecar_state=other
+  sidecar_held=$(sed -n 2p "$1.version")
+  if [ "$sidecar_held" != "$2" ]; then
+    case $sidecar_held$2 in
+      *'?'*) sidecar_state=mismatch ;;
+      *) sidecar_state=other ;;
+    esac
     return 0
   fi
   sidecar_version=$(head -n 1 "$1.version")
@@ -1449,6 +1641,115 @@ read_sidecar() {
   else
     sidecar_state=damaged sidecar_version=''
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Parts of a page: a section, a section's own text, the text before the
+# first heading
+
+# The part of the page at addr that a command names, from ANCHOR (empty:
+# none), OWN and TOP (empty or not), after page_address:
+#   want_query    the query of the part's API address, empty for the whole
+#                 page: section=ANCHOR (query_encode), with &own=true, or
+#                 top=true
+#   want_held     the second line of a record of it ("Versions remembered
+#                 between a get and a put"): the page's address, with
+#                 ?want_query for a part
+#   want_named    the part in words, for the messages
+#   want_options  the part as the command line names it, for the hints
+choose_part() {
+  if [ -n "$3" ]; then
+    want_query=top=true want_options=' --top'
+  elif [ -n "$1" ]; then
+    want_query="section=$(query_encode "$1")" want_options=" --section $1"
+    if [ -n "$2" ]; then
+      want_query="$want_query&own=true" want_options="$want_options --own"
+    fi
+  else
+    want_query='' want_options=''
+  fi
+  want_held=$addr_shown${want_query:+?$want_query}
+  held_named "$want_held"
+  want_named=$named
+}
+
+# What a record's second line HELD names, in words, in named.
+held_named() {
+  held_page=${1%%\?*}
+  case $1 in
+    '') named="nothing wiki.sh writes" ;;
+    *'?top=true') named="the text before the first heading of $held_page" ;;
+    *'?section='*'&own=true')
+      held_anchor=${1#*\?section=}
+      named="the own text of the section $(query_decode "${held_anchor%&own=true}") of $held_page (without its subsections)"
+      ;;
+    *'?section='*) named="the section $(query_decode "${1#*\?section=}") of $held_page" ;;
+    *'?contents') named="the contents of $held_page, which carry no text" ;;
+    *'?'*) named="nothing wiki.sh writes ($1)" ;;
+    *) named="the whole page $held_page" ;;
+  esac
+}
+
+# A query's value as it was before query_encode, for a message: each %XX
+# as its byte, and a control character as ?.
+query_decode() {
+  printf '%s\n' "$1" | awk '
+    function hexval(x,   k, r) { r = 0; x = tolower(x); for (k = 1; k <= 2; k++) r = r * 16 + index("0123456789abcdef", substr(x, k, 1)) - 1; return r }
+    {
+      out = ""
+      for (k = 1; k <= length($0); k++) {
+        c = substr($0, k, 1)
+        if (c == "%" && substr($0, k + 1, 2) ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) {
+          b = hexval(substr($0, k + 1, 2))
+          out = out (b < 32 || b == 127 ? "?" : sprintf("%c", b))
+          k += 2
+        } else out = out c
+      }
+      printf "%s", out
+    }'
+}
+
+# The options of get and put that name a part, checked before anything is
+# sent: --section with an anchor, not with --top, and --own with --section
+# alone.
+check_part_options() {
+  if [ -n "$section_given" ] && [ -z "$section" ]; then
+    usage "--section needs a section's anchor (wiki.sh contents PAGE lists them)"
+  elif [ -n "$section_given" ] && [ -n "$top" ]; then
+    usage "--section and --top name two parts of the page: give one of them"
+  elif [ -n "$own" ] && [ -z "$section_given" ]; then
+    usage "--own goes with --section ANCHOR: the section's own text, without its subsections"
+  fi
+}
+
+# An answer to a request about a part (want_query) that check_answer does
+# not tell well enough: a 404 for an anchor the page does not have, with
+# the server's message that lists the page's anchors; a 412, which says to
+# read the part again; and a 422, a body that would change something
+# outside the part, with the server's sentence. Status 0 for any other
+# answer.
+part_refused() {
+  case $http_status in
+    404)
+      said=$(json_field message)
+      case $said in
+        *'has no section with the anchor'*)
+          fail "$EX_NOTFOUND" "not found (404) in $addr_shown: $said"
+          return
+          ;;
+      esac
+      ;;
+    412)
+      fail "$EX_MOVED" "the page has been saved by someone since the version you sent (412): nothing was written; read $want_named again (wiki.sh get $addr_shown$want_options), write your change into it, and put it over the page's new version"
+      return
+      ;;
+    422)
+      said=$(json_field message)
+      fail "$EX_REFUSED" "the wiki refused the text for $want_named (422): ${said%.}; nothing was written"
+      return
+      ;;
+  esac
+  return 0
 }
 
 # A version given by the caller (--if-match, the MCP tool's version), its
@@ -1464,20 +1765,32 @@ given_version() {
 # ---------------------------------------------------------------------------
 # What the commands and the MCP tools do
 
-# The page at addr: its Markdown in $work/body, its version in page_version.
-# Nothing is remembered here: the caller records the version once the text
-# is delivered.
+# The page at addr, or the part of it that QUERY names (want_query, from
+# choose_part): its Markdown in $work/body, the page's version in
+# page_version. Nothing is remembered here: the caller records the version
+# once the text is delivered.
 fetch_page() {
-  wiki_request GET "api/markdown/$addr" || return
+  wiki_request GET "api/markdown/$addr${1:+?$1}" || return
+  [ -z "${1:-}" ] || part_refused || return
   check_answer "$addr_shown" || return
   expect_answer page || return
+  page_version=$(header_value etag)
+}
+
+# The table of contents of the page at addr: the server's JSON in
+# $work/body, the page's version in page_version.
+fetch_contents() {
+  wiki_request GET "api/contents/$addr" || return
+  check_answer "$addr_shown" || return
+  expect_answer contents || return
   page_version=$(header_value etag)
 }
 
 # The one function that sends a page's Markdown (a PUT): the file's text
 # to the page at addr, with exactly one condition, If-Match with a version
 # (CONDITION if-match, VERSION checked by is_version) or If-None-Match: *
-# (CONDITION create), and QUERY for a creation. The wiki writes over a page
+# (CONDITION create), and QUERY for a creation (its title and kind) or for
+# a part's write (want_query, with if-match only). The wiki writes over a page
 # and even creates one for a PUT with neither, so none ever goes out
 # without one: reached without a valid condition, it fails (exit 1) and
 # sends nothing, whatever branch led there.
@@ -1490,7 +1803,15 @@ send_page_text() {
       fi
       set -- "$1" -H "If-Match: $3" "$4"
       ;;
-    create) set -- "$1" -H 'If-None-Match: *' "$4" ;;
+    create)
+      case $4 in
+        section=* | *'&section='* | top=* | *'&top='*)
+          fail "$EX_ERROR" "internal error: a part of $addr_shown was about to be sent with If-None-Match, which no part takes; nothing was sent"
+          return
+          ;;
+      esac
+      set -- "$1" -H 'If-None-Match: *' "$4"
+      ;;
     *)
       fail "$EX_ERROR" "internal error: a write of $addr_shown was about to go out with no condition; nothing was sent"
       return
@@ -1499,14 +1820,28 @@ send_page_text() {
   wiki_request PUT "api/markdown/$addr${4:+?$4}" -H 'Content-Type: text/markdown; charset=utf-8' --data-binary "@$1" "$2" "$3"
 }
 
-# The file's text written over the page at addr, conditional on VERSION
-# (If-Match). The new version is in page_version; the caller records it.
-# An answer that is not the wiki's 204 with an ETag fails, and nothing is
-# recorded.
+# The file's text written over the page at addr, or over the part of it
+# that QUERY names (want_query, from choose_part), conditional on VERSION
+# (If-Match). The new version is in page_version, and for a section the
+# anchor it has after the write (a body may rename its heading) in
+# anchor_after; the caller records them. An answer that is not the wiki's
+# (204 with an ETag for the page, 200 with the JSON of what was written
+# for a part) fails, and nothing is recorded.
 store_page() {
-  send_page_text "$1" if-match "$2" '' || return
-  check_answer "$addr_shown" || return
-  expect_answer written || return
+  anchor_after=''
+  send_page_text "$1" if-match "$2" "${3:-}" || return
+  if [ -n "${3:-}" ]; then
+    part_refused || return
+    check_answer "$addr_shown" || return
+    case $3 in
+      top=true) expect_answer top-written ;;
+      *) expect_answer section-written ;;
+    esac || return
+    anchor_after=$(json_field anchor)
+  else
+    check_answer "$addr_shown" || return
+    expect_answer written || return
+  fi
   page_version=$(header_value etag)
 }
 
@@ -1761,20 +2096,26 @@ take_page_argument() {
 }
 
 cmd_get() {
-  first='' second='' out='' version_only=''
+  first='' second='' out='' version_only='' section='' section_given='' own='' top=''
   while [ $# -gt 0 ]; do
     case $1 in
       --out) [ $# -ge 2 ] || { usage "--out needs a file"; return; }; out=$2; shift ;;
       --out=*) out=${1#--out=} ;;
       --version) version_only=1 ;;
+      --section) [ $# -ge 2 ] || { usage "--section needs a section's anchor"; return; }; section=$2 section_given=1; shift ;;
+      --section=*) section=${1#--section=} section_given=1 ;;
+      --own) own=1 ;;
+      --top) top=1 ;;
       -*) usage "get does not take $1"; return ;;
       *) take_page_argument "$1" || return ;;
     esac
     shift
   done
   [ -n "$first" ] || { usage "get needs a page's address"; return; }
+  check_part_options || return
   load_config || return
   page_address "$first" "$second" || return
+  choose_part "$section" "$own" "$top"
   if [ -n "$out" ]; then
     # The pair is taken for writing (local_file): a directory of the
     # user's own, nothing through a link, and FILE's lock held from here
@@ -1782,7 +2123,7 @@ cmd_get() {
     local_file "$out" write || return
     out_path=$file_path
   fi
-  fetch_page || return
+  fetch_page "$want_query" || return
   # The version is recorded only once the text is delivered whole (the
   # table above record_version).
   if [ -n "$version_only" ]; then
@@ -1796,7 +2137,12 @@ cmd_get() {
     # order would leave the new version beside the old text, which a put
     # would write over the new version's changes unseen. FILE's lock,
     # taken by local_file before the request, is held to after the last
-    # move, so that two writers cannot interleave.
+    # move, so that two writers cannot interleave. The sidecar's second
+    # line names what the text is, the page or a part (want_held): the
+    # old sidecar goes before the new text comes, so that a part's text is
+    # never beside a sidecar that names the page, nor the page's beside
+    # one that names a part (the table of a part's file, above
+    # resolve_file).
     # Each is staged in a file mktemp makes beside it (stage), and gets the
     # mode of the file it replaces as it is moved in (place_staged).
     if ! stage "$out_path"; then
@@ -1810,7 +2156,7 @@ cmd_get() {
       fail "$EX_ERROR" "cannot write $out whole (is the disk full, or a file size limit reached?): $out and its version are as they were"
       return
     fi
-    if ! stage "$out_path.version" || ! { printf '%s\n%s\n' "$page_version" "$addr_shown" >"$staged"; } 2>/dev/null; then
+    if ! stage "$out_path.version" || ! { printf '%s\n%s\n' "$page_version" "$want_held" >"$staged"; } 2>/dev/null; then
       rm -f "$text_tmp" ${staged:+"$staged"}
       fail "$EX_ERROR" "cannot write $out.version: $out and its version are as they were"
       return
@@ -1840,26 +2186,69 @@ cmd_get() {
       return
     fi
     release_lock file_lock
-    if ! record_version "$page_version"; then
+    if ! record_version "$page_version" '' "$want_held"; then
       fail "$EX_ERROR" "wrote $out and $out.version, but not the version remembered for $addr_shown: $fail_message"
       return
     fi
-    note "wrote $out; its version $page_version is in $out.version, for put --file $out"
+    if [ -z "$want_query" ]; then
+      note "wrote $out; its version $page_version is in $out.version, for put --file $out"
+    else
+      note "wrote $want_named to $out; the page's version $page_version is in $out.version, for put $addr_shown$want_options --file $out"
+    fi
   else
     if ! cat "$work/body"; then
       fail "$EX_ERROR" "the page could not be written out whole: its version is not remembered"
       return
     fi
-    if ! record_version "$page_version"; then
+    if ! record_version "$page_version" '' "$want_held"; then
       fail "$EX_ERROR" "the page is written out, but its version is not remembered: $fail_message"
       return
     fi
-    note "version $page_version of $addr_shown (put remembers it)"
+    if [ -z "$want_query" ]; then
+      note "version $page_version of $addr_shown (put remembers it)"
+    else
+      note "version $page_version of $addr_shown, for $want_named (put $addr_shown$want_options remembers it)"
+    fi
   fi
 }
 
+cmd_contents() {
+  first='' second='' json=''
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --json) json=1 ;;
+      -*) usage "contents does not take $1"; return ;;
+      *) take_page_argument "$1" || return ;;
+    esac
+    shift
+  done
+  [ -n "$first" ] || { usage "contents needs a page's address"; return; }
+  load_config || return
+  page_address "$first" "$second" || return
+  fetch_contents || return
+  if [ -n "$json" ]; then
+    if ! cat "$work/body"; then
+      fail "$EX_ERROR" "the contents could not be written out whole: the page's version is not remembered"
+      return
+    fi
+  else
+    render_contents || {
+      render_failed $?
+      return
+    }
+  fi
+  # Remembered as a read's version is, naming the contents: a put from
+  # standard input then needs a get of what it writes, since the contents
+  # carry none of the page's text (the table above record_version).
+  if ! record_version "$page_version" '' "$addr_shown?contents"; then
+    fail "$EX_ERROR" "the contents are written out, but the page's version is not remembered: $fail_message"
+    return
+  fi
+  note "version $page_version of $addr_shown; read a section with wiki.sh get $addr_shown --section ANCHOR"
+}
+
 cmd_put() {
-  first='' second='' file='' if_match='' force=''
+  first='' second='' file='' if_match='' force='' section='' section_given='' own='' top=''
   while [ $# -gt 0 ]; do
     case $1 in
       --file) [ $# -ge 2 ] || { usage "--file needs a file"; return; }; file=$2; shift ;;
@@ -1867,12 +2256,21 @@ cmd_put() {
       --if-match) [ $# -ge 2 ] || { usage "--if-match needs a version"; return; }; if_match=$2; shift ;;
       --if-match=*) if_match=${1#--if-match=} ;;
       --force) force=1 ;;
+      --section) [ $# -ge 2 ] || { usage "--section needs a section's anchor"; return; }; section=$2 section_given=1; shift ;;
+      --section=*) section=${1#--section=} section_given=1 ;;
+      --own) own=1 ;;
+      --top) top=1 ;;
       -*) usage "put does not take $1"; return ;;
       *) take_page_argument "$1" || return ;;
     esac
     shift
   done
   [ -n "$first" ] || { usage "put needs a page's address"; return; }
+  check_part_options || return
+  if [ -n "$force" ] && { [ -n "$section_given" ] || [ -n "$top" ]; }; then
+    usage "--force does not go with a part of the page: a part is written over the version it was read at; read it again (get --section or --top), or give --if-match VERSION"
+    return
+  fi
   if [ -n "$force" ] && [ -n "$if_match" ]; then
     usage "--force writes over the page's version as it is now, and --if-match over the one given: give one of them"
     return
@@ -1887,6 +2285,7 @@ cmd_put() {
   fi
   load_config || return
   page_address "$first" "$second" || return
+  choose_part "$section" "$own" "$top"
   if [ -z "$file" ] && [ -t 0 ]; then
     usage "put reads the page's new text from --file or standard input (wiki.sh put PAGE < text.md)"
     return
@@ -1898,13 +2297,28 @@ cmd_put() {
   # every way out.
   if [ -n "$file" ]; then
     local_file "$file" update || return
+    # What the file holds, by its sidecar, read under its lock before the
+    # version is chosen and before any request: a part's file is sent only
+    # as that part, and a part only from that part's file, whatever
+    # --if-match or --force say (the table of a part's file, above
+    # resolve_file).
+    read_sidecar "$file_path" "$want_held"
+    if [ "$sidecar_state" = mismatch ]; then
+      held_named "$sidecar_held"
+      fail "$EX_USAGE" "$file holds $named, as $file.version says, not $want_named: nothing was sent. Put it as what it holds, or get $want_named into a file of its own (wiki.sh get $addr_shown$want_options --out FILE)"
+      return
+    fi
     if [ -z "$file_lock" ] && [ -z "$if_match" ] && [ -z "$force" ]; then
-      fail "$EX_USAGE" "$file has no $file.version naming $addr_shown, so its text may be of any version and the write could go over someone's edit: get the page into it (wiki.sh get $addr_shown --out $file), or give --if-match VERSION, or --force"
+      if [ -z "$want_query" ]; then
+        fail "$EX_USAGE" "$file has no $file.version naming $addr_shown, so its text may be of any version and the write could go over someone's edit: get the page into it (wiki.sh get $addr_shown --out $file), or give --if-match VERSION, or --force"
+      else
+        fail "$EX_USAGE" "$file has no $file.version naming $want_named, so its text may be of any version and the write could go over someone's edit: get the part into it (wiki.sh get $addr_shown$want_options --out $file), or give --if-match VERSION"
+      fi
       return
     fi
   fi
   read_text || return
-  if [ ! -s "$work/put-body" ] && [ -z "$force" ]; then
+  if [ ! -s "$work/put-body" ] && [ -z "$force" ] && [ -z "$want_query" ]; then
     fail "$EX_USAGE" "the new text is empty: put --force writes an empty page"
     return
   fi
@@ -1916,6 +2330,8 @@ cmd_put() {
   # exists, and never makes one: it always sends If-Match, which the wiki
   # never creates a page for (404 at a free address); between --force's
   # read and the write, a save by someone else is still refused (412).
+  # For a part, each record counts only when it names that part
+  # (want_held), and --force is refused above.
   version=''
   sidecar_file=''
   [ -z "$file_lock" ] || sidecar_file=$file_path
@@ -1930,39 +2346,75 @@ cmd_put() {
     fi
     version=$page_version
   elif [ -n "$file" ]; then
-    read_sidecar "$sidecar_file"
+    read_sidecar "$sidecar_file" "$want_held"
     case $sidecar_state in
       ok) version=$sidecar_version ;;
       damaged)
-        fail "$EX_USAGE" "$file.version names $addr_shown but holds no version of the wiki's shape (damaged, or edited by hand), so the text of $file may be of any version: get the page into it again (wiki.sh get $addr_shown --out $file), or give --if-match VERSION, or --force"
+        if [ -z "$want_query" ]; then
+          fail "$EX_USAGE" "$file.version names $addr_shown but holds no version of the wiki's shape (damaged, or edited by hand), so the text of $file may be of any version: get the page into it again (wiki.sh get $addr_shown --out $file), or give --if-match VERSION, or --force"
+        else
+          fail "$EX_USAGE" "$file.version names $want_named but holds no version of the wiki's shape (damaged, or edited by hand), so the text of $file may be of any version: get the part into it again (wiki.sh get $addr_shown$want_options --out $file), or give --if-match VERSION"
+        fi
+        return
+        ;;
+      mismatch)
+        held_named "$sidecar_held"
+        fail "$EX_USAGE" "$file holds $named, as $file.version says, not $want_named: nothing was sent"
         return
         ;;
       *)
-        fail "$EX_USAGE" "$file.version does not name $addr_shown, so the text of $file may be of any version of it: get the page into it (wiki.sh get $addr_shown --out $file), or give --if-match VERSION, or --force"
+        if [ -z "$want_query" ]; then
+          fail "$EX_USAGE" "$file.version does not name $addr_shown, so the text of $file may be of any version of it: get the page into it (wiki.sh get $addr_shown --out $file), or give --if-match VERSION, or --force"
+        else
+          fail "$EX_USAGE" "$file.version does not name $want_named, so the text of $file may be of any version of it: get the part into it (wiki.sh get $addr_shown$want_options --out $file), or give --if-match VERSION"
+        fi
         return
         ;;
     esac
   else
-    version=$(remembered_version)
-    if [ -z "$version" ]; then
-      fail "$EX_USAGE" "no version of $addr_shown is known here, so the write could go over someone's edit: get the page first (wiki.sh get $addr_shown), or give --if-match VERSION, or --force to write anyway"
-      return
-    fi
+    read_remembered "$want_held"
+    version=$remembered
+    case $remembered_state in
+      ok) ;;
+      other)
+        held_named "$remembered_held"
+        force_hint=''
+        [ -n "$want_query" ] || force_hint=', or --force to write anyway'
+        fail "$EX_USAGE" "the version known here for $addr_shown came with $named, not with $want_named, so the write could go over someone's edit: get $want_named first (wiki.sh get $addr_shown$want_options), or give --if-match VERSION$force_hint"
+        return
+        ;;
+      *)
+        if [ -z "$want_query" ]; then
+          fail "$EX_USAGE" "no version of $addr_shown is known here, so the write could go over someone's edit: get the page first (wiki.sh get $addr_shown), or give --if-match VERSION, or --force to write anyway"
+        else
+          fail "$EX_USAGE" "no version of $addr_shown is known here, so the write could go over someone's edit: get $want_named first (wiki.sh get $addr_shown$want_options), or give --if-match VERSION"
+        fi
+        return
+        ;;
+    esac
   fi
-  store_page "$work/put-body" "$version"
+  store_page "$work/put-body" "$version" "$want_query"
   put_status=$?
   if [ "$put_status" != 0 ]; then
-    [ "$put_status" != "$EX_NOTFOUND" ] || no_page_to_put
+    [ "$put_status" != "$EX_NOTFOUND" ] || [ -n "$want_query" ] || no_page_to_put
     return "$put_status"
   fi
   # Accepted: every record of the page follows, however the version sent
-  # was chosen (the table above record_version).
-  if ! record_version "$page_version" "$sidecar_file"; then
+  # was chosen (the table above record_version). A body that renamed its
+  # section's heading moves the section to another anchor: the records
+  # name it there, so that none names the old anchor at the new version.
+  part_after_write "$section" "$own"
+  if ! record_version "$page_version" "$sidecar_file" "$want_held" "$held_after"; then
     fail "$EX_ERROR" "wrote $addr_shown (its version is now $page_version), but did not remember that version: $fail_message"
     return
   fi
   release_lock file_lock
-  note "wrote $addr_shown; its version is now $page_version"
+  if [ -z "$want_query" ]; then
+    note "wrote $addr_shown; its version is now $page_version"
+  else
+    note "wrote $want_named; the page's version is now $page_version"
+  fi
+  [ -z "$renamed" ] || note "the section is now at $anchor_after (wiki.sh get $addr_shown --section $anchor_after${own:+ --own})"
 }
 
 # The message of a put at an address with no page.
@@ -2088,6 +2540,27 @@ wiki.sh: the wiki from a shell, through its API for programs.
       your own, which nobody else can write (not /tmp itself: make one with
       mkdir -m 700); so must a FILE whose FILE.version a put moves on. Two
       wiki.sh writing one FILE at once: the second fails, naming the lock.
+  wiki.sh contents PAGE [--json]
+      The page's headings as a tree: each with its level (h2), its anchor,
+      which --section takes, and its text, and "(in a spoiler)" for one
+      inside a block spoiler; a first line when the page has text before
+      its first heading, which --top reads. --json gives the server's JSON.
+  wiki.sh get PAGE --section ANCHOR [--own] [--out FILE]
+  wiki.sh get PAGE --top [--out FILE]
+      One part of the page, as get gives the page: the section with that
+      anchor and its subsections (--own: its own text, without them), or
+      the text before the first heading. FILE.version names the part, and
+      FILE is put back only as that part:
+        wiki.sh get /s/team/p/handbook/ --section the-week --out week.md
+        wiki.sh put /s/team/p/handbook/ --section the-week --file week.md
+  wiki.sh put PAGE --section ANCHOR [--own] [--file FILE] [--if-match VERSION]
+  wiki.sh put PAGE --top [--file FILE] [--if-match VERSION]
+      Write one part of the page, the rest of the page as it is, over the
+      version read with that part (or --if-match; never --force). The text
+      of a section starts with its heading; it may change the heading's
+      text, and then the section's new anchor is printed. A text that
+      would change the page outside the part is refused (exit 6), and
+      nothing is written.
   wiki.sh put PAGE [--file FILE] [--if-match VERSION | --force]
       Write the page's whole Markdown, from FILE or standard input. The write
       is conditional: it is refused (exit 5) when someone saved the page
@@ -2125,9 +2598,6 @@ page's URL in the browser, or its API address (/api/markdown/s/...); or a
 space's path and a page's path apart, as the titles make them
 (team/projects the-wiki, team/edit history).
 
-The API also gives a page's table of contents and one section of a page;
-this client has no commands for them yet.
-
 Configuration, from the environment or from ~/.config/wiki/config (another
 file with WIKI_CONFIG), which must be readable by you alone (chmod 600):
 
@@ -2149,11 +2619,13 @@ command line. Versions are remembered under WIKI_STATE_DIR (by default
 ~/.local/state/wiki), one file per page.
 
 Exit codes: 0 done; 1 another failure; 2 a wrong use (or no version known for
-a put); 3 sign-in refused; 4 not found (or not yours to read; for a put, no
-page there); 5 the page was saved since your version (for a create, a page
-is there already); 6 refused (not allowed, an encrypted space, a bad request,
-a space there already); 7 too many failed sign-ins, try again later; 8 no
-connection.
+a put, or a file that holds another part than the one named); 3 sign-in
+refused; 4 not found (or not yours to read; for a put, no page there; for
+--section, no such anchor, and the message lists the page's anchors); 5 the
+page was saved since your version (for a create, a page is there already);
+6 refused (not allowed, an encrypted space, a bad request, a space there
+already, a part's text that would change the page outside it); 7 too many
+failed sign-ins, try again later; 8 no connection.
 EOF
 }
 
@@ -2214,6 +2686,37 @@ mcp_tools='[
     "annotations": {"readOnlyHint": true, "openWorldHint": false}
   },
   {
+    "name": "wiki_page_outline",
+    "title": "A page'"'"'s outline",
+    "description": "Read a page'"'"'s outline: its title, its version, topCharacters, the length of the text before its first heading (0 when there is none; read it with wiki_read_section and top true), and its headings as a tree, each with its level, its text, its anchor (the name of its section, for wiki_read_section) and whether it is inside a spoiler.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "The page'"'"'s path, such as /s/team/p/on-call/."}
+      },
+      "required": ["path"],
+      "additionalProperties": false
+    },
+    "annotations": {"readOnlyHint": true, "openWorldHint": false}
+  },
+  {
+    "name": "wiki_read_section",
+    "title": "Read a section",
+    "description": "Read one part of a page: a section by its anchor, its Markdown from its heading to the next heading of the same or a higher level, its subsections included, or with own true only to the next heading of any level; or, with top true instead of section, the text before the first heading. Also the page'"'"'s version, to pass as base_version when you write the section (wiki_write_section) or the page.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "The page'"'"'s path, such as /s/team/p/on-call/."},
+        "section": {"type": "string", "description": "The section'"'"'s anchor, from the page'"'"'s outline (wiki_page_outline). Give section or top, not both."},
+        "own": {"type": "boolean", "description": "True for the section'"'"'s own text only, without its subsections."},
+        "top": {"type": "boolean", "description": "True for the text before the first heading, in place of section."}
+      },
+      "required": ["path"],
+      "additionalProperties": false
+    },
+    "annotations": {"readOnlyHint": true, "openWorldHint": false}
+  },
+  {
     "name": "wiki_write_page",
     "title": "Write a page",
     "description": "Replace a page'"'"'s whole Markdown with content. The write is conditional: version must be the version wiki_read_page returned. If someone saved the page since, nothing is written and the tool says so: read the page again, merge your change into its new text, and write with the new version. The page must exist: wiki_create_page makes new ones. Before writing, read the parts of wiki_markdown_reference you need: the wiki has its own Markdown.",
@@ -2225,6 +2728,25 @@ mcp_tools='[
         "content": {"type": "string", "description": "The page'"'"'s new Markdown, whole: it replaces all of the page'"'"'s text. The title stays."}
       },
       "required": ["page", "version", "content"],
+      "additionalProperties": false
+    },
+    "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
+  },
+  {
+    "name": "wiki_write_section",
+    "title": "Write a section",
+    "description": "Replace one part of a page: a section by its anchor, or with top true the text before the first heading. Prefer it to wiki_write_page for a change to one section of a long page: it sends fewer tokens, and the other sections cannot be damaged. markdown is the whole section, starting with its heading at the same level as the section'"'"'s (it may change the heading'"'"'s text), its subsections included, or with own true without them; for top, the text before the first heading, with no heading. A write that would change anything outside the part is refused, and nothing is written: the error says why and what to do. base_version is the version you read (wiki_read_section or wiki_page_outline): if the page has been saved since, nothing is written, and you read the section again and write with the page'"'"'s new version. The result is the section'"'"'s anchor after the write and the page'"'"'s new version.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "The page'"'"'s path, such as /s/team/p/on-call/."},
+        "section": {"type": "string", "description": "The section'"'"'s anchor, from the page'"'"'s outline (wiki_page_outline). Give section or top, not both."},
+        "own": {"type": "boolean", "description": "True to write the section'"'"'s own text only, its subsections staying as they are: markdown then has no subsections."},
+        "top": {"type": "boolean", "description": "True to write the text before the first heading, in place of section."},
+        "markdown": {"type": "string", "description": "The part'"'"'s whole new Markdown: for a section, from its heading on."},
+        "base_version": {"type": "string", "description": "The version you read the page at, as the reading tools give it."}
+      },
+      "required": ["path", "markdown", "base_version"],
       "additionalProperties": false
     },
     "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
@@ -2261,7 +2783,7 @@ mcp_tools='[
   }
 ]'
 
-mcp_instructions="The wiki at the address this server was started with: pages of Markdown in spaces. Find pages with wiki_list or wiki_search, read one with wiki_read_page, and change it with wiki_write_page, passing the version you read: a write over someone's newer save is refused, and you read again and merge. wiki_write_page only changes pages that exist; wiki_create_page makes a new one, and never writes over one. The wiki has its own Markdown: read the sections of wiki_markdown_reference you need before writing."
+mcp_instructions="The wiki at the address this server was started with: pages of Markdown in spaces. Find pages with wiki_list or wiki_search, read one with wiki_read_page, and change it with wiki_write_page, passing the version you read: a write over someone's newer save is refused, and you read again and merge. For a long page, read its outline (wiki_page_outline), then one section at a time (wiki_read_section), and the text before its first heading with top true. To change one section, write that section alone with wiki_write_section, from its heading on, over the version read as base_version: nothing outside it can change. wiki_write_page only changes pages that exist; wiki_create_page makes a new one, and never writes over one. The wiki has its own Markdown: read the sections of wiki_markdown_reference you need before writing."
 
 mcp_log() {
   printf 'wiki.sh mcp: %s\n' "$1" >&2
@@ -2306,14 +2828,85 @@ tool_failed() {
 
 # An argument of the tool call: a string in the file $work/arg, its status 1
 # when it is not given, 2 when it is not a string (or for an integer
-# argument, not a whole number).
+# argument, not a whole number; for a boolean, not true or false, which
+# it writes as true or false).
 tool_argument() {
   jq -j --arg name "$1" --arg kind "$2" '
     .params.arguments[$name]
     | if . == null then halt_error(1)
       elif $kind == "string" and type == "string" then .
       elif $kind == "integer" and type == "number" and . == floor then tostring
+      elif $kind == "boolean" and type == "boolean" then tostring
       else halt_error(2) end' "$work/msg" >"$work/arg" 2>/dev/null
+}
+
+# The arguments section, own and top of wiki_read_section and
+# wiki_write_section, as the wiki's own MCP server reads them: a section's
+# anchor, or top true, not both, and own with a section only. In section,
+# own and top (empty or 1), as the commands' options give them; a failure
+# answers the call with the tool's error.
+part_arguments() {
+  short_argument section string optional || return 1
+  section=$arg
+  if tool_argument section string && [ -z "$section" ]; then
+    tool_failed "section is empty: give a section's anchor from the page's outline (wiki_page_outline)."
+    return 1
+  fi
+  short_argument own boolean optional || return 1
+  own=''
+  [ "$arg" != true ] || own=1
+  short_argument top boolean optional || return 1
+  top=''
+  [ "$arg" != true ] || top=1
+  if [ -n "$section" ] && [ -n "$top" ]; then
+    tool_failed "Give section or top, not both."
+  elif [ -n "$top" ] && [ -n "$own" ]; then
+    tool_failed "own goes with a section: the text before the first heading has no subsections."
+  elif [ -z "$section" ] && [ -z "$top" ]; then
+    tool_failed "Give section, a section's anchor from the page's outline, or top true for the text before the first heading."
+  else
+    return 0
+  fi
+  return 1
+}
+
+# The page's outline as the wiki's own wiki_page_outline gives it, from
+# the contents in $work/body (fetch_contents): its title, its version, its
+# headings without their addresses, and topCharacters, the length of the
+# text before its first heading in characters (0 when it is blank), which
+# a second request reads (?top=true) when the contents say there is some.
+# Both answers are of one version of the page, or it fails.
+mcp_outline() {
+  cp "$work/body" "$work/contents"
+  top_characters=0
+  if jq -e 'has("top")' "$work/contents" >/dev/null 2>&1; then
+    outline_version=$page_version
+    choose_part '' '' 1
+    fetch_page "$want_query" || return
+    if [ "$page_version" != "$outline_version" ]; then
+      fail "$EX_MOVED" "The page $addr_shown was saved while its outline was read: call wiki_page_outline again."
+      return
+    fi
+    top_characters=$(jq -Rs 'if test("\\S") then length else 0 end' "$work/body") || {
+      fail "$EX_ERROR" "cannot count the text before the first heading"
+      return
+    }
+  fi
+  jq -c --argjson top "$top_characters" '
+    def strip: del(.section) | .children |= map(strip);
+    {title, version, headings: (.headings | map(strip)), topCharacters: $top}' "$work/contents" >"$work/tool-text"
+}
+
+# What the records name after a part's write (store_page), for the section
+# SECTION (empty for the top) and OWN: want_held, or for a section whose
+# heading the body renamed, the section at its new anchor (anchor_after)
+# in held_after, with renamed set.
+part_after_write() {
+  held_after=$want_held renamed=''
+  if [ -n "$1" ] && [ -n "$anchor_after" ] && [ "$anchor_after" != "$1" ]; then
+    renamed=1
+    held_after="$addr_shown?section=$(query_encode "$anchor_after")${2:+&own=true}"
+  fi
 }
 
 # The argument as a variable (for short ones: paths, numbers), in arg; a
@@ -2379,6 +2972,75 @@ mcp_call_tool() {
         tool_answer false "$work/tool-text" "$work/body"
       else
         tool_failed "$fail_message"
+      fi
+      ;;
+    wiki_page_outline)
+      short_argument path string required || return
+      if page_address "$arg" && fetch_contents && mcp_outline; then
+        tool_answer false "$work/tool-text"
+      else
+        tool_failed "$fail_message"
+      fi
+      ;;
+    wiki_read_section)
+      short_argument path string required || return
+      page=$arg
+      part_arguments || return
+      page_address "$page" || { tool_failed "$fail_message"; return; }
+      choose_part "$section" "$own" "$top"
+      if fetch_page "$want_query"; then
+        if [ -n "$top" ]; then
+          how="top true"
+        else
+          how="section \"$section\"${own:+ and own true}"
+        fi
+        printf 'This is %s, at the page'"'"'s version %s. To change it, call wiki_write_section with %s, this version as base_version, and its whole new Markdown%s. Its Markdown follows, in the next block.' \
+          "$want_named" "$page_version" "$how" "$([ -n "$top" ] || printf ', from its heading on')" >"$work/tool-text"
+        tool_answer false "$work/tool-text" "$work/body"
+      else
+        tool_failed "$fail_message"
+      fi
+      ;;
+    wiki_write_section)
+      short_argument path string required || return
+      page=$arg
+      part_arguments || return
+      short_argument base_version string required || return
+      version=$arg
+      [ -n "$version" ] || { tool_failed "base_version is empty: give the version wiki_read_section or wiki_page_outline returned."; return; }
+      tool_argument markdown string
+      case $? in
+        0) ;;
+        1) tool_failed "The argument markdown is missing."; return ;;
+        *) tool_failed "The argument markdown must be a string."; return ;;
+      esac
+      mv "$work/arg" "$work/content"
+      page_address "$page" || { tool_failed "$fail_message"; return; }
+      choose_part "$section" "$own" "$top"
+      checked_version=$(given_version "$version")
+      if [ -z "$checked_version" ]; then
+        tool_failed "base_version is not a version of the wiki ($version): give the one wiki_read_section returned, as \"2026-11-18T09:30:12.345678Z\"."
+        return
+      fi
+      if store_page "$work/content" "$checked_version" "$want_query"; then
+        part_after_write "$section" "$own"
+        # As for wiki_write_page, a lock held elsewhere is only noted.
+        record_version "$page_version" '' "$want_held" "$held_after" || note "$fail_message"
+        held_named "$held_after"
+        printf 'Wrote %s. The page'"'"'s version is now %s.' "$named" "$page_version" >"$work/tool-text"
+        [ -z "$renamed" ] || printf ' The section'"'"'s anchor is now %s (it was %s): read it with section %s.' "$anchor_after" "$section" "$anchor_after" >>"$work/tool-text"
+        tool_answer false "$work/tool-text"
+      else
+        case $? in
+          "$EX_MOVED") tool_failed "The page at $addr_shown has been saved since the version $version, and nothing was written. Read the section again with wiki_read_section, write your change into what it says now, and write with the page's new version." ;;
+          *)
+            if [ "$http_status" = 422 ] && [ -n "$(json_field message)" ]; then
+              tool_failed "$(json_field message) Nothing was written."
+            else
+              tool_failed "$fail_message"
+            fi
+            ;;
+        esac
       fi
       ;;
     wiki_write_page)
@@ -2578,7 +3240,7 @@ mcp_handle() {
       ;;
     '"tools/call"')
       case $tool_json in
-        '"wiki_list"' | '"wiki_search"' | '"wiki_read_page"' | '"wiki_write_page"' | '"wiki_create_page"' | '"wiki_markdown_reference"') ;;
+        '"wiki_list"' | '"wiki_search"' | '"wiki_read_page"' | '"wiki_page_outline"' | '"wiki_read_section"' | '"wiki_write_page"' | '"wiki_write_section"' | '"wiki_create_page"' | '"wiki_markdown_reference"') ;;
         *)
           mcp_error -32602 "Unknown tool: $tool_json"
           return
@@ -2634,15 +3296,13 @@ main() {
     search) cmd_search "$@" ;;
     get) cmd_get "$@" ;;
     put) cmd_put "$@" ;;
+    contents) cmd_contents "$@" ;;
     reference) cmd_reference "$@" ;;
     create) cmd_create "$@" ;;
     create-space) cmd_create_space "$@" ;;
     mcp)
       if [ $# = 0 ]; then cmd_mcp; else usage "mcp takes no arguments"; fi
       ;;
-    # The API's next endpoints (a page's table of contents, one section of
-    # a page) get their commands here, each a cmd_ function as above, and a
-    # tool of the same function in mcp_call_tool.
     help | --help | -h) cmd_help; exit 0 ;;
     *) usage "no command $command" ;;
   esac

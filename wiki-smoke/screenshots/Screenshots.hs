@@ -140,7 +140,7 @@ spec out demo = playwright $ do
               click (locator page "#app .user-dialog .disable-confirm-button")
               waitQuiet page
               count (locator page "#app .user-row[data-login=dora].user-disabled") `shouldReturn` 1
-              press page "Escape"
+              closeByEscape page
               count (locator page "#app .user-dialog") `shouldReturn` 0
               nothingThrown page
 
@@ -162,7 +162,7 @@ spec out demo = playwright $ do
                   ()
               settle page
               shoot' page ("admin-remove" <> suffix <> ".png")
-              press page "Escape"
+              closeByEscape page
               count (locator page "#app .user-dialog") `shouldReturn` 0
 
             -- Edgar's dialog: in a group, creating spaces, no password yet.
@@ -218,6 +218,13 @@ formulasSet page within =
     \  return formulas.length > 0 && formulas.every((f) => f.querySelector('.katex'));\
     \}"
     within
+
+-- | Close the user's dialog with Escape. The browser closes the dialog and
+-- tells the program by its close event, with the browser's next frame.
+-- The press's settle waits for that frame only up to a bound, so the close
+-- event is waited for: the call returns once the program has handled it.
+closeByEscape :: Page -> IO ()
+closeByEscape page = waitForEvent (OnElement (locator page "#app .user-dialog")) "close" (press page "Escape")
 
 -- | The users the administration's screenshots add to the demo's three,
 -- made with its "New user" form, so that the table looks like a wiki's:

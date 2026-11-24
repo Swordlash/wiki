@@ -4524,15 +4524,19 @@ program waits in an `H.async`, and the page is read once. What is not the
 program's is a condition, named in a comment, and the page is settled after
 it: what an island's library draws, a frame's own script or document, the
 service worker, a push over the WebSocket in another tab, something the
-server does by itself, an image decoded. An event the browser fires with
-the next frame (a modal dialog's `close` after Escape) or once a step
-through the history the page asked for has landed (the `popstate` after the
-page's own `history.back()`) needs nothing more: the driver's settle waits
-for both, so the action is followed by a plain read. An event that is
-neither would be waited for with the driver's `waitForEvent`, which listens
-for it before the action; no suite has one. What a page asked for is the
-driver's `requestsOf page`, the requests of the documents it shows now, not
-of the document before it. A dedicated worker's request is given the
+server does by itself, an image decoded. An event the browser fires once a
+step through the history the page asked for has landed (the `popstate`
+after the page's own `history.back()`) needs nothing more: the driver's
+settle waits for it, so the action is followed by a plain read. An event
+the browser fires with its next frame (a modal dialog's `close` after
+Escape) is waited for with the driver's `waitForEvent`, which listens for
+it before the action and settles after it: the settle waits for the next
+frame only up to a short bound, and a frame later than that (a loaded
+machine) leaves the event unheard when the page is read. CI's run of #364
+read the demo's user dialog still there after Escape, most likely so. Any
+other event the page fires later by itself is waited for the same way. What a
+page asked for is the driver's `requestsOf page`, the requests of the
+documents it shows now, not of the document before it. A dedicated worker's request is given the
 document its frame shows when the request is reported, so the demo's
 adoption check first takes its shared page to `about:blank`: a picture's
 worker on the page before then ends with that page, and a late request of

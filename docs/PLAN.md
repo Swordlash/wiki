@@ -2765,7 +2765,25 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   both stay the host's and the assistant reaches them through
   capabilities (`Models`, `Secret`) that mirror its present needs.
   **C is open (#374)**; **D is next (the owner, 2026-11-24, after
-  C).** **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
+  C).** **After D, the features behind the interface (the
+  session's plan of 2026-11-24, read from the code):** **E**, the
+  emoji: a `command` with a picker and the colon list's names, the
+  picker drawn by the host from data (its HTML unchanged); off, no
+  Emoji button and no list after a colon, while `:smile:` still shows
+  😄 (the parser's). **I**, Mermaid and TikZ, two plugins in one
+  package: a `block` (the host's islands still draw them) and a
+  `command` each; off, the fence shows as the listing `{.norender}`
+  gives, for that reader, in the prerender too, through
+  `Context.plugins`; exports, the feed and search belong to the page
+  and do not change. Then the calendar (WP5.92/93) as the first plugin
+  written as one, defining `pageKind`, `pageAction` and `sidebar`;
+  presentations' view half only after it, and only if still wanted.
+  **Decided by the session (small, reversible):** built-in features
+  moved behind the interface show no origin in grey in the completion
+  list (only external plugins will); the `html` frame stays the
+  host's (it is the wiki's own Markdown and its security model,
+  decision 72); the tree's `Mermaid` and `Tikz` constructors stay
+  until a block needs a generic one. **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
   requestować jakieś named keys per plugin z vaulta"):** named
   secrets per plugin in the vault as a general capability (get, put
   and remove by a name under the plugin's id, the names declared in

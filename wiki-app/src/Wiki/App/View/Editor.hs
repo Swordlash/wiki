@@ -1022,7 +1022,8 @@ problemsOf :: State -> Maybe [(Int, Int)] -> [Problems.Problem]
 problemsOf st taken = sort (st.checked.problems <> diagnosed <> fitProblems st <> swallowProblems st taken)
   where
     drawn = Drawn {text = st.checkedText, islands = st.checked.islands, failures = st.failedIslands}
-    diagnosed = concatMap (\d -> d.diagnose drawn) (contributed (pluginsOn st.input.context) plugins).diagnostics
+    -- Diagnostics are pure: the plugins' monad does not matter here.
+    diagnosed = concatMap (\d -> d.diagnose drawn) (contributed (pluginsOn st.input.context) (plugins @IO)).diagnostics
 
 -- | A problem on the line that opens a block left open (a code fence, a
 -- box, an HTML comment) in a row, which takes the rows below it into its

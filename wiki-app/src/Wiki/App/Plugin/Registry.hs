@@ -13,19 +13,23 @@ module Wiki.App.Plugin.Registry
   , pluginsOn
   , Contributed (..)
   , contributed
+  , assistantId
   )
 where
 
+import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Control.Monad.UUID (MonadUUID)
 import Data.Set qualified as Set
 import Protolude
 import Wiki.App.Plugin (Agent, Diagnostics, Manifest (..), Options, Plugin (..), PluginId)
+import Wiki.App.Plugin.Assistant (assistant, assistantId)
 import Wiki.App.Plugin.Errors (errors)
 import Wiki.App.View.Common (Context)
 
 -- | Every plugin built into the wiki, in the order their contributions are
 -- shown.
-plugins :: [Plugin m]
-plugins = [errors]
+plugins :: (Typeable m, MonadUUID m, MonadUnliftIO m) => [Plugin m]
+plugins = [assistant, errors]
 
 -- | The ids of every plugin built into the wiki.
 builtinIds :: Set PluginId

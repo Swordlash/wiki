@@ -75,8 +75,12 @@ spec = describe "plugins" $ do
     it "gives every built-in plugin's contribution when every plugin is on" $ do
       let given = contributed builtinIds builtins
       length given.diagnostics `shouldBe` 1
+      map fst given.options `shouldBe` [PluginId "assistant"]
     it "gives nothing of a plugin that is off" $ do
       length (contributed (Set.delete (PluginId "errors") builtinIds) builtins).diagnostics `shouldBe` 0
+      map fst (contributed (Set.delete (PluginId "errors") builtinIds) builtins).options `shouldBe` [PluginId "assistant"]
+      map fst (contributed (Set.delete (PluginId "assistant") builtinIds) builtins).options `shouldBe` []
+      length (contributed (Set.delete (PluginId "assistant") builtinIds) builtins).diagnostics `shouldBe` 1
       length (contributed Set.empty builtins).diagnostics `shouldBe` 0
     it "ignores an id that no plugin has" $
       length (contributed (Set.fromList [PluginId "nothing"]) builtins).diagnostics `shouldBe` 0

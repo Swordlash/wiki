@@ -66,9 +66,10 @@ spec site = do
     isVisible (editorText page) `shouldReturn` False
     fits "the editor's preview is wider than a phone"
     -- Back goes back in the session history, and the browser's popstate
-    -- shows the text: the tap settles once the page's own step back has
-    -- landed and the program has handled its popstate.
-    tap (locator page "#app .editor-back")
+    -- shows the text. The driver's settle waits for that popstate only up
+    -- to half a second, so the example waits for the event itself: it
+    -- listens before the tap and settles after the popstate.
+    waitForEvent (OnWindow page) "popstate" (tap (locator page "#app .editor-back"))
     isVisible (editorText page) `shouldReturn` True
     isVisible (locator page "#app .editor-preview") `shouldReturn` False
     -- A page's source wraps its long lines rather than widening the page.

@@ -25,3 +25,6 @@ title: The shell client reads and writes one section of a page
   section's file can never replace the whole page by mistake. The client's
   MCP mode (`wiki.sh mcp`) gains the same three tools as the wiki's own MCP
   server: `wiki_page_outline`, `wiki_read_section` and `wiki_write_section`.
+  Its other tools now take the same arguments as the server's (`path`,
+  `markdown`, `base_version`), so an assistant sees the same tools whether
+  it starts `wiki.sh mcp` or connects to the wiki's `/mcp`.

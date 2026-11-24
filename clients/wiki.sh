@@ -1068,8 +1068,6 @@ page_address_found() {
 #   /s/team/p/x/?section=A&own=true      the section's own text, without
 #                                        its subsections
 #   /s/team/p/x/?top=true                the text before the first heading
-#   /s/team/p/x/?contents                (the state file only) the page's
-#                                        contents, which carry no text
 #
 # A whole page's record is what this script has always written, so a
 # sidecar or a state file of an older wiki.sh reads as a whole page (a
@@ -1137,10 +1135,10 @@ page_address_found() {
 #                                  refused (412), never written over an edit
 #   get PAGE --section A [--own],  as get PAGE and get PAGE --out FILE, the
 #   get PAGE --top                 records naming the part; --version, nothing
-#   contents PAGE                  the state file, naming the contents, once
-#                                  they are written out without an error: a
-#                                  put from standard input then needs a get
-#                                  of what it writes, since no text came
+#   contents PAGE                  nothing: the contents carry no text, so
+#                                  their version is no version of a text a
+#                                  put sends, and the record of the last get
+#                                  stays as it was
 #   put PAGE --section A [--own],  as put PAGE and put PAGE --file FILE; the
 #   put PAGE --top                 records name the part as it is after the
 #                                  write: when the body renamed the section
@@ -1493,7 +1491,7 @@ write_record() {
 #                                         and FILE.version are read to after
 #                                         the version is moved on
 #   a page's state file (every get,       the state file's own lock,
-#   put, create, contents, MCP write)     STATE.wiki-sh-lock, around its write
+#   put, create, MCP write)               STATE.wiki-sh-lock, around its write
 #   the run's own directory               none: it is the run's alone
 file_lock='' state_lock=''
 
@@ -1598,8 +1596,7 @@ is_version() {
 
 # The page's state file as a record of HELD (what a put sends: the page,
 # or a part), in remembered_state: none (no file, or a damaged one, which
-# is said), other (a record of another part, or of the page's contents,
-# named in remembered_held), or ok, with the version in remembered. A state
+# is said), other (a record of another part, named in remembered_held), or ok, with the version in remembered. A state
 # file of one line, an older wiki.sh's, is a record of the whole page.
 read_remembered() {
   remembered_state=none remembered='' remembered_held=''
@@ -1684,7 +1681,6 @@ held_named() {
       named="the own text of the section $(query_decode "${held_anchor%&own=true}") of $held_page (without its subsections)"
       ;;
     *'?section='*) named="the section $(query_decode "${1#*\?section=}") of $held_page" ;;
-    *'?contents') named="the contents of $held_page, which carry no text" ;;
     *'?'*) named="nothing wiki.sh writes ($1)" ;;
     *) named="the whole page $held_page" ;;
   esac
@@ -2228,7 +2224,7 @@ cmd_contents() {
   fetch_contents || return
   if [ -n "$json" ]; then
     if ! cat "$work/body"; then
-      fail "$EX_ERROR" "the contents could not be written out whole: the page's version is not remembered"
+      fail "$EX_ERROR" "the contents could not be written out whole"
       return
     fi
   else
@@ -2237,13 +2233,9 @@ cmd_contents() {
       return
     }
   fi
-  # Remembered as a read's version is, naming the contents: a put from
-  # standard input then needs a get of what it writes, since the contents
-  # carry none of the page's text (the table above record_version).
-  if ! record_version "$page_version" '' "$addr_shown?contents"; then
-    fail "$EX_ERROR" "the contents are written out, but the page's version is not remembered: $fail_message"
-    return
-  fi
+  # Nothing is remembered: the contents carry none of the page's text, and
+  # the record of the last get stays as it was (the table above
+  # record_version).
   note "version $page_version of $addr_shown; read a section with wiki.sh get $addr_shown --section ANCHOR"
 }
 
@@ -2545,6 +2537,7 @@ wiki.sh: the wiki from a shell, through its API for programs.
       which --section takes, and its text, and "(in a spoiler)" for one
       inside a block spoiler; a first line when the page has text before
       its first heading, which --top reads. --json gives the server's JSON.
+      It remembers no version: a put needs a get of what it writes.
   wiki.sh get PAGE --section ANCHOR [--own] [--out FILE]
   wiki.sh get PAGE --top [--out FILE]
       One part of the page, as get gives the page: the section with that
@@ -2674,13 +2667,13 @@ mcp_tools='[
   {
     "name": "wiki_read_page",
     "title": "Read a page",
-    "description": "Read a page'"'"'s whole Markdown, and its version. To change the page, pass that version to wiki_write_page.",
+    "description": "Read a page: its Markdown and its version, to pass as base_version when you write it. Unlike the wiki'"'"'s own MCP server, this one does not give the page'"'"'s title here: wiki_page_outline gives it. A long page is read by its outline (wiki_page_outline) and its sections (wiki_read_section).",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "page": {"type": "string", "description": "The page'"'"'s address as wiki_list and wiki_search give it: /s/team/projects/p/the-wiki/ for a page, /s/team/ for a space'"'"'s home page. The page'"'"'s URL in the browser works too."}
+        "path": {"type": "string", "description": "The page'"'"'s path, such as /s/team/p/on-call/."}
       },
-      "required": ["page"],
+      "required": ["path"],
       "additionalProperties": false
     },
     "annotations": {"readOnlyHint": true, "openWorldHint": false}
@@ -2719,15 +2712,15 @@ mcp_tools='[
   {
     "name": "wiki_write_page",
     "title": "Write a page",
-    "description": "Replace a page'"'"'s whole Markdown with content. The write is conditional: version must be the version wiki_read_page returned. If someone saved the page since, nothing is written and the tool says so: read the page again, merge your change into its new text, and write with the new version. The page must exist: wiki_create_page makes new ones. Before writing, read the parts of wiki_markdown_reference you need: the wiki has its own Markdown.",
+    "description": "Replace a page'"'"'s whole Markdown, as a save in the editor does: a new version in the page'"'"'s history under the user'"'"'s name, shown at once to whoever has the page open. base_version is the version you read (wiki_read_page, wiki_page_outline or wiki_read_section): if the page has been saved since, nothing is written, and you read it again, merge, and write with its new version. The title stays. Look a construct of the wiki'"'"'s Markdown up in wiki_markdown_reference before using it. Every write can be seen and undone in the page'"'"'s history. The result is the page'"'"'s new version.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "page": {"type": "string", "description": "The page'"'"'s address, as for wiki_read_page: /s/team/projects/p/the-wiki/."},
-        "version": {"type": "string", "description": "The version wiki_read_page returned with the text this change is based on."},
-        "content": {"type": "string", "description": "The page'"'"'s new Markdown, whole: it replaces all of the page'"'"'s text. The title stays."}
+        "path": {"type": "string", "description": "The page'"'"'s path, such as /s/team/p/on-call/."},
+        "markdown": {"type": "string", "description": "The page'"'"'s whole new Markdown."},
+        "base_version": {"type": "string", "description": "The version you read the page at, as the reading tools give it."}
       },
-      "required": ["page", "version", "content"],
+      "required": ["path", "markdown", "base_version"],
       "additionalProperties": false
     },
     "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
@@ -2754,19 +2747,18 @@ mcp_tools='[
   {
     "name": "wiki_create_page",
     "title": "Create a page",
-    "description": "Make a new page with content as its Markdown. It only creates: if a page is at the address already, nothing is written and the tool says so (read that page and change it with wiki_write_page). The page above it, if any, must exist. Returns the new page'"'"'s version. Read the parts of wiki_markdown_reference you need first.",
+    "description": "Create a page at a path where there is none, with its Markdown, as the browser'"'"'s \"New page\" does: its first version under the user'"'"'s name. The path'"'"'s last slug is the new page'"'"'s slug, and the page above it, named by the slugs before, has to exist; nothing is created on the way. Without a title, the title is made from the slug. A page already at the path is not written over. Look a construct of the wiki'"'"'s Markdown up in wiki_markdown_reference before using it. The result is the page'"'"'s path and its version.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "page": {"type": "string", "description": "The new page'"'"'s address: its space'"'"'s address, then p/ and its slug (lower-case letters, digits and dashes), as /s/team/projects/p/release-notes/ or, under a page, /s/team/projects/p/release-notes/2026/."},
-        "title": {"type": "string", "description": "The page'"'"'s title. Omit for one made from the slug."},
-        "kind": {"type": "string", "enum": ["document", "presentation"], "description": "document (the default) or presentation."},
-        "content": {"type": "string", "description": "The new page'"'"'s Markdown, whole."}
+        "path": {"type": "string", "description": "The new page'"'"'s path, such as /s/team/p/on-call/rota/: its space, the page above it, and its own slug (lowercase letters, digits and dashes)."},
+        "markdown": {"type": "string", "description": "The new page'"'"'s Markdown."},
+        "title": {"type": "string", "description": "The new page'"'"'s title. Leave it out to make it from the slug."}
       },
-      "required": ["page", "content"],
+      "required": ["path", "markdown"],
       "additionalProperties": false
     },
-    "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
+    "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
   },
   {
     "name": "wiki_markdown_reference",
@@ -2966,9 +2958,9 @@ mcp_call_tool() {
       fi
       ;;
     wiki_read_page)
-      short_argument page string required || return
+      short_argument path string required || return
       if page_address "$arg" && fetch_page; then
-        printf 'The page %s, version %s. To change it, call wiki_write_page with this version and the whole new text. Its Markdown follows, in the next block.' "$addr_shown" "$page_version" >"$work/tool-text"
+        printf 'The page %s, version %s. To change it, call wiki_write_page with this version as base_version and the whole new Markdown. Its Markdown follows, in the next block.' "$addr_shown" "$page_version" >"$work/tool-text"
         tool_answer false "$work/tool-text" "$work/body"
       else
         tool_failed "$fail_message"
@@ -3044,22 +3036,22 @@ mcp_call_tool() {
       fi
       ;;
     wiki_write_page)
-      short_argument page string required || return
+      short_argument path string required || return
       page=$arg
-      short_argument version string required || return
+      short_argument base_version string required || return
       version=$arg
-      [ -n "$version" ] || { tool_failed "version is empty: give the version wiki_read_page returned."; return; }
-      tool_argument content string
+      [ -n "$version" ] || { tool_failed "base_version is empty: give the version wiki_read_page returned."; return; }
+      tool_argument markdown string
       case $? in
         0) ;;
-        1) tool_failed "The argument content is missing."; return ;;
-        *) tool_failed "The argument content must be a string."; return ;;
+        1) tool_failed "The argument markdown is missing."; return ;;
+        *) tool_failed "The argument markdown must be a string."; return ;;
       esac
       mv "$work/arg" "$work/content"
       page_address "$page" || { tool_failed "$fail_message"; return; }
       checked_version=$(given_version "$version")
       if [ -z "$checked_version" ]; then
-        tool_failed "version is not a version of the wiki ($version): give the one wiki_read_page returned, as \"2026-11-18T09:30:12.345678Z\"."
+        tool_failed "base_version is not a version of the wiki ($version): give the one wiki_read_page returned, as \"2026-11-18T09:30:12.345678Z\"."
         return
       fi
       if store_page "$work/content" "$checked_version"; then
@@ -3070,36 +3062,30 @@ mcp_call_tool() {
         tool_answer false "$work/tool-text"
       else
         case $? in
-          "$EX_MOVED") tool_failed "Nothing was written: the page $addr_shown has been saved by someone since version $version. Call wiki_read_page again, merge your change into the text it returns, and call wiki_write_page with the new version." ;;
+          "$EX_MOVED") tool_failed "Nothing was written: the page $addr_shown has been saved by someone since version $version. Call wiki_read_page again, merge your change into the text it returns, and call wiki_write_page with the new version as base_version." ;;
           "$EX_NOTFOUND") tool_failed "Nothing was written: there is no page at $addr_shown (or you may not read it). wiki_write_page changes a page that exists; wiki_create_page makes a new one." ;;
           *) tool_failed "$fail_message" ;;
         esac
       fi
       ;;
     wiki_create_page)
-      short_argument page string required || return
+      short_argument path string required || return
       page=$arg
       short_argument title string optional || return
       title=$arg
-      short_argument kind string optional || return
-      kind=$arg
-      case $kind in
-        '' | document | presentation) ;;
-        *) tool_failed "kind is document or presentation."; return ;;
-      esac
-      tool_argument content string
+      tool_argument markdown string
       case $? in
         0) ;;
-        1) tool_failed "The argument content is missing."; return ;;
-        *) tool_failed "The argument content must be a string."; return ;;
+        1) tool_failed "The argument markdown is missing."; return ;;
+        *) tool_failed "The argument markdown must be a string."; return ;;
       esac
       mv "$work/arg" "$work/content"
       page_address "$page" || { tool_failed "$fail_message"; return; }
       if [ -z "$pg" ]; then
-        tool_failed "$addr_shown is a space: give the new page's address in it, as ${addr_shown}p/new-page/."
+        tool_failed "$addr_shown is a space: give the new page's path in it, as ${addr_shown}p/new-page/."
         return
       fi
-      if create_page "$work/content" "$title" "$kind"; then
+      if create_page "$work/content" "$title" ''; then
         record_version "$page_version" || note "$fail_message"
         printf 'Created %s. Its version is %s.' "$addr_shown" "$page_version" >"$work/tool-text"
         tool_answer false "$work/tool-text"
@@ -3252,6 +3238,16 @@ mcp_handle() {
       fi
       tool=${tool_json#\"}
       tool=${tool%\"}
+      # An argument the tool does not have is refused, as the wiki's own
+      # MCP server refuses it, rather than left unread.
+      printf '%s' "$mcp_tools" | jq --arg tool "$tool" '.[] | select(.name == $tool) | .inputSchema.properties | keys_unsorted' >"$work/known"
+      unknown=$(jq -r --slurpfile known "$work/known" '(.params.arguments // {} | keys_unsorted) - $known[0] | first // empty' "$work/msg")
+      if [ -n "$unknown" ]; then
+        jq -nr --arg tool "$tool" --arg unknown "$unknown" --slurpfile known "$work/known" \
+          '"The tool \($tool) has no argument \($unknown). Its arguments are \($known[0] | join(", "))."' >"$work/tool-text"
+        tool_answer true "$work/tool-text"
+        return
+      fi
       mcp_call_tool
       ;;
   esac

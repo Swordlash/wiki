@@ -3211,8 +3211,9 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   its level, its anchor and its text, `(in a spoiler)` after one inside a
   block spoiler, and a first line when the page has text before its first
   heading; `--json` prints the server's JSON as it came. The page's version
-  is remembered as the contents' version: a `put` from standard input still
-  needs a `get` of what it writes (below).
+  is shown on standard error and not remembered: the contents carry no text,
+  so a `put` needs a `get` of what it writes (below), and what the last `get`
+  remembered stays as it was.
 
   ```text
   $ wiki.sh contents /s/team/p/team-handbook/
@@ -3254,8 +3255,8 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   whole section is refused (exit 2) before anything is sent. A version
   remembered under `~/.local/state/wiki/` names what was read the same way,
   so a `put` from standard input writes the whole page only after a `get` of
-  the page, and a part only after a `get` of that part; after `contents`,
-  which carries no text, neither.
+  the page, and a part only after a `get` of that part (a `contents` in
+  between changes nothing).
 - **`wiki.sh create PAGE [--title TITLE] [--kind document|presentation]
   [--file FILE]`** makes a new page with the Markdown of `FILE` or standard
   input, with `If-None-Match: *`: where a page is already, nothing is written
@@ -3297,19 +3298,21 @@ failed sign-ins (the line says when to try again), 8 no connection, 1
 anything else.
 
 **For an assistant that takes MCP servers**, `wiki.sh mcp` is a Model Context
-Protocol server on standard input and output, with nine tools: `wiki_list`,
-`wiki_search`, `wiki_read_page` (the Markdown and its version),
-`wiki_page_outline`, `wiki_read_section` and `wiki_write_section` (the
-wiki's own server's, with their arguments and descriptions: a page's
-headings and the length of its text before the first heading, one part
-read, one part written over `base_version`, a body that would change the
-page outside the part refused with the wiki's sentence),
-`wiki_write_page` (the version read is required, so every write is
-conditional: a page saved since comes back as an error that tells the model
-to read it again and merge; it never creates a page), `wiki_create_page`
-(a new page, its title, kind and text; it never writes over a page) and
-`wiki_markdown_reference` (the list of
-sections, or one section: the reference whole is 67 kB). It speaks the
+Protocol server on standard input and output, with the nine tools of the
+wiki's own server ([MCP](#mcp)), their names, their arguments (`path`,
+`markdown`, `base_version`, …) and their descriptions: `wiki_list`,
+`wiki_search`, `wiki_read_page` (the Markdown and its version; not the
+title, which `wiki_page_outline` gives, and its description says so),
+`wiki_page_outline`, `wiki_read_section`, `wiki_write_page` and
+`wiki_write_section` (the version read is required as `base_version`, so
+every write is conditional: a page saved since comes back as an error that
+tells the model to read it again and merge; neither creates a page; a part
+that would change the page outside it is refused with the wiki's sentence),
+`wiki_create_page` (a new page, its title and text; it never writes over a
+page) and `wiki_markdown_reference` (the list of sections, or one section:
+the reference whole is 67 kB). An argument a tool does not have is refused,
+as there. The answers are this script's own: text, where the wiki's
+server answers JSON for `wiki_list`, `wiki_search` and the writes. It speaks the
 protocol's current revision, 2026-07-28, in which each request names its
 revision, and answers `initialize` for the earlier ones, 2025-11-25 and
 2025-06-18; a client that asks for another gets 2025-11-25. It needs `jq`

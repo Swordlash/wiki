@@ -2194,9 +2194,20 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   read what an island raised through hspec-halogen's `outputs`, which
   listens only once the mount has returned, so an error that came
   back during the mount was lost (found on #357's CI): the test's
-  parent keeps the outputs itself now (#358). **For the library, a
-  pull request of the session's own:** `outputs` should hear what a
-  component raises while it is mounted. Seen in the library and left: Playwright's own test "the
+  parent keeps the outputs itself now (#358). **In the library since
+  (its pull request 148, pinned by #361):** `outputs` holds what a
+  component raised from the start of its mount (`runUIListening`).
+  **The HTTP backend's group is moved (#363)**, to `readsOnce
+  Quiet`: 58 `eventually`s down to none in its examples; what is
+  outside the loop (a socket opening, the live channel's reconnect
+  pauses) is waited for by the stand-in server's own signal. Found:
+  two loops that repeated an action until it worked, and a check of
+  "nothing said" that could pass by reading before a socket opened.
+  Left: the live channel's back-off is a raw `threadDelay` on a
+  thread of its own, which neither quiet nor the test's clock sees.
+  Not moved yet: `EditorSearch.hs`, the helpers `listening` and
+  `answersTaken` of `Http.hs` that other groups use, the editor's
+  remaining `eventually`s. Seen in the library and left: Playwright's own test "the
   DevTools protocol slows a page's processor down" depends on the
   machine's speed (it failed at a load of 40 on 16 cores).** What is
   left, each a
@@ -2411,10 +2422,15 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   `openapi3` and `servant-openapi3` build on GHC 9.14.1 under
   `allow-newer` for aeson and QuickCheck; the wasm plan is unchanged.
   The document cannot say that an address spans several segments.
-  **Open from #338 after this:** sections in `clients/wiki.sh` (its
-  commands and its local MCP mode know whole pages only), a tool and
-  an endpoint for attachments, clients in other languages (the
-  OpenAPI document is what a generator takes). **For MCP the session looked into the options (2026-11-23,
+  **The shell client has the contents and the sections too (#362):**
+  `contents`, `get` and `put` with `--section`, `--own` and `--top`,
+  and its `mcp` mode has the server's nine tools with the server's
+  argument names. A file is sent only as what it holds (the sidecar's
+  second line names the page or the part), an anchor is kept byte for
+  byte, and an MCP argument the shell cannot carry exactly (a NUL) is
+  refused. **Open from #338 after this:** a tool and an endpoint for
+  attachments, clients in other languages (the OpenAPI document is
+  what a generator takes). **For MCP the session looked into the options (2026-11-23,
   from the specification, Hackage and the clients' documentation):
   the wiki's own server is the MCP server.** One endpoint, `POST
   /mcp`, on the public listener, built on Hackage's `mcp-server`

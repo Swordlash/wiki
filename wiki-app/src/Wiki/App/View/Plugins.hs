@@ -14,11 +14,11 @@
 -- the plugin back on. The writing assistant's row links to its options,
 -- the section "Writing assistant", which stays a section of its own.
 --
--- What the section knows is its machine's ("Wiki.App.View.Plugins.Machine"):
--- this module renders it, turns the user's acts into its events and
--- carries out its effects. A change the server took is told to the shell
--- ('PluginsChanged'), which reads again what is on, so that the editor
--- follows at once.
+-- What the section shows is the shell's machine
+-- ("Wiki.App.View.Plugins.Machine"), which the shell keeps and runs, so
+-- that a write sent goes on after the section is gone ("Wiki.App.Shell"):
+-- this module draws the model it is given and raises the reader's acts as
+-- the machine's events.
 module Wiki.App.View.Plugins
   ( Input (..)
   , component
@@ -29,55 +29,47 @@ import Data.Map.Strict qualified as Map
 import Data.Row (Empty)
 import Data.Set qualified as Set
 import Halogen qualified as H
-import Halogen.Machine qualified as Machine
 import Halogen.Router (Follow, Router)
 import Halogen.Router qualified as Router
-import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
 import Protolude hiding (State)
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..))
 import Wiki.App.Backend (WikiError (..))
-import Wiki.App.Backend.Plugins (MonadPlugins (..))
 import Wiki.App.Plugin (Manifest (..))
 import Wiki.App.Plugin.Registry (assistantId, isOn, manifests)
 import Wiki.App.Route (Route (UserSettings), SettingsSection (AssistantSection))
-import Wiki.App.View.Common (ViewOutput (PluginsChanged), errorMessage)
-import Wiki.App.View.Plugins.Machine (Effect (..), Event (..), Model (..), initial, shownState, step)
+import Wiki.App.View.Common (errorMessage)
+import Wiki.App.View.Plugins.Machine (Event (..), Model (..), shownState)
 
 -- | 'Input' is what the section is given.
 data Input = Input
-  { session :: Int
-  -- ^ The number of the session signed in ("Wiki.App.View.Common"'s
-  -- @sessionNumber@): another number is another user, whose choices the
-  -- section reads afresh.
+  { model :: Model
+  -- ^ The shell's machine's model, as it is now.
   , router :: Router Route
   -- ^ For the link to a plugin's options.
   }
 
-data State = State
-  { input :: Input
-  , machine :: Machine.Machine () Event Model
-  }
+newtype State = State {input :: Input}
 
 data Action
   = Initialize
-  | Finalize
   | Receive Input
   | Happen Event
   | Followed (Follow Route)
 
-component :: forall query m. (MonadPlugins m, MonadIO m) => H.Component query Input ViewOutput m
+-- | The section. Its output is the machine's events, which the shell
+-- steps.
+component :: forall query m. (MonadIO m) => H.Component query Input Event m
 component =
   H.mkComponent
     H.ComponentSpec
-      { initialState = \input -> pure State {input, machine = Machine.new (initial input.session)}
+      { initialState = \input -> pure State {input}
       , render
       , eval =
           H.mkEval
             H.defaultEval
               { H.handleAction = handleAction
               , H.initialize = Just Initialize
-              , H.finalize = Just Finalize
               , H.receive = Just . Receive
               }
       }
@@ -91,7 +83,7 @@ component =
         </div>
       |]
       where
-        m = Machine.current st.machine
+        m = st.input.model
         listView = case m.known of
           Nothing -> [hh|<p class="loading">Loading…</p>|]
           Just (Left e) -> [hh|<p class="error plugins-error" role="alert">{{ "Your plugins could not be read. " <> errorMessage e }}</p>|]
@@ -147,27 +139,18 @@ component =
         -- The switch shows the state chosen while its write is out.
         isOnNow = isOn known {mine = Map.insert manifest.id PluginChoice {state = shown, options = Nothing} known.mine} manifest
 
-    handleAction :: Action -> H.HalogenM State Action Empty ViewOutput m ()
+    handleAction :: Action -> H.HalogenM State Action Empty Event m ()
     handleAction = \case
-      Initialize -> happen Started
-      Finalize -> Machine.finish machineSpec Finished
+      -- Opened, the section asks for a read, which the machine sends only
+      -- when nothing was read in this session; and again, once, when it is
+      -- given a new session.
+      Initialize -> H.raise Opened
       Receive input -> do
+        before <- gets (\st -> st.input.model.session)
         modify (\st -> st {input})
-        happen (Given input.session)
-      Happen e -> happen e
+        when (input.model.session /= before) (H.raise Opened)
+      Happen e -> H.raise e
       Followed f -> gets (\st -> st.input.router) >>= \r -> Router.follow r f
-
-    happen :: Event -> H.HalogenM State Action Empty ViewOutput m ()
-    happen = Machine.happen machineSpec
-
-    machineSpec :: Machine.Spec () State Action Empty ViewOutput m Event Effect Model
-    machineSpec = Machine.Spec {Machine.step = step, Machine.carry = carry, Machine.get = \st -> st.machine, Machine.set = \machine st -> st {machine}}
-
-    carry :: Effect -> Machine.Carry () State Action Empty ViewOutput m Event
-    carry = \case
-      Load asked -> Machine.Ask (Machine.run pluginsNow) (Loaded asked . answerOf)
-      Write asked p s -> Machine.Ask (Machine.run (setPluginState p s)) (Written asked p . answerOf)
-      Tell -> Machine.Now (Sync.raise PluginsChanged)
 
 -- | On or off, in a word.
 onOff :: Bool -> Text
@@ -178,12 +161,3 @@ refusalText :: WikiError -> Text
 refusalText = \case
   Invalid why -> why
   e -> errorMessage e
-
--- | The answer of the backend, as the machine takes it. The backend gives
--- what went wrong as a 'Left' and does not throw for it; what it throws
--- all the same is taken as the failure it is, or as 'Unreachable'.
-answerOf :: Either SomeException (Either WikiError a) -> Either WikiError a
-answerOf = either (Left . failure) identity
-
-failure :: SomeException -> WikiError
-failure e = fromMaybe (Unreachable (toS (displayException e))) (fromException e)

@@ -143,6 +143,7 @@ import Halogen qualified as H
 import Halogen.HTML qualified as HH
 import Halogen.HTML.Properties qualified as HP
 import Halogen.JSBits (inBrowser)
+import Halogen.Machine qualified as Machine
 import Halogen.Query.Event.Window qualified as Window
 import Halogen.Router (Follow, Router)
 import Halogen.Router qualified as Router
@@ -153,7 +154,7 @@ import Web.Event.Event (Event)
 import Web.Storage.Storage (StorageKind (..))
 import Web.Storage.Storage qualified as Storage
 import Wiki.Api.Links (archiveExportUrl)
-import Wiki.Api.Plugins (Plugins (..), noPlugins)
+import Wiki.Api.Plugins (Plugins (..), WikiPlugins (..), noPlugins)
 import Wiki.Api.ServerSettings (HomePage (showAnonymous, title))
 import Wiki.App.Account (Accounts (..), SignInError (..))
 import Wiki.App.Assistant (MonadAssistant, announceSignIn, closeKeyOwnersOf, keysDroppedElsewhere, listenToOtherTabs)
@@ -209,6 +210,7 @@ import Wiki.App.View.NotificationSettings qualified as NotificationSettingsView
 import Wiki.App.View.Page qualified as PageView
 import Wiki.App.View.PersonalSpace qualified as PersonalSpaceView
 import Wiki.App.View.Plugins qualified as PluginsView
+import Wiki.App.View.Plugins.Machine qualified as PluginsMachine
 import Wiki.App.View.Popup (watchPopup)
 import Wiki.App.View.Reset qualified as ResetView
 import Wiki.App.View.Search qualified as SearchBox
@@ -228,6 +230,7 @@ import Wiki.App.View.Users qualified as UsersView
 import Wiki.App.View.VerifyEmail qualified as VerifyEmailView
 import Wiki.App.View.WhatsNew qualified as WhatsNewView
 import Wiki.App.View.WikiPlugins qualified as WikiPluginsView
+import Wiki.App.View.WikiPlugins.Machine qualified as WikiPluginsMachine
 import Wiki.Core.Attachment (findAttachment)
 import Wiki.Core.Backlink (Backlink (..))
 import Wiki.Core.Blog (excerpt, firstImage)
@@ -255,6 +258,12 @@ data Input m = Input
   , migration :: Maybe (ImportView.Migration m)
   , accounts :: Maybe (Accounts m)
   , live :: Maybe (Live m)
+  , sectionsAtOnce :: Bool
+  -- ^ Whether the settings' sections and the administration's switch of
+  -- plugins are mounted from the first render. False for every page the
+  -- application serves and prerenders, where they are mounted after the
+  -- first render in a browser ('settingsShown'); true where a test mounts
+  -- the shell on the in-memory DOM and works a section.
   }
 
 -- | Whether the shell has loaded everything the route shows, and once it
@@ -288,10 +297,12 @@ type Slots =
     '[ "editor" :-> H.Slot Editor.Query ViewOutput (SpaceId, [Slug])
      , "invite" :-> H.Slot (Const Void) InviteView.Output ()
      , "part" :-> H.Slot (Const Void) Void PartSlot
+     , "plugins" :-> H.Slot (Const Void) PluginsMachine.Event (Maybe UserId)
      , "reset" :-> H.Slot (Const Void) ResetView.Output ()
      , "signIn" :-> H.Slot SignInView.Query SignInView.Output ()
      , "signInMethods" :-> H.Slot SignInMethodsView.Query SignInMethodsView.Output (Maybe UserId)
      , "view" :-> H.Slot ViewQuery ViewOutput ViewSlot
+     , "wikiPlugins" :-> H.Slot (Const Void) WikiPluginsMachine.Event (Maybe UserId)
      ]
 
 -- | 'ViewSlot' is the index of a child under the label "view". These
@@ -321,13 +332,6 @@ data ViewSlot
     -- user before.
     PersonalSpaceSlot (Maybe UserId)
   | AvatarSlot (Maybe UserId)
-  | PluginsSlot (Maybe UserId)
-  | -- | The administration's switch of plugins, in the section
-    -- "Permissions". Mounted in a browser only, after the first render, as
-    -- the settings' sections are ('settingsShown'): it reads the wiki's set
-    -- as it starts, which a page the server prerenders does not carry.
-    -- Keyed by the user, as the settings' views are.
-    WikiPluginsSlot (Maybe UserId)
   | EncryptedSlot
   deriving stock (Eq, Ord)
 
@@ -494,16 +498,26 @@ data State m = State
   -- the reader dismisses it. The text is kept nowhere.
   , chosenPlugins :: Plugins
   -- ^ The plugins off for the wiki and the reader's choices, read with
-  -- the session ('fetchWorld') and again when the settings or the
-  -- administration change them ('loadPlugins'): every view's context
-  -- carries them ('Wiki.App.Plugin.Registry.pluginsOn').
+  -- the session ('fetchWorld'), and told by the machines of the settings'
+  -- section "Plugins" and of the administration's switch as their
+  -- answers come: every view's context carries them
+  -- ('Wiki.App.Plugin.Registry.pluginsOn').
+  , pluginChoices :: Machine.Machine () PluginsMachine.Event PluginsMachine.Model
+  -- ^ The settings' section "Plugins" ("Wiki.App.View.Plugins.Machine").
+  -- The shell keeps it and runs its asks, which outlive the section: a
+  -- write sent before the reader left the section still ends here, and
+  -- what it changed reaches 'chosenPlugins'.
+  , wikiSwitch :: Machine.Machine () WikiPluginsMachine.Event WikiPluginsMachine.Model
+  -- ^ The administration's switch of plugins
+  -- ("Wiki.App.View.WikiPlugins.Machine"), kept for the same reason.
   , worldAsks :: Asks
   , hereAsks :: Asks
   , backlinkAsks :: Asks
   , pluginAsks :: Asks
   -- ^ The reads of who is asking and the spaces ('loadWorld'), of the
   -- space the route is in ('loadHere'), of the page's backlinks
-  -- ('loadBacklinks'), and of the plugins (with the world, or alone).
+  -- ('loadBacklinks'), and of the plugins (with the world); what the
+  -- plugins' machines tell puts the plugins' reads out behind it.
   -- Two of a kind can be out at once (two reloads), and an answer is
   -- taken only if no newer one of its kind was ("Wiki.App.View.Latest").
   }
@@ -559,6 +573,8 @@ data Action
   | SigningOut
   | FromAccount SignInView.Output
   | ChangePassword (Maybe UserId) SignInMethodsView.Output
+  | FromPlugins PluginsMachine.Event
+  | FromWikiPlugins WikiPluginsMachine.Event
   | SessionChanged Session
   | OpenSignIn
   | FromInvite InviteView.Output
@@ -581,7 +597,7 @@ component =
         -- the initializer to build it again.
         -- On a backend that would wait, it is loaded in 'Initialize'
         -- instead, unless the backend has it cached.
-        initialState = \Input {router, welcome, demo, migration, accounts, live} -> do
+        initialState = \Input {router, welcome, demo, migration, accounts, live, sectionsAtOnce} -> do
           route <- settledRoute <$> Router.current router
           -- The tab's live channel, made before any view: a page shown from
           -- the first render watches its page from its own initializer,
@@ -626,7 +642,7 @@ component =
                   , menuOpen = False
                   , menuHolder
                   , menuWatch = Nothing
-                  , settingsShown = False
+                  , settingsShown = sectionsAtOnce
                   , origin = ""
                   , passwordChange = Nothing
                   , panel = Actions Nothing
@@ -644,6 +660,8 @@ component =
                   , stale = Nothing
                   , droppedUnsaved = False
                   , chosenPlugins = fromMaybe noPlugins readPlugins
+                  , pluginChoices = Machine.new (PluginsMachine.initial 0)
+                  , wikiSwitch = Machine.new (WikiPluginsMachine.initial 0)
                   , worldAsks = noAsks
                   , hereAsks = noAsks
                   , backlinkAsks = noAsks
@@ -935,7 +953,7 @@ component =
           <div class="admin-permissions-and-plugins">
             {{ HH.slot "view" AccessSlot AccessView.component AccessView.Input {context = ctx} FromView }}
             {% if st.settingsShown %}
-              {{ HH.slot "view" (WikiPluginsSlot ((\u -> u.id) <$> st.session.user)) WikiPluginsView.component st.sessionNumber FromView }}
+              {{ HH.slot "wikiPlugins" ((\u -> u.id) <$> st.session.user) WikiPluginsView.component (Machine.current st.wikiSwitch) FromWikiPlugins }}
             {% end %}
           </div>
         |]
@@ -1051,7 +1069,7 @@ component =
       PluginsSection ->
         [hh|
           <div class="settings-sections">
-            {{ HH.slot "view" (PluginsSlot who) PluginsView.component PluginsView.Input {session = st.sessionNumber, router = st.router} FromView }}
+            {{ HH.slot "plugins" who PluginsView.component PluginsView.Input {model = Machine.current st.pluginChoices, router = st.router} FromPlugins }}
           </div>
         |]
       NotificationsSection ->
@@ -1759,7 +1777,10 @@ component =
         modify (\st -> st {chosenWidth = width})
         H.liftEffect (Storage.setItem LocalStorage pageWidthKey (case width of Compact -> "compact" :: Text; FullWidth -> "full"))
       FromView (Showing page) -> modify (\st -> st {shown = Just page})
-      FromView PluginsChanged -> loadPlugins
+      -- The plugins' machines, which the shell keeps ('pluginChoices',
+      -- 'wikiSwitch').
+      FromPlugins e -> Machine.happen choicesSpec e
+      FromWikiPlugins e -> Machine.happen switchSpec e
       FromView Entered -> do
         now <- H.liftEffect historyEntry
         modify (\st -> st {entry = now})
@@ -1771,6 +1792,7 @@ component =
         -- lets go of none.
         when (isJust s.user) (H.liftEffect (liftIO announceSignIn))
         modify (newSession s)
+        newPluginSession
         restartFeed
         reload Nothing
       -- The session ended by itself (or changed elsewhere): reload
@@ -1819,6 +1841,7 @@ component =
       -- wiki as them, from its front page.
       FromInvite (InviteView.Accepted s) -> do
         modify (newSession s)
+        newPluginSession
         restartFeed
         reload (Just Home)
       -- A password set through a reset link: the sign-in form, to use it.
@@ -1858,6 +1881,7 @@ component =
       sealScreen
       forgetFormer s
       modify (newSession s)
+      newPluginSession
       restartFeed
       reload Nothing
       when (isNothing s.user) $
@@ -2012,9 +2036,11 @@ component =
       pluginTicket <- Latest.asking pluginAsksOf setPluginAsks
       H.async (attempt (fetchWorld demo)) >>= \case
         Right w -> whenM (Latest.answered worldAsksOf setWorldAsks ticket (\st -> st {session = w.asking, sessionNumber = if sameUser st.session w.asking then st.sessionNumber else st.sessionNumber + 1, users = w.users, spaces = w.spaces, home = w.home, icons = w.icons, avatars = w.avatars, kept = w.kept, world = WorldReady, stale = Nothing})) $ do
-          -- What is on, read with the session: taken unless the plugins
-          -- were read again since this load was asked ('loadPlugins').
+          -- What is on, read with the session: taken unless a plugins'
+          -- machine told the shell what is on since this load was asked.
           void (Latest.answered pluginAsksOf setPluginAsks pluginTicket (\st -> st {chosenPlugins = pluginsOr st.chosenPlugins w.pluginsRead}))
+          -- The server may have answered with another user.
+          newPluginSession
           -- The server says nobody is signed in in this browser: no user's
           -- keys stay on the device, as after a sign-out, even when the
           -- session ended with no tab open. Not from a copy kept offline,
@@ -2040,15 +2066,37 @@ component =
           void . Latest.answered worldAsksOf setWorldAsks ticket $ \st ->
             if dirty && st.world == WorldReady then st {stale = Just e} else st {world = WorldFailed e}
 
-    -- Read again which plugins are on, after the settings or the
-    -- administration changed them in this tab: the editor follows at
-    -- once. An answer is taken only if no newer read of them was, with
-    -- the world or alone.
-    loadPlugins :: H.HalogenM (State m) Action Slots output m ()
-    loadPlugins = do
-      ticket <- Latest.asking pluginAsksOf setPluginAsks
-      answer <- pluginsNow
-      void (Latest.answered pluginAsksOf setPluginAsks ticket (\st -> st {chosenPlugins = pluginsOr st.chosenPlugins (rightToMaybe answer)}))
+    -- The plugins' machines given the session's number: a new one
+    -- forgets what they held, and drops a write chosen in the session
+    -- before. The same number changes nothing.
+    newPluginSession :: H.HalogenM (State m) Action Slots output m ()
+    newPluginSession = do
+      n <- gets (\st -> st.sessionNumber)
+      Machine.happen choicesSpec (PluginsMachine.Given n)
+      Machine.happen switchSpec (WikiPluginsMachine.Given n)
+
+    -- The settings' section "Plugins"'s machine, run by the shell so that
+    -- its asks outlive the section. What it tells is what is on now: the
+    -- reads of the plugins out with the world are put behind it.
+    choicesSpec :: Machine.Spec () (State m) Action Slots output m PluginsMachine.Event PluginsMachine.Effect PluginsMachine.Model
+    choicesSpec = Machine.Spec {Machine.step = PluginsMachine.step, Machine.carry = carryChoices, Machine.get = \st -> st.pluginChoices, Machine.set = \machine st -> st {pluginChoices = machine}}
+
+    carryChoices :: PluginsMachine.Effect -> Machine.Carry () (State m) Action Slots output m PluginsMachine.Event
+    carryChoices = \case
+      PluginsMachine.Load asked -> Machine.Ask (Machine.run pluginsNow) (PluginsMachine.Loaded asked . answerOf)
+      PluginsMachine.Write asked p s -> Machine.Ask (Machine.run (setPluginState p s)) (PluginsMachine.Written asked p . answerOf)
+      PluginsMachine.Tell known -> Machine.Now (modify (Latest.superseded pluginAsksOf setPluginAsks (\st -> st {chosenPlugins = known})))
+
+    -- The administration's switch's machine, run by the shell for the same
+    -- reason. What it tells is the plugins off for the wiki.
+    switchSpec :: Machine.Spec () (State m) Action Slots output m WikiPluginsMachine.Event WikiPluginsMachine.Effect WikiPluginsMachine.Model
+    switchSpec = Machine.Spec {Machine.step = WikiPluginsMachine.step, Machine.carry = carrySwitch, Machine.get = \st -> st.wikiSwitch, Machine.set = \machine st -> st {wikiSwitch = machine}}
+
+    carrySwitch :: WikiPluginsMachine.Effect -> Machine.Carry () (State m) Action Slots output m WikiPluginsMachine.Event
+    carrySwitch = \case
+      WikiPluginsMachine.Load asked -> Machine.Ask (Machine.run wikiPluginsOff) (WikiPluginsMachine.Loaded asked . answerOf)
+      WikiPluginsMachine.Save asked off -> Machine.Ask (Machine.run (setWikiPluginsOff WikiPlugins {off})) (WikiPluginsMachine.Saved asked . answerOf)
+      WikiPluginsMachine.Tell off -> Machine.Now (modify (Latest.superseded pluginAsksOf setPluginAsks (\st -> st {chosenPlugins = st.chosenPlugins {offForWiki = off}})))
 
     -- Whose changes not saved the content shown holds, if any: an
     -- editor's, or a page view's ticks. Asked before a route away
@@ -2669,3 +2717,9 @@ conversionNotice :: State m -> Maybe Text
 conversionNotice st = case st.here of
   InSpace _ space _ -> Offered.refusalOf Offered.Write (chainOf (context st) space.id)
   _ -> Nothing
+
+-- | The answer of the backend, as a machine takes it. The backend gives
+-- what went wrong as a 'Left' and does not throw for it; what it throws
+-- all the same is taken as the failure it is, or as 'Unreachable'.
+answerOf :: Either SomeException (Either WikiError a) -> Either WikiError a
+answerOf = either (\e -> Left (fromMaybe (Unreachable (toS (displayException e))) (fromException e))) identity

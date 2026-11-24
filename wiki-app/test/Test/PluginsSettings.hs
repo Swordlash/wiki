@@ -145,7 +145,7 @@ handled u e st0 = case e of
   Write _ p s -> case setPluginStateIn p s st of
     Left err -> (st0, Just (Wrote (Left err)))
     Right (st', c) -> (st' {current = st0.current}, Just (Wrote (Right c)))
-  Tell -> (st0, Nothing)
+  Tell _ -> (st0, Nothing)
   where
     st = st0 {current = Just (UserId ("user-" <> u))}
 
@@ -167,6 +167,9 @@ data Step
     Fill
   | -- | The answer to the next ask handled is lost on the way.
     Lose
+  | -- | The reader leaves the section and opens it again: the shell keeps
+    -- the model, and a write out goes on.
+    Reopen
   | -- | Another reader signs in.
     SwitchUser
   | Finish
@@ -182,6 +185,7 @@ genRun =
     , (1, OtherTab <$> place <*> elements [minBound .. maxBound])
     , (1, pure Fill)
     , (1, pure Lose)
+    , (1, pure Reopen)
     , (1, pure SwitchUser)
     , (1, pure Finish)
     ]
@@ -285,17 +289,23 @@ play w = \case
         others = Map.fromList [(PluginId ("other" <> show k), choice PluginOn) | k <- [1 .. maxPluginsPerUser]]
      in elsewhere "another tab fills the choices" w {backend = st {pluginChoices = Map.insertWith (\_ old -> Map.union old (Map.fromList (take (maxPluginsPerUser - Map.size old) (Map.toList others)))) u others st.pluginChoices}}
   Lose -> noted "the next answer will be lost" w {losing = True}
+  Reopen
+    | w.finished -> w
+    | otherwise -> afterEvent "opens the section again" Opened w {seen = ["opened again with an ask out" | any (\o -> o.inSession == w.turn) w.outs] <> w.seen}
   SwitchUser
     | w.finished -> w
     | otherwise ->
         let next = w.turn + 1
-         in afterEvent ("reader " <> readerOf next <> " signs in") (Given next) w {turn = next, fresh = False, lastWrite = mempty, seen = ["a switch with an ask out" | any (\o -> o.inSession == w.turn) w.outs] <> w.seen}
+         in -- The shell gives the new session; the section, open, asks.
+            afterEvent "the section, open, asks" Opened
+              . afterEvent ("reader " <> readerOf next <> " signs in") (Given next)
+              $ w {turn = next, fresh = False, lastWrite = mempty, seen = ["a switch with an ask out" | any (\o -> o.inSession == w.turn) w.outs] <> w.seen}
   Finish -> afterEvent "goes away" Finished w {finished = True}
   where
     lostAnswer = \case
       Load _ -> Just (Read (Left (Unreachable "lost")))
       Write {} -> Just (Wrote (Left (Unreachable "lost")))
-      Tell -> Nothing
+      Tell _ -> Nothing
 
 -- | A change made elsewhere: what the section knows may be old until its
 -- next read.
@@ -314,13 +324,16 @@ afterEvent what event w =
     $ w
       { section
       , outs = outs'
-      , told = if Tell `elem` effects then section.known >>= rightToMaybe else w.told
+      , told = lastMay [k | Tell k <- effects] <|> w.told
       , faults =
           w.faults
             <> [what <> ": " <> show effects <> " after the section went away" | w.finished, not (null effects)]
             <> [what <> ": two asks out at once: " <> show (map (\o -> o.effect) live) | length live > 1]
             <> [what <> ": writes " <> p.text <> " " <> show s <> ", not chosen in this session" | Write _ p s <- effects, (w.turn, p, s) `notElem` w.clicked]
-            <> [what <> ": tells the shell with no answer taken" | Tell `elem` effects, not (answered event)]
+            <> [what <> ": tells the shell with no answer taken" | not (null [() | Tell _ <- effects]), not (answered event)]
+            -- The section opened again finds the shell's model as it is,
+            -- a write out with it, and asks nothing once it has read.
+            <> [what <> ": asks anew on opening, what is on read already: " <> show effects | Opened <- [event], isJust (w.section.known >>= rightToMaybe), not (null effects)]
       }
   where
     (section, effects) = step event w.section
@@ -375,6 +388,7 @@ machine = describe "the section's machine, on generated runs" $ do
             reached tag = tag `elem` w.seen
          in QC.cover 15 (reached "a write taken") "a write taken"
               . QC.cover 3 (reached "checked settled after a write") "checked settled after a write"
+              . QC.cover 3 (reached "opened again with an ask out") "opened again with an ask out"
               . QC.cover 1 (reached "a write refused") "a write refused"
               . QC.cover 2 (reached "a write lost") "a write lost"
               . QC.cover 10 (reached "off for the wiki, read") "off for the wiki, read"
@@ -431,14 +445,14 @@ wikiSwitch = describe "the administration's switch" $ do
          in (m2, fx)
   it "reads the set and tells the shell, saves the set ticked, and tells the shell once the server took it" $ do
     let (m2, told) = readWith mempty
-    told `shouldBe` [Wiki.Tell]
+    told `shouldBe` [Wiki.Tell mempty]
     let (m3, save) = second onlyEffect (Wiki.step (Wiki.Ticked errors True) m2)
     save `shouldSatisfy` \case
       Wiki.Save _ s -> s == Set.fromList [errors]
       _ -> False
     Wiki.shownOff m3 `shouldBe` Just (Set.fromList [errors])
     let (m4, fx) = Wiki.step (Wiki.Saved (ticket save) (Right WikiPlugins {off = Set.fromList [errors]})) m3
-    fx `shouldBe` [Wiki.Tell]
+    fx `shouldBe` [Wiki.Tell (Set.fromList [errors])]
     m4.off `shouldBe` Just (Right (Set.fromList [errors]))
     m4.wantedOff `shouldBe` Nothing
 
@@ -462,7 +476,7 @@ wikiSwitch = describe "the administration's switch" $ do
     Wiki.shownOff m4 `shouldBe` Just mempty
     -- The save was done all the same: the read says so, and the shell hears it.
     let (m5, fx) = Wiki.step (Wiki.Loaded (ticket load) (Right WikiPlugins {off = Set.fromList [errors]})) m4
-    fx `shouldBe` [Wiki.Tell]
+    fx `shouldBe` [Wiki.Tell (Set.fromList [errors])]
     m5.off `shouldBe` Just (Right (Set.fromList [errors]))
 
   it "clears a refusal once a later save succeeds" $ do
@@ -479,8 +493,10 @@ wikiSwitch = describe "the administration's switch" $ do
     let (m2, _) = readWith mempty
         (m3, save) = second onlyEffect (Wiki.step (Wiki.Ticked errors True) m2)
         (m4, _) = Wiki.step (Wiki.Ticked assistant True) m3
-        -- Another administrator signs in: the view reads afresh.
-        (m5, fresh) = Wiki.step (Wiki.Given 1) m4
+        -- Another administrator signs in, and the view, open, asks.
+        (m5', given) = Wiki.step (Wiki.Given 1) m4
+        (m5, fresh) = Wiki.step Wiki.Opened m5'
+    given `shouldBe` []
     fresh `shouldSatisfy` \case
       [Wiki.Load _] -> True
       _ -> False

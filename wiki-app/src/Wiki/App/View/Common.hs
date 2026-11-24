@@ -169,9 +169,6 @@ data ViewOutput
     Entered
   | -- | The reader chose how wide pages are laid out: the shell keeps it.
     ChoseWidth PageWidth
-  | -- | The reader's choices of plugins, or the plugins off for the wiki,
-    -- changed: the shell reads again what is on ('plugins').
-    PluginsChanged
 
 -- | What the shell asks a view. A view that does not answer is taken to
 -- have nothing to say.

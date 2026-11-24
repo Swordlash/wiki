@@ -1,11 +1,18 @@
 -- | 'Model' is what the settings' section "Plugins" ("Wiki.App.View.Plugins")
--- knows, and 'step' is the one place it changes (decision 82 of
--- docs/PLAN.md). Every input is an 'Event': a switch flipped, an answer of
--- the backend, a change of the section's input, the section going away.
--- Every output is an 'Effect' as data: read what is on, write the user's
--- state for a plugin, tell the shell that what is on changed. The
--- component runs 'step' in one step of its program and carries out the
--- effects; an answer comes back as one more event.
+-- shows, and 'step' is the one place it changes (decision 82 of
+-- docs/PLAN.md). Every input is an 'Event': the section opened, a switch
+-- flipped, an answer of the backend, a change of session. Every output is
+-- an 'Effect' as data: read what is on, write the user's state for a
+-- plugin, tell the shell what is on now.
+--
+-- The shell keeps the model and carries out the effects
+-- ("Wiki.App.Shell"), not the section: a write sent goes on after the
+-- section is gone (the reader follows the assistant's link to its options,
+-- or goes to the editor), its answer is stepped all the same, and the
+-- shell hears what it changed. The section draws the model and raises the
+-- reader's acts as events. A section opened again shows the model as it
+-- is, a write still out with it, and reads only when nothing was read yet
+-- in this session ('Opened').
 --
 -- = One ask at a time
 --
@@ -31,11 +38,13 @@
 --
 -- = Who is signed in
 --
--- The section is the signed-in user's, by the session's number
--- ("Wiki.App.View.Common"'s @sessionNumber@). When it changes, the step
--- that takes it forgets what is known, what waits its turn and what was
--- refused, puts the asks out behind it, and reads again. An answer to an
--- ask of the earlier session changes nothing ('ofSession').
+-- The model is the signed-in user's, by the session's number
+-- ("Wiki.App.View.Common"'s @sessionNumber@), which the shell gives it
+-- each time it changes. The step that takes a new one forgets what is
+-- known, what waits its turn and what was refused, and puts the asks out
+-- behind it; the section, if it is open, then asks for a read
+-- ('Opened'). An answer to an ask of the earlier session changes nothing
+-- ('ofSession'), and a write chosen in it never goes out.
 module Wiki.App.View.Plugins.Machine
   ( Model (..)
   , Event (..)
@@ -86,8 +95,11 @@ data Model = Model
 
 -- | 'Event' is everything that happens to the section.
 data Event
-  = -- | The section is mounted.
+  = -- | Read what is on.
     Started
+  | -- | The section was opened, or is open in a new session: a read,
+    -- unless what is on was read in this session already.
+    Opened
   | -- | The section goes away.
     Finished
   | -- | The section was given the number of the session signed in.
@@ -108,9 +120,9 @@ data Effect
   | -- | Set the user's state for a plugin; the answer comes back as
     -- 'Written'.
     Write Ask PluginId PluginState
-  | -- | Tell the shell that the user's choices changed, so that what is
-    -- on changes in the rest of the page at once.
-    Tell
+  | -- | Tell the shell what is on now, as the model holds it, so that
+    -- the rest of the page follows at once.
+    Tell Plugins
   deriving stock (Eq, Show)
 
 -- | The section before it is mounted, for a session.
@@ -136,18 +148,21 @@ initial session =
 step :: Event -> Model -> (Model, [Effect])
 step event m =
   let (m', fx) = stepping event m
-   in (m', fx <> [Tell | not m.closed, known' m' /= known' m, isJust (known' m')])
+   in (m', fx <> [Tell k | not m.closed, known' m' /= known' m, Just k <- [known' m']])
 
 stepping :: Event -> Model -> (Model, [Effect])
 stepping event m
   | m.closed = (m, [])
   | otherwise = case event of
       Started -> reading m
+      Opened
+        | isNothing (known' m) -> reading m
+        | otherwise -> (m, [])
       Finished -> (m {closed = True}, [])
       Given session
         | session /= m.session ->
             let behind = supersede m.asks
-             in reading (initial session) {asks = behind, sessionFrom = behind}
+             in ((initial session) {asks = behind, sessionFrom = behind}, [])
         | otherwise -> (m, [])
       Loaded asked answer
         | ofSession asked m -> landed asked (taking asked answer m)
@@ -254,4 +269,4 @@ askOf :: Effect -> Maybe Ask
 askOf = \case
   Load a -> Just a
   Write a _ _ -> Just a
-  Tell -> Nothing
+  Tell _ -> Nothing

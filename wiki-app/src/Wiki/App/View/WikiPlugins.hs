@@ -8,11 +8,12 @@
 -- The server writes each change to the audit log (@settings.plugins@).
 --
 -- It is shown in the section "Permissions", under whom the wiki lets in,
--- beside the wiki's other settings. What it knows is its machine's
--- ("Wiki.App.View.WikiPlugins.Machine"). A change the server took is told
--- to the shell ('PluginsChanged'), which reads again what is on, so that
--- the administrator's own editor follows at once; other readers see it at
--- their next read of the session.
+-- beside the wiki's other settings. What it shows is the shell's machine
+-- ("Wiki.App.View.WikiPlugins.Machine"), which the shell keeps and runs,
+-- so that a save sent goes on after the view is gone and the shell hears
+-- what it changed ("Wiki.App.Shell"); other readers see it at their next
+-- read of the session. This module draws the model it is given and raises
+-- the administrator's acts as the machine's events.
 module Wiki.App.View.WikiPlugins
   ( component
   )
@@ -21,42 +22,35 @@ where
 import Data.Row (Empty)
 import Data.Set qualified as Set
 import Halogen qualified as H
-import Halogen.Machine qualified as Machine
-import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
 import Protolude hiding (State)
-import Wiki.Api.Plugins (PluginId (..), WikiPlugins (..))
+import Wiki.Api.Plugins (PluginId (..))
 import Wiki.App.Backend (WikiError (..))
-import Wiki.App.Backend.Plugins (MonadPlugins (..))
 import Wiki.App.Plugin (Manifest (..))
 import Wiki.App.Plugin.Registry (manifests)
-import Wiki.App.View.Common (ViewOutput (PluginsChanged), errorMessage)
-import Wiki.App.View.WikiPlugins.Machine (Effect (..), Event (..), Model (..), initial, shownOff, step)
+import Wiki.App.View.Common (errorMessage)
+import Wiki.App.View.WikiPlugins.Machine (Event (..), Model (..), shownOff)
 
-newtype State = State {machine :: Machine.Machine () Event Model}
+newtype State = State {model :: Model}
 
 data Action
   = Initialize
-  | Finalize
-  | Receive Int
+  | Receive Model
   | Happen Event
 
--- | The view, given the number of the session signed in
--- ("Wiki.App.View.Common"'s @sessionNumber@): another number is another
--- session, whose set the view reads afresh, and to which nothing the
--- earlier one wanted goes.
-component :: forall query m. (MonadPlugins m) => H.Component query Int ViewOutput m
+-- | The view, given the shell's machine's model as it is now. Its output
+-- is the machine's events, which the shell steps.
+component :: forall query m. (Monad m) => H.Component query Model Event m
 component =
   H.mkComponent
     H.ComponentSpec
-      { initialState = \session -> pure State {machine = Machine.new (initial session)}
+      { initialState = \model -> pure State {model}
       , render
       , eval =
           H.mkEval
             H.defaultEval
               { H.handleAction = handleAction
               , H.initialize = Just Initialize
-              , H.finalize = Just Finalize
               , H.receive = Just . Receive
               }
       }
@@ -71,7 +65,7 @@ component =
         </section>
       |]
       where
-        m = Machine.current st.machine
+        m = st.model
         body = case (m.off, shownOff m) of
           (Just (Left e), _) -> [hh|<p class="error admin-plugins-error" role="alert">{{ errorMessage e }}</p>|]
           (_, Just off) ->
@@ -96,32 +90,19 @@ component =
             |]
           _ -> [hh|<p class="loading">Loading…</p>|]
 
-    handleAction :: Action -> H.HalogenM State Action Empty ViewOutput m ()
+    handleAction :: Action -> H.HalogenM State Action Empty Event m ()
     handleAction = \case
-      Initialize -> happen Started
-      Finalize -> Machine.finish machineSpec Finished
-      Receive session -> happen (Given session)
-      Happen e -> happen e
-
-    happen :: Event -> H.HalogenM State Action Empty ViewOutput m ()
-    happen = Machine.happen machineSpec
-
-    machineSpec :: Machine.Spec () State Action Empty ViewOutput m Event Effect Model
-    machineSpec = Machine.Spec {Machine.step = step, Machine.carry = carry, Machine.get = \st -> st.machine, Machine.set = \machine st -> st {machine}}
-
-    carry :: Effect -> Machine.Carry () State Action Empty ViewOutput m Event
-    carry = \case
-      Load asked -> Machine.Ask (Machine.run wikiPluginsOff) (Loaded asked . answerOf)
-      Save asked off -> Machine.Ask (Machine.run (setWikiPluginsOff WikiPlugins {off})) (Saved asked . answerOf)
-      Tell -> Machine.Now (Sync.raise PluginsChanged)
+      -- Opened, the view asks for a read, which the machine sends only when
+      -- nothing was read in this session; and again, once, when it is given
+      -- a new session.
+      Initialize -> H.raise Opened
+      Receive model -> do
+        before <- gets (\st -> st.model.session)
+        modify (\st -> st {model})
+        when (model.session /= before) (H.raise Opened)
+      Happen e -> H.raise e
 
 refusalText :: WikiError -> Text
 refusalText = \case
   Invalid why -> why
   e -> errorMessage e
-
-answerOf :: Either SomeException (Either WikiError a) -> Either WikiError a
-answerOf = either (Left . failure) identity
-
-failure :: SomeException -> WikiError
-failure e = fromMaybe (Unreachable (toS (displayException e))) (fromException e)

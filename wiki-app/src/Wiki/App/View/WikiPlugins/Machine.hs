@@ -17,12 +17,19 @@
 -- taken that changes the set held is told to the shell ('Tell'), a read's
 -- as a save's.
 --
--- The view belongs to the session signed in, by its number
--- ("Wiki.App.View.Common"'s @sessionNumber@). When it changes, the step
--- that takes it forgets the set, what waits and the refusal, puts the asks
--- out behind it, and reads again: a save the former administrator queued
--- never goes out under the new one, and an answer to an ask of the
--- earlier session changes nothing.
+-- The shell keeps the model and carries out the effects
+-- ("Wiki.App.Shell"), not the view: a save sent goes on after the view is
+-- gone, and the shell hears what it changed. The view draws the model and
+-- raises the administrator's acts as events; opened again, it shows the
+-- model as it is, and reads only when nothing was read yet in this session
+-- ('Opened').
+--
+-- The model belongs to the session signed in, by its number
+-- ("Wiki.App.View.Common"'s @sessionNumber@), which the shell gives it
+-- each time it changes. The step that takes a new one forgets the set,
+-- what waits and the refusal, and puts the asks out behind it: a save the
+-- former administrator queued never goes out under the new one, and an
+-- answer to an ask of the earlier session changes nothing.
 module Wiki.App.View.WikiPlugins.Machine
   ( Model (..)
   , Event (..)
@@ -67,7 +74,11 @@ data Model = Model
 
 -- | 'Event' is everything that happens to the view.
 data Event
-  = Started
+  = -- | Read the set.
+    Started
+  | -- | The view was opened, or is open in a new session: a read, unless
+    -- the set was read in this session already.
+    Opened
   | Finished
   | -- | The view was given the number of the session signed in.
     Given Int
@@ -84,8 +95,9 @@ data Event
 data Effect
   = Load Ask
   | Save Ask (Set PluginId)
-  | -- | Tell the shell that the plugins off for the wiki changed.
-    Tell
+  | -- | Tell the shell the plugins off for the wiki, as the model holds
+    -- them, so that the rest of the page follows at once.
+    Tell (Set PluginId)
   deriving stock (Eq, Show)
 
 -- | The view before it is mounted, for a session.
@@ -96,7 +108,7 @@ initial session = Model {off = Nothing, asks = noAsks, flight = Nothing, wanted 
 step :: Event -> Model -> (Model, [Effect])
 step event m =
   let (m', fx) = stepping event m
-   in (m', fx <> [Tell | not m.closed, held m' /= held m, isJust (held m')])
+   in (m', fx <> [Tell off | not m.closed, held m' /= held m, Just off <- [held m']])
 
 -- | The set held, once read.
 held :: Model -> Maybe (Set PluginId)
@@ -107,11 +119,14 @@ stepping event m
   | m.closed = (m, [])
   | otherwise = case event of
       Started -> reading m
+      Opened
+        | isNothing (held m) -> reading m
+        | otherwise -> (m, [])
       Finished -> (m {closed = True}, [])
       Given session
         | session /= m.session ->
             let behind = supersede m.asks
-             in reading (initial session) {asks = behind, sessionFrom = behind}
+             in ((initial session) {asks = behind, sessionFrom = behind}, [])
         | otherwise -> (m, [])
       Loaded asked answer
         | ofSession asked m -> landed asked (taking asked (fmap (\w -> w.off) answer) m)
@@ -182,4 +197,4 @@ askOf :: Effect -> Maybe Ask
 askOf = \case
   Load a -> Just a
   Save a _ -> Just a
-  Tell -> Nothing
+  Tell _ -> Nothing

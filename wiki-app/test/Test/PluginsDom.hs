@@ -15,9 +15,11 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Control.Monad.UUID (MonadUUID (..))
+import Data.IORef (IORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
+import Halogen.Router (Router)
 import Halogen.Router qualified as Router
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
@@ -26,23 +28,33 @@ import Protolude hiding (find)
 import Test.Harness.MemDom
 import Test.Hspec
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), noPlugins)
+import Wiki.App (component, input)
 import Wiki.App.Assistant (MonadAssistant (..))
 import Wiki.App.Assistant.Sync (MonadVault)
-import Wiki.App.Backend (MonadLoad (..), MonadWiki (..))
+import Wiki.App.Backend
+  ( MonadLoad (..)
+  , MonadWiki (..)
+  , WikiError (..)
+  )
 import Wiki.App.Backend.Admin (MonadAdmin)
+import Wiki.App.Backend.Comments (MonadComments)
+import Wiki.App.Backend.Encrypted (MonadEncryption)
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Backend.Notifications (MonadNotifications)
 import Wiki.App.Backend.Plugins (MonadPlugins (..))
+import Wiki.App.Backend.Stars (MonadStars)
+import Wiki.App.Backend.WhatsNew (MonadWhatsNew)
 import Wiki.App.Demo (demoNow, demoState)
+import Wiki.App.DemoUsers (MonadDemoUsers)
 import Wiki.App.Islands (MonadIslands (..))
-import Wiki.App.Route (Route (..), route)
-import Wiki.App.View.Common (Context (..), ViewOutput (..))
+import Wiki.App.Route (Route (..), SettingsSection (..), route)
+import Wiki.App.Route qualified as R
+import Wiki.App.Security (MonadSecurity)
+import Wiki.App.Shell qualified as Shell
+import Wiki.App.View.Common (Context (..))
 import Wiki.App.View.Editor qualified as Editor
-import Wiki.App.View.Plugins qualified as Plugins
-import Wiki.Core.Access (Access (..))
 import Wiki.Core.Id (UserId (..))
-import Wiki.Core.Permission (Grants (..))
 import Wiki.Core.Slug (Slug, mkSlug)
 import Wiki.Core.Space (Space (id))
 
@@ -63,18 +75,98 @@ asEditor :: MemState
 asEditor = (demoState demoNow) {current = Just (UserId "user-editor")}
 
 --------------------------------------------------------------------------------
--- The section
+-- The section, in the shell
 
--- | The section mounted over a wiki.
-withSection :: MemState -> (View (Const Void) Plugins.Input ViewOutput -> IO a) -> IO a
-withSection st body = do
+-- | 'Holding' is what 'Holder' does: hold the plugins' writes (a user's
+-- state, the wiki's set) in a gate until the test lets each go, when there
+-- is a gate, and fail every read of the plugins, when asked to.
+data Holding = Holding
+  { gate :: Maybe (Gate Text ())
+  , failing :: Bool
+  }
+
+-- | 'Holder' is the demo's backend, as 'Holding' says.
+newtype Holder m a = Holder (ReaderT Holding m a)
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO, PrimMonad)
+
+instance MonadTrans Holder where
+  lift = Holder . lift
+
+deriving newtype instance (MonadDOM m) => MonadDOM (Holder m)
+
+deriving newtype instance (MonadAttributes m) => MonadAttributes (Holder m)
+
+deriving newtype instance (MonadBrowserDOM m) => MonadBrowserDOM (Holder m)
+
+deriving newtype instance (MonadIslands m) => MonadIslands (Holder m)
+
+instance (MonadUUID m) => MonadUUID (Holder m) where
+  generateV4 = lift generateV4
+
+instance (MonadWiki m) => MonadWiki (Holder m)
+
+instance (MonadWiki m) => MonadLoad (Holder m) where
+  atOnce = fmap Just
+  attempt = fmap Right
+
+instance (MonadAdmin m) => MonadAdmin (Holder m)
+
+instance (MonadComments m) => MonadComments (Holder m)
+
+instance (MonadNotifications m) => MonadNotifications (Holder m)
+
+instance (MonadStars m) => MonadStars (Holder m)
+
+instance (MonadWhatsNew m) => MonadWhatsNew (Holder m)
+
+instance (MonadSecurity m) => MonadSecurity (Holder m)
+
+instance (MonadAssistant m) => MonadAssistant (Holder m)
+
+instance (MonadVault m) => MonadVault (Holder m)
+
+instance (MonadEncryption m) => MonadEncryption (Holder m)
+
+instance (MonadDemoUsers m) => MonadDemoUsers (Holder m)
+
+instance (MonadPlugins m, MonadIO m) => MonadPlugins (Holder m) where
+  pluginsNow = Holder (asks (\h -> h.failing)) >>= bool (lift pluginsNow) (pure (Left (Unreachable "the network")))
+  setPluginState p s = heldBy ("state " <> p.text) >> lift (setPluginState p s)
+  setWikiPluginsOff w = heldBy "the wiki's set" >> lift (setWikiPluginsOff w)
+
+-- | Wait, when there is a gate, until the test lets this write go.
+heldBy :: (MonadIO m) => Text -> Holder m ()
+heldBy what = Holder (asks (\h -> h.gate)) >>= traverse_ (\gate -> liftIO (hold gate what))
+
+-- | The shell over a wiki, at a route, with the settings' sections mounted
+-- from the first render; the body gets the view, the router, the wiki,
+-- and a way to settle while the gate holds what it holds.
+withShellAt
+  :: MemState
+  -> Holding
+  -> Route
+  -> (View Shell.Query (Shell.Input (Holder (MemWiki MemDOM))) Void -> Router Route -> IORef MemState -> IO () -> IO a)
+  -> IO a
+withShellAt st holding at body = do
   wiki <- newMemWiki st
-  let run :: MemWiki MemDOM a -> MemDOM a
-      run = runMemWiki wiki
+  let run :: Holder (MemWiki MemDOM) a -> MemDOM a
+      run (Holder p) = runMemWiki wiki (runReaderT p holding)
+      quiet view = maybe (settle view) (settleHolding view . holds) holding.gate
   router <- runMemDOM (run (Router.newRouter "/" Unknown route))
-  result <- withView run Plugins.component Plugins.Input {session = 0, router} $ \view -> settle view >> body view
+  Router.redirect router at
+  result <- withView run (component @Void) (input router) {Shell.sectionsAtOnce = True} $ \view -> do
+    quiet view
+    body view router wiki (quiet view)
   Router.stop router
   pure result
+
+-- | The section mounted in the shell over a wiki.
+withSection :: MemState -> (View Shell.Query (Shell.Input (Holder (MemWiki MemDOM))) Void -> IO a) -> IO a
+withSection st body = withShellAt st free (UserSettings PluginsSection) (\view _ _ _ -> body view)
+
+-- | Nothing held, nothing failed.
+free :: Holding
+free = Holding {gate = Nothing, failing = False}
 
 -- | Each plugin's row: its id, whether it shows on, and its switch's
 -- state.
@@ -91,8 +183,17 @@ rows view =
           pure (i, on', ticked, off)
       )
 
+-- | The user's choices on the server, as the wiki holds them.
+choicesOf :: IORef MemState -> Text -> IO (Map PluginId PluginChoice)
+choicesOf wiki u = Map.findWithDefault mempty (UserId u) . (\st -> st.pluginChoices) <$> readIORef wiki
+
+-- | Whether the assistant's section says it is off: the shell's
+-- 'Wiki.App.Plugin.Registry.pluginsOn' without the assistant.
+saysOff :: View q i o -> IO Bool
+saysOff view = isJust <$> find view ".settings-plugin-off"
+
 section :: Spec
-section = describe "Wiki.App.View.Plugins, mounted on the in-memory DOM" $ do
+section = describe "Wiki.App.View.Plugins, in the shell on the in-memory DOM" $ do
   it "lists the registry's plugins, both on by default" $
     withSection asEditor $ \view -> do
       rows view `shouldReturn` [("assistant", True, True, False), ("errors", True, True, False)]
@@ -112,34 +213,58 @@ section = describe "Wiki.App.View.Plugins, mounted on the in-memory DOM" $ do
       textOf view ".plugin[data-plugin=errors] .plugin-off-for-wiki" >>= (`shouldSatisfy` T.isPrefixOf "An administrator has turned this plugin off for everyone")
 
   it "says the plugins could not be read when the read fails" $
-    withSection (demoState demoNow) {current = Nothing, grants = (demoState demoNow).grants {access = Closed}} $ \view -> do
+    withShellAt asEditor free {failing = True} (UserSettings PluginsSection) $ \view _ _ _ -> do
       rows view `shouldReturn` []
       textOf view ".plugins-error" >>= (`shouldSatisfy` T.isPrefixOf "Your plugins could not be read.")
 
-  it "turns the assistant off, tells the shell, and gives it back to its default" $ do
-    wiki <- newMemWiki asEditor
-    let run :: MemWiki MemDOM a -> MemDOM a
-        run = runMemWiki wiki
-        mine = runMemDOM (run (fmap (\p -> p.mine) . rightToMaybe <$> pluginsNow))
-    router <- runMemDOM (run (Router.newRouter "/" Unknown route))
-    withView run Plugins.component Plugins.Input {session = 0, router} $ \view -> do
-      settle view
-      -- What the section read is told to the shell once.
-      told view `shouldReturn` 1
+  it "turns the assistant off and gives it back to its default, the shell following" $
+    withShellAt asEditor free (UserSettings PluginsSection) $ \view router wiki quiet -> do
       click view ".plugin[data-plugin=assistant] .plugin-toggle"
-      settle view
+      quiet
       rows view `shouldReturn` [("assistant", False, False, False), ("errors", True, True, False)]
-      mine `shouldReturn` Just (Map.fromList [(assistant, choice PluginOff)])
-      told view `shouldReturn` 2
+      choicesOf wiki "user-editor" `shouldReturn` Map.fromList [(assistant, choice PluginOff)]
       click view ".plugin[data-plugin=assistant] .plugin-to-default"
-      settle view
+      quiet
       rows view `shouldReturn` [("assistant", True, True, False), ("errors", True, True, False)]
       textOf view ".plugin[data-plugin=assistant] .plugin-default" `shouldReturn` "Default: on."
-      mine `shouldReturn` Just mempty
-      told view `shouldReturn` 3
-    Router.stop router
-  where
-    told view = length . filter (\case PluginsChanged -> True; _ -> False) <$> outputs view
+      choicesOf wiki "user-editor" `shouldReturn` mempty
+      Router.navigate router (UserSettings AssistantSection)
+      quiet
+      saysOff view `shouldReturn` False
+
+  -- Codex's second round on #374: the write belongs to the shell, which
+  -- outlives the section; a write the section's own worker made died with
+  -- the section, and the shell never heard of it.
+  it "learns of a choice whose write ends after the section has gone" $ do
+    gate <- newGate
+    withShellAt asEditor free {gate = Just gate} (UserSettings PluginsSection) $ \view router wiki quiet -> do
+      click view ".plugin[data-plugin=assistant] .plugin-toggle"
+      quiet
+      map (\h -> h.asked) <$> held gate `shouldReturn` ["state assistant"]
+      -- To the assistant's own section: the section of plugins goes.
+      Router.navigate router (UserSettings AssistantSection)
+      quiet
+      length <$> findAll view ".plugin" `shouldReturn` 0
+      saysOff view `shouldReturn` False
+      held gate >>= traverse_ (\h -> answer gate h ())
+      quiet
+      choicesOf wiki "user-editor" `shouldReturn` Map.fromList [(assistant, choice PluginOff)]
+      saysOff view `shouldReturn` True
+
+  it "learns of the administrator's save that ends after the switch has gone" $ do
+    gate <- newGate
+    withShellAt (demoState demoNow) {current = Just (UserId "user-admin")} free {gate = Just gate} (Admin R.Permissions) $ \view router wiki quiet -> do
+      click view ".admin-plugin[data-plugin=assistant] .admin-plugin-off"
+      quiet
+      map (\h -> h.asked) <$> held gate `shouldReturn` ["the wiki's set"]
+      Router.navigate router (UserSettings AssistantSection)
+      quiet
+      length <$> findAll view ".admin-plugin" `shouldReturn` 0
+      saysOff view `shouldReturn` False
+      held gate >>= traverse_ (\h -> answer gate h ())
+      quiet
+      (\st -> st.pluginsOff) <$> readIORef wiki `shouldReturn` Set.fromList [assistant]
+      saysOff view `shouldReturn` True
 
 --------------------------------------------------------------------------------
 -- The editor

@@ -2764,7 +2764,8 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   provider's chat in one class, used far beyond the assistant, so
   both stay the host's and the assistant reaches them through
   capabilities (`Models`, `Secret`) that mirror its present needs.
-  **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
+  **C is open (#374)**; **D is next (the owner, 2026-11-24, after
+  C).** **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
   requestować jakieś named keys per plugin z vaulta"):** named
   secrets per plugin in the vault as a general capability (get, put
   and remove by a name under the plugin's id, the names declared in

@@ -599,8 +599,8 @@ wrong_answer() {
 # A successful answer (2xx) checked to be exactly what the wiki's handler
 # sends, before anything is read from it or remembered. What each request
 # is answered on success, from the server's code
-# (wiki-server/src/Wiki/Server/MarkdownApi.hs, markdownApplication, and
-# ListApi.hs, listApplication and searchApplication):
+# (wiki-server/src/Wiki/Server/ProgramApi.hs, Wiki.Server.ProgramApi,
+# whose handlers are in MarkdownApi.hs and ListApi.hs):
 #
 #   KIND           request                     status  Content-Type      body
 #   page           GET api/markdown/s/...      200     text/markdown     the page's

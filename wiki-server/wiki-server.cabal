@@ -21,6 +21,7 @@ extra-source-files: migrations/*.sql
                     changelog/*.md
                     changelog.stamp
                     test/schemas/*.rng
+                    test/golden/openapi.json
 
 -- haskell-halogen's examples' stanza: the warnings every package here is built
 -- with (cabal.project makes them errors) and the extensions its code assumes.

@@ -276,6 +276,17 @@ spec = describe "Markdown.Sections" $ do
       -- and the id made from it, are not kept.
       replaceSection (WholeSection "a") "# A\n\nText.\n\n# B\n\n> [!TIP]\n> Later.\n" "# A\n\n> [!TIP]\n> New.\n" `shouldSatisfy` isRight
 
+    it "refuses an own part whose heading becomes or stops being a spoiler, which hides the subsections too" $ do
+      replaceSection (OwnPart "a") "# A\n\n## B\n\nVisible.\n" "# [[!spoiler]] A\n\n" `shouldBe` Left HeadingSpoilerChanges
+      replaceSection (OwnPart "a") "# [[!spoiler]] A\n\n## B\n\nHidden.\n" "# A\n\n" `shouldBe` Left HeadingSpoilerChanges
+      -- Written whole, the spoiler hides the section and nothing after it.
+      replaceSection (WholeSection "a") "# A\n\n## B\n\nVisible.\n\n# C\n" "# [[!spoiler]] A\n\n## B\n\nVisible.\n" `shouldSatisfy` isRight
+
+    it "counts no id of a link the page does not show as one" $
+      -- The link to javascript: is shown as its text, without its id: x
+      -- lands on B, and A's code would take it.
+      replaceSection (WholeSection "a") "[blocked](javascript:alert){#x}\n\n# A\n\nText.\n\n# B {#x}\n" "# A\n\n`code`{#x}\n" `shouldBe` Left (AnchorMoves "x")
+
     it "refuses a code fence left open, which takes in the sections after it" $
       replaceSection (WholeSection "install") page "## Install\n\n```\nmake\n" `shouldBe` Left (SectionChanges "use" True)
 
@@ -522,10 +533,10 @@ spec = describe "Markdown.Sections" $ do
 -- | A page to cut into sections: headings of every level, written both
 -- ways, some the same; blocks that hold a heading that is no section (a
 -- quotation, a list, a box), and code with a @#@ in it; spoilers of both
--- kinds; a link's definition, a footnote's definition, a numbered box
--- (the references to them are in 'aSpoiledPage', whose line breaks are
--- all line feeds: here a reference could end up in a title underlined,
--- which 'firstHeading' reads apart from its definition); with or without
+-- kinds; a numbered box (the links to definitions and the footnotes are
+-- in 'aSpoiledPage', whose line breaks are all line feeds: here a
+-- definition or a reference could end up in a title underlined, which
+-- 'firstHeading' reads apart from the rest of the page); with or without
 -- text before the first
 -- heading, its pieces apart
 -- by one to three line breaks, and its line breaks line feeds, carriage
@@ -559,8 +570,6 @@ aPage = do
         , "[[!spoiler]]{t}(Open)\n" <> hashes <> " " <> word
         , "---"
         , "[[!toc]]"
-        , "[r]: /target"
-        , "[^n]: The note."
         , "> [!TIP]\n> A tip."
         ]
 
@@ -714,7 +723,8 @@ footnoteOwn i = case T.stripPrefix "fn-" i of
     numeral n = not (T.null n) && T.all isDigit n
 
 -- | A page with an element that has an id in every place one can be: inline
--- code, a link and an embed with an id, in a paragraph, a heading, an
+-- code, a link and an embed with an id (and a link and an embed the page
+-- refuses to show, to @javascript:@ and the like), in a paragraph, a heading, an
 -- embed's caption, a link's text, emphasis, an inline spoiler, a table's
 -- cell, a list's item, a quotation, a box with a title and without, a
 -- @[[!div]]@, a block spoiler's text and its description, a heading
@@ -737,6 +747,10 @@ anIdPage = do
         , "[l](/y){#" <> k <> "}"
         , "![c](a.png){#" <> k <> "}"
         , "![`c`{#" <> k <> "} cap](a.png)"
+        , "[l](javascript:alert){#" <> k <> "}"
+        , "[l](data:text/html,x){#" <> k <> "}"
+        , "![c](javascript:x){#" <> k <> "}"
+        , "![c](mailto:a@example.com){#" <> k <> "}"
         , "[`c`{#" <> k <> "} t](/y)"
         , "*`c`{#" <> k <> "}*"
         , "||`c`{#" <> k <> "}||"

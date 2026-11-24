@@ -354,6 +354,7 @@ refusalText = \case
       <> maybe "in the text before the first heading" (\a -> "in the section " <> quoted a) anchor
       <> (if after then ", after it" else ", before it")
       <> ": check for a link's definition ([name]: address) or a footnote's ([^name]: text) that the page uses there, or a code fence or a spoiler left open."
+  HeadingSpoilerChanges -> "With own=true the heading cannot become or stop being a spoiler, or change its spoiler's name, while the section has subsections, which a heading spoiler hides with it: write the section whole, without own=true."
   OutsideChanges -> "The body would change the page outside the section: check for a code fence or a spoiler left open, or a spoiler's end marker."
   where
     quoted t = "'" <> t <> "'"

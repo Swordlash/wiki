@@ -91,6 +91,8 @@ import Data.Sequence qualified as Seq
 import Data.Text qualified as T
 import Protolude
 import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), Footnote (..), Inline (..), ListItem (..), ParseError, SpoilerHead (..), SpoilerInside (..), SpoilerKind (..), attribute, parseDeckSpansAndInsides, plainText)
+import Wiki.Core.Markdown.Link (LinkTarget (..), urlScheme)
+import Wiki.Core.Markdown.Render (defaultResolveLink, embedShown, linkShown)
 import Wiki.Core.Slides (parserLineStarts)
 
 -- | 'Outline' is the sections of a text, the page's or a block spoiler's
@@ -316,6 +318,10 @@ data Refusal
     -- the section with this anchor ('Nothing' for the top), after the part
     -- ('True') or before it.
     BlockChanges (Maybe Text) Bool
+  | -- | Written as a section's own part, the heading would become a
+    -- spoiler, stop being one or change its spoiler's name, while the
+    -- section has subsections, which a heading spoiler hides with it.
+    HeadingSpoilerChanges
   | -- | Something else outside the part written would change.
     OutsideChanges
   deriving stock (Eq, Show)
@@ -469,6 +475,14 @@ replaceSection target page body = do
       unless (inside && and (zipWith (\(_, s) (_, n) -> sameAs n s) oldSeen newSeen) && length oldSeen == length newSeen && map snd oldBoxes == map snd newBoxes && oldPage == newPage) $
         Left (fromMaybe OutsideChanges outsideRefusal)
       for_ (head unnamed) (Left . AnchorMoves)
+      -- A heading spoiler hides its heading's whole section. Written as its
+      -- own part, a section with subsections keeps its heading a spoiler,
+      -- with the same marker, or plain: the subsections are outside the
+      -- part, and the spoiler would hide them or show them. Written whole,
+      -- the spoiler hides the part and nothing after it.
+      let headingSpoiler bs = head [h.marker | (Spoiler h _, Just p) <- bs, p == a, h.kind == OnHeading]
+      when (own && any (\w -> w.section.end > w.section.ownEnd) wanted && headingSpoiler oldBlocks /= headingSpoiler newBlocks) $
+        Left HeadingSpoilerChanges
       -- Every block outside the part is the block it was ('settled'). The
       -- parser's finished blocks hold what it read across the page (a
       -- link's target from its definition, a footnote's reference, each
@@ -624,12 +638,22 @@ blockIds = \case
       Strikeout xs -> inlineIds xs
       Hidden xs -> inlineIds xs
       Code attrs _ -> ownIds attrs
-      Link attrs _ _ xs -> ownIds attrs <> inlineIds xs
-      -- An embed's caption is plain text in the page.
-      Image attrs _ _ _ -> ownIds attrs
+      -- A link the page does not show as one (to @javascript:@) is its
+      -- text, without the link's id ('linkShown').
+      Link attrs dest _ xs -> (if shownWithId linkShown dest then ownIds attrs else []) <> inlineIds xs
+      -- An embed's caption is plain text in the page; an embed the page
+      -- does not show is its caption alone ('embedShown').
+      Image attrs dest _ _ -> if shownWithId embedShown dest then ownIds attrs else []
       Marked attrs xs -> ownIds attrs <> inlineIds xs
       _ -> []
     ownIds attrs = [(i, False) | Just i <- [attribute "id" attrs], not (T.null i)]
+    -- Whether a link's or an embed's id is in the page, by the renderer's
+    -- own rule for a URL. A destination the wiki resolves (a page, an
+    -- attachment) is taken to be shown: which ones the wiki has is not
+    -- known here.
+    shownWithId shown dest = case defaultResolveLink dest of
+      target@(External _) | isJust (urlScheme dest) -> shown target
+      _ -> True
     -- A block spoiler's description is its summary, which a spoiler with
     -- a problem does not show.
     summaryIds h = if isNothing h.problem then inlineIds h.description else []

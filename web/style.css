@@ -6573,6 +6573,81 @@ div.server-secret > span:first-child {
   align-self: flex-start;
 }
 
+/* The settings' section "Plugins" (Wiki.App.View.Plugins): a row a plugin,
+   its name and switch on one line, what it does and its default under them;
+   a plugin off reads dimmed. And the administration's switch of plugins
+   (Wiki.App.View.WikiPlugins), a box a plugin. */
+.plugins {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.plugin-list,
+.admin-plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.plugin p {
+  margin: 0;
+}
+
+.plugin-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.plugin-name,
+.admin-plugin-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.plugin-off .plugin-name,
+.plugin-off .plugin-description {
+  opacity: 0.6;
+}
+
+.plugin-switch,
+.admin-plugin-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.plugin-to-default,
+.plugin-options {
+  align-self: flex-start;
+  font-size: 0.85rem;
+}
+
+.admin-plugin p {
+  margin: 0.1rem 0 0;
+}
+
+.admin-plugin-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 /* The pages of a password reset's link and of an address's verification,
    as an invitation's. */
 .password-reset,

@@ -13,10 +13,11 @@ import Data.Text qualified as T
 import Protolude
 import Test.Hspec
 import Test.QuickCheck
+import Wiki.Api.Plugins (PluginChoice (..), PluginState (..), Plugins (..), noPlugins)
 import Wiki.App.Plugin (AgentButton (..), Diagnostics (..), Drawn (..), Face (..), Manifest (..), Plugin (..), PluginId (..), builtin)
 import Wiki.App.Plugin.Assistant.Agent (buttonsOf)
 import Wiki.App.Plugin.Errors (errors, islandFailures)
-import Wiki.App.Plugin.Registry (Contributed (..), builtinIds, contributed, plugins)
+import Wiki.App.Plugin.Registry (Contributed (..), builtinIds, contributed, isOn, manifests, onAmong, plugins)
 import Wiki.Core.Assistant (Provider (..), Settings, chooseProvider, defaultSettings, serviceName, settingsOf, withBaseUrl, withKey, withReached)
 import Wiki.Core.Markdown.Problems (Checked (..), IslandPlace (..), Problem (..), ProblemKind (..), Severity (..), allProblems, checkText)
 import Wiki.Core.Markdown.Render (IslandKey (..))
@@ -75,6 +76,47 @@ builtins = plugins
 
 spec :: Spec
 spec = describe "plugins" $ do
+  describe "which plugins are on (isOn, pluginsOn)" $ do
+    -- Every combination of the three things that decide: the wiki's off
+    -- set, the user's state (none kept, or one of the three), and the
+    -- plugin's default. The expected column is written out, not computed.
+    let table :: [(Bool, Maybe PluginState, Bool, Bool)]
+        table =
+          [ -- off for the wiki, the user's state, on by default, on
+            (True, Nothing, True, False)
+          , (True, Nothing, False, False)
+          , (True, Just PluginDefault, True, False)
+          , (True, Just PluginDefault, False, False)
+          , (True, Just PluginOn, True, False)
+          , (True, Just PluginOn, False, False)
+          , (True, Just PluginOff, True, False)
+          , (True, Just PluginOff, False, False)
+          , (False, Nothing, True, True)
+          , (False, Nothing, False, False)
+          , (False, Just PluginDefault, True, True)
+          , (False, Just PluginDefault, False, False)
+          , (False, Just PluginOn, True, True)
+          , (False, Just PluginOn, False, True)
+          , (False, Just PluginOff, True, False)
+          , (False, Just PluginOff, False, False)
+          ]
+        manifestOf byDefault = (builtin "p" "P" "") {onByDefault = byDefault}
+        known wikiOff s =
+          Plugins
+            { offForWiki = Set.fromList [PluginId "p" | wikiOff] <> Set.fromList [PluginId "other"]
+            , mine = Map.fromList ([(PluginId "p", PluginChoice {state = x, options = Nothing}) | Just x <- [s]] <> [(PluginId "other", PluginChoice {state = PluginOn, options = Nothing})])
+            }
+    it "follows its table over every combination" $ do
+      length table `shouldBe` 2 * 4 * 2
+      for_ table $ \(wikiOff, s, byDefault, expected) ->
+        (wikiOff, s, byDefault, isOn (known wikiOff s) (manifestOf byDefault)) `shouldBe` (wikiOff, s, byDefault, expected)
+    it "has every built-in plugin on by default, and on with nothing read" $ do
+      map (\m -> m.onByDefault) manifests `shouldBe` [True, True]
+      onAmong manifests noPlugins `shouldBe` builtinIds
+    it "turns each built-in plugin off for the wiki, or for the user alone" $ do
+      onAmong manifests noPlugins {offForWiki = Set.fromList [PluginId "errors"]} `shouldBe` Set.fromList [PluginId "assistant"]
+      onAmong manifests noPlugins {mine = Map.fromList [(PluginId "assistant", PluginChoice {state = PluginOff, options = Nothing})]} `shouldBe` Set.fromList [PluginId "errors"]
+
   describe "contributed" $ do
     it "gives every built-in plugin's contribution when every plugin is on" $ do
       let given = contributed builtinIds builtins

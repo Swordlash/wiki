@@ -99,6 +99,7 @@ import Halogen.Router qualified as Router
 import Halogen.TH (hh)
 import Numeric.Natural (Natural)
 import Protolude
+import Wiki.Api.Plugins (Plugins)
 import Wiki.App.Backend (MonadWiki (avatarUrl), Session (grants, homePage, mathMacros, standing, user), WikiError (..), sessionPrincipal)
 import Wiki.App.Route (Route (..), pageRoute)
 import Wiki.Core.HomePage (HomePage (showAnonymous))
@@ -135,6 +136,11 @@ data Context = Context
   , revision :: Int
   , pageWidth :: PageWidth
   -- ^ How wide the page view lays a page out, as this browser chose it.
+  , plugins :: Plugins
+  -- ^ Which plugins the wiki turned off and what the reader chose for
+  -- each, as the shell last read them with the session
+  -- ('Wiki.App.Plugin.Registry.pluginsOn' reads it). Nothing off and
+  -- nothing chosen until the read answers, and when it fails.
   }
 
 -- | 'PageWidth' is how wide the page view lays a page out on a wide screen
@@ -163,6 +169,9 @@ data ViewOutput
     Entered
   | -- | The reader chose how wide pages are laid out: the shell keeps it.
     ChoseWidth PageWidth
+  | -- | The reader's choices of plugins, or the plugins off for the wiki,
+    -- changed: the shell reads again what is on ('plugins').
+    PluginsChanged
 
 -- | What the shell asks a view. A view that does not answer is taken to
 -- have nothing to say.

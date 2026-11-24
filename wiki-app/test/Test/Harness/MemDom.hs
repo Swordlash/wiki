@@ -43,6 +43,7 @@ import Halogen.Router (Router)
 import Halogen.Subscription qualified as HS
 import Halogen.Test.Native
 import Protolude hiding (find)
+import Wiki.Api.Plugins (noPlugins)
 import Wiki.App.Backend (Session, anonymousIn)
 import Wiki.App.Live (Feed (..), Heard)
 import Wiki.App.Route (Route)
@@ -61,7 +62,7 @@ viewContext router = viewContextAs router (anonymousIn Open) []
 -- | 'viewContext' for someone signed in ('session', as the backend
 -- answers it), with the wiki's spaces.
 viewContextAs :: Router Route -> Session -> [Space] -> Int -> Context
-viewContextAs router session spaces revision = Context {router, session, sessionNumber = 0, spaces, icons = mempty, revision, pageWidth = Compact}
+viewContextAs router session spaces revision = Context {router, session, sessionNumber = 0, spaces, icons = mempty, revision, pageWidth = Compact, plugins = noPlugins}
 
 -- | 'TestFeed' is a live channel the test tells through ('Wiki.App.Live'):
 -- the feed a view is given, how to deliver a message to it, and what the

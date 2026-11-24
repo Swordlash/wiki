@@ -152,6 +152,7 @@ import Web.Event.Event (Event)
 import Web.Storage.Storage (StorageKind (..))
 import Web.Storage.Storage qualified as Storage
 import Wiki.Api.Links (archiveExportUrl)
+import Wiki.Api.Plugins (Plugins (..), noPlugins)
 import Wiki.Api.ServerSettings (HomePage (showAnonymous, title))
 import Wiki.App.Account (Accounts (..), SignInError (..))
 import Wiki.App.Assistant (MonadAssistant, announceSignIn, closeKeyOwnersOf, keysDroppedElsewhere, listenToOtherTabs)
@@ -161,6 +162,7 @@ import Wiki.App.Backend.Admin (MonadAdmin)
 import Wiki.App.Backend.Comments (MonadComments)
 import Wiki.App.Backend.Encrypted (MonadEncryption (..))
 import Wiki.App.Backend.Notifications (MonadNotifications)
+import Wiki.App.Backend.Plugins (MonadPlugins (..))
 import Wiki.App.Backend.Stars (MonadStars)
 import Wiki.App.Backend.WhatsNew (MonadWhatsNew)
 import Wiki.App.Browser (absoluteUrl, download, historyEntry, historyGo, keepContents, keepHeights, redirectKeepingFragment, replacingEntry, revealFragment, setDocumentTitle, setFavicon, unzipFiles, zipFiles)
@@ -205,6 +207,7 @@ import Wiki.App.View.NewSpace qualified as NewSpaceView
 import Wiki.App.View.NotificationSettings qualified as NotificationSettingsView
 import Wiki.App.View.Page qualified as PageView
 import Wiki.App.View.PersonalSpace qualified as PersonalSpaceView
+import Wiki.App.View.Plugins qualified as PluginsView
 import Wiki.App.View.Popup (watchPopup)
 import Wiki.App.View.Reset qualified as ResetView
 import Wiki.App.View.Search qualified as SearchBox
@@ -223,6 +226,7 @@ import Wiki.App.View.UserSpaces qualified as UserSpacesView
 import Wiki.App.View.Users qualified as UsersView
 import Wiki.App.View.VerifyEmail qualified as VerifyEmailView
 import Wiki.App.View.WhatsNew qualified as WhatsNewView
+import Wiki.App.View.WikiPlugins qualified as WikiPluginsView
 import Wiki.Core.Attachment (findAttachment)
 import Wiki.Core.Backlink (Backlink (..))
 import Wiki.Core.Blog (excerpt, firstImage)
@@ -316,6 +320,12 @@ data ViewSlot
     -- user before.
     PersonalSpaceSlot (Maybe UserId)
   | AvatarSlot (Maybe UserId)
+  | PluginsSlot (Maybe UserId)
+  | -- | The administration's switch of plugins, in the section
+    -- "Permissions". Mounted in a browser only, after the first render, as
+    -- the settings' sections are ('settingsShown'): it reads the wiki's set
+    -- as it starts, which a page the server prerenders does not carry.
+    WikiPluginsSlot
   | EncryptedSlot
   deriving stock (Eq, Ord)
 
@@ -480,14 +490,20 @@ data State m = State
   -- ^ Whether changes not saved to a page of an encrypted space were
   -- taken off the screen with the space ('sealScreen'): said once, until
   -- the reader dismisses it. The text is kept nowhere.
+  , chosenPlugins :: Plugins
+  -- ^ The plugins off for the wiki and the reader's choices, read with
+  -- the session ('fetchWorld') and again when the settings or the
+  -- administration change them ('loadPlugins'): every view's context
+  -- carries them ('Wiki.App.Plugin.Registry.pluginsOn').
   , worldAsks :: Asks
   , hereAsks :: Asks
   , backlinkAsks :: Asks
+  , pluginAsks :: Asks
   -- ^ The reads of who is asking and the spaces ('loadWorld'), of the
-  -- space the route is in ('loadHere'), and of the page's backlinks
-  -- ('loadBacklinks'). Two of a kind can be out at once (two reloads),
-  -- and an answer is taken only if no newer one of its kind was
-  -- ("Wiki.App.View.Latest").
+  -- space the route is in ('loadHere'), of the page's backlinks
+  -- ('loadBacklinks'), and of the plugins (with the world, or alone).
+  -- Two of a kind can be out at once (two reloads), and an answer is
+  -- taken only if no newer one of its kind was ("Wiki.App.View.Latest").
   }
 
 -- | Whose changes a route followed away would lose ('leaving'): what the
@@ -551,7 +567,7 @@ data Action
 
 component
   :: forall output m
-   . (Typeable m, MonadLoad m, MonadAdmin m, MonadComments m, MonadNotifications m, MonadStars m, MonadWhatsNew m, MonadSecurity m, MonadIslands m, MonadAssistant m, MonadVault m, MonadEncryption m, MonadUUID m, MonadBrowserDOM m, MonadUnliftIO m)
+   . (Typeable m, MonadLoad m, MonadAdmin m, MonadComments m, MonadNotifications m, MonadStars m, MonadWhatsNew m, MonadSecurity m, MonadPlugins m, MonadIslands m, MonadAssistant m, MonadVault m, MonadEncryption m, MonadUUID m, MonadBrowserDOM m, MonadUnliftIO m)
   => H.Component Query (Input m) output m
 component =
   H.mkComponent
@@ -577,7 +593,7 @@ component =
                 | PermanentLink pid _ <- route -> lookingFor pid <$> pageLocation pid
                 | otherwise -> maybe (pure NoSpace) fetchHere (spaceOfRoute route)
             pure (world, here)
-          let (Around signedIn users spaces home icons avatars kept, here) = fromMaybe (Around anonymous [] [] Nothing mempty mempty False, NoSpace) loaded
+          let (Around signedIn users spaces home icons avatars kept readPlugins, here) = fromMaybe (Around anonymous [] [] Nothing mempty mempty False Nothing, NoSpace) loaded
           switcherHolder <- H.newRefLabel "space-switcher"
           menuHolder <- H.newRefLabel "user-switcher"
           let begun =
@@ -625,9 +641,11 @@ component =
                   , seen = Nothing
                   , stale = Nothing
                   , droppedUnsaved = False
+                  , chosenPlugins = fromMaybe noPlugins readPlugins
                   , worldAsks = noAsks
                   , hereAsks = noAsks
                   , backlinkAsks = noAsks
+                  , pluginAsks = noAsks
                   }
           -- The page's backlinks too, if the backend has them at once, so
           -- that the sidebar's first render is the prerendered one; else
@@ -910,7 +928,15 @@ component =
       R.Overview -> HH.slot "view" StatusSlot StatusView.component StatusView.Input {context = ctx} FromView
       R.Users listing -> HH.slot "view" UsersSlot UsersView.component UsersView.Input {context = ctx, listing} FromView
       R.Groups -> HH.slot "view" GroupsSlot GroupsView.component GroupsView.Input {context = ctx} FromView
-      R.Permissions -> HH.slot "view" AccessSlot AccessView.component AccessView.Input {context = ctx} FromView
+      R.Permissions ->
+        [hh|
+          <div class="admin-permissions-and-plugins">
+            {{ HH.slot "view" AccessSlot AccessView.component AccessView.Input {context = ctx} FromView }}
+            {% if st.settingsShown %}
+              {{ HH.slot "view" WikiPluginsSlot WikiPluginsView.component () FromView }}
+            {% end %}
+          </div>
+        |]
       R.Server -> HH.slot "view" ServerSlot ServerView.component ServerView.Input {context = ctx} FromView
       R.EditorSettings -> HH.slot "view" EditorSettingsSlot EditorSettingsView.component EditorSettingsView.Input {context = ctx} FromView
       R.Backups ->
@@ -1010,6 +1036,12 @@ component =
         [hh|
           <div class="settings-sections">
             {{ HH.slot_ "part" (ApiKeysSlot who) ApiKeysView.component ApiKeysView.Input {session = st.sessionNumber, administers = isAdministrator st, address = ApiKeysView.programAddress st.origin st.router, demo = isJust st.demo} }}
+          </div>
+        |]
+      PluginsSection ->
+        [hh|
+          <div class="settings-sections">
+            {{ HH.slot "view" (PluginsSlot who) PluginsView.component PluginsView.Input {session = st.sessionNumber, router = st.router} FromView }}
           </div>
         |]
       NotificationsSection ->
@@ -1716,6 +1748,7 @@ component =
         modify (\st -> st {chosenWidth = width})
         H.liftEffect (Storage.setItem LocalStorage pageWidthKey (case width of Compact -> "compact" :: Text; FullWidth -> "full"))
       FromView (Showing page) -> modify (\st -> st {shown = Just page})
+      FromView PluginsChanged -> loadPlugins
       FromView Entered -> do
         now <- H.liftEffect historyEntry
         modify (\st -> st {entry = now})
@@ -1965,8 +1998,12 @@ component =
     loadWorld = do
       demo <- gets (\st -> st.demo)
       ticket <- Latest.asking worldAsksOf setWorldAsks
+      pluginTicket <- Latest.asking pluginAsksOf setPluginAsks
       H.async (attempt (fetchWorld demo)) >>= \case
         Right w -> whenM (Latest.answered worldAsksOf setWorldAsks ticket (\st -> st {session = w.asking, sessionNumber = if sameUser st.session w.asking then st.sessionNumber else st.sessionNumber + 1, users = w.users, spaces = w.spaces, home = w.home, icons = w.icons, avatars = w.avatars, kept = w.kept, world = WorldReady, stale = Nothing})) $ do
+          -- What is on, read with the session: taken unless the plugins
+          -- were read again since this load was asked ('loadPlugins').
+          void (Latest.answered pluginAsksOf setPluginAsks pluginTicket (\st -> st {chosenPlugins = pluginsOr st.chosenPlugins w.pluginsRead}))
           -- The server says nobody is signed in in this browser: no user's
           -- keys stay on the device, as after a sign-out, even when the
           -- session ended with no tab open. Not from a copy kept offline,
@@ -1991,6 +2028,16 @@ component =
           dirty <- isJust <$> unsavedShown
           void . Latest.answered worldAsksOf setWorldAsks ticket $ \st ->
             if dirty && st.world == WorldReady then st {stale = Just e} else st {world = WorldFailed e}
+
+    -- Read again which plugins are on, after the settings or the
+    -- administration changed them in this tab: the editor follows at
+    -- once. An answer is taken only if no newer read of them was, with
+    -- the world or alone.
+    loadPlugins :: H.HalogenM (State m) Action Slots output m ()
+    loadPlugins = do
+      ticket <- Latest.asking pluginAsksOf setPluginAsks
+      answer <- pluginsNow
+      void (Latest.answered pluginAsksOf setPluginAsks ticket (\st -> st {chosenPlugins = pluginsOr st.chosenPlugins (rightToMaybe answer)}))
 
     -- Whose changes not saved the content shown holds, if any: an
     -- editor's, or a page view's ticks. Asked before a route away
@@ -2120,13 +2167,16 @@ data Around = Around
   , icons :: Map SpaceId Text
   , avatars :: Map UserId Text
   , kept :: Bool
+  , pluginsRead :: Maybe Plugins
+  -- ^ Which plugins are on for whoever asks, or 'Nothing' when that could
+  -- not be read ('pluginsOr').
   }
 
 -- | Load 'Around'.
 --
 -- A closed wiki has no spaces to show someone who has not signed in, so
 -- they are not requested.
-fetchWorld :: (MonadWiki n) => Maybe (Demo n) -> n Around
+fetchWorld :: (MonadWiki n, MonadPlugins n) => Maybe (Demo n) -> n Around
 fetchWorld demo = do
   asking <- session
   users <- maybe (pure []) (\d -> d.listUsers) demo
@@ -2137,7 +2187,16 @@ fetchWorld demo = do
   icons <- Map.fromList <$> sequence [(x.id,) <$> spaceIconUrl x | x <- spaces <> toList home, Just (IconImage _ _) <- [x.icon]]
   avatars <- avatarUrls [(u.id, u.avatar) | u <- toList asking.user <> users]
   kept <- maybe (pure False) (\d -> d.demoKept) demo
-  pure Around {asking, users, spaces, home, icons, avatars, kept}
+  -- A closed wiki refuses the plugins to someone not signed in, who is
+  -- shown nothing they would change.
+  pluginsRead <- if shutOut asking then pure Nothing else rightToMaybe <$> pluginsNow
+  pure Around {asking, users, spaces, home, icons, avatars, kept, pluginsRead}
+
+-- | What is on after a read of the plugins: what it answered, or, when it
+-- failed, the defaults with what the wiki was known to turn off. A read
+-- that fails says nothing to the reader, as the other optional reads do.
+pluginsOr :: Plugins -> Maybe Plugins -> Plugins
+pluginsOr held = fromMaybe held {mine = mempty}
 
 -- | The space at a path, with its pages, or why it cannot be shown.
 fetchHere :: (MonadWiki n) => [Slug] -> n Here
@@ -2225,6 +2284,13 @@ worldAsksOf st = st.worldAsks
 setWorldAsks :: Asks -> State m -> State m
 setWorldAsks a st = st {worldAsks = a}
 
+-- | The shell's reads of which plugins are on ('pluginAsks').
+pluginAsksOf :: State m -> Asks
+pluginAsksOf st = st.pluginAsks
+
+setPluginAsks :: Asks -> State m -> State m
+setPluginAsks a st = st {pluginAsks = a}
+
 -- | The shell's reads of the space the route is in ('hereAsks').
 hereAsksOf :: State m -> Asks
 hereAsksOf st = st.hereAsks
@@ -2236,7 +2302,9 @@ setHereAsks a st = st {hereAsks = a}
 -- gave, in place of the one shown: newer than the answer to any load of
 -- the wiki still out, which is not taken after it ('worldAsks').
 newSession :: Session -> State m -> State m
-newSession s = Latest.superseded worldAsksOf setWorldAsks (\st -> st {session = s, sessionNumber = st.sessionNumber + 1, settled = False, panel = Actions Nothing})
+newSession s =
+  Latest.superseded pluginAsksOf setPluginAsks (\st -> st {chosenPlugins = st.chosenPlugins {mine = mempty}})
+    . Latest.superseded worldAsksOf setWorldAsks (\st -> st {session = s, sessionNumber = st.sessionNumber + 1, settled = False, panel = Actions Nothing})
 
 -- | Whether two sessions are of the same user, or both of nobody: a load
 -- of the wiki answering with the session the shell holds is the same
@@ -2246,7 +2314,7 @@ sameUser :: Session -> Session -> Bool
 sameUser a b = ((\u -> u.id) <$> a.user) == ((\u -> u.id) <$> b.user)
 
 context :: State m -> Context
-context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth}
+context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth, plugins = st.chosenPlugins}
   where
     available =
       st.spaces <> case st.here of

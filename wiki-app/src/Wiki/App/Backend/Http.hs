@@ -132,6 +132,7 @@ import Wiki.Api.Links (searchParameters)
 import Wiki.Api.Links qualified as Links
 import Wiki.Api.Notifications (Notifications (..), NotificationsApi (..), Watching (..), searchable)
 import Wiki.Api.Opaque (LoginChallenge (..), LoginFinish (..), LoginStart (..), Message, NewAccountRecord (..), OldPasswordProof (..), PasswordRecord (..), PasswordRecordChange (..), PasswordWrapChange (..), ProofStart (..), RegistrationChallenge (..), RegistrationFor (..), RegistrationStart (..))
+import Wiki.Api.Plugins (PluginStateChange (..))
 import Wiki.Api.Security (CurrentPassword (..), EmailChange (..), OneTimeCode (..), ResetRequest (..))
 import Wiki.Api.ServerSettings (MailTest (..))
 import Wiki.Api.Stars (StarredPage (..), Starring (..), StarsApi (..))
@@ -152,6 +153,7 @@ import Wiki.App.Backend.Http.Client (ClientApi, answer, fromSessionInfo, noRespo
 import Wiki.App.Backend.Http.Transport
 import Wiki.App.Backend.Notifications (MonadNotifications (..))
 import Wiki.App.Backend.Opaque qualified as Opaque
+import Wiki.App.Backend.Plugins (MonadPlugins (..))
 import Wiki.App.Backend.Stars (MonadStars (..))
 import Wiki.App.Backend.WhatsNew (MonadWhatsNew (..))
 import Wiki.App.DecryptedExport (DecryptedExport (..), ExportedSpace (..), LeftOut (..), checkedZip, decryptedArchive, exportFileName)
@@ -1250,6 +1252,20 @@ sealedTitles pids = do
 -- server prerendered is the program's first render, and read once a tab.
 instance (MonadIO m) => MonadWhatsNew (HttpWiki m) where
   whatsNew = cached (\c -> c.whatsNew) endpoints.whatsNew withWhatsNew
+
+-- | Which plugins are on, over the API's @plugins@, @account\/plugins\/…@
+-- and @admin\/plugins@. What is on is cached as the session is
+-- ('cached'), so that the page the server prerendered is the program's
+-- first render, and read again once a write or a sign-in has emptied the
+-- cache: a change made in another tab, or by the administrator, is seen
+-- then. The writes empty the cache, as every write does. The
+-- administrator's set is read afresh each time the administration shows
+-- it.
+instance (MonadIO m) => MonadPlugins (HttpWiki m) where
+  pluginsNow = cached (\c -> c.plugins) endpoints.plugins (\a c -> c {Cache.plugins = Just a})
+  setPluginState p s = write (endpoints.account.setPluginState p PluginStateChange {state = s})
+  wikiPluginsOff = send endpoints.admin.plugins
+  setWikiPluginsOff new = write (endpoints.admin.setPlugins new)
 
 -- | The tab's live channel: one per backend, made with it, and opened when
 -- the first page is watched.

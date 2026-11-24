@@ -131,6 +131,7 @@ actionText a = Map.findWithDefault a a actions
         , ("settings.wiki", "Changed whom the wiki lets in")
         , ("settings.server", "Changed the server's settings")
         , ("settings.backups", "Changed the backups' settings")
+        , ("settings.plugins", "Changed which plugins are off for everyone")
         , ("invitation.create", "Invited someone")
         , ("invitation.revoke", "Revoked an invitation")
         , ("invitation.accept", "Accepted an invitation")

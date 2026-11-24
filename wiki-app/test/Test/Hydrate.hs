@@ -59,6 +59,7 @@ import Wiki.App.Backend.Mem (newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..), savePageIn)
 import Wiki.App.Backend.Mem.State qualified as M
 import Wiki.App.Backend.Notifications (MonadNotifications (..))
+import Wiki.App.Backend.Plugins (MonadPlugins (..))
 import Wiki.App.Backend.Stars (MonadStars (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Route (AdminSection (..), Against (..), Route (..), UserFilter (..), UserListing (..), adminSections, settingsSections)
@@ -390,6 +391,7 @@ apiOver providers seed = do
       pure ([(endpointUrl (\e -> e.spaces.atPath (spacePath s.id)), answerOf space), (endpointUrl (\e -> e.spaces.listPages s.id), answerOf pages), (endpointUrl (\e -> e.spaces.postDetails s.id), answerOf details), (endpointUrl (\e -> e.notifications.spaceWatch s.id), answerOf spaceWatch)] <> concat perPage)
     told <- notifications
     stars <- starred
+    plugins <- pluginsNow
     pure
       ( Map.fromList
           ( (endpointUrl (\e -> e.session), answerOf (Right SessionInfo {user = me.user, groups = me.groups, grants = me.grants, standing = me.standing, providers, exports = me.exports, boxes = [], homePage = me.homePage, mathMacros = Nothing, assistantServices = [], whatsNew = Just (newestEntry news)} :: Either WikiError SessionInfo))
@@ -406,6 +408,7 @@ apiOver providers seed = do
               : (endpointUrl (\e -> e.admin.texEngine), answerOf (Right engine :: Either WikiError TexEngine))
               : (endpointUrl (\e -> e.notifications.list), answerOf told)
               : (endpointUrl (\e -> e.stars.list), answerOf stars)
+              : (endpointUrl (\e -> e.plugins), answerOf plugins)
               : (endpointUrl (\e -> e.whatsNew), answerOf (Right news :: Either WikiError WhatsNew))
               : (endpointUrl (\e -> e.invitations.details (InvitationToken "valid")), answerOf (Right InvitationInfo {email = Email "bea@example.org", expiresAt = now} :: Either WikiError InvitationInfo))
               : usersPages

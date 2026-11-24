@@ -116,6 +116,9 @@ fromArchive a =
         , -- Nor API keys: an export has none, and a key belongs to its
           -- user.
           apiKeys = mempty
+        , -- Nor which plugins are on: an export has none of it.
+          pluginChoices = mempty
+        , pluginsOff = mempty
         }
 
 -- | Replace user content while importing the root into its existing identity.

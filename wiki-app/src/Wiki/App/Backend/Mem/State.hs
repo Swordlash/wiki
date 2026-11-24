@@ -166,6 +166,12 @@ module Wiki.App.Backend.Mem.State
   , apiKeysIn
   , makeApiKeyIn
   , revokeApiKeyIn
+
+    -- * Plugins
+  , pluginsIn
+  , setPluginStateIn
+  , wikiPluginsIn
+  , setWikiPluginsIn
   )
 where
 
@@ -200,6 +206,7 @@ import Wiki.Api.ApiKeys qualified as Key
 import Wiki.Api.Backups (Backups (..), defaultBackupSettings)
 import Wiki.Api.Notifications (NotificationSettings (NotificationSettings), NotificationSettingsChange, Notifications (Notifications), ReadMark)
 import Wiki.Api.Notifications qualified as N
+import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), WikiPlugins (..), maxPluginsOff, maxPluginsPerUser, parsePluginId)
 import Wiki.Api.ServerSettings (HomePage, MailTestResult, ProviderChange, ProviderCheck (ProviderCheck), ServerSettings, ServerSettingsChange, ServerSettingsOf, applyChange, checkHomePage, checkServerSettings, named, noServerSettings, providerProblems, providerWith, redirectUri, secretState)
 import Wiki.Api.ServerSettings qualified as SS
 import Wiki.Api.Stars (StarredPage (StarredPage), maxStars)
@@ -356,6 +363,13 @@ data MemState = MemState
   -- the list shows them: no secret, since a key made in the demo signs in
   -- nowhere. They live as long as the tab, like 'server', and are not
   -- saved in IndexedDB or exported.
+  , pluginChoices :: Map UserId (Map PluginId PluginChoice)
+  -- ^ Each user's choices for the plugins ("Wiki.Api.Plugins"), by
+  -- plugin: only the plugins a user chose something for, as the server
+  -- keeps them. They live as long as the tab, like 'apiKeys'.
+  , pluginsOff :: Set PluginId
+  -- ^ The plugins the administrator turned off for the whole wiki, for
+  -- the tab's life.
   }
   deriving stock (Eq, Show)
 
@@ -392,6 +406,8 @@ emptyState =
     , counter = 1
     , whatsNew = Nothing
     , apiKeys = mempty
+    , pluginChoices = mempty
+    , pluginsOff = mempty
     }
 
 -- | A version of a page as the state stores it, under the page and its
@@ -1821,6 +1837,7 @@ removeUserIn uid st = do
         , choices = Map.delete uid st0.choices
         , stars = Map.delete uid st0.stars
         , apiKeys = Map.delete uid st0.apiKeys
+        , pluginChoices = Map.delete uid st0.pluginChoices
         , threads = Map.map (map (\t -> t {C.comments = map keptComment t.comments})) st0.threads
         }
     , ()
@@ -2448,3 +2465,63 @@ revokeApiKeyIn now i st = do
   unless (any (\k -> k.id == i) mine) (Left NotFound)
   let after = [if k.id == i && isNothing k.revokedAt then k {Key.revokedAt = Just now} else k | k <- mine]
   pure (st {apiKeys = Map.insert u after st.apiKeys}, after)
+
+--------------------------------------------------------------------------------
+-- Plugins
+
+-- | What is on, as the server's @GET api\/v1\/plugins@ answers it
+-- ("Wiki.Server.Plugins"'s @pluginsFor@): the plugins off for the whole
+-- wiki, and the signed-in user's choices; nobody signed in has none. A
+-- closed wiki refuses someone not signed in, as the server does (its 401
+-- is 'Forbidden' to the application).
+pluginsIn :: MemState -> Either WikiError Plugins
+pluginsIn st = case currentUserId st of
+  Nothing
+    | st.grants.access == Closed -> Left Forbidden
+    | otherwise -> Right Plugins {offForWiki = st.pluginsOff, mine = mempty}
+  Just u -> Right Plugins {offForWiki = st.pluginsOff, mine = Map.findWithDefault mempty u st.pluginChoices}
+
+-- | Set the signed-in user's state for a plugin, leaving its options as
+-- they are, by the server's rules and in its order of checks
+-- ("Wiki.Server.Storage.Plugins"'s @writeState@): an id that is not of
+-- the form of one is 'Invalid', with the rule (the server refuses it as it
+-- reads the address, before anything else); nobody signed in is
+-- 'Forbidden'; a first choice of a user who has choices kept for
+-- 'maxPluginsPerUser' plugins already is 'Invalid', in the server's words.
+-- A plugin given back to its default with no options is no longer kept.
+-- The plugins off for the wiki do not matter here: a user's choice is
+-- kept whatever the administrator turned off. The result is the user's
+-- choice for the plugin after it.
+setPluginStateIn :: PluginId -> PluginState -> Write PluginChoice
+setPluginStateIn p wanted st = do
+  void (first Invalid (parsePluginId p.text))
+  u <- signedIn st
+  let mine = Map.findWithDefault mempty u st.pluginChoices
+      before = Map.lookup p mine
+      after = PluginChoice {state = wanted, options = (\c -> c.options) =<< before}
+      keep = wanted /= PluginDefault || isJust after.options
+  when (keep && isNothing before && Map.size mine >= maxPluginsPerUser) $
+    Left (Invalid ("You have choices kept for " <> show maxPluginsPerUser <> " plugins already, the most a user has: give one of them back to its default, with no options, first."))
+  let mine' = if keep then Map.insert p after mine else Map.delete p mine
+      choices = if Map.null mine' then Map.delete u st.pluginChoices else Map.insert u mine' st.pluginChoices
+  pure (st {pluginChoices = choices}, after)
+
+-- | The plugins off for the whole wiki, for an administrator only, as the
+-- server's @wikiPluginsOff@; anyone else is 'Forbidden'.
+wikiPluginsIn :: MemState -> Either WikiError WikiPlugins
+wikiPluginsIn st = requireAdministrator st $> WikiPlugins {off = st.pluginsOff}
+
+-- | Replace the plugins off for the whole wiki, as the server's
+-- @setWikiPluginsOff@: an id that is not of the form of one is 'Invalid'
+-- (the server refuses it as it reads the body, before anything else);
+-- someone who does not administer the wiki is 'Forbidden'; more than
+-- 'maxPluginsOff' ids are 'Invalid', in the server's words. The users'
+-- choices are not touched: a plugin turned back on is as each user chose.
+-- The demo keeps no audit log.
+setWikiPluginsIn :: WikiPlugins -> Write WikiPlugins
+setWikiPluginsIn new st = do
+  traverse_ (first Invalid . parsePluginId . (\p -> p.text)) (toList new.off)
+  requireAdministrator st
+  when (Set.size new.off > maxPluginsOff) $
+    Left (Invalid ("The wiki turns off at most " <> show maxPluginsOff <> " plugins."))
+  pure (st {pluginsOff = new.off}, WikiPlugins {off = new.off})

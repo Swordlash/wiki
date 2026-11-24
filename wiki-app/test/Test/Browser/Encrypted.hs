@@ -461,7 +461,7 @@ spec m = readsOnce Quiet $ do
     twoAgain <- imageOf ui
     -- The third page's answer, taken: the second stays.
     release
-    answersTaken 20000
+    answersTaken
     find ui ".page-view .page-title-row" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Two")
     unsafeIOToPageM (js_image_width (toJSText twoAgain)) `shouldReturn` 4
     -- Its links, the file's and the attachments list's, still lead to its

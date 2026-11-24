@@ -27,6 +27,7 @@ module Test.Browser.Http
   , answerUsers
   , answerRaw
   , asked
+  , askedNow
   , offline
   , browserGoes
   , startServer
@@ -34,6 +35,7 @@ module Test.Browser.Http
   , startServerOver
   , startServerThrough
   , tellServer
+  , tell
   , said
   , holdAt
   , holdNext
@@ -140,7 +142,6 @@ $( browserJS
      , ("js_server_release", "wiki_test_server_release", Safe, [t|IO ()|])
      , ("js_server_pending", "wiki_test_server_pending", Safe, [t|IO Int|])
      , ("js_server_holding", "wiki_test_server_holding", Safe, [t|IO Int|])
-     , ("js_server_open_sockets", "wiki_test_server_open_sockets", Safe, [t|IO Int|])
      , ("js_server_asked", "wiki_test_server_asked", Safe, [t|IO JSText|])
      , ("js_markup", "wiki_test_markup", Safe, [t|IO JSText|])
      , ("js_embed", "wiki_test_embed", Safe, [t|JSText -> JSText -> IO ()|])
@@ -153,6 +154,8 @@ $( browserJS
      , ("js_server_until_open_saidPromise", "wiki_test_server_until_open_said", Safe, [t|JSText -> Int -> IO (Promise Bool)|])
      , ("js_server_until_askedPromise", "wiki_test_server_until_asked", Safe, [t|Int -> Int -> IO (Promise Bool)|])
      , ("js_server_until_abortedPromise", "wiki_test_server_until_aborted", Safe, [t|Int -> Int -> IO (Promise Bool)|])
+     , ("js_server_until_openPromise", "wiki_test_server_until_open", Safe, [t|Int -> IO (Promise Bool)|])
+     , ("js_server_until_answeredPromise", "wiki_test_server_until_answered", Safe, [t|Int -> IO (Promise Bool)|])
      , ("js_hide_clipboard", "wiki_test_hide_clipboard", Safe, [t|Bool -> IO ()|])
      , ("js_stub_clipboard", "wiki_test_stub_clipboard", Safe, [t|Bool -> IO ()|])
      , ("js_unstub_clipboard", "wiki_test_unstub_clipboard", Safe, [t|IO ()|])
@@ -174,6 +177,12 @@ js_server_until_asked a1 a2 = if inBrowser then wait =<< js_server_until_askedPr
 
 js_server_until_aborted :: Int -> Int -> IO Bool
 js_server_until_aborted a1 a2 = if inBrowser then wait =<< js_server_until_abortedPromise a1 a2 else pure inert
+
+js_server_until_open :: Int -> IO Bool
+js_server_until_open a1 = if inBrowser then wait =<< js_server_until_openPromise a1 else pure inert
+
+js_server_until_answered :: Int -> IO Bool
+js_server_until_answered a1 = if inBrowser then wait =<< js_server_until_answeredPromise a1 else pure inert
 
 -- | A request the server was asked.
 data Asked = Asked
@@ -209,28 +218,49 @@ releaseHolding method url = unsafeIOToPageM (js_server_release_holding (toJSText
 
 -- | Wait until the page has a socket open to the server: what the server
 -- says before that reaches nothing, as a real server's message to a tab
--- that is not connected. Within the given milliseconds.
-listening :: Int -> PageM s ()
-listening within = eventuallyWithin within (unsafeIOToPageM js_server_open_sockets >>= (`shouldSatisfy` (> 0)))
+-- that is not connected. A socket opens on the browser's timer (in the
+-- stand-in as from a real server), and one the live channel opens again
+-- after it closed waits first for the channel's own pause (a
+-- @threadDelay@ of "Wiki.App.Live" on a thread of its own). No rest of the
+-- program covers either, so this hangs on the server's own signal, a
+-- socket opened, and fails only at the watchdog. The open socket's
+-- handler has run by then: what the program does on it (subscriptions
+-- said, the bell's read after a reopening) is the program's, and a read
+-- at rest after this sees it done.
+listening :: (HasCallStack) => PageM s ()
+listening = do
+  came <- unsafeIOToPageM (js_server_until_open watchdogMs)
+  unless came $ do
+    made <- unsafeIOToPageM js_server_sockets
+    expectationFailure ("after " <> show watchdogMs <> " ms, no socket of the page was open; it had made " <> show made)
 
 -- | Wait until the server has answered every request it was given and the
 -- program has taken the answers: no request pending, and then the program
--- quiet (hspec-halogen's 'waitQuietWithin': no tree has work running or
--- queued, and no fiber waits in an @H.async@, the reading of an answer and
--- what follows it included). The server's answer alone is not that: the
--- program decodes it and acts on it later, and a check made in between
--- finds the state from before the answer, whatever the answer then does.
--- After a 'release', a check that something is still as it was is then a
--- check of what the answers did.
+-- quiet ('waitQuiet': no tree has work running or queued, and no fiber
+-- waits in an @H.async@, the reading of an answer and what follows it
+-- included, but for the requests the server holds, which it counts). The
+-- server's answer alone is not that: the program decodes it and acts on it
+-- later, and a check made in between finds the state from before the
+-- answer, whatever the answer then does. After a 'release', a check that
+-- something is still as it was is then a check of what the answers did.
+--
+-- The first wait hangs on the server's own signal, each answer it gives,
+-- and fails only at the watchdog. Quiet alone does not cover it: a request
+-- that no fiber waits for any more (its view closed while the server held
+-- it, in "Test.Browser.Encrypted") is still answered, and nothing of the
+-- program counts that answer.
 --
 -- Quiet is the signal for a view that reads and shows (the bell, a page,
--- a list). Not for an editor after typing: its draft's autosave keeps a
--- fiber waiting for seconds. Nor for what the live channel pushes, which
--- no fiber waits for. The milliseconds given only guard against a hang.
-answersTaken :: Int -> PageM s ()
-answersTaken within = do
-  eventuallyWithin within (unsafeIOToPageM js_server_pending `shouldReturn` 0)
-  waitQuietWithin within
+-- a list). Not for an editor after typing off the test's clock: its
+-- draft's autosave keeps a fiber waiting for seconds. Nor for what the
+-- live channel pushes, which no fiber waits for.
+answersTaken :: (HasCallStack) => PageM s ()
+answersTaken = do
+  answered <- unsafeIOToPageM (js_server_until_answered watchdogMs)
+  unless answered $ do
+    pending <- unsafeIOToPageM js_server_pending
+    expectationFailure ("after " <> show watchdogMs <> " ms, the server still had " <> show pending <> " requests to answer")
+  waitQuiet
 
 -- | Answer the requests held. It does not settle the program, as
 -- 'perform' would: some tests (the encrypted spaces') hold the program
@@ -240,9 +270,11 @@ release = unsafeIOToPageM js_server_release
 
 -- | Close the live channel's sockets as a network that drops them does:
 -- the program opens one again, and is told it missed what was sent
--- meanwhile ("Wiki.App.Live"'s 'Reopened').
+-- meanwhile ("Wiki.App.Live"'s 'Reopened'). The program is settled after
+-- the call, as after 'perform'; the new socket opens after the channel's
+-- own pause, which 'listening' waits for.
 hangUp :: PageM s ()
-hangUp = unsafeIOToPageM js_server_hang_up
+hangUp = perform js_server_hang_up
 
 -- | The server in fetch's place, with nothing to answer yet, for the length
 -- of the test.

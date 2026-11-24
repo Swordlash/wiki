@@ -136,7 +136,8 @@ function wiki_test_server_start() {
 
 // The server's fetch, counting the requests it has not answered yet
 // ('pending'): a test that let a held request go waits for its answer to
-// have been given before it looks at what the page did with it.
+// have been given before it looks at what the page did with it. Each
+// answer given is a change the waiters check again.
 function wikiTestServerCounted(serve) {
   return async (url, init) => {
     const request = {};
@@ -145,6 +146,7 @@ function wikiTestServerCounted(serve) {
       return await serve(url, init);
     } finally {
       wikiTestServer.pending.delete(request);
+      wikiTestServerChanged();
     }
   };
 }
@@ -248,15 +250,15 @@ function wiki_test_server_sockets() {
 }
 
 // The test's waits on this server's own signals (Test.Browser.Http's
-// 'untilSaid', 'untilOpenSaid', 'untilAsked', 'untilAborted'), for what
-// happens outside the program's loop: a socket that opens on the browser's
-// timer and what the live channel says on it, the live channel's own
-// pauses before it opens a socket again or asks again for a refused page,
-// and a request of a thread the test forked itself. Each waiter is a
-// check, run again at every change the server sees (a request asked or
-// aborted, a message said, a socket opened or closed). It resolves true
-// once the check holds, or false at the deadline it is given, the suite's
-// watchdog.
+// 'untilSaid', 'untilOpenSaid', 'untilAsked', 'untilAborted', 'listening',
+// 'answersTaken'), for what happens outside the program's loop: a socket
+// that opens on the browser's timer and what the live channel says on it,
+// the live channel's own pauses before it opens a socket again or asks
+// again for a refused page, a request of a thread the test forked itself,
+// and the answers the server gives. Each waiter is a check, run again at
+// every change the server sees (a request asked, answered or aborted, a
+// message said, a socket opened or closed). It resolves true once the
+// check holds, or false at the deadline it is given, the suite's watchdog.
 const wikiTestServerWaiters = new Set();
 
 function wikiTestServerUntil(holds, ms) {
@@ -300,6 +302,16 @@ function wiki_test_server_until_asked(count, ms) {
 // Wait until this many of the requests asked have been aborted.
 function wiki_test_server_until_aborted(count, ms) {
   return wikiTestServerUntil(() => wikiTestServer.asked.filter((request) => request.aborted).length >= count, ms);
+}
+
+// Wait until a socket of the page is open.
+function wiki_test_server_until_open(ms) {
+  return wikiTestServerUntil(() => wiki_test_server_open_sockets() > 0, ms);
+}
+
+// Wait until the server has answered every request it was asked.
+function wiki_test_server_until_answered(ms) {
+  return wikiTestServerUntil(() => wikiTestServer.pending.size === 0, ms);
 }
 
 function wiki_test_server_answer(method, url, status, body) {

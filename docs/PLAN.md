@@ -2190,7 +2190,13 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   of focus, which it does on a 10 ms timer of its own (found on
   #349's CI): `focusTaken` in `web/src/editor.js` gives a promise the
   test waits on: merged (#354); the slide rows wait
-  out the same timer with `eventually` still. Seen in the library and left: Playwright's own test "the
+  out the same timer with `eventually` still. **The islands' tests**
+  read what an island raised through hspec-halogen's `outputs`, which
+  listens only once the mount has returned, so an error that came
+  back during the mount was lost (found on #357's CI): the test's
+  parent keeps the outputs itself now (#358). **For the library, a
+  pull request of the session's own:** `outputs` should hear what a
+  component raises while it is mounted. Seen in the library and left: Playwright's own test "the
   DevTools protocol slows a page's processor down" depends on the
   machine's speed (it failed at a load of 40 on 16 cores).** What is
   left, each a
@@ -2327,15 +2333,35 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   either the whole section is inside the spoiler, where it may have
   subsections of its own, or a spoiler in a section's text has no
   sections in it; the headings inside a spoiler form an outline
-  confined to it. **Writing one section: open (#352, stacked on the
-  keys), his decisions of the same day:** the server adds a final
-  line break; a write after which the outline outside its own part is
-  not what it was (levels, texts, anchors, order, parents) is refused
-  (422), which covers an open fence or spoiler, a heading of another
-  level and a rename that renumbers another anchor; a body may change
-  its own heading, and the answer gives the new anchor; a section
-  inside a spoiler may be written. One pure function,
-  `replaceSection` in `Wiki.Core.Markdown.Sections`.
+  confined to it. **Writing one section: #352, his decisions of the
+  same day:** the server adds a final line break; a write that
+  changes anything outside its own part is refused (422); a body may
+  change its own heading, and the answer gives the new anchor; a
+  section inside a spoiler may be written. One pure function,
+  `replaceSection` in `Wiki.Core.Markdown.Sections`. **What "changes
+  anything outside" came to mean, over six rounds of review:** every
+  block outside the part is, after the write, the block it was (the
+  parser's finished blocks, which carry what is resolved across the
+  page: link targets from definitions, footnote references, heading
+  ids), less what the page numbers by position (footnotes' numbers,
+  numbered boxes' ids); a link to an id that landed outside the part
+  still lands there (`elementIds`, pinned to the renderer by a
+  property over generated pages; the renderer's `linkShown` and
+  `embedShown` are shared with it); with `own=true` the heading does
+  not become or stop being a heading spoiler while the section has
+  subsections. **Left, rare and refusing only:** `elementIds` counts
+  an id written on a page's embed or on a link to a page that does
+  not exist, which the renderer does not write (the pure code does
+  not know which pages exist), so a section whose heading has that
+  same id written out cannot be written apart (422), only with the
+  whole page. Not compared at all, by design: a table of contents
+  block, a note's text shown on its references, math macros a
+  formula defines for those after it, ids in raw HTML. **A lesson
+  for briefs:** the first rule compared an outline and then a list
+  of ids, each a second account of what the renderer does, and each
+  round found another difference; comparing the blocks themselves,
+  and pinning what is left to the renderer by a property, is what
+  ended it.
   **A shell client: merged (#345)**, `clients/wiki.sh`, POSIX sh with
   `curl` only (the owner: Copilot at his work must reach the wiki
   locally, by a shell script rather than a compiled client); it lists,
@@ -2354,11 +2380,12 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   address; making a key asks for the proof adding a passkey asks for
   (the session's choice: a stolen session must not mint a key that
   never expires); `wiki-server keys list|add|revoke`. A new password
-  and "Sign out everywhere" leave keys working. **Their panel is
-  being built** (branch `api-keys-panel`): a fifth section of the
+  and "Sign out everywhere" leave keys working. **Their panel**: a fifth section of the
   settings, `/settings/api-keys/`, a machine over three calls of
   `MonadSecurity`, the key shown once with examples for `curl` and
-  `wiki.sh`; the example for MCP is added when #353 is merged. **MCP: open
+  `wiki.sh`: merged (#356); the example for MCP is added when #353
+  is merged, and the README's sentence "When API keys exist,
+  `WIKI_TOKEN` …" is stale. **MCP: open
   (#353, stacked on #352)**, as recommended below, with eight tools
   (the five below, `wiki_page_outline`, `wiki_read_section`,
   `wiki_create_page`); the library's callback is given the token

@@ -34,6 +34,8 @@ import Test.Live qualified as Live
 import Test.LivePreviewDom qualified as LivePreviewDom
 import Test.Manifest qualified as Manifest
 import Test.Passwords qualified as Passwords
+import Test.PluginImports qualified as PluginImports
+import Test.Plugins qualified as Plugins
 import Test.Policy qualified as Policy
 import Test.Preview qualified as Preview
 import Test.Problems qualified as Problems
@@ -96,6 +98,8 @@ main = do
       Policy.spec
       Preview.spec
       Problems.spec
+      Plugins.spec
+      PluginImports.spec
       Complete.spec
       Licence.spec
       Readme.spec

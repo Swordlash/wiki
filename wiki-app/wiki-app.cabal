@@ -107,6 +107,9 @@ library
       Wiki.App.Islands
       Wiki.App.Islands.Monad
       Wiki.App.Live
+      Wiki.App.Plugin
+      Wiki.App.Plugin.Errors
+      Wiki.App.Plugin.Registry
       Wiki.App.Offline
       Wiki.App.Recent
       Wiki.App.Route
@@ -370,6 +373,8 @@ test-suite wiki-app-test
         Test.Live
         Test.Manifest
         Test.Passwords
+        Test.PluginImports
+        Test.Plugins
         Test.Policy
         Test.Preview
         Test.Problems

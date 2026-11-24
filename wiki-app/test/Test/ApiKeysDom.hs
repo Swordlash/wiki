@@ -28,7 +28,7 @@ import Wiki.App.Backend.Mem (MemState, MemWiki, newMemWiki, runMemWiki, switchUs
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Route (Route (Unknown), route)
 import Wiki.App.Security (MonadSecurity (..))
-import Wiki.App.View.ApiKeys (Input (..), component, programAddress)
+import Wiki.App.View.ApiKeys (Input (..), component, examples, programAddress)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.User (Password (..))
 
@@ -144,6 +144,11 @@ spec = describe "Wiki.App.View.ApiKeys, mounted on the in-memory DOM" $ do
     at' "/" `shouldReturn` "https://wiki.example"
     at' "/wiki/" `shouldReturn` "https://wiki.example/wiki"
     at' "/wiki" `shouldReturn` "https://wiki.example/wiki"
+    -- The MCP server is the wiki's address and /mcp, under the base path too.
+    let mcpAt base = at' base <&> \a -> lastMay (snd <$> examples a "wiki_k_s")
+        mcpLine a = "claude mcp add --transport http wiki " <> a <> " --header \"Authorization: Bearer wiki_k_s\""
+    mcpAt "/" `shouldReturn` Just (mcpLine "https://wiki.example/mcp")
+    mcpAt "/wiki/" `shouldReturn` Just (mcpLine "https://wiki.example/wiki/mcp")
 
   it "says loading, then that there is no key yet" $
     withPanel editor $ \gate view quiet -> do
@@ -241,7 +246,10 @@ spec = describe "Wiki.App.View.ApiKeys, mounted on the in-memory DOM" $ do
       (findAll view ".api-key-example" >>= traverse N.textContent)
         `shouldReturn` [ "curl -H 'Authorization: Bearer " <> secret <> "' 'https://wiki.example/wiki/api/list/'"
                        , "WIKI_TOKEN='" <> secret <> "' WIKI_URL='https://wiki.example/wiki' sh wiki.sh list"
+                       , "claude mcp add --transport http wiki https://wiki.example/wiki/mcp --header \"Authorization: Bearer " <> secret <> "\""
                        ]
+      (findAll view ".api-key-example-label" >>= traverse N.textContent)
+        `shouldReturn` ["For an assistant such as Claude Code, through this wiki's MCP server:"]
       -- Copy: natively there is no clipboard, so the field is selected for
       -- the keyboard, and the button says so.
       textOf view ".api-key-copy" `shouldReturn` "Copy"

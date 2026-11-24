@@ -3299,13 +3299,15 @@ assistant reads (`AGENTS.md`, `.github/copilot-instructions.md`, `CLAUDE.md`);
 its front matter is a skill's, so it can also be Claude Code's skill
 `~/.claude/skills/wiki/SKILL.md`.
 
-When API keys exist, `WIKI_TOKEN` (or `token =` in the configuration file)
-will be sent as `Authorization: Bearer` in place of the login and password;
-the script sends it already, and the wiki refuses it (401) until then. The
-wiki's own MCP endpoint is planned after the keys, for clients that take an
-MCP server by its address; this script stays for those that start one by a
-command. The commands for what the API does not do yet (a page's table of
-contents and its sections) will join it as the API gets them.
+To sign in with an API key ([The API](#the-api)), set `WIKI_TOKEN` (or
+`token =` in the configuration file): the script sends it as
+`Authorization: Bearer` in every request, in place of the login and
+password, which it then does not send. A key the wiki does not take is
+refused (401, exit 3). A client that takes an MCP server by its address
+needs no script: the wiki's own server ([MCP](#mcp)) is there for it; this
+script is for clients that start one by a command. The API's table of
+contents and sections (`/api/contents/`, `?section=`) have no commands in
+the script yet.
 
 #### Bringing the demo's pages into the server
 

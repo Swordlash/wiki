@@ -524,13 +524,13 @@ suite() {
   expect 2 "no WIKI_URL is a wrong use"
   url=$public_root
 
-  # A key in WIKI_TOKEN is sent as Bearer, which the server does not take
-  # yet; under -x, the trace does not show it.
+  # A key in WIKI_TOKEN is sent as Bearer; a key the server does not know is
+  # refused, and under -x, the trace does not show it.
   env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_TOKEN="a key ${dq}wörd${dq}" \
     "$shell" -x "$client" list >"$work/out" 2>"$work/err"
   status=$?
-  expect 3 "a key is refused, as the server takes none yet"
-  has err "does not take API keys" "the refusal says keys are to come"
+  expect 3 "an unknown key is refused"
+  has err "does not take the API key in WIKI_TOKEN" "the refusal names the key"
   lacks err "wörd" "no key in the trace"
 
   # A ~/.curlrc that would change curl's requests and their answers: it
@@ -542,7 +542,7 @@ suite() {
     "$shell" "$client" list >"$work/out" 2>"$work/err"
   status=$?
   expect 3 "with a ~/.curlrc that says fail, a refused sign-in is still exit 3"
-  has err "does not take API keys" "with that ~/.curlrc, the refusal is still the wiki's"
+  has err "does not take the API key in WIKI_TOKEN" "with that ~/.curlrc, the refusal is still the wiki's"
   home=$work/curlrc-home state=$work/state-$1-curlrc
   client get "$page"
   expect 0 "with that ~/.curlrc, get reads the page"

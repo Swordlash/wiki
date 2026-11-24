@@ -266,7 +266,10 @@ component =
             <button type="button" class="api-key-copy" onClick={{ const (Happen CopyClicked) }}>{{ copyLabel }}</button>
           </div>
           <p class="account-note">Use it like this:</p>
-          {% for e in examples st.input.address made.key %}
+          {% for (label, e) in examples st.input.address made.key %}
+            {% for l in maybeToList label %}
+              <p class="account-note api-key-example-label">{{ l }}</p>
+            {% end %}
             <pre class="api-key-example"><code>{{ e }}</code></pre>
           {% end %}
           <button type="button" class="api-key-made-close" onClick={{ const (Happen KeyClosed) }}>I have copied it</button>
@@ -396,20 +399,25 @@ refusalText = \case
 -- scheme and host, @https:\/\/wiki.example@) and the path the wiki is
 -- served under, which the router's front page names (@\/@, or
 -- @\/wiki\/@ for a wiki served with @--base-path \/wiki\/@), without a
--- final slash. The API is served under the same path, so the examples
--- written with it reach the API whatever the wiki's base path is.
+-- final slash. The API and the MCP server are served under the same path,
+-- so the examples written with it reach them whatever the wiki's base path
+-- is.
 programAddress :: Text -> Router Route -> Text
 programAddress origin router = T.dropWhileEnd (== '/') (T.dropWhileEnd (== '/') origin <> Router.href router Home)
 
--- | The examples of a key's use shown with it: a request with @curl@, and
--- the wiki's shell client (@clients\/wiki.sh@), at the wiki's address.
-examples :: Text -> Text -> [Text]
+-- | The examples of a key's use shown with it, each with a label when the
+-- command alone does not say what it is for: a request with @curl@, the
+-- wiki's shell client (@clients\/wiki.sh@), and the line that adds the
+-- wiki's MCP server (@\/mcp@) to Claude Code, as the README's "MCP" gives
+-- it. All three are at the wiki's address.
+examples :: Text -> Text -> [(Maybe Text, Text)]
 examples given key =
-  [ "curl -H 'Authorization: Bearer " <> key <> "' '" <> address <> "/api/list/'"
-  , "WIKI_TOKEN='" <> key <> "' WIKI_URL='" <> address <> "' sh wiki.sh list"
-  -- The line that adds the wiki's MCP server to an assistant
-  -- (@claude mcp add --transport http … --header@) goes here once the
-  -- wiki serves MCP and the README describes it.
+  [ (Nothing, "curl -H 'Authorization: Bearer " <> key <> "' '" <> address <> "/api/list/'")
+  , (Nothing, "WIKI_TOKEN='" <> key <> "' WIKI_URL='" <> address <> "' sh wiki.sh list")
+  ,
+    ( Just "For an assistant such as Claude Code, through this wiki's MCP server:"
+    , "claude mcp add --transport http wiki " <> address <> "/mcp --header \"Authorization: Bearer " <> key <> "\""
+    )
   ]
   where
     address = T.dropWhileEnd (== '/') given

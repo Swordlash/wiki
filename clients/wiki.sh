@@ -379,7 +379,7 @@ check_answer() {
   case $http_status in
     401)
       if [ "$signing_in" = token ]; then
-        fail "$EX_SIGNIN" "sign-in refused (401): this wiki does not take API keys (WIKI_TOKEN) yet; sign in with WIKI_USER and WIKI_PASSWORD"
+        fail "$EX_SIGNIN" "sign-in refused (401): the wiki does not take the API key in WIKI_TOKEN; check it, or make another in your settings, under API keys"
       elif [ "$signing_in" = nobody ]; then
         fail "$EX_SIGNIN" "sign-in needed (401): set WIKI_USER and WIKI_PASSWORD, or user and password in $config_file"
       else
@@ -2125,8 +2125,8 @@ page's URL in the browser, or its API address (/api/markdown/s/...); or a
 space's path and a page's path apart, as the titles make them
 (team/projects the-wiki, team/edit history).
 
-Planned, once the server has them: a page's table of contents, and one
-section of a page.
+The API also gives a page's table of contents and one section of a page;
+this client has no commands for them yet.
 
 Configuration, from the environment or from ~/.config/wiki/config (another
 file with WIKI_CONFIG), which must be readable by you alone (chmod 600):
@@ -2135,7 +2135,7 @@ file with WIKI_CONFIG), which must be readable by you alone (chmod 600):
   WIKI_USER      your login                      user = editor
   WIKI_PASSWORD  your password                   password = my password
   WIKI_TOKEN     an API key, sent as Authorization: Bearer   token = ...
-                 (the wiki does not accept keys yet: they are to come)
+                 in place of the login and password
   WIKI_PROXY     a proxy, as curl's --proxy takes it      proxy = http://proxy:3128
   WIKI_CACERT    a CA bundle, as curl's --cacert takes it  cacert = /etc/ssl/work.pem
 

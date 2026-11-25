@@ -22,7 +22,7 @@ import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (lookup)
 import Data.Text qualified as T
 import Network.Connection (ConnectionParams (..), connectTo, connectionClose, connectionGetChunk, connectionPut, initConnectionContext)
-import Network.HTTP.Client (Request (redirectCount), defaultManagerSettings, httpLbs, newManager, parseRequest, responseHeaders, responseStatus)
+import Network.HTTP.Client (Request (redirectCount, requestHeaders), defaultManagerSettings, httpLbs, newManager, parseRequest, responseHeaders, responseStatus)
 import Network.HTTP.Types (HeaderName, ResponseHeaders, hHost, hLocation, hSetCookie, methodGet, methodOptions, methodPost, status200, statusCode)
 import Network.Wai (Application, defaultRequest, responseLBS, responseToStream)
 import Network.Wai qualified as Wai
@@ -152,12 +152,17 @@ plainOnTheTlsPort backing = describe "plain HTTP on its port" $ do
       let address = fromMaybe (panic ("not https: " <> r.public)) (T.stripPrefix "https://" r.public)
       plainManager <- newManager defaultManagerSettings
       asked <- parseRequest (toS ("http://" <> address <> "/api/v1/info?x=1"))
-      response <- httpLbs asked {redirectCount = 0} plainManager
+      -- A session cookie the server does not know: over HTTPS the wiki
+      -- answers it with a cookie that clears it, over plain HTTP nothing
+      -- of the wiki reads it.
+      let stale = ("Cookie", "wiki_session=stale")
+      response <- httpLbs asked {redirectCount = 0, requestHeaders = [stale]} plainManager
       statusCode (responseStatus response) `shouldBe` 308
       lookup hLocation (responseHeaders response) `shouldBe` Just (encodeUtf8 (r.public <> "/api/v1/info?x=1"))
       lookup hSetCookie (responseHeaders response) `shouldBe` Nothing
-      overHttpsReply <- getUrl r (r.public <> "/api/v1/info")
+      overHttpsReply <- getUrlWith r (r.public <> "/api/v1/info") [stale]
       overHttpsReply.status `shouldBe` 200
+      lookup hSetCookie overHttpsReply.headers `shouldSatisfy` isJust
       lookup hstsHeader overHttpsReply.headers `shouldBe` Just "max-age=31536000"
 
   it "is answered as it is by a server without a certificate, behind a proxy too, with no Strict-Transport-Security" $

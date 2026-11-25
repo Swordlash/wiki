@@ -1383,8 +1383,12 @@ only for a year, and refuses to let the reader click through a certificate error
 there: a certificate that expires, or is replaced by one the browser does not
 trust, becomes a hard stop until it is fixed. A browser ignores the header when it
 did not trust the certificate in the first place (a self-signed one, say), and
-warns as before. `--no-hsts` (wiki-server's option, and the deploy's, remembered;
-`--hsts` sends it again) leaves the header out. A server behind a proxy (below)
+warns as before. The header holds for the host name on every port, so other
+programs served over plain HTTP under the same name are refused by those browsers
+too, as is the wiki itself if it later moves to `--http` under that name.
+`--no-hsts` (wiki-server's option, and the deploy's, remembered; `--hsts` sends it
+again) leaves the header out; it does not take back what browsers have already
+seen, which lasts until the year runs out. A server behind a proxy (below)
 speaks plain HTTP itself and does neither.
 
 Any `--bind` will do, `0.0.0.0` included (without `--bind`, the Tailscale address,

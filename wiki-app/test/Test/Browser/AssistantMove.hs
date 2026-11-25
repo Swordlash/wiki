@@ -10,7 +10,9 @@
 -- typed meanwhile) are each moved to the plugin's secrets, and read back
 -- through the plugin's capability; the legacy places are emptied. L3
 -- (settings as text, where nothing can seal) is the native tests'
--- (@Test.AssistantMove@).
+-- (@Test.AssistantMove@). Each run goes under an owner of the user's
+-- keys, as the shell runs it; under an owner let go, the browser writes
+-- nothing: no record kept or deleted, no key let go.
 module Test.Browser.AssistantMove (spec) where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -22,7 +24,7 @@ import Protolude
 import Test.Hspec.Halogen
 import Test.VaultServer
 import Wiki.Api.Vault (StoredVault (..))
-import Wiki.App.Assistant (KeyRef, MonadAssistant (..), NewIdentity (..))
+import Wiki.App.Assistant (KeyRef, MonadAssistant (..), NewIdentity (..), closeKeyOwner, openKeyOwner)
 import Wiki.App.Assistant.Migrate (Outcome (..), migrateAssistant)
 import Wiki.App.Assistant.Sync (Fetched (..), MonadVault (..))
 import Wiki.App.Plugin (Manifest (..), Unavailable)
@@ -64,6 +66,14 @@ spec m = do
     found.secrets `shouldBe` Right (Map.union (keysOf synced) (keysOf typed))
     found.legacyLeft `shouldBe` (False, False, False)
 
+  -- What the native tests' fake browser plays (@Test.AssistantMove@'s
+  -- sign-out), in the browser's own calls: each checks the owner in the
+  -- step that writes.
+  it "writes nothing under an owner of keys let go, and writes under one open: a record kept or deleted, a key let go" $ runPage $ do
+    (closed, open) <- unsafeIOToPageM (runTest (underOwners :: m (Owned', Owned')))
+    closed `shouldBe` Owned' {kept = False, dropped = False, record = Just "\"before\"", keyLeft = True}
+    open `shouldBe` Owned' {kept = True, dropped = True, record = Nothing, keyLeft = False}
+
 -- | What a walk found: each run's outcome; the plugin's secrets, read
 -- through the host; whether the legacy item, the record and the
 -- assistant's key are left; whether the vault's slot holds a key.
@@ -75,6 +85,47 @@ data Found = Found
   , asksEachTime :: Bool
   -- ^ Whether the vault asks for an unlock each time in this browser.
   }
+
+-- | What writes under one owner of keys did: whether a record was kept,
+-- and then deleted ('dropDeviceRecordIfBy'); the record left; whether the
+-- key let go ('dropDeviceKeyBy') is still there.
+data Owned' = Owned'
+  { kept :: Bool
+  , dropped :: Bool
+  , record :: Maybe ByteString
+  , keyLeft :: Bool
+  }
+  deriving stock (Eq, Show)
+
+-- | The writes under an owner let go, and then the same under one open.
+-- Under the first, the record put before stays and the key stays; under
+-- the second, the record is kept, deleted, and the key let go.
+underOwners :: (MonadAssistant m, MonadIO m) => m (Owned', Owned')
+underOwners = do
+  let u = UserId "user-owned"
+      slot = UserId "plugin:assistant:user-owned"
+  _ <- keepDeviceRecord slot (Just "\"before\"")
+  k <- newVaultKey False
+  _ <- keepDeviceKey u k False
+  forgetKey k
+  closed <- liftIO (openKeyOwner u)
+  liftIO (closeKeyOwner closed)
+  shut <- writes closed u slot "\"before\""
+  open <- liftIO (openKeyOwner u)
+  opened <- writes open u slot "\"after\""
+  liftIO (closeKeyOwner open)
+  dropDeviceKey u
+  _ <- keepDeviceRecord slot Nothing
+  pure (shut, opened)
+  where
+    writes o u slot expected = do
+      kept <- isRight <$> keepDeviceRecordBy o slot (Just "\"after\"")
+      dropped <- either (const False) identity <$> dropDeviceRecordIfBy o slot expected
+      record <- either (const Nothing) identity <$> deviceRecord slot
+      dropDeviceKeyBy o u
+      key <- deviceKey u
+      traverse_ forgetKey key
+      pure Owned' {kept, dropped, record, keyLeft = isJust key}
 
 synced, own, typed :: Settings
 synced = withModel Anthropic "claude-from-the-vault" (withKey OpenAI (Just "sk-open-vault-ü") (withKey Anthropic (Just "sk-ant-vault") defaultSettings))
@@ -110,14 +161,16 @@ withLegacyItem server k s = do
 writeRecord' :: (MonadAssistant m) => UserId -> DeviceRecord -> m ()
 writeRecord' u r = void (keepDeviceRecord u (Just (BSL.toStrict (encode r))))
 
--- | Runs the move as the shell does, adopting the options it finds as the
+-- | Runs the move as the shell does, each run under an owner of the
+-- user's keys let go when it ends, adopting the options it finds as the
 -- plugins' state does when the server holds none, until it ends.
 moving :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => IORef ServerState -> UserId -> Int -> m [Either Text Outcome]
 moving server u runs = go runs Nothing
   where
     go 0 _ = pure []
     go n known = do
-      r <- served server (migrateAssistant u True (Just known))
+      o <- liftIO (openKeyOwner u)
+      r <- served server (migrateAssistant o u True (Just known)) <* liftIO (closeKeyOwner o)
       let known' = case r of
             Right (Adopt v) -> known <|> Just v
             _ -> known
@@ -184,7 +237,8 @@ l4 = do
   sealed <- sealSettings mine typed
   writeRecord' u DeviceRecord {sealed = Just sealed, server = Just copy, learnt = learntOf defaultSettings, askEachTime = False}
   -- Locked: this browser holds no vault key.
-  first' <- served server (migrateAssistant u True (Just Nothing))
+  o <- liftIO (openKeyOwner u)
+  first' <- served server (migrateAssistant o u True (Just Nothing)) <* liftIO (closeKeyOwner o)
   -- Unlocked, as Security or the field's unlock keeps the key.
   _ <- keepDeviceKey (vaultSlot u) k False
   rest <- moving server u 4

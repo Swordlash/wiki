@@ -63,6 +63,7 @@ module Wiki.Core.Assistant
   , blankSettings
   , settingsOf
   , withKey
+  , apiKeyFrom
   , withModel
   , withEffort
   , withModels
@@ -535,8 +536,20 @@ alter p f s = s {byProvider = Map.insert p (f (settingsOf p s)) s.byProvider}
 -- models.
 withKey :: Provider -> Maybe Text -> Settings -> Settings
 withKey p k = alter p $ \(ProviderSettings old m e b f u) ->
-  let new = ApiKey <$> trimmed k
+  let new = apiKeyFrom =<< k
    in if new == old then ProviderSettings old m e b f u else ProviderSettings new m e b Nothing False
+
+-- | 'apiKeyFrom' is the API key that a text typed or stored makes: the
+-- text without the spaces and line breaks around it, which a copy often
+-- adds and no key contains; none when nothing else is left. It is the one
+-- normalisation of a key. The check of a key typed ('readyWith'), the
+-- settings ('withKey') and the read of the plugin's secrets
+-- ("Wiki.Core.Assistant.Split"'s 'Wiki.Core.Assistant.Split.fromParts')
+-- each make the key with it, so the key checked is the key kept and the
+-- key used, a key stored by an earlier build or moved from a legacy record
+-- included.
+apiKeyFrom :: Text -> Maybe ApiKey
+apiKeyFrom = fmap ApiKey . trimmed . Just
 
 -- | The settings with a provider's model set; an empty one means none chosen, the default.
 withModel :: Provider -> Text -> Settings -> Settings
@@ -649,12 +662,13 @@ readyFor p s
 -- | A provider's request with a key typed in the settings in place of the
 -- kept one, or 'Nothing' when nothing but spaces was typed. The settings'
 -- "Test and keep the key" checks the typed key with it before keeping the
--- key, so the key is trimmed as 'withKey' trims it: the key checked is the
--- key kept. The model, the effort and the base URL are those 'readyFor'
--- takes, and the model list fetched so far still chooses the model.
+-- key, so the key is made as every key is ('apiKeyFrom'), and the field
+-- keeps this key, not the text typed: the key checked is the key kept.
+-- The model, the effort and the base URL are those 'readyFor' takes, and
+-- the model list fetched so far still chooses the model.
 readyWith :: Text -> Provider -> Settings -> Maybe Ready
 readyWith typed p s =
-  (\k -> Ready {provider = p, model = chosenModel p ps, key = ApiKey k, effort = effortOf ps, baseUrl = baseUrlOf p ps}) <$> trimmed (Just typed)
+  (\key -> Ready {provider = p, model = chosenModel p ps, key, effort = effortOf ps, baseUrl = baseUrlOf p ps}) <$> apiKeyFrom typed
   where
     ps = settingsOf p s
 

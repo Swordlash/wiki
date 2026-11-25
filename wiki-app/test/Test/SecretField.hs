@@ -2,9 +2,9 @@
 -- ("Wiki.App.View.SecretField.Machine"), over generated orders of the
 -- reader's acts and of the answers to the field's asks: one ask out at a
 -- time; each ask's owner of keys let go once, when it answers or when the
--- field closes; a value kept only after the plugin's check passed for that
--- same value, under the binding the field has when the check answers; the
--- value typed cleared once kept; the plugin told of a
+-- field closes; a value kept only after the plugin's check passed for it,
+-- and as the check answered it, under the binding the field has when the
+-- check answers; the value typed cleared once kept; the plugin told of a
 -- keep, a forget and an unlock only when they were done; and the secret
 -- read again after an unlock, and after a change heard from elsewhere (the
 -- vault unlocked or locked, a secret kept or forgotten), at once or once
@@ -14,6 +14,7 @@ module Test.SecretField (spec) where
 
 import Data.List (lookup)
 import Data.Set qualified as Set
+import Data.Text qualified as T
 import Protolude hiding (asks)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
@@ -47,13 +48,16 @@ spec = describe "Wiki.App.View.SecretField.Machine" $ do
     e5 `shouldBe` [Release 1, Tell UnlockedIt, Ask 2 Read]
     m5.password `shouldBe` ""
 
-  it "keeps a value in two asks, the check and the keep, and clears it" $ do
+  -- The check answers the value to keep, as the plugin makes it from the
+  -- text typed (the assistant trims a key): that value is kept, not the
+  -- text typed, and the text typed is cleared.
+  it "keeps a value in two asks, the check and the keep, the value as the check answered it, and clears it" $ do
     let (m1, _) = step (Answered 0 (ReadAs (Here False))) (fst (step Opened initial))
-        (m2, _) = step (Typed "sk-1") m1
+        (m2, _) = step (Typed " sk-1\n") m1
         (m3, e3) = step KeepPressed m2
-    e3 `shouldBe` [Ask 1 (Check "sk-1" "")]
-    let (m4, e4) = step (Answered 1 (Done (Right ()))) m3
-    e4 `shouldBe` [Release 1, Ask 2 (Put "sk-1")]
+    e3 `shouldBe` [Ask 1 (Check " sk-1\n" "")]
+    let (m4, e4) = step (Answered 1 (Checked (Right "sk-1"))) m3
+    e4 `shouldBe` [Release 1, Ask 2 (Put " sk-1\n" "sk-1")]
     let (m5, e5) = step (Answered 2 (Done (Right ()))) m4
     e5 `shouldBe` [Release 2, Tell KeptIt]
     (m5.shown, m5.typed) `shouldBe` (Here True, "")
@@ -63,14 +67,14 @@ spec = describe "Wiki.App.View.SecretField.Machine" $ do
         (m2, e2) = step KeepPressed (fst (step (Typed "sk-1") m1))
     e2 `shouldBe` [Ask 1 (Check "sk-1" "anthropic https://gateway.example")]
     let (m3, _) = step (Rebound "anthropic ") m2
-        (m4, e4) = step (Answered 1 (Done (Right ()))) m3
+        (m4, e4) = step (Answered 1 (Checked (Right "sk-1"))) m3
     e4 `shouldBe` [Release 1]
     (m4.problem, m4.typed, m4.shown) `shouldBe` (Just reboundProblem, "sk-1", Here False)
 
   it "keeps nothing when the check fails, and says why" $ do
     let (m1, _) = step (Answered 0 (ReadAs (Here False))) (fst (step Opened initial))
         (m2, _) = step KeepPressed (fst (step (Typed "bad") m1))
-        (m3, e3) = step (Answered 1 (Done (Left "refused"))) m2
+        (m3, e3) = step (Answered 1 (Checked (Left "refused"))) m2
     e3 `shouldBe` [Release 1]
     (m3.problem, m3.typed, m3.shown) `shouldBe` (Just "refused", "bad", Here False)
 
@@ -87,7 +91,7 @@ genMove =
   frequency
     [ (1, pure (Act Opened))
     , (3, Act <$> elements [KeepPressed, KeepPressed, ForgetPressed, PasskeyPressed, PasswordPressed])
-    , (2, Act . Typed <$> elements ["", "sk-1", "sk-1", "sk-2", "  "])
+    , (2, Act . Typed <$> elements ["", "sk-1", "sk-1", " sk-2\n", "  "])
     , (1, Act . TypedPassword <$> elements ["", "pw", "pw"])
     , (1, Act . Rebound <$> elements ["", "a", "b"])
     , (1, pure (Act Changed))
@@ -101,8 +105,8 @@ data Sim = Sim
   -- ^ The asks made and not answered.
   , released :: Set Int
   , passed :: [(Int, Text)]
-  -- ^ The checks answered as passed, by the number of the keep that
-  -- followed.
+  -- ^ The values the checks answered as passed, by the number of the keep
+  -- that followed.
   , typedSince :: Bool
   -- ^ Whether the reader typed a value since the last check was asked.
   , done :: [Job]
@@ -135,15 +139,20 @@ play (checks, s) = \case
             (Read, Finds shown) -> ReadAs shown
             (Read, Fails) -> ReadAs (Unreadable "no")
             (Read, Succeeds) -> ReadAs (Here False)
+            -- A plugin's check that trims what was typed, as the
+            -- assistant's does.
+            (Check _ _, Fails) -> Checked (Left "no")
+            (Check v _, _) -> Checked (Right (T.strip v))
             (_, Fails) -> Done (Left "no")
             _ -> Done (Right ())
+          passes = answer == Done (Right ()) || checkPassed answer
           (m', effects) = step (Answered n answer) s.model
-          s' = s {model = m', out = filter ((/= n) . fst) s.out, done = [job | answer == Done (Right ())] <> s.done}
-          -- A check passed: the keep it makes must be of this value.
+          s' = s {model = m', out = filter ((/= n) . fst) s.out, done = [job | passes] <> s.done}
           -- A check passed under the binding the field has now: the keep
-          -- it makes must be of this value. Under another, no keep.
+          -- it makes must be of the value it answered. Under another, no
+          -- keep.
           s'' = case (job, answer) of
-            (Check v b, Done (Right ()))
+            (Check _ b, Checked (Right v))
               | b == s.model.binding -> s' {passed = (m'.next - 1, v) : s'.passed}
               | otherwise -> s' {reboundRefused = True}
             _ -> s'
@@ -151,6 +160,9 @@ play (checks, s) = \case
   where
     isTyped = \case
       Typed _ -> True
+      _ -> False
+    checkPassed = \case
+      Checked (Right _) -> True
       _ -> False
 
 -- | Check a step's effects, and note its asks and releases.
@@ -164,8 +176,8 @@ record (checks, s) answered effects =
         [ counterexample "at most one ask out" (length s'.out <= 1)
         , counterexample "each owner let go once" (all (`Set.notMember` s.released) releases)
         , counterexample "the ask answered is let go first" (maybe True (\(n, _, _, _) -> take 1 releases == [n]) answered)
-        , counterexample "a keep only of a value that passed its check, under the binding the field has" $
-            and [lookup n s'.passed == Just v | (n, Put v) <- asks]
+        , counterexample "a keep only of the value its check answered, under the binding the field has" $
+            and [lookup n s'.passed == Just v | (n, Put _ v) <- asks]
         , counterexample "a check asked under the binding the field has" $
             and [b == s'.model.binding | (_, Check _ b) <- asks]
         , counterexample "the model's busy is the ask out" (isJust s'.model.doing == not (null s'.out))
@@ -173,7 +185,7 @@ record (checks, s) answered effects =
             Just (_, job, Done (Right ()), _) -> told == expectedTold job
             _ -> null told
         , counterexample "the value kept is cleared, unless typed again" $ case answered of
-            Just (_, Put _, Done (Right ()), _) | not s.typedSince -> s'.model.typed == ""
+            Just (_, Put _ _, Done (Right ()), _) | not s.typedSince -> s'.model.typed == ""
             _ -> True
         , counterexample "the secret read after an unlock" $ case answered of
             Just (_, job, Done (Right ()), _) | isUnlock job -> map snd asks == [Read]
@@ -189,7 +201,7 @@ record (checks, s) answered effects =
       UnlockByPassword _ -> True
       _ -> False
     expectedTold = \case
-      Put _ -> [KeptIt]
+      Put _ _ -> [KeptIt]
       Remove -> [RemovedIt]
       UnlockByPasskey -> [UnlockedIt]
       UnlockByPassword _ -> [UnlockedIt]
@@ -206,7 +218,7 @@ jobName :: Job -> [Char]
 jobName = \case
   Read -> "Read"
   Check _ _ -> "Check"
-  Put _ -> "Put"
+  Put _ _ -> "Put"
   Remove -> "Remove"
   UnlockByPasskey -> "Unlock"
   UnlockByPassword _ -> "Unlock"

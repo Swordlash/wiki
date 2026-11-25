@@ -97,7 +97,8 @@ import Wiki.App.Plugin.Capability.Assistant
   , Models (..)
   )
 import Wiki.Core.Assistant
-  ( AssistantError (..)
+  ( ApiKey (..)
+  , AssistantError (..)
   , ErrorKind (BadKey, Unreachable)
   , Listed
   , Model (..)
@@ -603,7 +604,9 @@ component =
     -- stops; then the smallest request with the model chosen if the list
     -- has it, else with the list's first model. It tells the view what it
     -- found as it goes. The settings are those the field was last given.
-    checkFor :: State m -> Provider -> Settings -> Text -> m (Either Text ())
+    -- A key that passes is answered as it was tried ('readyWith' trims
+    -- it), and the field keeps that key, not the text typed.
+    checkFor :: State m -> Provider -> Settings -> Text -> m (Either Text Text)
     checkFor st p s typed = case (st.heard, readyWith typed p s) of
       (Nothing, _) -> pure (Left "The settings are still being read.")
       (_, Nothing) -> pure (Left "Type a key first.")
@@ -621,7 +624,7 @@ component =
             let model = either (const asked.model) (\l -> modelOf p (withModels p l at s)) listed
             models.check Ready {provider = asked.provider, model, key = asked.key, effort = asked.effort, baseUrl = asked.baseUrl} >>= \case
               Just e -> refused e
-              Nothing -> tell (CheckPassed p model) $> Right ()
+              Nothing -> tell (CheckPassed p model) $> Right asked.key.text
 
 -- | The service a key's check tries it against, as a key's field binds
 -- the check to it ('Wiki.App.Plugin.FieldInput'): the provider, and the

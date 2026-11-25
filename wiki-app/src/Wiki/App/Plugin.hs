@@ -386,7 +386,11 @@ fieldSlot s name = let (session, user) = s.field.reader in FieldSlot session use
 -- | 'FieldInput' is what a plugin gives a 'SecretField': the secret's name,
 -- one the manifest declares, and a check of a value before it is kept,
 -- with what to tell the reader when it fails (the assistant tries an API
--- key). The check waits; the field shows that it is checking.
+-- key). The check waits; the field shows that it is checking. A check
+-- that passes answers the value to keep, as the plugin makes it from the
+-- text typed: the field keeps that value, so that what is kept is what was
+-- checked (the assistant trims the spaces around a key, and tries the key
+-- trimmed). A plugin that keeps the text as typed answers it unchanged.
 --
 -- 'binding' names what the check is for, when it depends on more than the
 -- value: the assistant's is the service the key is tried against, its
@@ -396,7 +400,7 @@ fieldSlot s name = let (session, user) = s.field.reader in FieldSlot session use
 -- gives an empty binding.
 data FieldInput m = FieldInput
   { name :: SecretName
-  , check :: Text -> m (Either Text ())
+  , check :: Text -> m (Either Text Text)
   , binding :: Text
   }
 

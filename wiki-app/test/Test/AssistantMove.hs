@@ -8,12 +8,13 @@
 -- was typed meanwhile). A run stopped at any write and run again ends as
 -- one never stopped; two browsers moving at once keep every key; an
 -- earlier tab that adds the vault's legacy item again has it moved again,
--- the plugin's keys winning.
+-- the plugin's keys winning. A run that the reader's sign-out overtakes
+-- writes nothing more in this browser.
 module Test.AssistantMove (spec) where
 
 import Data.Aeson (Value, decodeStrict, encode)
 import Data.ByteString.Lazy qualified as BSL
-import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
@@ -22,10 +23,12 @@ import Test.FakeVault
 import Test.Hspec hiding (after, before)
 import Test.VaultServer
 import Wiki.Api.Plugins (PluginId (..))
+import Wiki.App.Assistant (KeyOwner (..), pageKeys)
 import Wiki.App.Assistant.Keys (recordSource)
 import Wiki.App.Assistant.Migrate (Outcome (..), migrateAssistant, migrateAssistantHeld)
+import Wiki.App.Assistant.Sync (owned)
 import Wiki.App.Plugin (Manifest (..), Unavailable (..))
-import Wiki.App.Plugin.Host.Secrets (DeviceEntry (..), deviceSecretsSlot, localSlot, putSecret, readSecrets, removeSecret)
+import Wiki.App.Plugin.Host.Secrets (DeviceEntry (..), deviceSecretsSlot, heldSlot, localSlot, putSecret, readSecrets, removeSecret)
 import Wiki.App.Plugin.Registry (assistantId, manifests)
 import Wiki.App.Vault (VaultDevice (..), vaultSlot)
 import Wiki.Core.Assistant (Mode (..), Provider (..), Settings (..), defaultSettings, withKey, withMode, withModel, withReached)
@@ -39,6 +42,7 @@ spec :: Spec
 spec = describe "Wiki.App.Assistant.Migrate" $ do
   states
   stopped
+  signedOut
   together
 
 alice :: UserId
@@ -155,7 +159,7 @@ moveAll w d options = go (4 :: Int)
     go 0 = pure (Left "the move did not end")
     go n = do
       known <- readIORef options
-      on w d (migrateAssistant alice True (Just known)) >>= \case
+      on w d (migrateAssistant pageKeys alice True (Just known)) >>= \case
         Right (Adopt v) -> modifyIORef' options (<|> Just v) >> go (n - 1)
         other -> pure other
 
@@ -168,16 +172,16 @@ states = describe "moves each legacy state" $ do
     own <- newKey w
     putKey d alice own
     putRecord d alice (ownRecord own ownHere)
-    first' <- on w d (migrateAssistant alice True (Just Nothing))
+    first' <- on w d (migrateAssistant pageKeys alice True (Just Nothing))
     first' `shouldBe` Right (Adopt (optionsValue ownHere))
     -- Nothing is deleted before the options are the server's.
     pluginKeys w `shouldReturn` keysOf ownHere
     (\l -> l.record) <$> leftOn d `shouldReturn` True
-    on w d (migrateAssistant alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
+    on w d (migrateAssistant pageKeys alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
     after <- leftOn d
     after `shouldBe` Left' {record = False, assistantKey = False, vaultKeyHere = Just w.vaultKey, cache = Just (learntValue ownHere), askEachTime = False}
     -- Run again, nothing is left to do.
-    on w d (migrateAssistant alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
+    on w d (migrateAssistant pageKeys alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
 
   it "L1: the vault's item, from a browser whose vault key is in the assistant's slot only, which asked each time" $ do
     w <- newWorld
@@ -215,7 +219,7 @@ states = describe "moves each legacy state" $ do
     own <- newKey w
     putKey d alice own
     followingRecord w (Just (own, typedHere)) False defaultSettings >>= putRecord d alice
-    on w d (migrateAssistant alice True (Just Nothing)) `shouldReturn` Right Waiting
+    on w d (migrateAssistant pageKeys alice True (Just Nothing)) `shouldReturn` Right Waiting
     pluginKeys w `shouldReturn` mempty
     (\l -> l.record) <$> leftOn d `shouldReturn` True
     hasLegacyItem w `shouldReturn` True
@@ -248,11 +252,11 @@ states = describe "moves each legacy state" $ do
     d <- newDevice w.counter True
     withVaultKey d alice w.vaultKey
     before <- (\s -> s.fetches) <$> serverState w.server
-    on w d (migrateAssistant alice False (Just Nothing)) `shouldReturn` Right NothingHere
+    on w d (migrateAssistant pageKeys alice False (Just Nothing)) `shouldReturn` Right NothingHere
     (\s -> s.fetches) <$> serverState w.server `shouldReturn` before
     -- Shown able to fail: told to look, the run fetches the vault, and
     -- moves the legacy item another browser left.
-    on w d (migrateAssistant alice True (Just Nothing)) `shouldReturn` Right (Adopt (optionsValue synced))
+    on w d (migrateAssistant pageKeys alice True (Just Nothing)) `shouldReturn` Right (Adopt (optionsValue synced))
     (\s -> s.fetches) <$> serverState w.server >>= (`shouldSatisfy` (> before))
     pluginKeys w `shouldReturn` keysOf synced
 
@@ -263,7 +267,7 @@ states = describe "moves each legacy state" $ do
     -- Sealed with a key this browser no longer holds.
     gone <- newKey w
     putRecord d alice (ownRecord gone ownHere)
-    on w d (migrateAssistant alice True (Just Nothing)) `shouldReturn` Right Waiting
+    on w d (migrateAssistant pageKeys alice True (Just Nothing)) `shouldReturn` Right Waiting
     (\l -> l.record) <$> leftOn d `shouldReturn` True
 
 stopped :: Spec
@@ -295,6 +299,80 @@ stopped = describe "a run stopped" $ do
       _ <- try @SomeException (moveAll w d options)
       _ <- moveAll w d options
       (,,,) <$> pluginKeys w <*> hasLegacyItem w <*> leftOn d <*> readIORef options
+
+signedOut :: Spec
+signedOut = describe "a run the reader's sign-out overtakes" $ do
+  -- The run goes under an owner of the reader's keys, as the shell runs
+  -- it. At each write the run makes in this browser, the write is held,
+  -- the reader signs out as the shell's sign-out does (the owner let go,
+  -- then the reader's keys deleted), and the write is let go. What the
+  -- browser holds right after the sign-out is what it holds once the run
+  -- ends: nothing written after the sign-out stays, the vault key the run
+  -- copies into the vault's slot included.
+  it "writes nothing in this browser after the sign-out, at whichever of its writes the sign-out comes" $
+    for_ [False, True] $ \asking -> do
+      (total, _, reference) <- run asking Nothing
+      total `shouldSatisfy` (> 3)
+      -- The run keeps the vault key in the vault's slot when nobody signs
+      -- out: a key the sign-out deletes is one the run would write.
+      Map.member (vaultSlot alice).text (snd reference) `shouldBe` True
+      for_ [0 .. total - 1] $ \k -> do
+        (_, atSignOut, end) <- run asking (Just k)
+        case atSignOut of
+          Nothing -> expectationFailure ("no sign-out at write " <> show k)
+          Just held -> unless (end == held) (expectationFailure ("asking each time " <> show asking <> ", signed out at write " <> show k <> ": " <> show end <> " /= " <> show held))
+
+  -- The sign-out comes while the run keeps the vault key in the vault's
+  -- slot, and deletes the user's keys; the key is not put back. On a
+  -- browser that does not ask each time, that is the run's second write:
+  -- its first is the copy of the vault's item its first read keeps.
+  it "puts back no vault key that the sign-out deleted while the run was keeping it" $ do
+    (_, _, reference) <- run False Nothing
+    Map.member (vaultSlot alice).text (snd reference) `shouldBe` True
+    (_, atSignOut, end) <- run False (Just 1)
+    (snd <$> atSignOut) `shouldBe` Just mempty
+    snd end `shouldBe` mempty
+
+  -- A read of the vault keeps a copy of the plugin's item in this browser
+  -- ('heldSlot'). The read of a field, or of the editor's assistant, goes
+  -- under an owner of the reader's keys too: its answer, come after the
+  -- sign-out, leaves no copy.
+  it "leaves no copy of the vault's item when a read of the vault answers after the sign-out" $
+    for_ [False, True] $ \signingOut -> do
+      w <- newWorld
+      d <- newDevice w.counter True
+      withVaultKey d alice w.vaultKey
+      let o = KeyOwner 1
+      beforeNextWrite d (when signingOut (closeOwner d o))
+      _ <- on w d (owned o (readSecrets alice assistant))
+      held <- Map.member (heldSlot alice (ItemName "plugin-assistant")).text <$> readIORef d.records
+      -- Shown able to fail: with no sign-out, the read keeps the copy.
+      held `shouldBe` not signingOut
+  where
+    run :: Bool -> Maybe Int -> IO (Int, Maybe (Map Text ByteString, Map Text Int), (Map Text ByteString, Map Text Int))
+    run asking signOutAt = do
+      w <- newWorld
+      withLegacyItem w synced
+      d <- newDevice w.counter True
+      -- L1, whose browser kept a key of its own for what it typed before
+      -- it synced: the vault key in the assistant's slot only, which the
+      -- run copies into the vault's slot; asking for an unlock each time
+      -- or not.
+      putKey d alice w.vaultKey
+      followingRecord w Nothing asking ownHere >>= putRecord d alice
+      writes <- newIORef (0 :: Int)
+      atSignOut <- newIORef Nothing
+      let o = KeyOwner 1
+          held = (,) <$> readIORef d.records <*> readIORef d.keys
+          hook = do
+            n <- atomicModifyIORef' writes (\x -> (x + 1, x))
+            when (Just n == signOutAt) $ do
+              closeOwner d o
+              modifyIORef' d.keys (Map.delete alice.text . Map.delete (vaultSlot alice).text)
+              held >>= writeIORef atSignOut . Just
+      replicateM_ 40 (beforeNextWrite d hook)
+      _ <- on w d (migrateAssistant o alice True (Just (Just (optionsValue synced))))
+      (,,) <$> readIORef writes <*> readIORef atSignOut <*> held
 
 together :: Spec
 together = describe "with other browsers and tabs" $ do
@@ -336,7 +414,7 @@ together = describe "with other browsers and tabs" $ do
     -- record's delete, finds the record the earlier tab wrote just before.
     beforeNextWrite d pass
     beforeNextWrite d (putRecord d alice (ownRecord own later))
-    on w d (migrateAssistant alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
+    on w d (migrateAssistant pageKeys alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
     pluginKeys w `shouldReturn` keysOf later
     (\l -> l.record) <$> leftOn d `shouldReturn` False
 
@@ -423,12 +501,12 @@ together = describe "with other browsers and tabs" $ do
     putKey d alice k
     putRecord d alice (ownRecord k ownHere)
     -- The options are not known yet: the run keeps the keys and waits.
-    on w d (migrateAssistant alice True Nothing) `shouldReturn` Right (Adopt (optionsValue ownHere))
+    on w d (migrateAssistant pageKeys alice True Nothing) `shouldReturn` Right (Adopt (optionsValue ownHere))
     pluginKeys w `shouldReturn` keysOf ownHere
     on w d (removeSecret alice assistant (SecretName "anthropic")) `shouldReturn` Right ()
     -- Shown able to fail: the record still holds the key.
     (\l -> l.record) <$> leftOn d `shouldReturn` True
-    on w d (migrateAssistant alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
+    on w d (migrateAssistant pageKeys alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
     pluginKeys w `shouldReturn` mempty
     (\l -> l.record) <$> leftOn d `shouldReturn` False
 

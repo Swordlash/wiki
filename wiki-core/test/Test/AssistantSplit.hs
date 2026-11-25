@@ -32,6 +32,20 @@ spec = describe "Wiki.Core.Assistant.Split" $ do
             .&&. not ("models" `T.isInfixOf` shown)
             .&&. not ("unreachable" `T.isInfixOf` shown)
 
+  -- The settings' field keeps the key its check made from the text typed
+  -- ('readyWith'), and a key stored by an earlier build, or moved from a
+  -- legacy record, is the text as typed: either way, the key read is the
+  -- key the check tried, so the requests send the credential that was
+  -- checked, or the check refused it. U+2003 around a key passes the
+  -- check, and in a request's Authorization header it throws.
+  prop "reads a provider's key as the key its check tried, whatever text was stored" $
+    forAll genSettings $ \s -> forAll (elements [minBound .. maxBound]) $ \p -> forAll genTyped $ \typed ->
+      let checked = (\r -> r.key) <$> readyWith typed p s
+          readFrom stored = (settingsOf p (fromParts (Just (optionsValue s)) (Map.singleton (secretOf p) stored) Nothing)).key
+       in counterexample (show typed) $
+            (readFrom typed === checked)
+              .&&. (readFrom (maybe typed (\k -> k.text) checked) === checked)
+
   it "names each provider's key by the provider" $
     assistantSecrets `shouldBe` [SecretName "anthropic", SecretName "openai", SecretName "scripted"]
 
@@ -52,6 +66,16 @@ spec = describe "Wiki.Core.Assistant.Split" $ do
     case optionsValue (withKey Anthropic (Just "sk-ant") defaultSettings) of
       Object o -> KeyMap.member "anthropic" o `shouldBe` False
       other -> expectationFailure (show other)
+
+-- | A text pasted into a key's field: a key, or nothing, with white space
+-- around it that a copy adds, the wide spaces of Unicode included.
+genTyped :: Gen Text
+genTyped = do
+  let space = listOf (elements [" ", "\t", "\n", "\r\n", "\x2003", "\xa0"])
+  lead <- T.concat <$> space
+  key <- oneof [pure "", ("sk-" <>) . T.pack <$> listOf1 (elements (['a' .. 'z'] <> ['0' .. '9']))]
+  trail <- T.concat <$> space
+  pure (lead <> key <> trail)
 
 -- | Settings as the settings page and the editor make them: keys trimmed
 -- and not empty, efforts the provider offers, whole seconds.

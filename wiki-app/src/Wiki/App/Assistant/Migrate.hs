@@ -50,6 +50,20 @@
 -- that key is let go ('Wiki.Core.Assistant.Migrate.DropSlotKey', which
 -- reads first that no record is there) leaves a record this browser can
 -- no longer open, and it is left where it is.
+--
+-- = The reader's
+--
+-- A run is the reader's, and waits (on IndexedDB, on the server, on
+-- WebCrypto) between its steps. A run therefore goes under an owner of the
+-- reader's keys ('Wiki.App.Assistant.KeyOwner'), which the shell makes as
+-- it starts the run, and which a sign-out lets go. Every write of this
+-- browser the run makes (a key kept or let go, the vault's record of this
+-- device, the plugin's secrets kept here and the copy of its item, the
+-- cache, the legacy record deleted) checks, in the browser's call that
+-- writes, that the owner is still open ('Wiki.App.Assistant.Sync.Owned').
+-- So a run that a sign-out overtakes writes nothing more here, even a
+-- write it had already asked for: no key is put back after the sign-out
+-- deleted it.
 module Wiki.App.Assistant.Migrate
   ( Outcome (..)
   , migrateAssistant
@@ -63,9 +77,9 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.Aeson (Value, eitherDecodeStrict)
 import Protolude
 import Wiki.Api.Vault (StoredVault (..))
-import Wiki.App.Assistant (MonadAssistant (..), holdingAcrossTabs, holdingDeviceRecords)
+import Wiki.App.Assistant (KeyOwner, MonadAssistant (..), holdingAcrossTabs, holdingDeviceRecords)
 import Wiki.App.Assistant.Keys (legacyRecordHere, readLegacy)
-import Wiki.App.Assistant.Sync (MonadVault (..))
+import Wiki.App.Assistant.Sync (MonadVault (..), owned)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Plugin (Manifest (..))
 import Wiki.App.Plugin.Host.Secrets (loadLocal, readContentsHeld, saveLocal, takeSourcesHeld)
@@ -93,11 +107,12 @@ data Outcome = Moved | Waiting | Adopt Value | NothingHere
 maxSteps :: Int
 maxSteps = 24
 
--- | Move what is left of the user's legacy settings, given whether to
--- look at the vault when this browser keeps nothing legacy, and the
--- plugin's options as the server keeps them ('Nothing' until they are
--- known). A browser that keeps no legacy record and no key of the
--- assistant's asks the server nothing unless told to: the vault's legacy
+-- | Move what is left of the user's legacy settings, under an owner of
+-- the user's keys (the module's header says why), given whether to look
+-- at the vault when this browser keeps nothing legacy, and the plugin's
+-- options as the server keeps them ('Nothing' until they are known). A
+-- browser that keeps no legacy record and no key of the assistant's asks
+-- the server nothing unless told to: the vault's legacy
 -- item, if another browser has not moved it, is looked for at the first
 -- change of the secrets here (an unlock, a sign-in), so that a page the
 -- server rendered asks nothing more when it starts.
@@ -107,11 +122,12 @@ maxSteps = 24
 -- of the vault can hold while it waits on the server (a sign-in bringing
 -- the keys up to date). A record an earlier tab writes just after is
 -- moved by the next run.
-migrateAssistant :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Bool -> Maybe (Maybe Value) -> m (Either Text Outcome)
-migrateAssistant u vaultToo options =
-  legacyHere u >>= \case
-    False | not vaultToo -> pure (Right NothingHere)
-    _ -> holdingDeviceRecords (holdingAcrossTabs (migrationLock u) (migrateAssistantHeld u vaultToo options))
+migrateAssistant :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => KeyOwner -> UserId -> Bool -> Maybe (Maybe Value) -> m (Either Text Outcome)
+migrateAssistant o u vaultToo options =
+  owned o $
+    legacyHere u >>= \case
+      False | not vaultToo -> pure (Right NothingHere)
+      _ -> holdingDeviceRecords (holdingAcrossTabs (migrationLock u) (migrateAssistantHeld u vaultToo options))
 
 -- | Whether this browser keeps a legacy record for the user, or a key in
 -- the assistant's slot.

@@ -15,12 +15,13 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Control.Monad.UUID (MonadUUID (..))
-import Data.IORef (IORef, readIORef)
+import Data.IORef (IORef, modifyIORef', readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Halogen.Router (Router)
 import Halogen.Router qualified as Router
+import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
 import Halogen.VDom.DOM.Monad.Native qualified as N
@@ -29,12 +30,15 @@ import Test.Harness.MemDom
 import Test.Hspec
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), noPlugins)
 import Wiki.App (component, input)
+import Wiki.App.Account (Accounts (..), SignInError (..))
 import Wiki.App.Assistant (MonadAssistant (..))
 import Wiki.App.Assistant.Sync (MonadVault)
 import Wiki.App.Backend
   ( MonadLoad (..)
   , MonadWiki (..)
+  , Session
   , WikiError (..)
+  , session
   )
 import Wiki.App.Backend.Admin (MonadAdmin)
 import Wiki.App.Backend.Comments (MonadComments)
@@ -80,11 +84,16 @@ asEditor = (demoState demoNow) {current = Just (UserId "user-editor")}
 -- The section, in the shell
 
 -- | 'Holding' is what 'Holder' does: hold the plugins' writes (a user's
--- state, the wiki's set) in a gate until the test lets each go, when there
--- is a gate, and fail every read of the plugins, when asked to.
+-- state, the wiki's set) and the deletion of a former user's keys on the
+-- device in a gate until the test lets each go, when there is a gate, and
+-- fail every read of the plugins, when asked to.
 data Holding = Holding
   { gate :: Maybe (Gate Text ())
   , failing :: Bool
+  , afterHandled :: Bool
+  -- ^ Whether a user's state is written before the gate holds its answer
+  -- (the server handled the write, under the cookie it was sent with),
+  -- and not after.
   }
 
 -- | 'Holder' is the demo's backend, as 'Holding' says.
@@ -123,7 +132,8 @@ instance (MonadWhatsNew m) => MonadWhatsNew (Holder m)
 
 instance (MonadSecurity m) => MonadSecurity (Holder m)
 
-instance (MonadAssistant m) => MonadAssistant (Holder m)
+instance (MonadAssistant m, MonadIO m) => MonadAssistant (Holder m) where
+  dropDeviceKey u = heldBy ("drop " <> u.text) >> lift (dropDeviceKey u)
 
 instance (MonadVault m) => MonadVault (Holder m)
 
@@ -133,7 +143,10 @@ instance (MonadDemoUsers m) => MonadDemoUsers (Holder m)
 
 instance (MonadPlugins m, MonadIO m) => MonadPlugins (Holder m) where
   pluginsNow = Holder (asks (\h -> h.failing)) >>= bool (lift pluginsNow) (pure (Left (Unreachable "the network")))
-  setPluginState p s = heldBy ("state " <> p.text) >> lift (setPluginState p s)
+  setPluginState p s =
+    Holder (asks (\h -> h.afterHandled)) >>= \case
+      True -> lift (setPluginState p s) <* heldBy ("state " <> p.text)
+      False -> heldBy ("state " <> p.text) >> lift (setPluginState p s)
   setWikiPluginsOff w = heldBy "the wiki's set" >> lift (setWikiPluginsOff w)
 
 -- | Wait, when there is a gate, until the test lets this write go.
@@ -149,14 +162,24 @@ withShellAt
   -> Route
   -> (View Shell.Query (Shell.Input (Holder (MemWiki MemDOM))) Void -> Router Route -> IORef MemState -> IO () -> IO a)
   -> IO a
-withShellAt st holding at body = do
+withShellAt = withShellAtWith identity
+
+-- | 'withShellAt', with the shell's input changed.
+withShellAtWith
+  :: (Shell.Input (Holder (MemWiki MemDOM)) -> Shell.Input (Holder (MemWiki MemDOM)))
+  -> MemState
+  -> Holding
+  -> Route
+  -> (View Shell.Query (Shell.Input (Holder (MemWiki MemDOM))) Void -> Router Route -> IORef MemState -> IO () -> IO a)
+  -> IO a
+withShellAtWith changed st holding at body = do
   wiki <- newMemWiki st
   let run :: Holder (MemWiki MemDOM) a -> MemDOM a
       run (Holder p) = runMemWiki wiki (runReaderT p holding)
       quiet view = maybe (settle view) (settleHolding view . holds) holding.gate
   router <- runMemDOM (run (Router.newRouter "/" Unknown route))
   Router.redirect router at
-  result <- withView run (component @Void) (input router) {Shell.sectionsAtOnce = True} $ \view -> do
+  result <- withView run (component @Void) (changed (input router) {Shell.sectionsAtOnce = True}) $ \view -> do
     quiet view
     body view router wiki (quiet view)
   Router.stop router
@@ -168,7 +191,7 @@ withSection st body = withShellAt st free (UserSettings PluginsSection) (\view _
 
 -- | Nothing held, nothing failed.
 free :: Holding
-free = Holding {gate = Nothing, failing = False}
+free = Holding {gate = Nothing, failing = False, afterHandled = False}
 
 -- | Each plugin's row: its id, whether it shows on, and its switch's
 -- state.
@@ -323,6 +346,65 @@ section = describe "Wiki.App.View.Plugins, in the shell on the in-memory DOM" $ 
       Router.navigate router (UserSettings AssistantSection)
       quiet
       saysOff view `shouldReturn` True
+
+  -- Codex's fifth round on #374: the shell heard of another reader, and
+  -- waited for the former one's keys to be deleted before it gave the
+  -- plugins' state the new session. Meanwhile the answer of the write out
+  -- sent the choice that waited its turn, under the new reader's cookie.
+  it "sends no choice of the former reader once the shell hears of another, while the former's keys are deleted" $ do
+    gate <- newGate
+    changes <- HS.create
+    editorsSession <- newMemWiki asEditor >>= \w -> runMemDOM (runMemWiki w session)
+    let telling i = i {Shell.accounts = Just (accountsTelling changes.emitter)}
+    withShellAtWith telling (demoState demoNow) {current = Just (UserId "user-admin")} free {gate = Just gate, afterHandled = True} (UserSettings PluginsSection) $ \view _ wiki quiet -> do
+      click view ".plugin[data-plugin=assistant] .plugin-toggle"
+      quiet
+      -- Errors waits its turn behind the assistant's write.
+      click view ".plugin[data-plugin=errors] .plugin-toggle"
+      quiet
+      map (\h -> h.asked) <$> held gate `shouldReturn` ["state assistant"]
+      -- Another tab signs the editor in: the shell hears of it, and holds
+      -- at the deletion of the administrator's keys.
+      modifyIORef' wiki (\st -> st {current = Just (UserId "user-editor")})
+      HS.notify changes.listener editorsSession
+      quiet
+      sort . map (\h -> h.asked) <$> held gate `shouldReturn` ["drop vault:user-admin", "state assistant"]
+      -- The write out answers while the deletion waits.
+      held gate >>= traverse_ (\h -> when (h.asked == "state assistant") (answer gate h ()))
+      quiet
+      map (\h -> h.asked) <$> held gate `shouldReturn` ["drop vault:user-admin"]
+      -- The deletion goes on to its end, one slot after another.
+      let drain = held gate >>= \hs -> unless (null hs) (traverse_ (\h -> answer gate h ()) hs >> quiet >> drain)
+      drain
+      choicesOf wiki "user-editor" `shouldReturn` mempty
+      choicesOf wiki "user-admin" `shouldReturn` Map.fromList [(assistant, choice PluginOff)]
+
+-- | Sign-in methods that refuse everything, with the changes of session
+-- this emitter tells.
+accountsTelling :: (Applicative m) => HS.Emitter IO Session -> Accounts m
+accountsTelling changes =
+  Accounts
+    { signIn = \_ _ -> pure (Left refused)
+    , signOut = pure (Left no)
+    , sessionChanges = pure changes
+    , register = \_ -> pure (Left refused)
+    , invitationFor = \_ -> pure (Left no)
+    , acceptInvitation = \_ _ -> pure (Left refused)
+    , identities = pure (Left no)
+    , unlinkIdentity = \_ -> pure (Left no)
+    , changePassword = \_ _ -> pure (Left refused)
+    , confirmSecondFactor = \_ -> pure (Left refused)
+    , beginPasskeySignIn = pure (Left refused)
+    , finishPasskeySignIn = \_ -> pure (Left refused)
+    , beginSecondFactorPasskey = pure (Left refused)
+    , finishSecondFactorPasskey = \_ -> pure (Left refused)
+    , requestPasswordReset = \_ -> pure (Left refused)
+    , resetPassword = \_ _ -> pure (Left no)
+    , verifyEmail = \_ -> pure (Left no)
+    }
+  where
+    no = Invalid "This test signs nobody in."
+    refused = SignInFailed no
 
 --------------------------------------------------------------------------------
 -- The editor

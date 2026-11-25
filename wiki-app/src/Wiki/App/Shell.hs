@@ -1661,6 +1661,7 @@ component =
       -- of an encrypted space stays open here, and the session is asked
       -- for again, with everything shown.
       KeysDropped -> do
+        readerChanging
         H.async forgetEncrypted
         sealScreen
         reload Nothing
@@ -1724,6 +1725,7 @@ component =
       SwitchTo user -> withDemo $ \demo -> do
         shut <- shutMenu
         modify (shut . \st -> st {panel = Actions Nothing, settled = False})
+        readerChanging
         H.async (demo.switchTo user)
         reload Nothing
       AskReset -> modify (\st -> st {panel = ConfirmingReset})
@@ -1732,6 +1734,7 @@ component =
       -- since nothing else there shows it.
       ResetDemo -> withDemo $ \demo -> do
         modify (\st -> st {panel = Actions Nothing, settled = False})
+        readerChanging
         H.async demo.resetDemo
         reload Nothing
         report False "The demo's content is back as it was at the start."
@@ -1753,8 +1756,9 @@ component =
       ConfirmImport ->
         gets (\st -> st.panel) >>= \case
           ConfirmingImport name archive -> withDemo $ \demo ->
-            H.async (demo.importDemo archive) >>= \case
-              Left why -> report True ("Not imported: " <> name <> ". " <> why <> ".")
+            readerChanging >> H.async (demo.importDemo archive) >>= \case
+              -- Nothing changed: what is on is read again.
+              Left why -> Machine.happen pluginsSpec PluginsMachine.Refresh >> report True ("Not imported: " <> name <> ". " <> why <> ".")
               Right () -> do
                 modify (\st -> st {settled = False})
                 reload Nothing
@@ -1774,12 +1778,10 @@ component =
       -- Someone signed in or out: reload everything, as the new user.
       FromAccount SignInView.SigningOut -> handleAction SigningOut
       FromAccount (SignInView.AccountChanged s) -> do
-        forgetFormer s
+        takeSession s
         -- A sign-in completed: a tab about to let go of every user's keys
         -- lets go of none.
         when (isJust s.user) (H.liftEffect (liftIO announceSignIn))
-        modify (newSession s)
-        newPluginSession
         restartFeed
         reload Nothing
       -- The session ended by itself (or changed elsewhere): reload
@@ -1866,9 +1868,7 @@ component =
     sessionEnded :: Session -> H.HalogenM (State m) Action Slots output m ()
     sessionEnded s = do
       sealScreen
-      forgetFormer s
-      modify (newSession s)
-      newPluginSession
+      takeSession s
       restartFeed
       reload Nothing
       when (isNothing s.user) $
@@ -1881,12 +1881,33 @@ component =
     -- ('Wiki.App.Assistant.KeyOwner'): their keys leave the page, and none
     -- of those operations keeps a key on this device from now on, so that
     -- none is kept after the deletion, which starts after.
-    forgetFormer :: Session -> H.HalogenM (State m) Action Slots output m ()
-    forgetFormer s = do
-      before <- gets (\st -> st.session.user)
-      for_ before $ \u -> when (((\x -> x.id) <$> s.user) /= Just u.id) $ do
-        H.sync (liftIO (closeKeyOwnersOf u.id))
-        H.async (forgetUserKeys u.id)
+    forgetFormer :: Maybe UserId -> Session -> H.HalogenM (State m) Action Slots output m ()
+    forgetFormer before s =
+      for_ before $ \u -> when (((\x -> x.id) <$> s.user) /= Just u) $ do
+        H.sync (liftIO (closeKeyOwnersOf u))
+        H.async (forgetUserKeys u)
+
+    -- The shell takes a new session, of another reader or of nobody. The
+    -- session, its number and the plugins' state change in this step,
+    -- before anything waits: a write the former reader left waiting its
+    -- turn is dropped now, and cannot go out under the new reader's
+    -- cookie when the ask out answers during the wait. Then the former
+    -- user's keys are let go ('forgetFormer').
+    takeSession :: Session -> H.HalogenM (State m) Action Slots output m ()
+    takeSession s = do
+      before <- gets (\st -> (\u -> u.id) <$> st.session.user)
+      modify (newSession s)
+      newPluginSession
+      forgetFormer before s
+
+    -- The reader changes, or may, by something the shell starts or hears
+    -- of before it knows the new session (the demo's switch of user, its
+    -- reset or import, another tab's sign-out). A new session's number,
+    -- given to the plugins' state in this step, before anything waits,
+    -- drops a write the former reader left waiting its turn. The load
+    -- after reads what is on for whoever it finds.
+    readerChanging :: H.HalogenM (State m) Action Slots output m ()
+    readerChanging = modify nextSession >> newPluginSession
 
     -- Open the live channel again, as the current user.
     restartFeed :: H.HalogenM (State m) Action Slots output m ()
@@ -2324,6 +2345,11 @@ setHereAsks a st = st {hereAsks = a}
 newSession :: Session -> State m -> State m
 newSession s =
   Latest.superseded worldAsksOf setWorldAsks (\st -> st {session = s, sessionNumber = st.sessionNumber + 1, settled = False, panel = Actions Nothing})
+
+-- | The state with the session's number moved on, the session kept until
+-- the next load says whose it is ('readerChanging').
+nextSession :: State m -> State m
+nextSession st = st {Wiki.App.Shell.sessionNumber = st.sessionNumber + 1}
 
 -- | Whether two sessions are of the same user, or both of nobody: a load
 -- of the wiki answering with the session the shell holds is the same

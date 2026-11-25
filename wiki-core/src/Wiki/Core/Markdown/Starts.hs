@@ -210,22 +210,28 @@ cutsOf kept firstChange lineStart = (begins, below)
 --
 -- A line inside code is no suspect (#301): a TypeScript index signature,
 -- @[key: string]: number@, in a fence cost the whole text below it that
--- shortcut. Code is what the parser reports as a code shape
--- ('CodeShape'): a fence of any kind (code, a diagram, math, @html@),
--- indented code, HTML, display math that is all of its paragraph; at any
--- depth, in a quotation, an item or a footnote's definition. Its lines
--- after its first hold no definition, with one exception: display math
--- is a paragraph, and the definitions at the paragraph's start are in its
--- shape, the first of them on its first line. So a code shape counts only
--- where its first line, from the column the parser gives the shape, does
--- not start with @[@. Its first line stays a suspect: a footnote's label
--- may stand before the code on it (@[^n]: ```@). Only the shapes give
--- this: a fence's mark seen in the text says nothing of whether the
--- fence is inside an HTML block, or of where an item or a quotation
--- around it ends. A line the parser does not report (a fence in the body
--- of a footnote defined twice, which it drops) stays a suspect. A line in
--- prose that the parser reads as no definition (inside a paragraph, which
--- a definition cannot interrupt) is a suspect still: known, and left.
+-- shortcut. Code is a code shape ('CodeShape') of the parse whose lines
+-- are its own: a fence of any kind (code, a diagram, math, @html@) or an
+-- HTML block, at any depth (in a quotation, an item, a footnote's
+-- definition). The range of either is its lines, from its first to its
+-- last, which nothing else interrupts. The lines after its first hold no
+-- definition. Its first line stays a suspect: a footnote's label may
+-- stand before the code on it (@[^n]: ```@). The shape is told by its
+-- first line, from the column the parser gives it: an opening fence, or
+-- @<@. Display math that is all of its paragraph is a code shape too, but
+-- its range is the paragraph's, which holds the definitions at its start
+-- and a footnote's definition that interrupts it (@$$x$$@ and then
+-- @[^n]: note@ on the next line: one range over both); and it cannot be
+-- told by its text from indented code in a list's item. So neither counts.
+-- A line on which the parse places a definition (a link's, a footnote's)
+-- is a suspect whatever shape covers it. Only the shapes give this: a
+-- fence's mark seen in the text says nothing of whether the fence is
+-- inside an HTML block, or of where an item or a quotation around it
+-- ends. A line the parser does not report (a fence in the body of a
+-- footnote defined twice, which it drops) stays a suspect. A line in prose
+-- that the parser reads as no definition (inside a paragraph, which a
+-- link's definition cannot interrupt), or in indented code, is a suspect
+-- still: known, and left.
 --
 -- A definition counts wherever it is in the page: a reference elsewhere
 -- reads as a link, or a footnote's number, only because of it. So the
@@ -245,14 +251,15 @@ blockDefinitions source shapes = [(l, readOn l (Map.findWithDefault [] l byLine)
       | T.null (T.strip line) = False
       | otherwise = opened || "[" `T.isPrefixOf` T.dropWhile (\c -> isDigit c || c `elem` (" \t>-+*.)" :: [Char])) line
     lineText l = fromMaybe "" (Seq.lookup (l - 1) sourceLines)
-    -- The lines inside code that hold no definition, each run by its first
-    -- line, with its last: the lines after the first of a code shape
-    -- whose first line, from the column the parser gives it, does not
-    -- start with a bracket. Code shapes do not overlap, so the run that
-    -- may hold a line is the last that starts at or before it.
-    listings = IntMap.fromList [(l + 1, b) | s <- concatMap codeShapes shapes, Just (l, c) <- [minimumMay (map fst s.parts)], let b = snd (shapeLines s), l < b, Just rest <- [fromColumn c (lineText l)], not ("[" `T.isPrefixOf` rest)]
+    -- The lines inside a fence or an HTML block, each run by its first
+    -- line, with its last: the lines after the first of a code shape whose
+    -- first line, from the column the parser gives it, opens a fence or
+    -- starts with @<@. Code shapes do not overlap, so the run that may
+    -- hold a line is the last that starts at or before it. A line on which
+    -- a definition's shape starts is never in one.
+    listings = IntMap.fromList [(l + 1, b) | s <- concatMap codeShapes shapes, Just (l, c) <- [minimumMay (map fst s.parts)], let b = snd (shapeLines s), l < b, Just rest <- [fromColumn c (lineText l)], opensFence rest || "<" `T.isPrefixOf` rest]
     codeShapes s = [s | s.kind == CodeShape] <> concatMap codeShapes s.inner
-    listed l = maybe False (\(_, b) -> l <= b) (IntMap.lookupLE l listings)
+    listed l = not (Map.member l byLine) && maybe False (\(_, b) -> l <= b) (IntMap.lookupLE l listings)
     byLine = Map.fromListWith (flip (<>)) [(l, [(top, footnote)]) | (l, top, footnote) <- concatMap (definitionsIn True) shapes]
     -- Each definition's line, whether it is at the top level, and whether
     -- it is a footnote's.
@@ -286,6 +293,17 @@ blockDefinitions source shapes = [(l, readOn l (Map.findWithDefault [] l byLine)
         , not (T.any (`elem` ['\\', '[', ']', '^']) label) ->
             Just label
       _ -> Nothing
+
+-- | Whether a line's text, from where its block starts, opens a fence:
+-- three backticks or more with no backtick after them, or three tildes or
+-- more (CommonMark's opening code fence, its indentation taken already).
+opensFence :: Text -> Bool
+opensFence t = case T.uncons t of
+  Just (mark, _)
+    | mark `elem` ['`', '~'] ->
+        let (run, rest) = T.span (== mark) t
+         in T.length run >= 3 && (mark == '~' || not (T.any (== '`') rest))
+  _ -> False
 
 -- | The text of a line from a column, as the parser counts columns (from
 -- 1, a tab to the next multiple of four, 'Shape'), or 'Nothing' where the

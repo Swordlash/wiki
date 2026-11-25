@@ -26,7 +26,7 @@ import Test.Cases (coverage, longText, longTexts)
 import Test.Hspec hiding (after, before)
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, forAllShow, frequency, property, (.&&.), (===))
-import Wiki.Core.Markdown.Ast (parseMarkdown, parseShapes)
+import Wiki.Core.Markdown.Ast (Block (..), Footnote (..), parseMarkdown, parseShapes)
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.Markdown.Edit qualified as Edit
 import Wiki.Core.Markdown.Problems (Checked (..), checkText)
@@ -128,7 +128,7 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
         -- a list opens there.
         (name, length <$> handed, (\h -> complete srcs (readLine h) (at h)) <$> handed, isJust whole)
           `shouldBe` (name, Just 2, Just whole, True)
-    it "counts no line inside a fence, indented code or HTML, and every line the parser reads as a definition" $ do
+    it "counts no line inside a fence or HTML, and every line the parser reads as a definition; a line in indented code still" $ do
       let doc =
             T.intercalate
               "\n"
@@ -168,7 +168,10 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
               , "[open]: /to-the-end"
               ]
       fmap (blockDefinitions doc) (parseShapes doc)
-        `shouldBe` Right [(4, Just "[r]: x"), (8, Just "[o]: x"), (19, Just "[^n]: x"), (25, Just "[a]: x"), (31, Just "[h2]: x")]
+        `shouldBe` Right [(4, Just "[r]: x"), (8, Just "[o]: x"), (17, Nothing), (19, Just "[^n]: x"), (25, Just "[a]: x"), (31, Just "[h2]: x")]
+    it "counts a footnote's definition right after display math, a fence, HTML or indented code, which a paragraph's range takes in (#387, Codex)" $
+      map (\doc -> fmap (blockDefinitions doc) (parseShapes doc)) ["$$x$$\n[^n]: first", "\\[x\\]\n[^n]: first", "Text.\n$$x$$\n[^n]: first", "$$x$$\n[^n]: first\n[^m]: second", "```\nx\n```\n[^n]: first", "<!--\nx\n-->\n[^n]: first", "    code\n[^n]: first", "$$x$$\n[a]: /in-the-paragraph"]
+        `shouldBe` map Right [[(2, Just "[^n]: x")], [(2, Just "[^n]: x")], [(3, Just "[^n]: x")], [(2, Just "[^n]: x"), (3, Just "[^m]: x")], [(4, Just "[^n]: x")], [(4, Just "[^n]: x")], [(2, Just "[^n]: x")], [(2, Nothing)]]
     -- The check finds the definitions after every pause in the typing, in
     -- one pass over the lines, looking up only a line that holds ]: among
     -- the code shapes ("Wiki.Core.Markdown.Starts" says how). Counted, not
@@ -191,7 +194,7 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
       (found, small, _) <- allocatedFor (n `div` 10)
       (found', large, parsing) <- allocatedFor n
       putStrLn ("the definitions of " <> show (n `div` 10) <> " and " <> show n <> " fences: " <> show (small `div` 1024) <> " KiB and " <> show (large `div` 1024) <> " KiB allocated, the parse " <> show (parsing `div` 1024) <> " KiB" :: Text)
-      -- Measured natively on 2026-11-25, unoptimised: 11.7 MB and 118 MB
+      -- Measured natively on 2026-11-25, unoptimised: 13.3 MB and 134 MB
       -- for 1,600 and 16,000 fences (8.4 MB and 84 MB before #301, which
       -- counted each fenced line), the parse 295 MB and 2.9 GB.
       (found, found', large < 15 * small, large < parsing `div` 10) `shouldBe` (0, 0, True, True)
@@ -473,9 +476,35 @@ listedLine l = any (`T.isInfixOf` l) ["]: /listed", "]: number", "]: listed note
 -- line like a definition with a label of its own (@k1@, @k2@, …).
 genLabelled :: Gen [Text]
 genLabelled = do
-  pieces <- choose (1, 6) >>= \k -> replicateM k (frequency [(4, listing True), (1, pure ["Some text.", ""]), (1, elements definitions)])
+  pieces <- choose (1, 6) >>= \k -> replicateM k (frequency [(4, listing True), (1, pure ["Some text.", ""]), (1, elements definitions), (3, rawAround)])
   pure (snd (mapAccumL label (1 :: Int) (concat pieces)))
   where
+    -- A block of each kind the parser reports as a code shape, with a
+    -- definition of a link or a footnote put before it, after it or between
+    -- two of its lines, with a blank line around it or none (#387, Codex:
+    -- display math from a paragraph took in a footnote's definition right
+    -- after it).
+    rawAround = do
+      raw <- elements raws
+      definition <- elements ["[{L}]: /real", "[^{L}]: real note"]
+      at <- choose (0, length raw)
+      blankBefore <- elements [[], [""]]
+      blankAfter <- elements [[], [""]]
+      pure (take at raw <> (if at > 0 then blankBefore else []) <> [definition] <> blankAfter <> drop at raw <> [""])
+    raws =
+      [ ["```", "[{L}]: /listed", "```"]
+      , ["~~~~", "code", "~~~~"]
+      , ["```math", "x^2", "```"]
+      , ["    indented code", "    [{L}]: /listed"]
+      , ["<div>", "[{L}]: /in-html", "</div>"]
+      , ["<!--", "[{L}]: /in-comment", "-->"]
+      , ["$$x$$"]
+      , ["$$", "x", "$$"]
+      , ["\\[", "x", "\\]"]
+      , ["Text.", "$$x$$"]
+      , ["> ```", "> [{L}]: /listed", "> ```"]
+      , ["- ```", "  [{L}]: /listed", "  ```"]
+      ]
     -- Definitions, and the code shapes that hold definitions, follow one
     -- on its line, or come right before one: display math that is all of
     -- a paragraph begun by two definitions (with a line of attributes
@@ -515,7 +544,12 @@ countsEveryDefinition doc =
     text = T.intercalate "\n" doc
     counted = map fst (definitionsOf text)
     labelled = [(l, label) | (l, line) <- zip [1 :: Int ..] doc, Just label <- [labelOf line]]
-    real = filter (defines . snd) labelled
+    real = filter (\(_, label) -> defines label || label `elem` notes) labelled
+    -- The labels of the footnotes the parse of the page holds, each with
+    -- its caret.
+    notes = case parseMarkdown text of
+      Right blocks -> ["^" <> label | Footnotes ns <- blocks, Footnote _ label _ <- ns]
+      Left _ -> []
     labelOf line = do
       let label = T.takeWhileEnd (/= '[') (fst (T.breakOn "]:" line))
       guard ("k" `T.isPrefixOf` T.dropWhile (== '^') label && "]:" `T.isInfixOf` line)

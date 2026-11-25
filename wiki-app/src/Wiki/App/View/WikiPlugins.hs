@@ -143,7 +143,7 @@ component =
                       <legend>Who may add them</legend>
                       {% for p in [minBound .. maxBound] %}
                         <label class="check">
-                          <input type="radio" name="external-plugins" value={{ policyValue p }} checked={{ policy == p }} onChange={{ const (Happen (PolicyChosen p)) }}>
+                          <input type="radio" name="external-plugins" class={{ "admin-external-policy-" <> policyValue p }} value={{ policyValue p }} checked={{ policy == p }} onChange={{ const (Happen (PolicyChosen p)) }}>
                           <span>{{ policyText p }}</span>
                         </label>
                       {% end %}

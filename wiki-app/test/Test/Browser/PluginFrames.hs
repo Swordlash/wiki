@@ -9,6 +9,11 @@
 -- marks a word written twice, and a plugin whose code loops is stopped,
 -- its frame removed, while the page goes on.
 --
+-- Then the settings, the whole application over the demo's backend outside
+-- the demo: an administrator lets the wiki's plugins run, picks the
+-- example plugin's two files, confirms the warning, sees it listed, and
+-- finds its problem in an editor.
+--
 -- The frames' documents are the server's, written by
 -- test/web/plugin-frames.mjs: the runner serves a file by its extension,
 -- and a frame's address on the server has none, so the test's monad opens
@@ -19,8 +24,10 @@
 module Test.Browser.PluginFrames (spec) where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Control.Monad.UUID (MonadUUID (..))
+import Data.ByteString.Base64 qualified as Base64
 import Data.IORef (IORef, modifyIORef', readIORef)
 import Data.Map.Strict qualified as Map
 import Data.NT (type (~>) (..))
@@ -29,30 +36,51 @@ import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Halogen qualified as H
 import Halogen.Activity.Control (withTestClock)
-import Halogen.JSBits (Safety (..), browserJS)
-import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
-import Protolude hiding (find)
-import Test.Browser.Mount (clickButton, slugs, startChangedWith)
+import Halogen.JSBits (JSText, Safety (..), browserJS, inBrowser, inert, toJSText)
+import Halogen.JSBits.Promise (Promise, wait)
+import Halogen.Router qualified as Router
+import Halogen.VDom.DOM.Monad.Class
+  ( MonadAttributes
+  , MonadBrowserDOM
+  , MonadDOM
+  )
+import Protolude hiding (find, wait)
+import Test.Browser.Mount (clickButton, forgetStorage, slugs, startChangedWith, testRouter)
 import Test.Hspec (around)
 import Test.Hspec.Halogen
 import Wiki.Api.Plugins (PluginId (..), noPlugins)
 import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPolicy (..), Permission (..), noExternalPlugins)
+import Wiki.App (component, input)
 import Wiki.App.Assistant (MonadAssistant)
+import Wiki.App.Assistant.Sync (MonadVault)
 import Wiki.App.Backend (MonadLoad (..), MonadWiki (..))
+import Wiki.App.Backend.Admin (MonadAdmin)
+import Wiki.App.Backend.Comments (MonadComments)
+import Wiki.App.Backend.Encrypted (MonadEncryption)
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..), externalPluginsIn)
+import Wiki.App.Backend.Notifications (MonadNotifications)
+import Wiki.App.Backend.Plugins (MonadPlugins)
+import Wiki.App.Backend.Stars (MonadStars)
+import Wiki.App.Backend.WhatsNew (MonadWhatsNew)
 import Wiki.App.Demo (demoNow, demoState)
+import Wiki.App.DemoUsers (MonadDemoUsers)
+import Wiki.App.Guide (exampleCode, exampleManifest)
 import Wiki.App.Islands (MonadIslands (..))
 import Wiki.App.Plugin.External (Heard (..))
 import Wiki.App.Plugin.External.Frames qualified as Frames
 import Wiki.App.Route (Route (..))
+import Wiki.App.Route qualified as R
+import Wiki.App.Security (MonadSecurity)
+import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Markdown.Problems (Problem (..), ProblemKind (..), Severity (..))
 import Wiki.Core.Page qualified as Core (Page (..))
 
 $( browserJS
-     ["jsbits/test-plugin-frames.js", "jsbits/test-moves.js"]
+     ["jsbits/test-plugin-frames.js", "jsbits/test-moves.js", "jsbits/test-files.js"]
      [ ("js_frames_open", "wiki_test_plugin_frames_open", Safe, [t|IO Int|])
+     , ("js_choose_two_filesPromise", "wiki_test_choose_two_files", Safe, [t|JSText -> JSText -> JSText -> JSText -> JSText -> JSText -> JSText -> IO (Promise ())|])
      , ("js_watch_frame_moves", "wiki_test_watch_frame_moves", Safe, [t|IO ()|])
      , ("js_frame_moved", "wiki_test_frame_moved", Safe, [t|IO Bool|])
      ]
@@ -61,7 +89,38 @@ $( browserJS
 -- | The demo's backend, opening each plugin's frame at the document the
 -- test wrote for the plugin.
 newtype Written m a = Written (m a)
-  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO)
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO, PrimMonad)
+
+deriving newtype instance (MonadDOM m) => MonadDOM (Written m)
+
+deriving newtype instance (MonadAttributes m) => MonadAttributes (Written m)
+
+deriving newtype instance (MonadBrowserDOM m) => MonadBrowserDOM (Written m)
+
+instance (MonadAdmin m) => MonadAdmin (Written m)
+
+instance (MonadComments m) => MonadComments (Written m)
+
+instance (MonadNotifications m) => MonadNotifications (Written m)
+
+instance (MonadStars m) => MonadStars (Written m)
+
+instance (MonadWhatsNew m) => MonadWhatsNew (Written m)
+
+instance (MonadSecurity m) => MonadSecurity (Written m)
+
+instance (MonadPlugins m) => MonadPlugins (Written m)
+
+instance (MonadAssistant m) => MonadAssistant (Written m)
+
+instance (MonadVault m) => MonadVault (Written m)
+
+instance (MonadEncryption m) => MonadEncryption (Written m)
+
+instance (MonadDemoUsers m) => MonadDemoUsers (Written m)
+
+js_choose_two_files :: JSText -> JSText -> JSText -> JSText -> JSText -> JSText -> JSText -> IO ()
+js_choose_two_files a1 a2 a3 a4 a5 a6 a7 = if inBrowser then wait =<< js_choose_two_filesPromise a1 a2 a3 a4 a5 a6 a7 else pure inert
 
 instance MonadTrans Written where
   lift = Written
@@ -252,6 +311,34 @@ spec m = describe "external plugins' frames" $ do
     -- put back, so it did not load again.
     unsafeIOToPageM js_frame_moved `shouldReturn` False
     find ui "iframe.editor-plugin-frame" >>= (`shouldBeSameElement` frame)
+    length <$> findAll ui ".editor-plugin-stopped" `shouldReturn` 0
+  -- The settings: the files are the example's, as the guide shows them
+  -- ("Wiki.App.Guide"), picked together.
+  it "installs the example plugin from the administration after the warning, lists it, and runs it in an editor" $ runPage $ do
+    wiki <- unsafeIOToPageM (newMemWiki ((demoState demoNow) {current = Just (UserId "user-admin")}))
+    page <- unsafeIOToPageM (helloWorld wiki)
+    -- The page's text has a word written twice.
+    _ <- unsafeIOToPageM (runMemWiki wiki (savePage page.id page.updatedAt page.title "# Hello, world\n\nSaid the the cat.\n")) >>= either (panic . show) pure
+    router <- unsafeIOToPageM testRouter
+    unsafeIOToPageM forgetStorage
+    unsafeIOToPageM (Router.redirect router (Admin R.Permissions))
+    ui <- mount m (H.hoist (NT (runMemWiki wiki . runWritten)) component) ((input router) {Shell.demo = Nothing})
+    waitQuiet
+    find ui ".admin-external-policy-wiki" >>= click
+    waitQuiet
+    unsafeIOToPageM ((\st -> st.externalPolicy) <$> readIORef wiki) `shouldReturn` ExternalWiki
+    let encoded = toJSText . decodeUtf8 . Base64.encode . encodeUtf8
+    unsafeIOToPageM (js_choose_two_files (toJSText (".admin-external .plugin-add input[type=file]" :: Text)) "manifest.json" "application/json" (encoded exampleManifest) "doubled-words.js" "text/javascript" (encoded exampleCode))
+    waitQuiet
+    find ui ".plugin-warning .plugin-hosts" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "It may connect to no other site")
+    unsafeIOToPageM (Map.keys . (\st -> st.externalWiki) <$> readIORef wiki) `shouldReturn` []
+    find ui ".plugin-warning .plugin-confirm" >>= click
+    waitQuiet
+    find ui ".admin-external-plugin[data-plugin=doubled-words] .admin-plugin-name" >>= textContent >>= (`shouldBe` "Doubled words")
+    -- In the editor of the page, the plugin runs and marks the word.
+    unsafeIOToPageM (Router.navigate router (EditPage (slugs ["blog"]) (slugs ["hello-world"])))
+    waitQuiet
+    find ui ".editor-problems" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "problem")
     length <$> findAll ui ".editor-plugin-stopped" `shouldReturn` 0
   where
     withExample st = st {externalPolicy = ExternalWiki, externalWiki = Map.fromList [(PluginId "doubled-words", installed "doubled-words" "Doubled words")]}

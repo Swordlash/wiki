@@ -77,7 +77,7 @@ warning p happen = case p.files of
   Right f ->
     [hh|
       <div class="plugin-pick plugin-warning" role="alertdialog" aria-label="Before you upload this plugin">
-        <p class="plugin-warning-title"><strong>{{ f.manifest.name }}</strong> {{ " " <> f.manifest.version <> " (" <> f.manifest.id.text <> ")" }}</p>
+        <p class="plugin-warning-title"><strong>{{ f.manifest.name }}</strong>{{ " " <> f.manifest.version <> " (" <> f.manifest.id.text <> ")" }}</p>
         {% if not (T.null f.manifest.description) %}
           <p class="plugin-description account-note">{{ f.manifest.description }}</p>
         {% end %}

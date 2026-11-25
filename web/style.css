@@ -6746,9 +6746,29 @@ div.server-secret > span:first-child {
   gap: 0.4rem;
 }
 
+/* Add, Install and Replace are labels around a hidden file input, looking
+   like the buttons beside them, as the import's: the input stays in the
+   focus order and opens the browser's picker on Enter and Space, and the
+   label shows its focus. */
+.plugin-add-files,
+.plugin-replace {
+  position: relative;
+}
+
+.plugin-add-files:focus-within,
+.plugin-replace:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .plugin-add-files input[type="file"],
 .plugin-replace input[type="file"] {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .plugin-warning,

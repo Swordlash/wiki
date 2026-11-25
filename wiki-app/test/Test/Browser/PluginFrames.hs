@@ -36,7 +36,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Halogen qualified as H
 import Halogen.Activity.Control (withTestClock)
-import Halogen.JSBits (JSText, Safety (..), browserJS, inBrowser, inert, toJSText)
+import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, inBrowser, inert, toJSText)
 import Halogen.JSBits.Promise (Promise, wait)
 import Halogen.Router qualified as Router
 import Halogen.VDom.DOM.Monad.Class
@@ -78,12 +78,14 @@ import Wiki.Core.Markdown.Problems (Problem (..), ProblemKind (..), Severity (..
 import Wiki.Core.Page qualified as Core (Page (..))
 
 $( browserJS
-     ["jsbits/test-plugin-frames.js", "jsbits/test-moves.js", "jsbits/test-files.js"]
+     ["jsbits/test-plugin-frames.js", "jsbits/test-moves.js", "jsbits/test-files.js", "jsbits/test-focus.js", "jsbits/test-style.js"]
      [ ("js_frames_open", "wiki_test_plugin_frames_open", Safe, [t|IO Int|])
      , ("js_overflowing", "wiki_test_overflowing", Safe, [t|JSText -> Bool -> IO Int|])
      , ("js_choose_two_filesPromise", "wiki_test_choose_two_files", Safe, [t|JSText -> JSText -> JSText -> JSText -> JSText -> JSText -> JSText -> IO (Promise ())|])
      , ("js_watch_frame_moves", "wiki_test_watch_frame_moves", Safe, [t|IO ()|])
      , ("js_frame_moved", "wiki_test_frame_moved", Safe, [t|IO Bool|])
+     , ("js_focused_matches", "wiki_test_focused_matches", Safe, [t|JSText -> IO Bool|])
+     , ("js_computed_style", "wiki_test_computed_style", Safe, [t|JSText -> JSText -> IO JSText|])
      ]
  )
 
@@ -375,6 +377,33 @@ spec m = describe "external plugins' frames" $ do
     unsafeIOToPageM (js_overflowing (toJSText (rows :: Text)) False) `shouldReturn` 0
     -- Shown able to fail: the same texts unwrapped run out of their row.
     unsafeIOToPageM (js_overflowing (toJSText (rows :: Text)) True) >>= (`shouldSatisfy` (> 0))
+  -- Codex's first round on #386: the file inputs that add and replace a
+  -- plugin were hidden with display: none, which took them out of the
+  -- focus order, so that nobody could pick a plugin's files with the
+  -- keyboard. Each is reached by Tab from the control before it, is in
+  -- the page's layout, and its label, which is what shows, is ringed while
+  -- the input has the focus. The reads of the focus and of the style are
+  -- the test's own calls, made once the program is quiet.
+  readsOnce Quiet . it "reaches the file inputs that add and replace a plugin of one's own by Tab, the label ringed" $ runPage $ do
+    let own = Map.fromList [(PluginId "mine", (installed "mine" "Mine") {mine = True})]
+    wiki <- unsafeIOToPageM (newMemWiki ((demoState demoNow) {current = Just (UserId "user-editor"), externalPolicy = ExternalUsers, externalOwn = Map.fromList [(UserId "user-editor", own)]}))
+    router <- unsafeIOToPageM testRouter
+    unsafeIOToPageM forgetStorage
+    unsafeIOToPageM (Router.redirect router (UserSettings PluginsSection))
+    ui <- mount m (H.hoist (NT (runMemWiki wiki . runWritten)) component) ((input router) {Shell.demo = Nothing})
+    waitQuiet
+    let row = ".plugin-external[data-plugin=mine] "
+        focusedIs selector = waitQuiet *> unsafeIOToPageM (js_focused_matches (toJSText selector))
+        computed selector property = waitQuiet *> unsafeIOToPageM (fromJSText <$> js_computed_style (toJSText selector) (toJSText property))
+    -- The control before each picker: the plugin's switch before Replace,
+    -- and the row's Remove before the input that adds one.
+    for_ [(row <> ".plugin-toggle", row <> ".plugin-replace"), (row <> ".plugin-remove", ".plugin-add-files")] $ \(before, label) -> do
+      find ui before >>= focus
+      press "Tab"
+      (label, focusedIs (label <> " input[type=file]")) `shouldReturn'` (label, True)
+      (label, computed (label <> " input[type=file]") "display") `shouldReturn'` (label, "block")
+      (label, computed (label <> " input[type=file]") "visibility") `shouldReturn'` (label, "visible")
+      (label, computed label "outline-style") `shouldReturn'` (label, "solid")
   where
     withExample st = st {externalPolicy = ExternalWiki, externalWiki = Map.fromList [(PluginId "doubled-words", installed "doubled-words" "Doubled words")]}
     helloWorld wiki = maybe (panic "no page Hello, world") identity . find' . Map.elems . (\st -> st.pages) <$> readIORef wiki

@@ -2817,10 +2817,23 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   by the parser and anything unusual stays a plain line break; the
   renumbering reaches as far as the 2,000 characters Enter reads; a
   number that grows a digit over indented later lines changes
-  nothing. Left of #301: braces and `\begin…\end` for commands in
-  math, Tab to the next place of a `/` command, pages of other
-  spaces after `[[`, the slow path on long pages with a `[…]:`
-  line, splitting an item on its later lines. **Other small things of 2026-11-25 (the owner):**
+  nothing. **The second cut merged (#384):** after a `/` command with
+  several places, Tab goes to the next, Shift+Tab back, Tab on the
+  last to the end; the fields are `@codemirror/autocomplete`'s
+  snippets, added in the transaction that writes the command, and
+  the integration takes the library's snippet extension and its
+  clear effect from a transaction it makes, which its documentation
+  does not promise (if that fails, there is no walk and nothing else
+  changes); any undo ends a walk. Left of #301: braces and
+  `\begin…\end` for commands in math, pages of other spaces after
+  `[[`, the slow path on long pages with a `[…]:` line, splitting an
+  item on its later lines. **Held requests (#385, after #377):** the
+  browser examples that hold a request start over a backend with no
+  time limit, through one helper (`holdingEnv`, `startHolding` in
+  `Test.Browser.Http`); left: five holds in `Test/Browser/Vault.hs`
+  across a navigation or a sign-out, and the smoke suites'
+  `holdLoads` and `loadAdopted`, which hold the built program's
+  fetches under its real 30 s limit. **Other small things of 2026-11-25 (the owner):**
   `WIKI_INSECURE=1` in `clients/wiki.sh` (#378); plain HTTP on the
   TLS port is redirected to HTTPS, and HSTS is sent only with
   `--hsts`, off by default because it applies to the host name on

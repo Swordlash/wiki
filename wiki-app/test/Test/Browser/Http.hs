@@ -35,6 +35,8 @@ module Test.Browser.Http
   , startServerWith
   , startServerOver
   , startServerThrough
+  , holdingEnv
+  , startHolding
   , tellServer
   , tell
   , said
@@ -473,6 +475,33 @@ startServerOver
   -> PageM s (Mounted s Shell.Query Void m)
 startServerOver m env at = startServerThrough m (runHttpWiki env) at
 
+-- | A backend over HTTP with no time limit on a request, for an example
+-- that holds a request on purpose ('holdAt', 'holdNext', a hold of every
+-- request). The backend the program runs with gives up on a request
+-- after thirty seconds ('Wiki.App.Backend.Http.Transport.requestTimeout')
+-- and aborts it. An example can hold a request that long on a slow run,
+-- when it holds it across slow steps of its own: a navigation, a long
+-- render, a second page. The held request then fails as if the server
+-- could not be reached, before the example releases it. The late answer
+-- the example is about never comes, and the example fails at rest, or
+-- passes without having tested anything. Without a limit, only the
+-- example decides when the answer comes. A negative limit is none
+-- ('System.Timeout.timeout'). The suite's watchdog still stands against
+-- a hang. An example about the limit itself makes a backend of its own.
+holdingEnv :: PageM s HttpEnv
+holdingEnv = unsafeIOToPageM (newHttpEnv (fetchTransport (const (-1))))
+
+-- | 'startServer' over a backend with no time limit on a request
+-- ('holdingEnv'), for an example that holds a request on purpose.
+startHolding
+  :: forall m
+  ->(Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m)
+  => Route
+  -> PageM s (Mounted s Shell.Query Void m)
+startHolding m at = do
+  env <- holdingEnv
+  startServerOver m env at
+
 -- | 'startServer', with each of the backend's actions run through the
 -- function given: the test's own way to run them, which can watch what
 -- each one did and act at that moment.
@@ -499,18 +528,8 @@ startServerWith m db at = do
   router <- prepare at
   mount m (H.hoist (NT (runHttpWiki env)) component) (serverInputWith db router)
 
--- | 'startServer', adopting a page that holds the shell's HTML already.
-adoptServer
-  :: forall m
-  ->(Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m)
-  => Element s
-  -> Route
-  -> PageM s (Mounted s Shell.Query Void m)
-adoptServer m page at = do
-  env <- unsafeIOToPageM (newHttpEnv browserTransport)
-  adoptServerOver m env page at
-
--- | 'adoptServer', over a backend of the test's.
+-- | 'startServerOver', adopting a page that holds the shell's HTML
+-- already.
 adoptServerOver
   :: forall m
   ->(Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m, MonadIndexedDB m)
@@ -1015,7 +1034,7 @@ views m = describe "the application over it" $ do
     serverStarts
     serveDemo
     perform js_server_hold
-    ui <- startServer m tour
+    ui <- startHolding m tour
     find ui ".wiki-content > .loading" >>= (`shouldHaveText` "Loading…")
     length <$> findAll ui ".breadcrumbs li" `shouldReturn` 0
     perform js_server_release
@@ -1070,7 +1089,7 @@ views m = describe "the application over it" $ do
     serverStarts
     serveDemo
     perform js_server_hold
-    ui <- startServer m (Admin (R.Users allUsers))
+    ui <- startHolding m (Admin (R.Users allUsers))
     find ui ".wiki-content > .loading" >>= (`shouldHaveText` "Loading…")
     perform js_server_release
     length <$> findAll ui ".admin-users .user-row" `shouldReturn` 3
@@ -1111,7 +1130,7 @@ views m = describe "the application over it" $ do
         requestsTo url = filter (\r -> r.method == "PUT" && r.url == url) <$> askedNow
     answerWith "PUT" saveAt 200 hello
     answerWith "PUT" draftAt 200 Draft {page = hello.id, author = UserId "user-admin", title = hello.title, body = "", base = hello.updatedAt, savedAt = hello.updatedAt}
-    ui <- startServer m (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
+    ui <- startHolding m (EditPage (slugs ["blog"]) (slugs ["hello-world"]))
     text <- editorText ui
     typeText text "One."
     perform (js_server_hold_at (toJSText "PUT") (toJSText saveAt))
@@ -1165,7 +1184,7 @@ views m = describe "the application over it" $ do
     hello <- unsafeIOToPageM helloWorld
     let versions = endpointUrl (\e -> e.pages.versions hello.id Nothing Nothing)
     perform (js_server_hold_at (toJSText "GET") (toJSText versions))
-    ui <- startServer m (PageHistory (slugs ["blog"]) (slugs ["hello-world"]) Nothing AgainstPrevious)
+    ui <- startHolding m (PageHistory (slugs ["blog"]) (slugs ["hello-world"]) Nothing AgainstPrevious)
     -- Quiet once the server holds the request, which it counts as held.
     map (\r -> r.aborted) . filter (\r -> r.url == versions) <$> askedNow `shouldReturn` [False]
     find ui ".all-spaces" >>= click
@@ -1231,14 +1250,15 @@ views m = describe "the application over it" $ do
     perform js_server_hold
     -- The page as the server's build has it: the shell before anything
     -- has come, which is the same at every address.
-    first' <- startServer m Home
+    first' <- startHolding m Home
     _ <- find first' ".wiki-content > .loading"
     html <- fromJSText <$> unsafeIOToPageM js_markup
     unmount first'
     page <- htmlContainer html
     shell <- findIn page ".wiki"
     before <- findAllIn page "*"
-    ui <- adoptServer m page tour
+    env <- holdingEnv
+    ui <- adoptServerOver m env page tour
     after <- findAll ui "*"
     length after `shouldBe` length before
     zipWithM_ shouldBeSameElement after before
@@ -1890,7 +1910,7 @@ overtaken
   -> PageM s ()
 overtaken m space page at url change shown = do
   answerWith "PUT" ("api/v1/pages/" <> page.id.text <> "/template") 200 page
-  ui <- startServer m (Page space at)
+  ui <- startHolding m (Page space at)
   _ <- find ui ".page-view .page-body"
   let templateAt = "api/v1/pages/" <> page.id.text <> "/template"
       readsAt = length . filter (\r -> r.method == "GET" && r.url == url) <$> askedNow

@@ -33,6 +33,7 @@ module Wiki.App.Editor.Complete
 where
 
 import Data.Aeson (Value (String), object, (.=))
+import Data.List (lookup)
 import Data.Map.Lazy qualified as Map
 import Data.Map.Strict qualified as Strict
 import Data.Text qualified as T
@@ -317,7 +318,10 @@ answer found earlier memo text request = case T.splitOn "\n" text of
 -- must still read as @line@ (the editor writes nothing otherwise),
 -- @select@ selected in it (from and to, in characters), the @/@ and its
 -- letters, at @query@ in @line@ (from and to, in characters), taken away
--- as a change of their own.
+-- as a change of their own; and for a command that leaves more than one
+-- place to fill, @places@, each from and to in @insert@ in the order Tab
+-- goes through them (@select@ the first), and @after@, where the cursor
+-- goes after the last.
 completionJson :: Completion -> Value
 completionJson c =
   object
@@ -344,5 +348,11 @@ completionJson c =
       AsText -> ["insert" .= fst (skeletonText candidate.skeleton)]
       LineAsText line (queryFrom, queryTo) ->
         let (text, places) = skeletonText candidate.skeleton
-            (selectFrom, selectTo) = maybe (T.length text, T.length text) snd (head places)
-         in ["insert" .= text, "select" .= [selectFrom, selectTo], "line" .= line, "query" .= [queryFrom, queryTo]]
+            fill = [range | (n, range) <- places, n /= 0]
+            (selectFrom, selectTo) = fromMaybe (T.length text, T.length text) (head fill)
+            -- A command with more than one place: all of them, and where
+            -- the writing goes on after them.
+            walk = case (fill, lookup 0 places) of
+              (_ : _ : _, Just (after, _)) -> ["places" .= [[a, b] | (a, b) <- fill], "after" .= after]
+              _ -> []
+         in ["insert" .= text, "select" .= [selectFrom, selectTo], "line" .= line, "query" .= [queryFrom, queryTo]] <> walk

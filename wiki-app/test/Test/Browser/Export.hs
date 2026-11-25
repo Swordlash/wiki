@@ -21,7 +21,7 @@ import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, i
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
-import Test.Browser.Http (Asked (..), answerWith, asked, holdAt, release, serveDemo, serverStarts, startServer)
+import Test.Browser.Http (Asked (..), answerWith, asked, holdAt, release, serveDemo, serverStarts, startHolding, startServer)
 import Test.Browser.Mount (slugs, start)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
@@ -138,7 +138,7 @@ spec m = do
         url = pageExport deck BeamerPdf
     document "GET" url 200 "application/pdf" "inline; filename=\"presentations.pdf\"" "%PDF-1.5 the deck"
     holdAt "GET" url
-    ui <- startServer m (Page docs (slugs ["markdown-guide", "presentations"]))
+    ui <- startHolding m (Page docs (slugs ["markdown-guide", "presentations"]))
     find ui ".export-menu summary" >>= click
     find ui ".export-formats button.export-beamer-pdf" >>= click
     eventually $ find ui ".export-formats button.export-beamer-pdf" >>= (`shouldHaveText` "Making the PDF…")

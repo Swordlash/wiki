@@ -6,9 +6,10 @@ module Test.Markdown.Edit (spec) where
 
 import Data.Text qualified as T
 import Protolude hiding (link, list)
+import Test.Cases (coverage)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
-import Test.QuickCheck (Gen, choose, elements, forAll, listOf, (===))
+import Test.QuickCheck (Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, frequency, listOf, oneof, property, (.&&.), (===))
 import Wiki.Core.Markdown.Ast qualified as A
 import Wiki.Core.Markdown.Edit
 
@@ -333,6 +334,27 @@ spec = describe "Wiki.Core.Markdown.Edit" $ do
         let (new, Selection s e) = apply command old sel
          in e >= s && e <= T.length new
 
+  -- #301: the places a command leaves to fill in, which the "/" menu
+  -- goes through with Tab.
+  describe "applyWithPlaces" $ do
+    it "gives a link's text and then its address, a table's cells, a code block's language and code, a block spoiler's name, description and body, and a collapsible section's summary and body" $ do
+      placesAt Link "See ‸" `shouldBe` Just (["link text", "https://"], "See [link text](https://)‸")
+      placesAt Image "‸" `shouldBe` Just (["description", "https://"], "![description](https://)‸")
+      placesAt Table "‸" `shouldBe` Just (["Column 1", "Column 2", "Column 3", "Text", "Text", "Text"], "| Column 1 | Column 2 | Column 3 |\n| -------- | -------- | -------- |\n| Text     | Text     | Text     |‸")
+      placesAt CodeBlock "Text‸" `shouldBe` Just (["", ""], "Text\n\n```\n\n```‸")
+      placesAt SpoilerBlock "‸" `shouldBe` Just (["name", "Description", ""], "[[!spoiler]]{name}(Description)\n\n[[/spoiler]]‸")
+      placesAt (Html Details) "‸" `shouldBe` Just (["Details", "What opens on a click."], "<details>\n<summary>Details</summary>\nWhat opens on a click.\n</details>‸")
+    it "gives none for a command with one place or none, nor for a selection a link goes around" $ do
+      map (\c -> placesAt c "Some text‸") [Bold, Mermaid, DisplayMath, Box "NOTE", HorizontalRule, BulletList, Heading, Html Kbd]
+        `shouldBe` replicate 8 Nothing
+      (\(_, _, places) -> places) (applyWithPlaces Link "a word" (Selection 2 6)) `shouldBe` Nothing
+    -- Its coverage checked natively only ("Test.Cases").
+    prop "writes what apply writes, and places inside what the command put in, in order and apart, the first what apply selects" . coverage $
+      forAll genPlaced $ \(command, old, sel) ->
+        let (new, selected, places) = applyWithPlaces command old sel
+         in cover 15 (isJust places) "places" $
+              (new, selected) === apply command old sel
+                .&&. maybe (property True) (placesHold old new selected) places
   describe "the palette" $ do
     it "names its classes" $ do
       map textColourClass textColours `shouldBe` ["c-red", "c-orange", "c-green", "c-teal", "c-blue", "c-purple", "c-pink", "c-grey"]
@@ -363,6 +385,54 @@ mark :: Text -> Selection -> Text
 mark text (Selection s e)
   | s == e = T.take s text <> "‸" <> T.drop s text
   | otherwise = T.take s text <> "«" <> T.take (e - s) (T.drop s text) <> "»" <> T.drop e text
+
+-- | What the places of a command applied at the marked cursor hold, in
+-- their order, and the text it makes with the cursor where the writing
+-- goes on after them; 'Nothing' for a command with one place or none.
+placesAt :: Command -> Text -> Maybe ([Text], Text)
+placesAt command marked = do
+  let (old, sel) = unmark marked
+      (new, _, places) = applyWithPlaces command old sel
+  p <- places
+  Just ([T.take (e - s) (T.drop s new) | Selection s e <- p.fill], mark new (cursor p.after))
+
+-- | Whether a command's places hold in the text it made from the old one,
+-- with the selection it made: more than one; the first selected; inside
+-- the text the command put in, which is all it changed; in order with
+-- text between them; and where the writing goes on after the last, inside
+-- the text put in too.
+placesHold :: Text -> Text -> Selection -> Places -> Property
+placesHold old new selected p =
+  counterexample (show (new, p)) $
+    conjoin
+      [ length p.fill > 1
+      , head p.fill == Just selected
+      , w.start <= w.end && w.end <= T.length new
+      , T.take w.start new <> T.drop w.end new == old
+      , all (\(Selection s e) -> w.start <= s && s <= e && e <= w.end) p.fill
+      , and (zipWith (\(Selection _ e) (Selection s _) -> e < s) p.fill (drop 1 p.fill))
+      , maybe False (\(Selection _ e) -> e < p.after) (lastMay p.fill) && p.after <= w.end
+      ]
+  where
+    w = p.written
+
+-- | Every command of the toolbar, a text of lines (prose, a list's item,
+-- a quotation, a fence, a heading, blank ones), and a selection in it: a
+-- cursor half the time, which is where the "/" menu applies a command.
+-- A command with places is one in three.
+genPlaced :: Gen (Command, Text, Selection)
+genPlaced = do
+  command <- frequency [(1, elements [Link, Image, Table, CodeBlock, SpoilerBlock, Html Details]), (2, elements allCommands)]
+  text <- T.intercalate "\n" <$> listOf (elements ["Some words", "", "- an item", "> quoted", "```", "# Title", "  ", "| a | b |", "🎉 x"])
+  a <- choose (0, T.length text)
+  b <- oneof [pure a, choose (0, T.length text)]
+  pure (command, text, Selection a b)
+  where
+    allCommands =
+      [Bold, Italic, Strikethrough, Spoiler, InlineCode, InlineMath, Heading, BulletList, NumberedList, TaskList, Quote]
+        <> [CodeBlock, DisplayMath, Mermaid, Tikz, HtmlBlock, Link, LinkTo "A title" "/docs/a", Image, Table, SpoilerBlock, HorizontalRule]
+        <> map Html [minBound .. maxBound]
+        <> [TextColour (Just Red), TextColour Nothing, Highlight (Just Yellow), Highlight Nothing, Box "NOTE", Box "TIP", PageMacros "\\newcommand{\\R}{\\mathbb{R}}", PageMacros ""]
 
 -- | A colour command, a text of words, line breaks, list markers and
 -- elements (nested as written, wrappers among them), and a selection in it.

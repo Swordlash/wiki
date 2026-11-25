@@ -15,8 +15,10 @@
 -- that ask answers ('wanted').
 --
 -- A value is kept in two asks: the plugin's check, and, when the check
--- passes, the keep. The value typed is in the ask, so that what is kept is
--- what was checked.
+-- passes, the keep. The check answers the value to keep, as the plugin
+-- makes it from the text typed (the assistant trims the spaces around a
+-- key), and the keep's ask carries that value: what is kept is what was
+-- checked, not the text typed.
 --
 -- = What the check was for
 --
@@ -97,8 +99,9 @@ data Job
   | -- | The plugin's check of a value, under the binding the field had
     -- when it was asked.
     Check Text Text
-  | -- | Keep a value that passed the check.
-    Put Text
+  | -- | Keep a value that passed the check: the text typed, and the value
+    -- the check answered, which is kept.
+    Put Text Text
   | -- | Forget the secret's value.
     Remove
   | -- | Unlock the vault with a passkey.
@@ -115,7 +118,7 @@ instance Show Job where
       named = case job of
         Read -> "Read"
         Check _ binding -> "Check <value> " <> show binding
-        Put _ -> "Put <value>"
+        Put _ _ -> "Put <value>"
         Remove -> "Remove"
         UnlockByPasskey -> "UnlockByPasskey"
         UnlockByPassword _ -> "UnlockByPassword <password>"
@@ -181,9 +184,10 @@ data Event
     Finished
   deriving stock (Eq, Show)
 
--- | 'Answer' is what an ask answers: a read, with what it found; or
--- another job, done or not.
-data Answer = ReadAs Shown | Done (Either Text ())
+-- | 'Answer' is what an ask answers: a read, with what it found; the
+-- plugin's check, with the value to keep or why not; or another job, done
+-- or not.
+data Answer = ReadAs Shown | Checked (Either Text Text) | Done (Either Text ())
   deriving stock (Eq, Show)
 
 -- | 'Effect' is what a step asks the component to do.
@@ -244,18 +248,22 @@ answered job answer m = case (job, answer) of
   (Read, ReadAs s) -> (m {shown = s}, [])
   -- A read that threw: what it found is unknown.
   (Read, Done r) -> (m {shown = either Unreadable (const m.shown) r}, [])
-  -- The check passed: the keep follows, of the value checked, if the
-  -- check was for what the plugin binds it to now.
-  (Check value binding, Done (Right ()))
-    | binding == m.binding -> asking (Put value) m
+  -- The check passed: the keep follows, of the value the check answered,
+  -- if the check was for what the plugin binds it to now.
+  (Check typed binding, Checked (Right value))
+    | binding == m.binding -> asking (Put typed value) m
     | otherwise -> (m {problem = Just reboundProblem}, [])
-  (Put value, Done (Right ())) -> (m {shown = Here True, typed = if m.typed == value then "" else m.typed}, [Tell KeptIt])
+  (Check _ _, Checked (Left why)) -> (m {problem = Just why}, [])
+  (Put typed _, Done (Right ())) -> (m {shown = Here True, typed = if m.typed == typed then "" else m.typed}, [Tell KeptIt])
   (Remove, Done (Right ())) -> (m {shown = Here False}, [Tell RemovedIt])
   (UnlockByPasskey, Done (Right ())) -> unlocked m
   (UnlockByPassword _, Done (Right ())) -> unlocked m
   (_, Done (Left why)) -> (m {problem = Just why}, [])
-  -- A read answers with what it found, every other job with 'Done'.
+  -- A read answers with what it found, a check with 'Checked', every other
+  -- job with 'Done'.
   (_, ReadAs _) -> (m, [])
+  (_, Checked _) -> (m, [])
+  (Check _ _, Done (Right ())) -> (m, [])
   where
     -- The vault is open: the plugin is told, and the secret read again.
     unlocked x = (x {password = "", wanted = True}, [Tell UnlockedIt])

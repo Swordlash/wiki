@@ -40,7 +40,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.Types (parseEither, parseJSON)
 import Data.Map.Strict qualified as Map
 import Protolude
-import Wiki.Core.Assistant (ApiKey (..), Mode (..), Provider (..), ProviderSettings (..), Settings (..), defaultSettings, providerKey, settingsOf)
+import Wiki.Core.Assistant (ApiKey (..), Mode (..), Provider (..), ProviderSettings (..), Settings (..), defaultSettings, providerKey, withKey)
 import Wiki.Core.Assistant.Vault (joinSettings, learntOf)
 import Wiki.Core.Vault.Plugin (SecretName (..))
 
@@ -106,8 +106,7 @@ fromParts options keys learnt = joinSettings (withKeys (optionsIn options)) (lea
     stripped s = s {byProvider = Map.map (\(ProviderSettings _ m e b _ _) -> ProviderSettings Nothing m e b Nothing False) s.byProvider}
     learntIn = maybe defaultSettings (either (const defaultSettings) learntOf . parseEither parseJSON)
     withKeys s = foldr keyed s [minBound .. maxBound]
-    keyed p s = case Map.lookup (secretOf p) keys of
-      Nothing -> s
-      Just k ->
-        let ProviderSettings _ m e b f u = settingsOf p s
-         in s {byProvider = Map.insert p (ProviderSettings (Just (ApiKey k)) m e b f u) s.byProvider}
+    -- Made as every key is ('withKey', 'Wiki.Core.Assistant.apiKeyFrom'):
+    -- a key stored with spaces around it, by an earlier build or moved
+    -- from a legacy record, is the key that was checked.
+    keyed p s = maybe s (\k -> withKey p (Just k) s) (Map.lookup (secretOf p) keys)

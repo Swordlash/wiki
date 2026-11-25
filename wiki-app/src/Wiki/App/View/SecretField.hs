@@ -201,14 +201,14 @@ component user manifest security =
           -- As this browser holds it: a page the server rendered asks
           -- nothing as it starts ("Wiki.App.Plugin.Host.Secrets").
           Read -> ReadAs . shownOf name <$> readSecretsForField u manifest
-          Put value -> Done <$> putSecret u manifest name value
+          Put _ value -> Done <$> putSecret u manifest name value
           Remove -> Done <$> removeSecret u manifest name
           UnlockByPasskey -> Done . void <$> unlockWithPasskey u
           UnlockByPassword p -> Done . void <$> unlockWithPassword u (Password p)
           Check _ _ -> pure (Done (Left "A check is the plugin's."))
         -- The plugin's check of a value.
         checked input = \case
-          Check value _ -> Done <$> input.check value
+          Check value _ -> Checked <$> input.check value
           _ -> pure (Done (Left "Only a check is the plugin's."))
         shownOf name = \case
           Right secrets -> Here (Map.member name secrets)
@@ -225,7 +225,7 @@ doingText :: Job -> Maybe Text
 doingText = \case
   Read -> Nothing
   Check _ _ -> Just "Checking…"
-  Put _ -> Just "Keeping…"
+  Put _ _ -> Just "Keeping…"
   Remove -> Just "Forgetting…"
   UnlockByPasskey -> Just "Unlocking with a passkey…"
   UnlockByPassword _ -> Just "Unlocking…"

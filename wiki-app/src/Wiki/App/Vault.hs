@@ -445,7 +445,7 @@ createWithProvedPassword u password = holdingDeviceRecords $ runExceptT $ do
 -- | Unlock the vault with a passkey too: a vault the password alone
 -- unlocks (the password proved again unwraps its key), wrapped for a
 -- passkey of the user's, or a new one. The passkey is then one more way
--- to unlock it, and what the assistant's syncing needs.
+-- to unlock it.
 addPasskeyUnlock :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe Password -> m (Either Text UserKeys)
 addPasskeyUnlock u password = holdingDeviceRecords $ runExceptT $ do
   s <- fetched >>= maybe (throwError "You have no vault.") pure
@@ -723,7 +723,7 @@ newPasskey password salt = do
       `recover` \why -> lift (discardPasskey options.rpId credential) >> forgetWrapping >> throwError why
   unless made.prf $ do
     forgetWrapping
-    throwError "This passkey cannot sync the keys: it has no PRF extension, which the browser or the password manager that keeps it does not offer. It was kept to sign in with, and is listed under Passkeys in your account. Try a passkey kept elsewhere (Google Password Manager, iCloud Keychain, Windows Hello, a security key)."
+    throwError "This passkey cannot unlock your vault: it has no PRF extension, which the browser or the password manager that keeps it does not offer. It was kept to sign in with, and is listed under Passkeys in your account. Try a passkey kept elsewhere (Google Password Manager, iCloud Keychain, Windows Hello, a security key)."
   case made.wrapping of
     Just wrapping -> pure (credential, wrapping)
     Nothing ->
@@ -738,12 +738,12 @@ newPasskey password salt = do
 usedPasskey :: (MonadAssistant m, MonadVault m) => Salt -> Maybe [CredentialId] -> Step m (CredentialId, KeyRef)
 usedPasskey salt only = do
   options <- server beginAssertion
-  when (null options.allow) (throwError "You have no passkey for this wiki any more: turn syncing off, and on again with a new passkey.")
+  when (null options.allow) (throwError "You have no passkey for this wiki any more: unlock your vault with your password, or add a passkey under Settings, Security.")
   let allowed = maybe options.allow (\these -> filter (`elem` these) options.allow) only
-  when (null allowed) (throwError "None of your passkeys holds a copy of the vault's key: turn syncing off, and on again with a passkey.")
+  when (null allowed) (throwError "None of your passkeys holds a copy of the vault's key: unlock it with your password, then add a passkey to it under Settings, Security, Keys.")
   used <- passkey (usePasskey AssertionOptions {challenge = options.challenge, rpId = options.rpId, allow = allowed} salt.text wrappingInfo)
   _ <- server (finishAssertion used.response) `recover` \why -> lift (traverse_ forgetKey used.wrapping) >> throwError why
-  wrapping <- maybe (throwError "This passkey gave no PRF output, so it cannot unlock the keys. Use another passkey, or remove this one under Passkeys in your account and turn syncing on again with a new one.") pure used.wrapping
+  wrapping <- maybe (throwError "This passkey gave no PRF output, so it cannot unlock the keys. Use another passkey, or remove this one under Passkeys in your account and add a new one to your vault under Settings, Security, Keys.") pure used.wrapping
   pure (used.response.id, wrapping)
 
 wrap :: (MonadAssistant m) => KeyRef -> KeyRef -> Step m WrappedKey

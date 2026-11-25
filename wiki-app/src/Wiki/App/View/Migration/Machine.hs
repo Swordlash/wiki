@@ -12,11 +12,13 @@
 -- server nothing when it keeps nothing legacy; the runs after a change of
 -- the secrets look at the vault too ('vaultToo'). A run that waits for an
 -- unlock is asked again at the next change. A run that ends with options
--- to adopt, or that waits for the server's options to be known, is asked
--- again when what the plugins' state knows of the assistant's options
--- changes ('OptionsLearnt': the plugins read, the adopted options written,
--- or refused because the server had some): the legacy places are then
--- emptied with nothing else needed. A new page asks again at its start,
+-- to adopt ('adopting'), which it does too while the server's options are
+-- not known, is asked again when what the plugins' state knows of the
+-- assistant's options changes ('OptionsLearnt': the plugins read, the
+-- adopted options written, or refused because the server had some): the
+-- legacy places are then emptied with nothing else needed, and so is a run
+-- out when they change, which read them before. A change of the options
+-- asks nothing when no run waits for them. A new page asks again at its start,
 -- so that a legacy item an earlier tab added again is moved.
 --
 -- = One run at a time
@@ -67,6 +69,9 @@ data Model = Model
   -- legacy: from the first change of the secrets in the session on.
   , problem :: Maybe Text
   -- ^ Why the last run of this session failed, until one does not.
+  , adopting :: Bool
+  -- ^ Whether the last run of this session ended with options to adopt:
+  -- the move waits for the server's options.
   }
   deriving stock (Eq, Show)
 
@@ -96,22 +101,25 @@ data Effect
 
 -- | Before any session.
 initial :: Model
-initial = Model {session = -1, reader = Nothing, out = Nothing, wanted = False, next = 0, done = False, problem = Nothing, vaultToo = False}
+initial = Model {session = -1, reader = Nothing, out = Nothing, wanted = False, next = 0, done = False, problem = Nothing, vaultToo = False, adopting = False}
 
 -- | The state after an event, and what it asks to be done.
 step :: Event -> Model -> (Model, [Effect])
 step event m = case event of
   Given session reader
     | session == m.session && reader == m.reader -> (m, [])
-    | otherwise -> asking m {session, reader, done = False, problem = Nothing, vaultToo = False}
+    | otherwise -> asking m {session, reader, done = False, problem = Nothing, vaultToo = False, adopting = False}
   Nudged
     | m.done -> (m, [])
     | otherwise -> asking m {vaultToo = True}
   -- Whether the run looks at the vault stays as it was: the options do
   -- not say that this browser keeps anything legacy.
+  -- A run out read the options before they changed, and may end with
+  -- options to adopt: it is run again once it answers.
   OptionsLearnt
     | m.done -> (m, [])
-    | otherwise -> asking m
+    | m.adopting || isJust m.out -> asking m
+    | otherwise -> (m, [])
   Answered n answer -> case m.out of
     Just (out, askedIn)
       | out == n ->
@@ -122,11 +130,11 @@ step event m = case event of
 -- | What a run's answer changes, for the session it was asked in.
 answered :: Int -> Either Text Outcome -> Model -> (Model, [Effect])
 answered session answer m = case answer of
-  Right Moved -> (m {done = True, problem = Nothing}, [])
-  Right NothingHere -> (m {problem = Nothing}, [])
-  Right Waiting -> (m {problem = Nothing}, [])
-  Right (Adopt v) -> (m {problem = Nothing}, [AdoptOptions session v])
-  Left why -> (m {problem = Just why}, [])
+  Right Moved -> (m {done = True, problem = Nothing, adopting = False}, [])
+  Right NothingHere -> (m {problem = Nothing, adopting = False}, [])
+  Right Waiting -> (m {problem = Nothing, adopting = False}, [])
+  Right (Adopt v) -> (m {problem = Nothing, adopting = True}, [AdoptOptions session v])
+  Left why -> (m {problem = Just why, adopting = False}, [])
 
 -- | Whether a step of the plugins' state changed what it knows of the
 -- assistant's options as the server keeps them: the shell then steps

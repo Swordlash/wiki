@@ -201,6 +201,9 @@ migrationMachine = describe "Wiki.App.View.Migration.Machine" $ do
     e3 `shouldBe` [M.Run 1 alice False]
     let (m4, _) = M.step (M.Answered 1 (Right Moved)) m3
     snd (M.step M.OptionsLearnt m4) `shouldBe` []
+    -- No run waits for the options: a change of them asks none.
+    let (n1, _) = M.step (M.Answered 0 (Right NothingHere)) m1
+    snd (M.step M.OptionsLearnt n1) `shouldBe` []
     let none = P.initialWith (Just Plugins {offForWiki = mempty, mine = mempty}) 1
         with = P.initialWith (Just Plugins {offForWiki = mempty, mine = Map.singleton (PluginId "assistant") PluginChoice {state = PluginDefault, options = Just (String "options")}}) 1
     M.optionsLearnt none with `shouldBe` True

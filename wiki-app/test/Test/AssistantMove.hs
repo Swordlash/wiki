@@ -22,7 +22,9 @@ import Test.Hspec hiding (after, before)
 import Test.VaultServer
 import Wiki.Api.Plugins (PluginId (..))
 import Wiki.App.Assistant.Migrate (Outcome (..), migrateAssistant, migrateAssistantHeld)
-import Wiki.App.Plugin.Host.Secrets (DeviceEntry (..), deviceSecretsSlot, localSlot)
+import Wiki.App.Plugin (Manifest (..), Unavailable (..))
+import Wiki.App.Plugin.Host.Secrets (DeviceEntry (..), deviceSecretsSlot, localSlot, putSecret, readSecrets, removeSecret)
+import Wiki.App.Plugin.Registry (assistantId, manifests)
 import Wiki.App.Vault (VaultDevice (..), vaultSlot)
 import Wiki.Core.Assistant (Mode (..), Provider (..), Settings (..), defaultSettings, withKey, withMode, withModel, withReached)
 import Wiki.Core.Assistant.Split (keysOf, learntValue, optionsValue)
@@ -39,6 +41,10 @@ spec = describe "Wiki.App.Assistant.Migrate" $ do
 
 alice :: UserId
 alice = UserId "user-alice"
+
+-- | The writing assistant's manifest, as the registry has it.
+assistant :: Manifest
+assistant = fromMaybe (panic "no assistant") (head (filter (\x -> x.id == assistantId) manifests))
 
 -- | Settings with a key for each of two providers, as a device had them.
 synced, ownHere, typedHere :: Settings
@@ -297,6 +303,38 @@ together = describe "with other browsers and tabs" $ do
     on w d (migrateAssistant alice (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
     pluginKeys w `shouldReturn` keysOf later
     (\l -> l.record) <$> leftOn d `shouldReturn` False
+
+  it "a key kept on one browser is another's once its vault is unlocked there, and a key changed on one is the other's at its next read" $ do
+    w <- newWorld
+    a <- newDevice w.counter True
+    b <- newDevice w.counter True
+    withVaultKey a alice w.vaultKey
+    on w a (putSecret alice assistant (SecretName "anthropic") "sk-ant-on-a") `shouldReturn` Right ()
+    -- Shown able to fail: locked, the second browser reads nothing.
+    on w b (readSecrets alice assistant) `shouldReturn` Left Locked
+    withVaultKey b alice w.vaultKey
+    on w b (readSecrets alice assistant) `shouldReturn` Right (Map.singleton (SecretName "anthropic") "sk-ant-on-a")
+    on w a (putSecret alice assistant (SecretName "anthropic") "sk-ant-changed-on-a") `shouldReturn` Right ()
+    on w b (readSecrets alice assistant) `shouldReturn` Right (Map.singleton (SecretName "anthropic") "sk-ant-changed-on-a")
+
+  it "does not bring back from another browser's legacy copy a key forgotten after the move" $ do
+    w <- newWorld
+    withLegacyItem w synced
+    a <- newDevice w.counter True
+    b <- newDevice w.counter True
+    for_ [a, b] $ \d -> do
+      putKey d alice w.vaultKey
+      followingRecord w Nothing False synced >>= putRecord d alice
+    options <- newIORef Nothing
+    moveAll w a options `shouldReturn` Right Moved
+    on w a (removeSecret alice assistant (SecretName "anthropic")) `shouldReturn` Right ()
+    -- The second browser still holds its copy of the vault's settings,
+    -- with the key forgotten on the first.
+    (\l -> l.record) <$> leftOn b `shouldReturn` True
+    moveAll w b options `shouldReturn` Right Moved
+    Map.member (SecretName "anthropic") <$> pluginKeys w `shouldReturn` False
+    Map.member (SecretName "openai") <$> pluginKeys w `shouldReturn` True
+    (\l -> l.record) <$> leftOn b `shouldReturn` False
 
   it "moves again the vault's item an earlier tab adds back, the plugin's keys winning, and the names it lacks taken" $ do
     w <- newWorld

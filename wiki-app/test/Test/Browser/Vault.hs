@@ -1050,6 +1050,33 @@ userKeys m = describe "the user's keys" $ do
     field ["publicKey", "keyId"] <$> vaultState `shouldReturn` field ["publicKey", "keyId"] made
     closed again
 
+  it "has the assistant's key on a second device once a passkey added in Security unlocks the vault there" $ runOwn $ do
+    ui <- signedOutAt (UserSettings AssistantSection) "editor's password"
+    unsafeIOToPageM js_scripted
+    signIn ui "editor's password"
+    _ <- madeKeys
+    anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
+    findIn anthropic ".secret-field-value" >>= (`typeText` "test-key-anthropic-first-device")
+    findIn anthropic ".secret-field-keep" >>= click
+    findIn anthropic ".secret-field-set" >>= (`shouldHaveText` "Set")
+    openSettings ui SecuritySection
+    find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
+    find ui ".keys-passkey-add" >>= click
+    length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
+    unmount ui
+    -- A second device: nothing of the first's keys or records.
+    unsafeIOToPageM (evaluate =<< js_new_device)
+    me <- signedInAs "user-editor"
+    answerWith "GET" "api/v1/session" 200 me
+    again <- startServer m (UserSettings AssistantSection)
+    there <- find again ".assistant-provider-settings[data-provider='anthropic']"
+    findIn there ".secret-field-locked" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "locked in this browser")
+    length <$> findAllIn there ".secret-field-set" `shouldReturn` 0
+    findIn there ".secret-field-unlock-passkey" >>= click
+    findIn there ".secret-field-set" >>= (`shouldHaveText` "Set")
+    any (\r -> "test-key-anthropic-first-device" `T.isInfixOf` r.body) <$> asked `shouldReturn` False
+    closed again
+
   -- The owner's wiki at work is served over plain HTTP, where the browser
   -- gives no crypto.subtle (WP5.79 of docs/PLAN.md). OPAQUE's client needs
   -- none: the sign-in and the change of password go through, and give no

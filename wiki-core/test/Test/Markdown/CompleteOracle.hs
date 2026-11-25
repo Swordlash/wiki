@@ -109,13 +109,19 @@ spec = describe "Wiki.Core.Markdown.Complete, by the wiki's parser" $ do
       -- fourth round).
       let image = slashAt "![see /ta‸\nmore]\n\n[see /ta more]: /url"
       isJust (complete [slashSource slashEntries'] (readLine image.above) image {place = placeOf ["Image", "Paragraph", "Document"]}) `shouldBe` False
-    it "writes each entry as its text in place of the line, the command's selection its one place, never as a snippet" $ do
-      slashPlaces "/ta‸" Edit.Table `shouldBe` Just ["Column 1"]
-      slashPlaces "/‸" Edit.SpoilerBlock `shouldBe` Just ["name"]
-      slashPlaces "Go /‸" Edit.Link `shouldBe` Just ["link text"]
-      slashPlaces "/‸" Edit.CodeBlock `shouldBe` Just [""]
+    it "writes each entry as its text in place of the line, never as a snippet: the command's selection its one place, or its places in order and then place 0, where the writing goes on (#301)" $ do
+      slashPlaces "/ta‸" Edit.Table `shouldBe` Just ["Column 1", "Column 2", "Column 3", "Text", "Text", "Text", ""]
+      slashPlaces "/‸" Edit.SpoilerBlock `shouldBe` Just ["name", "Description", "", ""]
+      slashPlaces "Go /‸" Edit.Link `shouldBe` Just ["link text", "https://", ""]
+      slashPlaces "/‸" Edit.CodeBlock `shouldBe` Just ["", "", ""]
+      slashPlaces "/‸" (Edit.Html Edit.Details) `shouldBe` Just ["Details", "What opens on a click.", ""]
       slashPlaces "/‸" Edit.Bold `shouldBe` Just ["bold text"]
       slashPlaces "/‸" Edit.Mermaid `shouldBe` Just ["graph LR\n  A --> B"]
+      slashPlaces "/‸" (Edit.Box "NOTE") `shouldBe` Just ["Text"]
+      -- Place 0 is at the end of the link, the line's text before the /
+      -- kept.
+      (skeletonText . (.skeleton) <$> slashCandidate "Go /‸" Edit.Link)
+        `shouldBe` Just ("Go [link text](https://)", [(1, (4, 13)), (2, (15, 23)), (0, (24, 24))])
       (.writing) <$> slashCandidate "  - item /ta‸" Edit.Table `shouldBe` Just (LineAsText "  - item /ta" (9, 12))
     it "writes what the command writes after a no-break space at the line's start, and with a carriage return in the line (#295)" $ do
       let asWritten c = (c.writing, fst (skeletonText c.skeleton))
@@ -298,8 +304,12 @@ genSlashCase = do
 -- cursor where it was, and selects what it selects: the skeleton's text
 -- (its places holding what the command writes there, a snippet's further
 -- lines after the cursor line's indentation as CodeMirror writes them)
--- and its first place. The entry is worked out on the lines around the
--- cursor's alone ('Window'), so this is the check that they are enough.
+-- and its first place. A command that leaves more than one place
+-- ('Edit.applyWithPlaces') has each of them, in order, and place 0 where
+-- the writing goes on, wherever the menu opens; a command that leaves one
+-- has that one alone (#301). The entry is worked out on the lines around
+-- the cursor's alone ('Window'), so this is the check that they are
+-- enough.
 slashWritesAsApply :: ([Text], Text, Text, [Text]) -> Property
 slashWritesAsApply (above, typedBefore, after', below) = cover 50 (isJust opened) "the menu opens" $ case opened of
   Nothing -> property True
@@ -308,7 +318,7 @@ slashWritesAsApply (above, typedBefore, after', below) = cover 50 (isJust opened
       -- With no letters, every entry: none is left out for a text its
       -- command could not be written in.
       (map (.label) found.candidates === map show slashCommands)
-        : [ counterexample (toS (c.label <> ":\n" <> whole)) $ written c === Just (Edit.apply command whole (Edit.cursor at'))
+        : [ counterexample (toS (c.label <> ":\n" <> whole)) $ written c === Just (applied command)
           | c <- found.candidates
           , command <- [k | k <- slashCommands, show k == c.label]
           ]
@@ -318,15 +328,20 @@ slashWritesAsApply (above, typedBefore, after', below) = cover 50 (isJust opened
     lineStart = sum (map ((+ 1) . T.length) above)
     at' = lineStart + T.length typedBefore
     whole = T.intercalate "\n" (above <> [typedBefore <> after'] <> below)
+    applied command =
+      let (new, selected, places) = Edit.applyWithPlaces command whole (Edit.cursor at')
+       in (new, selected, (\p -> (p.fill, p.after)) <$> places)
     -- Every entry is written as its text, in place of the line, its first
-    -- place selected.
+    -- place selected; with more than one place, each of them and place 0.
     written c = do
       let (text, ranges) = skeletonText c.skeleton
+          fill = [Edit.Selection (lineStart + s) (lineStart + e) | (n, (s, e)) <- ranges, n /= 0]
+          goesOn = head [lineStart + s | (0, (s, _)) <- ranges]
       text' <- case c.writing of
         LineAsText _ _ -> Just text
         _ -> Nothing
-      (s, e) <- snd <$> head ranges
-      Just (T.intercalate "\n" (above <> [text'] <> below), Edit.Selection (lineStart + s) (lineStart + e))
+      first' <- head fill
+      Just (T.intercalate "\n" (above <> [text'] <> below), first', if length fill > 1 then (fill,) <$> goesOn else Nothing)
 
 -- | A place where the @/@ menu opens (text of a paragraph, a list's item,
 -- a quotation, a table's cell, a heading) or does not (code of both kinds,

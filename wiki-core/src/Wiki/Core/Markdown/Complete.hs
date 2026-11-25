@@ -101,7 +101,7 @@ import Protolude
 import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), BoxMarker (markerLine), Footnote (..), Inline (..), ListItem (..), MarkerLine (..), MarkerName (..), MarkerRole (..), allInlines, closingMarker, holdsBlocks, markerNameText, openingMarker, parseWithStartsAndMarkers, plainText)
 import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxKind, boxChoices)
-import Wiki.Core.Markdown.Edit (Command, Selection (..), apply, cursor)
+import Wiki.Core.Markdown.Edit (Command, Places (..), Selection (..), applyWithPlaces, cursor)
 import Wiki.Core.Markdown.Problems (everyBlock)
 import Wiki.Core.Math.KatexCommands (katexCommands)
 import Wiki.Core.PageKind (PageKind (..))
@@ -1201,34 +1201,57 @@ windowOf at prefix = Window {above = reverse (upToText (reverse at.above)), pref
   where
     upToText ls = let (blank, rest) = break (not . T.all isSpace) ls in blank <> take 1 rest
 
+-- | 'Written' is what the toolbar's command writes in place of the
+-- cursor's line ('slashWritten'): the line's new text (with the lines the
+-- command writes after it); the places to fill in it, in their order, as
+-- (start, end) in characters, the first what the command selects; and,
+-- when the command leaves more than one place ('Places'), where the
+-- writing goes on after the last.
+data Written = Written {text :: Text, fill :: [(Int, Int)], after :: Maybe Int}
+
 -- | What the toolbar's command writes in place of the cursor's line, with
--- the cursor where the @/@ was: the line's new text (with the lines the
--- command writes after it), and what is selected in it afterwards, as
--- (start, end) in characters. 'Nothing' when the command changes the
--- text elsewhere, which none does.
-slashWritten :: Window -> Command -> Maybe (Text, (Int, Int))
+-- the cursor where the @/@ was ('Written'). 'Nothing' when the command
+-- changes the text elsewhere, which none does. A command's places that
+-- are not in the line's new text, in order and apart, are left out, and
+-- the command's selection is its one place.
+slashWritten :: Window -> Command -> Maybe Written
 slashWritten window command = do
   let before' = T.concat [l <> "\n" | l <- window.above]
       after' = T.concat ["\n" <> l | l <- window.below]
-      (new, Selection s e) = apply command (before' <> window.prefix <> window.after <> after') (cursor (T.length before' + T.length window.prefix))
-  written <- T.stripPrefix before' new >>= T.stripSuffix after'
-  let start = s - T.length before'
-      end = e - T.length before'
-  guard (0 <= start && start <= end && end <= T.length written)
-  Just (written, (start, end))
+      (new, Selection s e, places) = applyWithPlaces command (before' <> window.prefix <> window.after <> after') (cursor (T.length before' + T.length window.prefix))
+      inLine (Selection a b) = (a - T.length before', b - T.length before')
+  text <- T.stripPrefix before' new >>= T.stripSuffix after'
+  let selected@(start, end) = inLine (Selection s e)
+  guard (0 <= start && start <= end && end <= T.length text)
+  Just $ case places of
+    Just p
+      | fill@(firstPlace : _ : _) <- map inLine p.fill
+      , let after = p.after - T.length before'
+      , firstPlace == selected
+      , and (zipWith (\(_, b) (c, _) -> b < c) fill (drop 1 fill))
+      , all (\(a, b) -> a <= b) fill
+      , maybe False (\(_, b) -> b < after) (lastMay fill)
+      , after <= T.length text ->
+          Written {text, fill, after = Just after}
+    _ -> Written {text, fill = [selected], after = Nothing}
 
 -- | An entry of the @/@ menu that writes, as a candidate: the cursor's
 -- line replaced by what the command writes there ('slashWritten'), as it
--- is, with the command's selection, and where the @/@ and the letters were
--- ('LineAsText'). Never a snippet, whose
+-- is, with the command's places (its selection the first, Tab to the
+-- next, and place 0 where the writing goes on after them), and where the
+-- @/@ and the letters were ('LineAsText'). Never a snippet, whose
 -- rules (the indentation it puts before further lines, the line breaks it
 -- reads in its template) would write something else than the command.
-lineCandidate :: At -> Typed -> (Text, (Int, Int)) -> Candidate
-lineCandidate at typed (written, (start, end)) =
+lineCandidate :: At -> Typed -> Written -> Candidate
+lineCandidate at typed written =
   Candidate {label = "", skeleton, writing = LineAsText (at.before <> at.after) (typed.from, T.length at.before), action = Nothing, note = Nothing, origin = Nothing}
   where
-    slice a b = T.take (b - a) (T.drop a written)
-    skeleton = [Literal (slice 0 start) | start > 0] <> [Field 1 (slice start end)] <> [Literal (T.drop end written) | end < T.length written]
+    slice a b = T.take (b - a) (T.drop a written.text)
+    numbered = zip [1 ..] written.fill <> [(0, (a, a)) | Just a <- [written.after]]
+    skeleton = pieces 0 numbered
+    pieces pos = \case
+      [] -> [Literal (T.drop pos written.text) | pos < T.length written.text]
+      (n, (a, b)) : rest -> [Literal (slice pos a) | a > pos] <> [Field n (slice a b)] <> pieces b rest
 
 -- | Whether CodeMirror's snippet writes a skeleton in place of what was
 -- typed as the skeleton says, its further lines after the indentation of

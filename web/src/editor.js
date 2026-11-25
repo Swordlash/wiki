@@ -108,6 +108,7 @@ import {
   completionKeymap,
   completionStatus,
   currentCompletions,
+  hasNextSnippetField,
   insertCompletionText,
   nextSnippetField,
   pickedCompletion,
@@ -1185,6 +1186,117 @@ export const smallestChange = (old, text) => {
   return { from: prefix, to: old.length - suffix, insert: text.slice(prefix, text.length - suffix) };
 };
 
+// The walk through the places of a command the "/" menu wrote (#301): a
+// link's text and then its address, a table's cells, and so on. Tab goes
+// to the next place and Shift+Tab to the one before; Tab on the last
+// place puts the cursor where the writing goes on and ends the walk.
+//
+// The places are the library's snippet fields (@codemirror/autocomplete):
+// it keeps them through edits, marks them, binds Tab, Shift+Tab and
+// Escape (snippetKeys, in completions below), moves to a field clicked,
+// and ends the walk when the selection leaves the field it is in, or an
+// edit deletes across a field's edge. The library makes fields only
+// through `snippet`, which also writes a template's text: an indentation
+// before each further line, and a line break at a "\r". The menu writes
+// the command's text itself (writeOption), so the template is a stand-in
+// of one line with the text's length and the places where they are, and
+// only the fields of that snippet's transaction are taken.
+//
+// Two of the library's parts are taken once, here, through its own
+// functions on a scratch state: the extension that holds the fields (its
+// state, keys, clicks and marks), which it otherwise adds to an editor
+// the first time a snippet is written; and clearSnippet's effect, which
+// ends the fields. Null where the library does not give them as expected:
+// then no command has a walk, and each is written as before, its first
+// place selected.
+const snippetParts = (() => {
+  let started = null;
+  snippet("${1}x${0}")({ state: EditorState.create(), dispatch: (tr) => (started = tr) }, null, 0, 0);
+  const extension = started?.effects.find((effect) => effect.is(StateEffect.appendConfig))?.value ?? null;
+  let end = null;
+  if (started !== null) clearSnippet({ state: started.state, dispatch: (tr) => (end = tr.effects.length === 1 ? tr.effects[0] : null) });
+  return extension !== null && end !== null ? { extension, end } : null;
+})();
+
+// The range of the text a walk's command wrote, {from, to} in UTF-16
+// units of the view's text, while its walk lasts: set by the command's
+// write (startWalk), mapped through each change, and cleared (endWalk)
+// where the extender below ends the walk, and when a snippet of another
+// kind is written. The library says whether a walk lasts
+// (hasNextSnippetField: its fields end as the last is reached), so the
+// range counts only while it does (walkOf).
+const startWalk = StateEffect.define({
+  map: (range, mapping) => ({ from: mapping.mapPos(range.from, -1), to: mapping.mapPos(range.to, 1) }),
+});
+const endWalk = StateEffect.define();
+const walkRange = StateField.define({
+  create: () => null,
+  update: (range, tr) => {
+    for (const effect of tr.effects) {
+      if (effect.is(startWalk)) return effect.value;
+      if (effect.is(endWalk)) return null;
+    }
+    return range !== null && tr.docChanged ? { from: tr.changes.mapPos(range.from, -1), to: tr.changes.mapPos(range.to, 1) } : range;
+  },
+});
+
+// The range of the walk a state is in, or null.
+const walkOf = (state) => (hasNextSnippetField(state) ? (state.field(walkRange, false) ?? null) : null);
+
+// Whether a transaction is the reader's own typing in this view: keys,
+// a paste, a drop, a deletion, a completion chosen, Enter. Not an undo or
+// a redo, the toolbar's or the assistant's write, a replacement of the
+// search, a change of another tab or the server's, nor a change a row of
+// the slide mode takes from the master (mirrored) or the master from a row
+// (rowOf).
+const typingEvents = ["input.type", "input.paste", "input.drop", "input.complete", "input.escape", "delete"];
+const ownTyping = (tr) =>
+  !tr.annotation(mirrored) && tr.annotation(rowOf) === undefined && (tr.annotation(Transaction.userEvent) === "input" || typingEvents.some((event) => tr.isUserEvent(event)));
+
+// A change that is not the reader's typing and touches the text the
+// walk's command wrote (an undo of the command, the assistant's edit in a
+// place, another tab's change there) ends the walk, in the same
+// transaction: the library would keep its fields, mapped, wherever the
+// selection is not moved out of them.
+const walkEnds = EditorState.transactionExtender.of((tr) => {
+  if (!tr.docChanged || ownTyping(tr)) return null;
+  const range = walkOf(tr.startState);
+  if (range === null || !tr.changes.touchesRange(range.from, range.to)) return null;
+  return { effects: [snippetParts.end, endWalk.of(null)] };
+});
+
+// The effects that start a walk through an entry's places, written as
+// `changes` (a ChangeSet of the state) with the entry's text starting at
+// `at`: the library's fields, from a stand-in template, and the range of
+// the command's text (the changes, and the places up to where the writing
+// goes on). None for an entry without places, or with places that are not
+// in its text, in order and apart.
+const walkStart = (state, changes, at, option) => {
+  if (snippetParts === null || !Array.isArray(option.places) || option.places.length < 2 || !Number.isInteger(option.after)) return [];
+  const places = option.places.map(([from, to]) => [unitsOf(option.insert, from), unitsOf(option.insert, to)]);
+  const after = unitsOf(option.insert, option.after);
+  const apart = places.every(([from, to], i) => from <= to && (i === 0 ? from >= 0 : from > places[i - 1][1]));
+  if (!apart || after <= places[places.length - 1][1] || after > option.insert.length) return [];
+  const filler = (n) => "x".repeat(n);
+  let template = "";
+  let pos = 0;
+  places.forEach(([from, to], i) => {
+    template += filler(from - pos) + (to > from ? `\${${i + 1}:${filler(to - from)}}` : `\${${i + 1}}`);
+    pos = to;
+  });
+  template += `${filler(after - pos)}\${0}`;
+  let fields = [];
+  const scratch = EditorState.create({ doc: state.doc, extensions: snippetParts.extension });
+  snippet(template)({ state: scratch, dispatch: (tr) => (fields = tr.effects) }, null, at, at);
+  let from = at + places[0][0];
+  let to = at + after;
+  changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
+    from = Math.min(from, fromB);
+    to = Math.max(to, toB);
+  });
+  return [...fields, startWalk.of({ from, to })];
+};
+
 // An option's text written in place of from..to of a view's text, as the
 // smallest change ('smallestChange'), selecting start..end (UTF-16 units
 // of the text written, from `from`), one step of the undo.
@@ -1221,7 +1333,8 @@ const dismissAt = (state) => {
 // a view: its snippet, or its text as it is (insert), in place of the
 // range the list was for; or, for one given the cursor's whole line (an
 // entry of the "/" menu), its text in place of that line, with its
-// selection, if the line still reads as the one the answer was made for
+// selection and, for a command with several places, a walk through them
+// (walkStart), if the line still reads as the one the answer was made for
 // (a list kept from before the last key writes nothing); then, for an
 // entry that opens a dialog, a "wiki-complete-action" event on the host,
 // which the component answers.
@@ -1243,8 +1356,9 @@ const writeOption = (host, option, asked) => (view, completion, from, to) => {
   } else if (option.line === undefined) {
     snippet(option.template)(view, completion, from, to);
     // As the toolbar's writes, a step of the undo of its own: what is typed
-    // next (over a place to fill) is not joined to it.
-    view.dispatch({ annotations: isolateHistory.of("after") });
+    // next (over a place to fill) is not joined to it. The fields are this
+    // snippet's now, not a walk's of the "/" menu (walkRange).
+    view.dispatch({ annotations: isolateHistory.of("after"), effects: endWalk.of(null) });
   } else {
     const line = view.state.doc.lineAt(from);
     if (line.text !== option.line) return;
@@ -1259,7 +1373,7 @@ const writeOption = (host, option, asked) => (view, completion, from, to) => {
     const [queryFrom, queryTo] = option.query.map((n) => unitsOf(option.line, n));
     const size = queryTo - queryFrom;
     const edit = smallestChange(option.line.slice(0, queryFrom) + option.line.slice(queryTo), option.insert);
-    const changes =
+    const changes = view.state.changes(
       edit.from < queryFrom && edit.to > queryFrom
         ? [{ from: line.from + edit.from, to: line.from + edit.to + size, insert: edit.insert }]
         : [
@@ -1269,12 +1383,15 @@ const writeOption = (host, option, asked) => (view, completion, from, to) => {
               to: line.from + (edit.to <= queryFrom ? edit.to : edit.to + size),
               insert: edit.insert,
             },
-          ];
+          ],
+    );
     view.dispatch({
       changes,
       selection: EditorSelection.single(line.from + start, line.from + end),
       scrollIntoView: true,
       annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete"), isolateHistory.of("full")],
+      // A command with several places: Tab goes through them (walkStart).
+      effects: walkStart(view.state, changes, line.from, option),
     });
   }
   if (option.action !== undefined) host.dispatchEvent(new CustomEvent("wiki-complete-action", { detail: option.action }));
@@ -1289,8 +1406,8 @@ const writeOption = (host, option, asked) => (view, completion, from, to) => {
 // what is shown grey beside it as the option's detail (where a page is,
 // and where a plugin's entry comes from); and what Enter and Escape do,
 // for every option of the list. An option may also say what it writes in
-// place of the cursor's whole line, and what the editor does then
-// (writeOption).
+// place of the cursor's whole line, with the places to go through with
+// Tab (places, after), and what the editor does then (writeOption).
 const markupSource = (host, markup, whole) => async (context) => {
   const { state, pos, tree } = whole(context);
   const line = state.doc.lineAt(pos);
@@ -1471,16 +1588,23 @@ const completions = (host) => {
   const config = { icons: false, defaultKeymap: false, addToOptions: [emojiOfOption], interactionDelay };
   const ownKeys = Prec.highest(keymap.of(keys.map((binding) => ({ ...binding, stopPropagation: true }))));
   // The keys of a snippet being filled in (an entry of the wiki's own
-  // Markdown chosen): Tab and Shift+Tab to its next and previous place,
-  // Escape to stop filling it in, as the library binds them, but going no
-  // further when they act, so that the form's keydown does not also
-  // indent with Tab or close a menu with Escape. (CodeMirror joins the
-  // bindings of a key at one precedence, and stops the key when any of
-  // them says so: the list's Tab and Escape above say so too.)
+  // Markdown chosen, or a command of the "/" menu with several places):
+  // Tab and Shift+Tab to its next and previous place, Escape to stop
+  // filling it in, as the library binds them, but going no further when
+  // they act, so that the form's keydown does not also indent with Tab or
+  // close a menu with Escape. (CodeMirror joins the bindings of a key at
+  // one precedence, and stops the key when any of them says so: the
+  // list's Tab and Escape above say so too.) Shift+Tab on the first place
+  // of a "/" command's walk stays there, so that it neither leaves the
+  // editor nor goes on to the form.
   const snippetKeys = snippetKeymap.of([
-    { key: "Tab", run: nextSnippetField, shift: prevSnippetField, stopPropagation: true },
+    { key: "Tab", run: nextSnippetField, shift: (view) => prevSnippetField(view) || walkOf(view.state) !== null, stopPropagation: true },
     { key: "Escape", run: clearSnippet, stopPropagation: true },
   ]);
+  // The library's fields, in place from the start (snippetParts), after
+  // the list's keys, as the library would add them, so that the list's
+  // Tab comes first; and the "/" menu's walks over them.
+  const fields = snippetParts === null ? [] : [snippetParts.extension, walkRange, walkEnds];
   return {
     extension: [
       autocompletion({ ...config, override: [mentionSource(people, whole), emojiSource(names, whole), markupSource(host, markup, whole)] }),
@@ -1488,11 +1612,12 @@ const completions = (host) => {
       forgetMoves,
       ownKeys,
       snippetKeys,
+      fields,
     ],
     // The same, asking nothing and never starting on typing: the master's
     // slide by slide (masterCompletion). The library's state stays, so that
     // a query or a timer of its from before goes on finding it.
-    quiet: [autocompletion({ ...config, override: [], activateOnTyping: false }), dismissedSlashes, forgetMoves, ownKeys, snippetKeys],
+    quiet: [autocompletion({ ...config, override: [], activateOnTyping: false }), dismissedSlashes, forgetMoves, ownKeys, snippetKeys, fields],
     mentioned: people.answer,
     emojied: names.answer,
     completed: markup.answer,
@@ -3195,7 +3320,12 @@ export function attach(textarea, host, original, codeTokens) {
       const was = bySlide;
       bySlide = on;
       if (on !== was) {
-        if (on) closeCompletion(view);
+        // A walk through a "/" command's places in the master ends as the
+        // master is hidden: the rows are typed in from now on.
+        if (on) {
+          closeCompletion(view);
+          clearSnippet(view);
+        }
         view.dispatch({ effects: masterCompletion.reconfigure(on ? completion.quiet : completion.extension) });
       }
     },

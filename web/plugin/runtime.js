@@ -18,10 +18,58 @@
 // the worker and the worker's to the port, as they are. When the worker
 // cannot start, or its code throws, the port is told {type: "failed"},
 // with the browser's message.
+//
+// In front of the plugin's code, on the same line so that the code's own
+// line numbers stay as they are, the worker gets wikiPluginWorker below:
+// the global wikiPlugin, through which the code registers what it does
+// (wikiPlugin.plugin({diagnostics})), and the protocol's side in the
+// worker (Wiki.App.Plugin.External.Protocol). It answers {type: "ready"}
+// once the code has registered, and each {type: "diagnose", id, text}
+// with {type: "problems", re: id, problems} from the code's diagnostics,
+// or {type: "failed"} when they throw. A message that comes before the
+// code has registered waits for it.
 "use strict";
+
+// The worker's side, written without line comments and with every
+// statement ended, so that it can be put on one line.
+function wikiPluginWorker() {
+  "use strict";
+  let handlers = null;
+  const waiting = [];
+  const failed = (error) => postMessage({ type: "failed", message: String((error && error.message) || error) });
+  const answer = async (message) => {
+    if (message.type !== "diagnose") return;
+    try {
+      const problems = await handlers.diagnostics({ text: message.text });
+      postMessage({ type: "problems", re: message.id, problems: problems ?? [] });
+    } catch (error) {
+      failed(error);
+    }
+  };
+  addEventListener("message", (event) => {
+    const message = event.data;
+    if (typeof message !== "object" || message === null || message.wikiPlugin === "connect") return;
+    if (handlers === null) waiting.push(message);
+    else answer(message);
+  });
+  self.wikiPlugin = Object.freeze({
+    api: 1,
+    plugin(given) {
+      if (handlers !== null) throw new Error("wikiPlugin.plugin is called once.");
+      if (typeof given !== "object" || given === null || typeof given.diagnostics !== "function") {
+        throw new Error("wikiPlugin.plugin takes {diagnostics(document)}.");
+      }
+      handlers = given;
+      postMessage({ type: "ready" });
+      for (const message of waiting.splice(0)) answer(message);
+    },
+  });
+}
+
 (() => {
   const source = self.wikiPluginSource;
   delete self.wikiPluginSource;
+  const prelude = `(${String(wikiPluginWorker).replace(/\n\s*/g, " ")})();`;
   let connected = false;
   addEventListener("message", (event) => {
     const data = event.data;
@@ -32,7 +80,7 @@
     const failed = (message) => port.postMessage({ type: "failed", message: String(message) });
     let worker;
     try {
-      worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+      worker = new Worker(URL.createObjectURL(new Blob([prelude, source], { type: "text/javascript" })));
     } catch (error) {
       failed(error);
       return;

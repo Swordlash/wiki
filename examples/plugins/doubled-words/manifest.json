@@ -1,0 +1,10 @@
+{
+  "manifest": 1,
+  "id": "doubled-words",
+  "name": "Doubled words",
+  "version": "1.0.0",
+  "description": "Marks a word written twice in a row, as in \"the the\".",
+  "api": 1,
+  "contributes": { "diagnostics": {} },
+  "permissions": ["document.read"]
+}

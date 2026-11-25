@@ -343,6 +343,11 @@ everyTable = do
     , UserPluginRow {user_id = "copy-u1", plugin_id = "errors", state = Just "off", options = Nothing}
     , UserPluginRow {user_id = "copy-u2", plugin_id = "assistant", state = Nothing, options = Just "true"}
     ]
+  row
+    wikiDb.external_plugins
+    [ InstalledPluginRow {id = "copy-plugin-1", owner_id = Nothing, plugin_id = "doubled-words", manifest = "{\"id\":\"doubled-words\",\"name\":\"Doubled ünïcode ✓\"}", bundle = "copy-bundle-1", bundle_size = 4294967296, installed_at = time 0}
+    , InstalledPluginRow {id = "copy-plugin-2", owner_id = Just "copy-u1", plugin_id = "doubled-words", manifest = "{}", bundle = "copy-bundle-2", bundle_size = 0, installed_at = time 3}
+    ]
   row wikiDb.vaults [VaultRow {user_id = "copy-u1", salt = "salt", password_nonce = Just "nonce", password_key = Just "key", revision = 7, updated_at = time 2}]
   row wikiDb.vault_items [VaultItemRow {user_id = "copy-u1", name = "identity", key_id = Just "copy-key", nonce = "nonce", ciphertext = "ciphertext"}]
   row
@@ -428,6 +433,7 @@ comparedTables =
   , ("passkeys", rowsIn wikiDb.passkeys)
   , ("api_keys", rowsIn wikiDb.api_keys)
   , ("user_plugins", rowsIn wikiDb.user_plugins)
+  , ("external_plugins", rowsIn wikiDb.external_plugins)
   , ("vaults", rowsIn wikiDb.vaults)
   , ("vault_items", rowsIn wikiDb.vault_items)
   , ("public_keys", rowsIn wikiDb.public_keys)

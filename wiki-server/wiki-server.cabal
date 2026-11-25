@@ -122,6 +122,7 @@ library
         Wiki.Server.Opaque
         Wiki.Server.Options
         Wiki.Server.Password
+        Wiki.Server.PluginFrame
         Wiki.Server.Plugins
         Wiki.Server.Presence
         Wiki.Server.ProgramApi
@@ -153,6 +154,7 @@ library
         Wiki.Server.Storage.Migrate.Code.Step0013
         Wiki.Server.Storage.Migrate.Code.Step0015
         Wiki.Server.Storage.Migrate.CodeStep
+        Wiki.Server.Storage.ExternalPlugins
         Wiki.Server.Storage.Plugins
         Wiki.Server.Storage.Rows
         Wiki.Server.Storage.Schema
@@ -383,6 +385,7 @@ test-suite wiki-server-test
         Test.Server.Oidc
         Test.Server.Opaque
         Test.Server.Options
+        Test.Server.ExternalPlugins
         Test.Server.Plugins
         Test.Server.Presence
         Test.Server.Program

@@ -91,6 +91,7 @@ import Wiki.Server.Log (Logger, logRequests)
 import Wiki.Server.MarkdownApi (Asking (..))
 import Wiki.Server.McpApi (mcpApplication)
 import Wiki.Server.Metrics (observe)
+import Wiki.Server.PluginFrame (pluginFrameApplication)
 import Wiki.Server.ProgramApi (programApplication)
 import Wiki.Server.ProgramApi.Combinators (refusal, refusalResponse)
 import Wiki.Server.Render (renderPage, routeAddress, routeOf)
@@ -318,6 +319,9 @@ listenerRoutes logger env site l caller loggedAs request respond = do
             | endpoint == ["events"] -> eventsApplication env.storage env.events caller.who caller.origins request respond
             | otherwise -> api request {pathInfo = rest} respond
           "auth" : provider : more -> authApplication logger env caller l.mount provider more request respond
+          -- An external plugin's frame, for a signed-in user who may run
+          -- the plugin ("Wiki.Server.PluginFrame"); 404 to anyone else.
+          "plugin-frame" : rest -> pluginFrameApplication env.storage caller.who rest request respond
           -- A blog's feeds and the sitemap, with what anyone may read
           -- ("Wiki.Server.Feed"), whoever asks.
           ["sitemap.xml"] | readOnly -> sitemapApplication env.storage env.feeds l.mount request respond

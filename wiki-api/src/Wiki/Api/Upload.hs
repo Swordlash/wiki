@@ -22,7 +22,9 @@
 -- 'FromMultipart' instances, so the parts sent are the parts read: for an attachment, one file part named 'attachmentPart'
 -- with the file's name and media type; for an archive, one file part named
 -- 'archivePart', plus, for an import's choices, a text part named
--- 'choicesPart' with the choices as JSON.
+-- 'choicesPart' with the choices as JSON; for an external plugin, the
+-- text part 'manifestPart', the file part 'bundlePart', and the text part
+-- 'replacesPart' when it replaces one.
 module Wiki.Api.Upload
   ( -- * Attachments
     AttachmentUpload (..)
@@ -36,6 +38,12 @@ module Wiki.Api.Upload
   , archivePart
   , ImportApply (..)
   , choicesPart
+
+    -- * External plugins
+  , PluginUpload (..)
+  , manifestPart
+  , bundlePart
+  , replacesPart
   )
 where
 
@@ -190,3 +198,45 @@ instance (tag ~ form) => ToMultipart tag (ImportApply form) where
 -- | An archive as a form's file part.
 archiveFile :: MultipartResult tag -> FileData tag
 archiveFile payload = FileData {fdInputName = archivePart, fdFileName = "wiki.zip", fdFileCType = "application/zip", fdPayload = payload}
+
+-- | 'PluginUpload': an external plugin to install ("Wiki.Api.Plugins.External"):
+-- its manifest, as JSON in the text part named 'manifestPart'; its bundle,
+-- the one JavaScript file of its code, as the file part named
+-- 'bundlePart', whose file name and media type are ignored; and, to
+-- replace a plugin of the same id installed already, the SHA-256 of that
+-- plugin's bundle in the text part named 'replacesPart'. A plugin with the
+-- id installed and no 'replaces', or a 'replaces' that is not the
+-- installed bundle's, is refused, so that an upload never replaces a
+-- version its sender did not know of.
+data PluginUpload tag = PluginUpload
+  { manifest :: Text
+  , replaces :: Maybe Text
+  , bundle :: MultipartResult tag
+  }
+
+deriving stock instance Eq (PluginUpload Mem)
+
+deriving stock instance Show (PluginUpload Mem)
+
+deriving stock instance Eq (PluginUpload Tmp)
+
+deriving stock instance Show (PluginUpload Tmp)
+
+-- | The names of a 'PluginUpload''s parts.
+manifestPart, bundlePart, replacesPart :: Text
+manifestPart = "manifest"
+bundlePart = "bundle"
+replacesPart = "replaces"
+
+instance (tag ~ form) => FromMultipart tag (PluginUpload form) where
+  fromMultipart form = do
+    file <- lookupFile bundlePart form
+    manifest <- lookupInput manifestPart form
+    pure PluginUpload {manifest, replaces = rightToMaybe (lookupInput replacesPart form), bundle = fdPayload file}
+
+instance (tag ~ form) => ToMultipart tag (PluginUpload form) where
+  toMultipart u =
+    MultipartData
+      { inputs = Input {iName = manifestPart, iValue = u.manifest} : [Input {iName = replacesPart, iValue = r} | Just r <- [u.replaces]]
+      , files = [FileData {fdInputName = bundlePart, fdFileName = "plugin.js", fdFileCType = "text/javascript", fdPayload = u.bundle}]
+      }

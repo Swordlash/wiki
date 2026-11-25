@@ -21,6 +21,7 @@ import Test.Server.Comments qualified as Comments
 import Test.Server.Compress qualified as Compress
 import Test.Server.ContentsApi qualified as ContentsApi
 import Test.Server.Export qualified as Export
+import Test.Server.ExternalPlugins qualified as ExternalPlugins
 import Test.Server.Feed qualified as Feed
 import Test.Server.Guide qualified as Guide
 import Test.Server.Http qualified as Http
@@ -136,6 +137,7 @@ main = secureMain $ do
           BasicSignIn.spec b
           ApiKeys.spec b
           Plugins.spec b
+          ExternalPlugins.spec b
           McpApi.spec b
           Oidc.spec b
           Export.spec b

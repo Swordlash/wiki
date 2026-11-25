@@ -60,6 +60,9 @@ module Test.Sample
   , madeApiKey
   , plugins
   , wikiPlugins
+  , externalManifest
+  , externalPlugin
+  , externalPlugins
   , publicKeyEntry
   , registrationOptions
   , registrationResponse
@@ -82,6 +85,7 @@ import Wiki.Api.Export (ExportFormat (..))
 import Wiki.Api.Import
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), Notifications (..), feedAddressOf)
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), WikiPlugins (..))
+import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Permission (..))
 import Wiki.Api.Security (AccountEmail (..), EmailState (..), SecondFactorState (..), SessionRef (..), SessionSummary (..), TotpEnrolment (..))
 import Wiki.Api.ServerSettings (AssistantApi (..), AssistantService (..), Discovered (..), MailSettingsOf (..), ProviderCheck (..), ProviderKind (..), ProviderSettingsOf (..), SecretState (..), Security (..), ServerSettings, ServerSettingsChange, ServerSettingsOf (..), defaultHomePage)
 import Wiki.Api.Stars (StarredPage (..))
@@ -737,6 +741,37 @@ plugins =
 -- | The plugins off for the whole wiki, as the administration reads them.
 wikiPlugins :: WikiPlugins
 wikiPlugins = WikiPlugins {off = Set.fromList [PluginId "errors", PluginId "assistant"]}
+
+-- | An external plugin's manifest: the guide's example, which marks a word
+-- written twice and asks a host of its own.
+externalManifest :: ExternalManifest
+externalManifest =
+  ExternalManifest
+    { id = PluginId "doubled-words"
+    , name = "Doubled words"
+    , version = "1.0.0"
+    , description = "Marks a word written twice."
+    , api = 1
+    , contributes = Set.singleton Diagnostics
+    , permissions = Set.singleton DocumentRead
+    , hosts = ["https://api.languagetool.org"]
+    }
+
+-- | The example installed for everyone.
+externalPlugin :: ExternalPlugin
+externalPlugin = ExternalPlugin {manifest = externalManifest, bundle = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", size = 1234, mine = False, installedAt = time}
+
+-- | What a user who may add plugins of their own is answered: the wiki's
+-- example, and one of their own with no host.
+externalPlugins :: ExternalPlugins
+externalPlugins =
+  ExternalPlugins
+    { policy = ExternalUsers
+    , external =
+        [ externalPlugin
+        , externalPlugin {manifest = externalManifest {id = PluginId "mine", name = "Mine", hosts = []}, mine = True, installedAt = later}
+        ]
+    }
 
 passkeyInfo :: PasskeyInfo
 passkeyInfo = PasskeyInfo {id = CredentialId "Y3JlZGVudGlhbC0x", name = "Added on 2026-10-28 at 09:30 UTC", createdAt = time, lastUsedAt = Just later, unlocks = True}

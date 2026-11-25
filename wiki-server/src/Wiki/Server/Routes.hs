@@ -10,7 +10,8 @@
 -- from the API's type ('apiStructure'), so that a route added to the API
 -- is counted under its own pattern with nothing to keep in sync. The rest
 -- of what a listener serves has a handful: the live channel, signing in
--- with a provider, the application's files and its pages.
+-- with a provider, the external plugins' frames, the application's files
+-- and its pages.
 module Wiki.Server.Routes
   ( routePattern
   , apiPattern
@@ -44,6 +45,7 @@ routePattern mounted segments = case segments of
         rest@("api" : _) -> maybe "/api/unmatched" (("/" <>) . T.intercalate "/") (apiPattern rest)
         "auth" : _ : [step] | step `elem` ["start", "callback"] -> "/auth/:provider/" <> step
         "auth" : _ -> "/auth/unmatched"
+        "plugin-frame" : _ -> "/plugin-frame"
         rest
           -- A file of the build: its program, its styles, its images.
           | maybe False (T.elem '.') (lastMay rest) -> "/static"

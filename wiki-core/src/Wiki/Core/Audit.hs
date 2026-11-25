@@ -137,6 +137,10 @@ actionText a = Map.findWithDefault a a actions
         , ("wiki.import", "Imported a wiki")
         , ("guide.install", "Installed the guide")
         , ("guide.update", "Updated the guide's pages")
+        , ("settings.external-plugins", "Changed who may add external plugins")
+        , ("plugin.install", "Installed a plugin for everyone")
+        , ("plugin.replace", "Replaced a plugin installed for everyone")
+        , ("plugin.remove", "Removed a plugin installed for everyone")
         ]
 
 -- | @{"id", "at", "actor": {"id", "login"}, "action", "subject": {"kind",

@@ -7,6 +7,7 @@ module Test.Storage.Migrate (spec) where
 
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time (getCurrentTime)
 import Database.Beam (all_, insert, insertValues, runInsert, runSelectReturningList, select)
@@ -16,13 +17,14 @@ import Test.Hspec
 import Test.Storage.Fixture (demoArchive, ok, withEmptyPlaceIn)
 import Wiki.Api.ApiKeys (ApiKeyInfo (..), KeyRight (..), MadeApiKey (..), NewApiKey (..))
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..))
+import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), Permission (..))
 import Wiki.Api.Vault (StoredVault (..))
 import Wiki.Core.Assistant.Vault (Sealed (..), Vault (..), VaultTag (..), vaultFormat, withSealed)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Server.ApiKeys (KeyHolder (..), KeyOutcome (..), makeApiKey, signInByKey)
 import Wiki.Server.Limiter (defaultLimits, newLimiter)
 import Wiki.Server.Plugins (pluginsFor, setPluginState)
-import Wiki.Server.Storage (CheckProblem (..), Checked (..), Migrated (..), Place, TableRead (..), Who (..), checkDatabase, closeStorage, defaultConfig, importArchive, migrateDatabase, openStorage, withStorage)
+import Wiki.Server.Storage (CheckProblem (..), Checked (..), Migrated (..), Owner (..), Place, TableRead (..), Who (..), checkDatabase, closeStorage, defaultConfig, externalPlugins, importArchive, installExternal, migrateDatabase, openStorage, runStoredWiki, withStorage)
 import Wiki.Server.Storage.Backend (Backend (..))
 import Wiki.Server.Storage.Migrate
 import Wiki.Server.Storage.Rows (micro)
@@ -39,6 +41,7 @@ wikiTables =
   , "conversion_leases"
   , "drafts"
   , "email_verifications"
+  , "external_plugins"
   , "global_grants"
   , "group_members"
   , "groups"
@@ -156,6 +159,22 @@ spec backing = describe "the schema's versions" $ do
         _ <- setPluginState st (UserId "user-editor") (PluginId "assistant") PluginOff >>= ok
         (\p -> p.mine) <$> pluginsFor st (AsUser (UserId "user-editor"))
           `shouldReturn` Map.fromList [(PluginId "assistant", PluginChoice {state = PluginOff, options = Nothing})]
+
+  -- Step 26 (the external plugins), applied in the same way to a wiki of
+  -- the steps before it.
+  it "add the external plugins' table to a wiki of the steps before, which keeps its users and then installs one" $
+    withEmptyPlaceIn backing $ \at -> do
+      withStorage defaultConfig at $ \st -> importArchive st demoArchive >>= ok
+      withConnectionTo at $ \c -> do
+        let known = knownVersion (schemaSuffix c)
+        forgetStep 26 ["DROP TABLE external_plugins;"] c
+        versionsOf c `shouldReturn` [1 .. known]
+        tablesOf c `shouldReturn` wikiTables
+      withStorage defaultConfig at $ \st -> do
+        let manifest = ExternalManifest {id = PluginId "doubled-words", name = "Doubled words", version = "1.0.0", description = "", api = 1, contributes = Set.singleton Diagnostics, permissions = Set.singleton DocumentRead, hosts = []}
+        made <- runStoredWiki st Administrator (installExternal TheWiki manifest "self.onmessage = () => {};" Nothing) >>= ok
+        listed <- runStoredWiki st Administrator externalPlugins >>= ok
+        map (\p -> (p.manifest.id, p.bundle)) listed.external `shouldBe` [(PluginId "doubled-words", made.bundle)]
 
   it "apply nothing a second time, and change nothing" $
     withEmptyPlaceIn backing $ \at -> withConnectionTo at $ \c -> do

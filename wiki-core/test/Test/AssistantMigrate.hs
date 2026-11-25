@@ -1,3 +1,5 @@
+{-# LANGUAGE MultiWayIf #-}
+
 -- | The plan that moves the writing assistant's settings from their legacy
 -- places to the plugin's ("Wiki.Core.Assistant.Migrate"), run against a
 -- model of those places: the vault's legacy item and the plugin's item,
@@ -12,7 +14,10 @@
 -- only a reset of the password deletes the whole vault, which no run
 -- does). A run reads the model, takes the plan's first step, and reads
 -- again, as the runner does. Keys are forgotten from the plugin's item
--- between any two steps, on any browser that holds the vault key.
+-- between any two steps, on any browser that holds the vault key. A page
+-- that cannot seal (plain HTTP) never holds the vault key, keeps the
+-- plugin's secrets in its own browser, and finds the vault's legacy item
+-- out of reach.
 module Test.AssistantMigrate (spec) where
 
 import Data.Aeson (Value)
@@ -57,6 +62,12 @@ data Dev = Dev
   , vaultKept :: Bool
   , cached :: Bool
   , asks :: Bool
+  , sealing :: Bool
+  -- ^ Whether the page can seal. One that cannot (plain HTTP) never holds
+  -- the vault key, and keeps the plugin's secrets in this browser, in the
+  -- clear ('kept').
+  , kept :: Maybe Contents
+  -- ^ The plugin's secrets this browser keeps, where the page cannot seal.
   }
   deriving stock (Eq, Show)
 
@@ -76,13 +87,13 @@ data Rec = Rec
 
 -- | Whether the browser holds the vault key.
 unlocked :: Dev -> Bool
-unlocked d = d.vaultKept || d.keySlot == VaultKey
+unlocked d = d.sealing && (d.vaultKept || d.keySlot == VaultKey)
 
 sealOf :: Int -> Sealed
 sealOf n = Sealed {nonce = Nonce (show n), ciphertext = "sealed"}
 
 deviceOf :: Int -> World -> Dev
-deviceOf d w = Map.findWithDefault (Dev Nothing NoKey False False False) d w.devices
+deviceOf d w = Map.findWithDefault (Dev Nothing NoKey False False False True Nothing) d w.devices
 
 -- | What the runner reads on a browser.
 observe :: Int -> World -> Found
@@ -92,6 +103,7 @@ observe d w =
         Nothing -> NoItem
         Just (n, s)
           | unlocked dev -> ItemOpened (sealOf n) s
+          | not dev.sealing -> ItemOutOfReach
           | otherwise -> ItemLocked
     , record =
         ( \r ->
@@ -110,8 +122,16 @@ observe d w =
           <$> dev.held
     , slot = dev.keySlot
     , vaultSlot = dev.vaultKept
-    , target = if unlocked dev then Just (pluginSecrets w) else Nothing
-    , taken = if unlocked dev then maybe mempty (\c -> c.taken) w.plugin else mempty
+    , target =
+        if
+          | not dev.sealing -> Just (maybe mempty (\c -> c.secrets) dev.kept)
+          | unlocked dev -> Just (pluginSecrets w)
+          | otherwise -> Nothing
+    , taken =
+        if
+          | not dev.sealing -> maybe mempty (\c -> c.taken) dev.kept
+          | unlocked dev -> maybe mempty (\c -> c.taken) w.plugin
+          | otherwise -> mempty
     , options = Just w.serverOptions
     , local = dev.cached
     , askHere = dev.asks
@@ -125,6 +145,7 @@ perform d step w = case step of
   KeepAsk -> onDev (\x -> x {asks = True})
   CopyVaultKey -> onDev (\x -> if x.keySlot == VaultKey then x {vaultKept = True} else x)
   KeepKeys places
+    | not dev.sealing -> onDev (\x -> x {kept = Just (foldl' taking (fromMaybe noContents x.kept) places)})
     | unlocked dev -> w {plugin = Just (foldl' taking (fromMaybe noContents w.plugin) places)}
     | otherwise -> w
   KeepLearnt _ -> onDev (\x -> x {cached = True})
@@ -209,6 +230,7 @@ heldNames w =
     ( Map.keysSet (pluginSecrets w)
         : maybe mempty (Map.keysSet . keysOf . snd) w.item
         : [Set.unions [maybe mempty (Map.keysSet . keysOf) r.own, if lastCopy then maybe mempty (Map.keysSet . keysOf . snd) r.copy else mempty] | Just r <- map (\x -> x.held) (Map.elems w.devices)]
+          <> [maybe mempty (Map.keysSet . (\c -> c.secrets)) x.kept | x <- Map.elems w.devices]
     )
   where
     lastCopy = isNothing w.item && not (tookItem w)
@@ -228,11 +250,12 @@ moved d w = let x = deviceOf d w in isNothing x.held && x.keySlot == NoKey
 genDev :: (Int, Settings) -> Gen (Dev, Maybe Settings)
 genDev item =
   oneof
-    [ pure (Dev Nothing NoKey True False False, Nothing)
+    [ pure (Dev Nothing NoKey True False False True Nothing, Nothing)
     , l1
     , l1Reloaded
     , ownRecord OwnKey True -- L2
     , ownRecord NoKey True -- L3
+    , l3Plain
     , l4
     ]
   where
@@ -244,24 +267,30 @@ genDev item =
       copy <- aCopy
       inSlot <- arbitrary
       r <- record Nothing True copy
-      pure (Dev (Just r) VaultKey (not inSlot) False False, Nothing)
+      pure (Dev (Just r) VaultKey (not inSlot) False False True Nothing, Nothing)
     -- L1 on a browser that asks for an unlock each time, after a reload:
     -- the assistant's slot is empty, and the vault key is in the vault's
     -- slot once the browser is unlocked, which opens the copy.
     l1Reloaded = do
       copy <- aCopy
       r <- record Nothing True copy
-      pure (Dev (Just Rec {number = r.number, own = r.own, follows = r.follows, copy = r.copy, askEachTime = True, learnt = r.learnt}) NoKey True False False, Nothing)
+      pure (Dev (Just Rec {number = r.number, own = r.own, follows = r.follows, copy = r.copy, askEachTime = True, learnt = r.learnt}) NoKey True False False True Nothing, Nothing)
     ownRecord slot vaultSlot' = do
       s <- genSettings
       r <- record (Just s) False Nothing
-      pure (Dev (Just r) slot vaultSlot' False False, Just s)
+      pure (Dev (Just r) slot vaultSlot' False False True Nothing, Just s)
+    -- L3 on a page that cannot seal (plain HTTP): the settings as text, no
+    -- key, and the vault's item, if there is one, out of reach for ever.
+    l3Plain = do
+      s <- genSettings
+      r <- record (Just s) False Nothing
+      pure (Dev (Just r) NoKey False False False False Nothing, Just s)
     -- The copy is sealed with the vault key, which this browser does not
     -- hold: it opens once the browser is unlocked.
     l4 = do
       typed <- oneof [pure Nothing, Just <$> genSettings]
       r <- record typed True (Just item)
-      pure (Dev (Just r) OwnKey False False False, typed)
+      pure (Dev (Just r) OwnKey False False False True Nothing, typed)
     record own follows copy = do
       askEachTime <- if follows then arbitrary else pure False
       learnt <- oneof [pure Nothing, Just . optionsValue <$> genSettings]
@@ -283,9 +312,9 @@ genWorld n = do
     -- Each record its own number, so that a delete names one record.
     dedupe (i, d) = d {held = (\r -> Rec {number = r.number * 10 + i, own = r.own, follows = r.follows, copy = r.copy, askEachTime = r.askEachTime, learnt = r.learnt}) <$> d.held}
 
--- | A world whose browsers all hold the vault key.
+-- | A world whose browsers all hold the vault key: each page can seal.
 genUnlocked :: Int -> Gen World
-genUnlocked n = (\w -> w {devices = Map.map (\d -> if unlocked d then d else d {vaultKept = True}) w.devices}) <$> genWorld n
+genUnlocked n = (\w -> w {devices = Map.map (\d -> if unlocked d then d else d {vaultKept = True, sealing = True}) w.devices}) <$> genWorld n
 
 --------------------------------------------------------------------------------
 -- Properties
@@ -378,7 +407,7 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
     -- Syncing was turned off elsewhere: the vault has no item, and both
     -- browsers keep a copy of the one it last had.
     forAll genSettings $ \lost -> forAll (chooseInt (100, 10000)) $ \n ->
-      let copyOf i = Dev (Just Rec {number = n * 10 + i, own = Nothing, follows = True, copy = Just (1, lost), askEachTime = False, learnt = Nothing}) VaultKey True False False
+      let copyOf i = Dev (Just Rec {number = n * 10 + i, own = Nothing, follows = True, copy = Just (1, lost), askEachTime = False, learnt = Nothing}) VaultKey True False False True Nothing
           w = World {item = Nothing, plugin = Nothing, serverOptions = Just (optionsValue lost), devices = Map.fromList [(1, copyOf 1), (2, copyOf 2)], seals = 2, copiesMoved = mempty}
           first' = completed 1 w
           forgotten = foldl' (flip (forget 1)) first' (Map.keys (pluginSecrets first'))
@@ -386,9 +415,41 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
        in coverage . cover 50 (not (Map.null (keysOf lost))) "keys in the copy" $
             pluginSecrets first' === keysOf lost .&&. pluginSecrets end === mempty .&&. moved 2 end
 
+  prop "adopts the own options of a browser that cannot seal while the server holds none, a legacy item it cannot open left for another, whose options then lose" $
+    forAll (genWorld 2) $ \w0 -> forAll genSettings $ \own -> forAll (chooseInt (100, 10000)) $ \n ->
+      let plainHere = Dev (Just Rec {number = n * 10 + 1, own = Just own, follows = False, copy = Nothing, askEachTime = False, learnt = Nothing}) NoKey False False False False Nothing
+          w = w0 {devices = Map.insert 1 plainHere (Map.adjust (\d -> d {vaultKept = True, sealing = True}) 2 w0.devices)}
+          ownOptions = mfilter (not . blankOptions) (Just (optionsValue own))
+          end = completed 1 w
+          later = completed 2 end
+       in coverage . cover 30 (isJust w.item) "a legacy item out of reach" . cover 20 (isJust w.item && isJust ownOptions && isNothing w.serverOptions) "own options and an item, none on the server" $
+            counterexample "options" (end.serverOptions === (w.serverOptions <|> ownOptions))
+              .&&. counterexample "record" (moved 1 end)
+              .&&. counterexample "item" (end.item === w.item)
+              .&&. counterexample "options after another browser moved the item" (if isJust end.serverOptions then later.serverOptions === end.serverOptions else property True)
+              .&&. isNothing later.item
+
+  it "waits for an unlock where the browser can be unlocked, and not for an item the key does not open" $ do
+    -- L2 (syncing off) and L4 (typed while locked), each with options of
+    -- its own and a legacy item in the vault. Locked here, the item's
+    -- options would win once an unlock reads them: nothing is adopted or
+    -- emptied. Where the vault key does not open the item, no unlock will:
+    -- the browser's own options are adopted.
+    let s = settingsAsked
+        onDevice follows' = OnDevice {bytes = "r", source = "record:r", own = Just s, copy = Nothing, copied = Nothing, follows = follows', unopenable = False, askEachTime = False, learnt = Nothing}
+        l2 = Found {vault = ItemLocked, record = Just (onDevice False), slot = OwnKey, vaultSlot = False, target = Nothing, taken = mempty, options = Just Nothing, local = False, askHere = False}
+        l4 = l2 {record = Just (onDevice True)}
+    plan l2 `shouldBe` []
+    plan l4 `shouldBe` []
+    plan l2 {vault = ItemUnopenable, vaultSlot = True, target = Just mempty, taken = Set.fromList ["record:r"]} `shouldBe` [AdoptOptions (optionsValue s)]
+    plan l4 {vault = ItemUnopenable, vaultSlot = True, target = Just mempty, taken = Set.fromList ["record:r"]} `shouldBe` [AdoptOptions (optionsValue s)]
+    -- On a page that cannot seal, the item is out of reach for ever.
+    plan l2 {vault = ItemOutOfReach, slot = NoKey, target = Just mempty, taken = Set.fromList ["record:r"]} `shouldBe` [AdoptOptions (optionsValue s)]
+
   prop "waits on a locked browser without emptying a place that holds a key, and moves it all once unlocked" $
     forAll (genWorld 1) $ \w0 ->
-      let w = w0 {devices = Map.map (\d -> d {vaultKept = False, keySlot = if d.keySlot == VaultKey then OwnKey else d.keySlot}) w0.devices}
+      -- Each page can seal: one that cannot is never unlocked.
+      let w = w0 {devices = Map.map (\d -> d {vaultKept = False, sealing = True, keySlot = if d.keySlot == VaultKey then OwnKey else d.keySlot}) w0.devices}
           stopped = completed 1 w
           unlockedAfter = stopped {devices = Map.map (\d -> d {vaultKept = True}) stopped.devices}
           end = completed 1 unlockedAfter

@@ -181,10 +181,14 @@ found u options = do
   syncing <- lift vaultSync
   stored <- if syncing then fetched else pure Nothing
   key <- lift (vaultKeyHere u stored)
+  sealing <- lift sealingHere
   maybe identity forgetting key $ do
     vault <- case (\s -> itemOf assistantItem s.vault) =<< stored of
       Nothing -> pure NoItem
       Just i -> case key of
+        -- A page that cannot seal never opens the item: its options do
+        -- not wait for it ("Wiki.Core.Assistant.Migrate", "What wins").
+        Nothing | not sealing -> pure ItemOutOfReach
         Nothing -> pure ItemLocked
         Just k ->
           lift (openWith k i.sealed sealingData) <&> \case

@@ -53,6 +53,14 @@ writeFileSync(join(out, "plugin-frames", "looping.html"), frame("wikiPlugin.plug
 const mode = 'const strict = (function () { return this === undefined; })();\nwikiPlugin.plugin({ diagnostics: () => [{ from: 0, to: 0, severity: "warning", message: strict ? "strict" : "sloppy" }] });\n';
 writeFileSync(join(out, "plugin-frames", "strict.html"), frame('"use strict";\n' + mode, true));
 writeFileSync(join(out, "plugin-frames", "sloppy.html"), frame(mode));
+// Bundles whose top-level bindings name what the wiki's line in front of
+// them uses, which must still register and answer; and one that declares
+// wikiPlugin itself, which fails saying so.
+const answering = 'wikiPlugin.plugin({ diagnostics: () => [{ from: 0, to: 0, severity: "warning", message: "answered" }] });\n';
+writeFileSync(join(out, "plugin-frames", "shadow-self.html"), frame("const self = globalThis;\n" + answering));
+writeFileSync(join(out, "plugin-frames", "shadow-names.html"), frame("let postMessage, addEventListener, JSON, Promise;\n" + answering));
+writeFileSync(join(out, "plugin-frames", "shadow-array.html"), frame("class Array {}\n" + answering));
+writeFileSync(join(out, "plugin-frames", "own-name.html"), frame("const wikiPlugin = { plugin() {} };\nwikiPlugin.plugin({});\n"));
 // A plugin whose ordinary answer is past the protocol's limits: 501
 // problems, each with a message of 400 characters and a field more.
 writeFileSync(

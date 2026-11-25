@@ -61,23 +61,38 @@ const MAX_PROBLEMS = 500;
 const MAX_MESSAGE_LENGTH = 300;
 const MESSAGE_LENGTH = 1048576;
 
-// The worker's side, given the limits: written without line comments and
-// with every statement ended, so that it can be put on one line.
-function wikiPluginWorker(maxProblems, maxMessageLength) {
+// The worker's side, given the worker's global and the limits: written
+// without line comments and with every statement ended, so that it can be
+// put on one line. It runs in the same script as the plugin's code, before
+// it, while the code's top-level const, let and class bindings already
+// exist, uninitialized: so it names nothing free that the code could
+// declare. It takes everything it uses from the global it is given (the
+// script's top-level this, which is the worker's global in either mode),
+// once, before the code runs, and leaves the code the global wikiPlugin
+// alone. The one free name it reads is wikiPlugin, once, to tell a code
+// that declares that name itself, which would never reach the wiki's.
+function wikiPluginWorker(global, maxProblems, maxMessageLength) {
   "use strict";
+  const json = global.JSON;
+  const array = global.Array;
+  const object = global.Object;
+  const string = global.String;
+  const error = global.Error;
+  const post = global.postMessage.bind(global);
+  const listen = global.addEventListener.bind(global);
   let handlers = null;
   const waiting = [];
-  const send = (message) => postMessage(JSON.stringify(message));
+  const send = (message) => post(json.stringify(message));
   const cut = (text) => {
-    const characters = Array.from(text);
+    const characters = array.from(text);
     return characters.length > maxMessageLength ? characters.slice(0, maxMessageLength).join("") : text;
   };
-  const failed = (error) => send({ type: "failed", message: cut(String((error && error.message) || error)) });
+  const failed = (problem) => send({ type: "failed", message: cut(string((problem && problem.message) || problem)) });
   const answer = async (message) => {
     if (message.type !== "diagnose") return;
     try {
       const found = (await handlers.diagnostics({ text: message.text })) ?? [];
-      if (!Array.isArray(found)) throw new Error("diagnostics returned something other than a list of problems.");
+      if (!array.isArray(found)) throw new error("diagnostics returned something other than a list of problems.");
       const problems = found.slice(0, maxProblems).map((p) => ({
         from: p?.from,
         to: p?.to,
@@ -85,15 +100,15 @@ function wikiPluginWorker(maxProblems, maxMessageLength) {
         message: typeof p?.message === "string" ? cut(p.message) : p?.message,
       }));
       send({ type: "problems", re: message.id, problems });
-    } catch (error) {
-      failed(error);
+    } catch (problem) {
+      failed(problem);
     }
   };
-  addEventListener("message", (event) => {
+  listen("message", (event) => {
     if (typeof event.data !== "string") return;
     let message;
     try {
-      message = JSON.parse(event.data);
+      message = json.parse(event.data);
     } catch {
       return;
     }
@@ -101,18 +116,23 @@ function wikiPluginWorker(maxProblems, maxMessageLength) {
     if (handlers === null) waiting.push(message);
     else answer(message);
   });
-  self.wikiPlugin = Object.freeze({
+  global.wikiPlugin = object.freeze({
     api: 1,
     plugin(given) {
-      if (handlers !== null) throw new Error("wikiPlugin.plugin is called once.");
+      if (handlers !== null) throw new error("wikiPlugin.plugin is called once.");
       if (typeof given !== "object" || given === null || typeof given.diagnostics !== "function") {
-        throw new Error("wikiPlugin.plugin takes {diagnostics(document)}.");
+        throw new error("wikiPlugin.plugin takes {diagnostics(document)}.");
       }
       handlers = given;
       send({ type: "ready" });
       for (const message of waiting.splice(0)) answer(message);
     },
   });
+  try {
+    void wikiPlugin;
+  } catch {
+    failed("its code declares the name wikiPlugin itself, which hides the wiki's.");
+  }
 }
 
 (() => {
@@ -121,7 +141,7 @@ function wikiPluginWorker(maxProblems, maxMessageLength) {
   delete self.wikiPluginSource;
   delete self.wikiPluginStrict;
   const source = given.startsWith("#!") ? `//${given.slice(2)}` : given;
-  const line = `(${String(wikiPluginWorker).replace(/\n\s*/g, " ")})(${MAX_PROBLEMS}, ${MAX_MESSAGE_LENGTH});`;
+  const line = `(${String(wikiPluginWorker).replace(/\n\s*/g, " ")})(this, ${MAX_PROBLEMS}, ${MAX_MESSAGE_LENGTH});`;
   const script = [strict ? '"use strict";' : "", line, source];
   let connected = false;
   addEventListener("message", (event) => {

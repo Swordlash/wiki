@@ -21,31 +21,41 @@ module Test.Browser.PluginFrames (spec) where
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Control.Monad.UUID (MonadUUID (..))
-import Data.IORef (IORef)
+import Data.IORef (IORef, modifyIORef', readIORef)
 import Data.Map.Strict qualified as Map
 import Data.NT (type (~>) (..))
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Halogen qualified as H
+import Halogen.Activity.Control (withTestClock)
 import Halogen.JSBits (Safety (..), browserJS)
+import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
+import Test.Browser.Mount (clickButton, slugs, startChangedWith)
+import Test.Hspec (around)
 import Test.Hspec.Halogen
 import Wiki.Api.Plugins (PluginId (..), noPlugins)
 import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPolicy (..), Permission (..))
-import Wiki.App.Backend (MonadWiki)
+import Wiki.App.Assistant (MonadAssistant)
+import Wiki.App.Backend (MonadWiki (..))
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands (..))
 import Wiki.App.Plugin.External (Heard (..))
 import Wiki.App.Plugin.External.Frames qualified as Frames
+import Wiki.App.Route (Route (..))
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Markdown.Problems (Problem (..), ProblemKind (..), Severity (..))
+import Wiki.Core.Page qualified as Core (Page (..))
 
 $( browserJS
-     ["jsbits/test-plugin-frames.js"]
-     [("js_frames_open", "wiki_test_plugin_frames_open", Safe, [t|IO Int|])]
+     ["jsbits/test-plugin-frames.js", "jsbits/test-moves.js"]
+     [ ("js_frames_open", "wiki_test_plugin_frames_open", Safe, [t|IO Int|])
+     , ("js_watch_frame_moves", "wiki_test_watch_frame_moves", Safe, [t|IO ()|])
+     , ("js_frame_moved", "wiki_test_frame_moved", Safe, [t|IO Bool|])
+     ]
  )
 
 -- | The demo's backend, opening each plugin's frame at the document the
@@ -67,7 +77,7 @@ instance (MonadUUID m) => MonadUUID (Written m) where
 instance (MonadIslands m) => MonadIslands (Written m) where
   openPluginFrame container address = lift . openPluginFrame container written
     where
-      written = case filter (\p -> ("/" <> p <> "/") `T.isInfixOf` address) ["doubled-words", "looping", "strict", "sloppy", "many", "tangled-raw", "deep-raw", "flooding-raw"] of
+      written = case filter (\p -> ("/" <> p <> "/") `T.isInfixOf` address) ["doubled-words", "looping", "strict", "sloppy", "many", "shadow-self", "shadow-names", "shadow-array", "own-name", "tangled-raw", "deep-raw", "flooding-raw"] of
         p : _ -> "plugin-frames/" <> p <> ".html"
         [] -> address
 
@@ -97,7 +107,7 @@ installed pid name =
 wikiWith :: [ExternalPlugin] -> IO (IORef MemState)
 wikiWith ps = newMemWiki ((demoState demoNow) {current = Just (UserId "user-editor"), externalPolicy = ExternalWiki, externalWiki = Map.fromList [(p.manifest.id, p) | p <- ps]})
 
-spec :: forall m -> (MonadBrowserTest m, MonadIslands m, MonadUUID m) => Spec
+spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
 spec m = describe "external plugins' frames" $ do
   let input text = Frames.Input {session = 0, known = noPlugins, choicesRead = True, text = Just text, encrypted = False}
       frames wiki = H.hoist (NT (runMemWiki wiki . runWritten)) (Frames.component :: H.Component (Const Void) Frames.Input Frames.Output (Written (MemWiki m)))
@@ -189,3 +199,55 @@ spec m = describe "external plugins' frames" $ do
     map (\h -> length h.problems) heard `shouldBe` [500]
     map (\h -> map (\p -> p.message) (take 1 h.problems)) heard `shouldBe` [["Many: " <> T.replicate 300 "m"]]
     length <$> findAll ui ".editor-plugin-stopped" `shouldReturn` 0
+
+  -- The wiki's line runs in the same script as the bundle, before it,
+  -- while the bundle's top-level bindings exist uninitialized: it names
+  -- none of them.
+  it "registers and answers a bundle whose top-level bindings name what the wiki's line uses, and stops one that declares wikiPlugin, saying so" $ runPage $ do
+    for_ ["shadow-self", "shadow-names", "shadow-array"] $ \pid -> do
+      wiki <- unsafeIOToPageM (wikiWith [installed pid "Shadow"])
+      ui <- mount m (frames wiki) (input "Any text.")
+      waitQuiet
+      (pid, map (\h -> map (\p -> p.message) h.problems) . Map.elems <$> lastHeard ui) `shouldReturn'` (pid, [["Shadow: answered"]])
+      unmount ui
+    wiki <- unsafeIOToPageM (wikiWith [installed "own-name" "Own name"])
+    ui <- mount m (frames wiki) (input "Any text.")
+    waitQuiet
+    find ui ".editor-plugin-stopped" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The plugin Own name was stopped: it failed: its code declares the name wikiPlugin itself, which hides the wiki's")
+
+  -- Codex's fourth round on #381: the frames were among the editor's
+  -- notices, and two notices before them going at once ("Take theirs",
+  -- with a draft restored and a save's conflict shown) made Halogen move
+  -- them, and a frame whose ancestor moves loads again, which stopped its
+  -- plugin. The whole application, on the test's clock, under which the
+  -- plugin's frame (the server's address, which the runner does not
+  -- serve) never says it is ready, and is not stopped for it.
+  around withTestClock . it "keeps a plugin's frame where it is when notices before it go together" $ \_ -> runPage $ do
+    (ui, wiki) <- startChangedWith m withExample (Just "user-editor") (Page (slugs ["blog"]) (slugs ["hello-world"]))
+    page <- unsafeIOToPageM (helloWorld wiki)
+    -- A draft of the author's, which the editor restores.
+    _ <- unsafeIOToPageM (runMemWiki wiki (saveDraft page.id page.updatedAt page.title "# Hello, world\n\nMy words."))
+    find ui ".page-view .actions a[href$='/edit/']" >>= click
+    _ <- find ui ".editor-draft-found"
+    frame <- find ui "iframe.editor-plugin-frame"
+    unsafeIOToPageM js_watch_frame_moves
+    -- Someone else saves; the author's save meets theirs.
+    unsafeIOToPageM $ do
+      modifyIORef' wiki (\st -> st {current = Just (UserId "user-admin")})
+      runMemWiki wiki (savePage page.id page.updatedAt page.title "# Hello, world\n\nSomeone else's words.") >>= either (panic . show) (const pass)
+      modifyIORef' wiki (\st -> st {current = Just (UserId "user-editor")})
+    find ui ".editor-save" >>= click
+    _ <- find ui ".editor-conflict"
+    clickButton ui ".editor-conflict button" "Take theirs"
+    length <$> findAll ui ".editor-draft-found" `shouldReturn` 0
+    length <$> findAll ui ".editor-conflict" `shouldReturn` 0
+    -- The frame never left its place: nothing holding it was taken out or
+    -- put back, so it did not load again.
+    unsafeIOToPageM js_frame_moved `shouldReturn` False
+    find ui "iframe.editor-plugin-frame" >>= (`shouldBeSameElement` frame)
+    length <$> findAll ui ".editor-plugin-stopped" `shouldReturn` 0
+  where
+    withExample st = st {externalPolicy = ExternalWiki, externalWiki = Map.fromList [(PluginId "doubled-words", installed "doubled-words" "Doubled words")]}
+    helloWorld wiki = maybe (panic "no page Hello, world") identity . find' . Map.elems . (\st -> st.pages) <$> readIORef wiki
+    find' = headMay . filter (\p -> p.title == "Hello, world")
+    shouldReturn' (label, reading) expected = reading >>= \got -> (label, got) `shouldBe` expected

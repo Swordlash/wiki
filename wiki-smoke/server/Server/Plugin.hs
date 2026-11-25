@@ -236,6 +236,9 @@ inTheEditor smoke pw = do
   let mode = "const strict = (function () { return this === undefined; })();\nwikiPlugin.plugin({ diagnostics: () => [{ from: 0, to: 0, severity: 'warning', message: strict ? 'strict' : 'sloppy' }] });\n"
   _ <- installing "strict-mode" "Strict mode" ("\"use strict\";\n" <> mode)
   _ <- installing "sloppy-mode" "Sloppy mode" mode
+  -- A plugin whose top-level bindings name what the wiki's line in front
+  -- of it uses: it still registers and answers.
+  _ <- installing "shadowing" "Shadowing" "const self = globalThis;\nlet postMessage, addEventListener, JSON, Promise;\nclass Array {}\nwikiPlugin.plugin({ diagnostics: () => [{ from: 0, to: 0, severity: 'warning', message: 'answered' }] });\n"
   let frameAddress = "/plugin-frame/wiki/doubled-words/" <> bundle <> "/diagnostics"
       editorAt = "/s/smoke-space/p/first-page/edit/"
       stopped page = locator page "#app .editor-plugin-stopped"
@@ -253,10 +256,10 @@ inTheEditor smoke pw = do
     hasText (stopped page) "The plugin Tangled was stopped: it failed: it sent a message that is not text of at most 1 MiB"
     hasText (stopped page) "The plugin Flooding was stopped"
     -- The page went on all the while, and the frames of the plugins
-    -- stopped are gone: three are left, the example's and the two that
-    -- say their mode.
+    -- stopped are gone: four are left, the example's, the two that say
+    -- their mode, and the one that shadows the wiki's names.
     evaluate page "1 + 1" `shouldReturn` (2 :: Int)
-    count (locator page "#app .editor-plugin-frames iframe") `shouldReturn` 3
+    count (locator page "#app .editor-plugin-frames iframe") `shouldReturn` 4
     -- The author writes a word twice; once the text is checked and the
     -- example has answered, it is marked, with the plugin's name.
     marked page >>= \m -> expect (not ("Doubled word" `Text.isInfixOf` m)) ("marked before the typing: " <> show m)
@@ -266,6 +269,7 @@ inTheEditor smoke pw = do
     marked page >>= \m -> expect ("Doubled words: Doubled word: the" `Text.isInfixOf` m) ("the editor's marks: " <> show m)
     -- Each in the mode its code asks for, under the frame's policy.
     marked page >>= \m -> expect ("Strict mode: strict" `Text.isInfixOf` m && "Sloppy mode: sloppy" `Text.isInfixOf` m) ("the modes the plugins ran in: " <> show m)
+    marked page >>= \m -> expect ("Shadowing: answered" `Text.isInfixOf` m) ("the plugin that shadows the wiki's names: " <> show m)
     hasText (locator page "#app .editor-problems") "problem"
     nothingWrongExcept fromThePlugin serviceWorkerInSandbox page
 
@@ -291,5 +295,6 @@ inTheEditor smoke pw = do
   _ <- asAdmin smoke "DELETE" "external-plugins/wiki/flooding" Nothing >>= expectStatus 204 "removing the flooding plugin"
   _ <- asAdmin smoke "DELETE" "external-plugins/wiki/strict-mode" Nothing >>= expectStatus 204 "removing the strict plugin"
   _ <- asAdmin smoke "DELETE" "external-plugins/wiki/sloppy-mode" Nothing >>= expectStatus 204 "removing the sloppy plugin"
+  _ <- asAdmin smoke "DELETE" "external-plugins/wiki/shadowing" Nothing >>= expectStatus 204 "removing the shadowing plugin"
   _ <- asAdmin smoke "PUT" "external-plugins/policy" (Just (object ["policy" .= ("off" :: Text)])) >>= expectStatus 200 "turning external plugins off"
   pure ()

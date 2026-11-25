@@ -1293,7 +1293,11 @@ component =
     -- disappearing among the form's children would shift the ones after
     -- it, and Halogen, which matches unkeyed children by position, would
     -- recreate the Markdown's view, losing CodeMirror's text and undo
-    -- history.
+    -- history. The external plugins' frames are in a holder of their own
+    -- too, the only child, and not among the notices: when notices before
+    -- it come and go, Halogen moves what follows them, and an iframe whose
+    -- ancestor moves in the DOM loads again, which stops its plugin
+    -- ("Wiki.App.Plugin.External.Frame").
     editing :: State -> Work -> H.ComponentHTML Action Slots m
     editing st work =
       [hh|
@@ -1333,6 +1337,8 @@ component =
             {{ foundView st }}
             {{ cancelQuestion st }}
             {{ problemView st }}
+          </div>
+          <div class="editor-plugins-holder">
             {{ HH.slot "externalPlugins" () Frames.component (externalInput st) FromExternal }}
           </div>
           <div class="editor-home-holder" {{ HE.stoppingPropagation (HE.handler (EventType "submit") (const PanelSubmitted)) }}>

@@ -3210,6 +3210,21 @@ them to `wiki.sh` alone, set `WIKI_PROXY` and `WIKI_CACERT` (or `proxy =` and
 `cacert =` in the configuration file). No file of curl's own options is read,
 since some of them would break how the client reads the wiki's answers.
 
+When the command line does not accept the wiki's certificate although the
+browser does, `WIKI_INSECURE=1` (or `insecure = 1` in the configuration file)
+tells curl not to check it, as `curl -k` does, for the commands and for
+`wiki.sh mcp`. It gives up what https protects: anyone on the network path
+between you and the wiki can read your password or API key and the pages, and
+change them. Prefer `WIKI_CACERT` with your company's CA bundle. With
+`WIKI_INSECURE=1` each run says once, on standard error, that the certificate
+is not checked, and `WIKI_CACERT` is not used. `0` or nothing is the default,
+and any other value is refused. The environment's value wins over the file's,
+so `WIKI_INSECURE=0` turns it off for one run.
+
+```sh
+WIKI_INSECURE=1 wiki.sh list team
+```
+
 ```text
 $ wiki.sh list team
 Space: Team  /s/team/

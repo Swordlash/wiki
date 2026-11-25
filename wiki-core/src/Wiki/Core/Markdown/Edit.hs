@@ -64,12 +64,20 @@
 -- paragraph a heading, and text under a @<details>@ block would end up
 -- inside it.
 --
+-- A few commands leave more than one place to fill in ('Places'): a
+-- link's text and its address, a table's cells, a code block's language
+-- and its code, a block spoiler's name, description and body, and a
+-- collapsible section's summary and body. 'apply' selects the first;
+-- 'applyWithPlaces' also gives the others, which the editor's @/@ menu
+-- lets the writer go through with Tab.
+--
 -- Offsets count characters (code points), as 'Text' does. A browser counts
 -- UTF-16 code units, so the browser side converts both ways
 -- ("Wiki.App.Editor.Browser").
 module Wiki.Core.Markdown.Edit
   ( Selection (..)
   , cursor
+  , Places (..)
   , Command (..)
   , HtmlTag (..)
   , htmlTagName
@@ -82,6 +90,7 @@ module Wiki.Core.Markdown.Edit
   , textColourClass
   , highlightClass
   , apply
+  , applyWithPlaces
   , pageMacros
   )
 where
@@ -104,6 +113,18 @@ data Selection = Selection {start :: Int, end :: Int}
 -- | The cursor at an offset, with nothing selected.
 cursor :: Int -> Selection
 cursor at = Selection at at
+
+-- | 'Places' are the places a command leaves to fill in, when it leaves
+-- more than one: a link's text and then its address, say. 'fill' holds
+-- them in the order they are filled in, which is their order in the
+-- text; the first is what 'apply' selects. 'after' is where the writing
+-- goes on once they are filled in: the end of what the command wrote.
+-- 'written' is the range of the text the command put in. All three are
+-- offsets in the new text. The places lie inside 'written', with text of
+-- the command's between any two of them and between the last and
+-- 'after'.
+data Places = Places {written :: Selection, fill :: [Selection], after :: Int}
+  deriving stock (Eq, Show)
 
 -- | What a toolbar button or a shortcut does.
 data Command
@@ -221,7 +242,12 @@ highlightClass c = "h-" <> colourName c
 -- | Apply a command to the text with this selection. The result is the
 -- new text, and what is selected in it afterwards.
 apply :: Command -> Text -> Selection -> (Text, Selection)
-apply command text selection = case command of
+apply command text selection = let (new, selected, _) = applyWithPlaces command text selection in (new, selected)
+
+-- | 'apply', and the places the command leaves to fill in, when it
+-- leaves more than one ('Places'); 'Nothing' when it leaves one or none.
+applyWithPlaces :: Command -> Text -> Selection -> (Text, Selection, Maybe Places)
+applyWithPlaces command text selection = case command of
   Bold -> inline (wrapIn "**") "bold text"
   Italic -> inline (wrapIn "_") "italic text"
   Strikethrough -> inline (wrapIn "~~") "struck text"
@@ -230,30 +256,34 @@ apply command text selection = case command of
   InlineMath -> inline (wrapIn "$") "x^2"
   Html Details -> details text sel
   Html tag -> inline (wrapIn' ("<" <> htmlTagName tag <> ">") ("</" <> htmlTagName tag <> ">")) (htmlPlaceholder tag)
-  Heading -> heading text sel
-  BulletList -> list Bullet text sel
-  NumberedList -> list Numbered text sel
-  TaskList -> list Task text sel
-  Quote -> quote text sel
+  Heading -> onePlace (heading text sel)
+  BulletList -> onePlace (list Bullet text sel)
+  NumberedList -> onePlace (list Numbered text sel)
+  TaskList -> onePlace (list Task text sel)
+  Quote -> onePlace (quote text sel)
   CodeBlock -> fenced (Fence "```" "```" "" False) text sel
   DisplayMath -> fenced (Fence "$$" "$$" "E = mc^2" True) text sel
   Mermaid -> fenced (Fence "```mermaid" "```" "graph LR\n  A --> B" True) text sel
   Tikz -> fenced (Fence "```tikz" "```" "\\draw[->] (0,0) -- (2,1) node[right] {$x$};" True) text sel
   HtmlBlock -> fenced (Fence "```html" "```" "<p style=\"color: teal\">HTML with styles of its own</p>" True) text sel
   Link -> link "" "link text" text sel
-  LinkTo title address -> linkTo title address text sel
+  LinkTo title address -> onePlace (linkTo title address text sel)
   Image -> link "!" "description" text sel
-  Table -> template tableTemplate (Just (2, T.length "Column 1")) text sel
-  HorizontalRule -> template "---" Nothing text sel
+  Table -> placedTemplate tableTemplate tableCells text sel
+  HorizontalRule -> onePlace (template "---" Nothing text sel)
   SpoilerBlock -> spoilerBlock text sel
-  TextColour c -> colour textWrapper (textColourClass <$> c) text sel
-  Highlight c -> colour highlightWrapper (highlightClass <$> c) text sel
-  Box kind -> box kind text sel
-  PageMacros block -> setPageMacros block text sel
+  TextColour c -> onePlace (colour textWrapper (textColourClass <$> c) text sel)
+  Highlight c -> onePlace (colour highlightWrapper (highlightClass <$> c) text sel)
+  Box kind -> onePlace (box kind text sel)
+  PageMacros block -> onePlace (setPageMacros block text sel)
   where
     sel = normalise text selection
-    inline :: Markers -> Text -> (Text, Selection)
-    inline markers placeholder = wrapInline markers placeholder text sel
+    inline :: Markers -> Text -> (Text, Selection, Maybe Places)
+    inline markers placeholder = onePlace (wrapInline markers placeholder text sel)
+
+-- | What a command writes with one place to fill, or none.
+onePlace :: (Text, Selection) -> (Text, Selection, Maybe Places)
+onePlace (new, selected) = (new, selected, Nothing)
 
 -- | The selection inside the text, start first.
 normalise :: Text -> Selection -> Selection
@@ -281,6 +311,27 @@ tableTemplate =
     , "| -------- | -------- | -------- |"
     , "| Text     | Text     | Text     |"
     ]
+
+-- | The cells of 'tableTemplate' to fill in, row by row, as offsets into
+-- it and lengths: the header's names and the first row's texts, without
+-- the spaces that pad them.
+tableCells :: [(Int, Int)]
+tableCells =
+  [ (lineStart + start, T.length cell)
+  | (lineStart, row) <- zip (scanl (\at l -> at + T.length l + 1) 0 rows) rows
+  , not (T.isPrefixOf "| -" row)
+  , (start, cell) <- cellsOf row
+  ]
+  where
+    rows = T.splitOn "\n" tableTemplate
+    -- Each cell's text between its bars, where it starts in the row.
+    cellsOf row =
+      [ (at + T.length (T.takeWhile (== ' ') piece), T.strip piece)
+      | (at, piece) <- drop 1 (zip (scanl (\at p -> at + T.length p + 1) 0 pieces) pieces)
+      , not (T.null (T.strip piece))
+      ]
+      where
+        pieces = T.splitOn "|" row
 
 -- Replacing parts of the text
 
@@ -575,31 +626,39 @@ endOfLine text (Selection _ e) = e + T.length (T.takeWhile (/= '\n') (T.drop e t
 -- of it afterwards (an offset into the block and a length), if given, or
 -- put the cursor after it.
 template :: Text -> Maybe (Int, Int) -> Text -> Selection -> (Text, Selection)
-template block select text sel = (replace [Replacement at 0 new] text, selected)
+template block select text sel = let (new, selected, _) = placedTemplate block (maybeToList select) text sel in (new, selected)
+
+-- | 'template' with places to fill in the block, each an offset into it
+-- and a length, in order: the first is selected, and with more than one,
+-- they are the command's 'Places', the end of the block where the writing
+-- goes on after them.
+placedTemplate :: Text -> [(Int, Int)] -> Text -> Selection -> (Text, Selection, Maybe Places)
+placedTemplate block places text sel = (replace [Replacement at 0 new] text, selected, placesOf)
   where
     at = endOfLine text sel
     (pre, post) = blockSeparators (T.take at text) (T.drop at text)
     new = pre <> block <> post
     begin = at + T.length pre
-    selected = case select of
-      Just (offset, len) -> Selection (begin + offset) (begin + offset + len)
-      Nothing -> cursor (begin + T.length block)
+    fill = [Selection (begin + offset) (begin + offset + len) | (offset, len) <- places]
+    selected = fromMaybe (cursor (begin + T.length block)) (head fill)
+    placesOf = Places {written = Selection at (at + T.length new), fill, after = begin + T.length block} <$ guard (length fill > 1)
 
 -- | Fences around lines: the opening line, the closing one, what goes
 -- between them when nothing is selected, and whether that is selected
 -- afterwards (otherwise the cursor goes at the end of the opening line,
--- where a code block's language is written).
+-- where a code block's language is written, and the empty line inside is
+-- the place after it).
 data Fence = Fence {open :: Text, close :: Text, placeholder :: Text, selectInside :: Bool}
 
 -- | Fence the lines the selection touches, or unfence lines already fenced
 -- (the selection's first and last lines, or those just around it); with
 -- nothing selected, insert an empty block after the cursor's line.
-fenced :: Fence -> Text -> Selection -> (Text, Selection)
+fenced :: Fence -> Text -> Selection -> (Text, Selection, Maybe Places)
 fenced fence text sel@(Selection s e)
   | s == e = case fence.selectInside of
-      True -> template block (Just (T.length fence.open + 1, T.length fence.placeholder)) text sel
-      False -> template block (Just (T.length fence.open, 0)) text sel
-  | otherwise = case touched text sel of
+      True -> placedTemplate block [inside] text sel
+      False -> placedTemplate block [(T.length fence.open, 0), inside] text sel
+  | otherwise = onePlace $ case touched text sel of
       [] -> (text, sel)
       ls@(firstLine : _) ->
         let lastLine = fromMaybe firstLine (lastMay ls)
@@ -613,6 +672,7 @@ fenced fence text sel@(Selection s e)
                   else wrapLines firstLine lastLine
   where
     block = fence.open <> "\n" <> fence.placeholder <> "\n" <> fence.close
+    inside = (T.length fence.open + 1, T.length fence.placeholder)
     all' = allLines text
     index l = findIndex (\m -> m.at == l.at) all'
     -- Whether a fence line opens or closes a block depends on how many came
@@ -651,11 +711,13 @@ fenced fence text sel@(Selection s e)
 -- | A collapsible section: @<details>@ around the touched lines, with a
 -- @<summary>@ to name it, which is selected. An HTML block ends at a blank
 -- line, so the lines are inserted without the blank ones among them.
--- Lines that already are such a section are unwrapped.
-details :: Text -> Selection -> (Text, Selection)
+-- Lines that already are such a section are unwrapped. With nothing
+-- selected, a section goes after the cursor's line, its summary selected
+-- and its body the place after it.
+details :: Text -> Selection -> (Text, Selection, Maybe Places)
 details text sel@(Selection s e)
-  | s == e = template sectionTemplate (Just (T.length "<details>\n<summary>", T.length summary)) text sel
-  | otherwise = case touched text sel of
+  | s == e = placedTemplate sectionTemplate [(T.length opening, T.length summary), (T.length (opening <> summary <> closing), T.length body)] text sel
+  | otherwise = onePlace $ case touched text sel of
       [] -> (text, sel)
       ls@(firstLine : _) ->
         let lastLine = fromMaybe firstLine (lastMay ls)
@@ -672,24 +734,27 @@ details text sel@(Selection s e)
               else
                 let content = T.intercalate "\n" [l.line | l <- ls, not (T.all isSpace l.line)]
                     (pre, post) = blockSeparators (T.take lo text) (T.drop hi text)
-                    opening = "<details>\n<summary>"
                     begin = lo + T.length pre + T.length opening
-                    new = pre <> opening <> summary <> "</summary>\n" <> content <> "\n</details>" <> post
+                    new = pre <> opening <> summary <> closing <> content <> "\n</details>" <> post
                  in (replace [Replacement lo (hi - lo) new] text, Selection begin (begin + T.length summary))
   where
     summary = htmlPlaceholder Details
-    sectionTemplate = "<details>\n<summary>" <> summary <> "</summary>\nWhat opens on a click.\n</details>"
+    opening = "<details>\n<summary>"
+    closing = "</summary>\n"
+    body = "What opens on a click."
+    sectionTemplate = opening <> summary <> closing <> body <> "\n</details>"
 
 -- | A block spoiler around the lines the selection touches: its start
 -- marker, @[[!spoiler]]{name}(Description)@, on a line above them, and
 -- its end marker, @[[/spoiler]]@, on a line below. The name in the start
 -- marker is selected, to be typed over; the end marker needs none. With
 -- nothing selected, a spoiler with an empty line in it goes after the
--- cursor's line.
-spoilerBlock :: Text -> Selection -> (Text, Selection)
+-- cursor's line, and its name, its description and the empty line are
+-- the places to fill in, in that order.
+spoilerBlock :: Text -> Selection -> (Text, Selection, Maybe Places)
 spoilerBlock text sel@(Selection s e)
-  | s == e = template (opening <> "\n\n" <> closing) (Just (T.length beforeName, T.length name)) text sel
-  | otherwise = case touched text sel of
+  | s == e = placedTemplate (opening <> "\n\n" <> closing) [(T.length beforeName, T.length name), (T.length (beforeName <> name <> "}("), T.length description), (T.length opening + 1, 0)] text sel
+  | otherwise = onePlace $ case touched text sel of
       [] -> (text, sel)
       ls@(firstLine : _) ->
         let lastLine = fromMaybe firstLine (lastMay ls)
@@ -702,8 +767,9 @@ spoilerBlock text sel@(Selection s e)
          in (replace [Replacement lo (hi - lo) new] text, Selection begin (begin + T.length name))
   where
     name = "name"
+    description = "Description"
     beforeName = openingMarker SpoilerName <> "{"
-    opening = beforeName <> name <> "}(Description)"
+    opening = beforeName <> name <> "}(" <> description <> ")"
     closing = closingMarker SpoilerName
 
 -- Links
@@ -711,23 +777,28 @@ spoilerBlock text sel@(Selection s e)
 -- | A link (or, with @!@ before it, an image). Around a selection, which
 -- becomes its text, with the URL selected to be typed; around a selected
 -- URL, with a placeholder for the text selected; or, with nothing
--- selected, a placeholder for both, with the text selected. A selection
--- that is already a link's text is unwrapped.
-link :: Text -> Text -> Text -> Selection -> (Text, Selection)
+-- selected, a placeholder for both, with the text selected and the
+-- address the place after it. A selection that is already a link's text
+-- is unwrapped.
+link :: Text -> Text -> Text -> Selection -> (Text, Selection, Maybe Places)
 link bang placeholder text (Selection s e)
   | s == e =
       let new = bang <> "[" <> placeholder <> "](" <> address <> ")"
           begin = s + T.length bang + 1
-       in (replace [Replacement s 0 new] text, Selection begin (begin + T.length placeholder))
-  | Just close <- linkAround = (replace [Replacement (s - T.length opening) (T.length opening) "", Replacement e close ""] text, Selection (s - T.length opening) (e - T.length opening))
+          target = begin + T.length (placeholder <> "](")
+          fill = [Selection begin (begin + T.length placeholder), Selection target (target + T.length address)]
+       in (replace [Replacement s 0 new] text, Selection begin (begin + T.length placeholder), Just Places {written = Selection s (s + T.length new), fill, after = s + T.length new})
+  | Just close <- linkAround = onePlace (replace [Replacement (s - T.length opening) (T.length opening) "", Replacement e close ""] text, Selection (s - T.length opening) (e - T.length opening))
   | isAddress selected =
-      let new = bang <> "[" <> placeholder <> "](" <> selected <> ")"
-          begin = s + T.length bang + 1
-       in (replace [Replacement s (e - s) new] text, Selection begin (begin + T.length placeholder))
+      onePlace $
+        let new = bang <> "[" <> placeholder <> "](" <> selected <> ")"
+            begin = s + T.length bang + 1
+         in (replace [Replacement s (e - s) new] text, Selection begin (begin + T.length placeholder))
   | otherwise =
-      let reps = [Replacement s 0 (bang <> "["), Replacement e 0 ("](" <> address <> ")")]
-          begin = e + T.length bang + 1 + 2
-       in (replace reps text, Selection begin (begin + T.length address))
+      onePlace $
+        let reps = [Replacement s 0 (bang <> "["), Replacement e 0 ("](" <> address <> ")")]
+            begin = e + T.length bang + 1 + 2
+         in (replace reps text, Selection begin (begin + T.length address))
   where
     address = "https://"
     opening = bang <> "["

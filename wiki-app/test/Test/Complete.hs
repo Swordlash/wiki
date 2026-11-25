@@ -194,7 +194,24 @@ spec = describe "Wiki.App.Editor.Complete" $ do
                 Just (Array options) -> find (\case Object x -> KeyMap.lookup "label" x == Just (String name); _ -> False) (toList options)
                 _ -> Nothing
               _ -> Nothing
-      optionOf "Table" "/ta" `shouldBe` Just (object ["label" .= ("Table" :: Text), "insert" .= ("| Column 1 | Column 2 | Column 3 |\n| -------- | -------- | -------- |\n| Text     | Text     | Text     |" :: Text), "select" .= [2 :: Int, 10], "line" .= ("/ta" :: Text), "query" .= [0 :: Int, 3], "detail" .= ("| a | b |" :: Text)])
+      -- A command with several places gives them all, in the order Tab
+      -- goes through them, and where the writing goes on after them
+      -- (#301); a command with one place, its selection alone.
+      optionOf "Table" "/ta"
+        `shouldBe` Just
+          ( object
+              [ "label" .= ("Table" :: Text)
+              , "insert" .= ("| Column 1 | Column 2 | Column 3 |\n| -------- | -------- | -------- |\n| Text     | Text     | Text     |" :: Text)
+              , "select" .= [2 :: Int, 10]
+              , "line" .= ("/ta" :: Text)
+              , "query" .= [0 :: Int, 3]
+              , "detail" .= ("| a | b |" :: Text)
+              , "places" .= [[2 :: Int, 10], [13, 21], [24, 32], [72, 76], [83, 87], [94, 98]]
+              , "after" .= (104 :: Int)
+              ]
+          )
+      optionOf "Link" "Go /li"
+        `shouldBe` Just (object ["label" .= ("Link" :: Text), "insert" .= ("Go [link text](https://)" :: Text), "select" .= [4 :: Int, 13], "line" .= ("Go /li" :: Text), "query" .= [3 :: Int, 6], "detail" .= ("[text](https://)" :: Text), "places" .= [[4 :: Int, 13], [15, 23]], "after" .= (24 :: Int)])
       optionOf "Link to a page" "/li" `shouldBe` Just (object ["label" .= ("Link to a page" :: Text), "template" .= ("${0}" :: Text), "detail" .= ("[Title](page)" :: Text), "action" .= ("link-page" :: Text)])
       optionOf "Mermaid diagram" "/me" `shouldBe` Just (object ["label" .= ("Mermaid diagram" :: Text), "insert" .= ("```mermaid\ngraph LR\n  A --> B\n```" :: Text), "select" .= [11 :: Int, 29], "line" .= ("/me" :: Text), "query" .= [0 :: Int, 3], "detail" .= ("```mermaid" :: Text)])
       (answerOf "/ta" >>= \case Object o -> KeyMap.lookup "escape" o; _ -> Nothing) `shouldBe` Just (String "dismisses")

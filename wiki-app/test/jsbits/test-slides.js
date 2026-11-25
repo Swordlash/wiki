@@ -22,6 +22,19 @@ function wiki_test_slide_row_completion_ready(index) {
   return wikiTestSlideRow(index)?.completionReady() ?? false;
 }
 
+// Wait until the completion of the row at an index has its answer and the
+// list it shows takes its keys (web/src/editor.js's takesKeys), as
+// test-editor.js's wiki_test_editor_completion_takes_keys waits for the
+// editor's: "ready" then, "no list" for an answer that shows none,
+// "pending" at the deadline `ms`, the suite's watchdog, and "no row"
+// without the row.
+function wiki_test_slide_row_completion_takes_keys(index, ms) {
+  const row = wikiTestSlideRow(index);
+  if (!row) return Promise.resolve("no row");
+  const ready = row.completionTakesKeys().then((shown) => (shown ? "ready" : "no list"));
+  return Promise.race([ready, new Promise((resolve) => setTimeout(() => resolve("pending"), ms))]);
+}
+
 // Select from anchor to head in the row at an index, and give the row the
 // focus, as a click would: whether the row had its editor to select in (a
 // row shown open gets its CodeMirror a moment later); and the row's

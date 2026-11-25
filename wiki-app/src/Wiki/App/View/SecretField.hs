@@ -3,7 +3,7 @@
 -- | The host's field for one of a plugin's secrets
 -- ('Wiki.App.Plugin.SecretField'): the secret's label and description,
 -- whether it is set, a field to type a new value into, "Keep" (after the
--- plugin's check) and "Forget". Where the user's vault is locked in this
+-- plugin's check; Enter in the field too) and "Forget". Where the user's vault is locked in this
 -- browser, the field offers the unlock in its place, with a passkey or
 -- the password ("Wiki.App.Vault"), and the way out for a user who can no
 -- longer unlock it: forgetting every secret of the plugin, which needs no
@@ -37,6 +37,7 @@ import Data.Map.Strict qualified as Map
 import Data.Row (Empty)
 import Data.Text qualified as T
 import Halogen qualified as H
+import Halogen.HTML.Events qualified as HE
 import Halogen.Machine qualified as Machine
 import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
@@ -126,13 +127,13 @@ component user manifest =
             |]
           Here set ->
             [hh|
-              <div class="secret-field-change">
+              <form class="secret-field-change" {{ HE.preventingDefault (HE.onSubmit (const (Happened KeepPressed))) }}>
                 <input type="password" class="secret-field-value" autocomplete="off" aria-label={{ label }} placeholder={{ if set then "A new value" else "" :: Text }} value={{ m.typed }} disabled={{ busy m }} onValueInput={{ Happened . Typed }}>
-                <button type="button" class="secret-field-keep" disabled={{ busy m || T.null (T.strip m.typed) }} onClick={{ const (Happened KeepPressed) }}>Keep</button>
+                <button type="submit" class="secret-field-keep" disabled={{ busy m || T.null (T.strip m.typed) }}>Keep</button>
                 {% if set %}
                   <button type="button" class="secret-field-forget" disabled={{ busy m }} onClick={{ const (Happened ForgetPressed) }}>Forget</button>
                 {% end %}
-              </div>
+              </form>
             |]
 
     handleAction :: Action m -> H.HalogenM (State m) (Action m) Empty FieldOutput m ()

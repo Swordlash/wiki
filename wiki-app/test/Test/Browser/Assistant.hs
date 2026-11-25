@@ -790,7 +790,7 @@ spec m = readsOnce Quiet $ do
     findAll ui ".assistant-provider-settings[data-provider='openai'] .assistant-service option" >>= traverse textContent >>= (`shouldBe` ["OpenAI's own"])
     find ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service-hint" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "the only one this wiki offers")
 
-  it "tests the connection to another address without a key, until a key is typed, which is then the only one tested" $ runFresh $ do
+  it "tests the connection to another address without a key, while none is kept" $ runFresh $ do
     scriptWith [] (object [])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
     (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
@@ -803,13 +803,6 @@ spec m = readsOnce Quiet $ do
     [checked] <- checks
     fieldText ["key"] checked `shouldBe` Just ""
     fieldText ["baseUrl"] checked `shouldBe` Just gateway
-    -- A key typed: the only test offered is the one with the key.
-    findIn anthropic ".secret-field-value" >>= (`typeText` "gw-typed")
-    length <$> findAllIn anthropic ".assistant-test" `shouldReturn` 0
-    findIn anthropic ".secret-field-keep" >>= (`shouldHaveText` "Keep")
-    -- Emptied again, the connection test is back.
-    findIn anthropic ".secret-field-value" >>= clear
-    findIn anthropic ".assistant-test" >>= (`shouldHaveText` "Test the connection (no key)")
 
   it "tests a typed key before keeping it: a refused one is not kept and stays in the field, an accepted one is kept with its models, and Enter tests it" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])

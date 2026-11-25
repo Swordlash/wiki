@@ -244,11 +244,11 @@ spec = describe "Wiki.App.Editor.Complete" $ do
     -- TypeScript index signature in a fence, took every start below it:
     -- [[! and [[ read the whole text above (140 MB to 1.6 GB), and / and
     -- a backslash opened nothing. Below it now, the text is read from the
-    -- paragraph above the cursor's line, and each answer allocates about
-    -- what it allocates at that paragraph of the guide without the fence,
-    -- within the bound near the guide's end: measured natively on
-    -- 2026-11-25, unoptimised, 5.7, 3.6, 21 and 13 MB with the fence, and
-    -- 5.5, 3.6, 19 and 8.7 MB without.
+    -- paragraph above the cursor's line, and each answer stays within the
+    -- bound near the guide's end: measured natively on 2026-11-25,
+    -- unoptimised, 5.7, 3.6, 21 and 13 MB. A [[ at that paragraph costs
+    -- 19 MB without the fence too, more than the bound at the guide's
+    -- middle above.
     it "reads the text from a start in the middle of the Markdown guide below a TypeScript fence near its top" $ do
       let ls = T.splitOn "\n" markdownReference
           page = T.intercalate "\n" (take 2 ls <> ["```ts", "interface Prices {", "  [key: string]: number", "}", "```", ""] <> drop 2 ls)

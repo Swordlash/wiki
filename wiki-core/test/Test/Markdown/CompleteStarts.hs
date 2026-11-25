@@ -128,7 +128,7 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
         -- a list opens there.
         (name, length <$> handed, (\h -> complete srcs (readLine h) (at h)) <$> handed, isJust whole)
           `shouldBe` (name, Just 2, Just whole, True)
-    it "counts no line inside a fence or indented code, and every line the parser reads as a definition" $ do
+    it "counts no line inside a fence, indented code or HTML, and every line the parser reads as a definition" $ do
       let doc =
             T.intercalate
               "\n"
@@ -159,11 +159,16 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
               , "[a]: /u"
               , "$$x$$"
               , ""
+              , "<!--"
+              , "[h]: /in-a-comment"
+              , "-->"
+              , "[h2]: /after-it"
+              , ""
               , "```"
               , "[open]: /to-the-end"
               ]
       fmap (blockDefinitions doc) (parseShapes doc)
-        `shouldBe` Right [(4, Just "[r]: x"), (8, Just "[o]: x"), (19, Just "[^n]: x"), (25, Just "[a]: x")]
+        `shouldBe` Right [(4, Just "[r]: x"), (8, Just "[o]: x"), (19, Just "[^n]: x"), (25, Just "[a]: x"), (31, Just "[h2]: x")]
     -- The check finds the definitions after every pause in the typing, in
     -- one pass over the lines, looking up only a line that holds ]: among
     -- the code shapes ("Wiki.Core.Markdown.Starts" says how). Counted, not
@@ -471,10 +476,25 @@ genLabelled = do
   pieces <- choose (1, 6) >>= \k -> replicateM k (frequency [(4, listing True), (1, pure ["Some text.", ""]), (1, elements definitions)])
   pure (snd (mapAccumL label (1 :: Int) (concat pieces)))
   where
-    -- Definitions, and the code shapes that hold definitions or follow
-    -- one on its line: display math that is all of a paragraph begun by
-    -- two definitions, and a fence on a footnote's line.
-    definitions = [["[{L}]: /real", ""], ["[{L}]: /real", "[{L}]: /second", "$$x$$", ""], ["[^{L}]: ```", "    [{L}]: /listed", "    ```", ""], ["$$", "[{L}]: /in-math", "$$", ""]]
+    -- Definitions, and the code shapes that hold definitions, follow one
+    -- on its line, or come right before one: display math that is all of
+    -- a paragraph begun by two definitions (with a line of attributes
+    -- before it, or none); a fence on a footnote's line; HTML that runs
+    -- to a blank line, a comment, HTML around a definition; display math
+    -- in brackets; a fence after a quotation's mark and a tab.
+    definitions =
+      [ ["[{L}]: /real", ""]
+      , ["[{L}]: /real", "[{L}]: /second", "$$x$$", ""]
+      , ["{.cls}", "[{L}]: /real", "[{L}]: /second", "$$x$$", ""]
+      , ["[^{L}]: ```", "    [{L}]: /listed", "    ```", ""]
+      , ["$$", "[{L}]: /in-math", "$$", ""]
+      , ["<div>", "[{L}]: /in-html", "</div>", "[{L}]: /after", ""]
+      , ["<!--", "[{L}]: /in-comment", "-->", "[{L}]: /real", ""]
+      , ["<div>", "", "[{L}]: /real", "", "</div>", ""]
+      , ["\\[", "[{L}]: /in-math", "\\]", ""]
+      , [">\t```", ">\t[{L}]: /listed", ">\t```", ""]
+      , [">\t```", "[{L}]: /real", ""]
+      ]
     label n l
       | "{L}" `T.isInfixOf` l = (n + 1, T.replace "{L}" ("k" <> show n) l)
       | otherwise = (n, l)

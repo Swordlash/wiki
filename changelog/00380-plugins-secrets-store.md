@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 380
 title: Plugins can keep named secrets in your vault
 technical: true
 ---

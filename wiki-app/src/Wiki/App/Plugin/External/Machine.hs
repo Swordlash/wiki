@@ -82,14 +82,13 @@ where
 import Data.Aeson (Value)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Data.Time (NominalDiffTime)
 import Protolude
 import Wiki.Api.Plugins (PluginId, Plugins)
 import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins, framePath)
 import Wiki.App.Backend (WikiError)
 import Wiki.App.Plugin.External (Heard (..))
 import Wiki.App.Plugin.External.Frame (FrameSaid (..))
-import Wiki.App.Plugin.External.Protocol (FromPlugin (..), diagnose, fromPlugin, maxMessageLength, problemsIn)
+import Wiki.App.Plugin.External.Protocol (FromPlugin (..), answerWithin, diagnose, fromPlugin, maxMessageLength, problemsIn, startWithin)
 import Wiki.App.Plugin.Registry (externalOn)
 
 -- | 'Input' is what the editor gives the machine with each render.
@@ -210,15 +209,6 @@ data Effect
   | -- | Tell the editor what the plugins that run last answered.
     Tell (Map PluginId Heard)
   deriving stock (Eq, Show)
-
--- | How long a plugin has to say it is ready, in seconds: its frame's
--- document is loaded, and its code started in a worker.
-startWithin :: NominalDiffTime
-startWithin = 20
-
--- | How long a plugin has to answer an ask, in seconds.
-answerWithin :: NominalDiffTime
-answerWithin = 10
 
 -- | The machine for the first input, before anything is read.
 initial :: Input -> Model

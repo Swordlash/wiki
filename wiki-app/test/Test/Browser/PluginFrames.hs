@@ -67,7 +67,7 @@ instance (MonadUUID m) => MonadUUID (Written m) where
 instance (MonadIslands m) => MonadIslands (Written m) where
   openPluginFrame container address = lift . openPluginFrame container written
     where
-      written = case filter (\p -> ("/" <> p <> "/") `T.isInfixOf` address) ["doubled-words", "looping", "tangled-raw", "deep-raw", "flooding-raw"] of
+      written = case filter (\p -> ("/" <> p <> "/") `T.isInfixOf` address) ["doubled-words", "looping", "strict", "sloppy", "many", "tangled-raw", "deep-raw", "flooding-raw"] of
         p : _ -> "plugin-frames/" <> p <> ".html"
         [] -> address
 
@@ -168,3 +168,24 @@ spec m = describe "external plugins' frames" $ do
     stopped `shouldSatisfy` T.isInfixOf "The plugin Deep was stopped: it sent a message the wiki cannot read"
     length <$> findAll ui "iframe" `shouldReturn` 0
     unsafeIOToPageM js_frames_open `shouldReturn` openBefore
+
+  -- The runtime runs the plugin's code as a script of its own: a "use
+  -- strict" directive it begins with stays one.
+  it "runs a bundle that begins with \"use strict\" in strict mode, and one without in sloppy mode" $ runPage $ do
+    for_ [("strict", "Strict"), ("sloppy", "Sloppy")] $ \(pid, name) -> do
+      wiki <- unsafeIOToPageM (wikiWith [installed pid name])
+      ui <- mount m (frames wiki) (input "Any text.")
+      waitQuiet
+      (map (\h -> map (\p -> p.message) h.problems) . Map.elems <$> lastHeard ui) `shouldReturn` [[name <> ": " <> pid]]
+      unmount ui
+
+  -- What a plugin returns is kept within the protocol's limits by the
+  -- wiki's own code in the worker: an author is not stopped for them.
+  it "keeps the first 500 problems of an answer and cuts each message to 300 characters, and does not stop the plugin" $ runPage $ do
+    wiki <- unsafeIOToPageM (wikiWith [installed "many" "Many"])
+    ui <- mount m (frames wiki) (input "Any text.")
+    waitQuiet
+    heard <- Map.elems <$> lastHeard ui
+    map (\h -> length h.problems) heard `shouldBe` [500]
+    map (\h -> map (\p -> p.message) (take 1 h.problems)) heard `shouldBe` [["Many: " <> T.replicate 300 "m"]]
+    length <$> findAll ui ".editor-plugin-stopped" `shouldReturn` 0

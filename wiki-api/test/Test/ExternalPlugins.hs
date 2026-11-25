@@ -184,7 +184,7 @@ frames = describe "a plugin's frame" $ do
 
   it "runs the two scripts its hashes name, in a sandbox, a worker from a blob, and connects to the hosts given alone" $
     pluginFramePolicy ["https://api.languagetool.org"] ["cnVudGltZQ==", "Y29kZQ=="]
-      `shouldBe` "sandbox allow-scripts; default-src 'none'; script-src 'sha256-cnVudGltZQ==' 'sha256-Y29kZQ=='; worker-src blob:; connect-src https://api.languagetool.org; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; webrtc 'block'"
+      `shouldBe` "sandbox allow-scripts; default-src 'none'; script-src 'sha256-cnVudGltZQ==' 'sha256-Y29kZQ==' blob:; worker-src blob:; connect-src https://api.languagetool.org; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; webrtc 'block'"
 
   it "connects nowhere when the manifest names no host" $
     directiveIn "connect-src" (directives (pluginFramePolicy [] ["aGFzaA=="])) `shouldBe` Nothing

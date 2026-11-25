@@ -4,8 +4,8 @@
 -- plugin's frame ("Wiki.App.Plugin.External.Frame"). The wiki's runtime in
 -- the frame (@web\/plugin\/runtime.js@) passes them to and from the
 -- plugin's code, which runs in a worker and calls @wikiPlugin.plugin@.
--- A message from the plugin is at most 1 MiB of characters (the frame's
--- @maxFrameMessage@), and the plugin sends one message once connected
+-- A message from the plugin is at most 'maxFrameMessage' characters, and
+-- the plugin sends one message once connected
 -- (its @ready@) and one for each message the host sends: the runtime
 -- passes on nothing else, and the host refuses anything else whatever the
 -- runtime did, stopping the plugin.
@@ -40,9 +40,14 @@ module Wiki.App.Plugin.External.Protocol
 
     -- * Problems
   , problemsIn
+  , utf16Length
+
+    -- * Limits
   , maxProblems
   , maxMessageLength
-  , utf16Length
+  , maxFrameMessage
+  , startWithin
+  , answerWithin
   )
 where
 
@@ -52,6 +57,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.Types (Parser, parseEither)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import Data.Time (NominalDiffTime)
 import Protolude
 import Wiki.Core.Markdown.Problems (Problem (..), ProblemKind (..), Severity (..))
 
@@ -113,6 +119,22 @@ maxProblems = 500
 -- | The most characters of a problem's message.
 maxMessageLength :: Int
 maxMessageLength = 300
+
+-- | The longest message a plugin may send, in characters (UTF-16 units in
+-- the JavaScript, which checks it first; characters in the program, never
+-- more), 1 MiB. Five hundred problems of the longest message fit, each
+-- character escaped, with room to spare.
+maxFrameMessage :: Int
+maxFrameMessage = 1024 * 1024
+
+-- | How long a plugin has to say it is ready, in seconds: its frame's
+-- document is loaded, and its code started in a worker.
+startWithin :: NominalDiffTime
+startWithin = 20
+
+-- | How long a plugin has to answer an ask, in seconds.
+answerWithin :: NominalDiffTime
+answerWithin = 10
 
 -- | The length of a text in UTF-16 code units, as JavaScript counts it.
 utf16Length :: Text -> Int

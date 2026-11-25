@@ -42,6 +42,7 @@ import Halogen.JSBits (Callback, JSText, Safety (..), browserJS, freeCallback, i
 import Protolude
 -- With its constructor: the FFI passes the value inside the newtype.
 import Web.DOM.Internal.Types (Element (..))
+import Wiki.App.Plugin.External.Protocol (maxFrameMessage)
 
 $( browserJS
      ["jsbits/plugin-frames.js"]
@@ -71,12 +72,6 @@ data FrameSaid
   | Unreadable
   | Unasked
   deriving stock (Eq, Show)
-
--- | The longest message a plugin may send, in characters (UTF-16 units in
--- the JavaScript, which checks it first; characters here, never more).
--- Five hundred problems of the longest message fit with room to spare.
-maxFrameMessage :: Int
-maxFrameMessage = 1024 * 1024
 
 -- | Make a plugin's frame of this address in this element, and hand each
 -- thing it says to the function. Natively there is no browser: the frame

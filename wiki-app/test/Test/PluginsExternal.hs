@@ -8,6 +8,7 @@ module Test.PluginsExternal (spec) where
 
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson qualified as Aeson
+import Data.ByteString qualified as BS
 import Data.List (findIndex)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
@@ -25,9 +26,9 @@ import Wiki.App.Backend.Http.Preload (decodePreload, encodePreload)
 import Wiki.App.Plugin (Drawn (..))
 import Wiki.App.Plugin qualified as Plugin
 import Wiki.App.Plugin.External (Heard (..), diagnosticsOf, runnable)
-import Wiki.App.Plugin.External.Frame (FrameSaid (..), maxFrameMessage, saidOf)
+import Wiki.App.Plugin.External.Frame (FrameSaid (..), saidOf)
 import Wiki.App.Plugin.External.Machine (Effect (..), Event (..), Frame (..), Input (..), Model (..), Out (..), Phase (..), Stopped (..), initial, step, wanted)
-import Wiki.App.Plugin.External.Protocol (FromPlugin (..), Reported (..), fromPlugin, problemsIn, utf16Length)
+import Wiki.App.Plugin.External.Protocol (FromPlugin (..), Reported (..), fromPlugin, maxFrameMessage, maxMessageLength, maxProblems, problemsIn, utf16Length)
 import Wiki.App.Plugin.Registry (builtinIds, externalOn)
 import Wiki.Core.Markdown.Problems (Problem (..), ProblemKind (..), Severity (..))
 
@@ -148,6 +149,15 @@ protocol = describe "the protocol, version 1" $ do
     saidOf "mnot json" `shouldBe` Unreadable
     saidOf "" `shouldBe` Unreadable
     saidOf "nx" `shouldBe` Unreadable
+
+  it "has the runtime in the frame and the frame's JavaScript keep the program's limits" $ do
+    runtime <- decodeUtf8 <$> BS.readFile "../web/plugin/runtime.js"
+    host <- decodeUtf8 <$> BS.readFile "jsbits/plugin-frames.js"
+    let states source line = (line, line `T.isInfixOf` source) `shouldBe` (line, True)
+    states runtime ("const MAX_PROBLEMS = " <> show maxProblems <> ";")
+    states runtime ("const MAX_MESSAGE_LENGTH = " <> show maxMessageLength <> ";")
+    states runtime ("const MESSAGE_LENGTH = " <> show maxFrameMessage <> ";")
+    states host ("const wikiPluginMessageLength = " <> show maxFrameMessage <> ";")
 
   it "parses a plugin's message only up to the bound, and refuses a longer one before parsing it" $ do
     let padded k = "{\"type\":\"ready\",\"pad\":\"" <> T.replicate k "a" <> "\"}"

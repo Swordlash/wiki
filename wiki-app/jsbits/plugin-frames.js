@@ -40,7 +40,7 @@ let wikiPluginFrameNext = 0;
 
 // The longest message a plugin may send, in UTF-16 units
 // (Wiki.App.Plugin.External.Frame's maxFrameMessage).
-const wikiPluginMessageLength = 1024 * 1024;
+const wikiPluginMessageLength = 1048576;
 
 // Make a plugin's frame in a container and connect to it. `said` is given
 // what the frame says, as above. The frame's number, for

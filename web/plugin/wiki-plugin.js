@@ -21,7 +21,9 @@
 // or resolves to, a list of problems, each {from, to, severity, message}:
 // from and to are offsets into text as JavaScript counts a string (from
 // the first character marked to the one after the last), severity is
-// "error" or "warning", and message is 1 to 300 characters.
+// "error" or "warning", and message is not empty. The wiki keeps the
+// first 500 problems of an answer and cuts each message to 300
+// characters.
 const wikiPlugin = globalThis.wikiPlugin;
 
 export const api = wikiPlugin.api;

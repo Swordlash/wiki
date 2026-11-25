@@ -12,6 +12,12 @@
 // the frame or the wiki's page, so the wiki notices that the plugin no
 // longer answers and removes the frame, which ends the worker.
 //
+// The worker's script is the wiki's own (wikiPluginWorker below), which
+// then runs the plugin's code with importScripts, from a blob: address of
+// its own, as a script of its own: the code's text is not touched, so its
+// "use strict" directive, its line numbers and its top-level scope are
+// exactly its own.
+//
 // The wiki connects once: its first message, from the page that holds
 // the frame, carries a MessagePort. Everything after goes over that port,
 // which only this frame holds, as strings of JSON both ways: the runtime
@@ -26,31 +32,53 @@
 // When the worker cannot start, or its code throws, the worker is ended
 // and the port told {type: "failed"}, with the browser's message.
 //
-// In front of the plugin's code, on the same line so that the code's own
-// line numbers stay as they are, the worker gets wikiPluginWorker below:
-// the global wikiPlugin, through which the code registers what it does
-// (wikiPlugin.plugin({diagnostics})), and the protocol's side in the
-// worker (Wiki.App.Plugin.External.Protocol). It answers {type: "ready"}
-// once the code has registered, and each {type: "diagnose", id, text}
-// with {type: "problems", re: id, problems} from the code's diagnostics,
-// or {type: "failed"} when they throw. A message that comes before the
-// code has registered waits for it. The worker writes and reads the JSON
-// itself, in its own thread.
+// In the worker, wikiPluginWorker gives the code the global wikiPlugin,
+// through which it registers what it does
+// (wikiPlugin.plugin({diagnostics})), and speaks the protocol for it
+// (Wiki.App.Plugin.External.Protocol). It answers {type: "ready"} once
+// the code has registered, and each {type: "diagnose", id, text} with
+// {type: "problems", re: id, problems} from the code's diagnostics, or
+// {type: "failed"} when they throw. A message that comes before the code
+// has registered waits for it. The worker writes and reads the JSON
+// itself, in its own thread. What the code returns is kept within the
+// protocol's limits here, which the wiki checks again and does not
+// relax: the first MAX_PROBLEMS problems, each message cut to
+// MAX_MESSAGE_LENGTH characters, each problem only its four fields. So a
+// plugin is never stopped for the size of what ordinary text makes it
+// find.
 "use strict";
 
-// The worker's side, written without line comments and with every
-// statement ended, so that it can be put on one line.
-function wikiPluginWorker() {
+// The protocol's limits (Wiki.App.Plugin.External.Protocol's maxProblems
+// and maxMessageLength, Wiki.App.Plugin.External.Frame's maxFrameMessage,
+// 1 MiB): a test holds these equal to the program's.
+const MAX_PROBLEMS = 500;
+const MAX_MESSAGE_LENGTH = 300;
+const MESSAGE_LENGTH = 1048576;
+
+// The worker's side, given the limits and the plugin's code.
+function wikiPluginWorker(maxProblems, maxMessageLength, source) {
   "use strict";
   let handlers = null;
   const waiting = [];
   const send = (message) => postMessage(JSON.stringify(message));
-  const failed = (error) => send({ type: "failed", message: String((error && error.message) || error) });
+  // A message cut to the limit, in characters, never inside one.
+  const cut = (text) => {
+    const characters = Array.from(text);
+    return characters.length > maxMessageLength ? characters.slice(0, maxMessageLength).join("") : text;
+  };
+  const failed = (error) => send({ type: "failed", message: cut(String((error && error.message) || error)) });
   const answer = async (message) => {
     if (message.type !== "diagnose") return;
     try {
-      const problems = await handlers.diagnostics({ text: message.text });
-      send({ type: "problems", re: message.id, problems: problems ?? [] });
+      const found = (await handlers.diagnostics({ text: message.text })) ?? [];
+      if (!Array.isArray(found)) throw new Error("diagnostics returned something other than a list of problems.");
+      const problems = found.slice(0, maxProblems).map((p) => ({
+        from: p?.from,
+        to: p?.to,
+        severity: p?.severity,
+        message: typeof p?.message === "string" ? cut(p.message) : p?.message,
+      }));
+      send({ type: "problems", re: message.id, problems });
     } catch (error) {
       failed(error);
     }
@@ -79,15 +107,15 @@ function wikiPluginWorker() {
       for (const message of waiting.splice(0)) answer(message);
     },
   });
+  // The plugin's code, as a script of its own. What it throws, or a
+  // syntax error, reaches the worker's error event.
+  importScripts(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
 }
 
 (() => {
-  // The longest message the plugin may send, in UTF-16 units
-  // (Wiki.App.Plugin.External.Frame's maxFrameMessage).
-  const MESSAGE_LENGTH = 1024 * 1024;
   const source = self.wikiPluginSource;
   delete self.wikiPluginSource;
-  const prelude = `(${String(wikiPluginWorker).replace(/\n\s*/g, " ")})();`;
+  const bootstrap = `(${String(wikiPluginWorker)})(${MAX_PROBLEMS}, ${MAX_MESSAGE_LENGTH}, ${JSON.stringify(source)});\n`;
   let connected = false;
   addEventListener("message", (event) => {
     const data = event.data;
@@ -101,7 +129,7 @@ function wikiPluginWorker() {
     let ended = false;
     // The message may be the plugin's own words, of any length: cut to
     // what the wiki shows of a reason.
-    const failed = (message) => port.postMessage(JSON.stringify({ type: "failed", message: String(message).slice(0, 300) }));
+    const failed = (message) => port.postMessage(JSON.stringify({ type: "failed", message: String(message).slice(0, MAX_MESSAGE_LENGTH) }));
     let worker;
     const end = (message) => {
       if (ended) return;
@@ -110,7 +138,7 @@ function wikiPluginWorker() {
       failed(message);
     };
     try {
-      worker = new Worker(URL.createObjectURL(new Blob([prelude, source], { type: "text/javascript" })));
+      worker = new Worker(URL.createObjectURL(new Blob([bootstrap], { type: "text/javascript" })));
     } catch (error) {
       failed(error);
       return;

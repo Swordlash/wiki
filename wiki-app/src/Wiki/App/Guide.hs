@@ -41,6 +41,7 @@ import Data.Text qualified as T
 import Data.Time (NominalDiffTime, UTCTime)
 import Protolude
 import Wiki.App.Backend.Mem.State
+import Wiki.App.Plugin.External.Protocol (answerWithin, maxFrameMessage, maxMessageLength, maxProblems, startWithin)
 import Wiki.Core.Attachment (FileName (..), MimeType (..))
 import Wiki.Core.Id
 import Wiki.Core.Markdown.Ast (markerAt)
@@ -102,8 +103,10 @@ writingAPlugin =
     <> [ "```"
        , ""
        , "`id` is the plugin's name for the program: small letters, digits and"
-       , "dashes. `name` and `description` are what the settings show. `version`"
-       , "is three numbers. `api` is the version of the wiki's protocol the code"
+       , "dashes, starting with a letter. `name` is what the editor writes before"
+       , "each of its messages, and `description`, which may be left out, a line"
+       , "on what it does. `version` is three numbers. `api` is the version of"
+       , "the wiki's protocol the code"
        , "speaks, 1. `contributes` says what the plugin does, `diagnostics` alone"
        , "for now, and `permissions` what it reads: `document.read`, the text of"
        , "the page being edited, while its editor is open. `hosts`, which may be"
@@ -123,23 +126,32 @@ writingAPlugin =
        , "problems. Each is `{from, to, severity, message}`: `from` and `to` are"
        , "positions in `text` as JavaScript counts a string, from the first"
        , "character marked to the one after the last; `severity` is `error` or"
-       , "`warning`; the message is 1 to 300 characters, and the editor shows it"
-       , "after the plugin's name, on the lines the problem covers."
+       , "`warning`; the message is not empty, and the editor shows it after the"
+       , "plugin's name, on the lines the problem covers."
        , ""
        , "Code built with a bundler imports the same from `wiki-plugin`"
        , "(`web/plugin/wiki-plugin.js` of the wiki's sources) and is bundled into"
        , "one file: `esbuild plugin.js --bundle --format=iife"
        , "--alias:wiki-plugin=./wiki-plugin.js`."
        , ""
+       , "## Limits"
+       , ""
+       , "`wikiPlugin` keeps the first " <> show maxProblems <> " problems of an answer and cuts each"
+       , "message to " <> show maxMessageLength <> " characters, so that ordinary text never stops a"
+       , "plugin. A plugin that goes around it, and sends more problems or longer"
+       , "messages, a message over " <> show (maxFrameMessage `div` (1024 * 1024)) <> " MiB, or more than one answer each time"
+       , "it is asked, is stopped. It has " <> seconds startWithin <> " seconds to start and " <> seconds answerWithin <> " to"
+       , "answer each time it is asked."
+       , ""
        , "## What a plugin can and cannot do"
        , ""
        , "The code runs in a worker inside a sandboxed frame of its own: it sees"
        , "no page of the wiki's, no cookie, no storage and none of your keys, and"
-       , "connects to the hosts its manifest names and nowhere else. It has 20"
-       , "seconds to start and 10 to answer; a plugin that takes longer, fails,"
-       , "or answers what it should not (a position outside the text, more than"
-       , "500 problems) is stopped until the editor opens again, and the editor"
-       , "says why. No external plugin runs in an encrypted space."
+       , "connects to the hosts its manifest names and nowhere else. A plugin"
+       , "that goes past the limits, fails (its code throws or does not load),"
+       , "or reports a position outside the text is stopped until the editor"
+       , "opens again, and the editor says why. No external plugin runs in an"
+       , "encrypted space."
        , ""
        , "## Installing it"
        , ""
@@ -149,6 +161,10 @@ writingAPlugin =
        , "the manifest as the text part `manifest` and the code as the file part"
        , "`bundle`. Each user then finds the plugin on in the editor."
        ]
+
+-- | A number of seconds, as the page on writing a plugin says it.
+seconds :: NominalDiffTime -> Text
+seconds d = show (round d :: Int)
 
 -- | The example plugin's manifest, the repository's
 -- @examples/plugins/doubled-words/manifest.json@.

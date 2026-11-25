@@ -45,3 +45,14 @@ writeFileSync(join(out, "plugin-frames", "deep-raw.html"), raw('const n = 512 * 
 writeFileSync(join(out, "plugin-frames", "flooding-raw.html"), raw(`for (let i = 0; i <= 100000; i++) port.postMessage('{"type":"ready"}');`));
 writeFileSync(join(out, "plugin-frames", "doubled-words.html"), frame(readFileSync("examples/plugins/doubled-words/doubled-words.js", "utf8")));
 writeFileSync(join(out, "plugin-frames", "looping.html"), frame("wikiPlugin.plugin({ diagnostics: () => { for (;;) {} } });\n"));
+// Two bundles that report whether `this` is undefined in a plain call:
+// the first begins with a "use strict" directive, which must stay one.
+const mode = 'const strict = (function () { return this === undefined; })();\nwikiPlugin.plugin({ diagnostics: () => [{ from: 0, to: 0, severity: "warning", message: strict ? "strict" : "sloppy" }] });\n';
+writeFileSync(join(out, "plugin-frames", "strict.html"), frame('"use strict";\n' + mode));
+writeFileSync(join(out, "plugin-frames", "sloppy.html"), frame(mode));
+// A plugin whose ordinary answer is past the protocol's limits: 501
+// problems, each with a message of 400 characters and a field more.
+writeFileSync(
+  join(out, "plugin-frames", "many.html"),
+  frame('wikiPlugin.plugin({ diagnostics: () => Array.from({ length: 501 }, () => ({ from: 0, to: 0, severity: "warning", message: "m".repeat(400), extra: "x".repeat(1000) })) });\n'),
+);

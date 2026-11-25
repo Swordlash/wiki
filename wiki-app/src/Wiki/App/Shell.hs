@@ -467,6 +467,11 @@ data State m = State
   -- the service worker served offline was loaded without a network, and no
   -- event reports that.
   , offlineCopy :: Maybe UTCTime
+  , preloadEnded :: Bool
+  -- ^ Whether the shell has ended the preload ('endPreload'): the reader
+  -- went to another address than the one the page started at. Until then
+  -- the page shows what it carries, and a plugin's settings are told they
+  -- were adopted ('Wiki.App.Plugin.OptionsInput').
   , keysLooked :: Bool
   -- ^ Whether this page start has looked whether nobody is signed in, to
   -- let go of every user's keys: once a page start.
@@ -663,6 +668,7 @@ component =
                   , entry = 0
                   , offline = False
                   , offlineCopy = Nothing
+                  , preloadEnded = False
                   , keysLooked = False
                   , installable = False
                   , shown = Nothing
@@ -1097,7 +1103,7 @@ component =
               {% for why in maybeToList st.assistantMove.problem %}
                 <p class="error settings-migration-problem" role="alert">{{ "Your writing assistant's settings from before could not all be moved: " <> why }}</p>
               {% end %}
-              {{ HH.slot "pluginOptions" (assistantId, who) options OptionsInput {user = who, options = optionsFor assistantId (context st).plugins, can = capabilities (context st) manifest} (FromPluginOptions assistantId) }}
+              {{ HH.slot "pluginOptions" (assistantId, who) options OptionsInput {user = who, options = optionsFor assistantId (context st).plugins, adopted = not st.preloadEnded, can = capabilities (context st) manifest} (FromPluginOptions assistantId) }}
             </div>
           |]
         Nothing -> HH.text ""
@@ -1999,6 +2005,7 @@ component =
       -- Before the new route renders: its views fetch the page content
       -- they show, rather than read what the server prerendered the first
       -- route with.
+      modify (\st -> st {preloadEnded = True})
       H.async endPreload
       -- The questions and results about the wiki's data are not shown
       -- again on coming back to the administration.
@@ -2065,7 +2072,9 @@ component =
     reload next = do
       -- Going to another route after the change ends the preload, as
       -- 'arrive' does.
-      when (isJust next) (H.async endPreload)
+      when (isJust next) $ do
+        modify (\st -> st {preloadEnded = True})
+        H.async endPreload
       loadWorld
       void (gatesAt =<< maybe (gets (\st -> st.route)) (pure . settledRoute) next)
       modify (\st -> st {generation = st.generation + 1})

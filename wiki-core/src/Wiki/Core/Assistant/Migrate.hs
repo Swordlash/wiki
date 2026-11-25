@@ -76,6 +76,17 @@
 -- are taken only when the server has none: options already there were
 -- moved by another browser, or chosen since.
 --
+-- While the vault's item is locked on a browser that can be unlocked
+-- ('ItemLocked'), the browser's own options wait for the unlock: the
+-- item's options would win over them, and options adopted first would win
+-- for good. A browser that can never open the item ('ItemOutOfReach': the
+-- page cannot seal) does not wait for it: its own options are adopted if
+-- the server has none, and the item is left for a browser that can open
+-- it. That browser's move then finds the server's options and keeps them,
+-- so the first browser's options win over the item's. This is by design:
+-- waiting would leave this browser's options unadopted for ever, and its
+-- user with the defaults.
+--
 -- = Nothing deleted too early
 --
 -- A legacy place is emptied only when the plugin's item, read back, says
@@ -115,11 +126,19 @@ import Wiki.Core.Vault.Plugin (SecretName)
 -- | 'InVault' is the vault's legacy item @assistant@, as this browser finds
 -- it: none (or no vault); opened with the vault key this browser holds,
 -- with the sealed text as read; there, but this browser holds no key that
--- opens the vault; or there, and the vault key does not open it.
+-- opens the vault now; there, and this browser can never open it, as a
+-- page that cannot seal (plain HTTP); or there, and the vault key does not
+-- open it.
+--
+-- 'ItemLocked' and 'ItemOutOfReach' differ in what the options wait for
+-- (see "What wins"). A browser that can seal can be unlocked (a password,
+-- a passkey), and the item's options, once read, win over its own. A
+-- browser that cannot seal never reads them.
 data InVault
   = NoItem
   | ItemOpened Sealed Settings
   | ItemLocked
+  | ItemOutOfReach
   | ItemUnopenable
   deriving stock (Eq, Show)
 
@@ -284,15 +303,18 @@ copyRedundant :: Found -> Bool
 copyRedundant f = case f.vault of
   ItemOpened _ _ -> True
   ItemLocked -> True
-  _ -> any (itemPlace `T.isPrefixOf`) f.taken
+  ItemOutOfReach -> True
+  ItemUnopenable -> any (itemPlace `T.isPrefixOf`) f.taken
+  NoItem -> any (itemPlace `T.isPrefixOf`) f.taken
 
 -- | The start of a vault's item's identity as a legacy place ('sources').
 itemPlace :: Text
 itemPlace = "item:"
 
 -- | Whether the options wait for an unlock: the vault's item is there,
--- locked, and this browser holds settings of its own, which the vault's
--- would win over.
+-- locked on a browser that can be unlocked, and this browser holds
+-- settings of its own, which the vault's would win over. An item this
+-- browser can never open ('ItemOutOfReach') holds nothing back.
 optionsBehindLock :: Found -> Bool
 optionsBehindLock f = f.vault == ItemLocked && any (\r -> isJust r.own) f.record
 
@@ -324,7 +346,9 @@ legacyKeys f = Map.unions (map snd (sources f))
 
 -- | The settings whose options the legacy places hold: the first of the
 -- vault's item's, an L1 copy's, and this browser's own whose options are
--- not the defaults. None while the vault's item is locked here.
+-- not the defaults. None while the vault's item is locked here
+-- ('ItemLocked'); without the item's where this browser can never open it
+-- ('ItemOutOfReach').
 --
 -- Settings whose options are the defaults say nothing to adopt, and do not
 -- hide a browser's own: otherwise a browser's own options would be adopted

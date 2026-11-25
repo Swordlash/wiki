@@ -246,6 +246,24 @@ states = describe "moves each legacy state" $ do
     (\l -> l.record) <$> leftOn d `shouldReturn` False
     readIORef options `shouldReturn` Just (optionsValue ownHere)
 
+  it "L3 with a legacy item in the vault: the options adopted without waiting for the item, which a browser that can open it moves later, keeping them" $ do
+    w <- newWorld
+    withLegacyItem w synced
+    d <- newDevice w.counter False
+    putRecord d alice (BSL.toStrict (encode ownHere))
+    options <- newIORef Nothing
+    -- The item is left: this page can never open it.
+    moveAll w d options `shouldReturn` Right Waiting
+    readIORef options `shouldReturn` Just (optionsValue ownHere)
+    (\l -> l.record) <$> leftOn d `shouldReturn` False
+    hasLegacyItem w `shouldReturn` True
+    e <- newDevice w.counter True
+    withVaultKey e alice w.vaultKey
+    moveAll w e options `shouldReturn` Right Moved
+    readIORef options `shouldReturn` Just (optionsValue ownHere)
+    hasLegacyItem w `shouldReturn` False
+    pluginKeys w `shouldReturn` keysOf synced
+
   it "asks the server nothing where this browser keeps nothing legacy, unless told to look at the vault" $ do
     w <- newWorld
     withLegacyItem w synced

@@ -38,7 +38,7 @@ import Test.Hspec.Halogen
 import Wiki.Api.Plugins (PluginId (..), noPlugins)
 import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPolicy (..), Permission (..))
 import Wiki.App.Assistant (MonadAssistant)
-import Wiki.App.Backend (MonadWiki (..))
+import Wiki.App.Backend (MonadLoad (..), MonadWiki (..))
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
@@ -70,6 +70,11 @@ runWritten :: Written m a -> m a
 runWritten (Written m) = m
 
 instance (MonadWiki m) => MonadWiki (Written m)
+
+-- The in-memory backend reads everything at once.
+instance (MonadWiki m) => MonadLoad (Written m) where
+  atOnce = fmap Just
+  attempt = fmap Right
 
 instance (MonadUUID m) => MonadUUID (Written m) where
   generateV4 = lift generateV4

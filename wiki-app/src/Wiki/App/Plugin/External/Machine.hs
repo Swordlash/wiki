@@ -70,6 +70,7 @@ module Wiki.App.Plugin.External.Machine
   , Event (..)
   , Effect (..)
   , initial
+  , initialRead
   , step
   , wanted
   , stoppedPlugins
@@ -224,6 +225,15 @@ initial input =
     , heard = mempty
     , next = 0
     }
+
+-- | The machine for the first input, with the plugins installed as a
+-- read made at once answered, in the input's session, when it could be
+-- made at once ('Wiki.App.Backend.atOnce'): a page the server prerenders
+-- then carries the answer deterministically, and the program that adopts
+-- it reads it from there and asks nothing. Without one, the machine reads
+-- when it starts, as 'initial'.
+initialRead :: Input -> Maybe (Either WikiError ExternalPlugins) -> Model
+initialRead input answered = (initial input) {installed = answered}
 
 -- | The plugins that are to run now: the ones on, among those installed
 -- in this session, and none in an encrypted space.

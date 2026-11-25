@@ -2810,8 +2810,17 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   an editor already open; `wiki-plugin.js` is not served for
   download; one oversized message is deserialized once by the
   browser before it is refused. **D3 (the assistant moves, the
-  migration) is open as #382, in review. The first cut of #301
-  (Enter splits an item, later items renumbered) is open as #383.** **Other small things of 2026-11-25 (the owner):**
+  migration) is open as #382, in review.** **The first cut of #301
+  merged (#383):** Enter in the middle of an item's first line
+  splits the item, and later items of a consecutively numbered list
+  are renumbered in the same transaction; every split is read back
+  by the parser and anything unusual stays a plain line break; the
+  renumbering reaches as far as the 2,000 characters Enter reads; a
+  number that grows a digit over indented later lines changes
+  nothing. Left of #301: braces and `\begin…\end` for commands in
+  math, Tab to the next place of a `/` command, pages of other
+  spaces after `[[`, the slow path on long pages with a `[…]:`
+  line, splitting an item on its later lines. **Other small things of 2026-11-25 (the owner):**
   `WIKI_INSECURE=1` in `clients/wiki.sh` (#378); plain HTTP on the
   TLS port is redirected to HTTPS, and HSTS is sent only with
   `--hsts`, off by default because it applies to the host name on

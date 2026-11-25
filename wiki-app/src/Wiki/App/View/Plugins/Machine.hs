@@ -7,7 +7,9 @@
 -- made it is gone. Every view of the plugins draws it: the editor, through
 -- the context ('Wiki.App.Plugin.Registry.pluginsOn'), the settings'
 -- section "Plugins" ("Wiki.App.View.Plugins") and the administration's
--- switch ("Wiki.App.View.WikiPlugins"), whose acts are its events.
+-- switch ("Wiki.App.View.WikiPlugins"), whose acts are its events. A
+-- plugin's own surfaces (its agent in the editor, its settings) change
+-- the plugin's options through it too ('OptionsChosen').
 --
 -- = One ask at a time
 --
@@ -15,18 +17,21 @@
 -- each load of the session and the spaces ('Refresh'), the read a view
 -- wants when it opens on nothing read ('Opened'), the user's writes of
 -- their states, and the administrator's saves of the plugins off for the
--- wiki. While one of them is out, no other is sent ('flight'), so the
+-- wiki, and the user's writes of a plugin's options. While one of them is
+-- out, no other is sent ('flight'), so the
 -- server answers them in the order sent and a later answer is never an
 -- older one. A write chosen meanwhile waits its turn, in the order chosen
--- ('queued'); a later choice for the same plugin, or a later set of the
--- plugins off for the wiki, takes the place of the one that waits. A read
+-- ('queued'); a later choice for the same plugin, later options for the
+-- same plugin, or a later set of the plugins off for the wiki, takes the
+-- place of the one that waits. A read
 -- wanted meanwhile is sent when the ask out answers, failed or not, after
 -- what waits ('wanted').
 --
 -- = What is known
 --
--- A read answers with the whole value. A write answers with the user's
--- choice for the one plugin written, and a save with the plugins off for
+-- A read answers with the whole value. A write, of a state or of options,
+-- answers with the user's choice for the one plugin written, and a save
+-- with the plugins off for
 -- the wiki: each is put in by what it answers, and a read follows, since
 -- neither answers with the whole value. A write refused is shown on its
 -- plugin's row ('refused'), a save refused beside the boxes ('problem'),
@@ -34,6 +39,15 @@
 -- answer was lost may have been done. A read made after a write is sent
 -- after the write's answer came: the HTTP backend's cache, which a write
 -- empties when it answers, never answers it with what the write changed.
+--
+-- = A plugin's options
+--
+-- While a write of a plugin's options is out or waits, the plugin is given
+-- the options last chosen ('writingOptions', 'held'), as the section's
+-- switch shows the state last chosen ('writing', 'shownState'): a plugin
+-- that set its options sees them at once, and does not see the server's
+-- older ones come back with a read in between. Once the last write
+-- answers, the plugin is given what the server keeps.
 --
 -- = Who is signed in
 --
@@ -61,11 +75,13 @@ module Wiki.App.View.Plugins.Machine
   , held
   , stateOf
   , shownState
+  , shownOptions
   , shownOff
   , askOf
   )
 where
 
+import Data.Aeson (Value)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Protolude
@@ -90,11 +106,14 @@ data Model = Model
   -- with the session it was chosen in.
   , writing :: Map PluginId PluginState
   -- ^ The state last chosen for each plugin whose write is out or waits.
+  , writingOptions :: Map PluginId (Maybe Value)
+  -- ^ The options last chosen for each plugin whose write of options is
+  -- out or waits: a value, or 'Nothing' to clear them.
   , wantedOff :: Maybe (Set PluginId)
   -- ^ The plugins off for the wiki last ticked, while their save is out or
   -- waits.
   , refused :: Map PluginId WikiError
-  -- ^ Why the last write for a plugin failed.
+  -- ^ Why the last write for a plugin failed, of its state or its options.
   , problem :: Maybe WikiError
   -- ^ Why the last save of the plugins off for the wiki failed.
   , session :: Int
@@ -113,6 +132,9 @@ data Write
     StateWrite PluginId PluginState
   | -- | The plugins off for the wiki, the whole set.
     OffWrite (Set PluginId)
+  | -- | The user's options for a plugin: a value, or 'Nothing' to clear
+    -- them.
+    OptionsWrite PluginId (Maybe Value)
   deriving stock (Eq, Show)
 
 -- | 'Event' is everything that happens to the plugins' state.
@@ -131,6 +153,12 @@ data Event
   | -- | The answer to the write for this plugin sent under this ticket:
     -- the user's choice for it after the write.
     Written Ask PluginId (Either WikiError PluginChoice)
+  | -- | A plugin's surface set the plugin's options: a value, or 'Nothing'
+    -- to clear them.
+    OptionsChosen PluginId (Maybe Value)
+  | -- | The answer to the write of a plugin's options sent under this
+    -- ticket: the user's choice for it after the write.
+    OptionsWritten Ask PluginId (Either WikiError PluginChoice)
   | -- | The administrator ticked a plugin's box "off for everyone"
     -- ('True'), or cleared it.
     Ticked PluginId Bool
@@ -145,6 +173,9 @@ data Effect
   | -- | Set the user's state for a plugin; the answer comes back as
     -- 'Written'.
     WriteState Ask PluginId PluginState
+  | -- | Set the user's options for a plugin, or clear them ('Nothing');
+    -- the answer comes back as 'OptionsWritten'.
+    WriteOptions Ask PluginId (Maybe Value)
   | -- | Set the plugins off for the wiki; the answer comes back as 'Saved'.
     SaveOff Ask (Set PluginId)
   deriving stock (Eq, Show)
@@ -164,6 +195,7 @@ initialWith read' session =
     , wanted = False
     , queued = []
     , writing = mempty
+    , writingOptions = mempty
     , wantedOff = Nothing
     , refused = mempty
     , problem = Nothing
@@ -194,15 +226,15 @@ step event m = case event of
     | not (ofSession asked m) -> landed asked m
   Written asked p answer ->
     let waits = any (\(_, w) -> w `writes` p) m.queued
-        m1 = m {writing = if waits then m.writing else Map.delete p m.writing}
-        m2 = case (answer, takes asked m1.asks) of
-          -- A success clears the plugin's refusal: the last answer about
-          -- it is not one.
-          (Right choice, Just after) -> m1 {asks = after, known = withChoice p choice <$> m1.known, refused = Map.delete p m1.refused}
-          (Right _, Nothing) -> m1
-          (Left e, _) -> m1 {refused = Map.insert p e m1.refused}
-     in -- The answer is the one plugin's: a read follows, after what waits.
-        landed asked m2 {wanted = True}
+     in wrote asked p answer m {writing = if waits then m.writing else Map.delete p m.writing}
+  OptionsChosen p wanted'
+    | shownOptions m p == wanted' -> (m, [])
+    | otherwise -> writingNow (OptionsWrite p wanted') m {writingOptions = Map.insert p wanted' m.writingOptions, refused = Map.delete p m.refused}
+  OptionsWritten asked _ _
+    | not (ofSession asked m) -> landed asked m
+  OptionsWritten asked p answer ->
+    let waits = any (\(_, w) -> w `writesOptions` p) m.queued
+     in wrote asked p answer m {writingOptions = if waits then m.writingOptions else Map.delete p m.writingOptions}
   Ticked p isOff -> case shownOff m of
     Just now'
       | Set.member p now' /= isOff ->
@@ -221,6 +253,19 @@ step event m = case event of
      in -- The answer is the set alone: a read follows, after what waits.
         landed asked m2 {wanted = True}
 
+-- | The answer to a write for a plugin, of its state or its options, of
+-- this session, taken into the model.
+wrote :: Ask -> PluginId -> Either WikiError PluginChoice -> Model -> (Model, [Effect])
+wrote asked p answer m1 =
+  let m2 = case (answer, takes asked m1.asks) of
+        -- A success clears the plugin's refusal: the last answer about it
+        -- is not one.
+        (Right choice, Just after) -> m1 {asks = after, known = withChoice p choice <$> m1.known, refused = Map.delete p m1.refused}
+        (Right _, Nothing) -> m1
+        (Left e, _) -> m1 {refused = Map.insert p e m1.refused}
+   in -- The answer is the one plugin's: a read follows, after what waits.
+      landed asked m2 {wanted = True}
+
 -- | What the server keeps, as the model holds it, once read.
 knownNow :: Model -> Maybe Plugins
 knownNow m = m.known >>= rightToMaybe
@@ -228,9 +273,14 @@ knownNow m = m.known >>= rightToMaybe
 -- | What is on as the rest of the application sees it (the context's
 -- plugins): what is known, or, before a read of this session answered or
 -- when none could, the defaults with the plugins off for the wiki that an
--- earlier session knew.
+-- earlier session knew. Each plugin whose write of options is out or
+-- waits has the options last chosen in place of the server's, which is
+-- what its surfaces are given ('Wiki.App.Plugin.Registry.optionsFor').
 held :: Model -> Plugins
-held m = fromMaybe Plugins {offForWiki = m.offBefore, mine = mempty} (knownNow m)
+held m = withChosen (fromMaybe Plugins {offForWiki = m.offBefore, mine = mempty} (knownNow m))
+  where
+    withChosen k = k {mine = Map.foldrWithKey chosenFor k.mine m.writingOptions}
+    chosenFor p o mine = putChoice p PluginChoice {state = maybe PluginDefault (\c -> c.state) (Map.lookup p mine), options = o} mine
 
 -- | The user's state for a plugin, as the server keeps it: the default
 -- when they made no choice.
@@ -242,6 +292,11 @@ stateOf known p = maybe PluginDefault (\c -> c.state) (Map.lookup p known.mine)
 shownState :: Model -> PluginId -> PluginState
 shownState m p = fromMaybe (maybe PluginDefault (`stateOf` p) (knownNow m)) (Map.lookup p m.writing)
 
+-- | A plugin's options as its surfaces are given them: the ones last
+-- chosen while their write is out or waits, and otherwise the server's.
+shownOptions :: Model -> PluginId -> Maybe Value
+shownOptions m p = (\c -> c.options) =<< Map.lookup p (held m).mine
+
 -- | The plugins off for the wiki the administrator's boxes show: the set
 -- last ticked while its save is out or waits, and otherwise the server's;
 -- 'Nothing' before it was read.
@@ -252,20 +307,34 @@ shownOff m = m.wantedOff <|> ((\k -> k.offForWiki) <$> knownNow m)
 -- A choice of the default with no options is none, as the server keeps it:
 -- the plugin is taken out. A read that failed holds nothing to put it in.
 withChoice :: PluginId -> PluginChoice -> Either WikiError Plugins -> Either WikiError Plugins
-withChoice p choice = fmap (\k -> k {mine = if kept then Map.insert p choice k.mine else Map.delete p k.mine})
-  where
-    kept = choice.state /= PluginDefault || isJust choice.options
+withChoice p choice = fmap (\k -> k {mine = putChoice p choice k.mine})
+
+-- | The user's choices with the choice for a plugin put in, or taken out
+-- when it is the default with no options, as the server keeps them.
+putChoice :: PluginId -> PluginChoice -> Map PluginId PluginChoice -> Map PluginId PluginChoice
+putChoice p choice
+  | choice.state /= PluginDefault || isJust choice.options = Map.insert p choice
+  | otherwise = Map.delete p
 
 -- | Whether a write is one of this plugin's state.
 writes :: Write -> PluginId -> Bool
 writes w p = case w of
   StateWrite q _ -> q == p
   OffWrite _ -> False
+  OptionsWrite _ _ -> False
+
+-- | Whether a write is one of this plugin's options.
+writesOptions :: Write -> PluginId -> Bool
+writesOptions w p = case w of
+  OptionsWrite q _ -> q == p
+  StateWrite {} -> False
+  OffWrite _ -> False
 
 isOffWrite :: Write -> Bool
 isOffWrite = \case
   OffWrite _ -> True
   StateWrite {} -> False
+  OptionsWrite {} -> False
 
 -- | The answer to a read taken, if no answer to a later ask was. A failure
 -- is shown only where nothing is held: what is held is kept.
@@ -314,6 +383,7 @@ writingNow w m
     same q = case (q, w) of
       (StateWrite a _, StateWrite b _) -> a == b
       (OffWrite _, OffWrite _) -> True
+      (OptionsWrite a _, OptionsWrite b _) -> a == b
       _ -> False
 
 sendRead :: Model -> (Model, [Effect])
@@ -327,6 +397,7 @@ send w m =
         [ case w of
             StateWrite p s -> WriteState ticket p s
             OffWrite off -> SaveOff ticket off
+            OptionsWrite p o -> WriteOptions ticket p o
         ]
       )
 
@@ -335,4 +406,5 @@ askOf :: Effect -> Maybe Ask
 askOf = \case
   Load a -> Just a
   WriteState a _ _ -> Just a
+  WriteOptions a _ _ -> Just a
   SaveOff a _ -> Just a

@@ -133,7 +133,6 @@ where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
-import Data.Aeson (Value)
 import Data.Map.Strict qualified as Map
 import Data.Row.Internal (LT (..), Row (R))
 import Data.Set qualified as Set
@@ -1782,9 +1781,10 @@ component =
       FromPlugins e -> Machine.happen pluginsSpec e
       -- A plugin's options, from its settings or its agent in the editor:
       -- the plugins' state writes them, so that leaving the view does not
-      -- cut the write off.
-      FromView (PluginOptions p o) -> chooseOptions p o
-      FromPluginOptions p (SaveOptions o) -> chooseOptions p o
+      -- cut the write off, and gives them to the plugin while the write is
+      -- out ('PluginsMachine.held').
+      FromView (PluginOptions p o) -> Machine.happen pluginsSpec (PluginsMachine.OptionsChosen p o)
+      FromPluginOptions p (SaveOptions o) -> Machine.happen pluginsSpec (PluginsMachine.OptionsChosen p o)
       FromView Entered -> do
         now <- H.liftEffect historyEntry
         modify (\st -> st {entry = now})
@@ -2086,13 +2086,6 @@ component =
           void . Latest.answered worldAsksOf setWorldAsks ticket $ \st ->
             if dirty && st.world == WorldReady then st {stale = Just e} else st {world = WorldFailed e}
 
-    -- A plugin's options as one of its surfaces set them ('Nothing'
-    -- clears them). Nothing is written yet: the plugins' machine takes
-    -- them as an event in the next change, and no plugin sets its options
-    -- before then.
-    chooseOptions :: PluginId -> Maybe Value -> H.HalogenM (State m) Action Slots output m ()
-    chooseOptions _ _ = pass
-
     -- The plugins' state given the session's number: a new one forgets
     -- what it held, and drops a write chosen in the session before. The
     -- same number changes nothing.
@@ -2108,6 +2101,7 @@ component =
     carryPlugins = \case
       PluginsMachine.Load asked -> Machine.Ask (Machine.run pluginsNow) (PluginsMachine.Loaded asked . answerOf)
       PluginsMachine.WriteState asked p s -> Machine.Ask (Machine.run (setPluginState p s)) (PluginsMachine.Written asked p . answerOf)
+      PluginsMachine.WriteOptions asked p o -> Machine.Ask (Machine.run (maybe (clearPluginOptions p) (setPluginOptions p) o)) (PluginsMachine.OptionsWritten asked p . answerOf)
       PluginsMachine.SaveOff asked off -> Machine.Ask (Machine.run (setWikiPluginsOff WikiPlugins {off})) (PluginsMachine.Saved asked . answerOf)
 
     -- Whose changes not saved the content shown holds, if any: an

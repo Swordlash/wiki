@@ -103,6 +103,9 @@ optionsOf :: [Plugin m] -> [(PluginId, Options m)]
 optionsOf given = [(p.manifest.id, o) | p <- given, Just o <- [p.options]]
 
 -- | A plugin's options for the reader, as what is on holds them: what its
--- surfaces are given ('Wiki.App.Plugin.AgentInput''s @options@).
+-- surfaces are given ('Wiki.App.Plugin.AgentInput''s @options@). The
+-- context's plugins hold the options last chosen while their write is out
+-- or waits ("Wiki.App.View.Plugins.Machine"'s @held@), and otherwise the
+-- server's.
 optionsFor :: PluginId -> Plugins -> Maybe Value
 optionsFor p known = (\c -> c.options) =<< Map.lookup p known.mine

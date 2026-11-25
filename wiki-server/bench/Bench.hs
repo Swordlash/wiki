@@ -69,6 +69,7 @@ import Wiki.Core.Id
 import Wiki.Core.Notification (WatchTarget (..))
 import Wiki.Core.Page (Page (..))
 import Wiki.Core.PageKind qualified as Kind
+import Wiki.Core.PageMatch (titleQuery)
 import Wiki.Core.Permission (SpacePermission (..), Subject (..))
 import Wiki.Core.Search (SearchQuery (..), searchQuery)
 import Wiki.Core.Slug (Slug, mkSlug)
@@ -167,6 +168,12 @@ timings postgres = do
       report "search: a word on 1 page of 20,000" 10 (void (runStoredWiki st Administrator (searchPages (searchQuery "token12345"))))
       report "search: a word on every page of 20,000" 5 (void (runStoredWiki st Administrator (searchPages (searchQuery "fifty"))))
       report "search: a word on 1 page, in a 2,000-page space" 10 (void (runStoredWiki st Administrator (searchPages SearchQuery {text = "token1234", space = Just space, includeSubspaces = True, limit = 50, templates = False})))
+      -- The lookup of pages by title reads the nodes of every page of the
+      -- spaces the asker may view: the administrator's are the 20,000
+      -- pages, the viewer's the 2,000 of the public space.
+      report "pages by title: two letters on every page of 20,000" 10 (void (runStoredWiki st Administrator (findPagesByTitle (titleQuery "pa"))))
+      report "pages by title: letters on 1 page of 20,000" 10 (void (runStoredWiki st Administrator (findPagesByTitle (titleQuery "page 12345"))))
+      report "pages by title: two letters, for a viewer of 2,000 pages" 10 (void (runStoredWiki st viewer (findPagesByTitle (titleQuery "pa"))))
       report "sitemap of a 2,000-page public space, written" 5 (newFeedCache >>= \cache -> asked (sitemapApplication st cache "/"))
       report "feed of a 2,000-page blog, written" 5 (newFeedCache >>= \cache -> asked (feedApplication st cache "/" Atom ["big"]))
       cache <- newFeedCache

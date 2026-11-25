@@ -21,6 +21,7 @@ module Wiki.Server.Storage.Rows
   , pageNodes
   , pageNode
   , pageNodesWithIds
+  , pageNodesIn
   , childPage
   , childPages
   , subtreeIds
@@ -423,6 +424,13 @@ pageNode pid = head <$> nodesWhere (\p -> p.id ==. val_ pid.text)
 -- names no page is left out.
 pageNodesWithIds :: (Backend be) => [PageId] -> Db be [PageNode]
 pageNodesWithIds pids = inChunks (ordNub pids) $ \ids -> nodesWhere (\p -> p.id `in_` map (\x -> val_ x.text) ids)
+
+-- | The pages of these spaces, as nodes, in no particular order: what the
+-- lookup of pages by title reads ('Wiki.Server.Storage.findPagesByTitle').
+-- The condition is on the space alone, which the index
+-- @pages_space_template@ serves, so a space not named costs no row.
+pageNodesIn :: (Backend be) => [SpaceId] -> Db be [PageNode]
+pageNodesIn sids = inChunks (ordNub sids) $ \ids -> nodesWhere (\p -> p.space_id `in_` map (\x -> val_ x.text) ids)
 
 -- | The condition that a page is under a parent: one page, or the top
 -- level of its space for 'Nothing'. Written as @parent = ?@ or @parent IS

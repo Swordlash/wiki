@@ -63,6 +63,7 @@ import Wiki.Core.Notification (Kind (..), Notification (..), PageLocation (..), 
 import Wiki.Core.Offered qualified as Offered
 import Wiki.Core.Page (Page (..), PageSummary (..))
 import Wiki.Core.PageKind qualified as Kind
+import Wiki.Core.PageMatch (TitleHit (..), titleQuery)
 import Wiki.Core.Permission (Grants (..), SpaceGrant (..), SpacePermission (..), Subject (..))
 import Wiki.Core.Search (SearchHit (..), SearchQuery (..), searchQuery)
 import Wiki.Core.Slug (mkSlug, slugText)
@@ -1113,6 +1114,16 @@ spec backing = describe "encrypted spaces in the storage" $ do
           blobs <- blobFilesIn (at.dataDir </> "attachments")
           contents <- traverse (\f -> (f,) <$> BS.readFile f) =<< filterM doesFileExist (files <> blobs)
           [f | (f, b) <- contents, m <- markers, encodeUtf8 m `BS.isInfixOf` b] `shouldBe` []
+
+    it "leaves a space out of the lookup of pages by title from the start of its encryption, while its pages still read plain" $ withPeople backing $ \st p -> do
+      let as :: UserId -> StoredWiki IO a -> IO a
+          as u = runStoredWiki st (AsUser u)
+      s <- privateSpace st p.ada "Plans"
+      page <- ok =<< as p.ada (createPage s.id Nothing "Zanzibar notes" "Plain until its turn.")
+      map (\h -> h.page) <$> (ok =<< as p.ada (findPagesByTitle (titleQuery "zanzibar"))) `shouldReturn` [page.id]
+      void (ok =<< as p.ada (startEncrypting s.id StartEncrypting {keys = [startKey p s.id]}))
+      map (\x -> x.title) <$> (ok =<< as p.ada (listPages s.id)) >>= (`shouldContain` ["Zanzibar notes"])
+      as p.ada (findPagesByTitle (titleQuery "zanzibar")) `shouldReturn` Right []
 
     it "turns a space's encryption off page by page, and leaves no ciphertext, key or grant of it" $ withSystemTempDirectory "conversion" $ \dir -> withEncrypted backing $ \st p secret -> do
       let as :: UserId -> StoredWiki IO a -> IO a

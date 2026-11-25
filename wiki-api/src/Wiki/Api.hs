@@ -125,6 +125,7 @@ import Wiki.Core.Draft (Draft)
 import Wiki.Core.Id
 import Wiki.Core.Notification (PageLocation)
 import Wiki.Core.Page (Page, PageSummary)
+import Wiki.Core.PageMatch (TitleHit)
 import Wiki.Core.Permission (SpaceAccess)
 import Wiki.Core.Search (SearchHit)
 import Wiki.Core.Slug (Slug)
@@ -235,6 +236,21 @@ data WikiApi form mode = WikiApi
   -- ^ The users' public faces: their avatars ("Wiki.Core.User.Avatar").
   , homeDocument :: mode :- "home" :> Get '[JSON] (Space, Page)
   , spaces :: mode :- "spaces" :> NamedRoutes (SpacesApi form)
+  , pagesTitled
+      :: mode
+        :- "pages"
+          :> "titled"
+          :> QueryParam "q" Text
+          :> QueryParam "except" SpaceId
+          :> QueryParam "limit" Int
+          :> Get '[JSON] [TitleHit]
+  -- ^ @findPagesByTitle@ ("Wiki.Core.PageMatch"): the pages whose title or
+  -- path match the letters @q@, of the spaces the search reads for the
+  -- requester, but the space @except@, the best first. @limit@ missing is
+  -- 'Wiki.Core.PageMatch.defaultTitleHits', and at most
+  -- 'Wiki.Core.PageMatch.maxTitleHits' are given whatever it asks. @q@
+  -- missing is no letters, which find nothing. Before 'pages', so that
+  -- @titled@ is never read as a page's id.
   , pages :: mode :- "pages" :> NamedRoutes (PagesApi form)
   , attachments :: mode :- "attachments" :> NamedRoutes AttachmentsApi
   , search

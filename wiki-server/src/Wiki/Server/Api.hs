@@ -138,6 +138,7 @@ import Wiki.Core.Export (Archive)
 import Wiki.Core.Id
 import Wiki.Core.Markdown.Frame (framesInteractively)
 import Wiki.Core.Notification (WatchTarget (..))
+import Wiki.Core.PageMatch (titleQueryOf)
 import Wiki.Core.Permission (GlobalGrant (..), GlobalPermission (..), Grants (..))
 import Wiki.Core.Search (SearchQuery (..))
 import Wiki.Core.Slug (slugText)
@@ -862,6 +863,8 @@ handlers env caller =
           , createPage = \s new -> versioned <$> wiki (createPageOf new.kind s new.parent new.title new.body)
           , export = \s format request respond -> liftIO (exporting request respond (\key -> exportSpace env.exports env.texEngine key env.storage who s format))
           }
+    , pagesTitled = \q except limit ->
+        wiki (findPagesByTitle (titleQueryOf q except limit))
     , pages =
         PagesApi
           { save = \p version edit -> versioned <$> wiki (savePage p version.time edit.title edit.body)

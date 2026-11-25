@@ -617,6 +617,7 @@ a user has at most 50 (`maxStars`).
 | Method | Path | Body | Response | Errors | `MonadWiki` |
 | ------ | ---- | ---- | -------- | ------ | ----------- |
 | GET | `api/v1/search?q=<words>&space=<space>&only&limit=<n>&templates` | | `[SearchHit]`, the best first | | `searchPages` |
+| GET | `api/v1/pages/titled?q=<letters>&except=<space>&limit=<n>` | | `[TitleHit]` `{"page", "space", "spacePath", "pagePath", "title"}`, the best first | 400 | `findPagesByTitle` |
 
 The parameters are the application's own search address's
 (`/search/?q=…&space=…&only`), except that `space` is the space's id rather
@@ -640,6 +641,24 @@ as a web search engine reads it (`"a phrase"`, `or`, `-word` to leave out),
 the pages ranked by how well they match (`ts_rank`, a hit in the title above
 one in the text alone). Either way each hit has its title and a snippet with
 the query's words marked.
+
+`pages/titled` finds pages by the letters typed for them, as the editor's
+list after `[[` matches the pages of its own space (`Wiki.Core.PageMatch`):
+a page whose title starts with `q` first, then one with a later word of its
+title or a segment of its path that starts with it, then one whose title or
+path holds it anywhere else, compared in lower case. Among equals, by title
+in lower case, the title as written, the space's path, the page's path and
+its id. Its spaces are those the search reads for the requester (the same
+rule, `Wiki.Core.Search.searchedChain`): one they may view along its whole
+chain, neither encrypted nor converting, nor the front page's; and of those,
+not `except`, whose subspaces are other spaces and stay. Templates are left
+out. `limit` missing is 10, and at most 20 are given whatever it asks. A
+`q` missing or of fewer than two characters (once trimmed and in lower
+case) gives `[]`; one of more than 200 characters is a 400. Someone not
+signed in is answered as the search answers them, from the spaces they may
+view: the public ones. The server reads the pages of the chosen
+spaces without their texts and compares the titles itself, so that every
+database, and the demo, give the same pages in the same order.
 
 ### Documents
 

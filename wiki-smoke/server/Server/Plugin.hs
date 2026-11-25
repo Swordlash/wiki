@@ -7,6 +7,9 @@
 -- no WebSocket and no script from elsewhere, while a fetch to the host its
 -- manifest names arrives; an endless loop in it stops neither the page nor
 -- its frame; and the frame's address is refused to a visitor and to a tab.
+-- Then the settings: the administrator installs the example plugin from
+-- the administration, a user sees it in her settings and run in her
+-- editor, turns it off for herself, and the administrator removes it.
 --
 -- What the plugin does (its attempts, its loop) is the frame's own, not the
 -- program's: its report, which the page writes into an element of its
@@ -32,6 +35,7 @@ import Server.Site
 import Wiki.Smoke.Api
 import Wiki.Smoke.Browser
 import Wiki.Smoke.Demo (nothingWrongExcept)
+import Wiki.Smoke.Server (NewUser (..))
 import Wiki.Smoke.Walk
 
 spec :: Smoke -> SpecWith Playwright
@@ -41,6 +45,8 @@ spec smoke = describe "external plugins" $ do
       withElsewhere $ \other -> plugins smoke pw allowed other
   step smoke.chain "marks in the editor what the example plugin finds, shows plugins that loop, send a graph of shared parts or flood their port stopped while the page goes on, and leaves the plugin's frame to the network past the service worker" $ \pw ->
     inTheEditor smoke pw
+  step smoke.chain "installs the example plugin from the administration after the warning, runs it in a user's editor, turns it off for her in her settings, and removes it" $ \pw ->
+    fromTheSettings smoke pw
 
 -- | Another site, on localhost: the paths that reached it, in order.
 data Elsewhere = Elsewhere {origin :: Text, reached :: IORef [Text]}
@@ -298,3 +304,92 @@ inTheEditor smoke pw = do
   _ <- asAdmin smoke "DELETE" "external-plugins/wiki/shadowing" Nothing >>= expectStatus 204 "removing the shadowing plugin"
   _ <- asAdmin smoke "PUT" "external-plugins/policy" (Just (object ["policy" .= ("off" :: Text)])) >>= expectStatus 200 "turning external plugins off"
   pure ()
+
+-- | The example plugin installed, turned off and removed from the
+-- settings, as an administrator and a user do it.
+fromTheSettings :: Smoke -> Playwright -> IO ()
+fromTheSettings smoke pw = do
+  manifest <- ByteString.readFile "../examples/plugins/doubled-words/manifest.json"
+  code <- ByteString.readFile "../examples/plugins/doubled-words/doubled-words.js"
+  let wikiRow page = locator page "#app .admin-external-plugin[data-plugin=doubled-words]"
+      editorAt = "/s/smoke-space/p/first-page/edit/"
+      marked page = evaluate page "JSON.stringify([...document.querySelectorAll('#app *')].map((e) => e.wikiProblems).find((p) => p) ?? [])" :: IO Text
+  -- The administrator lets the wiki's plugins run and installs the
+  -- example for everyone, its two files picked together.
+  inBrowserWith Admin $ \page -> do
+    visit page (address smoke "/admin/permissions/")
+    waitQuiet page
+    check (locator page "#app input[name=external-plugins][value=wiki]")
+    waitQuiet page
+    policy <- asAdmin smoke "GET" "external-plugins" Nothing >>= apiJson
+    text (policy .! "policy") `shouldReturn` "wiki"
+    setInputFiles
+      (locator page "#app .admin-external .plugin-add input[type=file]")
+      [ UploadBytes {name = "manifest.json", mimeType = "application/json", bytes = manifest}
+      , UploadBytes {name = "doubled-words.js", mimeType = "text/javascript", bytes = code}
+      ]
+    waitQuiet page
+    -- The warning, before anything is sent: what it reads, and where it
+    -- may send it.
+    hasText (locator page "#app .plugin-warning .plugin-warning-text") "for everyone on this wiki"
+    hasText (locator page "#app .plugin-warning .plugin-hosts") "It may connect to no other site"
+    listed <- asAdmin smoke "GET" "external-plugins" Nothing >>= apiJson
+    list (listed .! "external") >>= (`shouldBe` 0) . length
+    click (locator page "#app .plugin-warning .plugin-confirm")
+    waitQuiet page
+    hasText (wikiRow page) "Doubled words"
+  -- A user who may edit the smoke space signs in: the plugin is listed in
+  -- her settings, the wiki's, and runs in her editor.
+  sid <- asAdmin smoke "GET" "spaces/at/smoke-space" Nothing >>= apiJson >>= \v -> text (v .! "id")
+  inBrowserWith Nobody $ \page -> do
+    visit page (address smoke "/")
+    signInOn page readerUser.login readerUser.password `shouldReturn` SignedIn
+    me :: Value <- evaluate page "(async () => (await fetch('/api/v1/session')).json())()"
+    bea <- text (me .! "user" .! "id")
+    let granting granted = object ["subject" .= object ["tag" .= ("SubjectUser" :: Text), "contents" .= bea], "permission" .= ("Edit" :: Text), "granted" .= granted]
+    _ <- asAdmin smoke "PUT" ("spaces/" <> escape sid <> "/grants") (Just (granting True)) >>= expectStatus 204 "letting the reader edit the smoke space"
+    visit page (address smoke "/settings/plugins/")
+    waitQuiet page
+    hasText (locator page "#app .plugin-external[data-plugin=doubled-words] .plugin-about") "The wiki's"
+    visit page (address smoke editorAt)
+    editorReady page
+    waitQuiet page
+    pressOn (editorText page) "Control+End"
+    typeText (editorText page) "\n\nSaid the the cat.\n"
+    waitQuiet page
+    marked page >>= \m -> expect ("Doubled words: Doubled word: the" `Text.isInfixOf` m) ("the editor's marks: " <> show m)
+    count (locator page "#app .editor-plugin-frames iframe") `shouldReturn` 1
+    -- Turned off for her in her settings: her editor runs it no more.
+    visit page (address smoke "/settings/plugins/")
+    waitQuiet page
+    uncheck (locator page "#app .plugin-external[data-plugin=doubled-words] .plugin-toggle")
+    waitQuiet page
+    hasText (locator page "#app .plugin-external[data-plugin=doubled-words] .plugin-state") "Off"
+    visit page (address smoke editorAt)
+    editorReady page
+    waitQuiet page
+    count (locator page "#app .editor-plugin-frames iframe") `shouldReturn` 0
+    _ <- asAdmin smoke "PUT" ("spaces/" <> escape sid <> "/grants") (Just (granting False)) >>= expectStatus 204 "taking the reader's edit back"
+    pure ()
+  -- The administrator removes it for everyone, and turns external
+  -- plugins off again.
+  inBrowserWith Admin $ \page -> do
+    visit page (address smoke "/admin/permissions/")
+    waitQuiet page
+    click (locator page "#app .admin-external-plugin[data-plugin=doubled-words] .plugin-remove")
+    waitQuiet page
+    count (wikiRow page) `shouldReturn` 0
+    check (locator page "#app input[name=external-plugins][value=off]")
+    waitQuiet page
+    listed <- asAdmin smoke "GET" "external-plugins" Nothing >>= apiJson
+    text (listed .! "policy") `shouldReturn` "off"
+    list (listed .! "external") >>= (`shouldBe` 0) . length
+  where
+    inBrowserWith who body = do
+      session <- case who of
+        Admin -> Just <$> adminSession smoke
+        _ -> pure Nothing
+      withSessionContext pw serverContext smoke.origin session $ \page -> do
+        result <- body page
+        nothingWrongExcept fromThePlugin serviceWorkerInSandbox page
+        pure result

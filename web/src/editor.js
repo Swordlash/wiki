@@ -1245,17 +1245,17 @@ const walkOf = (state) => (hasNextSnippetField(state) ? (state.field(walkRange, 
 
 // Whether a transaction is the reader's own typing in this view: keys,
 // a paste, a drop, a deletion, a completion chosen, Enter. Not an undo or
-// a redo, the toolbar's or the assistant's write, a replacement of the
-// search, a change of another tab or the server's, nor a change a row of
-// the slide mode takes from the master (mirrored) or the master from a row
-// (rowOf).
-const typingEvents = ["input.type", "input.paste", "input.drop", "input.complete", "input.escape", "delete"];
+// a redo, the toolbar's or the assistant's write (input.wiki), a
+// replacement of the search, a slide moved, deleted or added, nor a
+// change a row of the slide mode takes from the master (mirrored) or the
+// master from a row (rowOf).
+const typingEvents = ["input.type", "input.paste", "input.drop", "input.complete", "input.escape", "delete.backward", "delete.forward", "delete.selection", "delete.cut", "delete.line"];
 const ownTyping = (tr) =>
-  !tr.annotation(mirrored) && tr.annotation(rowOf) === undefined && (tr.annotation(Transaction.userEvent) === "input" || typingEvents.some((event) => tr.isUserEvent(event)));
+  !tr.annotation(mirrored) && tr.annotation(rowOf) === undefined && (["input", "delete"].includes(tr.annotation(Transaction.userEvent)) || typingEvents.some((event) => tr.isUserEvent(event)));
 
 // A change that is not the reader's typing and touches the text the
 // walk's command wrote (an undo of the command, the assistant's edit in a
-// place, another tab's change there) ends the walk, in the same
+// place, the master's change in a row) ends the walk, in the same
 // transaction: the library would keep its fields, mapped, wherever the
 // selection is not moved out of them.
 const walkEnds = EditorState.transactionExtender.of((tr) => {
@@ -3324,7 +3324,7 @@ export function attach(textarea, host, original, codeTokens) {
         // master is hidden: the rows are typed in from now on.
         if (on) {
           closeCompletion(view);
-          clearSnippet(view);
+          if (walkOf(view.state) !== null) clearSnippet(view);
         }
         view.dispatch({ effects: masterCompletion.reconfigure(on ? completion.quiet : completion.extension) });
       }

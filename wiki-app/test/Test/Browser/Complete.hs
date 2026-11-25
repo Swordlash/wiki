@@ -9,7 +9,9 @@
 -- snippet with the cursor at its first place and Tab moves to the next
 -- (a brace of the snippet read back exactly, the indentation of a list's
 -- item added), and that the list's and the snippet's keys stop on their
--- way to the form.
+-- way to the form; and that a command of the @/@ menu with several places
+-- to fill goes through them with Tab and Shift+Tab, in the raw Markdown
+-- and in a presentation's row, until the walk ends (#301).
 module Test.Browser.Complete (spec) where
 
 import Control.Monad.UUID (MonadUUID)

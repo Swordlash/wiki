@@ -803,7 +803,7 @@ data Candidate = Candidate
 -- write otherwise, its further lines after the cursor line's
 -- indentation); or as it is in place of the cursor's whole line, which
 -- read as the text given when the list was made, its first place selected
--- (an entry of the @/@ menu, whose command may change the line's start
+-- and Tab going on to the others (an entry of the @/@ menu, whose command may change the line's start
 -- and write lines after it), with where in that line the @/@ and its
 -- letters were, in characters: they go as a change of their own, and the
 -- command's edit as the smallest change between the line without them and
@@ -1158,7 +1158,8 @@ data SlashDoes = WritesCommand Command | OpensDialog Text
 --
 -- Choosing an entry that writes takes the @/@ and the letters away and
 -- writes what the toolbar's command writes at that place, selection and
--- all ('slashWritten'), as text with that selection ('lineCandidate'). An
+-- all ('slashWritten'), as text with that selection, and with the other
+-- places the command leaves to fill, for Tab ('lineCandidate'). An
 -- entry that opens a dialog takes the @/@ and the letters away, and the
 -- editor opens it.
 slashSource :: [SlashEntry] -> Source

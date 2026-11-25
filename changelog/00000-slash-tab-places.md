@@ -27,7 +27,7 @@ title: Tab goes to the next place to fill after a command of the / menu
 
   The places end, and Tab is again the editor's (two spaces, or an
   indented item in a list), after Tab on the last place, after Escape,
-  when you click outside them, after an undo of the command, and when the
-  writing assistant or another tab changes the command's text. A command
+  when you click outside them, after an undo, and when the writing
+  assistant or a toolbar button changes the command's text. A command
   with one place, such as bold or a box, selects it as before. The same
   works in a presentation's slide edited slide by slide.

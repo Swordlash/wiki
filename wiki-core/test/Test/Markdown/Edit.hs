@@ -6,6 +6,7 @@ module Test.Markdown.Edit (spec) where
 
 import Data.Text qualified as T
 import Protolude hiding (link, list)
+import Test.Cases (coverage)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck (Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, frequency, listOf, oneof, property, (.&&.), (===))
@@ -347,7 +348,8 @@ spec = describe "Wiki.Core.Markdown.Edit" $ do
       map (\c -> placesAt c "Some text‸") [Bold, Mermaid, DisplayMath, Box "NOTE", HorizontalRule, BulletList, Heading, Html Kbd]
         `shouldBe` replicate 8 Nothing
       (\(_, _, places) -> places) (applyWithPlaces Link "a word" (Selection 2 6)) `shouldBe` Nothing
-    prop "writes what apply writes, and places inside what the command put in, in order and apart, the first what apply selects" $
+    -- Its coverage checked natively only ("Test.Cases").
+    prop "writes what apply writes, and places inside what the command put in, in order and apart, the first what apply selects" . coverage $
       forAll genPlaced $ \(command, old, sel) ->
         let (new, selected, places) = applyWithPlaces command old sel
          in cover 15 (isJust places) "places" $

@@ -414,8 +414,11 @@ data FieldInput m = FieldInput
 
 -- | 'FieldOutput' is what a 'SecretField' tells the plugin: a value was kept
 -- under the name, or the name's value was forgotten, or the field unlocked
--- the vault, so that the plugin reads its secrets again ('get').
-data FieldOutput = Kept SecretName | Removed SecretName | Unlocked
+-- the vault, so that the plugin reads its secrets again ('get'). And
+-- 'KeepOver': the keep of a value typed under the name is over, kept
+-- (after 'Kept') or not (the check refused it, the write failed), so that
+-- a plugin that shows the check as going on shows it no more.
+data FieldOutput = Kept SecretName | Removed SecretName | Unlocked | KeepOver SecretName
   deriving stock (Eq, Show)
 
 -- | A 'SecretField' for one secret, in a surface whose children include

@@ -12,7 +12,9 @@
 --
 -- The writing assistant's settings, on a browser whose copy of the vault
 -- is older than the vault, ask the vault once as they open, for all their
--- fields, unless they are on the address the page started at.
+-- fields, unless they are on the address the page started at. A key the
+-- provider accepts and the vault then refuses to keep leaves the field
+-- saying why, and the settings' other controls on again.
 module Test.SecretFieldDom (spec) where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -123,6 +125,32 @@ spec = describe "Wiki.App.View.SecretField" $ do
     (adopted, fetchedAdopted) <- assistantSettingsOnB True
     adopted `shouldBe` ["Not set", "Not set"]
     fetchedAdopted `shouldBe` 0
+
+  it "turns the assistant's controls on again when the provider accepts a typed key and the vault refuses to keep it" $ do
+    counter <- newIORef 0
+    k <- atomicModifyIORef' counter (\n -> (n + 1, n + 1))
+    server <- newServer (Just (userVault k))
+    d <- newDevice counter True
+    withVaultKey d alice k
+    manifest <- maybe (panic "the assistant is in the registry") pure (head [m | m <- manifests, m.id == assistantId])
+    router <- runMemDOM (onDevice d (served server (Router.newRouter "/" Unknown route)))
+    let session = (anonymousIn Open) {B.user = Just User {id = alice, login = Login "alice", displayName = "Alice", avatar = Nothing}}
+        can = capabilities (viewContextAs router session [] 0) manifest
+        anthropic selector = "[data-provider=anthropic] " <> selector
+        controls = map anthropic [".assistant-service", ".assistant-model", ".assistant-default-effort", ".assistant-test"]
+    withView (onDevice d . served server . browsing) AssistantOptions.component OptionsInput {user = Just alice, options = Nothing, adopted = True, can} $ \view -> do
+      settle view
+      -- Another device stores the vault before each of the keep's tries:
+      -- every try is refused.
+      replicateM_ 3 (beforeNextStore server (serverState server >>= traverse_ (setVault server . snd) . (\st -> st.kept)))
+      typeInto view (anthropic ".secret-field-value") "sk-ant-typed"
+      click view (anthropic ".secret-field-keep")
+      settle view
+      textOf view (anthropic ".secret-field-problem") >>= (`shouldSatisfy` T.isInfixOf "could not be changed")
+      textOf view (anthropic ".secret-field-state") `shouldReturn` "Not set"
+      disabled <- for controls $ \c -> (c,) . isJust . join <$> (find view c >>= traverse (attribute "disabled"))
+      disabled `shouldBe` map (,False) controls
+      isJust <$> find view (anthropic ".assistant-check") `shouldReturn` False
   where
     token selector = "[data-secret=token] " <> selector
     endpoint selector = "[data-secret=endpoint] " <> selector
@@ -202,7 +230,7 @@ assistantSettingsOnB adopted = do
 
 -- | 'Browsing' is a browser of the tests where the writing assistant
 -- runs, as in a browser ('assistantHere'): its settings read what they
--- show.
+-- show. Its providers accept every key.
 newtype Browsing m a = Browsing (m a)
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO, PrimMonad)
 
@@ -223,6 +251,10 @@ instance (MonadIO m) => MonadUUID (Browsing m) where
 
 instance (MonadAssistant m) => MonadAssistant (Browsing m) where
   assistantHere = pure True
+
+  -- Every provider lists no model, and accepts every key.
+  listModels _ = pure (Right [])
+  checkKey _ = pure Nothing
 
 instance (MonadVault m) => MonadVault (Browsing m)
 

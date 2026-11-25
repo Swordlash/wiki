@@ -195,6 +195,7 @@ component user manifest security =
           KeptIt -> Kept name
           RemovedIt -> Removed name
           UnlockedIt -> Unlocked
+          KeepEnded -> KeepOver name
       where
         -- A job of the vault's.
         work u name = \case

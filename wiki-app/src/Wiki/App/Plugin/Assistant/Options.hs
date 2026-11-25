@@ -167,6 +167,7 @@ type Slots = ("secret" .== H.Slot (Const Void) FieldOutput FieldSlot)
 -- key)", or the check of a key typed in a provider's field. 'Kept' is a
 -- typed key that worked and is now kept.
 data Check = Checking | Works | KeptNow | Fails Text
+  deriving stock (Eq)
 
 -- | 'Listing': the state of fetching a provider's model list.
 data Listing = Listing | Fetched Int | NotFetched Text
@@ -188,7 +189,11 @@ data State m = State
   -- ^ The page's cap as typed in its field, until it is kept: the estimate
   -- beside the field follows it.
   , testing :: Set Provider
-  -- ^ The providers whose field checks a typed key.
+  -- ^ The providers whose field keeps a typed key: from its check's start
+  -- until the field says the keep is over ('KeepOver'), whichever way it
+  -- ended.
+  , testingKept :: Set Provider
+  -- ^ The providers whose kept key "Test the key" is testing.
   , tested :: Map Provider ModelName
   -- ^ The model the last check of a typed key passed with, for each
   -- provider, to keep with the key once the field has kept it.
@@ -235,6 +240,7 @@ component =
               , otherModels = mempty
               , typedCap = Nothing
               , testing = mempty
+              , testingKept = mempty
               , tested = mempty
               , heard = Nothing
               , refreshed = Nothing
@@ -467,10 +473,7 @@ component =
         effortName e = if e == defaultEffort then e <> " (default)" else e
         -- The service and the model cannot change while a key is tested,
         -- so that the key kept is the one tested at that address.
-        checking =
-          Set.member p st.testing || case Map.lookup p st.checks of
-            Just Checking -> True
-            _ -> False
+        checking = Set.member p st.testing || Set.member p st.testingKept
         checkView = case Map.lookup p st.checks of
           Nothing -> Nothing
           Just Checking -> Just [hh|<p class="assistant-check" role="status">Asking {{ providerLabel p }}…</p>|]
@@ -505,7 +508,7 @@ component =
         modify (\st -> st {input})
         -- Another reader: nothing shown of the former reader's stays.
         when (readerOf input /= before) $
-          modify (\st -> st {typedModels = mempty, checks = mempty, listings = mempty, otherModels = mempty, testing = mempty, tested = mempty})
+          modify (\st -> st {typedModels = mempty, checks = mempty, listings = mempty, otherModels = mempty, testing = mempty, testingKept = mempty, tested = mempty})
         whenM (H.liftEffect input.can.here) $ do
           happen (Settings.Given (readerOf input) input.options)
           -- Another reader, or the address the page started at left.
@@ -525,9 +528,10 @@ component =
           happen (Settings.Changed (\s -> if baseUrlOf p (settingsOf p s) == asked.baseUrl then withModels p models at s else s))
           modify (\st -> st {listings = Map.insert p (Fetched (length models)) st.listings})
       CheckFailed p why reached -> do
-        modify (\st -> st {testing = Set.delete p st.testing, checks = Map.insert p (Fails why) st.checks})
+        modify (\st -> st {checks = Map.insert p (Fails why) st.checks})
         happen (Settings.Changed (withReached p reached))
-      CheckPassed p model -> modify (\st -> st {testing = Set.delete p st.testing, tested = Map.insert p model st.tested})
+      -- The controls stay off until the field says the keep is over.
+      CheckPassed p model -> modify (\st -> st {tested = Map.insert p model st.tested})
       -- The key is kept: the model its check passed with is kept with it.
       FromField p (Kept _) -> do
         model <- gets (\st -> Map.lookup p st.tested)
@@ -541,6 +545,16 @@ component =
         happen (Settings.Changed (withKey p Nothing))
         happen Settings.SecretsChanged
       FromField _ Unlocked -> happen Settings.SecretsChanged
+      -- The keep is over, kept or not: the controls are on again. A check
+      -- still said to be going on was not kept (the field says why), and
+      -- is no longer shown, unless "Test the key" is out.
+      FromField p (KeepOver _) ->
+        modify $ \st ->
+          st
+            { testing = Set.delete p st.testing
+            , tested = Map.delete p st.tested
+            , checks = if Map.lookup p st.checks == Just Checking && Set.notMember p st.testingKept then Map.delete p st.checks else st.checks
+            }
       Choose p -> happen (Settings.Changed (chooseProvider p))
       -- "Other…": show its field, with the model typed there last, if any.
       ChooseModel p "" -> do
@@ -560,9 +574,9 @@ component =
       Test p ->
         gets (\st -> Settings.settings (Machine.current st.machine)) >>= \case
           Just s | Right r <- readyFor p s -> do
-            modify (\st -> st {checks = Map.insert p Checking st.checks})
+            modify (\st -> st {checks = Map.insert p Checking st.checks, testingKept = Set.insert p st.testingKept})
             result <- askProvider (\ms -> ms.check r)
-            modify (\st -> st {checks = Map.insert p (maybe Works (Fails . errorText (serviceOf r) (Just r.key)) result) st.checks})
+            modify (\st -> st {checks = Map.insert p (maybe Works (Fails . errorText (serviceOf r) (Just r.key)) result) st.checks, testingKept = Set.delete p st.testingKept})
             -- Record whether the provider responded at all; and once the
             -- key is known to work, fetch its model list too.
             for_ result (\e -> happen (Settings.Changed (withReached p (e.kind /= Unreachable))))

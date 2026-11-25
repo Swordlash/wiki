@@ -20,6 +20,25 @@
 -- key), and the keep's ask carries that value: what is kept is what was
 -- checked, not the text typed.
 --
+-- = The end of a keep
+--
+-- A plugin can show that a value is being checked (the assistant turns
+-- off its other controls meanwhile). So the field tells the plugin when
+-- the keep of a typed value is over ('KeepEnded'), whichever way it ends,
+-- in the step that takes the last answer of it:
+--
+-- * the check refused the value (its problem shown);
+-- * the check passed under a binding the field no longer has, and nothing
+--   is kept ('reboundProblem' shown);
+-- * the check threw (its problem shown);
+-- * the keep failed: the vault's write was refused, or the vault was
+--   locked meanwhile (its problem shown);
+-- * the keep was done ('KeptIt' first, then 'KeepEnded').
+--
+-- A field that closes with its check or keep out tells nothing: it closes
+-- with the plugin's settings, or with its reader, and the plugin's view
+-- drops what it showed of the check for another reader then.
+--
 -- = What the check was for
 --
 -- A plugin's check can depend on more than the value: the assistant tries
@@ -130,8 +149,10 @@ needsOwner = \case
   Check _ _ -> False
   _ -> True
 
--- | 'Told' is what the field tells the plugin.
-data Told = KeptIt | RemovedIt | UnlockedIt
+-- | 'Told' is what the field tells the plugin: a value kept, the value
+-- forgotten, the vault unlocked, or the keep of a typed value over, kept
+-- or not ("The end of a keep" in the module's header).
+data Told = KeptIt | RemovedIt | UnlockedIt | KeepEnded
   deriving stock (Eq, Show)
 
 -- | 'Model' is the field's state.
@@ -238,7 +259,9 @@ step event m = case event of
     Just (out, job)
       | out == n ->
           let (m', effects) = answered job answer m {doing = Nothing}
-           in landed (Release n : effects) m'
+              -- The last answer of a keep: no keep asked after its check.
+              ended = [Tell KeepEnded | keeping job, not (busy m')]
+           in landed (Release n : effects <> ended) m'
     _ -> (m, [Release n])
   Finished -> (m, [Release n | Just (n, _) <- [m.doing]])
 
@@ -267,6 +290,14 @@ answered job answer m = case (job, answer) of
   where
     -- The vault is open: the plugin is told, and the secret read again.
     unlocked x = (x {password = "", wanted = True}, [Tell UnlockedIt])
+
+-- | Whether a job is a part of the keep of a typed value: its check, or
+-- the keep that follows it.
+keeping :: Job -> Bool
+keeping = \case
+  Check _ _ -> True
+  Put _ _ -> True
+  _ -> False
 
 -- | What the field says when what the check was for changed while it was
 -- out.

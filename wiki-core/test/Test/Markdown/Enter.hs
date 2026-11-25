@@ -167,11 +167,14 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
           , ("in a link's address", "- [link](u‸v)")
           , ("in brackets left open", "- [la‸bel]")
           , ("between a link's text and its label", "- [a]‸[b]")
+          , ("in brackets left open, a bracket in code before", "- [a `]` ‸b][ref]")
           , ("in emphasis", "- *em‸ph*")
           , ("in strong emphasis", "- **str‸ong**")
           , ("in an emoji's name", "- :ta‸da:")
           , ("in a mention", "- @lo‸gin")
           , ("in an inline spoiler", "- ||hid‸den||")
+          , ("between a tag of HTML and its end", "- <span class=\"x\">a‸b</span>")
+          , ("in a colour the toolbar writes", "- <span class=\"c-red\">red ‸text</span> after")
           , ("before a heading's mark", "- a ‸# b")
           , ("before a bullet", "- a ‸- b")
           , ("before a number", "- a ‸1. b")
@@ -304,6 +307,19 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     -- tell a walk down the list of lines for each block from one lookup
     -- (47 MB and 54 MB for these paragraphs, natively, 2026-11-17), and a
     -- time is not asserted. The large text is read here all the same.
+    -- A new item in the middle of a numbered list of a thousand items:
+    -- the items around the cursor's, then the longer text, past whose end
+    -- the list goes on, so no number is changed.
+    it "reads at most the longer text for the numbers in the middle of a numbered list of a thousand items" $ do
+      let ls = "# Items" : "" : [show i <> ". item " <> show i | i <- [1 .. 1000 :: Int]]
+          before = T.intercalate "\n" (take 502 ls)
+          after = mconcat ["\n" <> l | l <- drop 502 ls]
+          ((given, taken, ends), (given', taken', ends')) = fromMaybe (("", "", True), ("", "", True)) (editorTexts before after)
+      _ <- evaluate (T.length given + T.length taken + T.length given' + T.length taken' + fromEnum ends + fromEnum ends')
+      (answer, allocated) <- allocations (askedOf (given, taken, ends) (given', taken', ends'))
+      -- 1,987 characters in the longer text and 50 MB, measured natively
+      -- on 2026-11-25, unoptimised, both asks together.
+      (fmap (.renumbered) answer, T.length given' + T.length taken' <= textLimit, allocated < 100_000_000) `shouldBe` (Just [], True, True)
     it "finds the starts of sixteen thousand paragraphs" $ do
       let text = T.intercalate "\n\n" ["Paragraph " <> show i <> "." | i <- [1 .. 16000 :: Int]]
       blockStarts text (fromRight [] (parseShapes text)) `shouldBe` [1, 3 .. 31999]
@@ -490,6 +506,18 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
                     .&&. (undone before after =<< edit True before after) === Just text
                 other -> counterexample ("not a split: " <> show other) False
             | (before, after) <- midLines text
+            ]
+  -- The same as "answers as for the whole text, for the text from the
+  -- start the last check kept", in the middle of lines: a split from the
+  -- text the editor hands over, for a change anywhere since the check, is
+  -- the whole text's.
+  longTexts . prop "splits as for the whole text, for the text from the start the last check kept" $ \doc change ->
+    let text = render doc
+     in counterexample (toS text) $
+          conjoin
+            [ counterexample (toS (before <> "‸" <> after) <> show (given, taken)) (enter given taken === enter before after)
+            | (before, after) <- midLines text
+            , Just (given, taken) <- [handedOver before after change]
             ]
   where
     isNewItem = \case
@@ -977,7 +1005,7 @@ editorAnswer :: Text -> Text -> Change -> Enter
 editorAnswer before after change = maybe NewLine (uncurry enter) (handedOver before after change)
 
 -- | An answer, forced, and the bytes allocated to make it.
-allocations :: Enter -> IO (Enter, Int64)
+allocations :: (Show a) => a -> IO (a, Int64)
 allocations answer = do
   start <- getAllocationCounter
   forced <- evaluate (answer `seq` T.length (show answer :: Text) `seq` answer)
@@ -1091,7 +1119,14 @@ oneSplit cut olds news =
 -- on the cursor's line is the same, else that change with no number
 -- rewritten (web/src/editor.js's askEnter).
 editorEdit :: Text -> Text -> Maybe Edit
-editorEdit before after = do
+editorEdit before after = uncurry askedOf =<< editorTexts before after
+
+-- | The texts the editor hands over ('editorEdit'): from the start the
+-- check kept to where 'textRange' ends it, and to where 'longerEnd' ends
+-- the longer one, each as the text before the cursor, the text after it,
+-- and whether it ends where the page does.
+editorTexts :: Text -> Text -> Maybe ((Text, Text, Bool), (Text, Text, Bool))
+editorTexts before after = do
   let now = before <> after
       len = T.length now
       ls = T.splitOn "\n" now
@@ -1108,10 +1143,16 @@ editorEdit before after = do
       slice a b = T.take (b - a) (T.drop a now)
   (begins, ends) <- textRange kept len lineStart lineEnd len
   longer <- longerEnd kept len lineStart lineEnd len
-  e <- edit (ends == len) (slice begins cursor) (slice cursor ends)
+  pure ((slice begins cursor, slice cursor ends, ends == len), (slice begins cursor, slice cursor longer, longer == len))
+
+-- | What the editor's Enter does with the texts it hands over
+-- ('editorTexts'), as web/src/editor.js's askEnter asks.
+askedOf :: (Text, Text, Bool) -> (Text, Text, Bool) -> Maybe Edit
+askedOf (given, taken, ends) (given', taken', ends') = do
+  e <- edit ends given taken
   if not e.longer
     then pure e
-    else case edit (longer == len) (slice begins cursor) (slice cursor longer) of
+    else case edit ends' given' taken' of
       Just again | not again.longer && again.change == e.change && again.cursor == e.cursor -> pure again
       _ -> pure (E.Edit e.change [] e.cursor False)
 
@@ -1178,7 +1219,7 @@ instance Arbitrary Listed where
     k <- choose (1, 6)
     entries <- vectorOf k $ do
       box <- if isJust bullet then frequency [(3, pure Nothing), (1, Just <$> elements [' ', 'x'])] else pure Nothing
-      tokens <- choose (1, 4) >>= \m -> vectorOf m (frequency [(4, Word <$> elements ["alpha", "beta", "gamma", "🎉", "naïve"]), (2, Construct <$> elements ["`code span`", "$x+y$", "[a link](u)", "*em text*", "**strong**", ":tada:", "||hidden||"])])
+      tokens <- choose (1, 4) >>= \m -> vectorOf m (frequency [(4, Word <$> elements ["alpha", "beta", "gamma", "🎉", "naïve"]), (2, Construct <$> elements ["`code span`", "$x+y$", "[a link](u)", "*em text*", "**strong**", ":tada:", "||hidden||", "<span class=\"c-red\">red text</span>"])])
       more <- frequency [(4, pure NoMore), (1, pure Continued), (1, pure LazyLine), (1, pure Second), (1, pure Nested)]
       pure Entry {box, tokens, more}
     loose <- frequency [(4, pure False), (1, pure True)]

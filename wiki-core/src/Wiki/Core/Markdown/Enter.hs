@@ -120,7 +120,7 @@ module Wiki.Core.Markdown.Enter
   )
 where
 
-import Data.List (zip3)
+import Data.List (span, zip3)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Protolude
@@ -191,7 +191,12 @@ answered before after
 -- microseconds a character on the everyday WebAssembly build (measured
 -- 2026-11-16: 3 ms for 149 characters, 10 to 17 ms for 691, 330 to 380
 -- ms for 10,900, a whole list of a thousand items), so that Enter stays
--- under about 50 ms. web/src/editor.js hands over no more than this. A
+-- under about 50 ms. A new item of a numbered list with items after it
+-- costs more: the text renumbered is parsed a third time, and where the
+-- list may go on past the text the editor asks again with a longer one,
+-- of up to this many characters too ('Wiki.Core.Markdown.Starts.longerEnd'),
+-- so at most about six parses of 2,000 characters (not measured on
+-- WebAssembly). web/src/editor.js hands over no more than this. A
 -- list's items are where it may cut the text (Wiki.Core.Markdown.Starts),
 -- so what is still past the limit is one long block: a paragraph, a
 -- quotation or a box, a single item.
@@ -641,7 +646,9 @@ split before after = do
   pure Answered {answer, shapes, blocks = spans'}
 
 -- | Whether a text leaves a bracket open: a @[@ with no @]@ after it, a
--- character after a backslash not counted.
+-- character after a backslash not counted, nor a bracket in code between
+-- backticks. Brackets in math are counted, which errs towards a plain
+-- line break.
 opensBracket :: Text -> Bool
 opensBracket = go (0 :: Int) . T.unpack
   where
@@ -649,8 +656,17 @@ opensBracket = go (0 :: Int) . T.unpack
       '\\' : _ : cs -> go depth cs
       '[' : cs -> go (depth + 1) cs
       ']' : cs -> go (max 0 (depth - 1)) cs
+      cs@('`' : _) ->
+        let (ticks, rest) = span (== '`') cs
+         in maybe (go depth rest) (go depth) (closing (length ticks) rest)
       _ : cs -> go depth cs
       [] -> depth > 0
+    -- What follows the run of so many backticks that closes a code span.
+    closing n cs = case break (== '`') cs of
+      (_, []) -> Nothing
+      (_, more) ->
+        let (ticks, rest) = span (== '`') more
+         in if length ticks == n then Just rest else closing n rest
 
 -- | Whether a block after Enter is the block before it with one list's
 -- item split in two at a cut where these blanks were taken out: the first
@@ -688,7 +704,17 @@ splitIn cut old new = case (old, new) of
       (A.Para xs, A.Para ys, A.Para zs) -> same xs ys zs
       (A.Plain xs, A.Plain ys, A.Plain zs) -> same xs ys zs
       _ -> False
-    same xs ys zs = merged xs == merged (ys <> [A.Str cut] <> zs)
+    same xs ys zs = not (leavesTagOpen ys) && merged xs == merged (ys <> [A.Str cut] <> zs)
+    -- Raw HTML is read a tag at a time, so a cut between an opening tag
+    -- and its closing tag (@<span class="x">a‸b</span>@, as the toolbar's
+    -- colours write) joins back to the same inlines, and parts the
+    -- element between two items: the first paragraph may not open more
+    -- tags than it closes. A tag that needs no closing one (@<br>@) counts
+    -- as opened, which leaves the line break plain.
+    leavesTagOpen ys =
+      let tags = [t | A.RawHtml t <- ys]
+          opening t = "<" `T.isPrefixOf` t && not ("</" `T.isPrefixOf` t) && not ("<!" `T.isPrefixOf` t) && not ("/>" `T.isSuffixOf` t)
+       in length (filter opening tags) > length (filter ("</" `T.isPrefixOf`) tags)
     merged = \case
       A.Str a : A.Str b : rest -> merged (A.Str (a <> b) : rest)
       A.Str "" : rest -> merged rest

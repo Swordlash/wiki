@@ -101,8 +101,26 @@ maxSteps = 24
 -- item, if another browser has not moved it, is looked for at the first
 -- change of the secrets here (an unlock, a sign-in), so that a page the
 -- server rendered asks nothing more when it starts.
+--
+-- That look at this browser is made before the locks are taken too: a
+-- browser with nothing legacy waits for no lock, which another operation
+-- of the vault can hold while it waits on the server (a sign-in bringing
+-- the keys up to date). A record an earlier tab writes just after is
+-- moved by the next run.
 migrateAssistant :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Bool -> Maybe (Maybe Value) -> m (Either Text Outcome)
-migrateAssistant u vaultToo options = holdingDeviceRecords (holdingAcrossTabs (migrationLock u) (migrateAssistantHeld u vaultToo options))
+migrateAssistant u vaultToo options =
+  legacyHere u >>= \case
+    False | not vaultToo -> pure (Right NothingHere)
+    _ -> holdingDeviceRecords (holdingAcrossTabs (migrationLock u) (migrateAssistantHeld u vaultToo options))
+
+-- | Whether this browser keeps a legacy record for the user, or a key in
+-- the assistant's slot.
+legacyHere :: (MonadAssistant m) => UserId -> m Bool
+legacyHere u = do
+  record <- legacyRecordHere u
+  slotKey <- deviceKey u
+  traverse_ forgetKey slotKey
+  pure (record || isJust slotKey)
 
 -- | 'migrateAssistant', for a caller that holds the lock of this device's
 -- records already: the tests of two browsers and of two tabs, which run
@@ -110,10 +128,8 @@ migrateAssistant u vaultToo options = holdingDeviceRecords (holdingAcrossTabs (m
 -- caller's too.
 migrateAssistantHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Bool -> Maybe (Maybe Value) -> m (Either Text Outcome)
 migrateAssistantHeld u vaultToo options = do
-  record <- legacyRecordHere u
-  slotKey <- deviceKey u
-  traverse_ forgetKey slotKey
-  if not vaultToo && not record && isNothing slotKey
+  here <- legacyHere u
+  if not vaultToo && not here
     then pure (Right NothingHere)
     else runExceptT (go maxSteps)
   where

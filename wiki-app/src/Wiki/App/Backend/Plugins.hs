@@ -13,14 +13,15 @@
 -- in-memory backend keeps both for the tab's life by the server's rules
 -- ("Wiki.App.Backend.Mem.State"'s 'setPluginStateIn' and
 -- 'setWikiPluginsIn'), so that the demo and the native tests behave as
--- the server does. A plugin's options are not here: no plugin of the wiki
--- keeps its options on the server yet.
+-- the server does. A plugin's options are set and cleared here too, apart
+-- from its state, so that a change of one never writes the other back.
 module Wiki.App.Backend.Plugins
   ( MonadPlugins (..)
   )
 where
 
 import Control.Monad.Trans.Class (MonadTrans)
+import Data.Aeson (Value)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
 import Halogen.Query.HalogenM qualified as H
@@ -28,7 +29,7 @@ import Protolude
 import Wiki.Api.Plugins (PluginChoice, PluginId, PluginState, Plugins, WikiPlugins)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Backend.Mem (MemWiki, memQuery, memWrite)
-import Wiki.App.Backend.Mem.State (pluginsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
+import Wiki.App.Backend.Mem.State (pluginsIn, setPluginOptionsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
 
 -- | 'MonadPlugins' is the backend interface for which plugins are on.
 --
@@ -52,6 +53,21 @@ class (Monad m) => MonadPlugins m where
   default setPluginState :: (MonadTrans t, m ~ t n, MonadPlugins n) => PluginId -> PluginState -> m (Either WikiError PluginChoice)
   setPluginState p = lift . setPluginState p
 
+  -- | Replace the signed-in user's options for a plugin with a JSON
+  -- value, leaving its state as it is. The result is the user's choice
+  -- for the plugin after it. @null@, and a value whose JSON is longer than
+  -- 'Wiki.Api.Plugins.maxOptionsBytes', are 'Invalid'; the other refusals
+  -- are 'setPluginState''s.
+  setPluginOptions :: PluginId -> Value -> m (Either WikiError PluginChoice)
+  default setPluginOptions :: (MonadTrans t, m ~ t n, MonadPlugins n) => PluginId -> Value -> m (Either WikiError PluginChoice)
+  setPluginOptions p = lift . setPluginOptions p
+
+  -- | Clear the signed-in user's options for a plugin, leaving its state
+  -- as it is. The result and the refusals are 'setPluginState''s.
+  clearPluginOptions :: PluginId -> m (Either WikiError PluginChoice)
+  default clearPluginOptions :: (MonadTrans t, m ~ t n, MonadPlugins n) => PluginId -> m (Either WikiError PluginChoice)
+  clearPluginOptions = lift . clearPluginOptions
+
   -- | The plugins off for the whole wiki, for an administrator; anyone
   -- else is 'Forbidden'.
   wikiPluginsOff :: m (Either WikiError WikiPlugins)
@@ -71,6 +87,8 @@ class (Monad m) => MonadPlugins m where
 instance (MonadPlugins m) => MonadPlugins (HalogenM st act slots output m) where
   pluginsNow = H.async pluginsNow
   setPluginState p = H.async . setPluginState p
+  setPluginOptions p = H.async . setPluginOptions p
+  clearPluginOptions = H.async . clearPluginOptions
   wikiPluginsOff = H.async wikiPluginsOff
   setWikiPluginsOff = H.async . setWikiPluginsOff
 
@@ -78,5 +96,7 @@ instance (MonadPlugins m) => MonadPlugins (HalogenM st act slots output m) where
 instance (MonadIO m) => MonadPlugins (MemWiki m) where
   pluginsNow = memQuery pluginsIn
   setPluginState p = memWrite . setPluginStateIn p
+  setPluginOptions p = memWrite . setPluginOptionsIn p . Just
+  clearPluginOptions p = memWrite (setPluginOptionsIn p Nothing)
   wikiPluginsOff = memQuery wikiPluginsIn
   setWikiPluginsOff = memWrite . setWikiPluginsIn

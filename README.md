@@ -612,7 +612,8 @@ It is [these nine slides](https://swordlash.github.io/wiki/s/docs/p/markdown-gui
   with the reason, and each user's choice is kept for when it is turned on
   again. A change applies at once in the tab it is made in, and in other
   tabs and for other users the next time they load the wiki or sign in.
-  In the demo the choices last as long as the tab.
+  In the demo your own choices are kept in the browser, and the
+  administrator's set lasts as long as the tab.
 - **Slides** made of any page, presented, printed and exported
   ([above](#presentations)).
 - **History**: every save a version, its changes shown word by word, and any

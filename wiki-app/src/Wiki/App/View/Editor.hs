@@ -283,6 +283,7 @@ import Web.Storage.Storage qualified as Storage
 import Wiki.Api.Events (PageEvent (PageChanged))
 import Wiki.Api.Events qualified as Event
 import Wiki.Api.Notifications (maxPeopleFound)
+import Wiki.Api.Plugins (PluginId)
 import Wiki.Api.ServerSettings (HomePage (showAnonymous, showRecent, showSpaces))
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Assistant.Sync (MonadVault)
@@ -375,10 +376,10 @@ import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Islands qualified as Islands
 import Wiki.App.Live (Feed (..))
 import Wiki.App.Live qualified as Live
-import Wiki.App.Plugin (Agent (..), AgentButton, AgentOutput, AgentQuery (..), Diagnostics (..), Drawn (..), Face (..))
+import Wiki.App.Plugin (Agent (..), AgentButton, AgentOutput, AgentQuery (..), Diagnostics (..), Drawn (..), Face (..), Manifest (..))
 import Wiki.App.Plugin qualified as Plugin (AgentButton (..), AgentInput (..), AgentOutput (..), Editing (..))
 import Wiki.App.Plugin.Host (capabilities, documentOf)
-import Wiki.App.Plugin.Registry (Contributed (..), contributed, plugins, pluginsOn)
+import Wiki.App.Plugin.Registry (Contributed (..), contributed, optionsFor, plugins, pluginsOn)
 import Wiki.App.Route (Route (..), pageRoute)
 import Wiki.App.View.Body qualified as Body
 import Wiki.App.View.Common
@@ -804,7 +805,7 @@ data Action
   | MergeByHand
   | HideTheirs
   | PressAgent Text
-  | FromAgent AgentOutput
+  | FromAgent PluginId AgentOutput
   | Selected (Maybe Span)
   | ChangesLeft Int
   | Decide Decision Int
@@ -1647,7 +1648,7 @@ component =
     -- is closed; until it opens, it draws nothing.
     agentSlot :: State -> Maybe Plugin.Editing -> Maybe (H.ComponentHTML Action Slots m)
     agentSlot st seen =
-      (\(_, agent) -> HH.slot "agent" () agent.surface Plugin.AgentInput {user = me st, editing = seen, can = capabilities st.input.context} FromAgent)
+      (\(manifest, agent) -> HH.slot "agent" () agent.surface Plugin.AgentInput {user = me st, options = optionsFor manifest.id st.input.context.plugins, editing = seen, can = capabilities st.input.context} (FromAgent manifest.id))
         <$> (contributed (pluginsOn st.input.context) plugins).agent
 
     -- The agent beside the text, in its frame once it has opened.
@@ -2377,9 +2378,12 @@ component =
             modify (\s -> s {assistantOpen = True, assistantMounted = True})
           else modify (\s -> s {assistantOpen = False})
         H.tell "agent" () (Press key opening)
-      FromAgent (Plugin.Buttons agentButtons) -> modify (\st -> st {agentButtons})
-      FromAgent Plugin.Closed -> modify (\st -> st {assistantOpen = False})
-      FromAgent (Plugin.DecideAll d) -> decide d Nothing
+      FromAgent _ (Plugin.Buttons agentButtons) -> modify (\st -> st {agentButtons})
+      FromAgent _ Plugin.Closed -> modify (\st -> st {assistantOpen = False})
+      FromAgent _ (Plugin.DecideAll d) -> decide d Nothing
+      -- The shell writes a plugin's options, so that closing the editor
+      -- does not cut the write off.
+      FromAgent p (Plugin.SetOptions o) -> H.raise (PluginOptions p o)
       Selected selection -> modify (\st -> st {selection})
       ChangesLeft n -> modify (\st -> st {pendingChanges = n})
       Decide d i -> decide d (Just i)

@@ -8,7 +8,7 @@
 -- which records a load, a view and a write read and write ('Counting').
 module Test.Backend.Persist (spec) where
 
-import Data.Aeson (Value (..), decodeStrict')
+import Data.Aeson (Value (..), decodeStrict', object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.IORef (newIORef, readIORef, writeIORef)
@@ -23,6 +23,7 @@ import Test.Hspec
 import Web.Storage.IndexedDB (Database (..))
 import Web.Storage.IndexedDB qualified as IDB
 import Wiki.Api.Account (Account (..), NewAccount (..))
+import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..))
 import Wiki.Api.ServerSettings (HomePage (..), ServerSettingsOf (..), defaultHomePage, noServerSettings)
 import Wiki.Api.ServerSettings qualified as SS
 import Wiki.App.Backend
@@ -37,6 +38,7 @@ import Wiki.App.Backend.Contract.Stars qualified as Stars
 import Wiki.App.Backend.Mem
 import Wiki.App.Backend.Mem.Persist
 import Wiki.App.Backend.Mem.State (MemState (..))
+import Wiki.App.Backend.Plugins (MonadPlugins (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.Core.Access (Access (..))
 import Wiki.Core.Attachment (Attachment (..), Source (..))
@@ -400,6 +402,27 @@ spec = describe "MemWiki kept in IndexedDB" $ do
       archive <- run (memArchive "test")
       run (importMemWiki archive) `shouldReturn` Right ()
       run (getDraft hello.id) `shouldReturn` Right Nothing
+      shouldReload db opened
+
+    it "keeps each user's choices for the plugins, their options included, for their next visit" $ do
+      db <- freshDatabase
+      opened <- open db
+      let run :: MemWiki IO x -> IO x
+          run = runKept opened
+          options = object ["provider" .= ("openai" :: Text)]
+      run (switchUser (Just (UserId "user-editor")))
+      _ <- run (setPluginOptions (PluginId "assistant") options) >>= ok
+      _ <- run (setPluginState (PluginId "errors") PluginOff) >>= ok
+      shouldReload db opened
+      reopened <- open db
+      mine <- runKept reopened (switchUser (Just (UserId "user-editor")) >> pluginsNow) >>= ok
+      mine.mine
+        `shouldBe` Map.fromList
+          [ (PluginId "assistant", PluginChoice {state = PluginDefault, options = Just options})
+          , (PluginId "errors", PluginChoice {state = PluginOff, options = Nothing})
+          ]
+      -- Cleared, the choice is no longer kept.
+      _ <- run (clearPluginOptions (PluginId "assistant")) >>= ok
       shouldReload db opened
 
     it "makes ids after the ones kept, not over them" $ do

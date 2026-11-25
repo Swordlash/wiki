@@ -88,6 +88,7 @@ module Wiki.App.View.Common
   )
 where
 
+import Data.Aeson (Value)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time (UTCTime, defaultTimeLocale, formatTime)
@@ -99,7 +100,7 @@ import Halogen.Router qualified as Router
 import Halogen.TH (hh)
 import Numeric.Natural (Natural)
 import Protolude
-import Wiki.Api.Plugins (Plugins)
+import Wiki.Api.Plugins (PluginId, Plugins)
 import Wiki.App.Backend (MonadWiki (avatarUrl), Session (grants, homePage, mathMacros, standing, user), WikiError (..), sessionPrincipal)
 import Wiki.App.Route (Route (..), pageRoute)
 import Wiki.Core.HomePage (HomePage (showAnonymous))
@@ -169,6 +170,9 @@ data ViewOutput
     Entered
   | -- | The reader chose how wide pages are laid out: the shell keeps it.
     ChoseWidth PageWidth
+  | -- | A plugin's surface in the view set the plugin's options ('Nothing'
+    -- clears them): the shell writes them ("Wiki.App.Plugin").
+    PluginOptions PluginId (Maybe Value)
 
 -- | What the shell asks a view. A view that does not answer is taken to
 -- have nothing to say.

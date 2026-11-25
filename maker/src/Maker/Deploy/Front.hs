@@ -181,6 +181,7 @@ front root o0 = do
   prevTlsCert <- prev "tls_cert"
   prevTlsKey <- prev "tls_key"
   prevTlsCa <- prev "tls_ca"
+  prevHsts <- prev "hsts"
   prevServePort <- prev "serve_port"
   prevDb <- prev "db"
   prevDbPort <- prev "db_port"
@@ -434,7 +435,12 @@ front root o0 = do
         pure (c, k, a)
       else do
         unless (null o.optTlsCa) (die "--tls-ca is the authority the deploy checks the server's own certificate against: it goes with --tls-cert FILE --tls-key FILE")
+        unless (null o.optHsts) (die "--hsts and --no-hsts are for wiki-server serving HTTPS itself (--tls-cert FILE --tls-key FILE): behind tailscale serve or a reverse proxy, the header is theirs to send")
         pure ("", "", "")
+  -- Whether wiki-server, serving HTTPS itself, sends
+  -- Strict-Transport-Security: no after --no-hsts, and empty (the default,
+  -- on) otherwise. Remembered whatever the way, and used with --tls-cert.
+  let hsts = if firstOf [o.optHsts, prevHsts] == "no" then "no" else ""
 
   -- The directory, absolute and with its links resolved, so that the
   -- safety checks compare what would really be deleted.
@@ -597,6 +603,7 @@ front root o0 = do
           , ("tls_cert", tlsCert)
           , ("tls_key", tlsKey)
           , ("tls_ca", tlsCa)
+          , ("hsts", hsts)
           , ("whats_new", whatsNew)
           , ("prefix", l.prefix)
           , ("user", user)

@@ -56,6 +56,10 @@ data Options = Options
   , optTlsKey :: String
   , optTlsCa :: String
   , optTlsCaGiven :: Bool
+  , optHsts :: String
+  -- ^ @yes@ after @--hsts@, @no@ after @--no-hsts@, empty when neither is
+  -- given: whether wiki-server, serving HTTPS itself, sends
+  -- Strict-Transport-Security.
   , optProxy :: Bool
   , optTexlive :: String
   , optTexliveMirror :: String
@@ -105,6 +109,7 @@ defaultOptions =
     , optTlsKey = ""
     , optTlsCa = ""
     , optTlsCaGiven = False
+    , optHsts = ""
     , optProxy = False
     , optTexlive = ""
     , optTexliveMirror = ""
@@ -171,6 +176,8 @@ table =
   , ("--no-texlive", Flag (exclusive (.optTexlive) "yes" "--texlive and --no-texlive exclude each other: give one" (\o -> o {optTexlive = "no"})))
   , ("--whats-new", Flag (exclusive (.optWhatsNew) "no" "--whats-new and --no-whats-new exclude each other: give one" (\o -> o {optWhatsNew = "yes"})))
   , ("--no-whats-new", Flag (exclusive (.optWhatsNew) "yes" "--whats-new and --no-whats-new exclude each other: give one" (\o -> o {optWhatsNew = "no"})))
+  , ("--hsts", Flag (exclusive (.optHsts) "no" "--hsts and --no-hsts exclude each other: give one" (\o -> o {optHsts = "yes"})))
+  , ("--no-hsts", Flag (exclusive (.optHsts) "yes" "--hsts and --no-hsts exclude each other: give one" (\o -> o {optHsts = "no"})))
   , ("--texlive-mirror", Value (\v o -> o {optTexliveMirror = v}))
   , ("--texlive-installer", Value (\v o -> o {optTexliveInstaller = v}))
   , ("--perl-source", Value (\v o -> o {optPerlSource = v}))

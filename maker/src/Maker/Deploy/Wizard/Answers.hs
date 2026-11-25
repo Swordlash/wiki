@@ -14,6 +14,7 @@
 -- >   texlive=machine|toolchain|none  texlive_mirror=URL
 -- >   texlive_installer=URL|DIR  perl_source=URL|DIR
 -- >   way=tailscale|cert|proxy|http tls_cert=FILE  tls_key=FILE  tls_ca=FILE
+-- >   hsts=yes|no
 -- >   port=N  bind=ADDRESS  admin_port=N  toolchain=DIR
 -- >   fresh|refresh_page|no_build|no_firewall|no_rehearsal|enable_linger=yes|no
 -- >   whats_new=yes|no              semaphore=probe|on|off
@@ -35,7 +36,10 @@
 -- give it.
 -- whats_new is whether the server shows the page "What's new?": yes (no
 -- option, unless the state remembers no, which --whats-new forgets) or no
--- (--no-whats-new). texlive_installer and perl_source are the git
+-- (--no-whats-new). hsts is whether wiki-server, serving HTTPS with a
+-- certificate of its own, sends Strict-Transport-Security: yes (no option,
+-- unless the state remembers no, which --hsts forgets) or no (--no-hsts).
+-- texlive_installer and perl_source are the git
 -- repositories (or directories) TeX Live's installer and Perl's source
 -- come from, when not from their GitHub mirrors; the deploy does not
 -- remember them, so the state file does not give them.
@@ -134,6 +138,7 @@ data Answers = Answers
   , tlsCert :: Text
   , tlsKey :: Text
   , tlsCa :: Text
+  , hsts :: Bool
   , port :: Text
   , bind :: Text
   , adminPort :: Text
@@ -151,6 +156,7 @@ data Answers = Answers
   , rememberedNpmRegistry :: Bool
   , rememberedHackageMirror :: Bool
   , rememberedNoWhatsNew :: Bool
+  , rememberedNoHsts :: Bool
   }
   deriving (Eq, Show)
 
@@ -183,6 +189,7 @@ defaultAnswers =
     , tlsCert = ""
     , tlsKey = ""
     , tlsCa = ""
+    , hsts = True
     , port = "8080"
     , bind = ""
     , adminPort = "8081"
@@ -200,6 +207,7 @@ defaultAnswers =
     , rememberedNpmRegistry = False
     , rememberedHackageMirror = False
     , rememberedNoWhatsNew = False
+    , rememberedNoHsts = False
     }
 
 -- | The answers a deployment's state file gives: what the deploy would
@@ -231,6 +239,7 @@ fromState kv a =
     , tlsCert = if remembered == Certificate then value "tls_cert" else ""
     , tlsKey = if remembered == Certificate then value "tls_key" else ""
     , tlsCa = if remembered == Certificate then value "tls_ca" else ""
+    , hsts = value "hsts" /= "no"
     , port = orKeep (a.port) (value "port")
     , -- An address the deploy chose itself (bind_choice=auto) is chosen
       -- again on the next run, so it is not an answer.
@@ -245,6 +254,7 @@ fromState kv a =
     , rememberedNpmRegistry = not (T.null (value "npm_registry"))
     , rememberedHackageMirror = not (T.null (value "hackage_mirror"))
     , rememberedNoWhatsNew = value "whats_new" == "no"
+    , rememberedNoHsts = value "hsts" == "no"
     }
   where
     -- As state_get: the last line of the key wins.
@@ -295,6 +305,7 @@ applyAnswer a (key, v) = case key of
   "tls_cert" -> Right a {tlsCert = v}
   "tls_key" -> Right a {tlsKey = v}
   "tls_ca" -> Right a {tlsCa = v}
+  "hsts" -> yesNo (\x -> a {hsts = x})
   "port" -> Right a {port = v}
   "bind" -> Right a {bind = v}
   "admin_port" -> Right a {adminPort = v}

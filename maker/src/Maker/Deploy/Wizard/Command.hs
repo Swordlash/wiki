@@ -116,9 +116,13 @@ deployArgs a = case a.action of
       PlainHttp -> ["--http"]
       Certificate ->
         ["--tls-cert", a.tlsCert, "--tls-key", a.tlsKey]
-          ++ if T.null (a.tlsCa)
-            then flag "--tls-ca=" (a.rememberedCa)
-            else ["--tls-ca", a.tlsCa]
+          ++ (if T.null (a.tlsCa) then flag "--tls-ca=" (a.rememberedCa) else ["--tls-ca", a.tlsCa])
+          ++ hstsArgs
+    -- Strict-Transport-Security is on by default, so it takes no option,
+    -- unless the state remembers it off, which --hsts forgets.
+    hstsArgs
+      | a.hsts = flag "--hsts" (a.rememberedNoHsts)
+      | otherwise = ["--no-hsts"]
     option key v = if T.null v then [] else [key, v]
     flag key on' = [key | on']
 

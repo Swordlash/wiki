@@ -176,6 +176,7 @@ state_write() {
     printf 'tls_cert=%s\n' "${tls_cert:-}"
     printf 'tls_key=%s\n' "${tls_key:-}"
     printf 'tls_ca=%s\n' "${tls_ca:-}"
+    printf 'hsts=%s\n' "${hsts:-}"
     printf 'https_host=%s\n' "${https_host:-}"
     printf 'serve_port=%s\n' "${serve_port:-}"
     printf 'db=%s\n' "${db:-}"
@@ -490,6 +491,7 @@ undeploy() {
   tls_cert=$(state_get tls_cert)
   tls_key=$(state_get tls_key)
   tls_ca=$(state_get tls_ca)
+  hsts=$(state_get hsts)
   https_host=$(state_get https_host)
   serve_port=$(state_get serve_port)
   db=$(state_get db)

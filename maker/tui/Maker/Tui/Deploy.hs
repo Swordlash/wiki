@@ -146,6 +146,7 @@ data Name
   | CertField
   | KeyField
   | CaField
+  | HstsField
   | PortField
   | BindField
   | AdminPortField
@@ -398,6 +399,11 @@ fieldsFor s a = case s of
               "Optional: the certificate authority to check the served certificate against after the deploy, for the name the certificate is issued for. Empty: the check skips verification."
               tlsCaL
               CaField
+          , check
+              "Every HTTPS answer carries Strict-Transport-Security for a year: a browser that has seen it over a trusted certificate goes to the host over HTTPS only, and lets nobody click through a certificate error there. Unticked, the server runs with --no-hsts. Ticked after that, the deploy gives --hsts."
+              hstsL
+              HstsField
+              "send Strict-Transport-Security (--no-hsts when unticked)"
           ]
         else []
   Address ->
@@ -541,8 +547,9 @@ wayL = lens (.way) (\a v -> a {way = v})
 semaphoreL :: Lens' Answers Semaphore
 semaphoreL = lens (.semaphore) (\a v -> a {semaphore = v})
 
-refreshPageL, freshL, noBuildL, noFirewallL, noRehearsalL, enableLingerL, whatsNewL :: Lens' Answers Bool
+refreshPageL, freshL, noBuildL, noFirewallL, noRehearsalL, enableLingerL, whatsNewL, hstsL :: Lens' Answers Bool
 whatsNewL = lens (.whatsNew) (\a v -> a {whatsNew = v})
+hstsL = lens (.hsts) (\a v -> a {hsts = v})
 refreshPageL = lens (.refreshPage) (\a v -> a {refreshPage = v})
 freshL = lens (.fresh) (\a v -> a {fresh = v})
 noBuildL = lens (.noBuild) (\a v -> a {noBuild = v})

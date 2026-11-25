@@ -128,6 +128,16 @@ expect 'sh toolchain/deploy-local.sh --server --name team --postgres --db-port 5
   name=team way=cert tls_cert=/etc/ssl/wiki.pem tls_key=/etc/ssl/wiki.pem tls_ca=/etc/ssl/ca.pem bind=0.0.0.0 port=8443 admin_port=8444 db_port=5434
 pass 'a certificate with --tls-ca, and --name'
 
+# Strict-Transport-Security, with a certificate: on is the deploy's default
+# and takes no option, off is --no-hsts; without a certificate, neither.
+expect 'sh toolchain/deploy-local.sh --server --sqlite --tls-cert /etc/ssl/wiki.pem --tls-key /etc/ssl/wiki.pem --no-hsts --port 8443 --admin-port 8081' \
+  mode=server db=sqlite way=cert tls_cert=/etc/ssl/wiki.pem tls_key=/etc/ssl/wiki.pem hsts=no port=8443
+expect 'sh toolchain/deploy-local.sh --server --sqlite --tls-cert /etc/ssl/wiki.pem --tls-key /etc/ssl/wiki.pem --port 8443 --admin-port 8081' \
+  mode=server db=sqlite way=cert tls_cert=/etc/ssl/wiki.pem tls_key=/etc/ssl/wiki.pem hsts=yes port=8443
+expect 'sh toolchain/deploy-local.sh --server --sqlite --behind-proxy --port 8090 --admin-port 8081' \
+  mode=server db=sqlite hsts=no way=proxy port=8090
+pass 'Strict-Transport-Security: nothing when on, --no-hsts when off, nothing without a certificate'
+
 # A rerun with no answers but the prefix: everything from the state file
 # under the prefix, as the deploy keeps it. The page is downloaded for the
 # checkout's commit (backend_only=head), and the certificate's files and
@@ -193,6 +203,16 @@ expect "sh toolchain/deploy-local.sh --server --prefix $TMP/srv/news --sqlite --
 expect "sh toolchain/deploy-local.sh --server --prefix $TMP/srv/news --sqlite --whats-new --behind-proxy --port 8090 --admin-port 8091" \
   "prefix=$TMP/srv/news" whats_new=yes
 pass 'the page from the state: whats_new=no is --no-whats-new, and on again is --whats-new'
+
+# Strict-Transport-Security off in the state (hsts=no) stays off, with
+# --no-hsts; turned on again, --hsts forgets it.
+mkdir -p "$TMP/srv/hsts/state"
+printf 'name=wiki-demo\ndir=%s/srv/hsts\nport=8443\nmode=server\nadmin_port=8091\nway=cert\ntls_cert=/etc/ssl/wiki.pem\ntls_key=/etc/ssl/wiki.key\ndb=sqlite\nhsts=no\n' "$TMP" >"$TMP/srv/hsts/state/wiki-demo.state"
+expect "sh toolchain/deploy-local.sh --server --prefix $TMP/srv/hsts --sqlite --tls-cert /etc/ssl/wiki.pem --tls-key /etc/ssl/wiki.key --no-hsts --port 8443 --admin-port 8091" \
+  "prefix=$TMP/srv/hsts"
+expect "sh toolchain/deploy-local.sh --server --prefix $TMP/srv/hsts --sqlite --tls-cert /etc/ssl/wiki.pem --tls-key /etc/ssl/wiki.key --hsts --port 8443 --admin-port 8091" \
+  "prefix=$TMP/srv/hsts" hsts=yes
+pass 'Strict-Transport-Security from the state: hsts=no is --no-hsts, and on again is --hsts'
 
 # The status and the stop of that deployment name it, and nothing else.
 expect "sh toolchain/deploy-local.sh --status --prefix $TMP/srv/wiki" action=status "prefix=$TMP/srv/wiki"

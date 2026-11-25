@@ -309,10 +309,11 @@ apply p = do
                 <> " --admin-listen 127.0.0.1:"
                 <> adminPort
             -- A Secure cookie is sent over HTTPS only, so over plain HTTP it
-            -- would make signing in impossible.
+            -- would make signing in impossible. wiki-server serving HTTPS
+            -- itself sends Strict-Transport-Security unless --no-hsts.
             tls
               | not (null httpsHost) || way == "proxy" = " --secure-cookies"
-              | way == "cert" = " --tls-cert " <> unitWord (v "tls_cert") <> " --tls-key " <> unitWord (v "tls_key")
+              | way == "cert" = " --tls-cert " <> unitWord (v "tls_cert") <> " --tls-key " <> unitWord (v "tls_key") <> (if v "hsts" == "no" then " --no-hsts" else "")
               | otherwise = ""
             database = databaseWords db dir dbPort pgDir
             pdf = if v "pdf" == "yes" then "" else " --no-pdf"

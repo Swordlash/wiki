@@ -10,6 +10,7 @@
 #
 #   sh toolchain/deploy-local.sh [--server | --static] [--port N]
 #                                [--https | --tls-cert FILE --tls-key FILE [--tls-ca FILE]
+#                                 [--hsts | --no-hsts]
 #                                 | --behind-proxy | --http]
 #                                [--bind ADDRESS] [--admin-port N] [--prefix DIR]
 #                                [--toolchain DIR] [--name NAME]
@@ -230,6 +231,12 @@
 #   --tls-ca FILE    with --tls-cert: after the deploy, check the certificate the server
 #                    serves against this certificate authority; remembered (--tls-ca=
 #                    forgets it)
+#   --no-hsts        with --tls-cert: run wiki-server with --no-hsts, so that its HTTPS
+#                    answers carry no Strict-Transport-Security header (by default they
+#                    do, and a browser that has seen it refuses for a year to let a
+#                    reader click through a certificate error for the host); remembered
+#   --hsts           with --tls-cert: send the header again, after a run with --no-hsts
+#                    (the first run's default)
 #   --behind-proxy   serve plain HTTP on 127.0.0.1, with Secure cookies, for a reverse
 #                    proxy on this machine that serves HTTPS (Caddy, nginx); remembered.
 #                    --https, --tls-cert, --behind-proxy and --http exclude each other;
@@ -527,7 +534,7 @@ opt_backend_only='' refresh_page=''
 opt_app_page='' opt_app_page_given='' opt_bundle_locally='' opt_system_tools=''
 opt_npm_registry='' opt_npm_registry_given='' opt_hackage_mirror='' opt_hackage_mirror_given=''
 opt_libsodium_source=''
-opt_tls_cert='' opt_tls_key='' opt_tls_ca='' opt_tls_ca_given='' opt_proxy=''
+opt_tls_cert='' opt_tls_key='' opt_tls_ca='' opt_tls_ca_given='' opt_proxy='' opt_hsts=''
 opt_texlive='' opt_texlive_mirror='' opt_texlive_installer='' opt_perl_source=''
 opt_whats_new=''
 action=deploy yes=
@@ -602,6 +609,12 @@ while [ $# -gt 0 ]; do
     --no-whats-new)
       [ "$opt_whats_new" != yes ] || die "--whats-new and --no-whats-new exclude each other: give one"
       opt_whats_new=no ;;
+    --hsts)
+      [ "$opt_hsts" != no ] || die "--hsts and --no-hsts exclude each other: give one"
+      opt_hsts=yes ;;
+    --no-hsts)
+      [ "$opt_hsts" != yes ] || die "--hsts and --no-hsts exclude each other: give one"
+      opt_hsts=no ;;
     --texlive-mirror) need_value $# "$1"; opt_texlive_mirror=$2; shift ;;
     --texlive-mirror=*) opt_texlive_mirror=${1#*=} ;;
     --texlive-installer) need_value $# "$1"; opt_texlive_installer=$2; shift ;;
@@ -811,7 +824,7 @@ env_file=$STATE_DIR/$name.env
 # rest (Docker, the commit, the unit's words) itself
 # (maker/src/Maker/Deploy/Move.hs).
 if [ "$action" = move ]; then
-  [ -z "$opt_port$opt_bind$opt_toolchain$opt_mode$opt_admin_port$opt_https$opt_db$fresh$opt_backend_only$refresh_page$opt_app_page_given$opt_bundle_locally$opt_system_tools$opt_npm_registry_given$opt_hackage_mirror_given$opt_libsodium_source$opt_tls_cert$opt_tls_key$opt_tls_ca_given$opt_proxy$opt_texlive$opt_texlive_mirror$opt_texlive_installer$opt_perl_source$opt_whats_new$no_firewall$no_rehearsal$enable_linger$force$yes" ] && [ -n "$build" ] ||
+  [ -z "$opt_port$opt_bind$opt_toolchain$opt_mode$opt_admin_port$opt_https$opt_db$fresh$opt_backend_only$refresh_page$opt_app_page_given$opt_bundle_locally$opt_system_tools$opt_npm_registry_given$opt_hackage_mirror_given$opt_libsodium_source$opt_tls_cert$opt_tls_key$opt_tls_ca_given$opt_hsts$opt_proxy$opt_texlive$opt_texlive_mirror$opt_texlive_installer$opt_perl_source$opt_whats_new$no_firewall$no_rehearsal$enable_linger$force$yes" ] && [ -n "$build" ] ||
     die "--move-to-postgres takes only --name, --prefix, --db-port and --semaphore or --no-semaphore: the deployment's other settings stay as its last deploy left them"
   where=$name${prefix:+ under $prefix}
   { [ -f "$state_file" ] && [ "$prev_mode" = server ] && [ -n "$prev_dir" ]; } ||
@@ -1189,6 +1202,9 @@ if [ "$action" = status ]; then
   https_host=$prev_https_host serve_note=
   if [ "$prev_way" = cert ]; then
     say "HTTPS by wiki-server itself, with its own certificate (--tls-cert $prev_tls_cert --tls-key $prev_tls_key${prev_tls_ca:+, checked against --tls-ca $prev_tls_ca}), read as it starts: a renewed certificate takes systemctl --user restart $name.service"
+    if grep '^ExecStart=.* --no-hsts' "$unit_file" >/dev/null 2>&1; then
+      say "no Strict-Transport-Security header (--no-hsts); --hsts sends it again"
+    fi
   elif [ "$prev_way" = proxy ]; then
     say "behind a reverse proxy (--behind-proxy): plain HTTP on 127.0.0.1:$prev_port for the proxy, which serves HTTPS; Secure cookies"
   elif [ -n "$prev_serve_port" ]; then

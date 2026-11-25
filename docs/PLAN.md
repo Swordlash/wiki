@@ -2241,7 +2241,13 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   the editor) reads whether it had the focus from the old master,
   which is false while a row has it, so no row is opened with the
   focus; `Tasks.hs:533` ("1 box changed,
-  not saved yet" at rest after twenty seconds); `SlideEditor.hs:962`
+  not saved yet" at rest after twenty seconds): **fixed (#377), a
+  fault of the test**, with the group moved to reads once: the
+  examples hold the ticks' save across slow steps, and the HTTP
+  backend aborts a request after 30 s, so on a slow run the held save
+  timed out before its release; those examples now use a transport
+  without a limit (other groups that hold a request across slow
+  steps may meet the same limit); `SlideEditor.hs:962`
   and `Http.hs:1581` (a read while a fiber waits); `Contents.hs:114`
   and `Comments.hs:87` (the clipboard's promise); `Vault.hs:771` and
   `:602`. **`DeckViewer.hs:67`, found on CI twice (#316's run and #322's):

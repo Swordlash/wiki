@@ -32,7 +32,7 @@ import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, i
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
-import Test.Browser.Http (Asked (..), answerRaw, answerWith, answersTaken, askedNow, holdAt, listening, release, releaseHolding, serveDemo, serverStarts, serverStops, startServer, startServerOver, tell)
+import Test.Browser.Http (Asked (..), answerRaw, answerWith, answersTaken, askedNow, holdAt, listening, release, releaseHolding, serveDemo, serverStarts, serverStops, startHolding, startServer, tell)
 import Test.Browser.Mount (adopt, clickButton, slugs, start, startChangedWith)
 import Test.Browser.Outside (watchdogMs)
 import Test.Hspec.Halogen
@@ -41,7 +41,6 @@ import Wiki.Api (SpacesApi (..), WikiApi (..))
 import Wiki.Api.Events (PageEvent (PageChanged), ServerMessage (Event))
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend (MonadWiki (postDetails))
-import Wiki.App.Backend.Http (fetchTransport, newHttpEnv)
 import Wiki.App.Backend.Http.Client (endpointUrl)
 import Wiki.App.Backend.Mem (newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..), insertPage, savePageIn)
@@ -253,7 +252,7 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
     -- The save meets a newer version, and the page as it is now is held.
     answerRaw "PUT" ("api/v1/pages/" <> guide.id.text) 409 "{\"error\":\"Conflict\",\"message\":\"Saved since.\"}"
     answerWith "GET" guideAt 200 guide
-    ui <- startHolding (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
+    ui <- startHolding m (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
     find ui ".page-body input[aria-label='Read it'][data-task]" >>= click
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     holdAt "GET" guideAt
@@ -329,7 +328,7 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
     answerWith "PUT" saveAt 200 saved
     holdAt "PUT" saveAt
     answerWith "GET" guideAt 200 guide
-    ui <- startHolding (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
+    ui <- startHolding m (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
     readIt ui >>= click
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     find ui ".page-ticks-save" >>= click
@@ -402,7 +401,7 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
     answerWith "POST" (pageAt <> "/move") 200 short
     answerWith "PUT" (pageAt <> "/template") 200 asTemplate
     answerRaw "DELETE" pageAt 204 ""
-    ui <- startHolding (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
+    ui <- startHolding m (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
     enabled ui `shouldReturn` 2
     -- Rename: submitted, its form stays though Cancel is clicked, and no
     -- box takes a tick until the answer.
@@ -462,7 +461,7 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
     answerWith "GET" guideAt 200 short
     answerWith "PUT" (pageAt <> "/template") 200 ((short :: Core.Page) {template = True})
     answerWith "PUT" pageAt 200 saved
-    ui <- startHolding (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
+    ui <- startHolding m (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
     boxes ui `shouldReturn` ["false", "false"]
     -- The template switch has the shell reload the wiki and the page,
     -- whose read is held.
@@ -499,7 +498,7 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
         pageAt = "api/v1/pages/" <> guide.id.text
     answerWith "GET" guideAt 200 short
     answerWith "PUT" pageAt 200 saved
-    ui <- startHolding (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
+    ui <- startHolding m (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
     length <$> findAll ui ".page-body input[data-task]" `shouldReturn` 2
     find ui ".page-body input[data-task='0']" >>= click
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
@@ -546,7 +545,7 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
     answerWith "PUT" saveAt 200 saved
     holdAt "PUT" saveAt
     answerWith "GET" guideAt 200 guide
-    ui <- startHolding (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
+    ui <- startHolding m (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
     readIt ui >>= click
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     find ui ".page-ticks-save" >>= click
@@ -636,20 +635,6 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
     (findAll ui ".page-ticks button" >>= traverse textContent) `shouldReturn` ["Save", "Discard"]
     find ui ".page-ticks" >>= \bar -> getAttribute bar "role" `shouldReturn` Just "status"
   where
-    -- The demo over the stand-in server ('startServer'), for an example
-    -- that holds a request on purpose ('holdAt'), with no time limit on a
-    -- request. The backend gives up on a request after thirty seconds
-    -- ('Wiki.App.Backend.Http.Transport.requestTimeout') and aborts it.
-    -- A slow run can hold a request that long (two examples hold a save
-    -- while the reader leaves and comes back). The request then fails as
-    -- if the server could not be reached: the late answer the example is
-    -- about never comes, and the example fails at rest. A negative limit
-    -- is none ('System.Timeout.timeout'). The suite's watchdog still
-    -- stands against a hang.
-    startHolding :: Route -> PageM s (Mounted s Shell.Query Void m)
-    startHolding at = do
-      env <- unsafeIOToPageM (newHttpEnv (fetchTransport (const (-1))))
-      startServerOver m env at
     -- Read once the program is quiet, as the harness's reads are.
     focusedIs selector = waitQuiet *> unsafeIOToPageM (js_focused_matches (toJSText selector))
     computedStyle selector property = waitQuiet *> unsafeIOToPageM (fromJSText <$> js_computed_style (toJSText selector) (toJSText property))

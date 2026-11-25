@@ -54,7 +54,9 @@ title: The writing assistant's keys follow you in your vault
   sets your choice of provider and model, and you may need to choose
   yours again; for a provider both had a key for, the first key moved is
   kept. A key changed in a tab of the earlier version still open after the
-  move does not replace the one already in your vault.
+  move does not replace the one already in your vault. A key you forget
+  after it was moved stays forgotten: no browser that has not moved yet
+  brings it back from what it kept before.
 
 - In the demo, and over plain HTTP, your keys stay in this browser as
   before.

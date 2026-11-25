@@ -64,12 +64,31 @@
 -- of tabs (a page over plain HTTP), two tabs can still write over each
 -- other's change.
 --
+-- = What this browser holds of the vault
+--
+-- A page the server rendered asks the server nothing as it starts: the
+-- server's render, which runs where no assistant is, never reads the
+-- vault, so the vault's answer is not among what the page carries. A
+-- read as a surface starts ('readSecretsHere': the editor's assistant, the
+-- settings' fields) therefore opens the copy of the plugin's item that
+-- this browser keeps ('heldSlot'), sealed as the server has it: every read
+-- and every change of the vault here keeps the item it saw. Only where
+-- this browser holds no copy, or no key here opens it (a vault made anew
+-- by a reset), is the vault fetched. With a copy and no key, the vault is
+-- locked here, and nothing is fetched either. A copy can be older than the
+-- vault, when another device changed the secrets since; 'refreshSecrets'
+-- reads the vault, and announces a change when the copy was older.
+--
 -- A change done is announced ('Wiki.App.Assistant.announceSecretsChanged')
 -- to this page and the wiki's other tabs, so that every field of a secret
 -- shown reads again ("Wiki.App.View.SecretField").
 module Wiki.App.Plugin.Host.Secrets
   ( -- * Secrets
     readSecrets
+  , readSecretsHere
+  , readSecretsForField
+  , refreshSecrets
+  , heldSlot
   , putSecret
   , removeSecret
   , maxTries
@@ -103,7 +122,7 @@ import Wiki.App.Assistant (KeyRef, MonadAssistant (..), holdingAcrossTabs, holdi
 import Wiki.App.Assistant.Sync (MonadVault (..))
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Plugin (Manifest (..), PluginId (..), SecretName (..), SecretSpec (..), Unavailable (..))
-import Wiki.App.Vault (Step, fetched, forgetting, vaultKeyHere, wikiText)
+import Wiki.App.Vault (Step, fetched, forgetting, vaultKeyHere, vaultSlot, wikiText)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Vault (Item (..), ItemName (..), Sealed, itemOf, withItem)
 import Wiki.Core.Vault.Plugin (Contents (..), decodeContents, encodeContents, foldContents, foldIn, noContents, pluginItem, pluginSealingData)
@@ -150,11 +169,124 @@ readContentsHeld u manifest = runExceptT $ do
   item <- withExceptT Failed (itemFor manifest)
   withExceptT Failed placeOf >>= \case
     InVault s -> do
+      -- Kept before the key is looked for: a browser where the vault is
+      -- locked knows so from the copy, and asks nothing as a page starts.
+      lift (keepHeld u item (HeldVault (itemOf item s.vault)))
       k <- lift (vaultKeyHere u (Just s)) >>= maybe (throwError Locked) pure
       inVault <- withExceptT Failed (forgetting k (openVaultItem k manifest.id item s))
       onDevice <- lift (keptHere u manifest.id item)
       pure (foldContents inVault (maybe noContents snd onDevice))
-    OnDevice _ -> withExceptT Failed (fromMaybe noContents <$> deviceSecrets u manifest.id item)
+    OnDevice sealing -> do
+      -- The user has no vault: kept, so that a read as a page starts need
+      -- not ask the server again.
+      when sealing (lift (whenM vaultSync (keepHeld u item HeldNoVault)))
+      withExceptT Failed (fromMaybe noContents <$> deviceSecrets u manifest.id item)
+
+-- | The plugin's secrets as a surface reads them as it starts (the
+-- module's header says why): from the copy this browser holds of the
+-- plugin's item, where a key here opens it; with no copy, 'Locked' where
+-- the secrets are kept in a vault and this browser holds no vault key, and
+-- otherwise what this browser keeps of its own. It never asks the server,
+-- takes no lock and writes nothing. Where the copy is older than the vault, a read of the
+-- vault ('readSecrets', 'refreshSecrets') keeps the newer one and
+-- announces the change.
+readSecretsHere :: (MonadAssistant m, MonadVault m) => UserId -> Manifest -> m (Either Unavailable (Map SecretName Text))
+readSecretsHere u manifest =
+  fmap (\c -> declared manifest c.secrets) <$> case pluginItem manifest.id.text of
+    Nothing -> pure (Right noContents)
+    Just item ->
+      heldContents u manifest >>= \case
+        Just r -> pure r
+        Nothing -> do
+          inVault <- (&&) <$> sealingHere <*> vaultSync
+          keys <- catMaybes <$> sequence [deviceKey (vaultSlot u), deviceKey u]
+          traverse_ forgetKey keys
+          if inVault && null keys
+            then pure (Left Locked)
+            else Right . maybe noContents snd <$> keptHere u manifest.id item
+
+-- | 'readSecretsHere', or, where this browser holds no copy of the
+-- plugin's item that a key here opens, 'readSecrets': for the host's
+-- field of a secret, which says whether it is set and offers the unlock.
+readSecretsForField :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> m (Either Unavailable (Map SecretName Text))
+readSecretsForField u manifest =
+  heldContents u manifest >>= \case
+    Just r -> pure (fmap (\c -> declared manifest c.secrets) r)
+    Nothing -> readSecrets u manifest
+
+-- | 'Held' is what this browser keeps of the vault for a plugin, as it
+-- last saw it: the user has no vault; or the vault, holding this item of
+-- the plugin's or none.
+data Held = HeldNoVault | HeldVault (Maybe Item)
+  deriving stock (Eq)
+
+instance ToJSON Held where
+  toJSON = \case
+    HeldNoVault -> object ["vault" .= False]
+    HeldVault i -> object ["vault" .= True, "item" .= i]
+
+instance FromJSON Held where
+  parseJSON = withObject "Held" $ \o ->
+    o .: "vault" >>= \case
+      False -> pure HeldNoVault
+      True -> HeldVault <$> o .: "item"
+
+-- | What the copy this browser holds says of the plugin's secrets: what
+-- this browser keeps of its own, where the user has no vault or the vault
+-- holds no item of the plugin's; 'Locked' where the vault is there and
+-- this browser holds no key; the item's contents, where a key here opens
+-- it. 'Nothing' where there is no copy, no key here opens the item, or
+-- the secrets are not kept in a vault here.
+heldContents :: (MonadAssistant m, MonadVault m) => UserId -> Manifest -> m (Maybe (Either Unavailable Contents))
+heldContents u manifest = do
+  sealing <- sealingHere
+  syncing <- vaultSync
+  case pluginItem manifest.id.text of
+    Just item
+      | sealing && syncing ->
+          deviceRecord (heldSlot u item) >>= \case
+            Right (Just bytes) -> case eitherDecodeStrict bytes of
+              Right HeldNoVault -> Just . Right <$> own item
+              Right (HeldVault i) -> do
+                keys <- catMaybes <$> sequence [deviceKey (vaultSlot u), deviceKey u]
+                case (keys, i) of
+                  ([], _) -> pure (Just (Left Locked))
+                  (_, Nothing) -> traverse_ forgetKey keys >> (Just . Right <$> own item)
+                  (_, Just held) -> do
+                    opened <- firstJust keys (\k -> forgettingKey k (rightToMaybe . (>>= decodeContents) <$> openWith k held.sealed (pluginSealingData manifest.id.text)))
+                    for opened $ \c -> Right . foldContents c <$> own item
+              Left _ -> pure Nothing
+            _ -> pure Nothing
+    _ -> pure Nothing
+  where
+    own item = maybe noContents snd <$> keptHere u manifest.id item
+    forgettingKey k act = act <* forgetKey k
+    firstJust ks f = foldM (\found k -> maybe (f k) (\c -> forgetKey k $> Just c) found) Nothing ks
+
+-- | Read the plugin's secrets from the vault, keeping the copy this
+-- browser holds, which announces a change when the copy was older: every
+-- surface that shows them reads them again. For when they are needed
+-- fresh: the editor's assistant opened.
+refreshSecrets :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> m ()
+refreshSecrets u manifest = void (readSecrets u manifest)
+
+-- | The name of the record where this browser keeps its copy of a
+-- plugin's item for a user, as the vault last held it here ('Held').
+heldSlot :: UserId -> ItemName -> UserId
+heldSlot u item = UserId ("held:" <> item.text <> ":" <> u.text)
+
+-- | Keep what this browser saw of the vault for the plugin, and announce
+-- a change of the secrets when it differs from the copy kept before: a
+-- read of the vault that finds what another device changed has every
+-- surface read again, the first copy included: what a surface read
+-- before there was one was what this browser keeps of its own.
+keepHeld :: (MonadAssistant m) => UserId -> ItemName -> Held -> m ()
+keepHeld u item h = do
+  let bytes = BSL.toStrict (encode h)
+  before <- deviceRecord (heldSlot u item)
+  unless (before == Right (Just bytes)) $ do
+    kept <- keepDeviceRecord (heldSlot u item) (Just bytes)
+    when (isRight kept) announceSecretsChanged
 
 -- | Keep a value under one of the plugin's names, in the place of the one
 -- it had.
@@ -226,7 +358,9 @@ changeSecrets u manifest names change = announced $ runExceptT $ do
             lift (storeVault (Just s.tag) vault)
           case stored of
             -- What this browser kept for the plugin is in the vault now.
-            Right _ -> for_ kept (\(store, _) -> writeStore u (Map.delete item store))
+            Right after -> do
+              lift (keepHeld u item (HeldVault (itemOf item after.vault)))
+              for_ kept (\(store, _) -> writeStore u (Map.delete item store))
             Left (Conflict _) | tries < maxTries -> changing (tries + 1) item
             Left e -> throwError ("Your vault could not be changed: " <> wikiText e)
 

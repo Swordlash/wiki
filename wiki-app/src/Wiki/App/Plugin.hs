@@ -341,6 +341,12 @@ data Document = Document
 -- 'H.async'.
 data Secrets m = Secrets
   { get :: m (Either Unavailable (Map SecretName Text))
+  -- ^ As this browser holds them where it can: what a surface reads as it
+  -- starts, which asks the server nothing ("Wiki.App.Plugin.Host.Secrets").
+  , refresh :: m ()
+  -- ^ Read them from the server, for when they are needed fresh (a
+  -- request about to be made): a change since is announced, and 'changes'
+  -- tells of it.
   , put :: SecretName -> Text -> m (Either Text ())
   , remove :: SecretName -> m (Either Text ())
   , field :: SecretField m

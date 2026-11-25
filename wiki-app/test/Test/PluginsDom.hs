@@ -15,10 +15,11 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Control.Monad.UUID (MonadUUID (..))
-import Data.IORef (IORef, modifyIORef', readIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
+import Data.Time (UTCTime (..), fromGregorian)
 import Halogen.Router (Router)
 import Halogen.Router qualified as Router
 import Halogen.Subscription qualified as HS
@@ -29,6 +30,7 @@ import Protolude hiding (find)
 import Test.Harness.MemDom
 import Test.Hspec
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), noPlugins)
+import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPolicy (..), Permission (..))
 import Wiki.App (component, input)
 import Wiki.App.Account (Accounts (..), SignInError (..))
 import Wiki.App.Assistant (MonadAssistant (..))
@@ -68,6 +70,7 @@ spec :: Spec
 spec = do
   section
   editor
+  external
 
 assistant, errors :: PluginId
 assistant = PluginId "assistant"
@@ -94,6 +97,11 @@ data Holding = Holding
   -- ^ Whether a user's state is written before the gate holds its answer
   -- (the server handled the write, under the cookie it was sent with),
   -- and not after.
+  , readHeld :: Bool
+  -- ^ Whether the reads of the plugins on are held in the gate too.
+  , framesAsked :: Maybe (IORef [Text])
+  -- ^ Where to note the address of each external plugin's frame the
+  -- editor asks for, in order.
   }
 
 -- | 'Holder' is the demo's backend, as 'Holding' says.
@@ -109,15 +117,21 @@ deriving newtype instance (MonadAttributes m) => MonadAttributes (Holder m)
 
 deriving newtype instance (MonadBrowserDOM m) => MonadBrowserDOM (Holder m)
 
-deriving newtype instance (MonadIslands m) => MonadIslands (Holder m)
+instance (MonadIslands m, MonadIO m) => MonadIslands (Holder m) where
+  openPluginFrame container address said = do
+    Holder (asks (\h -> h.framesAsked)) >>= traverse_ (\r -> liftIO (modifyIORef' r (<> [address])))
+    lift (openPluginFrame container address said)
 
 instance (MonadUUID m) => MonadUUID (Holder m) where
   generateV4 = lift generateV4
 
 instance (MonadWiki m) => MonadWiki (Holder m)
 
+-- While the reads of the plugins on are held, nothing is read at once, as
+-- the HTTP backend reads nothing at once that it has not cached: a read
+-- held in place would hold the program's thread.
 instance (MonadWiki m) => MonadLoad (Holder m) where
-  atOnce = fmap Just
+  atOnce program = Holder (asks (\h -> h.readHeld)) >>= bool (Just <$> program) (pure Nothing)
   attempt = fmap Right
 
 instance (MonadAdmin m) => MonadAdmin (Holder m)
@@ -142,7 +156,9 @@ instance (MonadEncryption m) => MonadEncryption (Holder m)
 instance (MonadDemoUsers m) => MonadDemoUsers (Holder m)
 
 instance (MonadPlugins m, MonadIO m) => MonadPlugins (Holder m) where
-  pluginsNow = Holder (asks (\h -> h.failing)) >>= bool (lift pluginsNow) (pure (Left (Unreachable "the network")))
+  pluginsNow = do
+    whenM (Holder (asks (\h -> h.readHeld))) (heldBy "the plugins on")
+    Holder (asks (\h -> h.failing)) >>= bool (lift pluginsNow) (pure (Left (Unreachable "the network")))
   setPluginState p s =
     Holder (asks (\h -> h.afterHandled)) >>= \case
       True -> lift (setPluginState p s) <* heldBy ("state " <> p.text)
@@ -191,7 +207,7 @@ withSection st body = withShellAt st free (UserSettings PluginsSection) (\view _
 
 -- | Nothing held, nothing failed.
 free :: Holding
-free = Holding {gate = Nothing, failing = False, afterHandled = False}
+free = Holding {gate = Nothing, failing = False, afterHandled = False, readHeld = False, framesAsked = Nothing}
 
 -- | Each plugin's row: its id, whether it shows on, and its switch's
 -- state.
@@ -466,7 +482,7 @@ editor = describe "Wiki.App.View.Editor, with the plugins turned off and on, on 
         pure (me, spaces, blog, ps)
       let ctx = viewContextAs router me spaces 0
           inputWith known = Editor.Input {context = ctx {plugins = known}, space = blog, pages = ps, path = slugs ["hello-world"], feed = Nothing, home = False}
-          offForMe p = noPlugins {mine = Map.fromList [(p, choice PluginOff)]}
+          offForMe p = Plugins {offForWiki = mempty, mine = Map.fromList [(p, choice PluginOff)]}
           offForAll p = noPlugins {offForWiki = Set.fromList [p]}
           buttons view = length <$> findAll view "nav.editor-providers .editor-provider"
           problems view = find view ".editor-problems" >>= maybe (pure Nothing) (fmap Just . N.textContent)
@@ -499,6 +515,61 @@ editor = describe "Wiki.App.View.Editor, with the plugins turned off and on, on 
         buttons view `shouldReturn` 1
         problems view `shouldReturn` Just "1 problem"
       Router.stop router
+  where
+    slugs :: [Text] -> [Slug]
+    slugs = mapMaybe (rightToMaybe . mkSlug)
+
+-- | An external plugin installed for everyone, in the demo's wiki with the
+-- editor signed in.
+withExternal :: MemState
+withExternal = asEditor {externalPolicy = ExternalWiki, externalWiki = Map.fromList [(doubled.manifest.id, doubled)]}
+  where
+    doubled =
+      ExternalPlugin
+        { manifest =
+            ExternalManifest
+              { id = PluginId "doubled-words"
+              , name = "Doubled words"
+              , version = "1.0.0"
+              , description = ""
+              , api = 1
+              , contributes = Set.singleton Diagnostics
+              , permissions = Set.singleton DocumentRead
+              , hosts = []
+              }
+        , bundle = "0123abcd"
+        , size = 100
+        , mine = False
+        , installedAt = UTCTime (fromGregorian 2026 11 25) 0
+        }
+
+-- | Codex's first round on #381: the shell holds the defaults until the
+-- session's read of the plugins on answers, under which a plugin the
+-- reader turned off is on; an external plugin, sent the page's text, must
+-- not run on them.
+external :: Spec
+external = describe "Wiki.App.View.Editor's external plugins, in the shell on the in-memory DOM" $ do
+  let editing = EditPage (slugs ["blog"]) (slugs ["hello-world"])
+      frameOf = "plugin-frame/wiki/doubled-words/0123abcd/diagnostics"
+  -- On a clock the test owns and never moves: the frame stood in natively
+  -- never says it is ready, and the pause for it stays asleep.
+  it "asks for no plugin's frame while the session's read of the plugins on is out, and for its frame once it answers" $ withTestClock $ \_ -> do
+    gate <- newGate
+    asked <- newIORef []
+    withShellAt withExternal free {gate = Just gate, readHeld = True, framesAsked = Just asked} editing $ \view _ _ quiet -> do
+      _ <- element view ".editor-text"
+      waiting <- held gate
+      map (\h -> h.asked) waiting `shouldSatisfy` (\hs -> not (null hs) && all (== "the plugins on") hs)
+      readIORef asked `shouldReturn` []
+      traverse_ (\h -> answer gate h ()) waiting
+      quiet
+      readIORef asked `shouldReturn` [frameOf]
+
+  it "asks for none when the read of the plugins on fails" $ do
+    asked <- newIORef []
+    withShellAt withExternal free {failing = True, framesAsked = Just asked} editing $ \view _ _ _ -> do
+      _ <- element view ".editor-text"
+      readIORef asked `shouldReturn` []
   where
     slugs :: [Text] -> [Slug]
     slugs = mapMaybe (rightToMaybe . mkSlug)

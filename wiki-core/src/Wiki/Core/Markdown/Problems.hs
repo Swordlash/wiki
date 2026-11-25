@@ -112,6 +112,9 @@ data ProblemKind
     -- when the presentation is read from the whole text, while the
     -- editor's rows keep them apart ("Wiki.Core.SlideRows.swallowed").
     SlideSwallows
+  | -- | What a plugin found in the text ("Wiki.App.Plugin"): an external
+    -- plugin's diagnostics, whose message starts with the plugin's name.
+    FromPlugin
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 -- | The kind's name as the editor shows it beside a problem's message.
@@ -125,6 +128,7 @@ kindName = \case
   Box -> "box"
   SlideFit -> "slide"
   SlideSwallows -> "slide"
+  FromPlugin -> "plugin"
 
 -- | 'IslandPlace' is where an island that can fail is written in the
 -- source: its first and last line, and its kind. Listings are not among

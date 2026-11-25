@@ -37,6 +37,7 @@ import Test.Browser.Personal qualified as Personal
 import Test.Browser.PluginSecrets qualified as PluginSecrets
 import Test.Browser.Policy qualified as Policy
 import Test.Browser.Problems qualified as Problems
+import Test.Browser.PluginFrames qualified as PluginFrames
 import Test.Browser.DeckViewer qualified as DeckViewer
 import Test.Browser.EditorSearch qualified as EditorSearch
 import Test.Browser.Folds qualified as Folds
@@ -98,6 +99,7 @@ spec = do
   describe "Emoji in the editor" (Emoji.spec BrowserDOM)
   describe "The completion of the wiki's own Markdown" (Complete.spec BrowserDOM)
   describe "Problems marked in the editor" (Problems.spec BrowserDOM)
+  describe "External plugins in a sandboxed frame" (PluginFrames.spec BrowserDOM)
   describe "Spoilers folded in the editor" (Folds.spec BrowserDOM)
   describe "The editor's search over the whole text" (EditorSearch.spec BrowserDOM)
   describe "A presentation in the editor" (SlideEditor.spec BrowserDOM)

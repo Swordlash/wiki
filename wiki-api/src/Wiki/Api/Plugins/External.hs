@@ -39,6 +39,8 @@ module Wiki.Api.Plugins.External
     -- * The bundle
   , checkBundle
   , maxBundleBytes
+  , strictBundle
+  , prologueWindow
 
     -- * Who may add plugins
   , ExternalPolicy (..)
@@ -61,6 +63,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), eitherDecodeStrict', 
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as BS
+import Data.Char (GeneralCategory (Space), generalCategory)
 import Data.Scientific (toBoundedInteger)
 import Data.Set qualified as Set
 import Data.Text qualified as T
@@ -286,6 +289,114 @@ checkBundle bytes
       Right t
         | T.null (T.strip t) -> Left "A plugin's bundle is empty."
         | otherwise -> Right t
+
+-- | Whether a plugin's bundle asks to run in strict mode: whether its
+-- directive prologue, the string literal statements it begins with, holds
+-- a @"use strict"@ directive.
+--
+-- The worker runs one script, the wiki's own line and then the bundle on
+-- the same line, so that the bundle's line numbers are its own (the
+-- runtime, @web\/plugin\/runtime.js@). A directive of the bundle's is then
+-- no longer at the start of the script, and the runtime begins the script
+-- with @"use strict";@ when this says so ('Wiki.Server.PluginFrame' tells
+-- it). The script runs no other code than the installed bundle's (decision
+-- 69: no @blob:@ or @eval@ in the frame's @script-src@).
+--
+-- This is the smallest lexer of the bundle's start, by the standard's
+-- rules for a script. It skips white space, line terminators and comments
+-- (and a @#!@ line at the very start), then reads string literals in
+-- single or double quotes, with their escapes and line continuations,
+-- each a statement when a @;@ follows, or the end of the code, or a line
+-- terminator after which the next token cannot go on with the expression
+-- (automatic semicolon insertion). A literal is the directive when its
+-- text between the quotes is exactly @use strict@: an escape in it makes
+-- it another one. It stops at the first thing that is none of these, and
+-- wherever it is in doubt, the prologue ends there and what is not yet a
+-- directive is none. It reads no further than the prologue, and never
+-- past the first 'prologueWindow' characters: a prologue not ended by
+-- then gives no directive after that point.
+strictBundle :: Text -> Bool
+strictBundle code = statements False (skipShebang (T.unpack (T.take prologueWindow code)))
+  where
+    truncated = T.compareLength code prologueWindow == GT
+    skipShebang = \case
+      '#' : '!' : rest -> dropWhile (not . isTerminator) rest
+      rest -> rest
+    statements found input = case gap input of
+      Nothing -> found
+      Just (_, rest@(q : _))
+        | q == '"' || q == '\'' -> case literal rest of
+            Nothing -> found
+            Just (raw, after) -> case ended after of
+              Ended next -> statements (found || raw == "use strict") next
+              EndedLast -> found || raw == "use strict"
+              Continued -> found
+      Just _ -> found
+    -- After a string literal: whether its statement ends there.
+    ended after = case gap after of
+      Nothing -> Continued
+      Just (newline, rest) -> case rest of
+        [] -> if truncated then Continued else EndedLast
+        ';' : next -> Ended next
+        c : _
+          | not newline -> Continued
+          | c == '"' || c == '\'' -> Ended rest
+          -- No line terminator may stand before a postfix ++ or --: after
+          -- one, they begin the next statement. A + or - alone goes on.
+          | "++" `isPrefixOf` rest || "--" `isPrefixOf` rest -> EndedLast
+          -- != and !== go on; a ! alone begins the next statement.
+          | "!=" `isPrefixOf` rest -> Continued
+          | c `elem` ("([.,?+-*/%=<>&|^`" :: [Char]) -> Continued
+          | isLetter c || c `elem` ("_$\\" :: [Char]) ->
+              if takeWhile (\x -> isAlphaNum x || x `elem` ("_$" :: [Char])) rest `elem` ["in", "instanceof"] then Continued else EndedLast
+          | isDigit c || c `elem` ("{}!~#@" :: [Char]) -> EndedLast
+          | otherwise -> Continued
+    -- White space, line terminators and comments skipped: whether a line
+    -- terminator was among them, and what follows; nothing for a comment
+    -- never closed.
+    gap = go False
+      where
+        go newline = \case
+          c : rest
+            | isTerminator c -> go True rest
+            | isWhite c -> go newline rest
+          '/' : '/' : rest -> go newline (dropWhile (not . isTerminator) rest)
+          '/' : '*' : rest -> case closing rest of
+            Nothing -> Nothing
+            Just (body, after) -> go (newline || any isTerminator body) after
+          rest -> Just (newline, rest)
+        closing = search []
+          where
+            search acc = \case
+              '*' : '/' : after -> Just (reverse acc, after)
+              c : more -> search (c : acc) more
+              [] -> Nothing
+    -- A string literal: its text between the quotes, as written, and what
+    -- follows; nothing when it is not closed, or a line ends in it.
+    literal = \case
+      q : rest -> go q [] rest
+      [] -> Nothing
+      where
+        go q acc = \case
+          c : after | c == q -> Just (reverse acc, after)
+          '\\' : '\r' : '\n' : more -> go q ('\n' : '\r' : '\\' : acc) more
+          '\\' : c : more -> go q (c : '\\' : acc) more
+          c : more
+            | c == '\n' || c == '\r' -> Nothing
+            | otherwise -> go q (c : acc) more
+          [] -> Nothing
+    isTerminator c = c `elem` ("\n\r\x2028\x2029" :: [Char])
+    isWhite c = c `elem` ("\t\v\f \xA0\xFEFF" :: [Char]) || generalCategory c == Space
+
+-- | How far into a plugin's bundle 'strictBundle' reads, in characters:
+-- 64 Ki.
+prologueWindow :: Int
+prologueWindow = 64 * 1024
+
+-- | Whether the statement of a string literal ended after it: with the
+-- rest to read on, with nothing more to read, or not (it goes on, or it
+-- is in doubt).
+data Ending = Ended [Char] | EndedLast | Continued
 
 --------------------------------------------------------------------------------
 -- Who may add plugins

@@ -1650,6 +1650,7 @@ instance (MonadIO m) => MonadWiki (StoredWiki m) where
   listVersions pid = run Reads . listVersionsTx pid
   getVersion pid = run Reads . getVersionTx pid
   restoreVersion pid at = saving . (withWriters <=< restoreVersionTx pid at)
+  externalPluginsNow = externalPlugins
 
   -- A document is made by the server's API, which runs pandoc and the TeX
   -- engine ("Wiki.Server.Export") and reads the page through this backend.

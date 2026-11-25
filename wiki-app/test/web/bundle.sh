@@ -43,6 +43,12 @@ keep=$(pwd)/dist-newstyle/wasm/test-bundle
 
 say() { printf 'test bundle: %s\n' "$*" >&2; }
 
+# The plugin frames of the browser suite's plugin test, written at every
+# run (plugin-frames.mjs says why), before the bundle is reused or built.
+if [ -f wiki-app/test/web/plugin-frames.mjs ]; then
+  node wiki-app/test/web/plugin-frames.mjs "$out"
+fi
+
 if command -v sha256sum >/dev/null 2>&1; then
   hasher=sha256sum
 else

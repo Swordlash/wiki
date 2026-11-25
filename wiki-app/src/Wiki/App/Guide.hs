@@ -25,6 +25,8 @@ module Wiki.App.Guide
   , guideProfile
   , unwrapped
   , markdownGuide
+  , exampleManifest
+  , exampleCode
 
     -- * What its pages show
   , treePng
@@ -39,6 +41,7 @@ import Data.Text qualified as T
 import Data.Time (NominalDiffTime, UTCTime)
 import Protolude
 import Wiki.App.Backend.Mem.State
+import Wiki.App.Plugin.External.Protocol (answerWithin, maxFrameMessage, maxMessageLength, maxProblems, startWithin)
 import Wiki.Core.Attachment (FileName (..), MimeType (..))
 import Wiki.Core.Id
 import Wiki.Core.Markdown.Ast (markerAt)
@@ -67,10 +70,148 @@ insertGuide which sid ago = do
   _ <- page Document (Just guide) "Diagrams" 3 diagrams
   _ <- page Document (Just guide) "Mathematics" 3 mathematics
   _ <- page Presentation (Just guide) "Presentations" 2 presentations
+  -- Only a server runs external plugins: the demo has none.
+  when (which == ServerTour) $ do
+    plugin <- page Document Nothing "Writing a plugin" 1 writingAPlugin
+    modify (fst . attachBytes plugin (FileName "manifest.json") (MimeType "application/json") (encodeUtf8 exampleManifest))
+    modify (fst . attachBytes plugin (FileName "doubled-words.js") (MimeType "text/javascript") (encodeUtf8 exampleCode))
   pure tourPage
   where
     page kind parent title daysAgo body = state $ \st ->
       let (st', p) = insertPageOf kind sid parent title (T.unlines (unwrapped body)) (ago daysAgo) st in (p.id, st')
+
+-- | The page on writing an external plugin, a server's only: what a
+-- plugin is, its manifest and code, what it can and cannot do, and how
+-- it is installed (WP5.84 of docs/PLAN.md). The example it shows and
+-- attaches is the repository's @examples/plugins/doubled-words@.
+writingAPlugin :: [Text]
+writingAPlugin =
+  [ "# Writing a plugin"
+  , ""
+  , "A plugin adds to the editor what the wiki does not do itself. The first"
+  , "kind there is marks **problems** in the text as you type, as the wiki"
+  , "marks a formula it cannot set: a word written twice, a spelling, a rule"
+  , "of your team's. A plugin is two files, attached here as an example:"
+  , "**manifest.json**, which says what the plugin is, and"
+  , "**doubled-words.js**, its code, one JavaScript file."
+  , ""
+  , "## The manifest"
+  , ""
+  , "```json"
+  ]
+    <> T.lines exampleManifest
+    <> [ "```"
+       , ""
+       , "`id` is the plugin's name for the program: small letters, digits and"
+       , "dashes, starting with a letter. `name` is what the editor writes before"
+       , "each of its messages, and `description`, which may be left out, a line"
+       , "on what it does. `version` is three numbers. `api` is the version of"
+       , "the wiki's protocol the code"
+       , "speaks, 1. `contributes` says what the plugin does, `diagnostics` alone"
+       , "for now, and `permissions` what it reads: `document.read`, the text of"
+       , "the page being edited, while its editor is open. `hosts`, which may be"
+       , "left out, names up to ten addresses the code may connect to, such as"
+       , "`https://api.example.org`: it reaches no other."
+       , ""
+       , "## The code"
+       , ""
+       , "```javascript"
+       ]
+    <> T.lines exampleCode
+    <> [ "```"
+       , ""
+       , "The code calls `wikiPlugin.plugin` once, with a function"
+       , "`diagnostics`. The wiki calls it with `{text}`, the page's Markdown as"
+       , "the editor last checked it, and it returns, or resolves to, a list of"
+       , "problems. Each is `{from, to, severity, message}`: `from` and `to` are"
+       , "positions in `text` as JavaScript counts a string, from the first"
+       , "character marked to the one after the last; `severity` is `error` or"
+       , "`warning`; the message is not empty, and the editor shows it after the"
+       , "plugin's name, on the lines the problem covers."
+       , ""
+       , "Code built with a bundler imports the same from `wiki-plugin`"
+       , "(`web/plugin/wiki-plugin.js` of the wiki's sources) and is bundled into"
+       , "one file: `esbuild plugin.js --bundle --format=iife"
+       , "--alias:wiki-plugin=./wiki-plugin.js`."
+       , ""
+       , "## Limits"
+       , ""
+       , "`wikiPlugin` keeps the first " <> show maxProblems <> " problems of an answer and cuts each"
+       , "message to " <> show maxMessageLength <> " characters, so that ordinary text never stops a"
+       , "plugin. A plugin that goes around it, and sends more problems or longer"
+       , "messages, a message over " <> show (maxFrameMessage `div` (1024 * 1024)) <> " MiB, or more than one answer each time"
+       , "it is asked, is stopped. It has " <> seconds startWithin <> " seconds to start and " <> seconds answerWithin <> " to"
+       , "answer each time it is asked."
+       , ""
+       , "## What a plugin can and cannot do"
+       , ""
+       , "The code runs in a worker inside a sandboxed frame of its own: it sees"
+       , "no page of the wiki's, no cookie, no storage and none of your keys, and"
+       , "connects to the hosts its manifest names and nowhere else. A plugin"
+       , "that goes past the limits, fails (its code throws or does not load),"
+       , "or reports a position outside the text is stopped until the editor"
+       , "opens again, and the editor says why. No external plugin runs in an"
+       , "encrypted space."
+       , ""
+       , "## Installing it"
+       , ""
+       , "An administrator lets plugins run and installs them, for now over the"
+       , "wiki's API: `PUT api/v1/external-plugins/policy` with the policy"
+       , "`wiki`, then a `POST` to `api/v1/external-plugins/wiki` of a form with"
+       , "the manifest as the text part `manifest` and the code as the file part"
+       , "`bundle`. Each user then finds the plugin on in the editor."
+       ]
+
+-- | A number of seconds, as the page on writing a plugin says it.
+seconds :: NominalDiffTime -> Text
+seconds d = show (round d :: Int)
+
+-- | The example plugin's manifest, the repository's
+-- @examples/plugins/doubled-words/manifest.json@.
+exampleManifest :: Text
+exampleManifest =
+  T.unlines
+    [ "{"
+    , "  \"manifest\": 1,"
+    , "  \"id\": \"doubled-words\","
+    , "  \"name\": \"Doubled words\","
+    , "  \"version\": \"1.0.0\","
+    , "  \"description\": \"Marks a word written twice in a row, as in \\\"the the\\\".\","
+    , "  \"api\": 1,"
+    , "  \"contributes\": { \"diagnostics\": {} },"
+    , "  \"permissions\": [\"document.read\"]"
+    , "}"
+    ]
+
+-- | The example plugin's code, the repository's
+-- @examples/plugins/doubled-words/doubled-words.js@.
+exampleCode :: Text
+exampleCode =
+  T.unlines
+    [ "// Doubled words: an example of an external plugin of the wiki (WP5.84 of"
+    , "// docs/PLAN.md). It marks a word written twice in a row, \"the the\", as a"
+    , "// warning on its line in the editor."
+    , "//"
+    , "// It is one file with no imports, so it is installed as it is, with"
+    , "// manifest.json beside it. The wiki runs it in a worker and gives it the"
+    , "// global wikiPlugin; a plugin built with a bundler imports the same from"
+    , "// \"wiki-plugin\" (web/plugin/wiki-plugin.js)."
+    , "const { plugin } = wikiPlugin;"
+    , ""
+    , "// A word, some white space, and the same word again, in any case: \\p{L}"
+    , "// is a letter of any script."
+    , "const twice = /(?<![\\p{L}\\p{N}])(\\p{L}+)\\s+\\1(?![\\p{L}\\p{N}])/giu;"
+    , ""
+    , "plugin({"
+    , "  diagnostics: (document) =>"
+    , "    [...document.text.matchAll(twice)].map((found) => ({"
+    , "      from: found.index,"
+    , "      to: found.index + found[0].length,"
+    , "      severity: \"warning\","
+    , "      message: `Doubled word: ${found[1]}`,"
+    , "    })),"
+    , "});"
+    ]
 
 -- | The name of the space a server keeps the guide in.
 guideSpaceName :: Text

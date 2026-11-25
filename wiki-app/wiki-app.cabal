@@ -116,6 +116,11 @@ library
       Wiki.App.Plugin.Assistant.Panel
       Wiki.App.Plugin.Capability.Assistant
       Wiki.App.Plugin.Errors
+      Wiki.App.Plugin.External
+      Wiki.App.Plugin.External.Frame
+      Wiki.App.Plugin.External.Frames
+      Wiki.App.Plugin.External.Machine
+      Wiki.App.Plugin.External.Protocol
       Wiki.App.Plugin.Host
       Wiki.App.Plugin.Host.Secrets
       Wiki.App.Plugin.Registry
@@ -391,6 +396,8 @@ test-suite wiki-app-test
         Test.PluginSecrets
         Test.Plugins
         Test.PluginsDom
+        Test.PluginsExternal
+        Test.PluginsExternalDom
         Test.PluginsSettings
         Test.Policy
         Test.Preview
@@ -493,6 +500,7 @@ test-suite wiki-app-browser-test
       Test.Browser.Personal
       Test.Browser.PluginSecrets
       Test.Browser.Avatars
+      Test.Browser.PluginFrames
       Test.Browser.Policy
       Test.Browser.Problems
       Test.Browser.Folds

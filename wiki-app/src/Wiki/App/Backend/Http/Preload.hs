@@ -74,12 +74,13 @@ preloadId = "wiki-preload"
 -- @postDetails@, @pageLocations@, @backlinks@, @threads@ and @watches@ as @null@ when empty, since they
 -- were added later. The starred pages are @stars@, the server's
 -- changelog @whatsNew@, and which plugins are on @plugins@, each an answer
--- or @null@. The administration's reads are an object with their
+-- or @null@; the external plugins the reader may run are
+-- @externalPlugins@, an answer, there only when an editor read them. The administration's reads are an object with their
 -- response or @error@, or @null@. @people@ is by login, or @null@ when
 -- empty. A preload written before a field existed reads as without it.
 preloadJSON :: Cache -> Value
 preloadJSON c =
-  object
+  object $
     [ "session" .= (sessionInfo <$> c.session)
     , "homeDocument" .= answer "document" c.homeDocument
     , "spaces" .= c.spaces
@@ -112,6 +113,8 @@ preloadJSON c =
     , "whatsNew" .= answer "whatsNew" c.whatsNew
     , "plugins" .= answer "plugins" c.plugins
     ]
+      -- Only on a page that read them: an editor's.
+      <> ["externalPlugins" .= read' | Just read' <- [answer "externalPlugins" c.externalPlugins]]
   where
     orNull = \case
       [] -> Nothing
@@ -184,6 +187,7 @@ parsePreload = withObject "the page's payload" $ \o -> do
   stars <- traverse (withObject "an answer" (answerIn "stars")) =<< o .:? "stars"
   whatsNew <- traverse (withObject "an answer" (answerIn "whatsNew")) =<< o .:? "whatsNew"
   plugins <- traverse (withObject "an answer" (answerIn "plugins")) =<< o .:? "plugins"
+  externalPlugins <- traverse (withObject "an answer" (answerIn "externalPlugins")) =<< o .:? "externalPlugins"
   pure Cache {..}
   where
     watchTarget e =

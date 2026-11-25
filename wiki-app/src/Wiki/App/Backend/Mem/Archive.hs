@@ -14,6 +14,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime)
 import Numeric.Natural (Natural)
 import Protolude
+import Wiki.Api.Plugins.External (ExternalPolicy (..))
 import Wiki.Api.ServerSettings (ServerSettingsOf (..), noServerSettings)
 import Wiki.Api.ServerSettings qualified as SS
 import Wiki.App.Backend.Mem.State (MemState (..), Saved (..), completeVersions, ensureHomePages, prepareSearch, versionOf)
@@ -119,6 +120,10 @@ fromArchive a =
         , -- Nor which plugins are on: an export has none of it.
           pluginChoices = mempty
         , pluginsOff = mempty
+        , -- Nor external plugins: the demo runs none.
+          externalPolicy = ExternalOff
+        , externalWiki = mempty
+        , externalOwn = mempty
         }
 
 -- | Replace user content while importing the root into its existing identity.

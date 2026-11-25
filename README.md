@@ -1372,6 +1372,21 @@ certificate takes a restart, `systemctl --user restart wiki-demo.service`. The
 files are remembered, and a renewed certificate in a new file is given alone
 (`--tls-cert new.crt`).
 
+Plain HTTP on the same port is redirected: `http://wiki.example:8443/s/team/`
+answers `308 Permanent Redirect` to `https://wiki.example:8443/s/team/`, the host
+and port the browser asked for, or the public address's when the request names no
+usable host. Nothing else is served over plain HTTP, and no cookie is set or read
+there. Every answer over HTTPS carries `Strict-Transport-Security: max-age=31536000`
+(not for subdomains: the wiki may share its domain with hosts it does not own). A
+browser that has seen it over a certificate it trusted goes to that host over HTTPS
+only for a year, and refuses to let the reader click through a certificate error
+there: a certificate that expires, or is replaced by one the browser does not
+trust, becomes a hard stop until it is fixed. A browser ignores the header when it
+did not trust the certificate in the first place (a self-signed one, say), and
+warns as before. `--no-hsts` (wiki-server's option, and the deploy's, remembered;
+`--hsts` sends it again) leaves the header out. A server behind a proxy (below)
+speaks plain HTTP itself and does neither.
+
 Any `--bind` will do, `0.0.0.0` included (without `--bind`, the Tailscale address,
 as with `--http`); ufw is opened for the port as with `--http`. The deploy checks
 that the server answers over HTTPS with `curl --insecure`, the certificate left
@@ -2079,7 +2094,8 @@ The unit runs `wiki-server serve --data ~/wiki-demo/data --static ~/wiki-demo/ap
 --listen 127.0.0.1:8080 --admin-listen 127.0.0.1:8081 --secure-cookies` and the
 database's options (above) behind
 `tailscale serve` (with `--http`, `--listen <tailscale address>:8080` and no
-`--secure-cookies`; with `--tls-cert`, `--tls-cert` and `--tls-key` in its place;
+`--secure-cookies`; with `--tls-cert`, `--tls-cert` and `--tls-key` in its place,
+and `--no-hsts` after the deploy's `--no-hsts`;
 behind a proxy, `--secure-cookies` too), and checks that both listeners and the
 HTTPS address answer.
 The admin listener is not served: it stays on this machine. When the

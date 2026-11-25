@@ -91,6 +91,7 @@ main = secureMain $ do
         Sha256.spec
         SqliteLibrary.unitSpec
         Tls.keySpec
+        Tls.httpsSpec
         WhatsNew.unitSpec
         Opaque.unitSpec
         Rehearsal.unitSpec

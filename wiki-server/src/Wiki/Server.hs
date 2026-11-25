@@ -11,7 +11,9 @@
 --
 -- With @--tls-cert@ and @--tls-key@ the public listener speaks HTTPS
 -- ("Wiki.Server.Tls"), with the files read before any socket is bound; the
--- admin listener stays plain HTTP, on loopback.
+-- admin listener stays plain HTTP, on loopback. A plain HTTP request to the
+-- public listener is then redirected to HTTPS, and every answer over TLS
+-- carries @Strict-Transport-Security@ unless @--no-hsts@ ('httpsOnly').
 --
 -- On @SIGTERM@ (systemd stopping it) or @SIGINT@ the server stops
 -- accepting connections, gives the requests in progress up to ten seconds
@@ -68,7 +70,7 @@ import Wiki.Server.Storage (Config (..), DataDirInUse (..), Database (..), Place
 import Wiki.Server.Storage.Layout (PgDatabase (..), withoutPassword)
 import Wiki.Server.Storage.Migrate (OldSchema, SchemaTooNew, StepsMissing)
 import Wiki.Server.Storage.SqliteLibrary (SqliteLibrary (..), SqliteRefused, sqliteLibrary)
-import Wiki.Server.Tls (loadTls)
+import Wiki.Server.Tls (HttpsOnly (..), allowingPlain, httpsOnly, loadTls)
 import Wiki.Server.Vault (newCeremonies)
 import Wiki.Server.Version (serverVersion)
 import Wiki.Server.WhatsNew (embeddedWhatsNew)
@@ -275,9 +277,17 @@ withServerUsing given raw sendMail action = do
           address <- getSocketName socket
           logWith logger Info [("event", "listening"), ("listener", l.name), ("address", showAddress (isJust secure) address <> l.mount), ("principal", case l.finding of EveryoneAdministers -> "administrator"; BySession _ -> "by-session")]
           pure address
+        -- A listener that speaks TLS takes plain HTTP on its port too, and
+        -- answers it with a redirect to HTTPS before the application sees
+        -- it ('httpsOnly'); both are decided by the one 'Maybe' that says
+        -- whether the listener speaks TLS. A listener that does not, such
+        -- as one behind a proxy that terminates TLS, is left as it is.
+        let httpsGuard = HttpsOnly {hsts = options.hsts, publicUrl = (.publicUrl) <$> readServerSettings storage}
         threads <- for bound $ \(socket, (_, (l, secure))) ->
-          let run = maybe runSettingsSocket runTLSSocket secure
-           in Async.async (run (settings l) socket (listenerApp logger env site l))
+          let app = listenerApp logger env site l
+           in Async.async $ case secure of
+                Nothing -> runSettingsSocket (settings l) socket app
+                Just tlsSettings -> runTLSSocket (allowingPlain tlsSettings) (settings l) socket (httpsOnly httpsGuard app)
         -- Warp stops accepting when its listening socket is closed, then
         -- waits up to ten seconds for its open connections to finish. The
         -- sockets belong to this function, so they are closed here rather

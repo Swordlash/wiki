@@ -184,6 +184,10 @@ data ServeOptions = ServeOptions
   , tlsKey :: Maybe FilePath
   -- ^ The certificate's private key (@--tls-key@), a PEM file. It may be
   -- the same file as 'tlsCert', when one @.pem@ holds both.
+  , hsts :: Bool
+  -- ^ Whether the public listener's answers over TLS carry
+  -- @Strict-Transport-Security@ ("Wiki.Server.Tls"'s 'httpsOnly'): 'False'
+  -- with @--no-hsts@. Without 'tlsCert' it does nothing.
   , basePath :: Text
   -- ^ The path the public listener serves the wiki under, @\/@ or
   -- @\/wiki\/@, as the application was built for (@HALOGEN_BASE_PATH@).
@@ -249,6 +253,7 @@ defaultServeOptions dataDir =
     , secureCookies = False
     , tlsCert = Nothing
     , tlsKey = Nothing
+    , hsts = True
     , basePath = "/"
     , staticDir = Nothing
     , maxImportSize = defaultMaxImportSize
@@ -285,8 +290,9 @@ serveOptions = do
   noAdmin <- switch (long "no-admin-listen" <> help "Do not listen for the administrator at all")
   adminListenUnsafe <- switch (long "admin-listen-unsafe" <> help "Allow --admin-listen on an address that is not loopback (inside a container, say)")
   secureCookies <- switch (long "secure-cookies" <> help "Mark the session's cookie Secure, for a wiki reached over HTTPS only (a browser never sends such a cookie over plain HTTP); implied by --tls-cert")
-  tlsCert <- optional (strOption (long "tls-cert" <> metavar "FILE" <> help "Serve the public listener over HTTPS with this certificate, a PEM file (the chain may follow the certificate); needs --tls-key. The admin listener stays plain HTTP"))
+  tlsCert <- optional (strOption (long "tls-cert" <> metavar "FILE" <> help "Serve the public listener over HTTPS with this certificate, a PEM file (the chain may follow the certificate); needs --tls-key. Plain HTTP on the same port is redirected to HTTPS. The admin listener stays plain HTTP"))
   tlsKey <- optional (strOption (long "tls-key" <> metavar "FILE" <> help "The certificate's private key, a PEM file (the same file as --tls-cert when one .pem holds both)"))
+  noHsts <- switch (long "no-hsts" <> help "With --tls-cert: send no Strict-Transport-Security header. By default every answer over HTTPS carries one (max-age one year), after which browsers refuse to let a reader click through a certificate error for this host")
   basePath <- strOption (long "base-path" <> metavar "PATH" <> value "/" <> showDefault <> help "The path the wiki is served under, as the application was built for")
   staticDir <- optional (strOption (long "static" <> metavar "DIR" <> help "The built application to serve (its index.html, 404.html, app.wasm, ...)"))
   rclone <- strOption (long "rclone" <> metavar "PATH" <> value "rclone" <> showDefault <> help "The rclone program, for backups the administration copies to an rclone remote")
@@ -312,6 +318,7 @@ serveOptions = do
       , secureCookies
       , tlsCert
       , tlsKey
+      , hsts = not noHsts
       , basePath
       , staticDir
       , maxImportSize = maxImportMb * 1024 * 1024

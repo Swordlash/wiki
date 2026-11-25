@@ -2792,9 +2792,26 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   HTTP has none and keeps the fault; the assistant's own device
   records have the same fault until D3 removes that path); fields
   hear `wiki-secrets-changed` from the keys kept here and from the
-  host's writes, other tabs included. **D3 (the assistant moves, the
-  migration) is being built; E2 (the bridge and `diagnostics`) is
-  open as #381.** **Other small things of 2026-11-25 (the owner):**
+  host's writes, other tabs included. **E2 merged (#381, five Codex rounds):** the
+  editor runs each external plugin that is on in a sandboxed frame
+  and counts its `diagnostics`; protocol version 1 is strings of JSON
+  of at most 1 MiB, one message per message asked for; a plugin that
+  is late, floods or sends junk is stopped; nothing runs until this
+  session's choices were read (`pluginsRead`); the frame's
+  `script-src` stays the two hashes (no `blob:`, no eval: the pin by
+  hash is all the code that runs), and the server reads whether a
+  bundle is strict (`strictBundle`); the guide's page "Writing a
+  plugin" and the example `examples/plugins/doubled-words`. **Left
+  for E3:** the read of the installed plugins is the editor's own
+  (cached, preloaded), not the plugins' machine's: E3 moves it into
+  the one flight with the writes that install; the choices, the
+  wiki's off set and the installed list are cached for the session,
+  so a change in another tab or by an administrator does not reach
+  an editor already open; `wiki-plugin.js` is not served for
+  download; one oversized message is deserialized once by the
+  browser before it is refused. **D3 (the assistant moves, the
+  migration) is open as #382, in review. The first cut of #301
+  (Enter splits an item, later items renumbered) is open as #383.** **Other small things of 2026-11-25 (the owner):**
   `WIKI_INSECURE=1` in `clients/wiki.sh` (#378); plain HTTP on the
   TLS port is redirected to HTTPS, and HSTS is sent only with
   `--hsts`, off by default because it applies to the host name on

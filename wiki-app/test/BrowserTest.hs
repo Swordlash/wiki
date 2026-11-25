@@ -34,9 +34,9 @@ import Test.Browser.Permissions qualified as Permissions
 import Test.Browser.Persist qualified as Persist
 import Test.Browser.Avatars qualified as Avatars
 import Test.Browser.Personal qualified as Personal
-import Test.Browser.PluginFrames qualified as PluginFrames
 import Test.Browser.Policy qualified as Policy
 import Test.Browser.Problems qualified as Problems
+import Test.Browser.PluginFrames qualified as PluginFrames
 import Test.Browser.DeckViewer qualified as DeckViewer
 import Test.Browser.EditorSearch qualified as EditorSearch
 import Test.Browser.Folds qualified as Folds

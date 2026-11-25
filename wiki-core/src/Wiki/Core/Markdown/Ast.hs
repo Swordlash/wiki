@@ -98,6 +98,7 @@ module Wiki.Core.Markdown.Ast
   , ShapeKind (..)
   , ItemMark (..)
   , parseShapes
+  , parseShapesAndSpans
   , shapeLines
 
     -- * Markers
@@ -580,6 +581,15 @@ parseWithTasks source =
 -- Enter reads them ("Wiki.Core.Markdown.Enter").
 parseShapes :: Text -> Either ParseError [Shape]
 parseShapes source = (\(Blocks _ (Markers _ _ _ hs _) _) -> hs) <$> parsed source
+
+-- | Parse a page's Markdown into what 'parseShapes' and 'parseWithSpans'
+-- give apart, from one parse: the editor's Enter reads the shapes, and
+-- the blocks too where it splits an item or renumbers a list
+-- ("Wiki.Core.Markdown.Enter"). The blocks are made only when they are
+-- read.
+parseShapesAndSpans :: Text -> Either ParseError ([Shape], [(Maybe (Int, Int), Block)])
+parseShapesAndSpans source =
+  (\(Blocks bs (Markers _ _ _ hs _) _) -> (hs, finishedWith (toList bs))) <$> parsed source
 
 -- | Parse a page's Markdown, each block of the page (not those inside
 -- another) with the line of the source it starts on, from 1: what the

@@ -297,6 +297,26 @@ spec m = readsOnce Idle $ do
     press "Control+z"
     markdown ui `shouldReturn` T.take at guide <> "$\\fr" <> T.drop at guide
 
+  -- #301: Enter in the middle of a numbered item's first line splits the
+  -- item, and numbers the item after it on, as one step of the undo. What
+  -- Enter writes is tested natively ("Test.Markdown.Enter" of wiki-core);
+  -- here, that the editor makes every change of the answer, at the places
+  -- the answer gives in UTF-16 units (the emoji before the cursor is two),
+  -- and puts the cursor at the new item's text.
+  it "splits an item on Enter in the middle of its line, numbers the item after it on, and takes both back in one undo" $ runPage $ do
+    ui <- editing helloEditor
+    text <- editorText ui
+    setMarkdown ui (titleLines <> "1. \n2. Bread")
+    selectText ui (T.length titleLines + 3) (T.length titleLines + 3)
+    typeText text "🎉 Milk and eggs"
+    -- After "Milk": "1. 🎉 Milk" is ten UTF-16 units.
+    selectText ui (T.length titleLines + 10) (T.length titleLines + 10)
+    press "Enter"
+    markdown ui `shouldReturn` titleLines <> "1. 🎉 Milk\n2. and eggs\n3. Bread"
+    -- The cursor before "and": "1. 🎉 Milk\n2. " is fourteen units.
+    editorSelection ui `shouldReturn` (T.length titleLines + 14, T.length titleLines + 14)
+    press "Control+z"
+    markdown ui `shouldReturn` titleLines <> "1. 🎉 Milk and eggs\n2. Bread"
   it "leaves a line break's two backslashes to Enter in display math" $ runPage $ do
     ui <- editing helloEditor
     text <- editorText ui

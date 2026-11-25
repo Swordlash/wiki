@@ -184,9 +184,9 @@ import Wiki.Core.Assistant.Edit (Change (..), Decision (..), Edit, Refusal, Repl
 import Wiki.Core.Assistant.Prompt (Span (..))
 import Wiki.Core.Markdown.Complete (Completion)
 import Wiki.Core.Markdown.Edit (Command (..), Selection (..), apply, cursor)
-import Wiki.Core.Markdown.Enter (Enter (..), enter)
+import Wiki.Core.Markdown.Enter qualified as Enter
 import Wiki.Core.Markdown.Folds (Fold (..))
-import Wiki.Core.Markdown.Starts (Kept (..), textRange)
+import Wiki.Core.Markdown.Starts (Kept (..), longerEnd, textRange)
 import Wiki.Core.SlideRows (Row (..), RowKey (..), Rows (..), rowStarts)
 import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.User (Login (..), User (..))
@@ -427,11 +427,12 @@ readPickedFile picked = liftIO (evaluate =<< wait =<< picked.file.bytes)
 -- whether that line is flush, the first
 -- change's offset, the start and the end of the cursor's line and the
 -- text's length ("Wiki.Core.Markdown.Starts"' 'Kept' and 'textRange');
--- 'answerEnter' sets @range@, "from to", the part of the text to hand
--- over, or nothing past the limit. Then @before@ and @after@, that part
--- before the cursor and after it; 'answerEnter' sets @insert@, the text to
--- write after a line break, or @line@, the text the cursor's line
--- becomes, or neither for a plain line break.
+-- 'answerEnter' sets @range@, "from to longer", the part of the text to
+-- hand over and where a longer text for a list's numbers ends
+-- ('longerEnd'), or nothing past the limit. Then @before@ and @after@,
+-- that part before the cursor and after it, and @ends@, whether it ends
+-- where the page does; 'answerEnter' sets @answer@, JSON, what Enter
+-- does ('Enter.Edit', 'editJson'), or nothing for a plain line break.
 newtype EnterAsk = EnterAsk JSVal
   deriving newtype (Inert)
 
@@ -440,9 +441,9 @@ $( jsFields
      [ Fixed "cut" [t|Maybe Text|]
      , Fixed "before" [t|Text|]
      , Fixed "after" [t|Text|]
+     , Fixed "ends" [t|Bool|]
      , Writable "range" [t|Maybe Text|]
-     , Writable "insert" [t|Maybe Text|]
-     , Writable "line" [t|Maybe Text|]
+     , Writable "answer" [t|Maybe Text|]
      ]
  )
 
@@ -463,9 +464,9 @@ instance FromJSON EnterCut where
 -- | The callback CodeMirror's Enter calls with an 'EnterAsk', in the
 -- master and in a presentation's rows ("Wiki.Core.Markdown.Enter"). It is
 -- a sync callback ('mkSyncCallback'), so the answer is set before the
--- call returns to the keymap: 'enter' is pure and never waits, and the
+-- call returns to the keymap: 'Enter.edit' is pure and never waits, and the
 -- callback reads and writes nothing but the ask, so it may run in the
--- middle of anything the component is doing. An exception in 'enter'
+-- middle of anything the component is doing. An exception in 'Enter.edit'
 -- leaves the ask unanswered, which the keymap takes for a plain line
 -- break. One callback serves every editor of the page, made the first
 -- time an editor is attached and kept for the page's life: it holds
@@ -484,33 +485,44 @@ enterCallback = do
 enterCallbackRef :: IORef (Maybe Callback)
 enterCallbackRef = unsafePerformIO (newIORef Nothing)
 
--- | Answer an 'EnterAsk' with what 'enter' writes, forced first, so that
+-- | Answer an 'EnterAsk' with what 'Enter.edit' does, forced first, so that
 -- an exception in it leaves the ask unanswered rather than reaching the
 -- keymap.
 answerEnter :: EnterAsk -> IO ()
 answerEnter asked = case asked.cut of
   Just json -> do
-    cut <- try @SomeException $ evaluate $ case decodeStrict (encodeUtf8 json) of
-      Just (EnterCut kept firstChange lineStart lineEnd len) -> (\(begins, ends) -> show begins <> " " <> show ends) <$> textRange kept firstChange lineStart lineEnd len
-      Nothing -> Nothing
+    cut <- try @SomeException $ do
+      let range = case decodeStrict (encodeUtf8 json) of
+            Just (EnterCut kept firstChange lineStart lineEnd len) -> do
+              (begins, ends) <- textRange kept firstChange lineStart lineEnd len
+              longer <- longerEnd kept firstChange lineStart lineEnd len
+              pure (show begins <> " " <> show ends <> " " <> show longer)
+            Nothing -> Nothing
+      range <$ evaluate (maybe 0 T.length range)
     case cut of
-      Right (Just range) -> evaluate (T.length range) >> asked.range_set (Just range)
+      Right (Just range) -> asked.range_set (Just range)
       _ -> pure ()
   Nothing -> answerText asked
 
--- | Answer the second question of an 'EnterAsk': what 'enter' writes.
+-- | Answer the second question of an 'EnterAsk': what Enter does.
 answerText :: EnterAsk -> IO ()
 answerText asked = do
   answered <- try @SomeException $ do
-    answer <- evaluate (enter asked.before asked.after)
-    case answer of
-      NewLine -> pure answer
-      NewLineWith t -> answer <$ evaluate (T.length t)
-      LineBecomes t -> answer <$ evaluate (T.length t)
+    let json = editJson <$> Enter.edit asked.ends asked.before asked.after
+    json <$ evaluate (maybe 0 T.length json)
   case answered of
-    Right (NewLineWith t) -> asked.insert_set (Just t)
-    Right (LineBecomes t) -> asked.line_set (Just t)
+    Right (Just json) -> asked.answer_set (Just json)
     _ -> pure ()
+
+-- | What Enter does ('Enter.Edit') as @web/src/editor.js@ reads it:
+-- @{change, renumbered, cursor, longer}@, each change an array of its
+-- range's start and end in UTF-16 units from the cursor, the text there
+-- and the text put in its place.
+editJson :: Enter.Edit -> Text
+editJson (Enter.Edit change renumbered at longer) =
+  decodeUtf8 (BSL.toStrict (encode (object ["change" .= changeJson change, "renumbered" .= map changeJson renumbered, "cursor" .= at, "longer" .= longer])))
+  where
+    changeJson (Enter.Change start end old new) = (start, end, old, new)
 
 -- | Put CodeMirror in the host element (an empty element the editor
 -- renders just before its textarea) in place of the textarea, once the

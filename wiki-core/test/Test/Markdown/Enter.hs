@@ -197,6 +197,18 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     "3) a‸\n4) b" `becomes` "3) a\n4) ‸\n5) b"
     "> 1. a‸\n> 2. b" `becomes` "> 1. a\n> 2. ‸\n> 3. b"
     "1. a\n   1. x‸\n   2. y\n2. b" `becomes` "1. a\n   1. x\n   2. ‸\n   3. y\n2. b"
+    -- Codex's round 1 on #383: a list that starts on its outer item's
+    -- first line starts on the same line as the outer list. The new item
+    -- and the numbers are the inner list's, the outer list's left alone.
+    "1. 1. a‸\n   2. b\n2. c" `becomes` "1. 1. a\n   2. ‸\n   3. b\n2. c"
+    "1. 1. a‸b\n   2. c\n2. d" `becomes` "1. 1. a\n   2. ‸b\n   3. c\n2. d"
+    "1. 1. 1. a‸\n      2. b\n   2. c\n2. d" `becomes` "1. 1. 1. a\n      2. ‸\n      3. b\n   2. c\n2. d"
+    "- 1. a‸\n  2. b\n- c" `becomes` "- 1. a\n  2. ‸\n  3. b\n- c"
+    "1. - a‸\n   - b\n2. c" `becomes` "1. - a\n   - ‸\n   - b\n2. c"
+    "1. - a‸b\n2. c" `becomes` "1. - a\n   - ‸b\n2. c"
+    "1. - [ ] a‸\n2. c" `becomes` "1. - [ ] a\n   - [ ] ‸\n2. c"
+    "1. - [x] a‸b\n2. c" `becomes` "1. - [x] a\n   - [ ] ‸b\n2. c"
+    "- 1) a‸b\n  2) c\n- d" `becomes` "- 1) a\n  2) ‸b\n  3) c\n- d"
     "1. a‸\n2. b\n\n- c\n\n1. d" `becomes` "1. a\n2. ‸\n3. b\n\n- c\n\n1. d"
     "1. a‸\n2. b\n\n\n3. c" `becomes` "1. a\n2. ‸\n3. b\n\n\n4. c"
     it "leaves a list numbered 1. 1. 1. as it is" $ press "1. a‸\n1. b\n1. c" `shouldBe` "1. a\n2. ‸\n1. b\n1. c"
@@ -465,6 +477,8 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
             $ cover 3 (cutInside l) "a cut inside code, math, a link or emphasis"
             $ cover 10 (renumbers l) "numbers rewritten"
             $ cover 1 (renumbers l && widens l) "a number one digit wider"
+            $ cover 20 (any onLine l.holders) "a list starting on its outer item's first line"
+            $ cover 3 (renumbers l && any onLine l.holders) "numbers rewritten in a list starting on its outer item's first line"
             -- At the end of a line, where a new item starts is the rule
             -- of #292, which the properties above check; the model is of
             -- what comes after a new item there.
@@ -1156,13 +1170,13 @@ askedOf (given, taken, ends) (given', taken', ends') = do
       Just again | not again.longer && again.change == e.change && again.cursor == e.cursor -> pure again
       _ -> pure (E.Edit e.change [] e.cursor False)
 
--- | A list for Enter on one of its items' first lines: what it is in, its
--- items' bullet (none for a numbered list) or its numbers' delimiter,
+-- | A list for Enter on one of its items' first lines: what it is in (the
+-- outermost first), its items' bullet (none for a numbered list) or its numbers' delimiter,
 -- its first number and how the numbers go on, its items, whether it is
 -- loose, what is above it and below it, and the cursor: the item and the
 -- column on its first line, from 0.
 data Listed = Listed
-  { holder :: Around
+  { holders :: [Around]
   , bullet :: Maybe Char
   , delimiter :: Char
   , start :: Int
@@ -1176,8 +1190,11 @@ data Listed = Listed
   }
   deriving stock (Show)
 
--- | What a list is in: nothing, a quotation, an item of a list around.
-data Around = Bare | Quoted | InItem
+-- | What a list is in: a quotation, an item of a list around (the list
+-- after the item's first line and a blank line), or an item whose first
+-- line the list starts on, with this mark, an item of the outer list after
+-- it (@1. 1. a@ … @2. Outer next@): both lists start on that line.
+data Around = Quoted | InItem | OnLine Text
   deriving stock (Eq, Show)
 
 -- | How a numbered list's numbers go: one after another, all the same, or
@@ -1211,7 +1228,8 @@ data Below = NothingBelow | ParagraphBelow | ListBelow
 
 instance Arbitrary Listed where
   arbitrary = do
-    holder <- elements [Bare, Bare, Quoted, InItem]
+    depth <- frequency [(3, pure 0), (3, pure 1), (1, pure 2)]
+    holders <- vectorOf depth (frequency [(1, pure Quoted), (1, pure InItem), (3, OnLine <$> elements ["-", "*", "1.", "3)"])])
     bullet <- elements [Just '-', Just '*', Just '+', Nothing, Nothing, Nothing]
     delimiter <- elements ['.', ')']
     start <- elements [1, 1, 7, 8, 9, 98, 99]
@@ -1226,7 +1244,7 @@ instance Arbitrary Listed where
     above <- elements [False, True]
     below <- elements [NothingBelow, ParagraphBelow, ListBelow]
     item <- choose (0, k - 1)
-    let listed column = Listed {holder, bullet, delimiter, start, numbering, entries, loose, above, below, item, column}
+    let listed column = Listed {holders, bullet, delimiter, start, numbering, entries, loose, above, below, item, column}
         line = firstLineOf' (listed 0)
         textStart = textStartOf (listed 0)
     listed <$> frequency [(6, choose (textStart + 1, max (textStart + 1) (T.length line - 1))), (2, pure (T.length line)), (1, choose (0, T.length line))]
@@ -1242,19 +1260,27 @@ numberOf l i = case l.numbering of
 markOf :: Listed -> Int -> Text
 markOf l i = maybe (show (numberOf l i) <> T.singleton l.delimiter) T.singleton l.bullet
 
--- | What every line of the list starts with, for what it is in, and a
--- blank line there.
-prefixOf' :: Listed -> (Text, Text)
-prefixOf' l = case l.holder of
-  Bare -> ("", "")
-  Quoted -> ("> ", ">")
-  InItem -> ("  ", "")
+-- | Whether a list starts on its outer item's first line.
+onLine :: Around -> Bool
+onLine = \case
+  OnLine _ -> True
+  _ -> False
 
--- | An item's first line, its prefix included.
-itemLine :: Listed -> Int -> Text
-itemLine l i =
+-- | What a line of the list after its first starts with, for what the
+-- list is in.
+laterPrefix :: Listed -> Text
+laterPrefix l = foldMap later l.holders
+  where
+    later = \case
+      Quoted -> "> "
+      InItem -> "  "
+      OnLine m -> T.replicate (T.length m + 1) " "
+
+-- | An item's first line, without what the list is in.
+ownLine :: Listed -> Int -> Text
+ownLine l i =
   let e = fromMaybe (Entry Nothing [] NoMore) (atMay l.entries i)
-   in fst (prefixOf' l) <> markOf l i <> " " <> boxOf e <> T.unwords (map tokenText e.tokens)
+   in markOf l i <> " " <> boxOf e <> T.unwords (map tokenText e.tokens)
 
 boxOf :: Entry -> Text
 boxOf e = maybe "" (\c -> "[" <> T.singleton c <> "] ") e.box
@@ -1266,24 +1292,22 @@ tokenText = \case
 
 -- | The cursor's item's first line.
 firstLineOf' :: Listed -> Text
-firstLineOf' l = itemLine l l.item
+firstLineOf' l = maybe "" snd (find ((== Just l.item) . fst) (listedLines l))
 
 -- | Where the cursor's item's text starts on its first line.
 textStartOf :: Listed -> Int
 textStartOf l =
   let e = fromMaybe (Entry Nothing [] NoMore) (atMay l.entries l.item)
-   in T.length (fst (prefixOf' l)) + T.length (markOf l l.item) + 1 + T.length (boxOf e)
+   in T.length (firstLineOf' l) - T.length (ownLine l l.item) + T.length (markOf l l.item) + 1 + T.length (boxOf e)
 
--- | The list's lines, each an item's first line (with the item) or not.
+-- | The list's lines, each an item's first line (with the item) or not:
+-- the list's own, in what it is in, the innermost first, with what is
+-- above it and below it at the top level.
 listedLines :: Listed -> [(Maybe Int, Text)]
-listedLines l = top <> body <> bottom
+listedLines l = top <> foldr wrap body l.holders <> bottom
   where
-    (prefix, blank) = prefixOf' l
-    top = map (Nothing,) $ case l.holder of
-      Bare -> if l.above then ["Intro.", ""] else []
-      Quoted -> if l.above then ["> Intro.", ">"] else []
-      InItem -> (if l.above then ["Intro.", ""] else []) <> ["- Outer", ""]
-    body = intercalate [(Nothing, blank) | l.loose] [(Just i, itemLine l i) : map ((Nothing,) . maybe blank (prefix <>)) (moreOf i e) | (i, e) <- zip [0 ..] l.entries]
+    top = map (Nothing,) (if l.above then ["Intro.", ""] else [])
+    body = intercalate [(Nothing, "") | l.loose] [(Just i, ownLine l i) : map ((Nothing,) . fromMaybe "") (moreOf i e) | (i, e) <- zip [0 ..] l.entries]
     moreOf i e =
       let indent = T.replicate (T.length (markOf l i) + 1) " "
        in case e.more of
@@ -1292,6 +1316,13 @@ listedLines l = top <> body <> bottom
             LazyLine -> [Just "lazy words"]
             Second -> [Nothing, Just (indent <> "second paragraph")]
             Nested -> [Just (indent <> "- child")]
+    -- A line in a container: its prefix, and on a blank line the prefix
+    -- without its spaces at the end.
+    under p (i, t) = (i, if T.null t then T.stripEnd p else p <> t)
+    wrap container ls = case container of
+      Quoted -> map (under "> ") ls
+      InItem -> [(Nothing, "- Outer"), (Nothing, "")] <> map (under "  ") ls
+      OnLine m -> zipWith (\k x -> under (if k == (0 :: Int) then m <> " " else T.replicate (T.length m + 1) " ") x) [0 ..] ls <> [(Nothing, nextMark m <> " Outer next")]
     bottom = map (Nothing,) $ case l.below of
       NothingBelow -> []
       ParagraphBelow -> ["", "After."]
@@ -1378,7 +1409,7 @@ modelPress l
     below' = drop (n + 1) ls
     line = firstLineOf' l
     e = fromMaybe (Entry Nothing [] NoMore) (atMay l.entries l.item)
-    (prefix, _) = prefixOf' l
+    prefix = laterPrefix l
     next = maybe (show (numberOf l l.item + 1) <> T.singleton l.delimiter) T.singleton l.bullet
     start' = prefix <> next <> " " <> (if isJust e.box then "[ ] " else "")
     kept = T.take l.column line

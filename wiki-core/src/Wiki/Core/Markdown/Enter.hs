@@ -775,9 +775,14 @@ following ends before after done = fromMaybe (Following []) $ do
   place <- placeOf done.shapes n
   Item item <- lastMay place.containers
   Numbered delimiter <- Just item.mark
-  numbered <- find (\s -> s.kind == ListShape && fst (extent s) == item.listLine && any ((== Just item.firstLine) . firstLineOf) s.inner) (everyShape done.shapes)
-  let marks = [(l, c) | i <- numbered.inner, ((l, c), _) <- take 1 i.parts]
-      later = drop 1 (dropWhile ((/= item.firstLine) . fst) marks)
+  -- The list the cursor's item is in: the one with an item whose mark
+  -- is where the item's is, line and column. A line is not enough: a
+  -- list may start on its outer item's first line (@1. 1. a@), and both
+  -- lists start there.
+  let own = (item.firstLine, item.markColumn)
+  numbered <- find (\s -> s.kind == ListShape && any ((== Just own) . markOf) s.inner) (everyShape done.shapes)
+  let marks = mapMaybe markOf numbered.inner
+      later = drop 1 (dropWhile (/= own) marks)
       numberAt (l, c) = do
         line <- atMay textLines (l - 1)
         let mark = markWritten (Numbered delimiter) (T.drop (c - 1) line)
@@ -810,9 +815,9 @@ following ends before after done = fromMaybe (Following []) $ do
       guard (map snd spans == map snd done.blocks)
       pure (Following changes)
 
--- | The line an item's mark is on.
-firstLineOf :: Shape -> Maybe Int
-firstLineOf s = (\((l, _), _) -> l) <$> head s.parts
+-- | Where an item's mark is: its line and its column.
+markOf :: Shape -> Maybe (Int, Int)
+markOf s = fst <$> head s.parts
 
 -- | Every shape, at any depth.
 everyShape :: [Shape] -> [Shape]

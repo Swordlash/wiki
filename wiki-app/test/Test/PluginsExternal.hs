@@ -432,14 +432,14 @@ machine = describe "the editor's machine of external plugins" $ do
     -- the rest of the run is spent on what happens to them.
     let runs = (<>) <$> elements [[], [DeliverRead True, Type 1, Ready' 0, Ready' 1]] <*> (choose (10, 80) >>= vector)
      in withNumTests 2000 . checkCoverage . forAll runs $ \steps ->
-      let wrong = runWith step steps
-          -- The runs reach what the rules are about.
-          played = foldl' play (newWorld step) steps
-       in cover 30 (Set.member "heard" played.seen) "a plugin found problems in a text"
-            . cover 30 (Set.member "stopped" played.seen) "a plugin was stopped"
-            . cover 50 (Set.member "asking" played.seen) "an ask was out"
-            . cover 50 (Set.member "two running" played.seen) "two plugins ran"
-            $ counterexample (show wrong) (null wrong)
+          let wrong = runWith step steps
+              -- The runs reach what the rules are about.
+              played = foldl' play (newWorld step) steps
+           in cover 30 (Set.member "heard" played.seen) "a plugin found problems in a text"
+                . cover 30 (Set.member "stopped" played.seen) "a plugin was stopped"
+                . cover 50 (Set.member "asking" played.seen) "an ask was out"
+                . cover 50 (Set.member "two running" played.seen) "two plugins ran"
+                $ counterexample (show wrong) (null wrong)
 
   it "is told apart from a machine that breaks each rule" $ do
     let early = [DeliverRead True, Type 1, Ready' 0, Ready' 1]

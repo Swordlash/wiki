@@ -210,8 +210,8 @@ import Wiki.Api.ApiKeys qualified as Key
 import Wiki.Api.Backups (Backups (..), defaultBackupSettings)
 import Wiki.Api.Notifications (NotificationSettings (NotificationSettings), NotificationSettingsChange, Notifications (Notifications), ReadMark)
 import Wiki.Api.Notifications qualified as N
-import Wiki.Api.Plugins.External (ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..))
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), WikiPlugins (..), maxOptionsBytes, maxPluginsOff, maxPluginsPerUser, optionsNull, optionsTooLarge, parsePluginId)
+import Wiki.Api.Plugins.External (ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..))
 import Wiki.Api.ServerSettings (HomePage, MailTestResult, ProviderChange, ProviderCheck (ProviderCheck), ServerSettings, ServerSettingsChange, ServerSettingsOf, applyChange, checkHomePage, checkServerSettings, named, noServerSettings, providerProblems, providerWith, redirectUri, secretState)
 import Wiki.Api.ServerSettings qualified as SS
 import Wiki.Api.Stars (StarredPage (StarredPage), maxStars)

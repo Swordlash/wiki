@@ -392,6 +392,7 @@ test-suite wiki-app-test
         Test.Plugins
         Test.PluginsDom
         Test.PluginsExternal
+        Test.PluginsExternalDom
         Test.PluginsSettings
         Test.Policy
         Test.Preview

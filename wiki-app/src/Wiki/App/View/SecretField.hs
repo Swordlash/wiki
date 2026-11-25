@@ -47,7 +47,7 @@ import Wiki.App.Assistant.Sync (MonadVault, owned)
 import Wiki.App.Plugin (FieldInput (..), FieldOutput (..), Manifest (..), SecretName (..), SecretSpec (..), Unavailable (..))
 import Wiki.App.Plugin.Host.Secrets (forgetSecrets, putSecret, readSecrets, removeSecret)
 import Wiki.App.Vault (unlockWithPasskey, unlockWithPassword)
-import Wiki.App.View.SecretField.Machine (Answer (..), Effect (..), Event (..), Job (..), Model (..), Shown (..), Told (..), busy, initial, needsOwner, step)
+import Wiki.App.View.SecretField.Machine (Answer (..), Effect (..), Event (..), Job (..), Model (..), Shown (..), Told (..), busy, initialBound, needsOwner, step)
 import Wiki.Core.Id (UserId)
 import Wiki.Core.User (Password (..))
 
@@ -71,7 +71,7 @@ component :: forall m. (Typeable m, MonadAssistant m, MonadVault m, MonadUnliftI
 component user manifest =
   H.mkComponent
     H.ComponentSpec
-      { initialState = \input -> pure State {input, machine = Machine.new initial, owners = mempty}
+      { initialState = \input -> pure State {input, machine = Machine.new (initialBound input.binding), owners = mempty}
       , render
       , eval =
           H.mkEval
@@ -146,8 +146,12 @@ component user manifest =
         happen Opened
       Finalize -> Machine.finish machineSpec Finished
       -- The plugin's check may be another function: the next check uses
-      -- it. The name is the slot's, which does not change.
-      Receive input -> modify (\st -> st {input})
+      -- it. The name is the slot's, which does not change. What the check
+      -- is for goes to the machine in this step, before any wait: a check
+      -- out answers into the binding as it is now.
+      Receive input -> do
+        modify (\st -> st {input})
+        happen (Rebound input.binding)
       Happened e -> happen e
 
     happen :: Event -> H.HalogenM (State m) (Action m) Empty FieldOutput m ()
@@ -191,10 +195,10 @@ component user manifest =
           UnlockByPasskey -> Done . void <$> unlockWithPasskey u
           UnlockByPassword p -> Done . void <$> unlockWithPassword u (Password p)
           ForgetAll -> Done <$> forgetSecrets u manifest
-          Check _ -> pure (Done (Left "A check is the plugin's."))
+          Check _ _ -> pure (Done (Left "A check is the plugin's."))
         -- The plugin's check of a value.
         checked input = \case
-          Check value -> Done <$> input.check value
+          Check value _ -> Done <$> input.check value
           _ -> pure (Done (Left "Only a check is the plugin's."))
         shownOf name = \case
           Right secrets -> Here (Map.member name secrets)
@@ -210,7 +214,7 @@ answerOf = either (\e -> Done (Left ("Something went wrong: " <> toS (displayExc
 doingText :: Job -> Maybe Text
 doingText = \case
   Read -> Nothing
-  Check _ -> Just "Checking…"
+  Check _ _ -> Just "Checking…"
   Put _ -> Just "Keeping…"
   Remove -> Just "Forgetting…"
   UnlockByPasskey -> Just "Unlocking with a passkey…"

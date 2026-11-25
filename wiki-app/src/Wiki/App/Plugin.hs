@@ -381,9 +381,17 @@ fieldSlot s name = let (session, user) = s.field.reader in FieldSlot session use
 -- one the manifest declares, and a check of a value before it is kept,
 -- with what to tell the reader when it fails (the assistant tries an API
 -- key). The check waits; the field shows that it is checking.
+--
+-- 'binding' names what the check is for, when it depends on more than the
+-- value: the assistant's is the service the key is tried against, its
+-- provider and its address. A value is kept only if the binding is the same
+-- when the check answers as when it was asked; otherwise the field keeps
+-- nothing and says so. A plugin whose check depends on the value alone
+-- gives an empty binding.
 data FieldInput m = FieldInput
   { name :: SecretName
   , check :: Text -> m (Either Text ())
+  , binding :: Text
   }
 
 -- | 'FieldOutput' is what a 'SecretField' tells the plugin: a value was kept
@@ -396,7 +404,7 @@ data FieldOutput = Kept SecretName | Removed SecretName | Unlocked
 -- fields under the given label:
 --
 -- > type Slots = ("secret" .== H.Slot (Const Void) FieldOutput FieldSlot)
--- > ... secretField "secret" can.secrets FieldInput {name, check} FromField
+-- > ... secretField "secret" can.secrets FieldInput {name, check, binding = ""} FromField
 secretField
   :: forall label
   ->forall action slots m

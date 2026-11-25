@@ -73,8 +73,8 @@ settings =
     render st =
       HH.section
         [HP.class_ (HH.ClassName "secretive")]
-        ( secretField "secret" st.granted.secrets FieldInput {name = tokenName, check = checkToken} FromField
-            : secretField "secret" st.granted.secrets FieldInput {name = endpointName, check = checkToken} FromField
+        ( secretField "secret" st.granted.secrets FieldInput {name = tokenName, check = checkToken, binding = ""} FromField
+            : secretField "secret" st.granted.secrets FieldInput {name = endpointName, check = checkToken, binding = ""} FromField
             : [HH.p [HP.class_ (HH.ClassName "secretive-read")] [HH.text (either (\u -> "unavailable: " <> show u) (T.intercalate ", " . map (\n -> n.text)) r)] | Just r <- [st.read]]
         )
 

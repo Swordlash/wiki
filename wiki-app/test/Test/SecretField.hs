@@ -3,7 +3,8 @@
 -- reader's acts and of the answers to the field's asks: one ask out at a
 -- time; each ask's owner of keys let go once, when it answers or when the
 -- field closes; a value kept only after the plugin's check passed for that
--- same value; the value typed cleared once kept; the plugin told of a
+-- same value, under the binding the field has when the check answers; the
+-- value typed cleared once kept; the plugin told of a
 -- keep, a forget and an unlock only when they were done; and the secret
 -- read again after an unlock, and after a change heard from elsewhere (the
 -- vault unlocked or locked, a secret kept or forgotten), at once or once
@@ -30,6 +31,7 @@ spec = describe "Wiki.App.View.SecretField.Machine" $ do
        in checkCoverage . tabulate "jobs done" (map jobName s.done)
             $ cover 15 ("Put" `elem` map jobName s.done) "kept a value"
             $ cover 10 ("Unlock" `elem` map jobName s.done) "unlocked"
+            $ cover 3 s.reboundRefused "a check refused for its binding"
             $ cover 20 (any heardChange moves) "heard a change"
             $ conjoin (reverse checks)
               .&&. counterexample "the ask out at the close is let go" ([n | Release n <- closing] === outAtClose)
@@ -49,12 +51,21 @@ spec = describe "Wiki.App.View.SecretField.Machine" $ do
     let (m1, _) = step (Answered 0 (ReadAs (Here False))) (fst (step Opened initial))
         (m2, _) = step (Typed "sk-1") m1
         (m3, e3) = step KeepPressed m2
-    e3 `shouldBe` [Ask 1 (Check "sk-1")]
+    e3 `shouldBe` [Ask 1 (Check "sk-1" "")]
     let (m4, e4) = step (Answered 1 (Done (Right ()))) m3
     e4 `shouldBe` [Release 1, Ask 2 (Put "sk-1")]
     let (m5, e5) = step (Answered 2 (Done (Right ()))) m4
     e5 `shouldBe` [Release 2, Tell KeptIt]
     (m5.shown, m5.typed) `shouldBe` (Here True, "")
+
+  it "keeps nothing when what the check was for changed while it was out" $ do
+    let (m1, _) = step (Answered 0 (ReadAs (Here False))) (fst (step Opened initial {binding = "anthropic https://gateway.example"}))
+        (m2, e2) = step KeepPressed (fst (step (Typed "sk-1") m1))
+    e2 `shouldBe` [Ask 1 (Check "sk-1" "anthropic https://gateway.example")]
+    let (m3, _) = step (Rebound "anthropic ") m2
+        (m4, e4) = step (Answered 1 (Done (Right ()))) m3
+    e4 `shouldBe` [Release 1]
+    (m4.problem, m4.typed, m4.shown) `shouldBe` (Just reboundProblem, "sk-1", Here False)
 
   it "keeps nothing when the check fails, and says why" $ do
     let (m1, _) = step (Answered 0 (ReadAs (Here False))) (fst (step Opened initial))
@@ -78,6 +89,7 @@ genMove =
     , (3, Act <$> elements [KeepPressed, KeepPressed, ForgetPressed, PasskeyPressed, PasswordPressed, ForgetAllPressed])
     , (2, Act . Typed <$> elements ["", "sk-1", "sk-1", "sk-2", "  "])
     , (1, Act . TypedPassword <$> elements ["", "pw", "pw"])
+    , (1, Act . Rebound <$> elements ["", "a", "b"])
     , (1, pure (Act Changed))
     , (5, Answer <$> elements [Succeeds, Succeeds, Succeeds, Fails, Finds (Here False), Finds (Here True), Finds (Here False), Finds LockedHere, Finds LockedHere, Finds NoReader, Finds (Unreadable "no")])
     ]
@@ -95,10 +107,12 @@ data Sim = Sim
   -- ^ Whether the reader typed a value since the last check was asked.
   , done :: [Job]
   -- ^ The jobs that answered done.
+  , reboundRefused :: Bool
+  -- ^ Whether a check passed for a binding the field no longer had.
   }
 
 start :: Sim
-start = Sim {model = initial, out = [], released = mempty, passed = [], typedSince = False, done = []}
+start = Sim {model = initial, out = [], released = mempty, passed = [], typedSince = False, done = [], reboundRefused = False}
 
 -- | Play one move: the step, and what it must keep.
 play :: ([Property], Sim) -> Move -> ([Property], Sim)
@@ -126,8 +140,12 @@ play (checks, s) = \case
           (m', effects) = step (Answered n answer) s.model
           s' = s {model = m', out = filter ((/= n) . fst) s.out, done = [job | answer == Done (Right ())] <> s.done}
           -- A check passed: the keep it makes must be of this value.
+          -- A check passed under the binding the field has now: the keep
+          -- it makes must be of this value. Under another, no keep.
           s'' = case (job, answer) of
-            (Check v, Done (Right ())) -> s' {passed = (m'.next - 1, v) : s'.passed}
+            (Check v b, Done (Right ()))
+              | b == s.model.binding -> s' {passed = (m'.next - 1, v) : s'.passed}
+              | otherwise -> s' {reboundRefused = True}
             _ -> s'
        in record (checks, s'') (Just (n, job, answer, s.model)) effects
   where
@@ -146,8 +164,10 @@ record (checks, s) answered effects =
         [ counterexample "at most one ask out" (length s'.out <= 1)
         , counterexample "each owner let go once" (all (`Set.notMember` s.released) releases)
         , counterexample "the ask answered is let go first" (maybe True (\(n, _, _, _) -> take 1 releases == [n]) answered)
-        , counterexample "a keep only of a value that passed its check" $
+        , counterexample "a keep only of a value that passed its check, under the binding the field has" $
             and [lookup n s'.passed == Just v | (n, Put v) <- asks]
+        , counterexample "a check asked under the binding the field has" $
+            and [b == s'.model.binding | (_, Check _ b) <- asks]
         , counterexample "the model's busy is the ask out" (isJust s'.model.doing == not (null s'.out))
         , counterexample "the plugin told only of what was done" $ case answered of
             Just (_, job, Done (Right ()), _) -> told == expectedTold job
@@ -162,7 +182,7 @@ record (checks, s) answered effects =
    in (counterexample (show effects) (conjoin rules) : checks, s')
   where
     isCheck = \case
-      Check _ -> True
+      Check _ _ -> True
       _ -> False
     isUnlock = \case
       UnlockByPasskey -> True
@@ -187,7 +207,7 @@ heardChange = \case
 jobName :: Job -> [Char]
 jobName = \case
   Read -> "Read"
-  Check _ -> "Check"
+  Check _ _ -> "Check"
   Put _ -> "Put"
   Remove -> "Remove"
   UnlockByPasskey -> "Unlock"

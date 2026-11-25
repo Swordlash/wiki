@@ -348,7 +348,7 @@ component =
                 <p class="warning assistant-insecure-base-url" role="alert">This address is plain HTTP to another machine: your key and your pages would cross the network unencrypted, for anyone on the way to read. Use an HTTPS address, or a server on this machine.</p>
               {% end %}
             {% end %}
-            {{ secretField "secret" st.input.can.secrets FieldInput {name = secretOf p, check = checkFor st p s} (FromField p) }}
+            {{ secretField "secret" st.input.can.secrets FieldInput {name = secretOf p, check = checkFor st p s, binding = serviceBinding p s} (FromField p) }}
             {% if isJust ps.key %}
               <div class="actions">
                 <button type="button" class="assistant-test" disabled={{ checking }} onClick={{ const (Test p) }}>Test the key</button>
@@ -622,6 +622,14 @@ component =
             models.check Ready {provider = asked.provider, model, key = asked.key, effort = asked.effort, baseUrl = asked.baseUrl} >>= \case
               Just e -> refused e
               Nothing -> tell (CheckPassed p model) $> Right ()
+
+-- | The service a key's check tries it against, as a key's field binds
+-- the check to it ('Wiki.App.Plugin.FieldInput'): the provider, and the
+-- address chosen, none for the provider's own. A key checked against one
+-- service is then never kept for another, if the options change while the
+-- check is out.
+serviceBinding :: Provider -> Settings -> Text
+serviceBinding p s = providerKey p <> " " <> maybe "" (\u -> u.text) (baseUrlOf p (settingsOf p s))
 
 -- | The model a key is tested with: the one chosen, if the provider's
 -- list has it, else the list's first.

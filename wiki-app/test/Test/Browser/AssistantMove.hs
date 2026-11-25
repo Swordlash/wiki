@@ -67,7 +67,7 @@ data Found = Found
 
 synced, own, typed :: Settings
 synced = withModel Anthropic "claude-from-the-vault" (withKey OpenAI (Just "sk-open-vault-ü") (withKey Anthropic (Just "sk-ant-vault") defaultSettings))
-own = withKey Anthropic (Just "sk-ant-own") defaultSettings
+own = withModel Anthropic "claude-own" (withKey Anthropic (Just "sk-ant-own") defaultSettings)
 typed = withKey Scripted (Just "typed-while-locked") defaultSettings
 
 assistantManifest :: Manifest

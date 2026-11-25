@@ -30,7 +30,8 @@
 --
 -- A surface that wants it (the agent) has each provider that can be asked
 -- asked for its list of models once the settings are first read for a
--- reader ('wantsLists'), and a provider asked again when it says so
+-- reader, and each provider whose key arrives later then ('wantsLists'),
+-- and a provider asked again when it says so
 -- ('Check'). One ask per provider is out at a time ('checking'). The list,
 -- or whether the provider could be reached, is kept only if the
 -- provider's key and address are still those it was asked with
@@ -100,8 +101,9 @@ data Model = Model
   -- ^ Whether the surface wants the providers asked for their lists once
   -- the settings are read, with whether the scripted provider is
   -- installed.
-  , listedFor :: Maybe Reader
-  -- ^ The reader for whom they were asked.
+  , listedNow :: Set Provider
+  -- ^ The providers asked for their lists for the reader: one whose key
+  -- arrives later (a vault unlocked, a key moved) is asked then.
   }
   deriving stock (Eq)
 
@@ -168,7 +170,7 @@ initial reader options =
     , problem = Nothing
     , checking = mempty
     , wantsLists = Nothing
-    , listedFor = Nothing
+    , listedNow = mempty
     }
 
 -- | The settings made whole, once the keys and the cache are read. While
@@ -255,12 +257,12 @@ listing p m = case settings m of
   _ -> (m, [])
 
 -- | Once the settings are read for a reader, each provider that can be
--- asked is asked for its list, by a surface that wants it.
+-- asked is asked for its list, once, by a surface that wants it.
 listingOnRead :: (Model, [Effect]) -> (Model, [Effect])
 listingOnRead (m, effects) = case (m.wantsLists, settings m) of
   (Just scripted, Just s)
-    | m.listedFor /= Just m.reader ->
-        foldl' (\(x, fx) p -> second (fx <>) (listing p x)) (m {listedFor = Just m.reader}, effects) [p | p <- providers scripted, usable p (settingsOf p s)]
+    | fresh@(_ : _) <- [p | p <- providers scripted, usable p (settingsOf p s), Set.notMember p m.listedNow] ->
+        foldl' (\(x, fx) p -> second (fx <>) (listing p x)) (m {listedNow = m.listedNow <> Set.fromList fresh}, effects) fresh
   _ -> (m, effects)
 
 -- | 'Shown' added when the settings shown, or whether the keys can be

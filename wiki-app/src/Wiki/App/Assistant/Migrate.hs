@@ -13,7 +13,7 @@
 -- otherwise. What was learnt from the providers goes to the plugin's cache
 -- in this browser. The options are not written here: they are the plugins'
 -- state's to write ("Wiki.App.View.Plugins.Machine"), which writes a
--- plugin's options one ask at a time. When the plan comes to them, the run
+-- plugin's options one ask at a time. A run takes every other step, and
 -- ends with the options to adopt ('Adopt'); the shell gives them to the
 -- plugins' state, and a later run, which reads the server's options as
 -- written, goes on to empty the legacy places.
@@ -88,13 +88,21 @@ migrateAssistant u options = holdingDeviceRecords (holdingAcrossTabs (migrationL
 migrateAssistantHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe (Maybe Value) -> m (Either Text Outcome)
 migrateAssistantHeld u options = runExceptT (go maxSteps)
   where
+    -- The options to adopt are the plugins' state's to write: every other
+    -- step is taken, and the run ends with them, if the plan still has
+    -- them. The legacy places wait for them to be the server's.
     go 0 = throwError "The writing assistant's settings could not be moved: they changed at every step."
     go n = do
       f <- found u options
-      case plan f of
-        [] -> pure (if legacyLeft f then Waiting else Moved)
-        Plan.AdoptOptions v : _ -> pure (Adopt v)
+      let steps = plan f
+      case filter (not . adopting) steps of
+        [] -> pure $ case [v | Plan.AdoptOptions v <- steps] of
+          v : _ -> Adopt v
+          [] -> if legacyLeft f then Waiting else Moved
         s : _ -> perform u s >> go (n - 1)
+    adopting = \case
+      Plan.AdoptOptions _ -> True
+      _ -> False
     legacyLeft f = f.vault /= NoItem || isJust f.record || f.slot /= NoKey
 
 -- | The name of the lock of tabs a run holds.

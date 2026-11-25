@@ -163,8 +163,9 @@ data Step
     KeepKeys (Map SecretName Text)
   | -- | What was learnt kept as the plugin's cache, which holds nothing.
     KeepLearnt Value
-  | -- | These options kept on the server, which holds none. The plugins'
-    -- state writes them ("Wiki.App.View.Plugins.Machine").
+  | -- | These options kept on the server, if it holds none. The plugins'
+    -- state writes them ("Wiki.App.View.Plugins.Machine"), once it has read
+    -- what the server holds.
     AdoptOptions Value
   | -- | The vault's item @assistant@ deleted, if it is still this one.
     DropVaultItem Sealed
@@ -215,8 +216,12 @@ plan f = asking <> copyKey <> keys <> learnt <> adopt <> drops
     keysSafe = maybe (Map.null wanted) (\held -> Map.null (Map.difference wanted held)) f.target
     learnt = [KeepLearnt v | Just r <- [f.record], Just v <- [r.learnt], not f.local]
     options = mfilter (not . blankOptions) (optionsValue <$> legacyOptions f)
+    -- Also while the server's options are not known yet: the plugins'
+    -- state holds them until it has read the server's, and adopts them
+    -- only if the server has none.
     adopt = case (f.options, options) of
-      (Just Nothing, Just v) -> [AdoptOptions v]
+      (Just (Just _), _) -> []
+      (_, Just v) -> [AdoptOptions v]
       _ -> []
     optionsSafe = case options of
       Nothing -> not (optionsBehindLock f)
@@ -256,13 +261,18 @@ legacyKeys :: Found -> Map SecretName Text
 legacyKeys f = Map.unions [maybe mempty keysOf (vaultSettings f), maybe mempty keysOf (lastCopy f), maybe mempty keysOf (f.record >>= \r -> r.own)]
 
 -- | The settings whose options the legacy places hold: the vault's item's,
--- or else an L1 copy that is the last one, or else this browser's own.
--- None while the vault's item is locked here.
+-- or else an L1 copy, when the vault no longer holds the item, or else this
+-- browser's own. None while the vault's item is locked here.
+--
+-- An L1 copy counts for the options even when the vault holds the
+-- plugin's item: that item is what this run's own keys made of it as
+-- much as another browser's move, and options another browser moved are
+-- the server's already, which win.
 legacyOptions :: Found -> Maybe Settings
 legacyOptions f = case f.vault of
   ItemOpened _ s -> Just s
   ItemLocked -> Nothing
-  _ -> lastCopy f <|> (f.record >>= \r -> r.own)
+  _ -> (f.record >>= \r -> if r.follows then r.copy else Nothing) <|> (f.record >>= \r -> r.own)
 
 vaultSettings :: Found -> Maybe Settings
 vaultSettings f = case f.vault of

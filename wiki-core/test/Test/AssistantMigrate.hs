@@ -19,7 +19,7 @@ import Test.Cases (coverage)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
-import Wiki.Core.Assistant (Settings)
+import Wiki.Core.Assistant (Mode (..), Settings, defaultSettings, withMode)
 import Wiki.Core.Assistant.Migrate
 import Wiki.Core.Assistant.Split (blankOptions, keysOf, optionsValue)
 import Wiki.Core.Vault (Nonce (..), Sealed (..))
@@ -157,6 +157,10 @@ heldNames w =
   where
     lastCopy = isNothing w.item && Map.null w.plugin
 
+-- | Settings that are not the defaults: in Ask mode.
+settingsAsked :: Settings
+settingsAsked = withMode Ask defaultSettings
+
 -- | Whether a browser holds nothing legacy any more.
 moved :: Int -> World -> Bool
 moved d w = let x = deviceOf d w in isNothing x.held && x.keySlot == NoKey
@@ -272,6 +276,12 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
             readded = first' {item = Just (first'.seals, readdedSettings), seals = first'.seals + 1}
             end = completed 1 readded
          in isNothing end.item .&&. end.plugin === foldIn first'.plugin (keysOf readdedSettings)
+
+  it "gives the options to adopt before the server's are known, and empties nothing until they are" $ do
+    let s = settingsAsked
+        found' = Found {vault = NoItem, pluginItem = False, record = Just OnDevice {bytes = "r", own = Just s, copy = Nothing, follows = False, unopenable = False, askEachTime = False, learnt = Nothing}, slot = OwnKey, vaultSlot = True, target = Just mempty, options = Nothing, local = False, askHere = False}
+    plan found' `shouldBe` [AdoptOptions (optionsValue s)]
+    plan found' {options = Just (Just (optionsValue s))} `shouldBe` [DropRecord "r"]
 
   prop "waits on a locked browser without emptying a place that holds a key, and moves it all once unlocked" $
     forAll (genWorld 1) $ \w0 ->

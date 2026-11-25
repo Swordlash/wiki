@@ -27,6 +27,7 @@
 module Main (main) where
 
 import Control.Monad (when)
+import Data.Foldable (for_)
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -159,6 +160,22 @@ spec p = describe "the vault, its passkeys and the assistant's keys in it" $ onW
   -- a discoverable credential, whose user handle names her, and no code.
   step' "signs its owner in from the sign-in form, signed out, with a real passkey and no password" $ \w -> do
     let page = w.page
+    -- The passkey moves to a security key (a "usb" authenticator), as it
+    -- was on one when the walk added a second passkey there. Chromium's
+    -- device authenticator ("internal") answers the login field's offer
+    -- of passkeys (conditional mediation) on its own as soon as the form
+    -- opens, which signs Ada in before the button is pressed: the
+    -- server's log shows the sign-in with a passkey right after the page
+    -- loads. A security key answers only a dialog the button opens.
+    internal <- readIORef p.authenticator >>= maybe (fail "no authenticator") pure
+    held :: Value <- cdp page "WebAuthn.getCredentials" (object ["authenticatorId" .= internal])
+    usb :: Value <- cdp page "WebAuthn.addVirtualAuthenticator" (object ["options" .= authenticatorOptions "usb"])
+    usbId <- text (usb .! "authenticatorId")
+    credentials <- list (held .! "credentials")
+    for_ credentials $ \c -> do
+      _ :: Value <- cdp page "WebAuthn.addCredential" (object ["authenticatorId" .= usbId, "credential" .= c])
+      pure ()
+    _ :: Value <- cdp page "WebAuthn.removeVirtualAuthenticator" (object ["authenticatorId" .= internal])
     clearCookies (pageContext page)
     visit page (p.origin <> "/")
     click (locator page ".sign-in-toggle")

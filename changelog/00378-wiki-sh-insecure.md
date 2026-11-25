@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 378
 title: The shell client can skip checking the wiki's certificate
 technical: true
 ---

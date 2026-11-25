@@ -2132,9 +2132,9 @@ component =
     carryMigration = \case
       -- The plugin's options as the server keeps them, read in this step:
       -- 'Nothing' until the plugins' state has read them in this session.
-      MigrationMachine.Run n u -> do
+      MigrationMachine.Run n u vaultToo -> do
         known <- gets (\st -> optionsFor assistantId <$> PluginsMachine.knownNow (Machine.current st.pluginState))
-        void . H.fork $ H.async (withRunInIO (\run -> try (run (migrateAssistant u known)))) >>= migrationStep . MigrationMachine.Answered n . either (\(e :: SomeException) -> Left (toS (displayException e))) identity
+        void . H.fork $ H.async (withRunInIO (\run -> try (run (migrateAssistant u vaultToo known)))) >>= migrationStep . MigrationMachine.Answered n . either (\(e :: SomeException) -> Left (toS (displayException e))) identity
       MigrationMachine.AdoptOptions foundIn v -> Machine.happen pluginsSpec (PluginsMachine.OptionsAdopted foundIn assistantId v)
 
     -- The plugins' state, run by the shell so that its asks outlive the

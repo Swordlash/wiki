@@ -71,8 +71,10 @@ import Wiki.Core.Vault.Plugin (pluginItem)
 -- or in the vault ('Moved'); something is, and waits for what a run
 -- cannot do, an unlock of the vault, the server's options to be known, or
 -- a part that cannot be opened ('Waiting'); or the plan came to options
--- the server has none of, for the plugins' state to write ('Adopt').
-data Outcome = Moved | Waiting | Adopt Value
+-- the server has none of, for the plugins' state to write ('Adopt'); or
+-- this browser keeps nothing legacy, and the vault was not looked at
+-- ('NothingHere').
+data Outcome = Moved | Waiting | Adopt Value | NothingHere
   deriving stock (Eq, Show)
 
 -- | The most steps a run takes. The plan has eight kinds of step, each
@@ -80,17 +82,29 @@ data Outcome = Moved | Waiting | Adopt Value
 maxSteps :: Int
 maxSteps = 24
 
--- | Move what is left of the user's legacy settings, given the plugin's
--- options as the server keeps them ('Nothing' until they are known).
-migrateAssistant :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe (Maybe Value) -> m (Either Text Outcome)
-migrateAssistant u options = holdingDeviceRecords (holdingAcrossTabs (migrationLock u) (migrateAssistantHeld u options))
+-- | Move what is left of the user's legacy settings, given whether to
+-- look at the vault when this browser keeps nothing legacy, and the
+-- plugin's options as the server keeps them ('Nothing' until they are
+-- known). A browser that keeps no legacy record and no key of the
+-- assistant's asks the server nothing unless told to: the vault's legacy
+-- item, if another browser has not moved it, is looked for at the first
+-- change of the secrets here (an unlock, a sign-in), so that a page the
+-- server rendered asks nothing more when it starts.
+migrateAssistant :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Bool -> Maybe (Maybe Value) -> m (Either Text Outcome)
+migrateAssistant u vaultToo options = holdingDeviceRecords (holdingAcrossTabs (migrationLock u) (migrateAssistantHeld u vaultToo options))
 
 -- | 'migrateAssistant', for a caller that holds the lock of this device's
 -- records already: the tests of two browsers and of two tabs, which run
 -- in one process and so share one such lock. The lock of tabs is the
 -- caller's too.
-migrateAssistantHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe (Maybe Value) -> m (Either Text Outcome)
-migrateAssistantHeld u options = runExceptT (go maxSteps)
+migrateAssistantHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Bool -> Maybe (Maybe Value) -> m (Either Text Outcome)
+migrateAssistantHeld u vaultToo options = do
+  record <- legacyRecordHere u
+  slotKey <- deviceKey u
+  traverse_ forgetKey slotKey
+  if not vaultToo && not record && isNothing slotKey
+    then pure (Right NothingHere)
+    else runExceptT (go maxSteps)
   where
     -- The options to adopt are the plugins' state's to write: every other
     -- step is taken, and the run ends with them, if the plan still has

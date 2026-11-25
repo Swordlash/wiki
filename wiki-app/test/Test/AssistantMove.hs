@@ -150,7 +150,7 @@ moveAll w d options = go (4 :: Int)
     go 0 = pure (Left "the move did not end")
     go n = do
       known <- readIORef options
-      on w d (migrateAssistant alice (Just known)) >>= \case
+      on w d (migrateAssistant alice True (Just known)) >>= \case
         Right (Adopt v) -> modifyIORef' options (<|> Just v) >> go (n - 1)
         other -> pure other
 
@@ -163,16 +163,16 @@ states = describe "moves each legacy state" $ do
     own <- newKey w
     putKey d alice own
     putRecord d alice (ownRecord own ownHere)
-    first' <- on w d (migrateAssistant alice (Just Nothing))
+    first' <- on w d (migrateAssistant alice True (Just Nothing))
     first' `shouldBe` Right (Adopt (optionsValue ownHere))
     -- Nothing is deleted before the options are the server's.
     pluginKeys w `shouldReturn` keysOf ownHere
     (\l -> l.record) <$> leftOn d `shouldReturn` True
-    on w d (migrateAssistant alice (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
+    on w d (migrateAssistant alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
     after <- leftOn d
     after `shouldBe` Left' {record = False, assistantKey = False, vaultKeyHere = Just w.vaultKey, cache = Just (learntValue ownHere), askEachTime = False}
     -- Run again, nothing is left to do.
-    on w d (migrateAssistant alice (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
+    on w d (migrateAssistant alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
 
   it "L1: the vault's item, from a browser whose vault key is in the assistant's slot only, which asked each time" $ do
     w <- newWorld
@@ -195,7 +195,7 @@ states = describe "moves each legacy state" $ do
     own <- newKey w
     putKey d alice own
     followingRecord w (Just (own, typedHere)) False defaultSettings >>= putRecord d alice
-    on w d (migrateAssistant alice (Just Nothing)) `shouldReturn` Right Waiting
+    on w d (migrateAssistant alice True (Just Nothing)) `shouldReturn` Right Waiting
     pluginKeys w `shouldReturn` mempty
     (\l -> l.record) <$> leftOn d `shouldReturn` True
     hasLegacyItem w `shouldReturn` True
@@ -220,6 +220,20 @@ states = describe "moves each legacy state" $ do
     (\l -> l.record) <$> leftOn d `shouldReturn` False
     readIORef options `shouldReturn` Just (optionsValue ownHere)
 
+  it "asks the server nothing where this browser keeps nothing legacy, unless told to look at the vault" $ do
+    w <- newWorld
+    withLegacyItem w synced
+    d <- newDevice w.counter True
+    withVaultKey d alice w.vaultKey
+    before <- (\s -> s.fetches) <$> serverState w.server
+    on w d (migrateAssistant alice False (Just Nothing)) `shouldReturn` Right NothingHere
+    (\s -> s.fetches) <$> serverState w.server `shouldReturn` before
+    -- Shown able to fail: told to look, the run fetches the vault, and
+    -- moves the legacy item another browser left.
+    on w d (migrateAssistant alice True (Just Nothing)) `shouldReturn` Right (Adopt (optionsValue synced))
+    (\s -> s.fetches) <$> serverState w.server >>= (`shouldSatisfy` (> before))
+    pluginKeys w `shouldReturn` keysOf synced
+
   it "leaves a record it cannot open where it is" $ do
     w <- newWorld
     d <- newDevice w.counter True
@@ -227,7 +241,7 @@ states = describe "moves each legacy state" $ do
     -- Sealed with a key this browser no longer holds.
     gone <- newKey w
     putRecord d alice (ownRecord gone ownHere)
-    on w d (migrateAssistant alice (Just Nothing)) `shouldReturn` Right Waiting
+    on w d (migrateAssistant alice True (Just Nothing)) `shouldReturn` Right Waiting
     (\l -> l.record) <$> leftOn d `shouldReturn` True
 
 stopped :: Spec
@@ -276,7 +290,7 @@ together = describe "with other browsers and tabs" $ do
     -- B's whole run happens between A's read and A's first store.
     bDone <- newIORef Nothing
     beforeNextStore w.server $ do
-      r <- on w b (migrateAssistantHeld alice (Just Nothing))
+      r <- on w b (migrateAssistantHeld alice True (Just Nothing))
       modifyIORef' bDone (const (Just r))
     options <- newIORef Nothing
     moveAll w a options `shouldReturn` Right Moved
@@ -300,7 +314,7 @@ together = describe "with other browsers and tabs" $ do
     -- record's delete, finds the record the earlier tab wrote just before.
     beforeNextWrite d pass
     beforeNextWrite d (putRecord d alice (ownRecord own later))
-    on w d (migrateAssistant alice (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
+    on w d (migrateAssistant alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
     pluginKeys w `shouldReturn` keysOf later
     (\l -> l.record) <$> leftOn d `shouldReturn` False
 

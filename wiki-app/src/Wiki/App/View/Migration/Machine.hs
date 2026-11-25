@@ -7,7 +7,10 @@
 -- A run is asked for the reader when the shell is given a session
 -- ('Given'), and each time the secrets change in this browser ('Nudged':
 -- the vault unlocked or locked, a secret kept or forgotten, here or in
--- another tab), until a run finds nothing legacy left ('done'). A run
+-- another tab), until a run finds nothing legacy left ('done'). The run
+-- at the start of a session looks at this browser only, and asks the
+-- server nothing when it keeps nothing legacy; the runs after a change of
+-- the secrets look at the vault too ('vaultToo'). A run
 -- that waits (for an unlock, for the server's options) is asked again at
 -- the next change. A new page asks again at its start, so that a legacy
 -- item an earlier tab added again is moved.
@@ -52,6 +55,9 @@ data Model = Model
   -- ^ The next run's number.
   , done :: Bool
   -- ^ Whether a run of this session found nothing legacy left.
+  , vaultToo :: Bool
+  -- ^ Whether runs look at the vault when this browser keeps nothing
+  -- legacy: from the first change of the secrets in the session on.
   , problem :: Maybe Text
   -- ^ Why the last run of this session failed, until one does not.
   }
@@ -69,8 +75,10 @@ data Event
 
 -- | 'Effect' is what a step asks the shell to do.
 data Effect
-  = -- | Run the move for the reader; the answer comes back as 'Answered'.
-    Run Int UserId
+  = -- | Run the move for the reader, looking at the vault even when this
+    -- browser keeps nothing legacy, or not; the answer comes back as
+    -- 'Answered'.
+    Run Int UserId Bool
   | -- | Give these options of the assistant to the plugins' state, found in
     -- the session of this number.
     AdoptOptions Int Value
@@ -78,17 +86,17 @@ data Effect
 
 -- | Before any session.
 initial :: Model
-initial = Model {session = -1, reader = Nothing, out = Nothing, wanted = False, next = 0, done = False, problem = Nothing}
+initial = Model {session = -1, reader = Nothing, out = Nothing, wanted = False, next = 0, done = False, problem = Nothing, vaultToo = False}
 
 -- | The state after an event, and what it asks to be done.
 step :: Event -> Model -> (Model, [Effect])
 step event m = case event of
   Given session reader
     | session == m.session && reader == m.reader -> (m, [])
-    | otherwise -> asking m {session, reader, done = False, problem = Nothing}
+    | otherwise -> asking m {session, reader, done = False, problem = Nothing, vaultToo = False}
   Nudged
     | m.done -> (m, [])
-    | otherwise -> asking m
+    | otherwise -> asking m {vaultToo = True}
   Answered n answer -> case m.out of
     Just (out, askedIn)
       | out == n ->
@@ -100,6 +108,7 @@ step event m = case event of
 answered :: Int -> Either Text Outcome -> Model -> (Model, [Effect])
 answered session answer m = case answer of
   Right Moved -> (m {done = True, problem = Nothing}, [])
+  Right NothingHere -> (m {problem = Nothing}, [])
   Right Waiting -> (m {problem = Nothing}, [])
   Right (Adopt v) -> (m {problem = Nothing}, [AdoptOptions session v])
   Left why -> (m {problem = Just why}, [])
@@ -110,4 +119,4 @@ asking m = case m.reader of
   Nothing -> (m, [])
   Just u
     | isJust m.out -> (m {wanted = True}, [])
-    | otherwise -> (m {out = Just (m.next, m.session), next = m.next + 1}, [Run m.next u])
+    | otherwise -> (m {out = Just (m.next, m.session), next = m.next + 1}, [Run m.next u m.vaultToo])

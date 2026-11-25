@@ -106,7 +106,7 @@ moving server u runs = go runs Nothing
   where
     go 0 _ = pure []
     go n known = do
-      r <- served server (migrateAssistant u (Just known))
+      r <- served server (migrateAssistant u True (Just known))
       let known' = case r of
             Right (Adopt v) -> known <|> Just v
             _ -> known
@@ -160,7 +160,7 @@ l4 = do
   sealed <- sealSettings mine typed
   writeRecord' u DeviceRecord {sealed = Just sealed, server = Just copy, learnt = learntOf defaultSettings, askEachTime = False}
   -- Locked: this browser holds no vault key.
-  first' <- served server (migrateAssistant u (Just Nothing))
+  first' <- served server (migrateAssistant u True (Just Nothing))
   -- Unlocked, as Security or the field's unlock keeps the key.
   _ <- keepDeviceKey (vaultSlot u) k False
   rest <- moving server u 4

@@ -155,9 +155,9 @@ migrationMachine = describe "Wiki.App.View.Migration.Machine" $ do
     let (m1, e1) = M.step (M.Given 1 (Just alice)) M.initial
         (m2, e2) = M.step M.Nudged m1
         (m3, e3) = M.step (M.Answered 0 (Right Waiting)) m2
-    e1 `shouldBe` [M.Run 0 alice]
+    e1 `shouldBe` [M.Run 0 alice False]
     e2 `shouldBe` []
-    e3 `shouldBe` [M.Run 1 alice]
+    e3 `shouldBe` [M.Run 1 alice True]
     m3.out `shouldBe` Just (1, 1)
 
   it "gives the options a run found, with the session they were found in" $ do
@@ -170,7 +170,7 @@ migrationMachine = describe "Wiki.App.View.Migration.Machine" $ do
         (m2, e2) = M.step (M.Given 2 (Just bob)) m1
         (_, e3) = M.step (M.Answered 0 (Right (Adopt (String "alice's")))) m2
     e2 `shouldBe` []
-    e3 `shouldBe` [M.Run 1 bob]
+    e3 `shouldBe` [M.Run 1 bob False]
 
   it "runs no more once nothing is left, until another session" $ do
     let (m1, _) = M.step (M.Given 1 (Just alice)) M.initial
@@ -178,7 +178,16 @@ migrationMachine = describe "Wiki.App.View.Migration.Machine" $ do
         (_, e3) = M.step M.Nudged m2
         (_, e4) = M.step (M.Given 2 (Just alice)) m2
     e3 `shouldBe` []
-    e4 `shouldBe` [M.Run 1 alice]
+    e4 `shouldBe` [M.Run 1 alice False]
+
+  it "looks at this browser only when a session starts, and at the vault too from the first change of the secrets" $ do
+    let (m1, e1) = M.step (M.Given 1 (Just alice)) M.initial
+        (m2, e2) = M.step (M.Answered 0 (Right NothingHere)) m1
+        (_, e3) = M.step M.Nudged m2
+    e1 `shouldBe` [M.Run 0 alice False]
+    e2 `shouldBe` []
+    m2.done `shouldBe` False
+    e3 `shouldBe` [M.Run 1 alice True]
 
   it "runs for nobody" $
     snd (M.step (M.Given 1 Nothing) M.initial) `shouldBe` []

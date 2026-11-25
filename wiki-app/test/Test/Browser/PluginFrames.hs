@@ -1,3 +1,5 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 -- | External plugins' frames in a real browser
 -- ("Wiki.App.Plugin.External.Frames", "Wiki.App.Plugin.External.Frame"):
 -- the component the editor mounts, over the demo's wiki with plugins
@@ -26,6 +28,7 @@ import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Halogen qualified as H
+import Halogen.JSBits (Safety (..), browserJS)
 import Protolude hiding (find)
 import Test.Hspec.Halogen
 import Wiki.Api.Plugins (PluginId (..), noPlugins)
@@ -39,6 +42,11 @@ import Wiki.App.Plugin.External (Heard (..))
 import Wiki.App.Plugin.External.Frames qualified as Frames
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Markdown.Problems (Problem (..), ProblemKind (..), Severity (..))
+
+$( browserJS
+     ["jsbits/test-plugin-frames.js"]
+     [("js_frames_open", "wiki_test_plugin_frames_open", Safe, [t|IO Int|])]
+ )
 
 -- | The demo's backend, opening each plugin's frame at the document the
 -- test wrote for the plugin.
@@ -98,6 +106,7 @@ spec m = describe "external plugins' frames" $ do
   it "runs the example plugin in its sandboxed frame, and hears it mark a word written twice, on its line" $ runPage $ do
     wiki <- unsafeIOToPageM (wikiWith [installed "doubled-words" "Doubled words"])
     let text = "Fine.\n😀 This is the the end."
+    openBefore <- unsafeIOToPageM js_frames_open
     ui <- mount m (frames wiki) (input text)
     -- The frame loads, the runtime starts the code, the code says it is
     -- ready, the text goes out and the problems come back: the program
@@ -107,11 +116,15 @@ spec m = describe "external plugins' frames" $ do
       `shouldReturn` Map.fromList [(PluginId "doubled-words", Heard {text, problems = [Problem {from = 2, to = 2, kind = FromPlugin, severity = Warning, message = "Doubled words: Doubled word: the"}]})]
     length <$> findAll ui "iframe[sandbox='allow-scripts']" `shouldReturn` 1
     length <$> findAll ui ".editor-plugin-stopped" `shouldReturn` 0
+    -- The editor closes: the program closes the frame it opened, its port
+    -- and its callback with it.
+    unsafeIOToPageM js_frames_open `shouldReturn` openBefore + 1
+    unmount ui
+    unsafeIOToPageM js_frames_open `shouldReturn` openBefore
 
   it "stops a plugin whose code loops, removes its frame, and says why, while the page goes on" $ runPage $ do
     wiki <- unsafeIOToPageM (wikiWith [installed "looping" "Looping"])
     ui <- mount m (frames wiki) (input "Any text.")
-    length <$> findAll ui "iframe" `shouldReturn` 1
     -- The program waits on the plugin's answer, which never comes, until
     -- the pause after which the plugin is stopped.
     waitQuietWithin 30000

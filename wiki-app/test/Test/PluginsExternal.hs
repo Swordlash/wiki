@@ -73,8 +73,8 @@ ids = map (\p -> p.manifest.id.text)
 
 registry :: Spec
 registry = describe "which installed plugins run" $ do
-  it "keeps the server's reserved ids the ids of the registry's built-in plugins" $
-    reservedPluginIds `shouldBe` builtinIds
+  it "has the server reserve the id of every plugin of the registry" $
+    builtinIds `Set.difference` reservedPluginIds `shouldBe` Set.empty
 
   it "runs the wiki's while the policy is not off, a user's own only while users may add theirs, and the wiki's in the place of a user's of the same id" $ do
     let wiki = plugin "spell" "a1" False

@@ -391,7 +391,9 @@ test-suite wiki-app-test
         Test.Passwords
         Test.FakeVault
         Test.PluginImports
-        Test.PluginSecrets
+        Test.AssistantMove
+      Test.AssistantSettings
+      Test.PluginSecrets
         Test.Plugins
         Test.PluginsDom
         Test.PluginsSettings

@@ -5,8 +5,10 @@
 -- whether it is set, a field to type a new value into, "Keep" (after the
 -- plugin's check) and "Forget". Where the user's vault is locked in this
 -- browser, the field offers the unlock in its place, with a passkey or
--- the password ("Wiki.App.Vault"). A value kept is never shown again: the
--- field only says that the secret is set.
+-- the password ("Wiki.App.Vault"), and the way out for a user who can no
+-- longer unlock it: forgetting every secret of the plugin, which needs no
+-- key. A value kept is never shown again: the field only says that the
+-- secret is set.
 --
 -- The field's logic is a machine ("Wiki.App.View.SecretField.Machine").
 -- The host makes one field for one reader and one plugin
@@ -42,7 +44,7 @@ import Protolude hiding (State)
 import Wiki.App.Assistant (KeyOwner, MonadAssistant (..), closeKeyOwner, openKeyOwner)
 import Wiki.App.Assistant.Sync (MonadVault, owned)
 import Wiki.App.Plugin (FieldInput (..), FieldOutput (..), Manifest (..), SecretName (..), SecretSpec (..), Unavailable (..))
-import Wiki.App.Plugin.Host.Secrets (putSecret, readSecrets, removeSecret)
+import Wiki.App.Plugin.Host.Secrets (forgetSecrets, putSecret, readSecrets, removeSecret)
 import Wiki.App.Vault (unlockWithPasskey, unlockWithPassword)
 import Wiki.App.View.SecretField.Machine (Answer (..), Effect (..), Event (..), Job (..), Model (..), Shown (..), Told (..), busy, initial, needsOwner, step)
 import Wiki.Core.Id (UserId)
@@ -118,6 +120,8 @@ component user manifest =
                 <button type="button" class="secret-field-unlock-passkey" disabled={{ busy m }} onClick={{ const (Happened PasskeyPressed) }}>Unlock with a passkey</button>
                 <input type="password" class="secret-field-password" autocomplete="current-password" aria-label="Your password" value={{ m.password }} disabled={{ busy m }} onValueInput={{ Happened . TypedPassword }}>
                 <button type="button" class="secret-field-unlock-password" disabled={{ busy m || T.null m.password }} onClick={{ const (Happened PasswordPressed) }}>Unlock with your password</button>
+                <p class="secret-field-note secret-field-lost">{{ "Lost every way to unlock it? Forgetting the secrets of " <> manifest.name <> " needs no unlock; you then type them again." }}</p>
+                <button type="button" class="danger secret-field-forget-all" disabled={{ busy m }} onClick={{ const (Happened ForgetAllPressed) }}>{{ "Forget every secret of " <> manifest.name }}</button>
               </div>
             |]
           Here set ->
@@ -185,6 +189,7 @@ component user manifest =
           Remove -> Done <$> removeSecret u manifest name
           UnlockByPasskey -> Done . void <$> unlockWithPasskey u
           UnlockByPassword p -> Done . void <$> unlockWithPassword u (Password p)
+          ForgetAll -> Done <$> forgetSecrets u manifest
           Check _ -> pure (Done (Left "A check is the plugin's."))
         -- The plugin's check of a value.
         checked input = \case
@@ -209,3 +214,4 @@ doingText = \case
   Remove -> Just "Forgetting…"
   UnlockByPasskey -> Just "Unlocking with a passkey…"
   UnlockByPassword _ -> Just "Unlocking…"
+  ForgetAll -> Just "Forgetting…"

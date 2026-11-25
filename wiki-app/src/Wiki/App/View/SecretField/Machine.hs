@@ -91,6 +91,9 @@ data Job
     UnlockByPasskey
   | -- | Unlock the vault with the user's password.
     UnlockByPassword Text
+  | -- | Forget every secret of the plugin, which needs no unlock: the way
+    -- out for a user who can no longer unlock their vault.
+    ForgetAll
   deriving stock (Eq)
 
 -- | Shown without the values it holds.
@@ -105,6 +108,7 @@ instance Show Job where
         Remove -> "Remove"
         UnlockByPasskey -> "UnlockByPasskey"
         UnlockByPassword _ -> "UnlockByPassword <password>"
+        ForgetAll -> "ForgetAll"
 
 -- | Whether a job asks the vault, with keys under an owner of its own:
 -- every job but the plugin's check.
@@ -151,6 +155,8 @@ data Event
     PasskeyPressed
   | -- | "Unlock with your password".
     PasswordPressed
+  | -- | "Forget them all", offered while the vault is locked.
+    ForgetAllPressed
   | -- | What the secrets read as changed: a key kept or let go in this
     -- browser (the vault unlocked or locked), or a secret of a plugin kept
     -- or forgotten, by this field, another, or another tab.
@@ -204,6 +210,9 @@ step event m = case event of
   PasswordPressed
     | LockedHere <- m.shown, not (busy m), not (T.null m.password) -> asking (UnlockByPassword m.password) m
     | otherwise -> (m, [])
+  ForgetAllPressed
+    | LockedHere <- m.shown, not (busy m) -> asking ForgetAll m
+    | otherwise -> (m, [])
   Answered n answer -> case m.doing of
     Just (out, job)
       | out == n ->
@@ -224,6 +233,8 @@ answered job answer m = case (job, answer) of
   (Remove, Done (Right ())) -> (m {shown = Here False}, [Tell RemovedIt])
   (UnlockByPasskey, Done (Right ())) -> unlocked m
   (UnlockByPassword _, Done (Right ())) -> unlocked m
+  -- Every secret of the plugin is gone: read again what is left.
+  (ForgetAll, Done (Right ())) -> (m {wanted = True}, [Tell RemovedIt])
   (_, Done (Left why)) -> (m {problem = Just why}, [])
   -- A read answers with what it found, every other job with 'Done'.
   (_, ReadAs _) -> (m, [])

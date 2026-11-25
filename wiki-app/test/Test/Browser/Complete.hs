@@ -9,15 +9,20 @@
 -- snippet with the cursor at its first place and Tab moves to the next
 -- (a brace of the snippet read back exactly, the indentation of a list's
 -- item added), and that the list's and the snippet's keys stop on their
--- way to the form.
+-- way to the form; and that a command of the @/@ menu with several places
+-- to fill goes through them with Tab and Shift+Tab, in the raw Markdown
+-- and in a presentation's row, until the walk ends (#301).
 module Test.Browser.Complete (spec) where
 
 import Control.Monad.UUID (MonadUUID)
+import Data.Aeson (decodeStrict)
 import Data.Text qualified as T
-import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText)
+import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser)
+import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
-import Protolude hiding (find)
+import Protolude hiding (find, wait)
 import Test.Browser.Mount (slugs, startChanged, startWith)
+import Test.Browser.Outside (watchdogMs)
 import Test.Browser.Text (completing, completionAnswered, editorSelection, editorText, markdown, proposeText, selectText, setMarkdown, untilListTakesKeys)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (boxes))
@@ -29,13 +34,21 @@ import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
 import Wiki.Core.Markdown.Edit qualified as Edit
 
--- The last key that reached the window: test/jsbits/test-keys.js.
+-- The last key that reached the window: test/jsbits/test-keys.js. A row
+-- of a presentation's slide mode: test/jsbits/test-slides.js.
 $( browserJS
-     ["jsbits/test-keys.js"]
+     ["jsbits/test-keys.js", "jsbits/test-slides.js"]
      [ ("js_watch_keys", "wiki_test_watch_keys", Safe, [t|IO ()|])
      , ("js_last_key", "wiki_test_last_key", Safe, [t|IO JSText|])
+     , ("js_row_text", "wiki_test_slide_row_text", Safe, [t|Int -> IO JSText|])
+     , ("js_row_select", "wiki_test_slide_row_select", Safe, [t|Int -> Int -> Int -> IO Bool|])
+     , ("js_row_selection", "wiki_test_slide_row_selection", Safe, [t|Int -> IO JSText|])
+     , ("js_row_takes_keysPromise", "wiki_test_slide_row_completion_takes_keys", Safe, [t|Int -> Int -> IO (Promise JSText)|])
      ]
  )
+
+js_row_takes_keys :: Int -> Int -> IO JSText
+js_row_takes_keys index ms = if inBrowser then wait =<< js_row_takes_keysPromise index ms else pure inert
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
 -- The reads look once, with the program idle: a group that types into the
@@ -263,6 +276,121 @@ spec m = readsOnce Idle $ do
     press "Enter"
     length <$> findAll ui ".link-dialog" `shouldReturn` 1
     markdown ui `shouldReturn` titleLines <> "See "
+
+  -- #301: a command of the "/" menu with several places to fill. Which
+  -- commands have them, and where, is tested natively
+  -- ("Test.Markdown.Edit" and "Test.Markdown.CompleteOracle" of
+  -- wiki-core); here, that Tab and Shift+Tab go through them in
+  -- CodeMirror, with what is typed in them kept, and that the walk ends
+  -- where the writing goes on, Tab then the form's again.
+  it "goes through a / command's places with Tab and Shift+Tab, keeping what is typed in them, and ends at the command's end, where Tab is the form's again" $ runPage $ do
+    ui <- editing helloEditor
+    text <- editorText ui
+    setMarkdown ui titleLines
+    selectText ui (T.length titleLines) (T.length titleLines)
+    typeText text "See /li"
+    _ <- completionAnswered ui
+    (take 1 <$> labels ui) `shouldReturn` ["Link"]
+    untilListTakesKeys ui
+    press "Enter"
+    withSelection ui `shouldReturn` "See [«link text»](https://)"
+    -- Shift+Tab on the first place stays there, and goes no further.
+    reached "Shift+Tab" `shouldReturn` ""
+    withSelection ui `shouldReturn` "See [«link text»](https://)"
+    typeText text "the guide"
+    reached "Tab" `shouldReturn` ""
+    withSelection ui `shouldReturn` "See [the guide](«https://»)"
+    press "Shift+Tab"
+    withSelection ui `shouldReturn` "See [«the guide»](https://)"
+    press "Tab"
+    typeText text "example.org"
+    reached "Tab" `shouldReturn` ""
+    withSelection ui `shouldReturn` "See [the guide](example.org)‸"
+    -- The walk is over: Tab is the form's, which indents.
+    reached "Tab" `shouldReturn` "Tab"
+    withSelection ui `shouldReturn` "See [the guide](example.org)  ‸"
+    -- A table: a cell typed in keeps its text, and the next cells move
+    -- with it.
+    setMarkdown ui titleLines
+    selectText ui (T.length titleLines) (T.length titleLines)
+    typeText text "/ta"
+    _ <- completionAnswered ui
+    (take 1 <$> labels ui) `shouldReturn` ["Table"]
+    untilListTakesKeys ui
+    press "Enter"
+    typeText text "Name"
+    press "Tab"
+    withSelection ui `shouldReturn` "| Name | «Column 2» | Column 3 |\n| -------- | -------- | -------- |\n| Text     | Text     | Text     |"
+    traverse_ press ["Tab", "Tab"]
+    typeText text "Ada"
+    traverse_ press ["Tab", "Tab", "Tab"]
+    withSelection ui `shouldReturn` "| Name | Column 2 | Column 3 |\n| -------- | -------- | -------- |\n| Ada     | Text     | Text     |‸"
+    -- With no walk, Tab in a list's item is the form's, as before.
+    setMarkdown ui titleLines
+    selectText ui (T.length titleLines) (T.length titleLines)
+    typeText text "- one"
+    press "Shift+Enter"
+    reached "Tab" `shouldReturn` "Tab"
+    typeText text "- two"
+    markdown ui `shouldReturn` titleLines <> "- one\n  - two"
+
+  it "ends a / command's walk on Escape, on an undo of the command, and on the assistant's change in its text, Tab then the form's" $ runPage $ do
+    ui <- editing helloEditor
+    text <- editorText ui
+    let linkAfter typed = do
+          setMarkdown ui titleLines
+          selectText ui (T.length titleLines) (T.length titleLines)
+          typeText text typed
+          _ <- completionAnswered ui
+          (take 1 <$> labels ui) `shouldReturn` ["Link"]
+          untilListTakesKeys ui
+          press "Enter"
+    -- Escape ends it, and goes no further; then Tab is the form's.
+    linkAfter "/li"
+    reached "Escape" `shouldReturn` ""
+    reached "Tab" `shouldReturn` "Tab"
+    -- An undo takes the command back, and the walk with it.
+    linkAfter "See /li"
+    press "Control+z"
+    withSelection ui `shouldReturn` "See /li‸"
+    reached "Tab" `shouldReturn` "Tab"
+    -- The assistant's change in the address, the cursor still in the
+    -- link's text: the walk ends.
+    linkAfter "See /li"
+    typeText text "a"
+    proposeText ui (T.length titleLines + T.length "See [a](") (T.length titleLines + T.length "See [a](https://") "example.org"
+    withSelection ui `shouldReturn` "See [a‸](example.org)"
+    reached "Tab" `shouldReturn` "Tab"
+
+  it "goes through a / command's places in a presentation's row, which writes the command into the master once" $ runPage $ do
+    ui <- editingAs "user-admin" (EditPage (slugs ["docs"]) (slugs ["markdown-guide", "presentations"]))
+    deck <- markdown ui
+    -- The first row, the title slide, is open as the editor opens, the
+    -- cursor's. It starts the master's text, and ends on the empty line
+    -- before the next slide's heading: a paragraph typed there is the
+    -- title slide's.
+    firstRow <- fromJSText <$> unsafeIOToPageM (js_row_text 0)
+    firstRow `shouldSatisfy` (`T.isPrefixOf` deck)
+    let rowEnd = T.length firstRow
+    perform (js_row_select 0 rowEnd rowEnd) `shouldReturn` True
+    row <-
+      findAll ui ".editor-slides .cm-content:focus" >>= \case
+        [content] -> pure content
+        found -> expectationFailure ("not one row's text with the focus, but " <> show (length found))
+    typeText row "\n\nSee /li"
+    status <- fromJSText <$> perform (js_row_takes_keys 0 watchdogMs)
+    status `shouldBe` "ready"
+    press "Enter"
+    typeText row "a"
+    press "Tab"
+    typeText row "b"
+    press "Tab"
+    let written = "\n\nSee [a](b)"
+    markdown ui `shouldReturn` T.take rowEnd deck <> written <> T.drop rowEnd deck
+    rowSelection 0 `shouldReturn` Just [rowEnd + T.length written, rowEnd + T.length written]
+    -- The walk is over in the row: Tab is the form's.
+    reached "Tab" `shouldReturn` "Tab"
+
   -- Commands in math (WP5.124 (e)): where the list opens and what it
   -- offers are tested natively ("Test.Markdown.CompleteMath"); here, the
   -- list in the long guide, a space's macro in it with where it comes
@@ -343,6 +471,9 @@ spec m = readsOnce Idle $ do
       unsafeIOToPageM js_watch_keys
       press key
       unsafeIOToPageM (fromJSText <$> js_last_key)
+    -- The selection of the row at an index, [anchor, head] in characters.
+    rowSelection :: Int -> PageM s (Maybe [Int])
+    rowSelection i = decodeStrict . encodeUtf8 . fromJSText <$> unsafeIOToPageM (js_row_selection i)
 
 -- | The labels of the completion's list shown, in its order.
 labels :: Mounted s q o m -> PageM s [Text]

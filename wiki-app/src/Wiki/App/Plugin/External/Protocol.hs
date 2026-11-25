@@ -1,9 +1,14 @@
 -- | The plugins' protocol, version 1, as the editor speaks it with an
 -- external plugin's code (WP5.84 of docs/PLAN.md, decision 69). Messages
--- are JSON, sent over the 'MessagePort' the editor gave the plugin's frame
--- ("Wiki.App.Plugin.External.Frame"). The wiki's runtime in the frame
--- (@web\/plugin\/runtime.js@) passes them to and from the plugin's code,
--- which runs in a worker and calls @wikiPlugin.plugin@.
+-- are strings of JSON, sent over the 'MessagePort' the editor gave the
+-- plugin's frame ("Wiki.App.Plugin.External.Frame"). The wiki's runtime in
+-- the frame (@web\/plugin\/runtime.js@) passes them to and from the
+-- plugin's code, which runs in a worker and calls @wikiPlugin.plugin@.
+-- A message from the plugin is at most 1 MiB of characters (the frame's
+-- @maxFrameMessage@), and the plugin sends one message once connected
+-- (its @ready@) and one for each message the host sends: the runtime
+-- passes on nothing else, and the host refuses anything else whatever the
+-- runtime did, stopping the plugin.
 --
 -- The host sends one message:
 --

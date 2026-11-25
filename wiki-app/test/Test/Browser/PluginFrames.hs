@@ -67,7 +67,7 @@ instance (MonadUUID m) => MonadUUID (Written m) where
 instance (MonadIslands m) => MonadIslands (Written m) where
   openPluginFrame container address = lift . openPluginFrame container written
     where
-      written = case filter (\p -> ("/" <> p <> "/") `T.isInfixOf` address) ["doubled-words", "looping", "tangled-raw", "flooding-raw"] of
+      written = case filter (\p -> ("/" <> p <> "/") `T.isInfixOf` address) ["doubled-words", "looping", "tangled-raw", "deep-raw", "flooding-raw"] of
         p : _ -> "plugin-frames/" <> p <> ".html"
         [] -> address
 
@@ -156,5 +156,15 @@ spec m = describe "external plugins' frames" $ do
     -- browser's order of the two, and either stops it there.
     stopped `shouldSatisfy` \s ->
       any (`T.isInfixOf` s) ["The plugin Flooding was stopped: it sent a message it was not asked for", "The plugin Flooding was stopped: it said it was ready a second time"]
+    length <$> findAll ui "iframe" `shouldReturn` 0
+    unsafeIOToPageM js_frames_open `shouldReturn` openBefore
+
+  it "parses a message as long as one may be and nested as deep as that lets it, then stops the plugin for what it is, and the page goes on" $ runPage $ do
+    wiki <- unsafeIOToPageM (wikiWith [installed "deep-raw" "Deep"])
+    openBefore <- unsafeIOToPageM js_frames_open
+    ui <- mount m (frames wiki) (input "Any text.")
+    waitQuiet
+    stopped <- find ui ".editor-plugin-stopped" >>= textContent
+    stopped `shouldSatisfy` T.isInfixOf "The plugin Deep was stopped: it sent a message the wiki cannot read"
     length <$> findAll ui "iframe" `shouldReturn` 0
     unsafeIOToPageM js_frames_open `shouldReturn` openBefore

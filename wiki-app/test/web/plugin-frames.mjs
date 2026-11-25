@@ -38,6 +38,9 @@ const raw = (sending) =>
 mkdirSync(join(out, "plugin-frames"), { recursive: true });
 // A graph of 2^40 paths in 41 arrays, posted as it is.
 writeFileSync(join(out, "plugin-frames", "tangled-raw.html"), raw("let x = []; for (let i = 0; i < 40; i++) x = [x, x]; port.postMessage(x);"));
+// A string of JSON as long as a message may be, nested as deep as that
+// lets it: parsed by the program on the page's thread, in wasm.
+writeFileSync(join(out, "plugin-frames", "deep-raw.html"), raw('const n = 512 * 1024; port.postMessage("[".repeat(n) + "]".repeat(n));'));
 // Ready, then a hundred thousand messages more, never asked for.
 writeFileSync(join(out, "plugin-frames", "flooding-raw.html"), raw(`for (let i = 0; i <= 100000; i++) port.postMessage('{"type":"ready"}');`));
 writeFileSync(join(out, "plugin-frames", "doubled-words.html"), frame(readFileSync("examples/plugins/doubled-words/doubled-words.js", "utf8")));

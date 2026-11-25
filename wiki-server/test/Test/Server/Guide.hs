@@ -55,7 +55,7 @@ firstStart backing = describe "a server's first start" $ do
       [(s.name, s.slug, s.public) | s <- spaces] `shouldBe` [("Guide", slug "guide", True)]
       guide <- ok200 (getUrl r (r.public <> "/" <> links.spaces.atPath [slug "guide"])) :: IO Space
       summaries <- ok200 (getUrl r (r.public <> "/" <> links.spaces.listPages guide.id)) :: IO [PageSummary]
-      sort [p.title | p <- summaries] `shouldBe` sort ["Tour", "Markdown guide", "Diagrams", "Mathematics", "Presentations"]
+      sort [p.title | p <- summaries] `shouldBe` sort ["Tour", "Markdown guide", "Diagrams", "Mathematics", "Presentations", "Writing a plugin"]
       tour <- ok200 (getUrl r (r.public <> "/" <> links.spaces.pageAt guide.id [slug "tour"])) :: IO Page
       guide.homePage `shouldBe` Just tour.id
       tour.body `shouldSatisfy` T.isInfixOf "[Markdown guide](markdown-guide)"
@@ -70,7 +70,7 @@ firstStart backing = describe "a server's first start" $ do
   it "installs it once: a wiki that had it, or has any space, gets none" $ do
     withStorageIn backing $ \_ st -> do
       installed <- installOnFirstStart st
-      (\s -> s.pagesCreated) <$> installed `shouldBe` Just 5
+      (\s -> s.pagesCreated) <$> installed `shouldBe` Just 6
       installOnFirstStart st >>= (`shouldSatisfy` isNothing)
       -- Deleted, the guide does not come back at the next start either: the
       -- wiki had it once.
@@ -104,8 +104,8 @@ installing backing = describe "installing it again" $ do
       runStoredWiki st Administrator (deleteSpace g.id) >>= ok
       canInstallGuide st `shouldReturn` True
       again <- installGuide st operator "console" >>= ok
-      again.pagesCreated `shouldBe` 5
-      again.attachments `shouldBe` 2
+      again.pagesCreated `shouldBe` 6
+      again.attachments `shouldBe` 4
 
   it "leaves a space of the wiki's own at /guide alone, and does not offer to install over it" $ do
     withStorageIn backing $ \_ st -> do
@@ -156,7 +156,7 @@ updating backing = describe "updating it to this release" $ do
       let tour = at "Tour"
       writing st (storeSetting "guide-installed" (decodeUtf8 (BSL.toStrict (encode Installed {space = g.id, pages = Map.fromList [("tour", writtenHash tour.title tour.body)], kinds = mempty}))))
       added <- updateGuide' st
-      added `shouldBe` GuideUpdated {updated = [], added = ["markdown-guide", "markdown-guide/diagrams", "markdown-guide/mathematics", "markdown-guide/presentations"], current = 1, leftAlone = [], attachmentsLeftOut = []}
+      added `shouldBe` GuideUpdated {updated = [], added = ["markdown-guide", "markdown-guide/diagrams", "markdown-guide/mathematics", "markdown-guide/presentations"], current = 2, leftAlone = [], attachmentsLeftOut = []}
       markdown <- runStoredWiki st Administrator (getPage g.id [slug "markdown-guide"]) >>= ok
       map (\a -> a.name.text) markdown.attachments `shouldBe` ["tree.png", "earth.jpg"]
       _ <- runStoredWiki st Administrator (getPage g.id [slug "markdown-guide", slug "diagrams"]) >>= ok
@@ -167,7 +167,7 @@ updating backing = describe "updating it to this release" $ do
         `shouldReturn` GuideUpdated
           { updated = []
           , added = []
-          , current = 4
+          , current = 5
           , leftAlone = ["markdown-guide/diagrams: not where this release puts it (moved, renamed or deleted), so left alone"]
           , attachmentsLeftOut = []
           }
@@ -285,7 +285,7 @@ updating backing = describe "updating it to this release" $ do
         `shouldBe` GuideUpdated
           { updated = ["markdown-guide/diagrams"]
           , added = []
-          , current = 1
+          , current = 2
           , leftAlone =
               [ "markdown-guide: changed by an administrator since the guide wrote it, so left alone"
               , "markdown-guide/mathematics: changed by an administrator since the guide wrote it, so left alone"

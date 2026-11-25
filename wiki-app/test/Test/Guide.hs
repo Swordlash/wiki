@@ -9,6 +9,7 @@
 -- break in a page is one on the page.
 module Test.Guide (spec) where
 
+import Data.ByteString qualified as BS
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
@@ -105,13 +106,20 @@ spec = describe "Wiki.App.Guide" $ do
     [(s.name, s.public) | s <- Map.elems guide.spaces] `shouldBe` [("Guide", True)]
     let tour = titled guide "Tour"
     [s.homePage | s <- Map.elems guide.spaces] `shouldBe` [(\p -> p.id) <$> tour]
-    sort (map (\p -> p.title) pages) `shouldBe` sort ["Tour", "Markdown guide", "Diagrams", "Mathematics", "Presentations"]
+    sort (map (\p -> p.title) pages) `shouldBe` sort ["Tour", "Markdown guide", "Diagrams", "Mathematics", "Presentations", "Writing a plugin"]
     -- The tour is the root of the guide's pages (WP5.78 of docs/PLAN.md).
     [p.title | p <- pages, isNothing p.parent] `shouldBe` ["Tour"]
 
   it "has every page parse, and attaches what the Markdown guide shows" $ do
     for_ pages $ \p -> (p.title, isRight (parseMarkdown p.body)) `shouldBe` (p.title, True)
     (map (\a -> a.name.text) . (\p -> p.attachments) <$> titled guide "Markdown guide") `shouldBe` Just ["tree.png", "earth.jpg"]
+
+  it "shows and attaches the example plugin as the repository has it" $ do
+    manifest <- decodeUtf8 <$> BS.readFile "../examples/plugins/doubled-words/manifest.json"
+    code <- decodeUtf8 <$> BS.readFile "../examples/plugins/doubled-words/doubled-words.js"
+    exampleManifest `shouldBe` manifest
+    exampleCode `shouldBe` code
+    (map (\a -> a.name.text) . (\p -> p.attachments) <$> titled guide "Writing a plugin") `shouldBe` Just ["manifest.json", "doubled-words.js"]
 
   it "links its pages to pages of the guide only" $ do
     let internal t = not (any (`T.isPrefixOf` t) ["https://", "http://", "attachment:", "<", "#"])

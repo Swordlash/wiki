@@ -80,6 +80,7 @@ module Wiki.App.View.Plugins.Machine
   , step
   , knownNow
   , held
+  , readIn
   , stateOf
   , shownState
   , shownOptions
@@ -303,6 +304,13 @@ wrote asked p answer m1 =
 -- | What the server keeps, as the model holds it, once read.
 knownNow :: Model -> Maybe Plugins
 knownNow m = m.known >>= rightToMaybe
+
+-- | Whether what is on is this session's read ('knownNow'), for the
+-- session of this number: not the defaults 'held' gives before that read
+-- answers, after it failed, or for a session the model has not been
+-- given yet.
+readIn :: Int -> Model -> Bool
+readIn session m = m.session == session && isJust (knownNow m)
 
 -- | What is on as the rest of the application sees it (the context's
 -- plugins): what is known, or, before a read of this session answered or

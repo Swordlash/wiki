@@ -29,7 +29,7 @@ sources = "src"
 -- | The modules under @Wiki.App.Plugin@ that are the host's, not a
 -- plugin's.
 hostModules :: [Text]
-hostModules = ["Registry", "Host", "Capability"]
+hostModules = ["Registry", "Host", "Capability", "External"]
 
 -- | The plugin a module belongs to, if it belongs to one: @Errors@ for
 -- @Wiki.App.Plugin.Errors@ and the modules under it.

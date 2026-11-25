@@ -142,6 +142,12 @@ data Context = Context
   -- each, as the shell last read them with the session
   -- ('Wiki.App.Plugin.Registry.pluginsOn' reads it). Nothing off and
   -- nothing chosen until the read answers, and when it fails.
+  , pluginsRead :: Bool
+  -- ^ Whether 'plugins' is what this session's read answered, and not
+  -- the defaults held until it does, or when it failed
+  -- ('Wiki.App.View.Plugins.Machine.readIn'). The built-in plugins run on
+  -- the defaults meanwhile; an external plugin, which is sent the page's
+  -- text, runs only once this is true.
   }
 
 -- | 'PageWidth' is how wide the page view lays a page out on a wide screen

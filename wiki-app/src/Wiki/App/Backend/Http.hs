@@ -116,7 +116,7 @@ import Servant.Client.Generic (AsClientT)
 import Servant.Multipart.API (Mem)
 import Web.HTML.Window qualified as Window
 import Web.Storage.IndexedDB (MonadIndexedDB)
-import Wiki.Api (AccountApi (..), AdminApi (..), ArchiveApi (..), AssistantApi (..), AttachmentsApi (..), EncryptedApi (..), InvitationsApi (..), PagesApi (..), PasswordResetApi (..), SpacesApi (..), WikiApi (..))
+import Wiki.Api (AccountApi (..), AdminApi (..), ArchiveApi (..), AssistantApi (..), AttachmentsApi (..), EncryptedApi (..), ExternalPluginsApi (..), InvitationsApi (..), PagesApi (..), PasswordResetApi (..), SpacesApi (..), WikiApi (..))
 import Wiki.Api.Account (AccountDisabled (..), Credentials (..), NewAccount (..), PasswordChange (..), SignInMethods)
 import Wiki.Api.Activity (ActivityQuery (..), firstPage)
 import Wiki.Api.Admin (AdministratorFlag (..), CreateSpacesFlag (..), GroupName (..), NewInvitation (..), UserQuery (..))
@@ -936,6 +936,11 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
     sealedPage pid >>= \case
       Just (sid, k) -> sealedVersion sid pid k at >>= either (pure . Left) (\v -> sealedSavePage sid pid k base v.title v.body)
       Nothing -> write (getResponse <$> endpoints.pages.restore pid (VersionTime at) (PageVersion base))
+
+  -- Cached as the plugins that are on are ('pluginsNow'): an editor the
+  -- server prerendered then asks nothing as it is adopted, and a write or
+  -- a sign-in empties the cache, after which an editor reads it again.
+  externalPluginsNow = cached (\c -> c.externalPlugins) endpoints.externalPlugins.list (\a c -> c {Cache.externalPlugins = Just a})
 
 -- | The administration's backend, over the API's @admin\/…@ endpoints. The
 -- directory is cached like any read, so that the administration page the

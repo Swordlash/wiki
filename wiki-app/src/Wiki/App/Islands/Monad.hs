@@ -43,6 +43,7 @@ import Web.DOM.Internal.Types (Element (..))
 import Web.Event.CustomEvent (CustomEvent (..))
 import Web.Event.Event (Event)
 import Wiki.App.Browser (localTime)
+import Wiki.App.Plugin.External.Frame (FrameSaid, PluginFrame, openFrame)
 import Wiki.Core.Markdown.Tikz (TikzDocument (..))
 import Wiki.Core.Math (Macros (..))
 
@@ -182,6 +183,14 @@ class (Monad m) => MonadIslands m where
   default renderTime :: (MonadTrans t, MonadIslands n, m ~ t n) => UTCTime -> Element -> m ()
   renderTime at = lift . renderTime at
 
+  -- | Make an external plugin's frame of this address inside the element,
+  -- and hand each thing the frame says to the function
+  -- ("Wiki.App.Plugin.External.Frame"). The frame is the program's to
+  -- close. A test stands a plugin of its own in the frame's place here.
+  openPluginFrame :: Element -> Text -> (FrameSaid -> IO ()) -> m PluginFrame
+  default openPluginFrame :: (MonadTrans t, MonadIslands n, m ~ t n) => Element -> Text -> (FrameSaid -> IO ()) -> m PluginFrame
+  openPluginFrame container address = lift . openPluginFrame container address
+
 instance (MonadIslands m) => MonadIslands (ReaderT r m)
 
 -- | The page's libraries. Natively the bindings are inert stubs and this
@@ -214,6 +223,8 @@ instance MonadIslands BrowserDOM where
     when (current /= Just url) (element.setAttribute "src" url)
 
   renderTime at element = liftIO $ localTime at >>= element.textContent_set
+
+  openPluginFrame container address = liftIO . openFrame container address
 
 -- | What a @wiki-island-drawn@ event says of a diagram or a picture just
 -- drawn: the library's error, or nothing when the drawing succeeded (the
@@ -249,6 +260,8 @@ instance MonadIslands MemDOM where
   -- the browser then finds there and leaves alone.
   loadFrame url = setAttribute Nothing (AttrName "src") url
   renderTime at element = localTime at >>= (`asText` element)
+  -- No browser, so no plugin runs: a frame that never answers.
+  openPluginFrame container address = liftIO . openFrame container address
 
 asText :: Text -> Element -> MemDOM ()
 asText text element = elementToNode element >>= setTextContent text

@@ -464,7 +464,8 @@ prefix firstLine = foldMap $ \case
 
 -- | Some lines of a document, in containers: a paragraph (with a lazy line
 -- after it, sometimes), a marker of a block's start or end, indented code
--- holding one, a fence holding one, or a blank line.
+-- holding one, a fence holding one, a fence holding a line like a
+-- definition, a definition, or a blank line.
 chunk :: Gen [Text]
 chunk = do
   ls <- layers
@@ -478,6 +479,9 @@ chunk = do
       , (1, (\name -> ["    " <> closingMarker name]) <$> elements holding)
       , (1, (\name -> ["    " <> opener name]) <$> elements holding)
       , (1, (\name -> ["```", closingMarker name, "```"]) <$> elements holding)
+      , -- A line like a definition in a fence of either mark, which no
+        -- start below it is lost to (#301), and a definition.
+        (1, elements [["```ts", "[a]: number", "```"], ["~~~~", "[a]: /listed", "~~~", "~~~~"], ["````", "```", "[^a]: listed", "````"], ["[a]: /real"]])
       , (2, pure [""])
       ]
   lazy <- frequency [(4, pure []), (1, pure ["lazy text"])]

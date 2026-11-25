@@ -937,9 +937,10 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
       Just (sid, k) -> sealedVersion sid pid k at >>= either (pure . Left) (\v -> sealedSavePage sid pid k base v.title v.body)
       Nothing -> write (getResponse <$> endpoints.pages.restore pid (VersionTime at) (PageVersion base))
 
-  -- Read afresh each time an editor opens, not cached: the editor runs
-  -- what the server lets it run now, and an editor opens seldom.
-  externalPluginsNow = send endpoints.externalPlugins.list
+  -- Cached as the plugins that are on are ('pluginsNow'): an editor the
+  -- server prerendered then asks nothing as it is adopted, and a write or
+  -- a sign-in empties the cache, after which an editor reads it again.
+  externalPluginsNow = cached (\c -> c.externalPlugins) endpoints.externalPlugins.list (\a c -> c {Cache.externalPlugins = Just a})
 
 -- | The administration's backend, over the API's @admin\/…@ endpoints. The
 -- directory is cached like any read, so that the administration page the

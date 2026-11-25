@@ -19,6 +19,9 @@ import Test.QuickCheck
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), noPlugins)
 import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Permission (..), framePath, reservedPluginIds)
 import Wiki.App.Backend (WikiError (..))
+import Wiki.App.Backend.Http.Cache (emptyCache)
+import Wiki.App.Backend.Http.Cache qualified as Cache
+import Wiki.App.Backend.Http.Preload (decodePreload, encodePreload)
 import Wiki.App.Plugin (Drawn (..))
 import Wiki.App.Plugin qualified as Plugin
 import Wiki.App.Plugin.External (Heard (..), diagnosticsOf, runnable)
@@ -88,6 +91,12 @@ registry = describe "which installed plugins run" $ do
     ids (externalOn (choosing [("spell", PluginOff)]) installed) `shouldBe` ["mine"]
     ids (externalOn (choosing [("spell", PluginDefault), ("mine", PluginOn)]) installed) `shouldBe` ["spell", "mine"]
     ids (externalOn noPlugins {offForWiki = Set.fromList [PluginId "mine"]} installed) `shouldBe` ["spell"]
+
+  it "is carried by the page an editor is prerendered into, and by no other" $ do
+    let read' = ExternalPlugins {policy = ExternalWiki, external = [plugin "spell" "a1" False]}
+        carrying = emptyCache {Cache.externalPlugins = Just (Right read')}
+    ((\c -> c.externalPlugins) <$> decodePreload (encodePreload carrying)) `shouldBe` Right (Just (Right read'))
+    encodePreload emptyCache `shouldNotSatisfy` T.isInfixOf "externalPlugins"
 
   it "counts what a plugin heard for exactly the text checked" $ do
     let problem = Problem {from = 1, to = 1, kind = FromPlugin, severity = Warning, message = "Spell: x"}

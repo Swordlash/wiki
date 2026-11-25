@@ -400,10 +400,10 @@ fieldsFor s a = case s of
               tlsCaL
               CaField
           , check
-              "Every HTTPS answer carries Strict-Transport-Security for a year: a browser that has seen it over a trusted certificate goes to the host over HTTPS only, and lets nobody click through a certificate error there. Unticked, the server runs with --no-hsts. Ticked after that, the deploy gives --hsts."
+              "Ticked, every HTTPS answer carries Strict-Transport-Security for a year (--hsts): a browser that has seen it over a trusted certificate goes to this host name over HTTPS only, on every port, and lets nobody click through a certificate error there. Off by default for that reason. Unticked after that, the deploy gives --no-hsts."
               hstsL
               HstsField
-              "send Strict-Transport-Security (--no-hsts when unticked)"
+              "send Strict-Transport-Security (--hsts)"
           ]
         else []
   Address ->

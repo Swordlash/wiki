@@ -46,6 +46,7 @@ import Wiki.Core.Id (PageId (..))
 import Wiki.Core.Url (Url (..))
 import Wiki.Server (ServerError (..))
 import Wiki.Server.Options (ServeOptions (..), serveOptions)
+import Wiki.Server.Options qualified as Options
 import Wiki.Server.Tls (HttpsOnly (..), httpsOnly, loadTls)
 
 spec :: Backing -> Spec
@@ -95,7 +96,10 @@ overHttps backing = describe "with a certificate of its own" $ do
     withDemoRunning backing (serving pair.cert pair.key) $ \r -> do
       r.public `shouldSatisfy` T.isPrefixOf "https://127.0.0.1:"
       r.admin `shouldSatisfy` T.isPrefixOf "http://127.0.0.1:"
-      ((.status) <$> getUrl r (r.public <> "/api/v1/info")) `shouldReturn` 200
+      infoReply <- getUrl r (r.public <> "/api/v1/info")
+      infoReply.status `shouldBe` 200
+      -- No Strict-Transport-Security without --hsts.
+      lookup hstsHeader infoReply.headers `shouldBe` Nothing
       ((.status) <$> getUrl r (r.admin <> "/admin/api/v1/admin/status")) `shouldReturn` 200
       -- The cookie is Secure without --secure-cookies: a server that
       -- speaks TLS is reached over HTTPS only.
@@ -140,15 +144,15 @@ secureChannel r app = do
     WS.runClientWithStream stream "127.0.0.1" ("/" <> toS eventsPath) WS.defaultConnectionOptions [] app
 
 -- | Plain HTTP on the port of a server that speaks TLS, over real
--- sockets: redirected to the same address over HTTPS, while its answers
--- over HTTPS carry @Strict-Transport-Security@. A server without a
--- certificate, here one behind a proxy (Secure cookies, a proxy's
--- @X-Forwarded-Proto@), answers plain HTTP itself, with neither.
+-- sockets: redirected to the same address over HTTPS, while with
+-- @--hsts@ its answers over HTTPS carry @Strict-Transport-Security@. A
+-- server without a certificate, here one behind a proxy (Secure cookies,
+-- a proxy's @X-Forwarded-Proto@), answers plain HTTP itself, with neither.
 plainOnTheTlsPort :: Backing -> Spec
 plainOnTheTlsPort backing = describe "plain HTTP on its port" $ do
-  it "is redirected to HTTPS, and the HTTPS answers carry Strict-Transport-Security" $ withOpenssl $ \dir -> do
+  it "is redirected to HTTPS, and with --hsts the HTTPS answers carry Strict-Transport-Security" $ withOpenssl $ \dir -> do
     pair <- makePair dir "rsa:2048" "server"
-    withDemoRunning backing (serving pair.cert pair.key) $ \r -> do
+    withDemoRunning backing (\o -> (serving pair.cert pair.key o) {Options.hsts = True}) $ \r -> do
       let address = fromMaybe (panic ("not https: " <> r.public)) (T.stripPrefix "https://" r.public)
       plainManager <- newManager defaultManagerSettings
       asked <- parseRequest (toS ("http://" <> address <> "/api/v1/info?x=1"))
@@ -244,7 +248,7 @@ httpsSpec = describe "the guard of a listener that speaks TLS" $ do
     locationOf methodGet "/a\tb" `shouldReturn` Just "https://wiki.example.org/"
     locationOf methodGet "/caf\195\169" `shouldReturn` Just "https://wiki.example.org/"
 
-  it "gives every answer over TLS Strict-Transport-Security, and none with --no-hsts" $ do
+  it "gives every answer over TLS Strict-Transport-Security with --hsts, and none without" $ do
     (_, withHsts) <- guardedApp True Nothing
     (_, onHeaders, _) <- answer withHsts (overTls (plain methodGet (Just "wiki.example.org") "/" ""))
     lookup hstsHeader onHeaders `shouldBe` Just "max-age=31536000"
@@ -252,10 +256,11 @@ httpsSpec = describe "the guard of a listener that speaks TLS" $ do
     (_, offHeaders, _) <- answer withoutHsts (overTls (plain methodGet (Just "wiki.example.org") "/" ""))
     lookup hstsHeader offHeaders `shouldBe` Nothing
 
-  it "is turned off by --no-hsts, and on by default" $ do
+  it "is turned on by --hsts, and off by default" $ do
     let parsedHsts args = (.hsts) <$> getParseResult (execParserPure defaultPrefs (info serveOptions mempty) args)
-    parsedHsts ["--data", "d"] `shouldBe` Just True
-    parsedHsts ["--data", "d", "--no-hsts"] `shouldBe` Just False
+    parsedHsts ["--data", "d"] `shouldBe` Just False
+    parsedHsts ["--data", "d", "--hsts"] `shouldBe` Just True
+    parsedHsts ["--data", "d", "--no-hsts"] `shouldBe` Nothing
   where
     badHosts =
       [ ""

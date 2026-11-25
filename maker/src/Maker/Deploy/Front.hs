@@ -438,9 +438,12 @@ front root o0 = do
         unless (null o.optHsts) (die "--hsts and --no-hsts are for wiki-server serving HTTPS itself (--tls-cert FILE --tls-key FILE): behind tailscale serve or a reverse proxy, the header is theirs to send")
         pure ("", "", "")
   -- Whether wiki-server, serving HTTPS itself, sends
-  -- Strict-Transport-Security: no after --no-hsts, and empty (the default,
-  -- on) otherwise. Remembered whatever the way, and used with --tls-cert.
-  let hsts = if firstOf [o.optHsts, prevHsts] == "no" then "no" else ""
+  -- Strict-Transport-Security: yes after --hsts, and empty (the default,
+  -- off) otherwise. Off by default because a browser that has seen the
+  -- header goes to the host name over HTTPS only, on every port, for a
+  -- year. A state file from before --hsts may say no, which is off too.
+  -- Remembered whatever the way, and used with --tls-cert.
+  let hsts = if firstOf [o.optHsts, prevHsts] == "yes" then "yes" else ""
 
   -- The directory, absolute and with its links resolved, so that the
   -- safety checks compare what would really be deleted.

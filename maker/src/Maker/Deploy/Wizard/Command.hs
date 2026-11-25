@@ -118,11 +118,11 @@ deployArgs a = case a.action of
         ["--tls-cert", a.tlsCert, "--tls-key", a.tlsKey]
           ++ (if T.null (a.tlsCa) then flag "--tls-ca=" (a.rememberedCa) else ["--tls-ca", a.tlsCa])
           ++ hstsArgs
-    -- Strict-Transport-Security is on by default, so it takes no option,
-    -- unless the state remembers it off, which --hsts forgets.
+    -- Strict-Transport-Security is off by default, so it takes no option,
+    -- unless the state remembers it on, which --no-hsts forgets.
     hstsArgs
-      | a.hsts = flag "--hsts" (a.rememberedNoHsts)
-      | otherwise = ["--no-hsts"]
+      | a.hsts = ["--hsts"]
+      | otherwise = flag "--no-hsts" (a.rememberedHsts)
     option key v = if T.null v then [] else [key, v]
     flag key on' = [key | on']
 

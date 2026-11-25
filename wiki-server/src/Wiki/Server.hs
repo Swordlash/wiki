@@ -12,8 +12,8 @@
 -- With @--tls-cert@ and @--tls-key@ the public listener speaks HTTPS
 -- ("Wiki.Server.Tls"), with the files read before any socket is bound; the
 -- admin listener stays plain HTTP, on loopback. A plain HTTP request to the
--- public listener is then redirected to HTTPS, and every answer over TLS
--- carries @Strict-Transport-Security@ unless @--no-hsts@ ('httpsOnly').
+-- public listener is then redirected to HTTPS ('httpsOnly'), and with
+-- @--hsts@ every answer over TLS carries @Strict-Transport-Security@.
 --
 -- On @SIGTERM@ (systemd stopping it) or @SIGINT@ the server stops
 -- accepting connections, gives the requests in progress up to ten seconds

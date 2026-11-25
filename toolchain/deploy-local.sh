@@ -231,11 +231,12 @@
 #   --tls-ca FILE    with --tls-cert: after the deploy, check the certificate the server
 #                    serves against this certificate authority; remembered (--tls-ca=
 #                    forgets it)
-#   --no-hsts        with --tls-cert: run wiki-server with --no-hsts, so that its HTTPS
-#                    answers carry no Strict-Transport-Security header (by default they
-#                    do, and a browser that has seen it refuses for a year to let a
-#                    reader click through a certificate error for the host); remembered
-#   --hsts           with --tls-cert: send the header again, after a run with --no-hsts
+#   --hsts           with --tls-cert: run wiki-server with --hsts, so that its HTTPS
+#                    answers carry a Strict-Transport-Security header; remembered. Off
+#                    by default: a browser that has seen it goes to the host name over
+#                    HTTPS only, on every port, and refuses for a year to let a reader
+#                    click through a certificate error there
+#   --no-hsts        with --tls-cert: send no header again, after a run with --hsts
 #                    (the first run's default)
 #   --behind-proxy   serve plain HTTP on 127.0.0.1, with Secure cookies, for a reverse
 #                    proxy on this machine that serves HTTPS (Caddy, nginx); remembered.
@@ -1202,8 +1203,8 @@ if [ "$action" = status ]; then
   https_host=$prev_https_host serve_note=
   if [ "$prev_way" = cert ]; then
     say "HTTPS by wiki-server itself, with its own certificate (--tls-cert $prev_tls_cert --tls-key $prev_tls_key${prev_tls_ca:+, checked against --tls-ca $prev_tls_ca}), read as it starts: a renewed certificate takes systemctl --user restart $name.service"
-    if grep '^ExecStart=.* --no-hsts' "$unit_file" >/dev/null 2>&1; then
-      say "no Strict-Transport-Security header (--no-hsts); --hsts sends it again"
+    if grep '^ExecStart=.* --hsts' "$unit_file" >/dev/null 2>&1; then
+      say "every HTTPS answer carries Strict-Transport-Security (--hsts); --no-hsts stops sending it"
     fi
   elif [ "$prev_way" = proxy ]; then
     say "behind a reverse proxy (--behind-proxy): plain HTTP on 127.0.0.1:$prev_port for the proxy, which serves HTTPS; Secure cookies"

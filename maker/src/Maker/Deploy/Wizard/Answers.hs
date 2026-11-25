@@ -37,8 +37,8 @@
 -- whats_new is whether the server shows the page "What's new?": yes (no
 -- option, unless the state remembers no, which --whats-new forgets) or no
 -- (--no-whats-new). hsts is whether wiki-server, serving HTTPS with a
--- certificate of its own, sends Strict-Transport-Security: yes (no option,
--- unless the state remembers no, which --hsts forgets) or no (--no-hsts).
+-- certificate of its own, sends Strict-Transport-Security: no (no option,
+-- unless the state remembers yes, which --no-hsts forgets) or yes (--hsts).
 -- texlive_installer and perl_source are the git
 -- repositories (or directories) TeX Live's installer and Perl's source
 -- come from, when not from their GitHub mirrors; the deploy does not
@@ -156,7 +156,7 @@ data Answers = Answers
   , rememberedNpmRegistry :: Bool
   , rememberedHackageMirror :: Bool
   , rememberedNoWhatsNew :: Bool
-  , rememberedNoHsts :: Bool
+  , rememberedHsts :: Bool
   }
   deriving (Eq, Show)
 
@@ -189,7 +189,7 @@ defaultAnswers =
     , tlsCert = ""
     , tlsKey = ""
     , tlsCa = ""
-    , hsts = True
+    , hsts = False
     , port = "8080"
     , bind = ""
     , adminPort = "8081"
@@ -207,7 +207,7 @@ defaultAnswers =
     , rememberedNpmRegistry = False
     , rememberedHackageMirror = False
     , rememberedNoWhatsNew = False
-    , rememberedNoHsts = False
+    , rememberedHsts = False
     }
 
 -- | The answers a deployment's state file gives: what the deploy would
@@ -239,7 +239,7 @@ fromState kv a =
     , tlsCert = if remembered == Certificate then value "tls_cert" else ""
     , tlsKey = if remembered == Certificate then value "tls_key" else ""
     , tlsCa = if remembered == Certificate then value "tls_ca" else ""
-    , hsts = value "hsts" /= "no"
+    , hsts = value "hsts" == "yes"
     , port = orKeep (a.port) (value "port")
     , -- An address the deploy chose itself (bind_choice=auto) is chosen
       -- again on the next run, so it is not an answer.
@@ -254,7 +254,7 @@ fromState kv a =
     , rememberedNpmRegistry = not (T.null (value "npm_registry"))
     , rememberedHackageMirror = not (T.null (value "hackage_mirror"))
     , rememberedNoWhatsNew = value "whats_new" == "no"
-    , rememberedNoHsts = value "hsts" == "no"
+    , rememberedHsts = value "hsts" == "yes"
     }
   where
     -- As state_get: the last line of the key wins.

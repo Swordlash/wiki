@@ -1376,20 +1376,22 @@ Plain HTTP on the same port is redirected: `http://wiki.example:8443/s/team/`
 answers `308 Permanent Redirect` to `https://wiki.example:8443/s/team/`, the host
 and port the browser asked for, or the public address's when the request names no
 usable host. Nothing else is served over plain HTTP, and no cookie is set or read
-there. Every answer over HTTPS carries `Strict-Transport-Security: max-age=31536000`
-(not for subdomains: the wiki may share its domain with hosts it does not own). A
-browser that has seen it over a certificate it trusted goes to that host over HTTPS
-only for a year, and refuses to let the reader click through a certificate error
-there: a certificate that expires, or is replaced by one the browser does not
-trust, becomes a hard stop until it is fixed. A browser ignores the header when it
-did not trust the certificate in the first place (a self-signed one, say), and
-warns as before. The header holds for the host name on every port, so other
-programs served over plain HTTP under the same name are refused by those browsers
-too, as is the wiki itself if it later moves to `--http` under that name.
-`--no-hsts` (wiki-server's option, and the deploy's, remembered; `--hsts` sends it
-again) leaves the header out; it does not take back what browsers have already
-seen, which lasts until the year runs out. A server behind a proxy (below)
-speaks plain HTTP itself and does neither.
+there. With `--hsts` (wiki-server's option, and the deploy's, remembered;
+`--no-hsts` turns it off again), every answer over HTTPS also carries
+`Strict-Transport-Security: max-age=31536000` (not for subdomains: the wiki may
+share its domain with hosts it does not own). It is off by default, for these
+reasons. A browser that has seen the header over a certificate it trusted goes to
+that host over HTTPS only for a year, and refuses to let the reader click through
+a certificate error there: a certificate that expires, or is replaced by one the
+browser does not trust, becomes a hard stop until it is fixed. A browser ignores
+the header when it did not trust the certificate in the first place (a self-signed
+one, say), and warns as before. The header holds for the host name on every port,
+so other programs served over plain HTTP under the same name are refused by those
+browsers too, as is the wiki itself if it later moves to `--http` under that name.
+Turning `--hsts` off again does not take back what browsers have already seen,
+which lasts until the year runs out. Give `--hsts` only when every service under
+the host name is served over HTTPS and will stay so. A server behind a proxy
+(below) speaks plain HTTP itself and does neither.
 
 Any `--bind` will do, `0.0.0.0` included (without `--bind`, the Tailscale address,
 as with `--http`); ufw is opened for the port as with `--http`. The deploy checks
@@ -2099,7 +2101,7 @@ The unit runs `wiki-server serve --data ~/wiki-demo/data --static ~/wiki-demo/ap
 database's options (above) behind
 `tailscale serve` (with `--http`, `--listen <tailscale address>:8080` and no
 `--secure-cookies`; with `--tls-cert`, `--tls-cert` and `--tls-key` in its place,
-and `--no-hsts` after the deploy's `--no-hsts`;
+and `--hsts` after the deploy's `--hsts`;
 behind a proxy, `--secure-cookies` too), and checks that both listeners and the
 HTTPS address answer.
 The admin listener is not served: it stays on this machine. When the

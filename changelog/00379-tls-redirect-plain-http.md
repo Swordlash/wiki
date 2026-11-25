@@ -15,10 +15,12 @@ title: The address without https:// now opens the wiki
   ```
 
   now arrives at `https://wiki.example.org:8443/s/team/p/on-call/`.
-- Such a wiki also tells browsers to come back over HTTPS only, for a
-  year, so the next visit goes straight there. An administrator can turn
-  that off with `--no-hsts` when deploying:
+- An administrator can also have such a wiki tell browsers to come back
+  over HTTPS only, for a year, so the next visit goes straight there. It
+  is off by default, because browsers then hold to HTTPS for every
+  service under that host name, on every port. To turn it on when
+  deploying:
 
   ```sh
-  sh toolchain/deploy-local.sh --no-hsts
+  sh toolchain/deploy-local.sh --hsts
   ```

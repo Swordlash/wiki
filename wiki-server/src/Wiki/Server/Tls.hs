@@ -18,8 +18,8 @@
 --
 -- The listener also takes plain HTTP on the same port ('allowingPlain'),
 -- so that a reader who types the address without @https://@ is sent to
--- it ('httpsOnly') rather than shown warp-tls's refusal. Every answer over
--- TLS carries @Strict-Transport-Security@, unless @--no-hsts@ turns it off.
+-- it ('httpsOnly') rather than shown warp-tls's refusal. With @--hsts@,
+-- every answer over TLS carries @Strict-Transport-Security@.
 module Wiki.Server.Tls
   ( loadTls
   , keyMatches
@@ -110,8 +110,8 @@ allowingPlain settings = settings {onInsecure = AllowInsecure}
 -- | 'HttpsOnly' is what 'httpsOnly' needs to know about the server.
 data HttpsOnly = HttpsOnly
   { hsts :: Bool
-  -- ^ Whether answers over TLS carry @Strict-Transport-Security@: 'False'
-  -- with @--no-hsts@.
+  -- ^ Whether answers over TLS carry @Strict-Transport-Security@: 'True'
+  -- with @--hsts@.
   , publicUrl :: IO (Maybe Url)
   -- ^ The public address set in the administration's Server section, read
   -- when a plain request's @Host@ cannot be used.
@@ -119,7 +119,7 @@ data HttpsOnly = HttpsOnly
 
 -- | 'httpsOnly' is the public listener's guard when the listener speaks
 -- TLS and also takes plain HTTP ('allowingPlain'). A request that came
--- over TLS goes to the application, and its answer carries
+-- over TLS goes to the application, and with 'hsts' its answer carries
 -- @Strict-Transport-Security: max-age=31536000@ (one year; not for
 -- subdomains, since the wiki may share its domain with hosts it does not
 -- own). A request that did not come over TLS never reaches the

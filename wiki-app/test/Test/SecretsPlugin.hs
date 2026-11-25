@@ -1,17 +1,19 @@
--- | A plugin of the tests, which keeps one secret, a token, with the
--- plugins' capability of secrets ("Wiki.App.Plugin"'s 'Secrets'). It is
+-- | A plugin of the tests, which keeps two secrets, a token and an
+-- endpoint, with the plugins' capability of secrets ("Wiki.App.Plugin"'s
+-- 'Secrets'). It is
 -- written as a built-in plugin is: it imports the plugins' interface,
 -- Halogen and wiki-core, and nothing else of the application's. It is in
 -- no registry; a test mounts its settings with the host's capabilities
 -- (@Test.SecretFieldDom@).
 --
--- Its settings show the host's field for the token, and the names of the
--- secrets it reads back, never their values. Its check refuses a token
--- that starts with "bad".
+-- Its settings show the host's field for each secret, and the names of
+-- the secrets it reads back, never their values. Its check refuses a
+-- value that starts with "bad".
 module Test.SecretsPlugin
   ( secretive
   , secretiveManifest
   , tokenName
+  , endpointName
   )
 where
 
@@ -24,11 +26,12 @@ import Halogen.HTML.Properties qualified as HP
 import Protolude hiding (State)
 import Wiki.App.Plugin
 
--- | The name of the plugin's one secret.
-tokenName :: SecretName
+-- | The names of the plugin's two secrets.
+tokenName, endpointName :: SecretName
 tokenName = SecretName "token"
+endpointName = SecretName "endpoint"
 
--- | The plugin's manifest: it declares the token.
+-- | The plugin's manifest: it declares the token and the endpoint.
 secretiveManifest :: Manifest
 secretiveManifest =
   Manifest
@@ -36,7 +39,10 @@ secretiveManifest =
     , name = "Secretive"
     , description = "A plugin of the tests that keeps a token."
     , onByDefault = True
-    , secrets = [SecretSpec {name = tokenName, label = "Token", description = "The token of a service of the tests."}]
+    , secrets =
+        [ SecretSpec {name = tokenName, label = "Token", description = "The token of a service of the tests."}
+        , SecretSpec {name = endpointName, label = "Endpoint", description = "The address of the service, with a key in it."}
+        ]
     }
 
 -- | The plugin: its settings and nothing else.
@@ -68,6 +74,7 @@ settings =
       HH.section
         [HP.class_ (HH.ClassName "secretive")]
         ( secretField "secret" st.granted.secrets FieldInput {name = tokenName, check = checkToken} FromField
+            : secretField "secret" st.granted.secrets FieldInput {name = endpointName, check = checkToken} FromField
             : [HH.p [HP.class_ (HH.ClassName "secretive-read")] [HH.text (either (\u -> "unavailable: " <> show u) (T.intercalate ", " . map (\n -> n.text)) r)] | Just r <- [st.read]]
         )
 

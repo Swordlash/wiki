@@ -19,6 +19,12 @@
 -- kept in the state before the ask starts, and let go when the ask answers
 -- or the field closes: a field closed during an unlock leaves no key of it
 -- in the page.
+--
+-- The field listens, from its start, for the changes of what the secrets
+-- read as ('Wiki.App.Assistant.secretsChanges': the vault unlocked or
+-- locked in this browser, a secret kept or forgotten, here or in another
+-- tab), and reads again on each. Halogen ends the subscription when the
+-- field closes.
 module Wiki.App.View.SecretField
   ( component
   )
@@ -33,7 +39,7 @@ import Halogen.Machine qualified as Machine
 import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
 import Protolude hiding (State)
-import Wiki.App.Assistant (KeyOwner, MonadAssistant, closeKeyOwner, openKeyOwner)
+import Wiki.App.Assistant (KeyOwner, MonadAssistant (..), closeKeyOwner, openKeyOwner)
 import Wiki.App.Assistant.Sync (MonadVault, owned)
 import Wiki.App.Plugin (FieldInput (..), FieldOutput (..), Manifest (..), SecretName (..), SecretSpec (..), Unavailable (..))
 import Wiki.App.Plugin.Host.Secrets (putSecret, readSecrets, removeSecret)
@@ -127,7 +133,12 @@ component user manifest =
 
     handleAction :: Action m -> H.HalogenM (State m) (Action m) Empty FieldOutput m ()
     handleAction = \case
-      Initialize -> happen Opened
+      Initialize -> do
+        -- Made in place, before the first read is asked, so that no
+        -- change after that read goes unheard.
+        changes <- Sync.sync secretsChanges
+        void (H.subscribe (Happened Changed <$ changes))
+        happen Opened
       Finalize -> Machine.finish machineSpec Finished
       -- The plugin's check may be another function: the next check uses
       -- it. The name is the slot's, which does not change.

@@ -8,7 +8,9 @@
 --
 -- A 'Device' is one browser: its keys by slot and its records, apart from
 -- every other device's. The numbers of keys are one test's, shared by its
--- devices, so that two devices can hold the same vault key.
+-- devices, so that two devices can hold the same vault key. Two runs on
+-- one device at once are two tabs of that browser: they share its keys,
+-- its records and its locks of tabs.
 module Test.FakeVault
   ( Device (..)
   , newDevice
@@ -20,10 +22,13 @@ module Test.FakeVault
   , keyIdOfTest
   , withVaultKey
   , deviceRecords
+  , beforeNextWrite
+  , waitingForLock
   , FakeMemDOM
   )
 where
 
+import Control.Concurrent.STM (TVar, modifyTVar', newTVarIO, readTVar, stateTVar, writeTVar)
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
@@ -31,10 +36,11 @@ import Data.Aeson (eitherDecodeStrict, encode)
 import Data.ByteString.Lazy qualified as BSL
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
+import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad (MemDOM)
 import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
 import Protolude
-import Wiki.App.Assistant (KeyRef, MonadAssistant (..), heldHandle, keyRefOf)
+import Wiki.App.Assistant (KeyRef, MonadAssistant (..), TabLock (..), heldHandle, keyRefOf)
 import Wiki.App.Assistant.Sync (MonadVault (..))
 import Wiki.App.Vault (vaultSlot)
 import Wiki.Core.Id (UserId (..))
@@ -50,11 +56,47 @@ data Device = Device
   -- ^ Whether the browser can seal (a secure page).
   , counter :: IORef Int
   -- ^ The numbers of keys, shared by the test's devices.
+  , writeHooks :: IORef [IO ()]
+  -- ^ What runs before the next writes of a key or a record, one each.
+  , requests :: TVar (Int, Map Int Text)
+  -- ^ The requests for locks of tabs ('requestTabLock'), by number, with
+  -- the name each asks for; and the last number given.
+  , locks :: TVar (Map Text Int)
+  -- ^ The locks of tabs held, by name: the request that holds each.
+  , waiters :: TVar Int
+  -- ^ How many requests wait for a lock of tabs that another holds.
+  , changes :: HS.Subscribe IO ()
+  -- ^ What 'secretsChanges' gives: a key kept or let go, a secret kept or
+  -- forgotten, in any tab of the browser.
   }
 
 -- | A device with nothing kept, numbering its keys with this counter.
 newDevice :: IORef Int -> Bool -> IO Device
-newDevice counter sealing = Device <$> newIORef mempty <*> newIORef mempty <*> pure sealing <*> pure counter
+newDevice counter sealing =
+  Device <$> newIORef mempty <*> newIORef mempty <*> pure sealing <*> pure counter <*> newIORef [] <*> newTVarIO (0, mempty) <*> newTVarIO mempty <*> newTVarIO 0 <*> HS.create
+
+-- | Run this before the next write of a key or a record on the device
+-- that no hook given before it took: a test's place to act between a
+-- tab's read and its write.
+beforeNextWrite :: Device -> IO () -> IO ()
+beforeNextWrite d act = modifyIORef' d.writeHooks (<> [act])
+
+-- | Wait until a request on the device waits for a lock of tabs, or the
+-- condition given holds (the other tab's work ended without waiting).
+waitingForLock :: Device -> STM Bool -> IO ()
+waitingForLock d ended = atomically $ do
+  n <- readTVar d.waiters
+  done <- ended
+  check (n > 0 || done)
+
+-- | Tell the device's tabs that what the secrets read as changed, as the
+-- browser's script does ('secretsChanges').
+changed :: Device -> IO ()
+changed d = d.changes.listener.notify ()
+
+-- | Run the next hook, before a write.
+writing :: Device -> IO ()
+writing d = join (atomicModifyIORef' d.writeHooks (\case [] -> ([], pass); h : rest -> (rest, h)))
 
 -- | 'Fake' is a monad whose browser is a 'Device'.
 newtype Fake m a = Fake (ReaderT Device m a)
@@ -124,14 +166,34 @@ deviceRecords d = readIORef d.records
 
 instance (MonadAssistant m, MonadIO m) => MonadAssistant (Fake m) where
   deviceRecord slot = device >>= \d -> liftIO (Right . Map.lookup slot.text <$> readIORef d.records)
-  keepDeviceRecord slot record = device >>= \d -> liftIO (modifyIORef' d.records (Map.alter (const record) slot.text)) $> Right ()
+  keepDeviceRecord slot record = device >>= \d -> liftIO (writing d >> modifyIORef' d.records (Map.alter (const record) slot.text)) $> Right ()
   newVaultKeyBy _ _ = handleOf <$> fresh
   sealWith k text ad = pure (Right (fakeSeal (heldHandle k) ad text))
   openWith k sealed ad = pure (fakeOpen (heldHandle k) ad sealed)
   forgetKey _ = pass
-  keepDeviceKeyBy _ slot k _ = device >>= \d -> liftIO (modifyIORef' d.keys (Map.insert slot.text (heldHandle k))) $> Right ()
+  keepDeviceKeyBy _ slot k _ = device >>= \d -> liftIO (writing d >> modifyIORef' d.keys (Map.insert slot.text (heldHandle k)) >> changed d) $> Right ()
   deviceKeyBy _ slot = device >>= \d -> liftIO ((handleOf <$>) . Map.lookup slot.text <$> readIORef d.keys)
-  dropDeviceKey slot = device >>= \d -> liftIO (modifyIORef' d.keys (Map.delete slot.text))
+  dropDeviceKey slot = device >>= \d -> liftIO (modifyIORef' d.keys (Map.delete slot.text) >> changed d)
+  secretsChanges = (\d -> d.changes.emitter) <$> device
+  announceSecretsChanged = device >>= liftIO . changed
+  requestTabLock name = device >>= \d -> liftIO $ atomically $ stateTVar d.requests (\(n, asked) -> (TabLock (n + 1), (n + 1, Map.insert (n + 1) name asked)))
+  tabLockGranted (TabLock n) =
+    device >>= \d -> liftIO $ do
+      let taking = do
+            name <- maybe (panic "a lock of tabs not requested") pure . Map.lookup n . snd =<< readTVar d.requests
+            held <- readTVar d.locks
+            if Map.member name held then pure False else writeTVar d.locks (Map.insert name n held) $> True
+      taken <- atomically taking
+      unless taken $ do
+        -- Another request holds the lock: this one waits, and says so.
+        atomically (modifyTVar' d.waiters (+ 1))
+        atomically (taking >>= check >> modifyTVar' d.waiters (subtract 1))
+          `onException` atomically (modifyTVar' d.waiters (subtract 1))
+  releaseTabLock (TabLock n) =
+    device >>= \d -> liftIO $ atomically $ do
+      name <- Map.lookup n . snd <$> readTVar d.requests
+      modifyTVar' d.requests (second (Map.delete n))
+      for_ name (\x -> modifyTVar' d.locks (Map.update (\holder -> if holder == n then Nothing else Just holder) x))
   sealingHere = (\d -> d.sealing) <$> device
   openIdentityBy _ k keyId sealed = case fakeOpen (heldHandle k) (identityData keyId) sealed of
     Right _ -> Right . handleOf <$> fresh

@@ -5,9 +5,12 @@
 -- vault. One plugin's change leaves every other item of the vault as it
 -- was; a name the manifest does not declare is refused before anything is
 -- read; an item moved to another plugin's name is not opened, nor written
--- over; two devices that change the vault at once both keep their change.
+-- over; two devices that change the vault at once both keep their change;
+-- two tabs of one browser that change what it keeps at once both keep
+-- their change, one after the other.
 module Test.PluginSecrets (spec, storageSpec) where
 
+import Control.Concurrent.STM (isEmptyTMVar, newEmptyTMVarIO, putTMVar, takeTMVar)
 import Data.Aeson (decodeStrict, object, (.=))
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
@@ -33,6 +36,7 @@ spec = describe "Wiki.App.Plugin.Host.Secrets" $ do
   inTheVault
   isolation
   twoDevices
+  twoTabs
   inThisBrowser
   registry
 
@@ -278,7 +282,7 @@ twoDevices = describe "two devices" $
           -- B's next change, made on B without the lock: A holds the one
           -- lock of the test's process, as each device holds its own.
           nextOfB =
-            atomicModifyIORef' remaining (\case [] -> ([], Nothing); op : rest -> (rest, Just op)) >>= traverse_ (\op -> on w b (held op) >>= done op)
+            atomicModifyIORef' remaining (\case [] -> ([], Nothing); op : rest -> (rest, Just op)) >>= traverse_ (\op -> on w b (heldOp alice op) >>= done op)
       for_ (zip fromA between) $ \(op, interleave) -> do
         when interleave (beforeNextStore w.server nextOfB)
         on w a (runOp alice op) >>= done op
@@ -289,12 +293,51 @@ twoDevices = describe "two devices" $
       let expected m = foldl (flip applied) mempty [op | op <- order, (pluginOf op).id == m.id]
       held' <- for [notes, mail, calendar] $ \m -> (\s -> fromMaybe mempty s === expected m) <$> itemSecrets w m
       pure (length order === length fromA + length fromB .&&. conjoin held')
-  where
-    declaredOp = genOp False `suchThat` declares
-    held = \case
-      Put m n v -> putSecretHeld alice m n v
-      Remove m n -> removeSecretHeld alice m n
-      Forget _ -> panic "no forget between two devices"
+
+-- | A change made with the lock of the page held already: another page's,
+-- run while this test's process holds its one lock of pages.
+heldOp :: UserId -> Op -> Served (Fake MemDOM) (Either Text ())
+heldOp u = \case
+  Put m n v -> putSecretHeld u m n v
+  Remove m n -> removeSecretHeld u m n
+  Forget _ -> panic "no forget made with the lock held"
+
+-- | A change of a name the plugin declares, no forget among them.
+declaredOp :: Gen Op
+declaredOp = genOp False `suchThat` declares
+
+-- | Two tabs of one browser are two pages: each holds a lock of its own
+-- page, and both read and write the browser's one record of secrets. Tab
+-- B's change is made while tab A is between its read of the record (and of
+-- the browser's key) and its write. B must wait for A's write, and then
+-- read it: otherwise A writes back what it read before B's change, and
+-- B's change is lost, even one of another plugin's, while both report
+-- success. The same holds for the browser's first key, which each tab
+-- would make for itself.
+twoTabs :: Spec
+twoTabs = describe "two tabs of one browser, where the user has no vault" $
+  modifyMaxSuccess (const 100) . prop "change what the browser keeps one after the other, so that neither writes over the other's change" $
+    forAll (listOf declaredOp) $ \seeds -> forAll (genOp True `suchThat` declares) $ \fromA -> forAll declaredOp $ \fromB -> ioProperty $ do
+      counter <- newIORef 0
+      server <- newServer Nothing
+      d <- newDevice counter True
+      let w = World {server, counter, vaultKey = 0}
+      for_ seeds (\op -> on w d (runOp alice op) >>= either (panic . ("a change failed: " <>)) pure)
+      answerOfB <- newEmptyTMVarIO
+      let tabB = on w d (heldOp alice fromB) >>= atomically . putTMVar answerOfB
+      -- B starts before A's first write, and A writes once B waits for
+      -- the lock of the browser's tabs, or once B is done.
+      beforeNextWrite d $ do
+        void (forkIO tabB)
+        waitingForLock d (not <$> isEmptyTMVar answerOfB)
+      answerOfA <- on w d (runOp alice fromA)
+      -- A wrote nothing (a forget of nothing): B was not started.
+      unstarted <- atomicModifyIORef' d.writeHooks (\h -> ([], not (null h)))
+      when unstarted tabB
+      answerB <- atomically (takeTMVar answerOfB)
+      let expected m = foldl (flip applied) mempty [op | op <- seeds <> [fromA, fromB], (pluginOf op).id == m.id]
+      readBack <- for [notes, mail, calendar] $ \m -> (\r -> counterexample (toS m.id.text) (r === Right (expected m))) <$> on w d (readSecrets alice m)
+      pure (answerOfA === Right () .&&. answerB === Right () .&&. conjoin readBack)
 
 inThisBrowser :: Spec
 inThisBrowser = describe "in this browser, where the user has no vault" $ do

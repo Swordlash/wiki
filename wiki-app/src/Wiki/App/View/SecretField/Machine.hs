@@ -25,6 +25,17 @@
 -- then cleared ('typed'), as the password typed for an unlock is after
 -- the unlock ('password').
 --
+-- = What changes elsewhere
+--
+-- Whether the vault is locked in this browser, and whether the secret is
+-- set, are not the field's alone: another field, a plugin's own call, a
+-- sign-out or an unlock in another tab change them. Each such change comes
+-- as 'Changed', from the one place that sees them all (the keys this
+-- browser keeps, and the host's changes of secrets:
+-- 'Wiki.App.Assistant.secretsChanges'), and the field reads again, now or
+-- after the ask out. So an unlock through one field shows the others
+-- unlocked, and a lock shows them locked.
+--
 -- = The reader
 --
 -- A field is made for one reader ('Wiki.App.Plugin.FieldSlot'): a new
@@ -140,6 +151,10 @@ data Event
     PasskeyPressed
   | -- | "Unlock with your password".
     PasswordPressed
+  | -- | What the secrets read as changed: a key kept or let go in this
+    -- browser (the vault unlocked or locked), or a secret of a plugin kept
+    -- or forgotten, by this field, another, or another tab.
+    Changed
   | -- | The answer to the ask made under this number.
     Answered Int Answer
   | -- | The field closes.
@@ -174,6 +189,7 @@ busy m = isJust m.doing
 step :: Event -> Model -> (Model, [Effect])
 step event m = case event of
   Opened -> reading m
+  Changed -> reading m
   Typed t -> (m {typed = t}, [])
   TypedPassword t -> (m {password = t}, [])
   KeepPressed

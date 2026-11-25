@@ -5,7 +5,9 @@
 -- field closes; a value kept only after the plugin's check passed for that
 -- same value; the value typed cleared once kept; the plugin told of a
 -- keep, a forget and an unlock only when they were done; and the secret
--- read again after an unlock. The real component on the in-memory DOM is
+-- read again after an unlock, and after a change heard from elsewhere (the
+-- vault unlocked or locked, a secret kept or forgotten), at once or once
+-- the ask out answers. The real component on the in-memory DOM is
 -- @Test.SecretFieldDom@'s.
 module Test.SecretField (spec) where
 
@@ -28,6 +30,7 @@ spec = describe "Wiki.App.View.SecretField.Machine" $ do
        in checkCoverage . tabulate "jobs done" (map jobName s.done)
             $ cover 15 ("Put" `elem` map jobName s.done) "kept a value"
             $ cover 10 ("Unlock" `elem` map jobName s.done) "unlocked"
+            $ cover 20 (any heardChange moves) "heard a change"
             $ conjoin (reverse checks)
               .&&. counterexample "the ask out at the close is let go" ([n | Release n <- closing] === outAtClose)
 
@@ -75,6 +78,7 @@ genMove =
     , (3, Act <$> elements [KeepPressed, KeepPressed, ForgetPressed, PasskeyPressed, PasswordPressed])
     , (2, Act . Typed <$> elements ["", "sk-1", "sk-1", "sk-2", "  "])
     , (1, Act . TypedPassword <$> elements ["", "pw", "pw"])
+    , (1, pure (Act Changed))
     , (5, Answer <$> elements [Succeeds, Succeeds, Succeeds, Fails, Finds (Here False), Finds (Here True), Finds (Here False), Finds LockedHere, Finds LockedHere, Finds NoReader, Finds (Unreadable "no")])
     ]
 
@@ -101,7 +105,15 @@ play :: ([Property], Sim) -> Move -> ([Property], Sim)
 play (checks, s) = \case
   Act e ->
     let (m', effects) = step e s.model
-     in record (checks, s {model = m', typedSince = s.typedSince || isTyped e}) Nothing effects
+        (checks', s') = record (checks, s {model = m', typedSince = s.typedSince || isTyped e}) Nothing effects
+        -- A change heard: the secret is read now, or wanted after the ask
+        -- out, which the rules of answers then check is asked.
+        heard = case e of
+          Changed
+            | isJust s.model.doing -> [counterexample "a change heard while an ask is out: a read wanted" (m'.wanted && null effects)]
+            | otherwise -> [counterexample "a change heard: a read asked" ([j | Ask _ j <- effects] == [Read])]
+          _ -> []
+     in (heard <> checks', s')
   Answer kind -> case s.out of
     [] -> (checks, s)
     (n, job) : _ ->
@@ -162,6 +174,12 @@ record (checks, s) answered effects =
       UnlockByPasskey -> [UnlockedIt]
       UnlockByPassword _ -> [UnlockedIt]
       _ -> []
+
+-- | Whether a move is a change heard from elsewhere.
+heardChange :: Move -> Bool
+heardChange = \case
+  Act Changed -> True
+  _ -> False
 
 -- | A job's kind, for the coverage.
 jobName :: Job -> [Char]

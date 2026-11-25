@@ -47,7 +47,20 @@
 -- Each function holds the lock of this device's records
 -- ('Wiki.App.Assistant.holdingDeviceRecords') for the whole of it, as the
 -- vault's own steps do: within this page, two changes are made one after
--- the other.
+-- the other. That lock is the page's only. A change also holds a lock
+-- that the wiki's tabs in this browser share ('secretsLock', through
+-- 'Wiki.App.Assistant.holdingAcrossTabs'): it reads this browser's record
+-- of secrets and its key, waits on WebCrypto, and writes the record back
+-- whole, so a change made by another tab in between would be written over,
+-- and two tabs would each make the browser's first key. With the lock,
+-- the second tab's change waits, and reads what the first wrote. A read
+-- writes nothing and takes no such lock. Where the browser has no locks
+-- of tabs (a page over plain HTTP), two tabs can still write over each
+-- other's change.
+--
+-- A change done is announced ('Wiki.App.Assistant.announceSecretsChanged')
+-- to this page and the wiki's other tabs, so that every field of a secret
+-- shown reads again ("Wiki.App.View.SecretField").
 module Wiki.App.Plugin.Host.Secrets
   ( -- * Secrets
     readSecrets
@@ -77,7 +90,7 @@ import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
 import Protolude
 import Wiki.Api.Vault (StoredVault (..))
-import Wiki.App.Assistant (KeyRef, MonadAssistant (..), holdingDeviceRecords)
+import Wiki.App.Assistant (KeyRef, MonadAssistant (..), holdingAcrossTabs, holdingDeviceRecords)
 import Wiki.App.Assistant.Sync (MonadVault (..))
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Plugin (Manifest (..), PluginId (..), SecretName (..), SecretSpec (..), Unavailable (..))
@@ -132,25 +145,32 @@ removeSecret :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> M
 removeSecret u manifest name = holdingDeviceRecords (removeSecretHeld u manifest name)
 
 -- | 'putSecret', for a caller that holds the lock of this device's records
--- already. The tests of two devices use it: two devices are two pages,
--- each with a lock of its own, and a test runs one device's change inside
--- the other's, in one process that has one lock.
-putSecretHeld :: (MonadAssistant m, MonadVault m) => UserId -> Manifest -> SecretName -> Text -> m (Either Text ())
+-- already. The tests of two devices and of two tabs use it: two devices,
+-- or two tabs, are two pages, each with a lock of its own, and a test runs
+-- one page's change inside the other's, in one process that has one lock.
+-- The lock of tabs ('secretsLock') is taken here all the same.
+putSecretHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> SecretName -> Text -> m (Either Text ())
 putSecretHeld u manifest name value = changeSecrets u manifest name (Map.insert name value)
 
 -- | 'removeSecret', for a caller that holds the lock already
 -- ('putSecretHeld').
-removeSecretHeld :: (MonadAssistant m, MonadVault m) => UserId -> Manifest -> SecretName -> m (Either Text ())
+removeSecretHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> SecretName -> m (Either Text ())
 removeSecretHeld u manifest name = changeSecrets u manifest name (Map.delete name)
+
+-- | 'secretsLock' is the name of the lock of tabs a change of a user's
+-- secrets of plugins holds (the module's header says why).
+secretsLock :: UserId -> Text
+secretsLock u = "wiki-plugin-secrets:" <> u.text
 
 -- | Change the plugin's secrets for one name, after the name is checked
 -- against the manifest: nothing is read for a name it does not declare.
-changeSecrets :: (MonadAssistant m, MonadVault m) => UserId -> Manifest -> SecretName -> (Map SecretName Text -> Map SecretName Text) -> m (Either Text ())
-changeSecrets u manifest name change = runExceptT $ do
+-- The change holds the lock of tabs, and is announced once done.
+changeSecrets :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> SecretName -> (Map SecretName Text -> Map SecretName Text) -> m (Either Text ())
+changeSecrets u manifest name change = announced $ runExceptT $ do
   unless (name `elem` map (\s -> s.name) manifest.secrets) $
     throwError ("The plugin " <> manifest.name <> " has no secret named " <> name.text <> ".")
   item <- itemFor manifest
-  changing 1 item
+  ExceptT (holdingAcrossTabs (secretsLock u) (runExceptT (changing 1 item)))
   where
     changing tries item =
       placeOf >>= \case
@@ -176,7 +196,7 @@ changeSecrets u manifest name change = runExceptT $ do
 -- This needs no key: the plugin's item is taken out of the vault whole. It
 -- is the way out for a user who can no longer unlock their vault.
 forgetSecrets :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> m (Either Text ())
-forgetSecrets u manifest = holdingDeviceRecords $ runExceptT $ do
+forgetSecrets u manifest = holdingDeviceRecords $ announced $ holdingAcrossTabs (secretsLock u) $ runExceptT $ do
   item <- itemFor manifest
   syncing <- lift vaultSync
   when syncing (forgetting' 1 item)
@@ -192,6 +212,11 @@ forgetSecrets u manifest = holdingDeviceRecords $ runExceptT $ do
                 Left (Conflict _) | tries < maxTries -> forgetting' (tries + 1) item
                 Left e -> throwError ("Your vault could not be changed: " <> wikiText e)
         _ -> pass
+
+-- | Announce a change of secrets once it is done
+-- ('announceSecretsChanged'), after the lock of tabs is let go.
+announced :: (MonadAssistant m) => m (Either Text ()) -> m (Either Text ())
+announced act = act >>= \r -> when (isRight r) announceSecretsChanged $> r
 
 -- | The plugin's item in the vault, by the plugin's id.
 itemFor :: (Monad m) => Manifest -> Step m ItemName

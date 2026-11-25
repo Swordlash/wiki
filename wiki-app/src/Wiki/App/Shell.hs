@@ -159,7 +159,7 @@ import Wiki.Api.Links (archiveExportUrl)
 import Wiki.Api.Plugins (PluginId, Plugins (..), WikiPlugins (..))
 import Wiki.Api.ServerSettings (HomePage (showAnonymous, title))
 import Wiki.App.Account (Accounts (..), SignInError (..))
-import Wiki.App.Assistant (MonadAssistant (..), announceSignIn, closeKeyOwnersOf, keysDroppedElsewhere, listenToOtherTabs)
+import Wiki.App.Assistant (MonadAssistant (..), announceSignIn, closeKeyOwner, closeKeyOwnersOf, keysDroppedElsewhere, listenToOtherTabs, openKeyOwner)
 import Wiki.App.Assistant.Migrate (migrateAssistant)
 import Wiki.App.Assistant.Sync (MonadVault)
 import Wiki.App.Backend (MonadLoad (..), MonadWiki (..), Session (..), WikiError (..), anonymous, sameAsking, shutOut)
@@ -2148,9 +2148,19 @@ component =
     carryMigration = \case
       -- The plugin's options as the server keeps them, read in this step:
       -- 'Nothing' until the plugins' state has read them in this session.
+      -- The run's writes in this browser go under an owner of the reader's
+      -- keys, made in this step, before the run waits: the reader's
+      -- sign-out lets it go ('forgetFormer'), and the run then writes
+      -- nothing more ("Wiki.App.Assistant.Migrate"). The run lets it go
+      -- when it ends.
       MigrationMachine.Run n u vaultToo -> do
         known <- gets (\st -> optionsFor assistantId <$> PluginsMachine.knownNow (Machine.current st.pluginState))
-        void . H.fork $ H.async (withRunInIO (\run -> try (run (migrateAssistant u vaultToo known)))) >>= migrationStep . MigrationMachine.Answered n . either (\(e :: SomeException) -> Left (toS (displayException e))) identity
+        o <- H.sync (liftIO (openKeyOwner u))
+        void . H.fork $
+          (H.async (withRunInIO (\run -> try (run (migrateAssistant o u vaultToo known)))) `H.finally` H.sync (liftIO (closeKeyOwner o)))
+            >>= migrationStep
+            . MigrationMachine.Answered n
+            . either (\(e :: SomeException) -> Left (toS (displayException e))) identity
       MigrationMachine.AdoptOptions foundIn v -> Machine.happen pluginsSpec (PluginsMachine.OptionsAdopted foundIn assistantId v)
 
     -- The plugins' state, run by the shell so that its asks outlive the

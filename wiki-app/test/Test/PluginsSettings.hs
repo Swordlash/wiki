@@ -21,10 +21,20 @@
 -- after the server handled the ask ('Lose'): the section hears
 -- 'Unreachable'.
 --
--- Each ask has three moments: the section sends it, the server handles it
+-- Beside the section, the reader works the administration's switch
+-- ('SwitchOpen', 'SwitchTick'), whose machine the shell runs too; the
+-- server refuses it to the editor. The runs keep the shell's one value of
+-- what is on as the shell does: what the reads with the session answered,
+-- and the part each machine's answers told, merged in ('toldInto', the
+-- switch's set). The rule is that, once nothing is out, that value is the
+-- server's: the last answer about each part wins, whichever machine took
+-- it.
+--
+-- Each ask has three moments: the shell sends it, the server handles it
 -- (a read takes what is on then; a write changes it and answers), and the
--- answer comes back. The server handles asks in the order sent, and the
--- answers come back in any order ('Handle', 'Deliver').
+-- answer comes back. The server handles asks in the order sent, the
+-- section's and the switch's alike, and the answers come back in any
+-- order ('Handle', 'Deliver').
 module Test.PluginsSettings (spec) where
 
 import Data.Map.Strict qualified as Map
@@ -40,7 +50,7 @@ import Wiki.App.Backend.Mem.State (MemState (..), pluginsIn, setPluginStateIn, s
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Plugin (Manifest (..))
 import Wiki.App.Plugin.Registry (manifests)
-import Wiki.App.View.Latest (madeAfter)
+import Wiki.App.View.Latest (Ask, madeAfter)
 import Wiki.App.View.Plugins.Machine
 import Wiki.App.View.WikiPlugins.Machine qualified as Wiki
 import Wiki.Core.Access (Access (..))
@@ -130,22 +140,37 @@ ids = map (\m -> m.id) manifests
 
 -- | The reader a session's number names: the two take turns.
 readerOf :: Int -> Text
-readerOf s = if even s then "editor" else "admin"
+readerOf s = if even s then "admin" else "editor"
+
+-- | 'Asked' is an ask the shell sent: one of the section's, or one of the
+-- administration's switch's. Both go to the one server, which handles them
+-- in the order sent.
+data Asked
+  = Personal Effect
+  | Switch Wiki.Effect
+  deriving stock (Show)
 
 -- | 'Answer' is what the server answered an ask.
 data Answer
   = Read (Either WikiError Plugins)
   | Wrote (Either WikiError PluginChoice)
+  | SetRead (Either WikiError WikiPlugins)
+  | SetSaved (Either WikiError WikiPlugins)
   deriving stock (Show)
 
 -- | The server's handling of an ask sent with a reader's cookie.
-handled :: Text -> Effect -> MemState -> (MemState, Maybe Answer)
-handled u e st0 = case e of
-  Load _ -> (st0, Just (Read (pluginsIn st)))
-  Write _ p s -> case setPluginStateIn p s st of
+handled :: Text -> Asked -> MemState -> (MemState, Maybe Answer)
+handled u asked st0 = case asked of
+  Personal (Load _) -> (st0, Just (Read (pluginsIn st)))
+  Personal (Write _ p s) -> case setPluginStateIn p s st of
     Left err -> (st0, Just (Wrote (Left err)))
     Right (st', c) -> (st' {current = st0.current}, Just (Wrote (Right c)))
-  Tell _ -> (st0, Nothing)
+  Personal (Tell _ _) -> (st0, Nothing)
+  Switch (Wiki.Load _) -> (st0, Just (SetRead (wikiPluginsIn st)))
+  Switch (Wiki.Save _ off) -> case setWikiPluginsIn WikiPlugins {off} st of
+    Left err -> (st0, Just (SetSaved (Left err)))
+    Right (st', w) -> (st' {current = st0.current}, Just (SetSaved (Right w)))
+  Switch (Wiki.Tell _ _) -> (st0, Nothing)
   where
     st = st0 {current = Just (UserId ("user-" <> u))}
 
@@ -170,6 +195,11 @@ data Step
   | -- | The reader leaves the section and opens it again: the shell keeps
     -- the model, and a write out goes on.
     Reopen
+  | -- | The reader opens the administration's switch.
+    SwitchOpen
+  | -- | The reader ticks the box "off for everyone" of the plugin at this
+    -- place, or clears it, in the administration's switch.
+    SwitchTick Int Bool
   | -- | Another reader signs in.
     SwitchUser
   | Finish
@@ -186,6 +216,8 @@ genRun =
     , (1, pure Fill)
     , (1, pure Lose)
     , (1, pure Reopen)
+    , (2, pure SwitchOpen)
+    , (4, SwitchTick <$> place <*> elements [True, False])
     , (1, pure SwitchUser)
     , (1, pure Finish)
     ]
@@ -197,9 +229,9 @@ shrinkRun = shrinkList $ \case
   Deliver i -> Deliver <$> [0 .. i - 1]
   _ -> []
 
--- | An ask the section made.
+-- | An ask the shell made, for the section or the switch.
 data Out = Out
-  { effect :: Effect
+  { effect :: Asked
   , reader :: Text
   , inSession :: Int
   , answer :: Maybe Answer
@@ -212,6 +244,15 @@ data Out = Out
 -- | A run under way.
 data World = World
   { section :: Model
+  , switch :: Wiki.Model
+  -- ^ The administration's switch's machine, which the shell runs too.
+  , shell :: Held
+  -- ^ What is on as the shell holds it: what the reads with the session
+  -- answered, and what the two machines told since, each part from the
+  -- latest ask about it, as the shell merges them.
+  , sectionSent :: Maybe (Ask, Int)
+  , switchSent :: Maybe (Ask, Int)
+  -- ^ Each machine's last ask, with the number the shell gave it.
   , backend :: MemState
   , outs :: [Out]
   , turn :: Int
@@ -226,8 +267,6 @@ data World = World
   -- on, what it knows is the server's.
   , clicked :: [(Int, PluginId, PluginState)]
   -- ^ The states chosen, with the session they were chosen in.
-  , told :: Maybe Plugins
-  -- ^ What the section last told the shell it holds ('Tell').
   , lastWrite :: Map PluginId Bool
   -- ^ Whether the last answer to a write of each plugin taken in this
   -- session was a success.
@@ -237,15 +276,15 @@ data World = World
   }
 
 start :: World
-start = afterEvent "mounted" Started World {section = initial 0, backend = as "editor", outs = [], turn = 0, finished = False, losing = False, changes = 0, fresh = False, clicked = [], told = Nothing, lastWrite = mempty, seen = [], trace = [], faults = []}
+start = afterEvent "mounted" Started World {section = initial 0, switch = Wiki.initial 0, shell = heldFrom (sure (pluginsIn (as "admin"))), sectionSent = Nothing, switchSent = Nothing, backend = as "admin", outs = [], turn = 0, finished = False, losing = False, changes = 0, fresh = False, clicked = [], lastWrite = mempty, seen = [], trace = [], faults = []}
 
 play :: World -> Step -> World
 play w = \case
   Click i s -> case atMay ids i of
     Just p
       | not w.finished
-      , Just (Right known) <- w.section.known
-      , not (Set.member p known.offForWiki) ->
+      , Just (Right _) <- w.section.known
+      , not (Set.member p w.shell.plugins.offForWiki) ->
           afterEvent ("chooses " <> p.text <> " " <> show s) (Chosen p s) w {clicked = (w.turn, p, s) : w.clicked}
     _ -> w
   Handle -> case break (isNothing . (\o -> o.answer)) w.outs of
@@ -253,23 +292,28 @@ play w = \case
       let (backend, a) = handled o.reader o.effect w.backend
           lost = w.losing
           a' = if lost then lostAnswer o.effect else a
-          changes = if lost then w.changes + 1 else w.changes
-       in noted ("the server handles " <> show o.effect <> if lost then ", its answer lost" else "") w {backend, outs = earlier <> [o {answer = a', changesSeen = changes}] <> later', losing = False, changes, fresh = w.fresh && not lost}
+          -- A save or a write of an earlier session, done now, is a change
+          -- the shell hears of no more than one made elsewhere.
+          former = o.inSession /= w.turn && backend /= w.backend
+          changes = if lost || former then w.changes + 1 else w.changes
+       in noted ("the server handles " <> show o.effect <> if lost then ", its answer lost" else "") w {backend, outs = earlier <> [o {answer = a', changesSeen = changes}] <> later', losing = False, changes, fresh = w.fresh && not lost && not former}
     _ -> w
   Deliver i -> case atMay [(k, o, a) | (k, o) <- zip [0 :: Int ..] w.outs, Just a <- [o.answer]] i of
     Just (k, o, a) ->
       let w' = w {outs = [x | (j, x) <- zip [0 ..] w.outs, j /= k]}
           ours = o.inSession == w.turn
        in case (o.effect, a) of
-            (Load t, Read r) ->
+            (Personal (Load t), Read r) ->
               let w2 = w' {fresh = w'.fresh || (ours && isRight r && o.changesSeen == w.changes), seen = ["off for the wiki, read" | ours, Right k' <- [r], not (Set.null k'.offForWiki)] <> w'.seen}
                in afterEvent "a read comes back" (Loaded t r) w2
-            (Write t p _, Wrote r) ->
+            (Personal (Write t p _), Wrote r) ->
               let tag = case r of
                     Right _ -> "a write taken"
                     Left (Invalid _) -> "a write refused"
                     Left _ -> "a write lost"
-               in afterEvent "a write comes back" (Written t p r) w' {seen = [tag | ours] <> w'.seen, lastWrite = if ours then Map.insert p (isRight r) w'.lastWrite else w'.lastWrite}
+               in afterEvent "a write comes back" (Written t p r) w' {seen = [tag | ours] <> ["a write taken after a save" | ours, isRight r, "a save taken" `elem` w'.seen] <> w'.seen, lastWrite = if ours then Map.insert p (isRight r) w'.lastWrite else w'.lastWrite}
+            (Switch (Wiki.Load t), SetRead r) -> afterSwitch "the wiki's set comes back" (Wiki.Loaded t r) w'
+            (Switch (Wiki.Save t _), SetSaved r) -> afterSwitch "a save comes back" (Wiki.Saved t r) w' {seen = ["a save taken" | ours, isRight r] <> w'.seen}
             _ -> w'
     Nothing -> w
   WikiOff i isOff -> case atMay ids i of
@@ -289,6 +333,12 @@ play w = \case
         others = Map.fromList [(PluginId ("other" <> show k), choice PluginOn) | k <- [1 .. maxPluginsPerUser]]
      in elsewhere "another tab fills the choices" w {backend = st {pluginChoices = Map.insertWith (\_ old -> Map.union old (Map.fromList (take (maxPluginsPerUser - Map.size old) (Map.toList others)))) u others st.pluginChoices}}
   Lose -> noted "the next answer will be lost" w {losing = True}
+  SwitchOpen
+    | w.finished -> w
+    | otherwise -> afterSwitch "opens the switch" Wiki.Opened w
+  SwitchTick i isOff -> case atMay ids i of
+    Just p | not w.finished -> afterSwitch ("ticks " <> p.text <> if isOff then " off for everyone" else " on for everyone") (Wiki.Ticked p isOff) w
+    _ -> w
   Reopen
     | w.finished -> w
     | otherwise -> afterEvent "opens the section again" Opened w {seen = ["opened again with an ask out" | any (\o -> o.inSession == w.turn) w.outs] <> w.seen}
@@ -297,15 +347,25 @@ play w = \case
     | otherwise ->
         let next = w.turn + 1
          in -- The shell gives the new session; the section, open, asks.
+            -- The shell reads what is on with the new session.
             afterEvent "the section, open, asks" Opened
+              . afterSwitch "the switch hears the session" (Wiki.Given next)
               . afterEvent ("reader " <> readerOf next <> " signs in") (Given next)
-              $ w {turn = next, fresh = False, lastWrite = mempty, seen = ["a switch with an ask out" | any (\o -> o.inSession == w.turn) w.outs] <> w.seen}
+              $ w {turn = next, fresh = False, lastWrite = mempty, shell = worldRead (newReader w.shell), seen = ["a switch with an ask out" | any (\o -> o.inSession == w.turn) w.outs] <> w.seen}
   Finish -> afterEvent "goes away" Finished w {finished = True}
   where
+    -- The shell's read with the session, numbered among the asks about
+    -- the plugins, answered at once.
+    worldRead held =
+      let (n, held') = sending held
+       in readAnswered n (rightToMaybe (pluginsIn w.backend {current = Just (UserId ("user-" <> readerOf (w.turn + 1)))})) held'
     lostAnswer = \case
-      Load _ -> Just (Read (Left (Unreachable "lost")))
-      Write {} -> Just (Wrote (Left (Unreachable "lost")))
-      Tell _ -> Nothing
+      Personal (Load _) -> Just (Read (Left (Unreachable "lost")))
+      Personal (Write {}) -> Just (Wrote (Left (Unreachable "lost")))
+      Personal (Tell _ _) -> Nothing
+      Switch (Wiki.Load _) -> Just (SetRead (Left (Unreachable "lost")))
+      Switch (Wiki.Save {}) -> Just (SetSaved (Left (Unreachable "lost")))
+      Switch (Wiki.Tell _ _) -> Nothing
 
 -- | A change made elsewhere: what the section knows may be old until its
 -- next read.
@@ -324,25 +384,62 @@ afterEvent what event w =
     $ w
       { section
       , outs = outs'
-      , told = lastMay [k | Tell k <- effects] <|> w.told
+      , shell = shell'
+      , sectionSent = sent'
       , faults =
           w.faults
             <> [what <> ": " <> show effects <> " after the section went away" | w.finished, not (null effects)]
             <> [what <> ": two asks out at once: " <> show (map (\o -> o.effect) live) | length live > 1]
+            <> [what <> ": tells the shell the plugins off for the wiki after a write: " <> show t | Written {} <- [event], t@(Tell _ (Everything _)) <- effects]
             <> [what <> ": writes " <> p.text <> " " <> show s <> ", not chosen in this session" | Write _ p s <- effects, (w.turn, p, s) `notElem` w.clicked]
-            <> [what <> ": tells the shell with no answer taken" | not (null [() | Tell _ <- effects]), not (answered event)]
+            <> [what <> ": tells the shell with no answer taken" | not (null [() | Tell _ _ <- effects]), not (answered event)]
             -- The section opened again finds the shell's model as it is,
             -- a write out with it, and asks nothing once it has read.
             <> [what <> ": asks anew on opening, what is on read already: " <> show effects | Opened <- [event], isJust (w.section.known >>= rightToMaybe), not (null effects)]
       }
   where
     (section, effects) = step event w.section
-    outs' = w.outs <> [Out {effect = e, reader = readerOf w.turn, inSession = w.turn, answer = Nothing, changesSeen = 0} | e <- effects, isJust (askOf e)]
-    live = [o | o <- outs', Just t <- [askOf o.effect], t `madeAfter` section.sessionFrom, o.inSession == w.turn]
+    -- As the shell carries the effects, in order: an ask numbered as it
+    -- is sent, a told part merged in by its ask's number.
+    (shell', sent') = foldl' carried (w.shell, w.sectionSent) effects
+    carried (held, sent) = \case
+      Tell asked told
+        | Just (sentAs, n) <- sent, sentAs == asked -> (answeredWith n told held, sent)
+        | otherwise -> (held, sent)
+      e -> case askOf e of
+        Just asked -> let (n, held') = sending held in (held', Just (asked, n))
+        Nothing -> (held, sent)
+    outs' = w.outs <> [Out {effect = Personal e, reader = readerOf w.turn, inSession = w.turn, answer = Nothing, changesSeen = 0} | e <- effects, isJust (askOf e)]
+    live = [o | o <- outs', Personal e <- [o.effect], Just t <- [askOf e], t `madeAfter` section.sessionFrom, o.inSession == w.turn]
     answered = \case
       Written {} -> True
       Loaded {} -> True
       _ -> False
+
+-- | The world after the administration's switch took an event: its asks
+-- out, and what it told the shell merged in, as the shell does.
+afterSwitch :: Text -> Wiki.Event -> World -> World
+afterSwitch what event w =
+  checked
+    . noted (what <> if null effects then "" else " -> " <> show effects)
+    $ w
+      { switch
+      , outs = w.outs <> [Out {effect = Switch e, reader = readerOf w.turn, inSession = w.turn, answer = Nothing, changesSeen = 0} | e <- effects, isJust (Wiki.askOf e)]
+      , shell = shell'
+      , switchSent = sent'
+      , faults = w.faults <> [what <> ": two saves or reads out at once" | length live > 1]
+      }
+  where
+    (switch, effects) = Wiki.step event w.switch
+    (shell', sent') = foldl' carried (w.shell, w.switchSent) effects
+    carried (held, sent) = \case
+      Wiki.Tell asked off
+        | Just (sentAs, n) <- sent, sentAs == asked -> (offAnswered n off held, sent)
+        | otherwise -> (held, sent)
+      e -> case Wiki.askOf e of
+        Just asked -> let (n, held') = sending held in (held', Just (asked, n))
+        Nothing -> (held, sent)
+    live = [o | o <- w.outs <> [Out {effect = Switch e, reader = "", inSession = w.turn, answer = Nothing, changesSeen = 0} | e <- effects, isJust (Wiki.askOf e)], Switch e <- [o.effect], Just t <- [Wiki.askOf e], t `madeAfter` switch.sessionFrom, o.inSession == w.turn]
 
 -- | The rules, checked after every step: once the section has read what
 -- the server holds since the last change elsewhere, and nothing it asked
@@ -351,23 +448,30 @@ afterEvent what event w =
 checked :: World -> World
 checked w = w {faults = w.faults <> if w.finished then [] else settledRule, seen = ["checked settled after a write" | quiet, w.fresh, not w.finished, "a write taken" `elem` w.seen] <> w.seen}
   where
-    quiet = null [o | o <- w.outs, o.inSession == w.turn] && null w.section.queued
+    quiet = null [o | o <- w.outs, o.inSession == w.turn] && null w.section.queued && isNothing w.switch.queued
     serverNow = pluginsIn w.backend {current = Just (UserId ("user-" <> readerOf w.turn))}
     settledRule =
-      [ "settled, but shows " <> show w.section.known <> " where the server has " <> show serverNow
+      [ "settled, but shows the choices " <> show ((\k -> k.mine) <$> (w.section.known >>= rightToMaybe)) <> " where the server has " <> show serverNow
       | quiet
       , w.fresh
-      , w.section.known /= Just serverNow
+      , ((\k -> k.mine) <$> (w.section.known >>= rightToMaybe)) /= ((\k -> k.mine) <$> rightToMaybe serverNow)
       ]
+        -- The shell's one value: the last answer about each part wins,
+        -- whichever machine took it.
+        <> [ "settled, but the shell holds " <> show w.shell.plugins <> " where the server has " <> show serverNow
+           | quiet
+           , w.fresh
+           , Right w.shell.plugins /= serverNow
+           ]
         <> [ "settled, but its switches show writes not out: " <> show w.section.writing
            | quiet
            , not (Map.null w.section.writing)
            ]
-        -- What it holds, once read, the shell has been told: the editor
-        -- runs the plugins the switches show.
-        <> [ "holds " <> show held <> ", but told the shell " <> show w.told
+        -- The user's choices it holds, once read, the shell has been told:
+        -- the editor runs the plugins the switches show.
+        <> [ "holds the choices " <> show held.mine <> ", but the shell " <> show w.shell.plugins.mine
            | Just held <- [w.section.known >>= rightToMaybe]
-           , w.told /= Just held
+           , w.shell.plugins.mine /= held.mine
            ]
         -- A refusal stays only while the last answer about its plugin is
         -- one.
@@ -387,12 +491,13 @@ machine = describe "the section's machine, on generated runs" $ do
         let w = runOf run
             reached tag = tag `elem` w.seen
          in QC.cover 15 (reached "a write taken") "a write taken"
-              . QC.cover 3 (reached "checked settled after a write") "checked settled after a write"
+              . QC.cover 1 (reached "checked settled after a write") "checked settled after a write"
               . QC.cover 3 (reached "opened again with an ask out") "opened again with an ask out"
               . QC.cover 1 (reached "a write refused") "a write refused"
               . QC.cover 2 (reached "a write lost") "a write lost"
               . QC.cover 10 (reached "off for the wiki, read") "off for the wiki, read"
               . QC.cover 10 (reached "a switch with an ask out") "a switch with an ask out"
+              . QC.cover 1 (reached "a write taken after a save") "a write taken after a save"
               $ counterexample (toS (T.unlines (reverse w.trace) <> "\n" <> T.unlines w.faults)) (null w.faults)
 
   it "sends one ask at a time: a switch flipped while the read is out waits, and the later choice of a plugin takes its place" $ do
@@ -400,7 +505,7 @@ machine = describe "the section's machine, on generated runs" $ do
     -- Nothing is shown before the first read: nothing to click.
     length w.outs `shouldBe` 1
     let w1 = runOf [Handle, Deliver 0, Click 0 PluginOff, Click 1 PluginOff, Click 0 PluginOn]
-    map (\o -> o.effect) w1.outs `shouldSatisfy` ((== 1) . length)
+    length w1.outs `shouldBe` 1
     [(p, s) | (_, p, s) <- w1.section.queued] `shouldBe` [(PluginId "errors", PluginOff), (PluginId "assistant", PluginOn)]
 
   it "shows the state chosen while its write is out, and the server's once it answered" $ do
@@ -413,10 +518,19 @@ machine = describe "the section's machine, on generated runs" $ do
 
   it "drops a write chosen before another reader signed in" $ do
     let w = runOf [Handle, Deliver 0, Click 0 PluginOff, Click 1 PluginOff, SwitchUser, Handle, Deliver 0, Handle, Deliver 0]
-    -- The editor's first write was out and done; the second waited, and
-    -- went with the editor's session.
-    Map.lookup (UserId "user-editor") w.backend.pluginChoices `shouldBe` Just (Map.fromList [(assistant, choice PluginOff)])
-    Map.lookup (UserId "user-admin") w.backend.pluginChoices `shouldBe` Nothing
+    -- The administrator's first write was out and done; the second waited, and
+    -- went with the administrator's session.
+    Map.lookup (UserId "user-admin") w.backend.pluginChoices `shouldBe` Just (Map.fromList [(assistant, choice PluginOff)])
+    Map.lookup (UserId "user-editor") w.backend.pluginChoices `shouldBe` Nothing
+    w.faults `shouldBe` []
+
+  -- Codex's third round on #374, as a run: the administrator reads the
+  -- section, turns the assistant off for everyone, then turns errors off
+  -- for themselves.
+  it "keeps the wiki's set the switch told when the section's next write is answered" $ do
+    let w = runOf [Handle, Deliver 0, SwitchOpen, Handle, Deliver 0, SwitchTick 0 True, Handle, Deliver 0, Click 1 PluginOff, Handle, Deliver 0]
+    w.shell.plugins.offForWiki `shouldBe` Set.fromList [assistant]
+    w.shell.plugins.mine `shouldBe` Map.fromList [(errors, choice PluginOff)]
     w.faults `shouldBe` []
 
   it "is shown able to fail: a section that keeps an answer older than a write breaks the rule" $ do
@@ -445,14 +559,14 @@ wikiSwitch = describe "the administration's switch" $ do
          in (m2, fx)
   it "reads the set and tells the shell, saves the set ticked, and tells the shell once the server took it" $ do
     let (m2, told) = readWith mempty
-    told `shouldBe` [Wiki.Tell mempty]
+    told `shouldSatisfy` \case [Wiki.Tell _ off] -> off == mempty; _ -> False
     let (m3, save) = second onlyEffect (Wiki.step (Wiki.Ticked errors True) m2)
     save `shouldSatisfy` \case
       Wiki.Save _ s -> s == Set.fromList [errors]
       _ -> False
     Wiki.shownOff m3 `shouldBe` Just (Set.fromList [errors])
     let (m4, fx) = Wiki.step (Wiki.Saved (ticket save) (Right WikiPlugins {off = Set.fromList [errors]})) m3
-    fx `shouldBe` [Wiki.Tell (Set.fromList [errors])]
+    fx `shouldSatisfy` \case [Wiki.Tell _ off] -> off == Set.fromList [errors]; _ -> False
     m4.off `shouldBe` Just (Right (Set.fromList [errors]))
     m4.wantedOff `shouldBe` Nothing
 
@@ -476,7 +590,7 @@ wikiSwitch = describe "the administration's switch" $ do
     Wiki.shownOff m4 `shouldBe` Just mempty
     -- The save was done all the same: the read says so, and the shell hears it.
     let (m5, fx) = Wiki.step (Wiki.Loaded (ticket load) (Right WikiPlugins {off = Set.fromList [errors]})) m4
-    fx `shouldBe` [Wiki.Tell (Set.fromList [errors])]
+    fx `shouldSatisfy` \case [Wiki.Tell _ off] -> off == Set.fromList [errors]; _ -> False
     m5.off `shouldBe` Just (Right (Set.fromList [errors]))
 
   it "clears a refusal once a later save succeeds" $ do

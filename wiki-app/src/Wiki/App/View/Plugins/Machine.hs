@@ -49,6 +49,17 @@ module Wiki.App.View.Plugins.Machine
   ( Model (..)
   , Event (..)
   , Effect (..)
+  , Told (..)
+  , toldInto
+
+    -- * What the shell holds
+  , Held (..)
+  , heldFrom
+  , sending
+  , answeredWith
+  , offAnswered
+  , readAnswered
+  , newReader
   , initial
   , step
   , stateOf
@@ -59,7 +70,6 @@ module Wiki.App.View.Plugins.Machine
 where
 
 import Data.Map.Strict qualified as Map
-import Data.Set qualified as Set
 import Protolude
 import Wiki.Api.Plugins (PluginChoice (..), PluginId, PluginState (..), Plugins (..))
 import Wiki.App.Backend (WikiError)
@@ -120,10 +130,87 @@ data Effect
   | -- | Set the user's state for a plugin; the answer comes back as
     -- 'Written'.
     Write Ask PluginId PluginState
-  | -- | Tell the shell what is on now, as the model holds it, so that
-    -- the rest of the page follows at once.
-    Tell Plugins
+  | -- | Tell the shell what the answer to the ask made under this ticket
+    -- said, so that the rest of the page follows at once.
+    Tell Ask Told
   deriving stock (Eq, Show)
+
+-- | 'Told' is the part of what is on that an answer taken said, which is
+-- all the shell is told: the user's choices after a write ('Mine'), and
+-- both the user's choices and the plugins off for the wiki after a read
+-- ('Everything'). The plugins off for the wiki that the model holds from
+-- an earlier read are never told after a write: the shell may know newer
+-- ones, from the administration's switch.
+data Told
+  = Mine (Map PluginId PluginChoice)
+  | Everything Plugins
+  deriving stock (Eq, Show)
+
+-- | What is on with what an answer said put in: the one source of each
+-- part is the last answer about it.
+toldInto :: Told -> Plugins -> Plugins
+toldInto told held = case told of
+  Mine mine -> held {mine}
+  Everything known -> known
+
+-- | 'Held' is what is on as the shell holds it: one value, which every
+-- view's context carries, with the order of the ask whose answer set each
+-- of its two parts. The shell numbers every ask about the plugins it sends
+-- ('sending'): its reads with the session, and the asks of the section's
+-- machine and of the administration's switch. The server handles a later
+-- ask after an earlier one, so an answer changes a part only when its ask
+-- is later than the one that set the part: the last answer about each
+-- part wins, whichever ask it came from and in whatever order the answers
+-- arrive.
+data Held = Held
+  { plugins :: Plugins
+  , offFrom :: Int
+  -- ^ The order of the ask whose answer set the plugins off for the wiki.
+  , mineFrom :: Int
+  -- ^ The order of the ask whose answer set the user's choices.
+  , sent :: Int
+  -- ^ The order of the last ask sent.
+  }
+  deriving stock (Eq, Show)
+
+-- | What the shell holds from the read made before anything else.
+heldFrom :: Plugins -> Held
+heldFrom plugins = Held {plugins, offFrom = 0, mineFrom = 0, sent = 0}
+
+-- | The order of an ask sent now, and the value with it counted.
+sending :: Held -> (Int, Held)
+sending h = (h.sent + 1, h {sent = h.sent + 1})
+
+-- | The value after the answer to the ask of this order told this part.
+answeredWith :: Int -> Told -> Held -> Held
+answeredWith n told h = case told of
+  Mine mine -> withMine n mine h
+  Everything k -> withMine n k.mine (offAnswered n k.offForWiki h)
+
+-- | The value after the answer to the ask of this order told the plugins
+-- off for the wiki.
+offAnswered :: Int -> Set PluginId -> Held -> Held
+offAnswered n off h
+  | n > h.offFrom = h {plugins = h.plugins {offForWiki = off}, offFrom = n}
+  | otherwise = h
+
+withMine :: Int -> Map PluginId PluginChoice -> Held -> Held
+withMine n mine h
+  | n > h.mineFrom = h {plugins = h.plugins {mine}, mineFrom = n}
+  | otherwise = h
+
+-- | The value after the read with the session of this order answered:
+-- both parts, or, when it failed, the user's choices as none (the
+-- defaults), the plugins off for the wiki kept as known.
+readAnswered :: Int -> Maybe Plugins -> Held -> Held
+readAnswered n answer h = case answer of
+  Just k -> answeredWith n (Everything k) h
+  Nothing -> withMine n mempty h
+
+-- | The value for a new reader signed in: none of the former's choices,
+-- and no answer to an ask sent before taken about the new one's.
+newReader :: Held -> Held
+newReader h = h {plugins = h.plugins {mine = mempty}, mineFrom = h.sent}
 
 -- | The section before it is mounted, for a session.
 initial :: Int -> Model
@@ -141,14 +228,22 @@ initial session =
     , closed = False
     }
 
--- | The section after an event, and what it asks to be done. An answer
--- taken that changes what the section holds about any plugin is told to
--- the shell ('Tell'), whatever the ask was: a read that follows a write
--- whose answer was lost may be the first to say the write was done.
+-- | The section after an event, and what it asks to be done. Every
+-- answer taken that says what is on is told to the shell ('Tell'), with
+-- the part it says, whatever the ask was: a read that follows a write
+-- whose answer was lost may be the first to say the write was done, and
+-- the shell, which orders the answers of every ask about the plugins, is
+-- the one to tell whether it is the latest.
 step :: Event -> Model -> (Model, [Effect])
 step event m =
   let (m', fx) = stepping event m
-   in (m', fx <> [Tell k | not m.closed, known' m' /= known' m, Just k <- [known' m']])
+      taken asked = ofSession asked m && isJust (takes asked m.asks)
+      told = case (known' m', event) of
+        (Just k, Loaded asked (Right _)) | taken asked -> [Tell asked (Everything k)]
+        (Just k, Written asked _ (Right _)) | taken asked -> [Tell asked (Mine k.mine)]
+        _ -> []
+   in -- Told first: an ask the same step sends comes after the answer told.
+      (m', [t | not m.closed, t <- told] <> fx)
 
 stepping :: Event -> Model -> (Model, [Effect])
 stepping event m
@@ -167,8 +262,10 @@ stepping event m
       Loaded asked answer
         | ofSession asked m -> landed asked (taking asked answer m)
         | otherwise -> landed asked m
+      -- A plugin off for the wiki is disabled in the section, which reads
+      -- the plugins off for the wiki from the shell; the server keeps a
+      -- choice made all the same.
       Chosen p wanted'
-        | maybe False (Set.member p . offForWiki) (known' m) -> (m, [])
         | shownState m p == wanted' -> (m, [])
         | otherwise -> writingNow p wanted' m {writing = Map.insert p wanted' m.writing, refused = Map.delete p m.refused}
       Written asked p answer
@@ -269,4 +366,4 @@ askOf :: Effect -> Maybe Ask
 askOf = \case
   Load a -> Just a
   Write a _ _ -> Just a
-  Tell _ -> Nothing
+  Tell _ _ -> Nothing

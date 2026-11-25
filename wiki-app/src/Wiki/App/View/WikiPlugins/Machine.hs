@@ -13,9 +13,10 @@
 -- answered ('wantedOff'). A save refused is shown, and a read follows: a
 -- save whose answer was lost may have been done. A save that succeeds
 -- clears the refusal shown. An answer is taken only if no answer to a
--- later ask was taken already ("Wiki.App.View.Latest"), and an answer
--- taken that changes the set held is told to the shell ('Tell'), a read's
--- as a save's.
+-- later ask was taken already ("Wiki.App.View.Latest"), and every answer
+-- taken that says the set is told to the shell ('Tell'), a read's as a
+-- save's, with its ticket: the shell orders it among every ask about the
+-- plugins.
 --
 -- The shell keeps the model and carries out the effects
 -- ("Wiki.App.Shell"), not the view: a save sent goes on after the view is
@@ -95,9 +96,10 @@ data Event
 data Effect
   = Load Ask
   | Save Ask (Set PluginId)
-  | -- | Tell the shell the plugins off for the wiki, as the model holds
-    -- them, so that the rest of the page follows at once.
-    Tell (Set PluginId)
+  | -- | Tell the shell the plugins off for the wiki that the answer to the
+    -- ask made under this ticket said, so that the rest of the page
+    -- follows at once.
+    Tell Ask (Set PluginId)
   deriving stock (Eq, Show)
 
 -- | The view before it is mounted, for a session.
@@ -108,7 +110,13 @@ initial session = Model {off = Nothing, asks = noAsks, flight = Nothing, wanted 
 step :: Event -> Model -> (Model, [Effect])
 step event m =
   let (m', fx) = stepping event m
-   in (m', fx <> [Tell off | not m.closed, held m' /= held m, Just off <- [held m']])
+      taken asked = ofSession asked m && isJust (takes asked m.asks)
+      told = case (held m', event) of
+        (Just off, Loaded asked (Right _)) | taken asked -> [Tell asked off]
+        (Just off, Saved asked (Right _)) | taken asked -> [Tell asked off]
+        _ -> []
+   in -- Told first: an ask the same step sends comes after the answer told.
+      (m', [t | not m.closed, t <- told] <> fx)
 
 -- | The set held, once read.
 held :: Model -> Maybe (Set PluginId)
@@ -197,4 +205,4 @@ askOf :: Effect -> Maybe Ask
 askOf = \case
   Load a -> Just a
   Save a _ -> Just a
-  Tell _ -> Nothing
+  Tell _ _ -> Nothing

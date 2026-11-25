@@ -201,7 +201,7 @@ import Wiki.App.View.Help qualified as HelpView
 import Wiki.App.View.History qualified as HistoryView
 import Wiki.App.View.Import qualified as ImportView
 import Wiki.App.View.Invite qualified as InviteView
-import Wiki.App.View.Latest (Asks, noAsks)
+import Wiki.App.View.Latest (Ask, Asks, noAsks)
 import Wiki.App.View.Latest qualified as Latest
 import Wiki.App.View.LivePreview qualified as LivePreviewView
 import Wiki.App.View.NewPage qualified as NewPageView
@@ -496,12 +496,14 @@ data State m = State
   -- ^ Whether changes not saved to a page of an encrypted space were
   -- taken off the screen with the space ('sealScreen'): said once, until
   -- the reader dismisses it. The text is kept nowhere.
-  , chosenPlugins :: Plugins
-  -- ^ The plugins off for the wiki and the reader's choices, read with
-  -- the session ('fetchWorld'), and told by the machines of the settings'
-  -- section "Plugins" and of the administration's switch as their
-  -- answers come: every view's context carries them
-  -- ('Wiki.App.Plugin.Registry.pluginsOn').
+  , chosenPlugins :: PluginsMachine.Held
+  -- ^ The plugins off for the wiki and the reader's choices: one value,
+  -- which every view's context carries
+  -- ('Wiki.App.Plugin.Registry.pluginsOn'). Each part is the answer to
+  -- the latest ask about it, of the asks the shell numbers: its reads with
+  -- the session ('fetchWorld'), and the asks of the machines of the
+  -- settings' section "Plugins" and of the administration's switch, whose
+  -- answers they tell ('PluginsMachine.Held').
   , pluginChoices :: Machine.Machine () PluginsMachine.Event PluginsMachine.Model
   -- ^ The settings' section "Plugins" ("Wiki.App.View.Plugins.Machine").
   -- The shell keeps it and runs its asks, which outlive the section: a
@@ -510,14 +512,19 @@ data State m = State
   , wikiSwitch :: Machine.Machine () WikiPluginsMachine.Event WikiPluginsMachine.Model
   -- ^ The administration's switch of plugins
   -- ("Wiki.App.View.WikiPlugins.Machine"), kept for the same reason.
+  , choicesSent :: Maybe (Ask, Int)
+  , switchSent :: Maybe (Ask, Int)
+  -- ^ The last ask each machine sent, with the number the shell gave it
+  -- ('PluginsMachine.sending'). A machine has one ask out at a time and
+  -- tells the answer of that one, before it sends the next.
   , worldAsks :: Asks
   , hereAsks :: Asks
   , backlinkAsks :: Asks
-  , pluginAsks :: Asks
   -- ^ The reads of who is asking and the spaces ('loadWorld'), of the
-  -- space the route is in ('loadHere'), of the page's backlinks
-  -- ('loadBacklinks'), and of the plugins (with the world); what the
-  -- plugins' machines tell puts the plugins' reads out behind it.
+  -- space the route is in ('loadHere'), and of the page's backlinks
+  -- ('loadBacklinks'). Two of a kind can be out at once (two reloads),
+  -- and an answer is taken only if no newer one of its kind was
+  -- ("Wiki.App.View.Latest").
   -- Two of a kind can be out at once (two reloads), and an answer is
   -- taken only if no newer one of its kind was ("Wiki.App.View.Latest").
   }
@@ -659,13 +666,14 @@ component =
                   , seen = Nothing
                   , stale = Nothing
                   , droppedUnsaved = False
-                  , chosenPlugins = fromMaybe noPlugins readPlugins
+                  , chosenPlugins = PluginsMachine.heldFrom (fromMaybe noPlugins readPlugins)
+                  , choicesSent = Nothing
+                  , switchSent = Nothing
                   , pluginChoices = Machine.new (PluginsMachine.initial 0)
                   , wikiSwitch = Machine.new (WikiPluginsMachine.initial 0)
                   , worldAsks = noAsks
                   , hereAsks = noAsks
                   , backlinkAsks = noAsks
-                  , pluginAsks = noAsks
                   }
           -- The page's backlinks too, if the backend has them at once, so
           -- that the sidebar's first render is the prerendered one; else
@@ -1069,7 +1077,7 @@ component =
       PluginsSection ->
         [hh|
           <div class="settings-sections">
-            {{ HH.slot "plugins" who PluginsView.component PluginsView.Input {model = Machine.current st.pluginChoices, router = st.router} FromPlugins }}
+            {{ HH.slot "plugins" who PluginsView.component PluginsView.Input {model = Machine.current st.pluginChoices, offForWiki = st.chosenPlugins.plugins.offForWiki, router = st.router} FromPlugins }}
           </div>
         |]
       NotificationsSection ->
@@ -2033,12 +2041,14 @@ component =
     loadWorld = do
       demo <- gets (\st -> st.demo)
       ticket <- Latest.asking worldAsksOf setWorldAsks
-      pluginTicket <- Latest.asking pluginAsksOf setPluginAsks
+      -- The read of the plugins with the world is numbered among the
+      -- asks about the plugins.
+      pluginOrder <- state (\st -> let (n, held) = PluginsMachine.sending st.chosenPlugins in (n, st {chosenPlugins = held}))
       H.async (attempt (fetchWorld demo)) >>= \case
         Right w -> whenM (Latest.answered worldAsksOf setWorldAsks ticket (\st -> st {session = w.asking, sessionNumber = if sameUser st.session w.asking then st.sessionNumber else st.sessionNumber + 1, users = w.users, spaces = w.spaces, home = w.home, icons = w.icons, avatars = w.avatars, kept = w.kept, world = WorldReady, stale = Nothing})) $ do
-          -- What is on, read with the session: taken unless a plugins'
-          -- machine told the shell what is on since this load was asked.
-          void (Latest.answered pluginAsksOf setPluginAsks pluginTicket (\st -> st {chosenPlugins = pluginsOr st.chosenPlugins w.pluginsRead}))
+          -- What is on, read with the session: each part taken unless a
+          -- later ask about it was answered already.
+          modify (\st -> st {chosenPlugins = PluginsMachine.readAnswered pluginOrder w.pluginsRead st.chosenPlugins})
           -- The server may have answered with another user.
           newPluginSession
           -- The server says nobody is signed in in this browser: no user's
@@ -2076,27 +2086,48 @@ component =
       Machine.happen switchSpec (WikiPluginsMachine.Given n)
 
     -- The settings' section "Plugins"'s machine, run by the shell so that
-    -- its asks outlive the section. What it tells is what is on now: the
-    -- reads of the plugins out with the world are put behind it.
+    -- its asks outlive the section. Each ask is numbered among the asks
+    -- about the plugins as it is sent; what an answer told (the user's
+    -- choices after a write, both parts after a read) is merged in by that
+    -- number ('PluginsMachine.answeredWith').
     choicesSpec :: Machine.Spec () (State m) Action Slots output m PluginsMachine.Event PluginsMachine.Effect PluginsMachine.Model
     choicesSpec = Machine.Spec {Machine.step = PluginsMachine.step, Machine.carry = carryChoices, Machine.get = \st -> st.pluginChoices, Machine.set = \machine st -> st {pluginChoices = machine}}
 
     carryChoices :: PluginsMachine.Effect -> Machine.Carry () (State m) Action Slots output m PluginsMachine.Event
     carryChoices = \case
-      PluginsMachine.Load asked -> Machine.Ask (Machine.run pluginsNow) (PluginsMachine.Loaded asked . answerOf)
-      PluginsMachine.Write asked p s -> Machine.Ask (Machine.run (setPluginState p s)) (PluginsMachine.Written asked p . answerOf)
-      PluginsMachine.Tell known -> Machine.Now (modify (Latest.superseded pluginAsksOf setPluginAsks (\st -> st {chosenPlugins = known})))
+      PluginsMachine.Load asked -> Machine.AskWith (numbered asked (\a st -> st {choicesSent = a})) (\_ -> Machine.run pluginsNow) (PluginsMachine.Loaded asked . answerOf)
+      PluginsMachine.Write asked p s -> Machine.AskWith (numbered asked (\a st -> st {choicesSent = a})) (\_ -> Machine.run (setPluginState p s)) (PluginsMachine.Written asked p . answerOf)
+      PluginsMachine.Tell asked told ->
+        Machine.Now
+          ( modify $ \st -> case st.choicesSent of
+              Just (sentAs, n) | sentAs == asked -> st {chosenPlugins = PluginsMachine.answeredWith n told st.chosenPlugins}
+              _ -> st
+          )
 
     -- The administration's switch's machine, run by the shell for the same
-    -- reason. What it tells is the plugins off for the wiki.
+    -- reason. What it tells is the plugins off for the wiki, merged in by
+    -- the number of its ask ('PluginsMachine.offAnswered').
     switchSpec :: Machine.Spec () (State m) Action Slots output m WikiPluginsMachine.Event WikiPluginsMachine.Effect WikiPluginsMachine.Model
     switchSpec = Machine.Spec {Machine.step = WikiPluginsMachine.step, Machine.carry = carrySwitch, Machine.get = \st -> st.wikiSwitch, Machine.set = \machine st -> st {wikiSwitch = machine}}
 
     carrySwitch :: WikiPluginsMachine.Effect -> Machine.Carry () (State m) Action Slots output m WikiPluginsMachine.Event
     carrySwitch = \case
-      WikiPluginsMachine.Load asked -> Machine.Ask (Machine.run wikiPluginsOff) (WikiPluginsMachine.Loaded asked . answerOf)
-      WikiPluginsMachine.Save asked off -> Machine.Ask (Machine.run (setWikiPluginsOff WikiPlugins {off})) (WikiPluginsMachine.Saved asked . answerOf)
-      WikiPluginsMachine.Tell off -> Machine.Now (modify (Latest.superseded pluginAsksOf setPluginAsks (\st -> st {chosenPlugins = st.chosenPlugins {offForWiki = off}})))
+      WikiPluginsMachine.Load asked -> Machine.AskWith (numbered asked (\a st -> st {switchSent = a})) (\_ -> Machine.run wikiPluginsOff) (WikiPluginsMachine.Loaded asked . answerOf)
+      WikiPluginsMachine.Save asked off -> Machine.AskWith (numbered asked (\a st -> st {switchSent = a})) (\_ -> Machine.run (setWikiPluginsOff WikiPlugins {off})) (WikiPluginsMachine.Saved asked . answerOf)
+      WikiPluginsMachine.Tell asked off ->
+        Machine.Now
+          ( modify $ \st -> case st.switchSent of
+              Just (sentAs, n) | sentAs == asked -> st {chosenPlugins = PluginsMachine.offAnswered n off st.chosenPlugins}
+              _ -> st
+          )
+
+    -- A machine's ask numbered among the asks about the plugins as it is
+    -- sent, in place, and kept as the machine's last ('choicesSent',
+    -- 'switchSent').
+    numbered :: (MonadState (State m) h) => Ask -> (Maybe (Ask, Int) -> State m -> State m) -> h ()
+    numbered asked keep = modify $ \st ->
+      let (n, held) = PluginsMachine.sending st.chosenPlugins
+       in keep (Just (asked, n)) st {chosenPlugins = held}
 
     -- Whose changes not saved the content shown holds, if any: an
     -- editor's, or a page view's ticks. Asked before a route away
@@ -2251,12 +2282,6 @@ fetchWorld demo = do
   pluginsRead <- if shutOut asking then pure Nothing else rightToMaybe <$> pluginsNow
   pure Around {asking, users, spaces, home, icons, avatars, kept, pluginsRead}
 
--- | What is on after a read of the plugins: what it answered, or, when it
--- failed, the defaults with what the wiki was known to turn off. A read
--- that fails says nothing to the reader, as the other optional reads do.
-pluginsOr :: Plugins -> Maybe Plugins -> Plugins
-pluginsOr held = fromMaybe held {mine = mempty}
-
 -- | The space at a path, with its pages, or why it cannot be shown.
 fetchHere :: (MonadWiki n) => [Slug] -> n Here
 fetchHere [] = either (SpaceFailed [] Nothing) (\(space, page) -> InSpace [] space [summaryOf page]) <$> getHomeDocument
@@ -2343,13 +2368,6 @@ worldAsksOf st = st.worldAsks
 setWorldAsks :: Asks -> State m -> State m
 setWorldAsks a st = st {worldAsks = a}
 
--- | The shell's reads of which plugins are on ('pluginAsks').
-pluginAsksOf :: State m -> Asks
-pluginAsksOf st = st.pluginAsks
-
-setPluginAsks :: Asks -> State m -> State m
-setPluginAsks a st = st {pluginAsks = a}
-
 -- | The shell's reads of the space the route is in ('hereAsks').
 hereAsksOf :: State m -> Asks
 hereAsksOf st = st.hereAsks
@@ -2362,7 +2380,7 @@ setHereAsks a st = st {hereAsks = a}
 -- the wiki still out, which is not taken after it ('worldAsks').
 newSession :: Session -> State m -> State m
 newSession s =
-  Latest.superseded pluginAsksOf setPluginAsks (\st -> st {chosenPlugins = st.chosenPlugins {mine = mempty}})
+  (\st -> st {chosenPlugins = PluginsMachine.newReader st.chosenPlugins})
     . Latest.superseded worldAsksOf setWorldAsks (\st -> st {session = s, sessionNumber = st.sessionNumber + 1, settled = False, panel = Actions Nothing})
 
 -- | Whether two sessions are of the same user, or both of nobody: a load
@@ -2373,7 +2391,7 @@ sameUser :: Session -> Session -> Bool
 sameUser a b = ((\u -> u.id) <$> a.user) == ((\u -> u.id) <$> b.user)
 
 context :: State m -> Context
-context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth, plugins = st.chosenPlugins}
+context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth, plugins = st.chosenPlugins.plugins}
   where
     available =
       st.spaces <> case st.here of

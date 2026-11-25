@@ -48,6 +48,8 @@ import Wiki.App.Backend.WhatsNew (MonadWhatsNew)
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.DemoUsers (MonadDemoUsers)
 import Wiki.App.Islands (MonadIslands (..))
+import Wiki.App.Plugin (Manifest (..))
+import Wiki.App.Plugin.Registry (manifests)
 import Wiki.App.Route (Route (..), SettingsSection (..), route)
 import Wiki.App.Route qualified as R
 import Wiki.App.Security (MonadSecurity)
@@ -183,6 +185,17 @@ rows view =
           pure (i, on', ticked, off)
       )
 
+-- | The rows expected: every plugin of the registry, in its order, as
+-- its default has it (on or off, its switch enabled), but for those given
+-- (whether it shows on, its switch's state, whether the switch is
+-- disabled).
+rowsWith :: [(PluginId, (Bool, Bool, Bool))] -> [(Text, Bool, Bool, Bool)]
+rowsWith given =
+  [ (m.id.text, shown, ticked, off)
+  | m <- manifests
+  , let (shown, ticked, off) = fromMaybe (m.onByDefault, m.onByDefault, False) (Map.lookup m.id (Map.fromList given))
+  ]
+
 -- | The user's choices on the server, as the wiki holds them.
 choicesOf :: IORef MemState -> Text -> IO (Map PluginId PluginChoice)
 choicesOf wiki u = Map.findWithDefault mempty (UserId u) . (\st -> st.pluginChoices) <$> readIORef wiki
@@ -196,20 +209,23 @@ section :: Spec
 section = describe "Wiki.App.View.Plugins, in the shell on the in-memory DOM" $ do
   it "lists the registry's plugins, both on by default" $
     withSection asEditor $ \view -> do
-      rows view `shouldReturn` [("assistant", True, True, False), ("errors", True, True, False)]
-      (findAll view ".plugin-default" >>= traverse N.textContent) `shouldReturn` ["Default: on.", "Default: on."]
-      (findAll view ".plugin-name" >>= traverse N.textContent) `shouldReturn` ["Writing assistant", "Errors of formulas and diagrams"]
+      rows view `shouldReturn` rowsWith []
+      (findAll view ".plugin-default" >>= traverse N.textContent) `shouldReturn` ["Default: " <> bool "off" "on" m.onByDefault <> "." | m <- manifests]
+      -- The registry's plugins, whatever they are: the assistant among them.
+      names <- findAll view ".plugin-name" >>= traverse N.textContent
+      names `shouldBe` map (\m -> m.name) manifests
+      names `shouldSatisfy` elem "Writing assistant"
       -- The assistant's options are its own section; errors has none.
       (findAll view ".plugin-options" >>= traverse (N.attribute "href")) `shouldReturn` [Just "/settings/assistant/"]
 
   it "shows a plugin the user turned off, with the way back to its default" $
     withSection asEditor {pluginChoices = Map.fromList [(UserId "user-editor", Map.fromList [(assistant, choice PluginOff)])]} $ \view -> do
-      rows view `shouldReturn` [("assistant", False, False, False), ("errors", True, True, False)]
+      rows view `shouldReturn` rowsWith [(assistant, (False, False, False))]
       textOf view ".plugin[data-plugin=assistant] .plugin-to-default" `shouldReturn` "Back to the default (on)"
 
   it "shows a plugin off for the wiki as off, its switch disabled, with the reason" $
     withSection asEditor {pluginsOff = Set.fromList [errors], pluginChoices = Map.fromList [(UserId "user-editor", Map.fromList [(errors, choice PluginOn)])]} $ \view -> do
-      rows view `shouldReturn` [("assistant", True, True, False), ("errors", False, False, True)]
+      rows view `shouldReturn` rowsWith [(errors, (False, False, True))]
       textOf view ".plugin[data-plugin=errors] .plugin-off-for-wiki" >>= (`shouldSatisfy` T.isPrefixOf "An administrator has turned this plugin off for everyone")
 
   it "says the plugins could not be read when the read fails" $
@@ -221,11 +237,11 @@ section = describe "Wiki.App.View.Plugins, in the shell on the in-memory DOM" $ 
     withShellAt asEditor free (UserSettings PluginsSection) $ \view router wiki quiet -> do
       click view ".plugin[data-plugin=assistant] .plugin-toggle"
       quiet
-      rows view `shouldReturn` [("assistant", False, False, False), ("errors", True, True, False)]
+      rows view `shouldReturn` rowsWith [(assistant, (False, False, False))]
       choicesOf wiki "user-editor" `shouldReturn` Map.fromList [(assistant, choice PluginOff)]
       click view ".plugin[data-plugin=assistant] .plugin-to-default"
       quiet
-      rows view `shouldReturn` [("assistant", True, True, False), ("errors", True, True, False)]
+      rows view `shouldReturn` rowsWith []
       textOf view ".plugin[data-plugin=assistant] .plugin-default" `shouldReturn` "Default: on."
       choicesOf wiki "user-editor" `shouldReturn` mempty
       Router.navigate router (UserSettings AssistantSection)
@@ -264,6 +280,28 @@ section = describe "Wiki.App.View.Plugins, in the shell on the in-memory DOM" $ 
       held gate >>= traverse_ (\h -> answer gate h ())
       quiet
       (\st -> st.pluginsOff) <$> readIORef wiki `shouldReturn` Set.fromList [assistant]
+      saysOff view `shouldReturn` True
+
+  -- Codex's third round on #374: the section's machine held the plugins
+  -- off for the wiki from its read, and told them to the shell with the
+  -- user's next choice, over the newer ones the administration's switch
+  -- had told.
+  it "keeps the wiki's set the administration told when the user then chooses in Plugins" $
+    withShellAt (demoState demoNow) {current = Just (UserId "user-admin")} free (UserSettings PluginsSection) $ \view router wiki quiet -> do
+      rows view `shouldReturn` rowsWith []
+      Router.navigate router (Admin R.Permissions)
+      quiet
+      click view ".admin-plugin[data-plugin=assistant] .admin-plugin-off"
+      quiet
+      Router.navigate router (UserSettings PluginsSection)
+      quiet
+      -- The section shows the assistant off for the wiki, without a read.
+      rows view `shouldReturn` rowsWith [(assistant, (False, False, True))]
+      click view ".plugin[data-plugin=errors] .plugin-toggle"
+      quiet
+      choicesOf wiki "user-admin" `shouldReturn` Map.fromList [(errors, choice PluginOff)]
+      Router.navigate router (UserSettings AssistantSection)
+      quiet
       saysOff view `shouldReturn` True
 
 --------------------------------------------------------------------------------

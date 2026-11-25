@@ -45,6 +45,10 @@ import Wiki.App.View.Plugins.Machine (Event (..), Model (..), shownState)
 data Input = Input
   { model :: Model
   -- ^ The shell's machine's model, as it is now.
+  , offForWiki :: Set PluginId
+  -- ^ The plugins off for the wiki, as the shell holds them: the one
+  -- source of them, which the administration's switch and every read of
+  -- what is on keep current. The model's own are from its last read.
   , router :: Router Route
   -- ^ For the link to a plugin's options.
   }
@@ -135,9 +139,9 @@ component =
       |]
       where
         shown = shownState m manifest.id
-        offForAll = Set.member manifest.id known.offForWiki
+        offForAll = Set.member manifest.id st.input.offForWiki
         -- The switch shows the state chosen while its write is out.
-        isOnNow = isOn known {mine = Map.insert manifest.id PluginChoice {state = shown, options = Nothing} known.mine} manifest
+        isOnNow = isOn known {offForWiki = st.input.offForWiki, mine = Map.insert manifest.id PluginChoice {state = shown, options = Nothing} known.mine} manifest
 
     handleAction :: Action -> H.HalogenM State Action Empty Event m ()
     handleAction = \case

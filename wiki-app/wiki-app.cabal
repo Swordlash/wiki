@@ -490,6 +490,7 @@ test-suite wiki-app-browser-test
       Test.Browser.Persist
       Test.Browser.Personal
       Test.Browser.Avatars
+      Test.Browser.PluginFrames
       Test.Browser.Policy
       Test.Browser.Problems
       Test.Browser.Folds
@@ -522,6 +523,7 @@ test-suite wiki-app-browser-test
       row-types,
       text,
       time,
+      transformers,
       unliftio-core,
       haskell-halogen-core,
       haskell-halogen-jsbits,

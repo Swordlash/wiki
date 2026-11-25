@@ -44,8 +44,8 @@ import Control.Monad.Fail (fail)
 import Data.Aeson (FromJSON (..), FromJSONKey (..), ToJSON (..), ToJSONKey (..), eitherDecodeStrict, encode)
 import Data.Aeson.Types (FromJSONKeyFunction (..), toJSONKeyText)
 import Data.ByteString qualified as BS
-import Data.Char (isAsciiLower)
 import Data.ByteString.Lazy qualified as BSL
+import Data.Char (isAsciiLower)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Protolude

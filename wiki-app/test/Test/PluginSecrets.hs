@@ -14,12 +14,12 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Protolude hiding (on)
-import Text.Show (Show (showsPrec))
 import Test.FakeVault
 import Test.Hspec hiding (after, before)
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.QuickCheck
 import Test.VaultServer
+import Text.Show (Show (showsPrec))
 import Wiki.Api.Plugins (PluginId (..))
 import Wiki.App.Plugin (Manifest (..), SecretName (..), SecretSpec (..), Unavailable (..), builtin)
 import Wiki.App.Plugin.Host.Secrets

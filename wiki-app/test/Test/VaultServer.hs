@@ -98,6 +98,7 @@ instance (MonadVault m, MonadAssistant m, MonadIO m) => MonadVault (Served m) wh
       )
   storeVault tag v = storing tag v
   storeVaultChange tag c = storing tag c.vault
+
   -- A password proved again gives the page a key.
   provePasswordBy _ _ = Right . Just <$> lift (newVaultKey False)
 

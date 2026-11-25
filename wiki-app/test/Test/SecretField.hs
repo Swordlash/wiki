@@ -25,11 +25,11 @@ spec = describe "Wiki.App.View.SecretField.Machine" $ do
       let (checks, s) = foldl' play ([], start) moves
           (_, closing) = step Finished s.model
           outAtClose = [n | Just (n, _) <- [s.model.doing]]
-       in checkCoverage . tabulate "jobs done" (map jobName s.done) $
-            cover 15 ("Put" `elem` map jobName s.done) "kept a value" $
-              cover 10 ("Unlock" `elem` map jobName s.done) "unlocked" $
-                conjoin (reverse checks)
-                  .&&. counterexample "the ask out at the close is let go" ([n | Release n <- closing] === outAtClose)
+       in checkCoverage . tabulate "jobs done" (map jobName s.done)
+            $ cover 15 ("Put" `elem` map jobName s.done) "kept a value"
+            $ cover 10 ("Unlock" `elem` map jobName s.done) "unlocked"
+            $ conjoin (reverse checks)
+              .&&. counterexample "the ask out at the close is let go" ([n | Release n <- closing] === outAtClose)
 
   it "reads the secret when it opens, and again after an unlock" $ do
     let (m1, e1) = step Opened initial

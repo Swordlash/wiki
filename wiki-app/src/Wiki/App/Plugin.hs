@@ -392,7 +392,7 @@ data FieldOutput = Kept SecretName | Removed SecretName | Unlocked
 -- > ... secretField "secret" can.secrets FieldInput {name, check} FromField
 secretField
   :: forall label
-  -> forall action slots m
+  ->forall action slots m
    . (HasType label (H.Slot (Const Void) FieldOutput FieldSlot) slots, KnownSymbol label)
   => Secrets m
   -> FieldInput m

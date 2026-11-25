@@ -491,6 +491,7 @@ test-suite wiki-app-browser-test
       Test.Browser.Permissions
       Test.Browser.Persist
       Test.Browser.Personal
+      Test.Browser.PluginSecrets
       Test.Browser.Avatars
       Test.Browser.Policy
       Test.Browser.Problems
@@ -514,16 +515,19 @@ test-suite wiki-app-browser-test
       Test.Browser.Vault
       Test.Browser.Workspace
       Test.Counting
+      Test.VaultServer
   build-depends:
       aeson,
       base,
       base64-bytestring,
       bytestring,
       containers,
+      primitive,
       protolude,
       row-types,
       text,
       time,
+      transformers,
       unliftio-core,
       haskell-halogen-core,
       haskell-halogen-jsbits,

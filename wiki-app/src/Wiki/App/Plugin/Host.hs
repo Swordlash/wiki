@@ -87,7 +87,6 @@ capabilities context manifest =
           , services = context.session.assistantServices
           }
     }
-
   where
     user = (\u -> u.id) <$> context.session.user
     signedOut = "Nobody is signed in."

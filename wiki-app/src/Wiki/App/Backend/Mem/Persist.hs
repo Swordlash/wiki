@@ -28,7 +28,10 @@
 -- title and body per save, so a page saved a hundred times takes a hundred
 -- times its size. A user's notifications, what they watch,
 -- how they want to be notified ("Wiki.Core.Notification") and the pages
--- they starred ("Wiki.Api.Stars") are one record, under the user's id.
+-- they starred ("Wiki.Api.Stars") are one record, under the user's id,
+-- and so are their choices for the plugins, each plugin's state and
+-- options ("Wiki.Api.Plugins"). The plugins the administrator turned off
+-- for the whole demo are not saved: they last as long as the tab.
 --
 -- Everything here is pure. "Wiki.App.Backend.Mem" reads and writes the
 -- database, and works out what to write by comparing two sets of
@@ -95,6 +98,7 @@ import Protolude
 import System.Mem.StableName (makeStableName)
 import Web.Storage.IndexedDB (Database (..), StoreName)
 import Web.Storage.IndexedDB qualified as IDB
+import Wiki.Api.Plugins (PluginChoice, PluginId)
 import Wiki.Api.ServerSettings (ServerSettingsOf (..), defaultHomePage)
 import Wiki.Api.ServerSettings qualified as SS
 import Wiki.App.Backend.Mem.State (Choices (..), MemState (..), Saved (..), completeVersions, emptyState, prepareSearch)
@@ -158,10 +162,11 @@ versionsStore = "versions"
 -- comments.
 threadsStore = "threads"
 
--- | A user's notifications, the marks of what they watch, their choices
--- and their stars, as one record under their id. A database from before
--- this store existed has none: nobody has been notified, or chosen
--- anything. A record from before stars existed has no stars.
+-- | A user's notifications, the marks of what they watch, their choices,
+-- their stars and their choices for the plugins, as one record under their
+-- id. A database from before this store existed has none: nobody has been
+-- notified, or chosen anything. A record from before stars existed has no
+-- stars, and one from before the plugins no choice for any plugin.
 notificationsStore = "notifications"
 
 -- | Every store of 'memDatabase'.
@@ -238,7 +243,7 @@ records st =
           )
       )
     , (threadsStore, encoded [(page.text, encodeJson (toJSON ts)) | (page, ts) <- Map.toList st.threads])
-    , (notificationsStore, encoded [(u.text, encodeJson (encodeNotified st u)) | u <- Set.toList (Map.keysSet st.notices <> Map.keysSet st.watches <> Map.keysSet st.choices <> Map.keysSet st.stars)])
+    , (notificationsStore, encoded [(u.text, encodeJson (encodeNotified st u)) | u <- Set.toList (Map.keysSet st.notices <> Map.keysSet st.watches <> Map.keysSet st.choices <> Map.keysSet st.stars <> Map.keysSet st.pluginChoices)])
     ]
   where
     encoded = Map.fromList . map (second Just)
@@ -272,6 +277,7 @@ touched old new = do
   watches <- same (\x -> x.watches)
   choices <- same (\x -> x.choices)
   stars <- same (\x -> x.stars)
+  pluginChoices <- same (\x -> x.pluginChoices)
   homePage <- same (\x -> x.server.homePage)
   pure
     [ store
@@ -286,7 +292,7 @@ touched old new = do
         , (draftsStore, drafts)
         , (versionsStore, versions && unreadVersions)
         , (threadsStore, threads)
-        , (notificationsStore, notices && watches && choices && stars)
+        , (notificationsStore, notices && watches && choices && stars && pluginChoices)
         ]
     , not unchanged
     ]
@@ -297,7 +303,8 @@ touched old new = do
     same field = (==) <$> (makeStableName =<< evaluate (field old)) <*> (makeStableName =<< evaluate (field new))
 
 -- | A user's record of notifications: what they were notified of, what
--- they marked to watch or not, their choices, and the pages they starred.
+-- they marked to watch or not, their choices, the pages they starred, and
+-- their choices for the plugins, by plugin, as the server answers them.
 encodeNotified :: MemState -> UserId -> Value
 encodeNotified st u =
   object
@@ -307,6 +314,7 @@ encodeNotified st u =
     , "mail" .= (Map.lookup u st.choices >>= \c -> c.mail)
     , "watchOwn" .= maybe True (\c -> c.watchOwn) (Map.lookup u st.choices)
     , "stars" .= Map.findWithDefault [] u st.stars
+    , "plugins" .= Map.findWithDefault mempty u st.pluginChoices
     ]
   where
     targetField = \case
@@ -317,9 +325,9 @@ encodeNotified st u =
       WatchSpace s -> s.text
 
 -- | Parse a user's record of notifications: whose it is, their
--- notifications, their marks, their choices if they have made any, and
--- their stars.
-parseNotified :: Value -> Parser (UserId, [Notification], Mark, Maybe Choices, [PageId])
+-- notifications, their marks, their choices if they have made any, their
+-- stars, and their choices for the plugins.
+parseNotified :: Value -> Parser (UserId, [Notification], Mark, Maybe Choices, [PageId], Map PluginId PluginChoice)
 parseNotified = withObject "notifications" $ \o -> do
   u <- o .: "user"
   ns <- o .:? "notifications" .!= []
@@ -327,7 +335,8 @@ parseNotified = withObject "notifications" $ \o -> do
   mail <- o .:? "mail"
   watchOwn <- o .:? "watchOwn" .!= True
   starredPages <- o .:? "stars" .!= []
-  pure (u, ns, Map.fromList marks, if isNothing mail && watchOwn then Nothing else Just Choices {mail, watchOwn}, starredPages)
+  plugins <- o .:? "plugins" .!= mempty
+  pure (u, ns, Map.fromList marks, if isNothing mail && watchOwn then Nothing else Just Choices {mail, watchOwn}, starredPages, plugins)
   where
     target w =
       (w .:? "page") >>= \case
@@ -513,7 +522,7 @@ restore stored = case Map.lookup counterKey (holding metaStore) of
       if all (\t -> t.page.text == key) ts
         then Right (PageId key, ts)
         else Left (failure threadsStore key "has threads of another page")
-    notified <- keyed notificationsStore parseNotified (\(u, _, _, _, _) -> u.text) UserId
+    notified <- keyed notificationsStore parseNotified (\(u, _, _, _, _, _) -> u.text) UserId
     grants <- fmap concat . for (Map.toList (holding grantsStore)) $ \(key, bytes) -> do
       gs <- decoding grantsStore key (listOf parseSpaceGrant) bytes
       if all (\g -> g.space.text == key) gs
@@ -536,10 +545,11 @@ restore stored = case Map.lookup counterKey (holding metaStore) of
         , unreadVersions = Map.intersection (Map.fromListWith (<>) [(page, Set.singleton at) | (page, at) <- unread]) pages
         , -- Like versions: deleting a page deletes its threads.
           threads = Map.intersection discussed pages
-        , notices = Map.filter (not . null) (map (\(_, ns, _, _, _) -> ns) notified)
-        , watches = Map.filter (not . null) (map (\(_, _, marks, _, _) -> marks) notified)
-        , choices = Map.mapMaybe (\(_, _, _, cs, _) -> cs) notified
-        , stars = Map.filter (not . null) (map (\(_, _, _, _, ps) -> ps) notified)
+        , notices = Map.filter (not . null) (map (\(_, ns, _, _, _, _) -> ns) notified)
+        , watches = Map.filter (not . null) (map (\(_, _, marks, _, _, _) -> marks) notified)
+        , choices = Map.mapMaybe (\(_, _, _, cs, _, _) -> cs) notified
+        , stars = Map.filter (not . null) (map (\(_, _, _, _, ps, _) -> ps) notified)
+        , pluginChoices = Map.filter (not . null) (map (\(_, _, _, _, _, ks) -> ks) notified)
         , -- Whom the demo is open to is not saved: it is open whenever it
           -- starts, as its prerendered pages are.
           grants = Grants {global, spaces = grants, access = Open}

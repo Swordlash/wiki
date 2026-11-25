@@ -170,12 +170,15 @@ module Wiki.App.Backend.Mem.State
     -- * Plugins
   , pluginsIn
   , setPluginStateIn
+  , setPluginOptionsIn
   , wikiPluginsIn
   , setWikiPluginsIn
   )
 where
 
+import Data.Aeson (Value (..), encode)
 import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
@@ -206,7 +209,7 @@ import Wiki.Api.ApiKeys qualified as Key
 import Wiki.Api.Backups (Backups (..), defaultBackupSettings)
 import Wiki.Api.Notifications (NotificationSettings (NotificationSettings), NotificationSettingsChange, Notifications (Notifications), ReadMark)
 import Wiki.Api.Notifications qualified as N
-import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), WikiPlugins (..), maxPluginsOff, maxPluginsPerUser, parsePluginId)
+import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), WikiPlugins (..), maxOptionsBytes, maxPluginsOff, maxPluginsPerUser, optionsNull, optionsTooLarge, parsePluginId)
 import Wiki.Api.ServerSettings (HomePage, MailTestResult, ProviderChange, ProviderCheck (ProviderCheck), ServerSettings, ServerSettingsChange, ServerSettingsOf, applyChange, checkHomePage, checkServerSettings, named, noServerSettings, providerProblems, providerWith, redirectUri, secretState)
 import Wiki.Api.ServerSettings qualified as SS
 import Wiki.Api.Stars (StarredPage (StarredPage), maxStars)
@@ -2496,10 +2499,40 @@ setPluginStateIn :: PluginId -> PluginState -> Write PluginChoice
 setPluginStateIn p wanted st = do
   void (first Invalid (parsePluginId p.text))
   u <- signedIn st
+  choiceIn u p (\before -> PluginChoice {state = wanted, options = (\c -> c.options) =<< before}) st
+
+-- | Replace the signed-in user's options for a plugin with a value, or
+-- clear them ('Nothing'), leaving its state as it is, by the server's
+-- rules and in its order of checks ("Wiki.Server.Plugins"'s
+-- @setPluginOptions@ behind the API's reading of the body): an id that is
+-- not of the form of one is 'Invalid', with the rule; options whose JSON
+-- is longer than 'maxOptionsBytes' are 'Invalid', with the server's words;
+-- @null@ is 'Invalid', as the server refuses that body; nobody signed in
+-- is 'Forbidden', after the body, since the server reads the body before
+-- its handler asks who is signed in; a first choice past
+-- 'maxPluginsPerUser' plugins is refused as 'setPluginStateIn' refuses
+-- it. The size is that of the JSON the value is written as, as the HTTP
+-- backend sends it and the server stores it. The result is the user's
+-- choice for the plugin after it.
+setPluginOptionsIn :: PluginId -> Maybe Value -> Write PluginChoice
+setPluginOptionsIn p options st = do
+  void (first Invalid (parsePluginId p.text))
+  when (maybe False (\v -> BSL.length (encode v) > fromIntegral maxOptionsBytes) options) (Left (Invalid optionsTooLarge))
+  when (options == Just Null) (Left (Invalid optionsNull))
+  u <- signedIn st
+  choiceIn u p (\before -> PluginChoice {state = maybe PluginDefault (\c -> c.state) before, options}) st
+
+-- | Keep a user's choice for a plugin, made from the one kept before, as
+-- the server's @writeColumn@ does: a choice of the default with no
+-- options is no choice, and is not kept; a first choice of a user who has
+-- choices kept for 'maxPluginsPerUser' plugins already is 'Invalid', in
+-- the server's words.
+choiceIn :: UserId -> PluginId -> (Maybe PluginChoice -> PluginChoice) -> Write PluginChoice
+choiceIn u p made st = do
   let mine = Map.findWithDefault mempty u st.pluginChoices
       before = Map.lookup p mine
-      after = PluginChoice {state = wanted, options = (\c -> c.options) =<< before}
-      keep = wanted /= PluginDefault || isJust after.options
+      after = made before
+      keep = after.state /= PluginDefault || isJust after.options
   when (keep && isNothing before && Map.size mine >= maxPluginsPerUser) $
     Left (Invalid ("You have choices kept for " <> show maxPluginsPerUser <> " plugins already, the most a user has: give one of them back to its default, with no options, first."))
   let mine' = if keep then Map.insert p after mine else Map.delete p mine

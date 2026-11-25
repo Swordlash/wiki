@@ -39,6 +39,7 @@ module Wiki.Api.Plugins
   , PluginOptions (..)
   , maxOptionsBytes
   , optionsTooLarge
+  , optionsNull
   , maxPluginsPerUser
 
     -- * The wiki's set
@@ -175,7 +176,7 @@ instance {-# OVERLAPPING #-} MimeUnrender JSON PluginOptions where
     | BSL.length bytes > fromIntegral maxOptionsBytes = Left (toS optionsTooLarge)
     | otherwise = case eitherDecode bytes of
         Left e -> Left e
-        Right Null -> Left "A plugin's options are a JSON value other than null: to clear them, send DELETE to the same address."
+        Right Null -> Left (toS optionsNull)
         Right v -> Right (PluginOptions v)
 
 -- | The most bytes of JSON one plugin's options take: 16 kB (16 × 1024
@@ -186,6 +187,10 @@ maxOptionsBytes = 16 * 1024
 -- | Why options were refused for their size.
 optionsTooLarge :: Text
 optionsTooLarge = "A plugin's options are at most 16 kB (" <> show maxOptionsBytes <> " bytes) of JSON."
+
+-- | Why @null@ was refused as a plugin's options.
+optionsNull :: Text
+optionsNull = "A plugin's options are a JSON value other than null: to clear them, send DELETE to the same address."
 
 -- | The most plugins one user has a choice kept for: a bound on what one
 -- account stores, far above the plugins a wiki has.

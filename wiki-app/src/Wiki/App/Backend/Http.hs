@@ -132,7 +132,7 @@ import Wiki.Api.Links (searchParameters)
 import Wiki.Api.Links qualified as Links
 import Wiki.Api.Notifications (Notifications (..), NotificationsApi (..), Watching (..), searchable)
 import Wiki.Api.Opaque (LoginChallenge (..), LoginFinish (..), LoginStart (..), Message, NewAccountRecord (..), OldPasswordProof (..), PasswordRecord (..), PasswordRecordChange (..), PasswordWrapChange (..), ProofStart (..), RegistrationChallenge (..), RegistrationFor (..), RegistrationStart (..))
-import Wiki.Api.Plugins (PluginStateChange (..))
+import Wiki.Api.Plugins (PluginOptions (..), PluginStateChange (..))
 import Wiki.Api.Security (CurrentPassword (..), EmailChange (..), OneTimeCode (..), ResetRequest (..))
 import Wiki.Api.ServerSettings (MailTest (..))
 import Wiki.Api.Stars (StarredPage (..), Starring (..), StarsApi (..))
@@ -1264,6 +1264,8 @@ instance (MonadIO m) => MonadWhatsNew (HttpWiki m) where
 instance (MonadIO m) => MonadPlugins (HttpWiki m) where
   pluginsNow = cached (\c -> c.plugins) endpoints.plugins (\a c -> c {Cache.plugins = Just a})
   setPluginState p s = write (endpoints.account.setPluginState p PluginStateChange {state = s})
+  setPluginOptions p v = write (endpoints.account.setPluginOptions p (PluginOptions v))
+  clearPluginOptions p = write (endpoints.account.clearPluginOptions p)
   wikiPluginsOff = send endpoints.admin.plugins
   setWikiPluginsOff new = write (endpoints.admin.setPlugins new)
 

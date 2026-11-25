@@ -20,6 +20,7 @@ import Wiki.App.Backend.Contract.Admin qualified as Admin
 import Wiki.App.Backend.Contract.Backlinks qualified as Backlinks
 import Wiki.App.Backend.Contract.Comments qualified as Comments
 import Wiki.App.Backend.Contract.Notifications qualified as Notifications
+import Wiki.App.Backend.Contract.Plugins qualified as Plugins
 import Wiki.App.Backend.Contract.Stars qualified as Stars
 import Wiki.App.Backend.Mem
 import Wiki.App.Backend.Mem.Archive (toArchive)
@@ -55,6 +56,7 @@ spec = do
     Comments.spec (type (MemWiki IO)) (memFixture >>=)
     Notifications.spec (type (MemWiki IO)) (memFixture >>=)
     Stars.spec (type (MemWiki IO)) (memFixture >>=)
+    Plugins.spec (type (MemWiki IO)) (memFixture >>=)
     Backlinks.spec (type (MemWiki IO)) (memFixture >>=)
 
     it "offers the demo's users to switch between" $ do

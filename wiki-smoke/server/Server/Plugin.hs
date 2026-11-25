@@ -244,15 +244,15 @@ inTheEditor smoke pw = do
 
   -- The service worker leaves the plugin's frame to the network: a frame
   -- of its address, loaded in a page the worker controls, is not kept,
-  -- while a page of the wiki's loaded the same way after it is. What the
-  -- worker keeps is its own: a condition.
+  -- while a page of the wiki's visited after it is. The frame's load and
+  -- what the worker keeps are the browser's and the worker's own:
+  -- conditions.
   withSessionContext pw defaultContextOptions {acceptDialogs = True} smoke.origin (Just s) $ \page -> do
     visit page (address smoke "/s/smoke-space/")
     holdsInPage page "navigator.serviceWorker.controller !== null"
-    let framed (path :: Text) = evaluate page ("(() => { const f = document.createElement('iframe'); f.src = " <> Text.pack (show path) <> "; document.body.appendChild(f); return null; })()") :: IO Value
-        keptPages = "(async () => { const found = []; for (const name of await caches.keys()) { if (!name.startsWith('wiki-pages ')) continue; const cache = await caches.open(name); for (const r of await cache.keys()) found.push(new URL(r.url).pathname); } return found; })()"
-    _ <- framed frameAddress
-    _ <- framed "/s/smoke-space/p/first-page/"
+    let keptPages = "(async () => { const found = []; for (const name of await caches.keys()) { if (!name.startsWith('wiki-pages ')) continue; const cache = await caches.open(name); for (const r of await cache.keys()) found.push(new URL(r.url).pathname); } return found; })()"
+    _ :: Value <- evaluate page ("new Promise((loaded) => { const f = document.createElement('iframe'); f.addEventListener('load', () => loaded(null)); f.src = " <> Text.pack (show frameAddress) <> "; document.body.appendChild(f); })")
+    visit page (address smoke "/s/smoke-space/p/first-page/")
     holdsInPage page (keptPages <> ".then((ps) => ps.includes('/s/smoke-space/p/first-page/'))")
     kept :: [Text] <- evaluate page keptPages
     expect (not (any ("/plugin-frame/" `Text.isPrefixOf`) kept)) ("the worker kept the plugin's frame: " <> show kept)

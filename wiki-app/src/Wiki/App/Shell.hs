@@ -2173,6 +2173,9 @@ component =
       PluginsMachine.WriteOptions asked p o -> Machine.Ask (Machine.run (maybe (clearPluginOptions p) (setPluginOptions p) o)) (PluginsMachine.OptionsWritten asked p . answerOf)
       PluginsMachine.WriteOptionsIfNone asked p v -> Machine.Ask (Machine.run (setPluginOptionsIfNone p v)) (PluginsMachine.AdoptWritten asked p . answerOf)
       PluginsMachine.SaveOff asked off -> Machine.Ask (Machine.run (setWikiPluginsOff WikiPlugins {off})) (PluginsMachine.Saved asked . answerOf)
+      PluginsMachine.SetPolicy asked policy -> Machine.Ask (Machine.run (setExternalPolicy policy)) (PluginsMachine.PolicySaved asked . answerOf)
+      PluginsMachine.Install asked u -> Machine.Ask (Machine.run (installExternal u.owner u.manifestText u.bundle u.replaces)) (PluginsMachine.Uploaded asked u.owner u.id . answerOf)
+      PluginsMachine.Remove asked owner p -> Machine.Ask (Machine.run (removeExternal owner p)) (PluginsMachine.Removed asked owner p . answerOf)
 
     -- Whose changes not saved the content shown holds, if any: an
     -- editor's, or a page view's ticks. Asked before a route away

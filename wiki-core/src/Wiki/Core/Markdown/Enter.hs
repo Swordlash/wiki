@@ -1,10 +1,11 @@
 -- | What Enter writes in the editor's text (WP5.124 (a) of docs/PLAN.md,
--- issue #187): the next item of a list, the next line of a quotation or a
--- box, or, on an empty item or an empty quoted line, the way up one level.
--- CodeMirror's keymap calls 'enter' as the key is pressed, with the text
--- of the top-level block the cursor is in (web/src/editor.js). The
--- function is pure, so every rule is tested natively, with the wiki's own
--- parser as the oracle (decision 83).
+-- issue #187, and the first cut of #301): the next item of a list, the
+-- next line of a quotation or a box, an item split in two, or, on an
+-- empty item or an empty quoted line, the way up one level. CodeMirror's
+-- keymap calls 'edit' as the key is pressed, with the text of the
+-- top-level block the cursor is in (web/src/editor.js). The function is
+-- pure, so every rule is tested natively, with the wiki's own parser as
+-- the oracle (decision 83).
 --
 -- Which quotations and items a line is in, and whether it is code, is the
 -- wiki's parser's reading ("Wiki.Core.Markdown.Ast"'s 'parseShapes'), not
@@ -16,11 +17,10 @@
 -- bullet or number where the parser says the item starts.
 --
 -- The contract. Enter writes more than a line break only with the cursor
--- at the end of its line (a selection is the editor's business: it sends
--- one to the plain line break), and it changes only the cursor's line and
--- the new line it makes. No other line changes, and no other item's
--- number: Markdown numbers a list from its first item, so the page shows
--- the same numbers.
+-- at the end of its line, or in the text of an item's first line (a
+-- selection is the editor's business: it sends one to the plain line
+-- break). It changes only the cursor's line and the new line it makes,
+-- and the numbers of the items after a new numbered item.
 --
 -- * At the end of the last line with text of a list's item: a new item of
 --   the same list at the same indentation, with the same bullet, or the
@@ -30,6 +30,36 @@
 --   The containers around the list go on before it: a quotation's marks
 --   as the cursor's line writes them (@>  > @), an outer item's
 --   indentation.
+-- * In the text of an item's first line, with text after the cursor on
+--   the line: the item split in two ('SplitWith'). The text before the
+--   cursor stays in the item, as it is, blanks at its end included (as at
+--   the end of a line, where Enter leaves them). A new item of the same
+--   list starts on the next line, written as at the end of the line, and
+--   takes the rest of the line, without the blanks right after the
+--   cursor (they would widen the gap after its mark, and five make code),
+--   and every later line of the item: its continuation lines, its nested
+--   lists, its further paragraphs. The cursor goes to the start of the
+--   new item's text. With the cursor at the start of the item's text,
+--   among its marks, or before blanks alone, Enter is a plain line break,
+--   as it was before. The parser reads the answer back ('splitIn'): the
+--   two items' first paragraphs, put together with the blanks taken out,
+--   must be the old one's, inline for inline, so a cut inside code, math,
+--   a link, emphasis or anything else written over several characters is
+--   a plain line break; so is a cut after a bracket left open (a link's
+--   reference, whose definition the text given may not hold), and one
+--   between @]@ and @[@.
+-- * After a new item of a numbered list (at the end of a line, or split
+--   off), the items after it in that list are renumbered ('Renumbered'),
+--   each the number before it plus one, in the same change, so that one
+--   undo takes both back. Only where they were numbered one after another
+--   from the item the cursor is in, at most 'renumberLimit' of them, and
+--   only where the parser reads the text renumbered as it reads it
+--   without: a wider number moves its item's text one column right, and
+--   the item's later lines are left as they are, so where one of them
+--   would leave the item (a second paragraph indented to the old column),
+--   no number is changed. The list's end must be in the text given, or
+--   the text must reach the end of the page; otherwise the editor asks
+--   again with a longer text ('Edit''s @longer@).
 -- * At the end of a line of a quotation or a box (lazy lines of its
 --   paragraph too): its marks on the new line, as the cursor's line writes
 --   them, @> @ where it is lazy, after the indentation of the items around
@@ -38,13 +68,16 @@
 --   else) and on an empty line of a quotation (its marks and nothing
 --   else): up one level. The line becomes what Enter would start after
 --   the container around: the next item of the item around, the marks of
---   the quotation around, or, at the top level, an empty line.
+--   the quotation around, or, at the top level, an empty line. The items
+--   after an item started this way are not renumbered.
 --
 -- Items inside quotations and quotations inside items, at any depth, and
 -- loose lists are read as the parser reads them. Everything else is a
 -- plain line break:
 --
--- * a cursor before the end of its line;
+-- * a cursor before the end of its line, outside the text of an item's
+--   first line: in a paragraph, a quotation, a box, a heading, an item's
+--   later line;
 -- * code, fenced or indented, alone or in a container; HTML; a fence the
 --   wiki renders; a table, a rule, the wiki's marker lines, a footnote's
 --   definition;
@@ -79,14 +112,20 @@ module Wiki.Core.Markdown.Enter
   , enter
   , written
   , textLimit
+  , Edit (..)
+  , Change (..)
+  , edit
+  , renumberLimit
+  , utf16Length
   )
 where
 
-import Data.List (zip3)
+import Data.List (span, zip3)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Protolude
-import Wiki.Core.Markdown.Ast (ItemMark (..), Shape (..), ShapeKind (..), parseShapes, shapeLines)
+import Wiki.Core.Markdown.Ast (Block, ItemMark (..), Shape (..), ShapeKind (..), parseShapesAndSpans, parseWithSpans, shapeLines)
+import Wiki.Core.Markdown.Ast qualified as A
 
 -- | 'Enter' is what Enter writes at the cursor.
 data Enter
@@ -98,6 +137,11 @@ data Enter
   | -- | The cursor's line replaced by this text, the cursor at its end:
     -- an empty item or an empty quoted line gone up one level.
     LineBecomes Text
+  | -- | The cursor's item split in two: so many blanks right after the
+    -- cursor taken out, and a line break with this text put in their
+    -- place, the cursor after the text. The text is the start of the next
+    -- item; the rest of the line is its text.
+    SplitWith Int Text
   deriving stock (Eq, Show)
 
 -- | What Enter writes, given the text before the cursor and the text after
@@ -114,25 +158,45 @@ data Enter
 -- are given apart so that no offset crosses from the browser's UTF-16
 -- units to Haskell's characters.
 enter :: Text -> Text -> Enter
-enter before after
-  | not (T.null after || "\n" `T.isPrefixOf` after) = NewLine
-  | T.length before + T.length after > textLimit = NewLine
-  | T.any (== '\r') (before <> after) = NewLine
-  | otherwise = fromMaybe NewLine $ do
+enter before after = maybe NewLine (.answer) (answered before after)
+
+-- | 'Answered' is an answer other than a plain line break, with what was
+-- parsed on the way to it, which the renumbering after it reads again:
+-- the shapes of the text before the answer, and the blocks of the text
+-- after it.
+data Answered = Answered
+  { answer :: Enter
+  , shapes :: [Shape]
+  , blocks :: [(Maybe (Int, Int), Block)]
+  }
+
+-- | 'enter''s answer, with what was parsed for it; nothing for a plain
+-- line break.
+answered :: Text -> Text -> Maybe Answered
+answered before after
+  | T.length before + T.length after > textLimit = Nothing
+  | T.any (== '\r') (before <> after) = Nothing
+  | not (T.null after || "\n" `T.isPrefixOf` after) = split before after
+  | otherwise = do
       let text = before <> after
           n = T.count "\n" before + 1
-      shapes <- rightToMaybe (parseShapes text)
+      (shapes, _) <- rightToMaybe (parseShapesAndSpans text)
       place <- placeOf shapes n
       (answer, expected) <- decide (T.splitOn "\n" text) n place
-      guard (readsAsMeant before after shapes answer expected)
-      pure answer
+      blocks <- readsAsMeant before after shapes answer expected
+      pure Answered {answer, shapes, blocks}
 
 -- | 'textLimit' is the most text, in characters, 'enter' reads: past it,
 -- Enter is a plain line break. The text is parsed twice, about 25 to 35
 -- microseconds a character on the everyday WebAssembly build (measured
 -- 2026-11-16: 3 ms for 149 characters, 10 to 17 ms for 691, 330 to 380
 -- ms for 10,900, a whole list of a thousand items), so that Enter stays
--- under about 50 ms. web/src/editor.js hands over no more than this. A
+-- under about 50 ms. A new item of a numbered list with items after it
+-- costs more: the text renumbered is parsed a third time, and where the
+-- list may go on past the text the editor asks again with a longer one,
+-- of up to this many characters too ('Wiki.Core.Markdown.Starts.longerEnd'),
+-- so at most about six parses of 2,000 characters (not measured on
+-- WebAssembly). web/src/editor.js hands over no more than this. A
 -- list's items are where it may cut the text (Wiki.Core.Markdown.Starts),
 -- so what is still past the limit is one long block: a paragraph, a
 -- quotation or a box, a single item.
@@ -146,6 +210,70 @@ written before after = \case
   NewLine -> (before <> "\n", after)
   NewLineWith start -> (before <> "\n" <> start, after)
   LineBecomes line -> (T.dropWhileEnd (/= '\n') before <> line, after)
+  SplitWith blanks start -> (before <> "\n" <> start, T.drop blanks after)
+
+----------------------------------------------------------------------
+-- What the editor is told
+
+-- | 'Change' is one change Enter makes to the text: a range of the text
+-- before the change, from @from@ to @to@, in UTF-16 units from the
+-- cursor (negative before it), the text that range holds, and the text
+-- put in its place. The editor's offsets are UTF-16 units and Haskell's
+-- are characters: the editor checks that each range still holds @old@
+-- before it changes anything, so that a wrong offset writes nothing.
+data Change = Change
+  { from :: Int
+  , to :: Int
+  , old :: Text
+  , new :: Text
+  }
+  deriving stock (Eq, Show)
+
+-- | 'Edit' is what Enter does to the text, other than a plain line
+-- break: the change on the cursor's line (the new line, the item split,
+-- the line replaced), the numbers of the list's later items rewritten,
+-- and where the cursor goes, in UTF-16 units from where it was, in the
+-- text after the changes. All the changes are one transaction of the
+-- editor, so one undo takes them back.
+--
+-- @longer@ is set when the new item's list may go on past the text given
+-- and its numbers were not looked at: the editor asks again with a
+-- longer text, and takes the renumbering of that answer if its change on
+-- the cursor's line is the same.
+data Edit = Edit
+  { change :: Change
+  , renumbered :: [Change]
+  , cursor :: Int
+  , longer :: Bool
+  }
+  deriving stock (Eq, Show)
+
+-- | What Enter does, given whether the text given ends where the page
+-- ends, the text before the cursor and the text after it; nothing for a
+-- plain line break ('enter' is its answer on the cursor's line).
+edit :: Bool -> Text -> Text -> Maybe Edit
+edit ends before after = do
+  done <- answered before after
+  let line = T.takeWhileEnd (/= '\n') before
+  (change, cursor) <- case done.answer of
+    NewLine -> Nothing
+    NewLineWith start -> Just (Change 0 0 "" ("\n" <> start), utf16Length ("\n" <> start))
+    SplitWith blanks start -> Just (Change 0 blanks (T.take blanks after) ("\n" <> start), utf16Length ("\n" <> start))
+    LineBecomes new -> Just (Change (negate (utf16Length line)) 0 line new, utf16Length new - utf16Length line)
+  pure $ case following ends before after done of
+    PastText -> Edit {change, renumbered = [], cursor, longer = True}
+    Following numbers ->
+      Edit
+        { change
+        , renumbered = [Change at (at + utf16Length was) was now | Renumbered offset was now <- numbers, let at = utf16Length (T.take offset after)]
+        , cursor
+        , longer = False
+        }
+
+-- | The length of a text in UTF-16 units, the editor's: two for a
+-- character past the first 65,536, one for any other.
+utf16Length :: Text -> Int
+utf16Length = T.foldl' (\n c -> n + if ord c > 0xFFFF then 2 else 1) 0
 
 ----------------------------------------------------------------------
 -- Where the cursor's line is
@@ -363,6 +491,9 @@ data Expected
     -- list starting on this line, a task or not, with nothing after its
     -- mark (and box).
     NewItem [(Bool, Int)] Int Bool
+  | -- | As 'NewItem', with text after its mark (and box): the item split
+    -- off.
+    SplitItem [(Bool, Int)] Int Bool
   | -- | In these containers, the last a quotation whose marks the line
     -- has, and nothing after them.
     QuotedLine [(Bool, Int)]
@@ -380,29 +511,8 @@ decide textLines n place = do
   let blank = T.null (T.strip rest)
       kept = effective n blank place.containers
       held = zip3 kept taken layout
-      -- What a new line starts with in some of the containers (a prefix
-      -- of these): a quotation's marks as the cursor's line writes them,
-      -- or @> @ where it is lazy; an item's indentation.
-      prefix k =
-        mconcat
-          [ case (c, t, l) of
-              (Quotation _, Taken marks, _) -> marks
-              (Item _, _, Just l') -> T.replicate (indentOf l') " "
-              _ -> "> "
-          | (c, t, l) <- take k held
-          ]
-      -- The next item after the item at this depth.
-      nextItem k = case atMay held k of
-        Just (Item item, _, Just l) -> do
-          next <- case item.mark of
-            Bullet c -> Just (T.singleton c)
-            Numbered d -> do
-              number <- readMaybe (T.unpack (T.dropEnd 1 l.markText)) :: Maybe Integer
-              guard (number + 1 <= 999999999)
-              Just (show (number + 1) <> T.singleton d)
-          let written' = prefix k <> T.replicate l.before " " <> next <> T.replicate l.gap " " <> (if item.task then "[ ] " else "")
-          Just (written', NewItem (signature (take k kept)) item.listLine item.task)
-        _ -> Nothing
+      prefix = prefixOf held
+      nextItem = nextItemOf held
       -- The line one level up from the innermost container.
       goUp = case lastMay (initSafe kept) of
         Nothing -> Just (LineBecomes "", Outside)
@@ -419,6 +529,36 @@ decide textLines n place = do
     Just (Quotation _, _, _)
       | blank -> Nothing
       | otherwise -> Just (NewLineWith (prefix (length kept)), QuotedLine (signature kept))
+
+-- | What a new line starts with in the first so many containers a line is
+-- in, each with what the line holds of it and its layout: a quotation's
+-- marks as the line writes them, or @> @ where it is lazy; an item's
+-- indentation.
+prefixOf :: [(Container, Taken, Maybe Layout)] -> Int -> Text
+prefixOf held k =
+  mconcat
+    [ case (c, t, l) of
+        (Quotation _, Taken marks, _) -> marks
+        (Item _, _, Just l') -> T.replicate (indentOf l') " "
+        _ -> "> "
+    | (c, t, l) <- take k held
+    ]
+
+-- | The start of the next item after the item at this depth of the
+-- containers a line is in ('prefixOf'), and how the parser should read
+-- it.
+nextItemOf :: [(Container, Taken, Maybe Layout)] -> Int -> Maybe (Text, Expected)
+nextItemOf held k = case atMay held k of
+  Just (Item item, _, Just l) -> do
+    next <- case item.mark of
+      Bullet c -> Just (T.singleton c)
+      Numbered d -> do
+        number <- readMaybe (T.unpack (T.dropEnd 1 l.markText)) :: Maybe Integer
+        guard (number + 1 <= 999999999)
+        Just (show (number + 1) <> T.singleton d)
+    let written' = prefixOf held k <> T.replicate l.before " " <> next <> T.replicate l.gap " " <> (if item.task then "[ ] " else "")
+    Just (written', NewItem (signature (take k (map (\(c, _, _) -> c) held))) item.listLine item.task)
+  _ -> Nothing
 
 -- | Whether an item's first line, after its mark, holds nothing (or its
 -- box alone, for a task).
@@ -448,6 +588,251 @@ signature = map $ \case
   Item item -> (False, item.firstLine)
 
 ----------------------------------------------------------------------
+-- An item split in two
+
+-- | Enter in the text of an item's first line, with text after the
+-- cursor on the line: the item split in two ('SplitWith'), or nothing.
+split :: Text -> Text -> Maybe Answered
+split before after = do
+  let lineBefore = T.takeWhileEnd (/= '\n') before
+      lineAfter = T.takeWhile (/= '\n') after
+      blanks = T.length (T.takeWhile (== ' ') lineAfter)
+      moved = T.drop blanks lineAfter
+  -- Text after the cursor, which does not start with a tab: a tab right
+  -- after the new item's mark is a tab among its marks.
+  guard (not (T.null (T.strip moved)) && not ("\t" `T.isPrefixOf` moved))
+  let text = before <> after
+      n = T.count "\n" before + 1
+      textLines = T.splitOn "\n" text
+  (shapes, spans) <- rightToMaybe (parseShapesAndSpans text)
+  place <- placeOf shapes n
+  guard place.inText
+  layout <- layouts textLines place.containers
+  line <- atMay textLines (n - 1)
+  (taken, rest) <- walkLine n line (zip place.containers layout)
+  let held = zip3 place.containers taken layout
+  (Item item, _, _) <- lastMay held
+  guard (item.firstLine == n)
+  -- Where the item's text starts on the line: after its mark, and after
+  -- a task's box and the blanks after it.
+  let afterBox = if item.task then T.dropWhile (\c -> c == ' ' || c == '\t') (T.drop 1 (T.dropWhile (/= ']') rest)) else rest
+      textStart = T.length line - T.length afterBox
+      left = T.drop textStart lineBefore
+  guard (T.length lineBefore > textStart)
+  -- What the text given may not show: the definition of a link's
+  -- reference above it. Inside brackets left open the cursor may be in
+  -- such a link's text (@[la‸bel]@); between @]@ and @[@, a cut would
+  -- part a link's text from its label.
+  guard (not (opensBracket left))
+  guard (not ("]" `T.isSuffixOf` left && "[" `T.isPrefixOf` lineAfter))
+  (start, expected) <- nextItemOf held (length held - 1)
+  splitExpected <- case expected of
+    NewItem outer listLine task -> Just (SplitItem outer listLine task)
+    _ -> Nothing
+  let answer = SplitWith blanks start
+  spans' <- readsAsMeant before after shapes answer splitExpected
+  -- The top-level block the cursor is in: the one item split in two, and
+  -- nothing else changed, as the parser reads both. The last block whose
+  -- lines run over the cursor's, as in 'placeOf': a block's lines may run
+  -- to the start of the block after it (a list of tasks right after a
+  -- list of plain items is a list of its own).
+  let covers l (at, _) = maybe False (\(a, b) -> a <= l && l <= b) at
+      cut = T.takeWhileEnd (\c -> c == ' ' || c == '\t') left <> T.take blanks lineAfter
+  guard (length spans' == length spans)
+  i <- lastMay [j | (j, s) <- zip [0 ..] spans, covers n s]
+  (_, old) <- atMay spans i
+  (_, new) <- find (covers n) (take 1 (drop i spans'))
+  guard (splitIn cut old new)
+  pure Answered {answer, shapes, blocks = spans'}
+
+-- | Whether a text leaves a bracket open: a @[@ with no @]@ after it, a
+-- character after a backslash not counted, nor a bracket in code between
+-- backticks. Brackets in math are counted, which errs towards a plain
+-- line break.
+opensBracket :: Text -> Bool
+opensBracket = go (0 :: Int) . T.unpack
+  where
+    go depth = \case
+      '\\' : _ : cs -> go depth cs
+      '[' : cs -> go (depth + 1) cs
+      ']' : cs -> go (max 0 (depth - 1)) cs
+      cs@('`' : _) ->
+        let (ticks, rest) = span (== '`') cs
+         in maybe (go depth rest) (go depth) (closing (length ticks) rest)
+      _ : cs -> go depth cs
+      [] -> depth > 0
+    -- What follows the run of so many backticks that closes a code span.
+    closing n cs = case break (== '`') cs of
+      (_, []) -> Nothing
+      (_, more) ->
+        let (ticks, rest) = span (== '`') more
+         in if length ticks == n then Just rest else closing n rest
+
+-- | Whether a block after Enter is the block before it with one list's
+-- item split in two at a cut where these blanks were taken out: the first
+-- item keeps the start of its first paragraph, alone; the second, after
+-- it, has the rest of that paragraph, then every other block of the item,
+-- and an empty box where the item is a task. The two paragraphs, joined
+-- by the blanks, are the old paragraph, inline for inline: a cut inside
+-- code, math, a link or emphasis makes inlines of another kind, and a
+-- cut that makes a block of another kind (a heading, a nested list, a
+-- quotation, a box) leaves no paragraph to join. Everything else is the
+-- same.
+splitIn :: Text -> Block -> Block -> Bool
+splitIn cut old new = case (old, new) of
+  (A.List kind items, A.List kind' items')
+    | kind == kind' -> splitItems items items' || oneDiffers inItem items items'
+  (A.BlockQuote bs, A.BlockQuote bs') -> oneDiffers (splitIn cut) bs bs'
+  (A.Alert k h bs, A.Alert k' h' bs') | k == k' && h == h' -> oneDiffers (splitIn cut) bs bs'
+  (A.Div a bs, A.Div a' bs') | a == a' -> oneDiffers (splitIn cut) bs bs'
+  (A.Spoiler h bs, A.Spoiler h' bs') | h == h' -> oneDiffers (splitIn cut) bs bs'
+  _ -> False
+  where
+    inItem (A.ListItem task bs) (A.ListItem task' bs') = task == task' && oneDiffers (splitIn cut) bs bs'
+    splitItems items items' =
+      length items' == length items + 1
+        && or
+          [ take i items == take i items' && drop (i + 1) items == drop (i + 2) items' && pieces o a b
+          | (i, o) <- zip [0 ..] items
+          , Just a <- [atMay items' i]
+          , Just b <- [atMay items' (i + 1)]
+          ]
+    pieces (A.ListItem task (p : rest)) (A.ListItem task1 [p1]) (A.ListItem task2 (p2 : rest')) =
+      task1 == task && task2 == (False <$ task) && rest == rest' && joined p p1 p2
+    pieces _ _ _ = False
+    joined p p1 p2 = case (p, p1, p2) of
+      (A.Para xs, A.Para ys, A.Para zs) -> same xs ys zs
+      (A.Plain xs, A.Plain ys, A.Plain zs) -> same xs ys zs
+      _ -> False
+    same xs ys zs = not (leavesTagOpen ys) && merged xs == merged (ys <> [A.Str cut] <> zs)
+    -- Raw HTML is read a tag at a time, so a cut between an opening tag
+    -- and its closing tag (@<span class="x">a‸b</span>@, as the toolbar's
+    -- colours write) joins back to the same inlines, and parts the
+    -- element between two items: the first paragraph may not open more
+    -- tags than it closes. A tag that needs no closing one (@<br>@) counts
+    -- as opened, which leaves the line break plain.
+    leavesTagOpen ys =
+      let tags = [t | A.RawHtml t <- ys]
+          opening t = "<" `T.isPrefixOf` t && not ("</" `T.isPrefixOf` t) && not ("<!" `T.isPrefixOf` t) && not ("/>" `T.isSuffixOf` t)
+       in length (filter opening tags) > length (filter ("</" `T.isPrefixOf`) tags)
+    merged = \case
+      A.Str a : A.Str b : rest -> merged (A.Str (a <> b) : rest)
+      A.Str "" : rest -> merged rest
+      x : rest -> x : merged rest
+      [] -> []
+
+-- | Whether two lists of the same length differ in exactly one place, and
+-- there as this says.
+oneDiffers :: (Eq a) => (a -> a -> Bool) -> [a] -> [a] -> Bool
+oneDiffers f xs ys =
+  length xs == length ys && case [(x, y) | (x, y) <- zip xs ys, x /= y] of
+    [(x, y)] -> f x y
+    _ -> False
+
+----------------------------------------------------------------------
+-- The numbers after a new item
+
+-- | 'renumberLimit' is the most items after a new item Enter renumbers:
+-- past it, none. The page numbers a list from its first item whatever
+-- the numbers after it say.
+renumberLimit :: Int
+renumberLimit = 1000
+
+-- | 'Following' is what becomes of the numbers of the items after a new
+-- item.
+data Following
+  = -- | These are rewritten (none, where the list is not renumbered).
+    Following [Renumbered]
+  | -- | The list may go on past the text given, and nothing was looked at.
+    PastText
+
+-- | 'Renumbered' is a number of an item that Enter rewrites: where it
+-- starts, in characters after the cursor, the number as written, and the
+-- number written in its place.
+data Renumbered = Renumbered Int Text Text
+
+-- | The numbers after an answer that adds an item to a numbered list,
+-- given whether the text ends where the page ends: each later item of
+-- that list (the same list, not one nested in an item, nor one after it)
+-- the number before it plus one. Only where those items were numbered one
+-- after another from the item the cursor is in, the new number and every
+-- one after it have at most nine digits, and they are at most
+-- 'renumberLimit'; and where the parser reads the text renumbered as it
+-- reads it without, block for block: a number one digit wider moves its
+-- item's text one column right, and leaves the item's later lines as
+-- they are, which keeps a lazy line in its paragraph and takes a second
+-- paragraph indented to the old column out of the item.
+following :: Bool -> Text -> Text -> Answered -> Following
+following ends before after done = fromMaybe (Following []) $ do
+  guard $ case done.answer of
+    NewLineWith _ -> True
+    SplitWith _ _ -> True
+    _ -> False
+  let text = before <> after
+      n = T.count "\n" before + 1
+      textLines = T.splitOn "\n" text
+      lineStarts = scanl (\at l -> at + T.length l + 1) 0 textLines
+  place <- placeOf done.shapes n
+  Item item <- lastMay place.containers
+  Numbered delimiter <- Just item.mark
+  -- The list the cursor's item is in: the one with an item whose mark
+  -- is where the item's is, line and column. A line is not enough: a
+  -- list may start on its outer item's first line (@1. 1. a@), and both
+  -- lists start there.
+  let own = (item.firstLine, item.markColumn)
+  numbered <- find (\s -> s.kind == ListShape && any ((== Just own) . markOf) s.inner) (everyShape done.shapes)
+  let marks = mapMaybe markOf numbered.inner
+      later = drop 1 (dropWhile (/= own) marks)
+      numberAt (l, c) = do
+        line <- atMay textLines (l - 1)
+        let mark = markWritten (Numbered delimiter) (T.drop (c - 1) line)
+        guard (not (T.null mark))
+        let digits = T.dropEnd 1 mark
+        number <- readMaybe (T.unpack digits) :: Maybe Integer
+        pure (digits, number)
+  (_, first') <- numberAt (item.firstLine, item.markColumn)
+  numbers <- traverse numberAt later
+  guard (map snd numbers == take (length numbers) [first' + 1 ..])
+  -- The list ends in the text, before a line of something else, or the
+  -- text ends where the page does. The list's last line is its last
+  -- item's: the parser may run a list's own lines on to the start of the
+  -- block after it.
+  let lastLine = fromMaybe 0 (maximumMay (map (snd . extent) numbered.inner))
+      whole = ends || any (not . T.null . T.strip) (drop lastLine textLines)
+  if not whole
+    then pure PastText
+    else do
+      guard (not (null numbers) && length numbers <= renumberLimit && first' + 1 + fromIntegral (length numbers) <= 999999999)
+      let cursorAt = T.length before
+      changes <- for (zip later numbers) $ \((l, c), (digits, number)) -> do
+        at <- atMay lineStarts (l - 1)
+        let offset = at + c - 1 - cursorAt
+        guard (offset >= T.length (T.takeWhile (/= '\n') after))
+        pure (Renumbered offset digits (show (number + 1)))
+      let renumberedAfter = replaced [(offset, offset + T.length was, now) | Renumbered offset was now <- changes] after
+          (before', after') = written before renumberedAfter done.answer
+      spans <- rightToMaybe (parseWithSpans (before' <> after'))
+      guard (map snd spans == map snd done.blocks)
+      pure (Following changes)
+
+-- | Where an item's mark is: its line and its column.
+markOf :: Shape -> Maybe (Int, Int)
+markOf s = fst <$> head s.parts
+
+-- | Every shape, at any depth.
+everyShape :: [Shape] -> [Shape]
+everyShape = concatMap (\s -> s : everyShape s.inner)
+
+-- | A text with ranges replaced: each its start and end, in characters,
+-- and what goes there, in order, none overlapping.
+replaced :: [(Int, Int, Text)] -> Text -> Text
+replaced changes t = go 0 changes
+  where
+    go at = \case
+      [] -> T.drop at t
+      (a, b, new) : rest -> T.take (a - at) (T.drop at t) <> new <> go b rest
+
+----------------------------------------------------------------------
 -- Reading the answer back
 
 -- | Whether the parser reads the text an answer writes as expected, on the
@@ -456,22 +841,25 @@ signature = map $ \case
 -- before the answer). A new item before a line indented as deep as its
 -- text would take that line in (@2)    code@ before @   1. text@, which
 -- the item @2)@ did not hold).
-readsAsMeant :: Text -> Text -> [Shape] -> Enter -> Expected -> Bool
-readsAsMeant before after oldShapes answer expected = fromMaybe False $ do
+readsAsMeant :: Text -> Text -> [Shape] -> Enter -> Expected -> Maybe [(Maybe (Int, Int), Block)]
+readsAsMeant before after oldShapes answer expected = do
   let (before', after') = written before after answer
       text = before' <> after'
       textLines = T.splitOn "\n" text
       n = T.count "\n" before' + 1
-  shapes <- rightToMaybe (parseShapes text)
+  (shapes, spans) <- rightToMaybe (parseShapesAndSpans text)
   -- Every line after the cursor's with anything on it is read as before:
   -- in the same quotations and items, each by the line it starts on in the
   -- text before the answer (0 for the new line's own), and as the same
-  -- kind of block (text, code). A blank line belongs to no item.
+  -- kind of block (text, code). A blank line belongs to no item. After a
+  -- split, the item the new line starts takes the place of the item split
+  -- for the lines below: they were the old item's, and are the new one's.
   let cursor = T.count "\n" before + 1
       oldLines = T.splitOn "\n" (before <> after)
       below = [m | (m, l) <- zip [cursor + 1 ..] (drop cursor oldLines), not (T.null (T.strip l))]
       (moved, renumber) = case answer of
         NewLineWith _ -> (1, \l -> if l == n then 0 else if l > n then l - 1 else l)
+        SplitWith _ _ -> (1, \l -> if l >= n then l - 1 else l)
         _ -> (0, identity)
       old = readings oldShapes
       new = readings shapes
@@ -490,11 +878,16 @@ readsAsMeant before after oldShapes answer expected = fromMaybe False $ do
         layout <- layouts textLines place.containers
         (taken, rest) <- walkLine n line (zip place.containers layout)
         pure (effective n (T.null (T.strip rest)) place.containers, taken, rest)
-  case expected of
+  meant <- case expected of
     NewItem outer listLine task -> do
       (kept, _, rest) <- marks
       pure $ case lastMay kept of
         Just (Item item) -> signature (initSafe kept) == outer && item.firstLine == n && item.listLine == listLine && item.task == task && emptyItem item rest
+        _ -> False
+    SplitItem outer listLine task -> do
+      (kept, _, rest) <- marks
+      pure $ case lastMay kept of
+        Just (Item item) -> signature (initSafe kept) == outer && item.firstLine == n && item.listLine == listLine && item.task == task && not (emptyItem item rest)
         _ -> False
     QuotedLine outer -> do
       (kept, taken, rest) <- marks
@@ -506,3 +899,5 @@ readsAsMeant before after oldShapes answer expected = fromMaybe False $ do
     -- text 'enter' is given decides nothing more: a footnote's definition
     -- above takes in a blank line as one of its own.
     Outside -> pure (T.null (T.strip line) && maybe True (\(cs, kind, _) -> kind /= CodeShape && not (any ((== 0) . fst) cs)) (Map.lookup n (readings shapes)))
+  guard meant
+  pure spans

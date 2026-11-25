@@ -24,6 +24,7 @@ module Wiki.Core.Markdown.Starts
   ( blockStarts
   , Kept (..)
   , textRange
+  , longerEnd
   , blockDefinitions
   , Earlier (..)
   , earlierFrom
@@ -132,19 +133,45 @@ data Kept = Kept
 -- marker typed above it) Enter sees only on the lines it is given.
 textRange :: [Kept] -> Int -> Int -> Int -> Int -> Maybe (Int, Int)
 textRange kept firstChange lineStart lineEnd len = do
-  let starts = ordNub (sort [k | k <- kept, k.at == k.lineFrom])
-      -- A start the check read, on a line the changes have left: one
-      -- that ends at or before the first change, and starts before it. A
-      -- start the changes mapped onto an empty line where the first
-      -- change begins (one in a block deleted there) is none.
-      checked k = k.lineFrom < firstChange && k.lineTo <= firstChange
-      begins = fromMaybe 0 (lastMay [k.at | k <- starts, k.at < lineStart, checked k])
-      below = ordNub [k.at | k <- starts, checked k || k.flush]
-      ends = case dropWhile (<= lineEnd) below of
+  let (begins, below) = cutsOf kept firstChange lineStart
+      ends = case dropWhile (<= lineEnd) (map fst below) of
         _ : end : _ -> end - 1
         _ -> len
   guard (ends - begins <= textLimit)
   pure (begins, ends)
+
+-- | Where a longer text ends, for the numbers of a list's items after a
+-- new one (Enter's 'Wiki.Core.Markdown.Enter.Edit' asks for it): from
+-- where 'textRange''s text starts, as far as 'textLimit' allows, at the
+-- end of the first line of a start below the cursor's line, or at the
+-- text's end. The text holds the blocks before that start whole, and the
+-- start's first line, so that a list that ends just before the start is
+-- seen to end: Enter changes no number past the end of the list it reads,
+-- and reads the list's end in this text or changes none. The end of
+-- 'textRange''s text where nothing further fits, and nothing where
+-- 'textRange' gives nothing.
+longerEnd :: [Kept] -> Int -> Int -> Int -> Int -> Maybe Int
+longerEnd kept firstChange lineStart lineEnd len = do
+  (begins, ends) <- textRange kept firstChange lineStart lineEnd len
+  let (_, below) = cutsOf kept firstChange lineStart
+      fitting = [e | e <- [lineTo | (s, lineTo) <- below, s > lineEnd] <> [len], e >= ends, e - begins <= textLimit]
+  pure (fromMaybe ends (maximumMay fitting))
+
+-- | Where a text handed to Enter may start, for a cursor's line starting
+-- here, and the starts below which it may end before, each with where
+-- its line ends.
+cutsOf :: [Kept] -> Int -> Int -> (Int, [(Int, Int)])
+cutsOf kept firstChange lineStart = (begins, below)
+  where
+    starts = ordNub (sort [k | k <- kept, k.at == k.lineFrom])
+    -- A start the check read, on a line the changes have left: one that
+    -- ends at or before the first change, and starts before it. A start
+    -- the changes mapped onto an empty line where the first change begins
+    -- (one in a block deleted there) is none.
+    checked k = k.lineFrom < firstChange && k.lineTo <= firstChange
+    begins = fromMaybe 0 (lastMay [k.at | k <- starts, k.at < lineStart, checked k])
+    -- Starts at one place are on one line.
+    below = Map.toAscList (Map.fromList [(k.at, k.lineTo) | k <- starts, checked k || k.flush])
 
 ----------------------------------------------------------------------
 -- The completion's text around the cursor

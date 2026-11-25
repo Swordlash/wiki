@@ -66,6 +66,8 @@ $( browserJS
      , ("js_recordPromise", "wiki_test_device_record", Safe, [t|JSText -> IO (Promise JSText)|])
      , ("js_scripted", "wiki_test_passkeys_scripted", Safe, [t|IO ()|])
      , ("js_cancel_next", "wiki_test_passkeys_cancel_next", Safe, [t|IO ()|])
+     , ("js_add_unwrapped", "wiki_test_vault_server_add_unwrapped", Safe, [t|IO ()|])
+     , ("js_other_tab_dropsPromise", "wiki_test_other_tab_drops", Safe, [t|JSText -> IO (Promise ())|])
      , ("js_stash", "wiki_test_vault_server_stash", Safe, [t|IO ()|])
      , ("js_exportablePromise", "wiki_test_exportable_keys_left", Safe, [t|IO (Promise Int)|])
      , ("js_keys_mark", "wiki_test_keys_mark", Safe, [t|IO ()|])
@@ -96,6 +98,9 @@ $( browserJS
      , ("js_heard_signed_in", "wiki_test_heard_signed_in", Safe, [t|IO Bool|])
      ]
  )
+
+js_other_tab_drops :: JSText -> IO ()
+js_other_tab_drops a1 = if inBrowser then wait =<< js_other_tab_dropsPromise a1 else pure inert
 
 js_new_device :: IO ()
 js_new_device = if inBrowser then wait =<< js_new_devicePromise else pure inert
@@ -1077,6 +1082,89 @@ userKeys m = describe "the user's keys" $ do
     any (\r -> "test-key-anthropic-first-device" `T.isInfixOf` r.body) <$> asked `shouldReturn` False
     closed again
 
+  -- The passkeys of the vault, made and used in Security's "Also unlock
+  -- with a passkey" and the assistant's field (ported from the examples of
+  -- the assistant's syncing, which made and used them before WP5.84).
+  describe "a passkey for the vault" $ do
+    it "makes a passkey whose PRF output comes only when it is used, with one more touch" $ runOwn $ do
+      ui <- securityAfterSignIn
+      unsafeIOToPageM (js_install True False)
+      before <- touches
+      addPasskey ui
+      length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
+      touches `shouldReturn` (before + 2)
+      closed ui
+
+    it "refuses a passkey without the PRF extension for the vault, says why, and keeps it to sign in with" $ runOwn $ do
+      ui <- securityAfterSignIn
+      unsafeIOToPageM (js_install False False)
+      addPasskey ui
+      find ui ".keys-error" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "It was kept to sign in with")
+      kept <- vaultState
+      (isJust (field ["passkeys", "0", "id"] kept), field ["passkeys", "0", "wrapped", "key"] kept, isJust (field ["passkeys", "1"] kept))
+        `shouldBe` (True, Nothing, False)
+      length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 0
+      closed ui
+
+    it "makes a new passkey for the vault when the one the user has is not used" $ runOwn $ do
+      ui <- securityAfterSignIn
+      existing <- fromJSText <$> unsafeIOToPageM js_existing
+      -- The dialog for the passkey the user has is closed: a new one is made.
+      unsafeIOToPageM js_cancel_next
+      addPasskey ui
+      length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
+      kept <- vaultState
+      (field ["passkeys", "0", "id"] kept, isJust (field ["passkeys", "1", "wrapped", "key"] kept), isJust (field ["passkeys", "2"] kept))
+        `shouldBe` (Just (Aeson.String existing), True, False)
+      closed ui
+
+    it "unlocks the vault with a passkey the user has already, making none" $ runOwn $ do
+      ui <- securityAfterSignIn
+      existing <- fromJSText <$> unsafeIOToPageM js_existing
+      before <- touches
+      addPasskey ui
+      length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
+      -- One touch: the passkey used, none made.
+      touches `shouldReturn` (before + 1)
+      kept <- vaultState
+      (field ["passkeys", "0", "id"] kept, isJust (field ["passkeys", "0", "wrapped", "key"] kept), isJust (field ["passkeys", "1"] kept))
+        `shouldBe` (Just (Aeson.String existing), True, False)
+      closed ui
+
+    it "offers for unlocking only the passkeys that hold a copy of the vault's key" $ runOwn $ do
+      ui <- securityAfterSignIn
+      addPasskey ui
+      length <$> findAll ui ".keys-unlock-passkey" `shouldReturn` 1
+      unmount ui
+      -- Another device, and a passkey of the user's that holds no copy,
+      -- which the stub would use first if it were offered.
+      unsafeIOToPageM (evaluate =<< js_new_device)
+      unsafeIOToPageM js_add_unwrapped
+      me <- signedInAs "user-editor"
+      answerWith "GET" "api/v1/session" 200 me
+      again <- startServer m (UserSettings AssistantSection)
+      there <- find again ".assistant-provider-settings[data-provider='anthropic']"
+      before <- touches
+      findIn there ".secret-field-unlock-passkey" >>= click
+      _ <- findIn there ".secret-field-value"
+      length <$> findAllIn there ".secret-field-locked" `shouldReturn` 0
+      touches `shouldReturn` (before + 1)
+      closed again
+
+    it "lets go of the vault's key another tab let go of, and shows the vault locked" $ runOwn $ do
+      ui <- signedOutAt (UserSettings AssistantSection) "editor's password"
+      signIn ui "editor's password"
+      _ <- madeKeys
+      there <- find ui ".assistant-provider-settings[data-provider='anthropic']"
+      -- Unlocked here by the sign-in with the password.
+      _ <- findIn there ".secret-field-value"
+      unsafeIOToPageM (evaluate =<< js_stores_key (toJSText "vault:user-editor")) `shouldReturn` True
+      unsafeIOToPageM (evaluate =<< js_other_tab_drops (toJSText "vault:user-editor"))
+      again <- find ui ".assistant-provider-settings[data-provider='anthropic']"
+      findIn again ".secret-field-locked" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "locked in this browser")
+      unsafeIOToPageM (evaluate =<< js_stores_key (toJSText "vault:user-editor")) `shouldReturn` False
+      closed ui
+
   -- The owner's wiki at work is served over plain HTTP, where the browser
   -- gives no crypto.subtle (WP5.79 of docs/PLAN.md). OPAQUE's client needs
   -- none: the sign-in and the change of password go through, and give no
@@ -1214,6 +1302,22 @@ userKeys m = describe "the user's keys" $ do
       serverStops
     vaultState :: PageM s Value
     vaultState = waitQuiet *> unsafeIOToPageM (fromMaybe Aeson.Null . decodeStrict . encodeUtf8 . fromJSText <$> js_vault_state)
+    -- The stub's touches of a passkey so far.
+    touches :: PageM s Int
+    touches = waitQuiet *> unsafeIOToPageM js_touches
+    -- Signed in with the password, which makes the vault, at Security.
+    securityAfterSignIn :: PageM s (Mounted s Shell.Query Void m)
+    securityAfterSignIn = do
+      ui <- signedOut "editor's password"
+      signIn ui "editor's password"
+      _ <- madeKeys
+      openSettings ui SecuritySection
+      pure ui
+    -- "Also unlock with a passkey", with the password.
+    addPasskey :: Mounted s Shell.Query Void m -> PageM s ()
+    addPasskey ui = do
+      find ui ".account-keys input[name=keys-password]" >>= (`typeText` "editor's password")
+      find ui ".keys-passkey-add" >>= click
     answerAccount = do
       answerWith "GET" "api/v1/account/identities" 200 (Aeson.object ["password" Aeson..= True, "identities" Aeson..= ([] :: [Text])])
       answerWith "GET" "api/v1/account/sessions" 200 ([] :: [Text])

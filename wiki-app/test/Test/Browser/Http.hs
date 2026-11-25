@@ -24,6 +24,7 @@ module Test.Browser.Http
   , serveDemo
   , quietServer
   , answerWith
+  , servePlugins
   , answerUsers
   , answerRaw
   , asked
@@ -135,6 +136,7 @@ $( browserJS
      [ ("js_server_start", "wiki_test_server_start", Safe, [t|IO ()|])
      , ("js_server_stop", "wiki_test_server_stop", Safe, [t|IO ()|])
      , ("js_server_answer", "wiki_test_server_answer", Safe, [t|JSText -> JSText -> Int -> JSText -> IO ()|])
+     , ("js_server_plugins", "wiki_test_server_plugins", Safe, [t|IO ()|])
      , ("js_server_offline", "wiki_test_server_offline", Safe, [t|Bool -> IO ()|])
      , ("js_server_hold", "wiki_test_server_hold", Safe, [t|IO ()|])
      , ("js_server_hold_at", "wiki_test_server_hold_at", Safe, [t|JSText -> JSText -> IO ()|])
@@ -324,6 +326,13 @@ ownRegistration user = RegistrationChallenge {credential = user, response = fake
 
 serverStops :: PageM s ()
 serverStops = unsafeIOToPageM js_server_stop
+
+-- | The server keeps the plugins' options as the real one does
+-- (@jsbits\/test-fetch.js@'s @wiki_test_server_plugins@): written whole,
+-- cleared, and read back with which plugins are on. Installed after the
+-- server starts, until it stops.
+servePlugins :: PageM s ()
+servePlugins = unsafeIOToPageM js_server_plugins
 
 answerWith :: (ToJSON a) => Text -> Text -> Int -> a -> PageM s ()
 answerWith method url status value = unsafeIOToPageM (js_server_answer (toJSText method) (toJSText url) status (toJSText (decodeUtf8 (toS (encode value)))))

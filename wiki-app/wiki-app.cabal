@@ -392,6 +392,7 @@ test-suite wiki-app-test
         Test.FakeVault
         Test.PluginImports
         Test.AssistantMove
+      Test.LegacyKeys
       Test.AssistantSettings
       Test.PluginSecrets
         Test.Plugins
@@ -497,6 +498,7 @@ test-suite wiki-app-browser-test
       Test.Browser.Persist
       Test.Browser.Personal
       Test.Browser.AssistantMove
+      Test.LegacyKeys
       Test.Browser.PluginSecrets
       Test.Browser.Avatars
       Test.Browser.Policy

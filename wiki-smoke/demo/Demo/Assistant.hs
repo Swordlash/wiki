@@ -51,9 +51,10 @@ spec site =
     -- A key for Claude, kept, its list of models fetched with it (from the
     -- script, which answers for every provider on this page).
     let claude = locator page "#app .assistant-provider-settings[data-provider='anthropic']"
-    fill (locator claude ".assistant-key") "sk-ant-smoke"
-    click (locator claude ".assistant-key-form button[type='submit']")
+    fill (locator claude ".secret-field-value") "sk-ant-smoke"
+    click (locator claude ".secret-field-keep")
     waitQuiet page
+    count (locator claude ".secret-field-set") `shouldReturn` 1
     textContent (locator claude ".assistant-listed") >>= (`shouldSatisfy` Text.isInfixOf "2 models fetched")
     -- The scripted provider's default effort, high, for new conversations.
     let effort = locator page "#app .assistant-provider-settings[data-provider='scripted'] .assistant-default-effort"

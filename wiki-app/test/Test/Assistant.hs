@@ -24,7 +24,7 @@ import Web.Storage.IndexedDB (Database (..))
 import Web.Storage.IndexedDB qualified as IDB
 import Wiki.Api.Vault (StoredVault (..))
 import Wiki.App.Assistant (KeyOwner (..), MonadAssistant (..), assistantDatabase, pageKeys, readRecord, writeRecord)
-import Wiki.App.Assistant.Keys (Keys (..), changeKeys, readKeys)
+import Test.LegacyKeys (Keys (..), changeKeys, readKeys)
 import Wiki.App.Assistant.Sync (Fetched (..), MonadVault (..), owned)
 import Wiki.App.Vault (VaultDevice (..), readDevice, setVaultAskEachTime, settleKeys, unlockWithPassword)
 import Wiki.Core.Assistant

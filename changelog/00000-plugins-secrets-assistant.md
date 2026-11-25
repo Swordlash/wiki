@@ -14,7 +14,9 @@ title: The writing assistant's keys follow you in your vault
   mode, and the page's cap are kept on the wiki's server too, so that they
   follow you as well. These are not encrypted: the server can see, for
   example, that you use Claude Opus 5.5 at medium effort through your
-  organisation's gateway. Your keys are never among them.
+  organisation's gateway. So the wiki's server now sees the service's
+  address, the model, the effort, the mode and the page's cap; your API
+  keys stay sealed.
 
 - Each key under Settings, Writing assistant, is a field that says
   whether a key is set, tests a typed key before keeping it, and forgets

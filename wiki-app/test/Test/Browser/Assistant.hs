@@ -47,32 +47,33 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types qualified as Aeson
 import Data.ByteString.Lazy qualified as BSL
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, replace)
 import System.IO.Unsafe (unsafePerformIO)
-import Test.Browser.Http (answerWith, serveDemo, serverStarts, serverStops, startServer)
+import Test.Browser.Http (answerWith, serveDemo, servePlugins, serverStarts, serverStops, startServerOver)
 import Test.Browser.Mount (slugs)
 import Test.Browser.Mount qualified as Mount
 import Test.Browser.Text (editorText, markdown, untilFocusTaken)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
-import Wiki.Api.Plugins (PluginChoice (..))
+import Wiki.Api.Plugins (Plugins)
+import Wiki.App.Backend.Http (browserTransport, newHttpEnv, runHttpWiki)
+import Wiki.App.Backend.Plugins (MonadPlugins (..))
 import Wiki.Api.ServerSettings (AssistantApi (..), AssistantService (..))
 import Wiki.Api.Types (SessionInfo (..))
 import Wiki.App.Assistant (MonadAssistant (..))
-import Wiki.App.Assistant.Keys (Keys, changeKeys)
+import Test.LegacyKeys (Keys, changeKeys)
 import Wiki.App.Assistant.Sync (MonadVault)
-import Wiki.App.Backend (MonadWiki (..), Session (..), session)
+import Wiki.App.Backend (MonadWiki (..), Session (..), WikiError, session)
 import Wiki.App.Backend.Mem (newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State qualified as M
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Plugin (Manifest (..))
 import Wiki.App.Plugin.Host.Secrets (deviceSecretsSlot, loadLocal, localSlot, readSecrets)
-import Wiki.App.Plugin.Registry (assistantId, manifests)
+import Wiki.App.Plugin.Registry (assistantId, manifests, optionsFor)
 import Wiki.App.Route (Route (..), SettingsSection (..))
 import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Assistant (ApiKey (..), Mode (..), ModelName (..), Provider (..), ProviderSettings (..), Settings (..), aboutTokens, chooseProvider, defaultSettings, settingsOf, withBaseUrl, withEffort, withKey, withMode, withModel)
@@ -955,7 +956,10 @@ settingsOver m services = do
     wiki <- newMemWiki ((demoState demoNow) {M.current = Just (UserId "user-editor")})
     runMemWiki wiki session
   answerWith "GET" "api/v1/session" 200 SessionInfo {user = me.user, groups = me.groups, grants = me.grants, standing = SignedIn, providers = [], exports = [], boxes = [], homePage = me.homePage, mathMacros = Nothing, assistantServices = services, whatsNew = Nothing}
-  ui <- startServer m (UserSettings AssistantSection)
+  servePlugins
+  env <- unsafeIOToPageM (newHttpEnv browserTransport)
+  unsafeIOToPageM (writeIORef optionsHere (Just (runTest (runHttpWiki env pluginsNow :: m (Either WikiError Plugins)))))
+  ui <- startServerOver m env (UserSettings AssistantSection)
   _ <- find ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service"
   pure ui
 
@@ -1062,8 +1066,9 @@ keep m user settings = unsafeIOToPageM . runTest $ do
 
 -- | The settings kept for a user, read once the program is quiet: the
 -- keys among the assistant's secrets, what was learnt in its cache in
--- this browser, and the options as the wiki the example started last
--- keeps them ('startWith').
+-- this browser, and the options as the backend the example started last
+-- reads them ('MonadPlugins', 'optionsHere'): the demo's wiki, or the
+-- test's server.
 settingsFor :: forall m -> (MonadBrowserTest m, MonadAssistant m, MonadVault m) => UserId -> PageM s Settings
 settingsFor m user =
   waitQuiet
@@ -1072,18 +1077,16 @@ settingsFor m user =
           let manifest = fromMaybe (panic "no assistant") (head (filter (\x -> x.id == assistantId) manifests))
           keys <- runTest (readSecrets user manifest :: m _)
           learnt <- runTest (loadLocal user assistantId :: m _)
-          options <-
-            readIORef lastWiki >>= \case
-              Nothing -> pure Nothing
-              Just wiki -> (\st -> (\c -> c.options) =<< Map.lookup assistantId =<< Map.lookup user st.pluginChoices) <$> readIORef wiki
+          options <- readIORef optionsHere >>= maybe (pure Nothing) (fmap (either (const Nothing) (optionsFor assistantId)))
           pure (fromParts options (fromRight mempty keys) learnt)
       )
 
--- | The wiki the example started last, whose backend keeps the plugins'
--- options: one page runs one example at a time.
-lastWiki :: IORef (Maybe (IORef M.MemState))
-lastWiki = unsafePerformIO (newIORef Nothing)
-{-# NOINLINE lastWiki #-}
+-- | Which plugins are on, with their options, as the backend the example
+-- started last reads them for its reader: one page runs one example at a
+-- time.
+optionsHere :: IORef (Maybe (IO (Either WikiError Plugins)))
+optionsHere = unsafePerformIO (newIORef Nothing)
+{-# NOINLINE optionsHere #-}
 
 -- | 'Mount.startWith', the wiki kept for 'settingsFor'.
 startWith
@@ -1094,7 +1097,7 @@ startWith
   -> PageM s (Mounted s Shell.Query Void m, IORef M.MemState)
 startWith m who route = do
   (ui, wiki) <- Mount.startWith m who route
-  unsafeIOToPageM (writeIORef lastWiki (Just wiki))
+  unsafeIOToPageM (writeIORef optionsHere (Just (runMemWiki wiki pluginsNow)))
   pure (ui, wiki)
 
 -- | 'Mount.startOn', the wiki kept for 'settingsFor'.
@@ -1104,7 +1107,7 @@ startOn
   => IORef M.MemState
   -> Route
   -> PageM s (Mounted s Shell.Query Void m)
-startOn m wiki route = unsafeIOToPageM (writeIORef lastWiki (Just wiki)) *> Mount.startOn m wiki route
+startOn m wiki route = unsafeIOToPageM (writeIORef optionsHere (Just (runMemWiki wiki pluginsNow))) *> Mount.startOn m wiki route
 
 -- | Run an example on a page without the scripted provider's script, and
 -- leave the page without one. The script is a global of the page

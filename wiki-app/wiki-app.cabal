@@ -135,7 +135,6 @@ library
       Wiki.App.View.Plugins
       Wiki.App.View.Plugins.Machine
       Wiki.App.View.WikiPlugins
-      Wiki.App.View.WikiPlugins.Machine
       Wiki.App.View.Activity
       Wiki.App.View.Backups
       Wiki.App.View.Invite

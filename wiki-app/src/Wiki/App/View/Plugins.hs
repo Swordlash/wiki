@@ -14,11 +14,11 @@
 -- the plugin back on. The writing assistant's row links to its options,
 -- the section "Writing assistant", which stays a section of its own.
 --
--- What the section shows is the shell's machine
+-- What the section shows is the plugins' state
 -- ("Wiki.App.View.Plugins.Machine"), which the shell keeps and runs, so
 -- that a write sent goes on after the section is gone ("Wiki.App.Shell"):
--- this module draws the model it is given and raises the reader's acts as
--- the machine's events.
+-- this module draws the state it is given and raises the reader's acts as
+-- its events.
 module Wiki.App.View.Plugins
   ( Input (..)
   , component
@@ -44,11 +44,8 @@ import Wiki.App.View.Plugins.Machine (Event (..), Model (..), shownState)
 -- | 'Input' is what the section is given.
 data Input = Input
   { model :: Model
-  -- ^ The shell's machine's model, as it is now.
-  , offForWiki :: Set PluginId
-  -- ^ The plugins off for the wiki, as the shell holds them: the one
-  -- source of them, which the administration's switch and every read of
-  -- what is on keep current. The model's own are from its last read.
+  -- ^ The plugins' state, as the shell holds it now: the one value of
+  -- what is on, and the user's changes not done yet.
   , router :: Router Route
   -- ^ For the link to a plugin's options.
   }
@@ -139,9 +136,9 @@ component =
       |]
       where
         shown = shownState m manifest.id
-        offForAll = Set.member manifest.id st.input.offForWiki
+        offForAll = Set.member manifest.id known.offForWiki
         -- The switch shows the state chosen while its write is out.
-        isOnNow = isOn known {offForWiki = st.input.offForWiki, mine = Map.insert manifest.id PluginChoice {state = shown, options = Nothing} known.mine} manifest
+        isOnNow = isOn known {mine = Map.insert manifest.id PluginChoice {state = shown, options = Nothing} known.mine} manifest
 
     handleAction :: Action -> H.HalogenM State Action Empty Event m ()
     handleAction = \case

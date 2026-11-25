@@ -304,6 +304,26 @@ section = describe "Wiki.App.View.Plugins, in the shell on the in-memory DOM" $ 
       quiet
       saysOff view `shouldReturn` True
 
+  -- Codex's fourth round on #374: the section read what is on beside the
+  -- administrator's save still out, its read answered the set before the
+  -- save and counted as later, and the shell dropped the save's answer.
+  -- Now every ask about the plugins is one flight.
+  it "keeps the administrator's save when Plugins opens before the save answers" $ do
+    gate <- newGate
+    withShellAt (demoState demoNow) {current = Just (UserId "user-admin")} free {gate = Just gate} (Admin R.Permissions) $ \view router wiki quiet -> do
+      click view ".admin-plugin[data-plugin=assistant] .admin-plugin-off"
+      quiet
+      map (\h -> h.asked) <$> held gate `shouldReturn` ["the wiki's set"]
+      Router.navigate router (UserSettings PluginsSection)
+      quiet
+      held gate >>= traverse_ (\h -> answer gate h ())
+      quiet
+      (\st -> st.pluginsOff) <$> readIORef wiki `shouldReturn` Set.fromList [assistant]
+      rows view `shouldReturn` rowsWith [(assistant, (False, False, True))]
+      Router.navigate router (UserSettings AssistantSection)
+      quiet
+      saysOff view `shouldReturn` True
+
 --------------------------------------------------------------------------------
 -- The editor
 

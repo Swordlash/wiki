@@ -8,12 +8,12 @@
 -- The server writes each change to the audit log (@settings.plugins@).
 --
 -- It is shown in the section "Permissions", under whom the wiki lets in,
--- beside the wiki's other settings. What it shows is the shell's machine
--- ("Wiki.App.View.WikiPlugins.Machine"), which the shell keeps and runs,
--- so that a save sent goes on after the view is gone and the shell hears
--- what it changed ("Wiki.App.Shell"); other readers see it at their next
--- read of the session. This module draws the model it is given and raises
--- the administrator's acts as the machine's events.
+-- beside the wiki's other settings. What it shows is the plugins' state
+-- ("Wiki.App.View.Plugins.Machine"), which the shell keeps and runs, so
+-- that a save sent goes on after the view is gone, and is in the one value
+-- of what is on as soon as it is done ("Wiki.App.Shell"); other readers
+-- see it at their next read of the session. This module draws the state
+-- it is given and raises the administrator's acts as its events.
 module Wiki.App.View.WikiPlugins
   ( component
   )
@@ -29,7 +29,7 @@ import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Plugin (Manifest (..))
 import Wiki.App.Plugin.Registry (manifests)
 import Wiki.App.View.Common (errorMessage)
-import Wiki.App.View.WikiPlugins.Machine (Event (..), Model (..), shownOff)
+import Wiki.App.View.Plugins.Machine (Event (..), Model (..), shownOff)
 
 newtype State = State {model :: Model}
 
@@ -66,7 +66,7 @@ component =
       |]
       where
         m = st.model
-        body = case (m.off, shownOff m) of
+        body = case (m.known, shownOff m) of
           (Just (Left e), _) -> [hh|<p class="error admin-plugins-error" role="alert">{{ errorMessage e }}</p>|]
           (_, Just off) ->
             [hh|

@@ -1,8 +1,9 @@
 -- | 'Model' is everything the application knows of which plugins are on,
 -- and 'step' is the one place it changes (decision 82 of docs/PLAN.md):
 -- the one value of what is on ('known': the plugins off for the wiki and
--- the user's own states), what the reader asked to change and is not done
--- yet, and why a change was refused. The shell keeps it ("Wiki.App.Shell")
+-- the user's own states), the external plugins installed and who may add
+-- them ('installed', "Wiki.Api.Plugins.External"), what the reader asked
+-- to change and is not done yet, and why a change was refused. The shell keeps it ("Wiki.App.Shell")
 -- and carries out its effects, so that an ask goes on after the view that
 -- made it is gone. Every view of the plugins draws it: the editor, through
 -- the context ('Wiki.App.Plugin.Registry.pluginsOn'), the settings'
@@ -28,6 +29,13 @@
 -- what waits ('wanted').
 --
 -- = What is known
+--
+-- A read is two requests, one after the other in the same flight: what is
+-- on ('Load'), then, when its answer comes, the external plugins installed
+-- ('LoadInstalled'), before any write that waits. The server answers each
+-- in a transaction of its own, so a change made elsewhere between the two
+-- is seen by the second only; the next read sees it in both. What is on is
+-- read in the session ('readIn') once both have answered in it.
 --
 -- A read answers with the whole value. A write, of a state or of options,
 -- answers with the user's choice for the one plugin written, and a save
@@ -80,10 +88,13 @@ module Wiki.App.View.Plugins.Machine
   , Write (..)
   , initial
   , initialWith
+  , initialRead
   , step
   , knownNow
   , held
   , readIn
+  , installedNow
+  , heldInstalled
   , stateOf
   , shownState
   , shownOptions
@@ -97,6 +108,7 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Protolude
 import Wiki.Api.Plugins (PluginChoice (..), PluginId, PluginState (..), Plugins (..), WikiPlugins (..))
+import Wiki.Api.Plugins.External (ExternalPlugins (..), noExternalPlugins)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.View.Latest (Ask, Asks, madeAfter, newAsk, noAsks, supersede, takes)
 
@@ -137,6 +149,11 @@ data Model = Model
   , adopting :: Map PluginId Value
   -- ^ The options to adopt for each plugin once what is on is read in
   -- this session ('OptionsAdopted').
+  , installed :: Maybe (Either WikiError ExternalPlugins)
+  -- ^ The external plugins the reader may run and who may add them, as
+  -- the last answers said it, or why they could not be read; 'Nothing'
+  -- until the first answer in the session. Nothing of it is held across a
+  -- change of reader: a user's own plugins are theirs alone.
   }
   deriving stock (Eq, Show)
 
@@ -165,6 +182,9 @@ data Event
     Given Int
   | -- | The answer to the read made under this ticket.
     Loaded Ask (Either WikiError Plugins)
+  | -- | The answer to the read of the external plugins installed made
+    -- under this ticket, the second request of a read.
+    LoadedInstalled Ask (Either WikiError ExternalPlugins)
   | -- | The user chose a state for a plugin: on, off, or its default.
     Chosen PluginId PluginState
   | -- | The answer to the write for this plugin sent under this ticket:
@@ -195,6 +215,9 @@ data Event
 data Effect
   = -- | Read what is on; the answer comes back as 'Loaded'.
     Load Ask
+  | -- | Read the external plugins installed; the answer comes back as
+    -- 'LoadedInstalled'.
+    LoadInstalled Ask
   | -- | Set the user's state for a plugin; the answer comes back as
     -- 'Written'.
     WriteState Ask PluginId PluginState
@@ -212,10 +235,17 @@ data Effect
 initial :: Int -> Model
 initial = initialWith Nothing
 
--- | The plugins' state for a session, with what a read before the program
--- started answered (the shell's first load), if it did.
+-- | The plugins' state for a session, with what the first request of a
+-- read made before the program started answered, if it did, and the
+-- external plugins installed not read.
 initialWith :: Maybe Plugins -> Int -> Model
-initialWith read' session =
+initialWith read' = initialRead read' Nothing
+
+-- | The plugins' state for a session, with what the two requests of a read
+-- made before the program started answered (the shell's first load), if
+-- they did.
+initialRead :: Maybe Plugins -> Maybe ExternalPlugins -> Int -> Model
+initialRead read' readInstalled session =
   Model
     { known = Right <$> read'
     , asks = noAsks
@@ -231,6 +261,7 @@ initialWith read' session =
     , sessionFrom = noAsks
     , offBefore = mempty
     , adopting = mempty
+    , installed = Right <$> readInstalled
     }
 
 -- | The state after an event, and what it asks to be done.
@@ -238,7 +269,7 @@ step :: Event -> Model -> (Model, [Effect])
 step event m = case event of
   Refresh -> reading m
   Opened
-    | isNothing (knownNow m) -> reading m
+    | isNothing (knownNow m) || isNothing (installedNow m) -> reading m
     | otherwise -> (m, [])
   Given session
     | session /= m.session ->
@@ -247,8 +278,11 @@ step event m = case event of
     | otherwise -> (m, [])
   Loaded asked answer
     | ofSession asked m ->
-        let (m1, effects) = landed asked (taking asked answer m)
+        let (m1, effects) = secondRequest asked (taking asked answer m)
          in second (effects <>) (adoptWaiting m1)
+    | otherwise -> landed asked m
+  LoadedInstalled asked answer
+    | ofSession asked m -> landed asked (takingInstalled asked answer m)
     | otherwise -> landed asked m
   Chosen p wanted'
     | shownState m p == wanted' -> (m, [])
@@ -330,12 +364,23 @@ wrote asked p answer m1 =
 knownNow :: Model -> Maybe Plugins
 knownNow m = m.known >>= rightToMaybe
 
--- | Whether what is on is this session's read ('knownNow'), for the
--- session of this number: not the defaults 'held' gives before that read
--- answers, after it failed, or for a session the model has not been
--- given yet.
+-- | The external plugins installed, as the model holds them, once read.
+installedNow :: Model -> Maybe ExternalPlugins
+installedNow m = m.installed >>= rightToMaybe
+
+-- | Whether what is on and the external plugins installed are this
+-- session's read ('knownNow', 'installedNow'), for the session of this
+-- number: not the defaults 'held' gives before that read answers, after it
+-- failed, or for a session the model has not been given yet.
 readIn :: Int -> Model -> Bool
-readIn session m = m.session == session && isJust (knownNow m)
+readIn session m = m.session == session && isJust (knownNow m) && isJust (installedNow m)
+
+-- | The external plugins as the rest of the application sees them (the
+-- context's): what is installed, once read in this session, and before
+-- that, or when it could not be read, none, under the policy that runs
+-- none.
+heldInstalled :: Model -> ExternalPlugins
+heldInstalled m = fromMaybe noExternalPlugins (installedNow m)
 
 -- | What is on as the rest of the application sees it (the context's
 -- plugins): what is known, or, before a read of this session answered or
@@ -417,6 +462,25 @@ taking asked answer m = case takes asked m.asks of
       Just (Right _) -> m {asks = after}
       _ -> m {asks = after, known = Just answer}
 
+-- | The answer to the read of the external plugins installed taken, as
+-- 'taking' takes what is on.
+takingInstalled :: Ask -> Either WikiError ExternalPlugins -> Model -> Model
+takingInstalled asked answer m = case takes asked m.asks of
+  Nothing -> m
+  Just after -> case answer of
+    Right _ -> m {asks = after, installed = Just answer}
+    Left _ -> case m.installed of
+      Just (Right _) -> m {asks = after}
+      _ -> m {asks = after, installed = Just answer}
+
+-- | After the answer to the first request of a read of this session came:
+-- when it was the ask out, the second request is sent at once, before any
+-- write that waits, whatever the first answered.
+secondRequest :: Ask -> Model -> (Model, [Effect])
+secondRequest asked m
+  | m.flight /= Just asked = (m, [])
+  | otherwise = let (ticket, after) = newAsk m.asks in (m {asks = after, flight = Just ticket}, [LoadInstalled ticket])
+
 -- | The state after the answer to an ask came, taken or not, failed or
 -- not: when it was the ask out, the next is sent, the first write waiting
 -- of this session, or else the read wanted.
@@ -481,6 +545,7 @@ send w m =
 askOf :: Effect -> Maybe Ask
 askOf = \case
   Load a -> Just a
+  LoadInstalled a -> Just a
   WriteState a _ _ -> Just a
   WriteOptions a _ _ -> Just a
   WriteOptionsIfNone a _ _ -> Just a

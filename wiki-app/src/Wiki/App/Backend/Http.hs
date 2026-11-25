@@ -133,11 +133,12 @@ import Wiki.Api.Links qualified as Links
 import Wiki.Api.Notifications (Notifications (..), NotificationsApi (..), Watching (..), searchable)
 import Wiki.Api.Opaque (LoginChallenge (..), LoginFinish (..), LoginStart (..), Message, NewAccountRecord (..), OldPasswordProof (..), PasswordRecord (..), PasswordRecordChange (..), PasswordWrapChange (..), ProofStart (..), RegistrationChallenge (..), RegistrationFor (..), RegistrationStart (..))
 import Wiki.Api.Plugins (PluginOptions (..), PluginStateChange (..))
+import Wiki.Api.Plugins.External (ExternalPolicyChange (..), Owner (..))
 import Wiki.Api.Security (CurrentPassword (..), EmailChange (..), OneTimeCode (..), ResetRequest (..))
 import Wiki.Api.ServerSettings (MailTest (..))
 import Wiki.Api.Stars (StarredPage (..), Starring (..), StarsApi (..))
 import Wiki.Api.Types
-import Wiki.Api.Upload (ArchiveUpload (..), AttachmentUpload (..), ImportApply (..), SealedAttachmentUpload (..), SealedUpload (..))
+import Wiki.Api.Upload (ArchiveUpload (..), AttachmentUpload (..), ImportApply (..), PluginUpload (..), SealedAttachmentUpload (..), SealedUpload (..))
 import Wiki.Api.Vault (PublicKeyEntry (..), VaultChange (..))
 import Wiki.Api.Version (PageVersion (..), VersionTime (..))
 import Wiki.App.Account (MonadAccount (..), SignInError (..))
@@ -937,11 +938,6 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
       Just (sid, k) -> sealedVersion sid pid k at >>= either (pure . Left) (\v -> sealedSavePage sid pid k base v.title v.body)
       Nothing -> write (getResponse <$> endpoints.pages.restore pid (VersionTime at) (PageVersion base))
 
-  -- Cached as the plugins that are on are ('pluginsNow'): an editor the
-  -- server prerendered then asks nothing as it is adopted, and a write or
-  -- a sign-in empties the cache, after which an editor reads it again.
-  externalPluginsNow = cached (\c -> c.externalPlugins) endpoints.externalPlugins.list (\a c -> c {Cache.externalPlugins = Just a})
-
 -- | The administration's backend, over the API's @admin\/…@ endpoints. The
 -- directory is cached like any read, so that the administration page the
 -- server prerendered for an administrator is also the program's first
@@ -1268,6 +1264,21 @@ instance (MonadIO m) => MonadWhatsNew (HttpWiki m) where
 -- it.
 instance (MonadIO m) => MonadPlugins (HttpWiki m) where
   pluginsNow = cached (\c -> c.plugins) endpoints.plugins (\a c -> c {Cache.plugins = Just a})
+
+  -- Cached as the plugins that are on are: a page the server prerendered
+  -- carries both, read with the first load, and asks for neither as it is
+  -- adopted; a write or a sign-in empties the cache.
+  externalPluginsNow = cached (\c -> c.externalPlugins) endpoints.externalPlugins.list (\a c -> c {Cache.externalPlugins = Just a})
+  setExternalPolicy policy = write (endpoints.externalPlugins.setPolicy ExternalPolicyChange {policy})
+  installExternal owner manifest bytes replaces =
+    write (withBoundary installing PluginUpload {manifest, replaces, bundle = toS bytes})
+    where
+      installing = case owner of
+        TheWiki -> endpoints.externalPlugins.installForWiki
+        Mine -> endpoints.externalPlugins.installMine
+  removeExternal owner p = write_ $ case owner of
+    TheWiki -> endpoints.externalPlugins.removeForWiki p
+    Mine -> endpoints.externalPlugins.removeMine p
   setPluginState p s = write (endpoints.account.setPluginState p PluginStateChange {state = s})
   setPluginOptions p v = write (endpoints.account.setPluginOptions p Nothing (PluginOptions v))
   setPluginOptionsIfNone p v = write (endpoints.account.setPluginOptions p (Just "*") (PluginOptions v))

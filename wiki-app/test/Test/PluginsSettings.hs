@@ -31,6 +31,13 @@
 -- a view opens ('OpenView'), and another reader signs in ('SwitchUser');
 -- the server refuses the editor's saves of the wiki's set.
 --
+-- A read is two asks, one after the other: what is on, then the external
+-- plugins installed ("Wiki.Api.Plugins.External"), each handled by the
+-- server apart, so that a change elsewhere can come between them. The
+-- runs' server has external plugins installed under the policy that lets
+-- users add theirs, one of the wiki's and one of the editor's own, so that
+-- the two readers are answered different lists.
+--
 -- Each ask has three moments: the shell sends it, the server handles it
 -- (a read takes what is on then; a write changes it and answers), and the
 -- answer comes back. The server handles asks in the order sent, and the
@@ -48,8 +55,9 @@
 --
 -- = The rules
 --
--- One ask out at a time, across reads, writes and saves, and across
--- sessions; no write that was not asked for in the session it goes out
+-- One ask out at a time, across reads (each of its two requests), writes
+-- and saves, and across sessions; the second request of a read sent as
+-- soon as the first answers; no write that was not asked for in the session it goes out
 -- in; no answer of an earlier session changes what the views show; no
 -- read anew when a view opens on what is read. Once nothing is out, waits
 -- or is wanted: a read was sent after every load of the session and every
@@ -67,14 +75,16 @@ import Data.Aeson (Value (..))
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
+import Data.Time (UTCTime (..), fromGregorian)
 import Protolude
 import Test.Hspec
 import Test.QuickCheck (Gen, chooseInt, counterexample, elements, forAllShrinkShow, frequency, listOf, shrinkList, withNumTests)
 import Test.QuickCheck qualified as QC
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), WikiPlugins (..), maxPluginsPerUser, optionsNull, pluginIdRule)
+import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Permission (..))
 import Wiki.App.Backend (WikiError (..))
-import Wiki.App.Backend.Http.Cache (Cache (plugins), Reading (..), Stored (cache), afterWrite, changedBy, emptyCache, kept, storedAnswer, storedOf)
-import Wiki.App.Backend.Mem.State (MemState (..), pluginsIn, setPluginOptionsIfNoneIn, setPluginOptionsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
+import Wiki.App.Backend.Http.Cache (Cache (externalPlugins, plugins), Reading (..), Stored (cache), afterWrite, changedBy, emptyCache, kept, storedAnswer, storedOf)
+import Wiki.App.Backend.Mem.State (MemState (..), externalPluginsIn, pluginsIn, setPluginOptionsIfNoneIn, setPluginOptionsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Plugin (Manifest (..))
 import Wiki.App.Plugin.Registry (manifests, optionsFor)
@@ -187,6 +197,7 @@ readerOf s = if even s then "admin" else "editor"
 -- | 'Answer' is what the server answered an ask.
 data Answer
   = Read (Either WikiError Plugins)
+  | ReadInstalled (Either WikiError ExternalPlugins)
   | Wrote (Either WikiError PluginChoice)
   | SetSaved (Either WikiError WikiPlugins)
   deriving stock (Show)
@@ -195,6 +206,7 @@ data Answer
 handled :: Text -> Effect -> MemState -> (MemState, Answer)
 handled u e st0 = case e of
   Load _ -> (st0, Read (pluginsIn st))
+  LoadInstalled _ -> (st0, ReadInstalled (externalPluginsIn st))
   WriteState _ p s -> case setPluginStateIn p s st of
     Left err -> (st0, Wrote (Left err))
     Right (st', c) -> (st' {current = st0.current}, Wrote (Right c))
@@ -251,8 +263,8 @@ genRun =
     [ (8, Click <$> place <*> elements [minBound .. maxBound])
     , (4, Tick <$> place <*> elements [True, False])
     , (3, SetOptions <$> place <*> frequency [(4, Just <$> optionsValue), (2, pure Nothing), (1, pure (Just Null))])
-    , (10, pure Handle)
-    , (10, Deliver <$> frequency [(6, pure 0), (1, pure 1)])
+    , (18, pure Handle)
+    , (18, Deliver <$> frequency [(6, pure 0), (1, pure 1)])
     , (3, pure Reload)
     , (1, pure OpenView)
     , (2, WikiOff <$> place <*> elements [True, False])
@@ -287,7 +299,8 @@ data Out = Out
   , fromCache :: Bool
   -- ^ Whether the HTTP backend's cache answered it, without the server.
   , owedSeen :: Int
-  -- ^ How many reads were owed when it was sent ('owed').
+  -- ^ How many reads were owed when it was sent ('owed'); for the second
+  -- request of a read, when its first was sent.
   }
   deriving stock (Show)
 
@@ -303,6 +316,8 @@ data World = World
   -- run over the in-memory backend, which caches nothing.
   , cacheSeen :: Int
   -- ^ The changes elsewhere seen by the read whose answer the cache keeps.
+  , cacheSeenInstalled :: Int
+  -- ^ The same, for the plugins installed the cache keeps.
   , outs :: [Out]
   , turn :: Int
   , losing :: Bool
@@ -313,6 +328,11 @@ data World = World
   -- ^ Whether the model has taken, in this session, a read the server
   -- handled after every change elsewhere and every answer lost: from then
   -- on, what it knows is the server's.
+  , freshInstalled :: Bool
+  -- ^ The same, for the plugins installed.
+  , firstOwed :: Int
+  -- ^ The reads owed when the first request of the read whose second is
+  -- sent next was sent.
   , owed :: Int
   -- ^ How many reads the model owes: one for each load of the session,
   -- and one for each answer of a write or a save of this session, which
@@ -356,16 +376,19 @@ startCached = startOver (Just (storedOf emptyCache))
 startOver :: Maybe Stored -> World
 startOver tab =
   World
-    { model = initialWith (rightToMaybe firstRead) 0
+    { model = initialRead (rightToMaybe firstRead) (rightToMaybe firstInstalled) 0
     , stepper = step
-    , backend = as "admin"
-    , tab = (\t -> t {cache = (t.cache) {plugins = Just firstRead}}) <$> tab
+    , backend = withInstalled (as "admin")
+    , tab = (\t -> t {cache = (t.cache) {plugins = Just firstRead, externalPlugins = Just firstInstalled}}) <$> tab
     , cacheSeen = 0
+    , cacheSeenInstalled = 0
     , outs = []
     , turn = 0
     , losing = False
     , changes = 0
     , fresh = True
+    , freshInstalled = True
+    , firstOwed = 0
     , owed = 0
     , paid = 0
     , chosen = []
@@ -381,6 +404,38 @@ startOver tab =
     }
   where
     firstRead = pluginsIn (as "admin")
+    firstInstalled = externalPluginsIn (withInstalled (as "admin"))
+
+-- | A plugin installed in the runs' server: its id, and whose it is.
+installedPlugin :: Text -> Bool -> ExternalPlugin
+installedPlugin pid mine =
+  ExternalPlugin
+    { manifest =
+        ExternalManifest
+          { id = PluginId pid
+          , name = T.toTitle pid
+          , version = "1.0.0"
+          , description = ""
+          , api = 1
+          , contributes = Set.singleton Diagnostics
+          , permissions = Set.singleton DocumentRead
+          , hosts = []
+          }
+    , bundle = "b-" <> pid
+    , size = 10
+    , mine
+    , installedAt = UTCTime (fromGregorian 2026 11 25) 0
+    }
+
+-- | The runs' server with external plugins: one of the wiki's, one of the
+-- editor's own, under the policy that lets users add theirs.
+withInstalled :: MemState -> MemState
+withInstalled st =
+  st
+    { externalPolicy = ExternalUsers
+    , externalWiki = Map.fromList [(PluginId "spell", installedPlugin "spell" False)]
+    , externalOwn = Map.fromList [(UserId "user-editor", Map.fromList [(PluginId "mine", installedPlugin "mine" True)])]
+    }
 
 play :: World -> Step -> World
 play w = \case
@@ -433,9 +488,18 @@ play w = \case
                in afterEvent (if o.fromCache then "a read comes back from the cache" else "a read comes back") (Loaded t r) $
                     w'
                       { fresh = w'.fresh || upToDate
-                      , paid = if ours then max w'.paid o.owedSeen else w'.paid
+                      , firstOwed = o.owedSeen
                       , learntOther = w'.learntOther || (upToDate && w'.otherTab)
                       , seen = ["off for the wiki, read" | ours, Right k' <- [r], not (Set.null k'.offForWiki)] <> ["a read from the cache" | o.fromCache] <> w'.seen
+                      }
+            (LoadInstalled t, ReadInstalled r) ->
+              let upToDate = ours && isRight r && o.changesSeen == w.changes
+               in afterEvent (if o.fromCache then "the plugins installed come back from the cache" else "the plugins installed come back") (LoadedInstalled t r) $
+                    w'
+                      { freshInstalled = w'.freshInstalled || upToDate
+                      , -- The read is done once its second request answered.
+                        paid = if ours then max w'.paid o.owedSeen else w'.paid
+                      , seen = ["the plugins installed, read" | ours, Right got <- [r], not (null got.external)] <> w'.seen
                       }
             (WriteState t p _, Wrote r) ->
               let tag = case r of
@@ -514,6 +578,7 @@ play w = \case
           $ w
             { turn = next
             , fresh = False
+            , freshInstalled = False
             , tab = changedBy (const emptyCache) <$> w.tab
             , lastWrite = mempty
             , lastSave = Nothing
@@ -526,6 +591,7 @@ play w = \case
   where
     lostAnswer = \case
       Load _ -> Read (Left (Unreachable "lost"))
+      LoadInstalled _ -> ReadInstalled (Left (Unreachable "lost"))
       WriteState {} -> Wrote (Left (Unreachable "lost"))
       WriteOptions {} -> Wrote (Left (Unreachable "lost"))
       WriteOptionsIfNone {} -> Wrote (Left (Unreachable "lost"))
@@ -536,8 +602,8 @@ play w = \case
 
 -- | What the views show of the model: what is known, the changes not done,
 -- and the refusals. What waits its turn is checked apart ('sentNext').
-shown :: Model -> (Maybe (Either WikiError Plugins), Map PluginId PluginState, Map PluginId (Maybe Value), Maybe (Set PluginId), Map PluginId WikiError, Maybe WikiError)
-shown m = (m.known, m.writing, m.writingOptions, m.wantedOff, m.refused, m.problem)
+shown :: Model -> (Maybe (Either WikiError Plugins), Maybe (Either WikiError ExternalPlugins), Map PluginId PluginState, Map PluginId (Maybe Value), Maybe (Set PluginId), Map PluginId WikiError, Maybe WikiError)
+shown m = (m.known, m.installed, m.writing, m.writingOptions, m.wantedOff, m.refused, m.problem)
 
 -- | The writes a step sent, from one world to the next, each with the
 -- session it goes out in: one that waited its turn leaves 'queued' for
@@ -553,6 +619,7 @@ writeOf = \case
   WriteOptions _ p o -> Just (OptionsWrite p o)
   WriteOptionsIfNone _ p v -> Just (AdoptWrite p v)
   Load _ -> Nothing
+  LoadInstalled _ -> Nothing
 
 -- | The HTTP backend's cache after an answer arrived, before the machine
 -- hears it: a read sent to the server stores its answer, unless the cache
@@ -566,6 +633,13 @@ arrived o a w = case (w.tab, a) of
     , kept r ->
         let t' = storedAnswer PlainRead sent (\c -> c {plugins = Just r}) t
          in w {tab = Just t', cacheSeen = if t' /= t then o.changesSeen else w.cacheSeen}
+    | otherwise -> w
+  (Just t, ReadInstalled r)
+    | o.fromCache -> w
+    | Just sent <- o.sentWith
+    , kept r ->
+        let t' = storedAnswer PlainRead sent (\c -> c {externalPlugins = Just r}) t
+         in w {tab = Just t', cacheSeenInstalled = if t' /= t then o.changesSeen else w.cacheSeenInstalled}
     | otherwise -> w
   (Just t, _) -> w {tab = Just (changedBy afterWrite t)}
 
@@ -595,7 +669,10 @@ afterEvent what event w =
             <> [what <> ": writes " <> show x <> ", not asked for in this session" | Just x <- map writeOf effects, (w.turn, x) `notElem` w.chosen]
             -- A view opened again finds the state as it is, a write out
             -- with it, and asks nothing once it has read.
-            <> [what <> ": asks anew on opening, what is on read already: " <> show effects | Opened <- [event], isJust (knownNow w.model), not (null effects)]
+            <> [what <> ": asks anew on opening, what is on read already: " <> show effects | Opened <- [event], isJust (knownNow w.model), isJust (installedNow w.model), not (null effects)]
+            -- The second request of a read goes as soon as the first
+            -- answers, before anything that waits.
+            <> [what <> ": the first request of a read answered, and the second not sent: " <> show effects | Loaded t _ <- [event], w.model.flight == Just t, t `madeAfter` w.model.sessionFrom, not (any (\case LoadInstalled _ -> True; _ -> False) effects)]
             -- A write of options sent carries the options last chosen.
             <> [ what <> ": writes " <> show o <> " as the options of " <> p.text <> ", where the last chosen are " <> show (Map.lookup p w.lastOptions)
                | WriteOptions _ p o <- effects
@@ -606,10 +683,13 @@ afterEvent what event w =
     (model, effects) = w.stepper event w.model
     outs' = w.outs <> [sent e | e <- effects, isJust (askOf e)]
     sent e =
-      let o = Out {effect = e, reader = readerOf w.turn, inSession = w.turn, answer = Nothing, changesSeen = 0, sentWith = Nothing, fromCache = False, owedSeen = w.owed}
+      let o = Out {effect = e, reader = readerOf w.turn, inSession = w.turn, answer = Nothing, changesSeen = 0, sentWith = Nothing, fromCache = False, owedSeen = case e of LoadInstalled _ -> w.firstOwed; _ -> w.owed}
        in case (e, w.tab) of
             (Load _, Just t) -> case t.cache.plugins of
               Just r -> o {answer = Just (Read r), changesSeen = w.cacheSeen, fromCache = True}
+              Nothing -> o {sentWith = Just t}
+            (LoadInstalled _, Just t) -> case t.cache.externalPlugins of
+              Just r -> o {answer = Just (ReadInstalled r), changesSeen = w.cacheSeenInstalled, fromCache = True}
               Nothing -> o {sentWith = Just t}
             _ -> o
 
@@ -639,6 +719,7 @@ checked w = givenChecked w {faults = w.faults <> settledRule, seen = ["checked s
   where
     quiet = null w.outs && null w.model.queued && not w.model.wanted
     serverNow = pluginsIn w.backend {current = Just (UserId ("user-" <> readerOf w.turn))}
+    serverInstalled = externalPluginsIn w.backend {current = Just (UserId ("user-" <> readerOf w.turn))}
     settledRule =
       [ "settled, but no read was sent after the last load or answer that owed one"
       | quiet
@@ -648,6 +729,11 @@ checked w = givenChecked w {faults = w.faults <> settledRule, seen = ["checked s
            | quiet
            , w.fresh
            , w.model.known /= Just serverNow
+           ]
+        <> [ "settled, but holds the plugins installed " <> show w.model.installed <> " where the server has " <> show serverInstalled
+           | quiet
+           , w.freshInstalled
+           , w.model.installed /= Just serverInstalled
            ]
         <> [ "settled, but shows changes not out: " <> show (w.model.writing, w.model.writingOptions, w.model.wantedOff)
            | quiet
@@ -693,6 +779,7 @@ machine = describe "the plugins' state, on generated runs" $ do
                 , (5, "an options write taken")
                 , (1, "an options write refused")
                 , (2, "options chosen with an ask out")
+                , (10, "the plugins installed, read")
                 ]
                   <> [(5, tag) | tag <- more]
            in foldr (\(n, tag) -> QC.cover n (reached tag) (toS tag)) (counterexample (toS (T.unlines (reverse w.trace) <> "\n" <> T.unlines w.faults)) (null w.faults)) covers
@@ -705,7 +792,7 @@ machine = describe "the plugins' state, on generated runs" $ do
   it "shows the state chosen while its write is out, and the server's once it answered and was read again" $ do
     let w = runOf [Click 0 PluginOff]
     shownState w.model assistant `shouldBe` PluginOff
-    let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0]
+    let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
     w1.model.writing `shouldBe` mempty
     stateOf (sure (maybeToRight () (knownNow w1.model))) assistant `shouldBe` PluginOff
     w1.outs `shouldSatisfy` null
@@ -715,7 +802,7 @@ machine = describe "the plugins' state, on generated runs" $ do
     length w.outs `shouldBe` 1
     w.model.queued `shouldBe` [(0, OptionsWrite errors (Just (Number 1))), (0, OptionsWrite assistant (Just (Number 2)))]
     optionsFor assistant (held w.model) `shouldBe` Just (Number 2)
-    let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
+    let w1 = foldl' play w (concat (replicate 6 [Handle, Deliver 0]))
     w1.outs `shouldSatisfy` null
     (\k -> k.mine) <$> knownNow w1.model
       `shouldBe` Just (Map.fromList [(assistant, PluginChoice {state = PluginDefault, options = Just (Number 2)}), (errors, PluginChoice {state = PluginDefault, options = Just (Number 1)})])
@@ -725,7 +812,7 @@ machine = describe "the plugins' state, on generated runs" $ do
     let w = runOf [SetOptions 0 (Just (Number 1))]
     optionsFor assistant (held w.model) `shouldBe` Just (Number 1)
     (\k -> k.mine) <$> knownNow w.model `shouldBe` Just mempty
-    let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0]
+    let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
     w1.model.writingOptions `shouldBe` mempty
     optionsFor assistant (held w1.model) `shouldBe` Just (Number 1)
     -- Refused: the plugin is given the server's options again, and its
@@ -758,13 +845,13 @@ machine = describe "the plugins' state, on generated runs" $ do
     w.model.queued `shouldBe` []
     w.model.writingOptions `shouldBe` mempty
     optionsFor assistant (held w.model) `shouldBe` Nothing
-    let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0]
+    let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
     w1.outs `shouldSatisfy` null
     Map.lookup (UserId "user-admin") w1.backend.pluginChoices `shouldBe` Nothing
     w1.faults `shouldBe` []
 
   it "keeps the plugins off for the wiki across a sign-in, until the new reader's read answers" $ do
-    let w = runOf [Tick 1 True, Handle, Deliver 0, Handle, Deliver 0, SwitchUser]
+    let w = runOf [Tick 1 True, Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0, SwitchUser]
     w.model.known `shouldBe` Nothing
     (held w.model).offForWiki `shouldBe` Set.fromList [errors]
     (held w.model).mine `shouldBe` mempty
@@ -780,7 +867,7 @@ machine = describe "the plugins' state, on generated runs" $ do
     it ("reads what a save out changed, not beside it" <> how) $ do
       let w = foldl' play w0 [Tick 0 True, OpenView, Reload]
       length w.outs `shouldBe` 1
-      let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0]
+      let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
       w1.outs `shouldSatisfy` null
       (\k -> k.offForWiki) <$> knownNow w1.model `shouldBe` Just (Set.fromList [assistant])
       (held w1.model).offForWiki `shouldBe` Set.fromList [assistant]
@@ -791,7 +878,7 @@ machine = describe "the plugins' state, on generated runs" $ do
   it "keeps a choice another tab made, which a load learnt, when the section chooses next" $ do
     let w = runOf [OtherTab 0 PluginOff, Reload, Handle, Deliver 0]
     (\k -> k.mine) <$> knownNow w.model `shouldBe` Just (Map.fromList [(assistant, choice PluginOff)])
-    let w1 = foldl' play w [Click 1 PluginOff, Handle, Deliver 0]
+    let w1 = foldl' play w [Click 1 PluginOff, Handle, Deliver 0, Handle, Deliver 0]
     (\k -> k.mine) <$> knownNow w1.model `shouldBe` Just (Map.fromList [(assistant, choice PluginOff), (errors, choice PluginOff)])
     let w2 = foldl' play w1 [Handle, Deliver 0]
     (\k -> k.mine) <$> knownNow w2.model `shouldBe` Just (Map.fromList [(assistant, choice PluginOff), (errors, choice PluginOff)])
@@ -836,7 +923,7 @@ machine = describe "the plugins' state, on generated runs" $ do
     it "a read after a load: a load of the session that reads nothing" $
       fails (\e m -> case e of Refresh -> (m, []); _ -> step e m) [Reload] "no read was sent after"
     it "the server's value once settled: a read's answer not taken" $
-      fails (\e m -> case e of Loaded {} -> first (\m' -> m' {known = m.known}) (step e m); _ -> step e m) [OtherTab 0 PluginOff, Reload, Handle, Deliver 0] "where the server has"
+      fails (\e m -> case e of Loaded {} -> first (\m' -> m' {known = m.known}) (step e m); _ -> step e m) [OtherTab 0 PluginOff, Reload, Handle, Deliver 0, Handle, Deliver 0] "where the server has"
     it "a refusal cleared by a later success: a write's success that keeps it" $
       fails
         (\e m -> case e of Written {} -> first (\m' -> m' {refused = Map.union m'.refused m.refused}) (step e m); _ -> step e m)
@@ -855,12 +942,12 @@ machine = describe "the plugins' state, on generated runs" $ do
             OptionsChosen p o | isJust m.flight -> (m {queued = m.queued <> [(m.session, OptionsWrite p o)], writingOptions = Map.insert p o m.writingOptions}, [])
             _ -> step e m
         )
-        [Reload, SetOptions 0 (Just (Number 1)), SetOptions 0 (Just (Number 2)), Handle, Deliver 0]
+        [Reload, SetOptions 0 (Just (Number 1)), SetOptions 0 (Just (Number 2)), Handle, Deliver 0, Handle, Deliver 0]
         "where the last chosen are"
     it "no options shown that are not out: a write of options answered and still shown as out" $
       fails
         (\e m -> case e of OptionsWritten {} -> first (\m' -> m' {writingOptions = m.writingOptions}) (step e m); _ -> step e m)
-        [SetOptions 0 (Just (Number 1)), Handle, Deliver 0, Handle, Deliver 0]
+        [SetOptions 0 (Just (Number 1)), Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
         "shows changes not out"
     it "a read after a write of options: its answer taken with no read after it" $
       fails
@@ -870,6 +957,16 @@ machine = describe "the plugins' state, on generated runs" $ do
         )
         [SetOptions 0 (Just (Number 1)), Handle, Deliver 0]
         "no read was sent after"
+    it "a read in two requests: the second never sent" $
+      fails
+        ( \e m -> case (e, step e m) of
+            (Loaded {}, (m', [LoadInstalled _])) -> (m' {flight = Nothing}, [])
+            (_, r) -> r
+        )
+        [Reload, Handle, Deliver 0]
+        "the second not sent"
+    it "the server's plugins installed once settled: the second request's answer not taken" $
+      fails (\e m -> case e of LoadedInstalled {} -> first (\m' -> m' {installed = m.installed}) (step e m); _ -> step e m) [SwitchUser, Handle, Deliver 0, Handle, Deliver 0] "where the server has"
 
 -- | The one effect of a step that has one.
 onlyEffect :: [a] -> a

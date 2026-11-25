@@ -170,6 +170,9 @@ module Wiki.App.Backend.Mem.State
     -- * Plugins
   , pluginsIn
   , externalPluginsIn
+  , setExternalPolicyIn
+  , installExternalIn
+  , removeExternalIn
   , setPluginStateIn
   , setPluginOptionsIn
   , setPluginOptionsIfNoneIn
@@ -181,6 +184,7 @@ where
 import Data.Aeson (Value (..), encode)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
+import Data.Digest.Pure.SHA (sha256, showDigest)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
@@ -212,7 +216,7 @@ import Wiki.Api.Backups (Backups (..), defaultBackupSettings)
 import Wiki.Api.Notifications (NotificationSettings (NotificationSettings), NotificationSettingsChange, Notifications (Notifications), ReadMark)
 import Wiki.Api.Notifications qualified as N
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), WikiPlugins (..), maxOptionsBytes, maxPluginsOff, maxPluginsPerUser, optionsNull, optionsTooLarge, parsePluginId)
-import Wiki.Api.Plugins.External (ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..))
+import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Owner (..), checkBundle, maxBundleBytes, maxOwnPlugins, maxWikiPlugins, parseManifest)
 import Wiki.Api.ServerSettings (HomePage, MailTestResult, ProviderChange, ProviderCheck (ProviderCheck), ServerSettings, ServerSettingsChange, ServerSettingsOf, applyChange, checkHomePage, checkServerSettings, named, noServerSettings, providerProblems, providerWith, redirectUri, secretState)
 import Wiki.Api.ServerSettings qualified as SS
 import Wiki.Api.Stars (StarredPage (StarredPage), maxStars)
@@ -2585,6 +2589,79 @@ externalPluginsIn st = case currentUserId st of
      in Right ExternalPlugins {policy = st.externalPolicy, external = wiki <> own}
   where
     asMine mine p = ExternalPlugin {manifest = p.manifest, bundle = p.bundle, size = p.size, mine, installedAt = p.installedAt}
+
+-- | Set who may add external plugins, as the server's
+-- @setExternalPolicy@: for an administrator only, anyone else is
+-- 'Forbidden'. The plugins are kept whatever the policy. The answer is
+-- what 'externalPluginsIn' then answers the administrator.
+setExternalPolicyIn :: ExternalPolicy -> Write ExternalPlugins
+setExternalPolicyIn policy st = do
+  requireAdministrator st
+  let st' = st {externalPolicy = policy}
+  (st',) <$> externalPluginsIn st'
+
+-- | Install an external plugin, or replace the owner's plugin of the same
+-- id, by the server's rules and in its order of checks: the API's reading
+-- of the upload first ('parseManifest', the bundle's size, 'checkBundle',
+-- each 'Invalid' with the rule), then the server's @installExternal@. The
+-- wiki's are installed by an administrator, whatever the policy, anyone
+-- else 'Forbidden'; a user's own by someone signed in while the policy is
+-- 'ExternalUsers' ('Forbidden' otherwise), and never with the id of one of
+-- the wiki's ('Conflict'). A plugin of the id installed, with no
+-- @replaces@ or another hash than its bundle's, and one more than the
+-- owner may have, are 'Conflict'; a @replaces@ with nothing of the id
+-- installed is too. The bundle is named by its SHA-256, as the server's
+-- blob store names it; its bytes are not kept, since the demo serves no
+-- plugin's frame.
+installExternalIn :: UTCTime -> Owner -> Text -> ByteString -> Maybe Text -> Write ExternalPlugin
+installExternalIn time owner manifestText bytes replaces st = do
+  manifest <- first Invalid (parseManifest (encodeUtf8 manifestText))
+  when (BS.length bytes > maxBundleBytes) $
+    Left (Invalid ("A plugin's bundle is at most " <> show maxBundleBytes <> " bytes (2 MiB)."))
+  _ <- first Invalid (checkBundle bytes)
+  ownerId <- case owner of
+    TheWiki -> requireAdministrator st $> Nothing
+    Mine -> do
+      u <- signedIn st
+      unless (st.externalPolicy == ExternalUsers) (Left Forbidden)
+      pure (Just u)
+  let pid = manifest.id.text
+      theirs = maybe st.externalWiki (\u -> Map.findWithDefault mempty u st.externalOwn) ownerId
+      existing = Map.lookup manifest.id theirs
+  when (owner == Mine && Map.member manifest.id st.externalWiki) $
+    Left (Conflict ("The wiki has a plugin with the id " <> pid <> ", installed for everyone: a plugin of your own needs another id."))
+  case (existing, replaces) of
+    (Nothing, Just _) -> Left (Conflict ("No plugin with the id " <> pid <> " is installed, so none is replaced: send the upload without replaces."))
+    (Just e, Nothing) -> Left (Conflict ("A plugin with the id " <> pid <> " is installed already: to replace it, send its bundle's hash, " <> e.bundle <> ", as replaces."))
+    (Just e, Just r) | r /= e.bundle -> Left (Conflict ("The plugin " <> pid <> " was replaced since: its bundle's hash is now " <> e.bundle <> "."))
+    _ -> pass
+  when (isNothing existing) $ do
+    let most = if owner == TheWiki then maxWikiPlugins else maxOwnPlugins
+    when (Map.size theirs >= most) $
+      Left (Conflict ((if owner == TheWiki then "The wiki has " else "You have ") <> show most <> " plugins installed already, the most it may: remove one first."))
+  let plugin = ExternalPlugin {manifest, bundle = toS (showDigest (sha256 (BSL.fromStrict bytes))), size = BS.length bytes, mine = owner == Mine, installedAt = time}
+      theirs' = Map.insert manifest.id plugin theirs
+      st' = case ownerId of
+        Nothing -> st {externalWiki = theirs'}
+        Just u -> st {externalOwn = Map.insert u theirs' st.externalOwn}
+  pure (st', plugin)
+
+-- | Remove an external plugin, as the server's @removeExternal@: one of
+-- the wiki's, by an administrator ('Forbidden' for anyone else), or one of
+-- the signed-in user's own, whatever the policy. One the owner does not
+-- have is 'NotFound'. The users' own state for its id is kept.
+removeExternalIn :: Owner -> PluginId -> Write ()
+removeExternalIn owner p st = case owner of
+  TheWiki -> do
+    requireAdministrator st
+    unless (Map.member p st.externalWiki) (Left NotFound)
+    pure (st {externalWiki = Map.delete p st.externalWiki}, ())
+  Mine -> do
+    u <- signedIn st
+    let theirs = Map.findWithDefault mempty u st.externalOwn
+    unless (Map.member p theirs) (Left NotFound)
+    let theirs' = Map.delete p theirs
+    pure (st {externalOwn = if Map.null theirs' then Map.delete u st.externalOwn else Map.insert u theirs' st.externalOwn}, ())
 
 -- | The plugins off for the whole wiki, for an administrator only, as the
 -- server's @wikiPluginsOff@; anyone else is 'Forbidden'.

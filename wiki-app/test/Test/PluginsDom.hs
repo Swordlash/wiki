@@ -164,6 +164,9 @@ instance (MonadPlugins m, MonadIO m) => MonadPlugins (Holder m) where
       True -> lift (setPluginState p s) <* heldBy ("state " <> p.text)
       False -> heldBy ("state " <> p.text) >> lift (setPluginState p s)
   setWikiPluginsOff w = heldBy "the wiki's set" >> lift (setWikiPluginsOff w)
+  externalPluginsNow = do
+    whenM (Holder (asks (\h -> h.readHeld))) (heldBy "the plugins installed")
+    lift externalPluginsNow
 
 -- | Wait, when there is a gate, until the test lets this write go.
 heldBy :: (MonadIO m) => Text -> Holder m ()
@@ -553,7 +556,9 @@ external = describe "Wiki.App.View.Editor's external plugins, in the shell on th
       frameOf = "plugin-frame/wiki/doubled-words/0123abcd/diagnostics"
   -- On a clock the test owns and never moves: the frame stood in natively
   -- never says it is ready, and the pause for it stays asleep.
-  it "asks for no plugin's frame while the session's read of the plugins on is out, and for its frame once it answers" $ withTestClock $ \_ -> do
+  -- The read is two requests, what is on and then the plugins installed:
+  -- no frame before both have answered.
+  it "asks for no plugin's frame while either request of the session's read of the plugins is out, and for its frame once both answer" $ withTestClock $ \_ -> do
     gate <- newGate
     asked <- newIORef []
     withShellAt withExternal free {gate = Just gate, readHeld = True, framesAsked = Just asked} editing $ \view _ _ quiet -> do
@@ -562,6 +567,11 @@ external = describe "Wiki.App.View.Editor's external plugins, in the shell on th
       map (\h -> h.asked) waiting `shouldSatisfy` (\hs -> not (null hs) && all (== "the plugins on") hs)
       readIORef asked `shouldReturn` []
       traverse_ (\h -> answer gate h ()) waiting
+      quiet
+      installing <- held gate
+      map (\h -> h.asked) installing `shouldBe` ["the plugins installed"]
+      readIORef asked `shouldReturn` []
+      traverse_ (\h -> answer gate h ()) installing
       quiet
       readIORef asked `shouldReturn` [frameOf]
 

@@ -1000,13 +1000,15 @@ problemsOf st taken = sort (st.checked.problems <> diagnosed <> fitProblems st <
     diagnosed = concatMap (\d -> d.diagnose drawn) ((contributed (pluginsOn st.input.context) (plugins @IO)).diagnostics <> External.diagnosticsOf st.externalHeard)
 
 -- | What the external plugins are given ("Wiki.App.Plugin.External.Frames"):
--- the session, which plugins are on, the text as last checked once the
--- page is loaded, and whether the space is encrypted, where none runs.
+-- the session, which plugins are on and which are installed, as the
+-- context holds them, the text as last checked once the page is loaded,
+-- and whether the space is encrypted, where none runs.
 externalInput :: State -> Frames.Input
 externalInput st =
   Frames.Input
     { session = st.input.context.sessionNumber
     , known = st.input.context.plugins
+    , installed = st.input.context.external
     , choicesRead = st.input.context.pluginsRead
     , text = case st.loaded of
         Ready _ -> Just st.checkedText

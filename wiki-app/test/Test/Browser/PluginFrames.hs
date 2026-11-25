@@ -36,11 +36,11 @@ import Test.Browser.Mount (clickButton, slugs, startChangedWith)
 import Test.Hspec (around)
 import Test.Hspec.Halogen
 import Wiki.Api.Plugins (PluginId (..), noPlugins)
-import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPolicy (..), Permission (..))
+import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPolicy (..), Permission (..), noExternalPlugins)
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend (MonadLoad (..), MonadWiki (..))
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki)
-import Wiki.App.Backend.Mem.State (MemState (..))
+import Wiki.App.Backend.Mem.State (MemState (..), externalPluginsIn)
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands (..))
 import Wiki.App.Plugin.External (Heard (..))
@@ -114,7 +114,9 @@ wikiWith ps = newMemWiki ((demoState demoNow) {current = Just (UserId "user-edit
 
 spec :: forall m -> (Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m) => Spec
 spec m = describe "external plugins' frames" $ do
-  let input text = Frames.Input {session = 0, known = noPlugins, choicesRead = True, text = Just text, encrypted = False}
+  -- The plugins installed are the editor's input, as the shell's
+  -- plugins' state read them from the wiki.
+  let inputOf wiki text = unsafeIOToPageM (readIORef wiki) <&> \st -> Frames.Input {session = 0, known = noPlugins, installed = either (const noExternalPlugins) identity (externalPluginsIn st), choicesRead = True, text = Just text, encrypted = False}
       frames wiki = H.hoist (NT (runMemWiki wiki . runWritten)) (Frames.component :: H.Component (Const Void) Frames.Input Frames.Output (Written (MemWiki m)))
       lastHeard ui = (\os -> case lastMay os of Just (Frames.Heard h) -> h; Nothing -> mempty) <$> outputs ui
 
@@ -122,7 +124,7 @@ spec m = describe "external plugins' frames" $ do
     wiki <- unsafeIOToPageM (wikiWith [installed "doubled-words" "Doubled words"])
     let text = "Fine.\n😀 This is the the end."
     openBefore <- unsafeIOToPageM js_frames_open
-    ui <- mount m (frames wiki) (input text)
+    ui <- inputOf wiki text >>= mount m (frames wiki)
     -- The frame loads, the runtime starts the code, the code says it is
     -- ready, the text goes out and the problems come back: the program
     -- waits on the plugin's answer, a pause the answer ends.
@@ -139,7 +141,7 @@ spec m = describe "external plugins' frames" $ do
 
   it "stops a plugin whose code loops, removes its frame, and says why, while the page goes on" $ runPage $ do
     wiki <- unsafeIOToPageM (wikiWith [installed "looping" "Looping"])
-    ui <- mount m (frames wiki) (input "Any text.")
+    ui <- inputOf wiki "Any text." >>= mount m (frames wiki)
     -- The program waits on the plugin's answer, which never comes, until
     -- the pause after which the plugin is stopped.
     waitQuietWithin 30000
@@ -153,7 +155,7 @@ spec m = describe "external plugins' frames" $ do
   it "stops a frame that sends a small graph of shared parts, before writing it out, and the page goes on" $ runPage $ do
     wiki <- unsafeIOToPageM (wikiWith [installed "tangled-raw" "Tangled"])
     openBefore <- unsafeIOToPageM js_frames_open
-    ui <- mount m (frames wiki) (input "Any text.")
+    ui <- inputOf wiki "Any text." >>= mount m (frames wiki)
     waitQuiet
     stopped <- find ui ".editor-plugin-stopped" >>= textContent
     stopped `shouldSatisfy` T.isInfixOf "The plugin Tangled was stopped: it sent a message that is not text of at most 1 MiB, or not JSON"
@@ -163,7 +165,7 @@ spec m = describe "external plugins' frames" $ do
   it "stops a frame that floods its port at its first message beyond those asked for, and the page goes on" $ runPage $ do
     wiki <- unsafeIOToPageM (wikiWith [installed "flooding-raw" "Flooding"])
     openBefore <- unsafeIOToPageM js_frames_open
-    ui <- mount m (frames wiki) (input "Any text.")
+    ui <- inputOf wiki "Any text." >>= mount m (frames wiki)
     waitQuiet
     stopped <- find ui ".editor-plugin-stopped" >>= textContent
     -- Its second ready comes either before the program has asked it for
@@ -177,7 +179,7 @@ spec m = describe "external plugins' frames" $ do
   it "parses a message as long as one may be and nested as deep as that lets it, then stops the plugin for what it is, and the page goes on" $ runPage $ do
     wiki <- unsafeIOToPageM (wikiWith [installed "deep-raw" "Deep"])
     openBefore <- unsafeIOToPageM js_frames_open
-    ui <- mount m (frames wiki) (input "Any text.")
+    ui <- inputOf wiki "Any text." >>= mount m (frames wiki)
     waitQuiet
     stopped <- find ui ".editor-plugin-stopped" >>= textContent
     stopped `shouldSatisfy` T.isInfixOf "The plugin Deep was stopped: it sent a message the wiki cannot read"
@@ -189,7 +191,7 @@ spec m = describe "external plugins' frames" $ do
   it "runs a bundle that begins with \"use strict\" in strict mode, and one without in sloppy mode" $ runPage $ do
     for_ [("strict", "Strict"), ("sloppy", "Sloppy")] $ \(pid, name) -> do
       wiki <- unsafeIOToPageM (wikiWith [installed pid name])
-      ui <- mount m (frames wiki) (input "Any text.")
+      ui <- inputOf wiki "Any text." >>= mount m (frames wiki)
       waitQuiet
       (map (\h -> map (\p -> p.message) h.problems) . Map.elems <$> lastHeard ui) `shouldReturn` [[name <> ": " <> pid]]
       unmount ui
@@ -198,7 +200,7 @@ spec m = describe "external plugins' frames" $ do
   -- wiki's own code in the worker: an author is not stopped for them.
   it "keeps the first 500 problems of an answer and cuts each message to 300 characters, and does not stop the plugin" $ runPage $ do
     wiki <- unsafeIOToPageM (wikiWith [installed "many" "Many"])
-    ui <- mount m (frames wiki) (input "Any text.")
+    ui <- inputOf wiki "Any text." >>= mount m (frames wiki)
     waitQuiet
     heard <- Map.elems <$> lastHeard ui
     map (\h -> length h.problems) heard `shouldBe` [500]
@@ -211,12 +213,12 @@ spec m = describe "external plugins' frames" $ do
   it "registers and answers a bundle whose top-level bindings name what the wiki's line uses, and stops one that declares wikiPlugin, saying so" $ runPage $ do
     for_ ["shadow-self", "shadow-names", "shadow-array"] $ \pid -> do
       wiki <- unsafeIOToPageM (wikiWith [installed pid "Shadow"])
-      ui <- mount m (frames wiki) (input "Any text.")
+      ui <- inputOf wiki "Any text." >>= mount m (frames wiki)
       waitQuiet
       (pid, map (\h -> map (\p -> p.message) h.problems) . Map.elems <$> lastHeard ui) `shouldReturn'` (pid, [["Shadow: answered"]])
       unmount ui
     wiki <- unsafeIOToPageM (wikiWith [installed "own-name" "Own name"])
-    ui <- mount m (frames wiki) (input "Any text.")
+    ui <- inputOf wiki "Any text." >>= mount m (frames wiki)
     waitQuiet
     find ui ".editor-plugin-stopped" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The plugin Own name was stopped: it failed: its code declares the name wikiPlugin itself, which hides the wiki's")
 

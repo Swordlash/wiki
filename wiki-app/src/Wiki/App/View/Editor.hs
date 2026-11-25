@@ -378,6 +378,8 @@ import Wiki.App.Live (Feed (..))
 import Wiki.App.Live qualified as Live
 import Wiki.App.Plugin (Agent (..), AgentButton, AgentOutput, AgentQuery (..), Diagnostics (..), Drawn (..), Face (..), Manifest (..))
 import Wiki.App.Plugin qualified as Plugin (AgentButton (..), AgentInput (..), AgentOutput (..), Editing (..))
+import Wiki.App.Plugin.External qualified as External
+import Wiki.App.Plugin.External.Frames qualified as Frames
 import Wiki.App.Plugin.Host (capabilities, documentOf)
 import Wiki.App.Plugin.Registry (Contributed (..), contributed, optionsFor, plugins, pluginsOn)
 import Wiki.App.Route (Route (..), pageRoute)
@@ -459,6 +461,7 @@ type Slots =
     .+ ("homeIcon" .== H.Slot (Const Void) ViewOutput ())
     .+ ("slideRow" .== H.Slot (Const Void) SlideRow.Output (Int, Int))
     .+ ("search" .== H.Slot SearchPanel.Query SearchPanel.Output ())
+    .+ ("externalPlugins" .== H.Slot (Const Void) Frames.Output ())
 
 -- | 'Work': the text being written, and the page it started from.
 data Work = Work
@@ -566,6 +569,11 @@ data State = State
   -- holds its key, since its island is still there ('keepDrawnFailures');
   -- the plugins that are on make problems of those whose key is in the
   -- checked text ('problemsOf').
+  , externalHeard :: Map PluginId External.Heard
+  -- ^ What each external plugin that runs last answered, as the
+  -- component that runs them tells it ("Wiki.App.Plugin.External.Frames"):
+  -- problems of the text each was sent, counted while that is the text
+  -- checked ('problemsOf').
   , problemCount :: Int
   -- ^ How many problems the text is marked with.
   , edits :: Int
@@ -806,6 +814,7 @@ data Action
   | HideTheirs
   | PressAgent Text
   | FromAgent PluginId AgentOutput
+  | FromExternal Frames.Output
   | Selected (Maybe Span)
   | ChangesLeft Int
   | Decide Decision Int
@@ -988,7 +997,21 @@ problemsOf st taken = sort (st.checked.problems <> diagnosed <> fitProblems st <
   where
     drawn = Drawn {text = st.checkedText, islands = st.checked.islands, failures = st.failedIslands}
     -- Diagnostics are pure: the plugins' monad does not matter here.
-    diagnosed = concatMap (\d -> d.diagnose drawn) (contributed (pluginsOn st.input.context) (plugins @IO)).diagnostics
+    diagnosed = concatMap (\d -> d.diagnose drawn) ((contributed (pluginsOn st.input.context) (plugins @IO)).diagnostics <> External.diagnosticsOf st.externalHeard)
+
+-- | What the external plugins are given ("Wiki.App.Plugin.External.Frames"):
+-- the session, which plugins are on, the text as last checked once the
+-- page is loaded, and whether the space is encrypted, where none runs.
+externalInput :: State -> Frames.Input
+externalInput st =
+  Frames.Input
+    { session = st.input.context.sessionNumber
+    , known = st.input.context.plugins
+    , text = case st.loaded of
+        Ready _ -> Just st.checkedText
+        _ -> Nothing
+    , encrypted = isJust st.input.space.encryption
+    }
 
 -- | A problem on the line that opens a block left open (a code fence, a
 -- box, an HTML comment) in a row, which takes the rows below it into its
@@ -1149,6 +1172,7 @@ component =
               , checkedText = ""
               , earlier = Complete.noEarlier
               , failedIslands = mempty
+              , externalHeard = mempty
               , problemCount = 0
               , edits = 0
               , found
@@ -1308,6 +1332,7 @@ component =
             {{ foundView st }}
             {{ cancelQuestion st }}
             {{ problemView st }}
+            {{ HH.slot "externalPlugins" () Frames.component (externalInput st) FromExternal }}
           </div>
           <div class="editor-home-holder" {{ HE.stoppingPropagation (HE.handler (EventType "submit") (const PanelSubmitted)) }}>
             {% if editsHomeOptions st.input %}{{ homeOptions st }}{% end %}
@@ -2384,6 +2409,10 @@ component =
       -- The shell writes a plugin's options, so that closing the editor
       -- does not cut the write off.
       FromAgent p (Plugin.SetOptions o) -> H.raise (PluginOptions p o)
+      -- An external plugin answered, stopped, or no longer runs.
+      FromExternal (Frames.Heard heard) -> do
+        news <- state (\st -> (heard /= st.externalHeard, st {externalHeard = heard}))
+        when news publishProblems
       Selected selection -> modify (\st -> st {selection})
       ChangesLeft n -> modify (\st -> st {pendingChanges = n})
       Decide d i -> decide d (Just i)

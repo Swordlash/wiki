@@ -116,6 +116,11 @@ library
       Wiki.App.Plugin.Assistant.Panel
       Wiki.App.Plugin.Capability.Assistant
       Wiki.App.Plugin.Errors
+      Wiki.App.Plugin.External
+      Wiki.App.Plugin.External.Frame
+      Wiki.App.Plugin.External.Frames
+      Wiki.App.Plugin.External.Machine
+      Wiki.App.Plugin.External.Protocol
       Wiki.App.Plugin.Host
       Wiki.App.Plugin.Registry
       Wiki.App.Offline

@@ -116,7 +116,7 @@ import Servant.Client.Generic (AsClientT)
 import Servant.Multipart.API (Mem)
 import Web.HTML.Window qualified as Window
 import Web.Storage.IndexedDB (MonadIndexedDB)
-import Wiki.Api (AccountApi (..), AdminApi (..), ArchiveApi (..), AssistantApi (..), AttachmentsApi (..), EncryptedApi (..), InvitationsApi (..), PagesApi (..), PasswordResetApi (..), SpacesApi (..), WikiApi (..))
+import Wiki.Api (AccountApi (..), AdminApi (..), ArchiveApi (..), AssistantApi (..), AttachmentsApi (..), EncryptedApi (..), ExternalPluginsApi (..), InvitationsApi (..), PagesApi (..), PasswordResetApi (..), SpacesApi (..), WikiApi (..))
 import Wiki.Api.Account (AccountDisabled (..), Credentials (..), NewAccount (..), PasswordChange (..), SignInMethods)
 import Wiki.Api.Activity (ActivityQuery (..), firstPage)
 import Wiki.Api.Admin (AdministratorFlag (..), CreateSpacesFlag (..), GroupName (..), NewInvitation (..), UserQuery (..))
@@ -936,6 +936,10 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
     sealedPage pid >>= \case
       Just (sid, k) -> sealedVersion sid pid k at >>= either (pure . Left) (\v -> sealedSavePage sid pid k base v.title v.body)
       Nothing -> write (getResponse <$> endpoints.pages.restore pid (VersionTime at) (PageVersion base))
+
+  -- Read afresh each time an editor opens, not cached: the editor runs
+  -- what the server lets it run now, and an editor opens seldom.
+  externalPluginsNow = send endpoints.externalPlugins.list
 
 -- | The administration's backend, over the API's @admin\/…@ endpoints. The
 -- directory is cached like any read, so that the administration page the

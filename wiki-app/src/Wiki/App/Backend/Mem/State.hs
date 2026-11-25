@@ -169,6 +169,7 @@ module Wiki.App.Backend.Mem.State
 
     -- * Plugins
   , pluginsIn
+  , externalPluginsIn
   , setPluginStateIn
   , setPluginOptionsIn
   , wikiPluginsIn
@@ -209,6 +210,7 @@ import Wiki.Api.ApiKeys qualified as Key
 import Wiki.Api.Backups (Backups (..), defaultBackupSettings)
 import Wiki.Api.Notifications (NotificationSettings (NotificationSettings), NotificationSettingsChange, Notifications (Notifications), ReadMark)
 import Wiki.Api.Notifications qualified as N
+import Wiki.Api.Plugins.External (ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..))
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), WikiPlugins (..), maxOptionsBytes, maxPluginsOff, maxPluginsPerUser, optionsNull, optionsTooLarge, parsePluginId)
 import Wiki.Api.ServerSettings (HomePage, MailTestResult, ProviderChange, ProviderCheck (ProviderCheck), ServerSettings, ServerSettingsChange, ServerSettingsOf, applyChange, checkHomePage, checkServerSettings, named, noServerSettings, providerProblems, providerWith, redirectUri, secretState)
 import Wiki.Api.ServerSettings qualified as SS
@@ -373,6 +375,14 @@ data MemState = MemState
   , pluginsOff :: Set PluginId
   -- ^ The plugins the administrator turned off for the whole wiki, for
   -- the tab's life.
+  , externalPolicy :: ExternalPolicy
+  -- ^ Who may add external plugins ("Wiki.Api.Plugins.External"). The
+  -- demo has no server to run them, so it stays off there; a test sets
+  -- it, with the plugins below, to run the editor over some.
+  , externalWiki :: Map PluginId ExternalPlugin
+  -- ^ The external plugins installed for everyone, by id.
+  , externalOwn :: Map UserId (Map PluginId ExternalPlugin)
+  -- ^ Each user's own external plugins, by id.
   }
   deriving stock (Eq, Show)
 
@@ -411,6 +421,9 @@ emptyState =
     , apiKeys = mempty
     , pluginChoices = mempty
     , pluginsOff = mempty
+    , externalPolicy = ExternalOff
+    , externalWiki = mempty
+    , externalOwn = mempty
     }
 
 -- | A version of a page as the state stores it, under the page and its
@@ -2538,6 +2551,27 @@ choiceIn u p made st = do
   let mine' = if keep then Map.insert p after mine else Map.delete p mine
       choices = if Map.null mine' then Map.delete u st.pluginChoices else Map.insert u mine' st.pluginChoices
   pure (st {pluginChoices = choices}, after)
+
+-- | The external plugins the signed-in user may run, as the server's
+-- @GET api\/v1\/external-plugins@ answers: the wiki's while the policy is
+-- not off, and always to an administrator; then the user's own while
+-- users may add theirs; each in the order of its id. Someone not signed
+-- in gets the policy and no plugins, and a closed wiki refuses them.
+externalPluginsIn :: MemState -> Either WikiError ExternalPlugins
+externalPluginsIn st = case currentUserId st of
+  Nothing
+    | st.grants.access == Closed -> Left Forbidden
+    | otherwise -> Right ExternalPlugins {policy = st.externalPolicy, external = []}
+  Just u ->
+    let wiki
+          | st.externalPolicy /= ExternalOff || isRight (requireAdministrator st) = [asMine False p | p <- Map.elems st.externalWiki]
+          | otherwise = []
+        own
+          | st.externalPolicy == ExternalUsers = [asMine True p | p <- Map.elems (Map.findWithDefault mempty u st.externalOwn)]
+          | otherwise = []
+     in Right ExternalPlugins {policy = st.externalPolicy, external = wiki <> own}
+  where
+    asMine mine p = ExternalPlugin {manifest = p.manifest, bundle = p.bundle, size = p.size, mine, installedAt = p.installedAt}
 
 -- | The plugins off for the whole wiki, for an administrator only, as the
 -- server's @wikiPluginsOff@; anyone else is 'Forbidden'.

@@ -18,6 +18,7 @@ module Wiki.App.Plugin.Registry
   , pluginsOn
   , isOn
   , onAmong
+  , externalOn
   , Contributed (..)
   , contributed
   , optionsOf
@@ -33,9 +34,11 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Protolude
 import Wiki.Api.Plugins (PluginChoice (..), PluginState (..), Plugins (..))
+import Wiki.Api.Plugins.External (ExternalPlugin, ExternalPlugins)
 import Wiki.App.Plugin (Agent, Diagnostics, Manifest (..), Options, Plugin (..), PluginId)
 import Wiki.App.Plugin.Assistant (assistant, assistantId)
 import Wiki.App.Plugin.Errors (errors)
+import Wiki.App.Plugin.External (manifestOf, runnable)
 import Wiki.App.View.Common (Context (..))
 
 -- | Every plugin built into the wiki, in the order their contributions are
@@ -73,6 +76,12 @@ isOn known m
       Just PluginOff -> False
       Just PluginDefault -> m.onByDefault
       Nothing -> m.onByDefault
+
+-- | The external plugins that are on for the reader, among those
+-- installed ("Wiki.App.Plugin.External"): each that may run by the policy
+-- ('runnable') and is on by the same rule as a built-in plugin ('isOn').
+externalOn :: Plugins -> ExternalPlugins -> [ExternalPlugin]
+externalOn known installed = [p | p <- runnable installed, isOn known (manifestOf p)]
 
 -- | 'Contributed' is what the plugins that are on give the editor and the
 -- pages, each kind of contribution in the plugins' order. The editor has

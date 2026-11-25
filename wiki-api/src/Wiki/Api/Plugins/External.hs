@@ -341,6 +341,11 @@ strictBundle code = statements False (skipShebang (T.unpack (T.take prologueWind
         c : _
           | not newline -> Continued
           | c == '"' || c == '\'' -> Ended rest
+          -- No line terminator may stand before a postfix ++ or --: after
+          -- one, they begin the next statement. A + or - alone goes on.
+          | "++" `isPrefixOf` rest || "--" `isPrefixOf` rest -> EndedLast
+          -- != and !== go on; a ! alone begins the next statement.
+          | "!=" `isPrefixOf` rest -> Continued
           | c `elem` ("([.,?+-*/%=<>&|^`" :: [Char]) -> Continued
           | isLetter c || c `elem` ("_$\\" :: [Char]) ->
               if takeWhile (\x -> isAlphaNum x || x `elem` ("_$" :: [Char])) rest `elem` ["in", "instanceof"] then Continued else EndedLast

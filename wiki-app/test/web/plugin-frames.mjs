@@ -5,8 +5,11 @@
 //
 // Each is the document the wiki's server answers at a plugin's frame
 // address (wiki-server's Wiki.Server.PluginFrame.frameDocument): the
-// plugin's code as a JSON string, every "<" written \u003c, then the
-// wiki's runtime, web/plugin/runtime.js. The runner serves a file by its
+// plugin's code as a JSON string, every "<" written \u003c, with whether
+// it asks for strict mode, then the wiki's runtime, web/plugin/runtime.js.
+// Whether it asks is the server's to read (Wiki.Api.Plugins.External's
+// strictBundle, tested natively and in the smoke step); here each frame
+// says it. The runner serves a file by its
 // extension, and a frame's address on the server has none, so the test
 // opens these instead; the server's policy on the frame is the smoke
 // test's (wiki-smoke's Server.Plugin), not this one's.
@@ -21,9 +24,9 @@ import { join } from "node:path";
 
 const [out] = process.argv.slice(2);
 const runtime = readFileSync("web/plugin/runtime.js", "utf8");
-const frame = (code) =>
+const frame = (code, strict = false) =>
   '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>' +
-  `<script>self.wikiPluginSource = ${JSON.stringify(code).replaceAll("<", "\\u003c")};</script>` +
+  `<script>self.wikiPluginSource = ${JSON.stringify(code).replaceAll("<", "\\u003c")}; self.wikiPluginStrict = ${strict};</script>` +
   `<script>${runtime}</script>` +
   "</body></html>";
 
@@ -48,7 +51,7 @@ writeFileSync(join(out, "plugin-frames", "looping.html"), frame("wikiPlugin.plug
 // Two bundles that report whether `this` is undefined in a plain call:
 // the first begins with a "use strict" directive, which must stay one.
 const mode = 'const strict = (function () { return this === undefined; })();\nwikiPlugin.plugin({ diagnostics: () => [{ from: 0, to: 0, severity: "warning", message: strict ? "strict" : "sloppy" }] });\n';
-writeFileSync(join(out, "plugin-frames", "strict.html"), frame('"use strict";\n' + mode));
+writeFileSync(join(out, "plugin-frames", "strict.html"), frame('"use strict";\n' + mode, true));
 writeFileSync(join(out, "plugin-frames", "sloppy.html"), frame(mode));
 // A plugin whose ordinary answer is past the protocol's limits: 501
 // problems, each with a message of 400 characters and a field more.

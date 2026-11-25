@@ -254,7 +254,10 @@ frames backing = describe "a plugin's frame" $ do
     T.count "<script>" body `shouldBe` 2
     -- The code is a JSON string with every < escaped: nothing in it ends
     -- the script.
-    codeScript "a</script><script>alert(1)" `shouldBe` "self.wikiPluginSource = \"a\\u003c/script>\\u003cscript>alert(1)\";"
+    codeScript "a</script><script>alert(1)" `shouldBe` "self.wikiPluginSource = \"a\\u003c/script>\\u003cscript>alert(1)\"; self.wikiPluginStrict = false;"
+    -- With whether the code asks for strict mode, which the runtime's line
+    -- in front of it would take from it.
+    codeScript "\"use strict\";\nf();" `shouldBe` "self.wikiPluginSource = \"\\\"use strict\\\";\\nf();\"; self.wikiPluginStrict = true;"
     -- Revalidated by its tag.
     for_ (header "ETag" reply) $ \tag -> (\x -> x.status) <$> getUrlWith r at (("If-None-Match", tag) : editor) `shouldReturn` 304
     header "ETag" reply `shouldSatisfy` isJust

@@ -166,6 +166,45 @@ bundles = describe "a plugin's bundle" $ do
     checkBundle (BS.replicate (maxBundleBytes + 1) 0x61) `shouldSatisfy` either (T.isInfixOf "2 MiB") (const False)
     checkBundle (BS.replicate maxBundleBytes 0x61) `shouldSatisfy` isRight
 
+  it "asks for strict mode exactly when its directive prologue holds a \"use strict\" directive" $ do
+    let comments = T.replicate (prologueWindow `div` 8) "/* ab */"
+    for_
+      [ ("\"use strict\";\nwikiPlugin.plugin({});", True)
+      , ("'use strict';", True)
+      , ("\"use strict\"", True)
+      , ("// a comment\n/* another\n */ \"use strict\";", True)
+      , ("#!/usr/bin/env node\n\"use strict\";", True)
+      , ("\"use asm\"; \"use strict\";", True)
+      , ("\"use asm\"\n'use strict'\nf();", True)
+      , ("\"use strict\"\nf();", True)
+      , ("\"use strict\"\n\"another\";", True)
+      , ("\"use strict\"; \"a\" + b;", True)
+      , ("\t\x00A0\xFEFF\x2028\"use strict\";", True)
+      , ("", False)
+      , ("wikiPlugin.plugin({});", False)
+      , ("x = 1; \"use strict\";", False)
+      , ("'use\\x20strict';", False)
+      , ("\"use \\\nstrict\";", False)
+      , ("\"use strict\" + x;", False)
+      , ("\"use strict\".length;", False)
+      , ("(\"use strict\");", False)
+      , ("\"use strict\"\n(f)();", False)
+      , ("\"use strict\"\n+ x;", False)
+      , ("\"use strict\"\ninstanceof X;", False)
+      , ("\"use strict\n\";", False)
+      , ("\"use strict", False)
+      , ("/* never closed \"use strict\";", False)
+      , ("\"use strict\" /* never closed", False)
+      , ("#!\"use strict\";", False)
+      , (" #!/usr/bin/env node\n\"use strict\";", False)
+      , ("\"a\"; f(); \"use strict\";", False)
+      , (comments <> "\"use strict\";", False)
+      , (T.drop 16 comments <> "\"use strict\";", True)
+      ]
+      $ \(code, strict) -> (code, strictBundle code) `shouldBe` (code, strict)
+    -- Past the window, a statement not yet ended is no directive.
+    strictBundle (T.replicate (prologueWindow - T.length "\"use strict\"") " " <> "\"use strict\"" <> "\n.length") `shouldBe` False
+
 policies :: Spec
 policies = describe "who may add plugins" $ do
   it "is off, wiki or users in JSON" $
@@ -184,7 +223,7 @@ frames = describe "a plugin's frame" $ do
 
   it "runs the two scripts its hashes name, in a sandbox, a worker from a blob, and connects to the hosts given alone" $
     pluginFramePolicy ["https://api.languagetool.org"] ["cnVudGltZQ==", "Y29kZQ=="]
-      `shouldBe` "sandbox allow-scripts; default-src 'none'; script-src 'sha256-cnVudGltZQ==' 'sha256-Y29kZQ==' blob:; worker-src blob:; connect-src https://api.languagetool.org; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; webrtc 'block'"
+      `shouldBe` "sandbox allow-scripts; default-src 'none'; script-src 'sha256-cnVudGltZQ==' 'sha256-Y29kZQ=='; worker-src blob:; connect-src https://api.languagetool.org; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; webrtc 'block'"
 
   it "connects nowhere when the manifest names no host" $
     directiveIn "connect-src" (directives (pluginFramePolicy [] ["aGFzaA=="])) `shouldBe` Nothing

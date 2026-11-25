@@ -12,11 +12,17 @@
 // the frame or the wiki's page, so the wiki notices that the plugin no
 // longer answers and removes the frame, which ends the worker.
 //
-// The worker's script is the wiki's own (wikiPluginWorker below), which
-// then runs the plugin's code with importScripts, from a blob: address of
-// its own, as a script of its own: the code's text is not touched, so its
-// "use strict" directive, its line numbers and its top-level scope are
-// exactly its own.
+// The worker runs one script: the wiki's line (wikiPluginWorker below,
+// on one line), then the plugin's code on the same line, so that the
+// code's line numbers are its own. The code runs as the installed bundle
+// and nothing else: the frame's policy allows no script made at run time
+// (decision 69), so no importScripts of a blob and no eval. A "use strict"
+// directive of the code's is no longer one there, so the script begins
+// with "use strict"; exactly when the code's directive prologue holds one,
+// as the server read it (Wiki.Api.Plugins.External.strictBundle, given as
+// self.wikiPluginStrict); the wiki's line behaves the same either way. A
+// "#!" line the code begins with, which may stand only at the start of a
+// script, becomes a comment of the same length.
 //
 // The wiki connects once: its first message, from the page that holds
 // the frame, carries a MessagePort. Everything after goes over that port,
@@ -55,13 +61,13 @@ const MAX_PROBLEMS = 500;
 const MAX_MESSAGE_LENGTH = 300;
 const MESSAGE_LENGTH = 1048576;
 
-// The worker's side, given the limits and the plugin's code.
-function wikiPluginWorker(maxProblems, maxMessageLength, source) {
+// The worker's side, given the limits: written without line comments and
+// with every statement ended, so that it can be put on one line.
+function wikiPluginWorker(maxProblems, maxMessageLength) {
   "use strict";
   let handlers = null;
   const waiting = [];
   const send = (message) => postMessage(JSON.stringify(message));
-  // A message cut to the limit, in characters, never inside one.
   const cut = (text) => {
     const characters = Array.from(text);
     return characters.length > maxMessageLength ? characters.slice(0, maxMessageLength).join("") : text;
@@ -107,15 +113,16 @@ function wikiPluginWorker(maxProblems, maxMessageLength, source) {
       for (const message of waiting.splice(0)) answer(message);
     },
   });
-  // The plugin's code, as a script of its own. What it throws, or a
-  // syntax error, reaches the worker's error event.
-  importScripts(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
 }
 
 (() => {
-  const source = self.wikiPluginSource;
+  const given = self.wikiPluginSource;
+  const strict = self.wikiPluginStrict === true;
   delete self.wikiPluginSource;
-  const bootstrap = `(${String(wikiPluginWorker)})(${MAX_PROBLEMS}, ${MAX_MESSAGE_LENGTH}, ${JSON.stringify(source)});\n`;
+  delete self.wikiPluginStrict;
+  const source = given.startsWith("#!") ? `//${given.slice(2)}` : given;
+  const line = `(${String(wikiPluginWorker).replace(/\n\s*/g, " ")})(${MAX_PROBLEMS}, ${MAX_MESSAGE_LENGTH});`;
+  const script = [strict ? '"use strict";' : "", line, source];
   let connected = false;
   addEventListener("message", (event) => {
     const data = event.data;
@@ -138,7 +145,7 @@ function wikiPluginWorker(maxProblems, maxMessageLength, source) {
       failed(message);
     };
     try {
-      worker = new Worker(URL.createObjectURL(new Blob([bootstrap], { type: "text/javascript" })));
+      worker = new Worker(URL.createObjectURL(new Blob(script, { type: "text/javascript" })));
     } catch (error) {
       failed(error);
       return;

@@ -61,7 +61,7 @@ import Protolude
 import System.Directory (doesFileExist)
 import Wiki.Api.ContentPolicy (pluginFramePolicy)
 import Wiki.Api.Plugins (parsePluginId)
-import Wiki.Api.Plugins.External (ExternalManifest (..), diagnosticsSegment)
+import Wiki.Api.Plugins.External (ExternalManifest (..), diagnosticsSegment, strictBundle)
 import Wiki.Core.Id (BlobId (..))
 import Wiki.Server.Sha256 (sha256)
 import Wiki.Server.Storage (Owner (..), Storage, Who, pluginFrameBundle)
@@ -73,10 +73,18 @@ runtimeScript :: Text
 runtimeScript = $(makeRelativeToProject "../web/plugin/runtime.js" >>= embedStringFile)
 
 -- | The script that holds a plugin's code: the code as a JSON string, in
--- @self.wikiPluginSource@, for the runtime to start. Every @<@ is written
--- @\\u003c@, so nothing in the code can end the script element.
+-- @self.wikiPluginSource@, for the runtime to start, and whether the code
+-- asks for strict mode, in @self.wikiPluginStrict@
+-- ('Wiki.Api.Plugins.External.strictBundle'), since the runtime puts its
+-- own line in front of the code. Every @<@ is written @\\u003c@, so
+-- nothing in the code can end the script element.
 codeScript :: Text -> Text
-codeScript code = "self.wikiPluginSource = " <> T.replace "<" "\\u003c" (decodeUtf8 (BSL.toStrict (encode code))) <> ";"
+codeScript code =
+  "self.wikiPluginSource = "
+    <> T.replace "<" "\\u003c" (decodeUtf8 (BSL.toStrict (encode code)))
+    <> "; self.wikiPluginStrict = "
+    <> (if strictBundle code then "true" else "false")
+    <> ";"
 
 -- | The document's two scripts, in their order: the plugin's code, then
 -- the runtime.

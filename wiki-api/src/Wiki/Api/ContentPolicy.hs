@@ -167,22 +167,11 @@ interactiveSvgPolicy =
 -- ("Wiki.Server.PluginFrame", "Wiki.Api.Plugins.External"): the frame's
 -- two inline scripts run, the wiki's runtime and the line that holds the
 -- plugin's code, each allowed by the base64 of its SHA-256; the runtime
--- starts a worker of its own from a @blob:@ address, which runs the
--- plugin's code from another @blob:@ address with @importScripts@; and
--- the code connects to the hosts given, the ones its manifest names, and
--- nowhere else. The worker is under this policy too, since a worker made
--- from a @blob:@ address takes its maker's (tried in Chromium 153: its
--- @fetch@ to a host given works, and to any other is refused, and its
--- @importScripts@ of a @blob:@ address is refused unless @script-src@
--- names @blob:@).
---
--- @script-src blob:@ is there so that the plugin's code runs as a script
--- of its own, its text untouched (its @"use strict"@ directive, its line
--- numbers and its top-level scope its own), after the runtime's. It lets
--- code in the worker run a script it makes at run time, as @eval@ would;
--- that reaches nothing the code could not reach already. The frame's
--- page makes no script of its own, and no other address loads: a script
--- of another site is still refused.
+-- starts the code as a worker from a @blob:@ address; and the code
+-- connects to the hosts given, the ones its manifest names, and nowhere
+-- else. The worker is under this policy too, since a worker made from a
+-- @blob:@ address takes its maker's (tried in Chromium 153: its @fetch@ to
+-- a host given works, and to any other is refused).
 --
 -- Everything else is refused. The sandbox gives the frame an opaque
 -- origin even where it is shown outside a frame, so no cookie, storage
@@ -195,7 +184,7 @@ pluginFramePolicy hosts scriptHashes =
   renderPolicy
     ( [ ("sandbox", T.words scriptSandbox)
       , ("default-src", ["'none'"])
-      , ("script-src", ["'sha256-" <> h <> "'" | h <- scriptHashes] <> ["blob:"])
+      , ("script-src", ["'sha256-" <> h <> "'" | h <- scriptHashes])
       , ("worker-src", ["blob:"])
       ]
         <> [("connect-src", hosts) | not (null hosts)]

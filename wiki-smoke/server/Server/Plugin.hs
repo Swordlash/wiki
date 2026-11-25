@@ -124,6 +124,11 @@ plugins smoke pw allowed other = do
     expect ("threw" `Text.isPrefixOf` at "fetchOther") ("another site, from the plugin: " <> show (at "fetchOther"))
     expect (at "socket" /= "open") ("a WebSocket, from the plugin: " <> show (at "socket"))
     expect ("threw" `Text.isPrefixOf` at "importScripts") ("a script from another site, from the plugin: " <> show (at "importScripts"))
+    -- No code but the installed bundle runs (decision 69): no script made
+    -- at run time, by eval, new Function, or a blob of its own.
+    expect ("threw" `Text.isPrefixOf` at "eval") ("eval, from the plugin: " <> show (at "eval"))
+    expect ("threw" `Text.isPrefixOf` at "newFunction") ("new Function, from the plugin: " <> show (at "newFunction"))
+    expect ("threw" `Text.isPrefixOf` at "blobScript") ("a script of a blob it made, from the plugin: " <> show (at "blobScript"))
     -- The report was sent after every attempt: what reached the two sites
     -- is all that will.
     readIORef allowed.reached `shouldReturn` ["/allowed"]
@@ -175,6 +180,9 @@ hostileWorker wiki allowed other =
     , "    await attempt('fetchOther', () => fetch(OTHER + '/other').then((r) => 'status ' + r.status));"
     , "    await attempt('socket', () => new Promise((ok) => { const w = new WebSocket(OTHER.replace('http', 'ws') + '/socket'); w.onopen = () => ok('open'); w.onerror = () => ok('error'); }));"
     , "    await attempt('importScripts', () => { importScripts(OTHER + '/script.js'); return 'imported'; });"
+    , "    await attempt('eval', () => (0, eval)('1 + 1'));"
+    , "    await attempt('newFunction', () => new Function('return 2')());"
+    , "    await attempt('blobScript', () => { importScripts(URL.createObjectURL(new Blob(['self.made = 3;'], { type: 'text/javascript' }))); return 'imported ' + self.made; });"
     , "    postMessage(JSON.stringify({ type: 'report', report: out }));"
     , "  } else if (data && data.type === 'loop') {"
     , "    postMessage(JSON.stringify({ type: 'looping' }));"
@@ -223,6 +231,11 @@ inTheEditor smoke pw = do
       installing pid name bundleCode = upload smoke.wiki s "external-plugins/wiki" "bundle" (pid <> ".js") "text/javascript" bundleCode [("manifest", Text.decodeUtf8 (LazyByteString.toStrict (Aeson.encode (hostile pid name))))] >>= expectStatus 200 ("installing " <> Text.unpack pid)
   _ <- installing "tangled" "Tangled" "let x = []; for (let i = 0; i < 40; i++) x = [x, x]; postMessage(x);\n"
   _ <- installing "flooding" "Flooding" "wikiPlugin.plugin({ diagnostics: () => [] }); for (;;) postMessage('{\"type\":\"ready\"}');\n"
+  -- Two plugins that say whether `this` is undefined in a plain call: the
+  -- first begins with a "use strict" directive, which the server reads.
+  let mode = "const strict = (function () { return this === undefined; })();\nwikiPlugin.plugin({ diagnostics: () => [{ from: 0, to: 0, severity: 'warning', message: strict ? 'strict' : 'sloppy' }] });\n"
+  _ <- installing "strict-mode" "Strict mode" ("\"use strict\";\n" <> mode)
+  _ <- installing "sloppy-mode" "Sloppy mode" mode
   let frameAddress = "/plugin-frame/wiki/doubled-words/" <> bundle <> "/diagnostics"
       editorAt = "/s/smoke-space/p/first-page/edit/"
       stopped page = locator page "#app .editor-plugin-stopped"
@@ -240,9 +253,10 @@ inTheEditor smoke pw = do
     hasText (stopped page) "The plugin Tangled was stopped: it failed: it sent a message that is not text of at most 1 MiB"
     hasText (stopped page) "The plugin Flooding was stopped"
     -- The page went on all the while, and the frames of the plugins
-    -- stopped are gone: one frame is left, the example's.
+    -- stopped are gone: three are left, the example's and the two that
+    -- say their mode.
     evaluate page "1 + 1" `shouldReturn` (2 :: Int)
-    count (locator page "#app .editor-plugin-frames iframe") `shouldReturn` 1
+    count (locator page "#app .editor-plugin-frames iframe") `shouldReturn` 3
     -- The author writes a word twice; once the text is checked and the
     -- example has answered, it is marked, with the plugin's name.
     marked page >>= \m -> expect (not ("Doubled word" `Text.isInfixOf` m)) ("marked before the typing: " <> show m)
@@ -250,6 +264,8 @@ inTheEditor smoke pw = do
     typeText (editorText page) "\n\nSaid the the cat.\n"
     waitQuiet page
     marked page >>= \m -> expect ("Doubled words: Doubled word: the" `Text.isInfixOf` m) ("the editor's marks: " <> show m)
+    -- Each in the mode its code asks for, under the frame's policy.
+    marked page >>= \m -> expect ("Strict mode: strict" `Text.isInfixOf` m && "Sloppy mode: sloppy" `Text.isInfixOf` m) ("the modes the plugins ran in: " <> show m)
     hasText (locator page "#app .editor-problems") "problem"
     nothingWrongExcept fromThePlugin serviceWorkerInSandbox page
 
@@ -273,5 +289,7 @@ inTheEditor smoke pw = do
   _ <- asAdmin smoke "DELETE" "external-plugins/wiki/looping" Nothing >>= expectStatus 204 "removing the plugin that loops"
   _ <- asAdmin smoke "DELETE" "external-plugins/wiki/tangled" Nothing >>= expectStatus 204 "removing the tangled plugin"
   _ <- asAdmin smoke "DELETE" "external-plugins/wiki/flooding" Nothing >>= expectStatus 204 "removing the flooding plugin"
+  _ <- asAdmin smoke "DELETE" "external-plugins/wiki/strict-mode" Nothing >>= expectStatus 204 "removing the strict plugin"
+  _ <- asAdmin smoke "DELETE" "external-plugins/wiki/sloppy-mode" Nothing >>= expectStatus 204 "removing the sloppy plugin"
   _ <- asAdmin smoke "PUT" "external-plugins/policy" (Just (object ["policy" .= ("off" :: Text)])) >>= expectStatus 200 "turning external plugins off"
   pure ()

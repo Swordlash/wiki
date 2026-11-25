@@ -169,8 +169,8 @@ spec m = describe "external plugins' frames" $ do
     length <$> findAll ui "iframe" `shouldReturn` 0
     unsafeIOToPageM js_frames_open `shouldReturn` openBefore
 
-  -- The runtime runs the plugin's code as a script of its own: a "use
-  -- strict" directive it begins with stays one.
+  -- The runtime runs the plugin's code after its own line, in the mode the
+  -- code asks for, as the frame says it does.
   it "runs a bundle that begins with \"use strict\" in strict mode, and one without in sloppy mode" $ runPage $ do
     for_ [("strict", "Strict"), ("sloppy", "Sloppy")] $ \(pid, name) -> do
       wiki <- unsafeIOToPageM (wikiWith [installed pid name])

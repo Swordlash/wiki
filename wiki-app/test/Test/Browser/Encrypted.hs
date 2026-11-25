@@ -64,7 +64,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import System.Timeout (timeout)
-import Test.Browser.Http (Asked (..), answerWith, answersTaken, asked, holdAt, offline, release, said, serveDemo, serverStartsWith, startServer, startServerOver, startServerThrough, tellServer)
+import Test.Browser.Http (Asked (..), answerWith, answersTaken, asked, holdAt, holdingEnv, offline, release, said, serveDemo, serverStartsWith, startHolding, startServer, startServerOver, startServerThrough, tellServer)
 import Test.Browser.Mount (clickButton, signOut)
 import Test.Browser.Text (editorText)
 import Test.Hspec.Halogen
@@ -439,7 +439,7 @@ spec m = readsOnce Quiet $ do
           links <- findAll ui ".wiki-sidebar .page-tree a"
           named <- filterM (\l -> (== title) . T.strip <$> textContent l) links
           maybe (panic ("no link to " <> title)) click (head named)
-    ui <- startServer m (R.Page [secretSlug] [pageOne.slug])
+    ui <- startHolding m (R.Page [secretSlug] [pageOne.slug])
     oneSrc <- imageOf ui
     unsafeIOToPageM (js_image_width (toJSText oneSrc)) `shouldReturn` 3
     -- Another page: the first page's URL is let go.
@@ -491,7 +491,7 @@ spec m = readsOnce Quiet $ do
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
     holdAt "GET" ("api/v1/attachments/" <> b.id.text <> "/" <> b.id.text)
-    ui <- startServer m (R.PageSlides [secretSlug] [made.slug] 1 1)
+    ui <- startHolding m (R.PageSlides [secretSlug] [made.slug] 1 1)
     -- The first attachment's URL is made; the second's bytes are held.
     let images = (\blobs -> [u | (u, (t, gone)) <- Map.toList blobs, t == "image/svg+xml", not gone]) <$> blobsNow
     waitQuiet
@@ -522,7 +522,7 @@ spec m = readsOnce Quiet $ do
     void (ok =<< run env (savePage made.id again.updatedAt "Deck" "![a](attachment:a.svg)"))
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
-    tab <- unsafeIOToPageM (newHttpEnv browserTransport)
+    tab <- holdingEnv
     let held = unsafeIOToPageM (ownersHeld tab)
         docs = either (const (panic "not a slug")) identity . mkSlug
         -- Each view, and what shows it is open: on the encrypted page, its
@@ -600,7 +600,7 @@ spec m = readsOnce Quiet $ do
           ]
     -- Each view, and how many owners it left behind: none.
     left <- for routes $ \route -> do
-      tab <- unsafeIOToPageM (newHttpEnv browserTransport)
+      tab <- holdingEnv
       gate <- unsafeIOToPageM newGate
       armed <- unsafeIOToPageM (newIORef (Just gate))
       holdAt "GET" "api/v1/session"
@@ -631,7 +631,7 @@ spec m = readsOnce Quiet $ do
         route = R.EditPage [docs "docs"] [docs "markdown-guide", docs "presentations"]
         running = unsafeIOToPageM js_fit_watches
     before <- running
-    tab <- unsafeIOToPageM (newHttpEnv browserTransport)
+    tab <- holdingEnv
     gate <- unsafeIOToPageM newGate
     armed <- unsafeIOToPageM (newIORef (Just gate))
     holdAt "GET" "api/v1/session"
@@ -1168,7 +1168,7 @@ spec m = readsOnce Quiet $ do
     unsafeIOToPageM js_record_decryptions
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
-    tab <- unsafeIOToPageM (newHttpEnv browserTransport)
+    tab <- holdingEnv
     ui <- startServerOver m tab (R.Page [secretSlug] [made.slug])
     find ui ".encrypted-state" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "asks for a passkey or your password each time")
     -- This device has no vault to unlock: it cannot be opened here.
@@ -1358,7 +1358,7 @@ spec m = readsOnce Quiet $ do
     made <- ok =<< run env (createPage secret.id Nothing "Titled secret" "Body of it.")
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
-    tab <- unsafeIOToPageM (newHttpEnv browserTransport)
+    tab <- holdingEnv
     ui <- startServerOver m tab (R.Page [secretSlug] [made.slug])
     let title = unsafeIOToPageM (fromJSText <$> js_document_title)
     find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Body of it.")
@@ -1438,7 +1438,7 @@ spec m = readsOnce Quiet $ do
     bellOf waiting `shouldReturn` [encryptedPageTitle]
     -- Behind a gate not confirmed: what the server says, and no title
     -- decrypted; once confirmed, the title.
-    gated <- as "user-admin"
+    gated <- asHolding "user-admin"
     void (ok =<< run gated (setEntry secret.id ConfirmEach))
     recordDecryptions
     bellOf gated `shouldReturn` [encryptedPageTitle]
@@ -2069,7 +2069,7 @@ spec m = readsOnce Quiet $ do
     void (ok =<< run env (createPage secret.id Nothing "Turned plain" "Text."))
     serveDemo
     answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
-    ui <- startServer m (R.SpacePages [secretSlug])
+    ui <- startHolding m (R.SpacePages [secretSlug])
     find ui ".space-settings-toggle" >>= click
     find ui ".decrypt-space" >>= click
     confirm <- find ui ".decrypt-confirm"
@@ -2168,10 +2168,19 @@ seenAt' u pid seen = unsafeIOToPageM (keepSeen u pid seen)
 
 -- | A new tab of a user's, over the server, as the user asking.
 as :: Text -> PageM s HttpEnv
-as user = do
+as user = asking user *> unsafeIOToPageM (newHttpEnv browserTransport)
+
+-- | 'as', over a backend with no time limit on a request ('holdingEnv'),
+-- for an example that holds a request on purpose.
+asHolding :: Text -> PageM s HttpEnv
+asHolding user = asking user *> holdingEnv
+
+-- | Make the user the one who asks the stand-in server from now on, with
+-- the session the server answers for them.
+asking :: Text -> PageM s ()
+asking user = do
   answerWith "GET" "api/v1/session" 200 =<< sessionOf user
   unsafeIOToPageM (js_as (toJSText user))
-  unsafeIOToPageM (newHttpEnv browserTransport)
 
 -- | An attachment's URL in a tab, held by an owner of its own, which the
 -- test never lets go.

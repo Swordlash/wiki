@@ -24,7 +24,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find)
-import Test.Browser.Http (Asked (..), answerWith, askedNow, hangUp, holdAt, listening, release, serveDemo, serverStarts, serverStops, startServer, tell)
+import Test.Browser.Http (Asked (..), answerWith, askedNow, hangUp, holdAt, listening, release, serveDemo, serverStarts, serverStops, startHolding, startServer, tell)
 import Test.Browser.Mount (clickButton, slugs, start, startChanged)
 import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (MonadIndexedDB)
@@ -168,7 +168,7 @@ live m = describe "over the backend over HTTP" $ do
       serverStarts
       serveDemo
       answerWith "GET" "api/v1/notifications" 200 Notifications {unread = 0, items = []}
-      ui <- startServer m Home
+      ui <- startHolding m Home
       find ui ".notifications-toggle" >>= (`shouldHaveText` "🔔")
       length <$> findAll ui ".notifications-count" `shouldReturn` 0
       let told i title =

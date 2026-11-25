@@ -68,11 +68,16 @@ readLegacy user vaultKey =
             lift (opening slotKey copySealed) >>= \case
               -- L1: the assistant's key is the vault key.
               Just copy -> pure OnDevice {bytes, own = Nothing, copy = Just copy, follows = True, unopenable = False, askEachTime = r.askEachTime, learnt = learntIn r.learnt}
-              -- L4: what was typed while the vault was locked.
+              -- L4: what was typed while the vault was locked, sealed with
+              -- the assistant's own key. Or L1 after a reload on "ask each
+              -- time": the assistant's slot is empty, and what the record
+              -- sealed is the vault's, which the vault key here opens.
               Nothing -> do
                 copy <- lift (opening vaultKey copySealed)
                 typed <- join <$> traverse (lift . opening slotKey) r.sealed
-                pure OnDevice {bytes, own = typed, copy, follows = True, unopenable = isJust r.sealed && isNothing typed, askEachTime = r.askEachTime, learnt = learntIn r.learnt}
+                vaults :: Maybe Settings <- join <$> traverse (lift . opening vaultKey) r.sealed
+                let unopenable = isJust r.sealed && isNothing typed && isNothing vaults
+                pure OnDevice {bytes, own = typed, copy, follows = True, unopenable, askEachTime = r.askEachTime, learnt = learntIn r.learnt}
           Nothing -> do
             own <- join <$> traverse (lift . opening slotKey) r.sealed
             pure OnDevice {bytes, own, copy = Nothing, follows = False, unopenable = isJust r.sealed && isNothing own, askEachTime = r.askEachTime, learnt = learntIn r.learnt}

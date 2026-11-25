@@ -188,6 +188,21 @@ states = describe "moves each legacy state" $ do
     after <- leftOn d
     after `shouldBe` Left' {record = False, assistantKey = False, vaultKeyHere = Just w.vaultKey, cache = Nothing, askEachTime = True}
 
+  it "L1 after a reload on \"ask each time\", unlocked through the vault's slot: the record is the vault's, and goes" $ do
+    w <- newWorld
+    withLegacyItem w synced
+    d <- newDevice w.counter True
+    -- The assistant's slot emptied by the reload; the vault's slot holds
+    -- the key once unlocked again.
+    withVaultKey d alice w.vaultKey
+    followingRecord w Nothing True synced >>= putRecord d alice
+    options <- newIORef Nothing
+    moveAll w d options `shouldReturn` Right Moved
+    pluginKeys w `shouldReturn` keysOf synced
+    hasLegacyItem w `shouldReturn` False
+    after <- leftOn d
+    (after.record, after.askEachTime) `shouldBe` (False, True)
+
   it "L4: waits while the vault is locked, then takes the vault's keys and those typed here for the names the vault lacks" $ do
     w <- newWorld
     withLegacyItem w synced

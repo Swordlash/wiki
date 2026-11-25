@@ -12,12 +12,11 @@ import Control.Monad.IO.Unlift (MonadUnliftIO, withRunInIO)
 import Protolude
 import Web.DOM.Internal.Types (Element)
 import Wiki.App.Assistant (MonadAssistant (..), closeKeyOwner, openKeyOwner)
-import Wiki.App.Assistant.Keys (addPasskey, changeKeys, loadFollowedKeys, loadKeys, readKeys, removePasskey, setAskEachTime, turnOffSync, turnOnSync, unlockKeys)
-import Wiki.App.Assistant.Sync (MonadVault (..), Owned, owned)
+import Wiki.App.Assistant.Sync (MonadVault, Owned, owned)
 import Wiki.App.Backend (Session (..))
 import Wiki.App.Editor.Browser (currentText, focusText, proposeEdit, trackedChanges)
 import Wiki.App.Plugin (Capabilities (..), Document (..), Local (..), Manifest (..), SecretField (..), Secrets (..), Unavailable (..), optionsLinkTo)
-import Wiki.App.Plugin.Capability.Assistant (AssistantCapabilities (..), Models (..), Secret (..))
+import Wiki.App.Plugin.Capability.Assistant (AssistantCapabilities (..), Models (..))
 import Wiki.App.Plugin.Host.Secrets (loadLocal, putSecret, readSecrets, removeSecret, saveLocal)
 import Wiki.App.Route (Route (UserSettings), SettingsSection (AssistantSection))
 import Wiki.App.View.Common (Context (..))
@@ -46,6 +45,7 @@ capabilities context manifest =
           , put = \name value -> maybe (pure (Left signedOut)) (\u -> ownedFor u (putSecret u manifest name value)) user
           , remove = \name -> maybe (pure (Left signedOut)) (\u -> ownedFor u (removeSecret u manifest name)) user
           , field = SecretField {component = SecretField.component user manifest, reader = (context.sessionNumber, user)}
+          , changes = secretsChanges
           }
     , local =
         Local
@@ -65,24 +65,6 @@ capabilities context manifest =
                 , close = closeTalk
                 , check = checkKey
                 , list = listModels
-                }
-          , secret =
-              Secret
-                { followed = loadFollowedKeys
-                , keep = changeKeys
-                , load = loadKeys
-                , read = readKeys
-                , change = changeKeys
-                , turnOn = turnOnSync
-                , unlock = unlockKeys
-                , addPasskey = addPasskey
-                , removePasskey = removePasskey
-                , turnOff = turnOffSync
-                , askEachTime = setAskEachTime
-                , passkeys = listPasskeys
-                , syncing = vaultSync
-                , passkeysHere = passkeysHere
-                , sealingHere = sealingHere
                 }
           , services = context.session.assistantServices
           }

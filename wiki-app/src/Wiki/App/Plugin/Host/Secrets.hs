@@ -70,8 +70,10 @@ module Wiki.App.Plugin.Host.Secrets
   , maxTries
 
     -- * With the lock held
+  , readSecretsHeld
   , putSecretHeld
   , removeSecretHeld
+  , keepMissingHeld
 
     -- * What this browser keeps
   , DeviceEntry (..)
@@ -125,7 +127,13 @@ placeOf = do
 -- | The plugin's secrets for the user: every name the manifest declares
 -- that has a value.
 readSecrets :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> m (Either Unavailable (Map SecretName Text))
-readSecrets u manifest = holdingDeviceRecords $ runExceptT $ do
+readSecrets u manifest = holdingDeviceRecords (readSecretsHeld u manifest)
+
+-- | 'readSecrets', for a caller that holds the lock of this device's
+-- records already: the move of the assistant's legacy settings
+-- ("Wiki.App.Assistant.Migrate"), which reads them between its steps.
+readSecretsHeld :: (MonadAssistant m, MonadVault m) => UserId -> Manifest -> m (Either Unavailable (Map SecretName Text))
+readSecretsHeld u manifest = runExceptT $ do
   item <- withExceptT Failed (itemFor manifest)
   withExceptT Failed placeOf >>= \case
     InVault s -> do
@@ -150,25 +158,34 @@ removeSecret u manifest name = holdingDeviceRecords (removeSecretHeld u manifest
 -- one page's change inside the other's, in one process that has one lock.
 -- The lock of tabs ('secretsLock') is taken here all the same.
 putSecretHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> SecretName -> Text -> m (Either Text ())
-putSecretHeld u manifest name value = changeSecrets u manifest name (Map.insert name value)
+putSecretHeld u manifest name value = changeSecrets u manifest [name] (Map.insert name value)
 
 -- | 'removeSecret', for a caller that holds the lock already
 -- ('putSecretHeld').
 removeSecretHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> SecretName -> m (Either Text ())
-removeSecretHeld u manifest name = changeSecrets u manifest name (Map.delete name)
+removeSecretHeld u manifest name = changeSecrets u manifest [name] (Map.delete name)
+
+-- | Keep these values under the names the plugin's secrets do not hold
+-- yet; a name they hold keeps its value ('Wiki.Core.Vault.Plugin.foldIn').
+-- For a caller that holds the lock of this device's records: the move of
+-- the assistant's legacy settings, which puts its keys in this way, so
+-- that a key a browser changed since the move is not taken back.
+keepMissingHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> Map SecretName Text -> m (Either Text ())
+keepMissingHeld u manifest values = changeSecrets u manifest (Map.keys values) (`foldIn` values)
 
 -- | 'secretsLock' is the name of the lock of tabs a change of a user's
 -- secrets of plugins holds (the module's header says why).
 secretsLock :: UserId -> Text
 secretsLock u = "wiki-plugin-secrets:" <> u.text
 
--- | Change the plugin's secrets for one name, after the name is checked
--- against the manifest: nothing is read for a name it does not declare.
--- The change holds the lock of tabs, and is announced once done.
-changeSecrets :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> SecretName -> (Map SecretName Text -> Map SecretName Text) -> m (Either Text ())
-changeSecrets u manifest name change = announced $ runExceptT $ do
-  unless (name `elem` map (\s -> s.name) manifest.secrets) $
-    throwError ("The plugin " <> manifest.name <> " has no secret named " <> name.text <> ".")
+-- | Change the plugin's secrets for these names, after the names are
+-- checked against the manifest: nothing is read for a name it does not
+-- declare. The change holds the lock of tabs, and is announced once done.
+changeSecrets :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> [SecretName] -> (Map SecretName Text -> Map SecretName Text) -> m (Either Text ())
+changeSecrets u manifest names change = announced $ runExceptT $ do
+  for_ names $ \name ->
+    unless (name `elem` map (\s -> s.name) manifest.secrets) $
+      throwError ("The plugin " <> manifest.name <> " has no secret named " <> name.text <> ".")
   item <- itemFor manifest
   ExceptT (holdingAcrossTabs (secretsLock u) (runExceptT (changing 1 item)))
   where

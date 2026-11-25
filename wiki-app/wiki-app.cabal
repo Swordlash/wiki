@@ -74,6 +74,7 @@ library
       Wiki.App.Account
       Wiki.App.Assistant
       Wiki.App.Assistant.Keys
+      Wiki.App.Assistant.Migrate
       Wiki.App.Assistant.Sync
       Wiki.App.Backend
       Wiki.App.Backlinks
@@ -114,6 +115,7 @@ library
       Wiki.App.Plugin.Assistant.Icons
       Wiki.App.Plugin.Assistant.Options
       Wiki.App.Plugin.Assistant.Panel
+      Wiki.App.Plugin.Assistant.Settings
       Wiki.App.Plugin.Capability.Assistant
       Wiki.App.Plugin.Errors
       Wiki.App.Plugin.Host
@@ -134,6 +136,7 @@ library
       Wiki.App.View.ApiKeys
       Wiki.App.View.ApiKeys.Machine
       Wiki.App.View.Plugins
+      Wiki.App.View.Migration.Machine
       Wiki.App.View.Plugins.Machine
       Wiki.App.View.WikiPlugins
       Wiki.App.View.Activity

@@ -94,6 +94,7 @@ import Halogen.HTML qualified as HH
 import Halogen.HTML.Properties qualified as HP
 import Halogen.Router (Follow, Router)
 import Halogen.Router qualified as Router
+import Halogen.Subscription (Emitter)
 import Protolude
 import Wiki.Api.Plugins (PluginId (..))
 import Wiki.App.Editor.Browser (clearField, focusElement)
@@ -332,12 +333,18 @@ data Document = Document
 -- the one it had; 'remove' forgets one. A name the manifest does not
 -- declare is refused before anything is read. 'field' is the host's form
 -- for one secret, which unlocks the vault where it is locked
--- ('secretField'). Each function but 'field' waits: call it in 'H.async'.
+-- ('secretField'). 'changes' tells each time what the secrets read as may
+-- have changed: the vault unlocked or locked in this browser, a secret
+-- kept or forgotten, here or in another tab; a surface that shows them
+-- reads them again. It is made in place: call it with 'Halogen.liftEffect',
+-- and subscribe. Each other function but 'field' waits: call it in
+-- 'H.async'.
 data Secrets m = Secrets
   { get :: m (Either Unavailable (Map SecretName Text))
   , put :: SecretName -> Text -> m (Either Text ())
   , remove :: SecretName -> m (Either Text ())
   , field :: SecretField m
+  , changes :: m (Emitter IO ())
   }
 
 -- | 'Unavailable' is why a plugin's secrets cannot be read: the user's

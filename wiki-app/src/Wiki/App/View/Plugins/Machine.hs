@@ -49,6 +49,13 @@
 -- older ones come back with a read in between. Once the last write
 -- answers, the plugin is given what the server keeps.
 --
+-- Options found by the move of a plugin's legacy settings
+-- ("Wiki.App.Assistant.Migrate") are adopted only when the server keeps
+-- none for the plugin and none were chosen since ('OptionsAdopted'): other
+-- options were moved by another browser, or chosen by the user. Before
+-- what is on is read in the session, they wait for the read
+-- ('adopting').
+--
 -- = Who is signed in
 --
 -- The model is the signed-in user's, by the session's number
@@ -123,6 +130,9 @@ data Model = Model
   , offBefore :: Set PluginId
   -- ^ The plugins off for the wiki as the earlier session last knew them,
   -- for what is on until this session has read them ('held').
+  , adopting :: Map PluginId Value
+  -- ^ The options to adopt for each plugin once what is on is read in
+  -- this session ('OptionsAdopted').
   }
   deriving stock (Eq, Show)
 
@@ -159,6 +169,10 @@ data Event
   | -- | The answer to the write of a plugin's options sent under this
     -- ticket: the user's choice for it after the write.
     OptionsWritten Ask PluginId (Either WikiError PluginChoice)
+  | -- | The move of a plugin's legacy settings, started in the session of
+    -- this number, found these options: kept if the server keeps none for
+    -- the plugin and none were chosen since.
+    OptionsAdopted Int PluginId Value
   | -- | The administrator ticked a plugin's box "off for everyone"
     -- ('True'), or cleared it.
     Ticked PluginId Bool
@@ -202,6 +216,7 @@ initialWith read' session =
     , session
     , sessionFrom = noAsks
     , offBefore = mempty
+    , adopting = mempty
     }
 
 -- | The state after an event, and what it asks to be done.
@@ -217,7 +232,9 @@ step event m = case event of
          in ((initial session) {asks = behind, sessionFrom = behind, flight = m.flight, offBefore = (held m).offForWiki}, [])
     | otherwise -> (m, [])
   Loaded asked answer
-    | ofSession asked m -> landed asked (taking asked answer m)
+    | ofSession asked m ->
+        let (m1, effects) = landed asked (taking asked answer m)
+         in second (effects <>) (adoptWaiting m1)
     | otherwise -> landed asked m
   Chosen p wanted'
     | shownState m p == wanted' -> (m, [])
@@ -235,6 +252,10 @@ step event m = case event of
   OptionsWritten asked p answer ->
     let waits = any (\(_, w) -> w `writesOptions` p) m.queued
      in wrote asked p answer m {writingOptions = if waits then m.writingOptions else Map.delete p m.writingOptions}
+  OptionsAdopted session p v
+    | session /= m.session -> (m, [])
+    | isNothing (knownNow m) -> (m {adopting = Map.insert p v m.adopting}, [])
+    | otherwise -> adopt p v m
   Ticked p isOff -> case shownOff m of
     Just now'
       | Set.member p now' /= isOff ->
@@ -252,6 +273,19 @@ step event m = case event of
           (Left e, _) -> m1 {problem = Just e}
      in -- The answer is the set alone: a read follows, after what waits.
         landed asked m2 {wanted = True}
+
+-- | Options found by a move adopted for a plugin: written, unless the
+-- plugin has options, the server's or chosen since ('shownOptions').
+adopt :: PluginId -> Value -> Model -> (Model, [Effect])
+adopt p v m
+  | isJust (shownOptions m p) = (m, [])
+  | otherwise = writingNow (OptionsWrite p (Just v)) m {writingOptions = Map.insert p (Just v) m.writingOptions, refused = Map.delete p m.refused}
+
+-- | The options waiting for what is on to be read, adopted once it is.
+adoptWaiting :: Model -> (Model, [Effect])
+adoptWaiting m
+  | isNothing (knownNow m) || Map.null m.adopting = (m, [])
+  | otherwise = Map.foldrWithKey (\p v (x, effects) -> second (effects <>) (adopt p v x)) (m {adopting = mempty}, []) m.adopting
 
 -- | The answer to a write for a plugin, of its state or its options, of
 -- this session, taken into the model.

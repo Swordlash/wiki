@@ -20,20 +20,26 @@
 -- kept, and the field says why.
 --
 -- The assistant is bring-your-own-key (decision 21). A key belongs to the
--- user and is billed by its provider. It stays in this browser, stored
--- under the user's id ("Wiki.App.Assistant"), and the browser sends it
--- only to its provider, never to the wiki's server. The page says so, and
+-- user and is billed by its provider. It is one of the plugin's secrets,
+-- sealed in the user's vault, and the browser sends it only to its
+-- provider. The rest of the settings are the plugin's options, which the
+-- server keeps in the clear, and the model lists its cache in this
+-- browser ("Wiki.App.Plugin.Assistant.Settings"). The page says so, and
 -- also that every request sends the wiki's Markdown reference, about how
 -- many tokens it is ('Wiki.Core.Assistant.aboutTokens' of its length), and
--- that the providers cache it where they can. A typed key is kept only once it works
--- (WP5.59): "Test and keep the key" (or Enter in the key's field) fetches
--- the model list with the typed key, then makes the smallest possible
--- request with it (looking up the model, which is free), and keeps the
--- key and the model only when the provider accepts both. A refused key is
--- not kept: the page shows why, and the key stays in the field to be
--- corrected. "Test the key" checks a kept key with that small request.
--- "Forget" deletes the key. Once kept, a key is never shown again; the
--- page only shows that one is set.
+-- that the providers cache it where they can.
+--
+-- Each provider's key is the host's field ('Wiki.App.Plugin.secretField'),
+-- which unlocks the vault where it is locked here. A typed key is kept
+-- only once it works (WP5.59): the field's check ('checkFor') fetches the
+-- model list with the typed key, then makes the smallest possible request
+-- with it (looking up the model, which is free); the field keeps the key
+-- only when the provider accepts both, and the model the check passed
+-- with is kept with it. A refused key is not kept: the field shows why.
+-- "Test the key" checks a kept key with that small request. Once kept, a
+-- key is never shown again; the field only shows that one is set.
+-- Managing the vault itself (its unlock, passkeys, "ask each time") is
+-- the settings' section "Security".
 --
 -- Over plain HTTP (anywhere except the local machine's address) the page
 -- warns that it is not secure. The key is still sent to the provider over
@@ -72,31 +78,28 @@ where
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
 import Data.Map.Strict qualified as Map
-import Data.Row (Empty)
+import Data.Row (type (.==))
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Data.Time (getCurrentTime)
+import Data.Time (UTCTime, getCurrentTime)
 import Halogen qualified as H
-import Halogen.HTML.Events qualified as HE
-import Halogen.HTML.Properties qualified as HP
+import Halogen.Machine qualified as Machine
+import Halogen.Subscription qualified as HS
+import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
 import Protolude hiding (State)
-import Wiki.App.Plugin (Capabilities (..), OptionsInput (..), attr, clearField)
+import Wiki.App.Plugin (Capabilities (..), FieldInput (..), FieldOutput (..), FieldSlot, Local (..), OptionsInput (..), OptionsOutput (..), SecretField (..), Secrets (..), Unavailable (Failed), attr, secretField)
+import Wiki.App.Plugin.Assistant.Settings qualified as Settings
 import Wiki.App.Plugin.Capability.Assistant
   ( AssistantApi (..)
   , AssistantCapabilities (..)
   , AssistantService (..)
-  , KeyOwner
-  , Keys (..)
   , Models (..)
-  , PasskeyInfo (..)
-  , Secret (..)
-  , Vaulted
   )
-import Wiki.App.Plugin.Capability.Assistant qualified as Sync (owning, releaseOwners)
 import Wiki.Core.Assistant
   ( AssistantError (..)
   , ErrorKind (BadKey, Unreachable)
+  , Listed
   , Model (..)
   , ModelChoices (..)
   , ModelName (..)
@@ -138,54 +141,29 @@ import Wiki.Core.Assistant
   , withReached
   )
 import Wiki.Core.Assistant.Reference (markdownReference)
-import Wiki.Core.Assistant.Vault (CredentialId)
-import Wiki.Core.Id (UserId)
+import Wiki.Core.Assistant.Split (secretOf)
 import Wiki.Core.Url (Url (..))
-import Wiki.Core.User (Password (..))
 
 -- | What the settings page gives the view ('Wiki.App.Plugin.OptionsInput').
 type Input m = OptionsInput m
 
+type Slots = ("secret" .== H.Slot (Const Void) FieldOutput FieldSlot)
+
 -- | 'Check': the result of "Test the key", "Test the connection (no
--- key)" or "Test and keep the key". 'Kept' is a typed key that worked and
--- is now kept.
-data Check = Checking | Works | Kept | Fails Text
+-- key)", or the check of a key typed in a provider's field. 'Kept' is a
+-- typed key that worked and is now kept.
+data Check = Checking | Works | KeptNow | Fails Text
 
 -- | 'Listing': the state of fetching a provider's model list.
 data Listing = Listing | Fetched Int | NotFetched Text
 
--- | 'Offer': whether this page can sync the keys across devices.
-data Offer
-  = -- | No server keeps a vault: the demo.
-    NoServer
-  | -- | A server does, but this page is not served over HTTPS, and a
-    -- browser offers passkeys only on a secure page.
-    NotSecure
-  | Offered
-
--- | 'Sync': the keys across devices, as the page shows them.
-data Sync = Sync
-  { offer :: Offer
-  , synced :: Bool
-  , locked :: Bool
-  , askEachTime :: Bool
-  , passkeys :: [PasskeyInfo]
-  , working :: Maybe Text
-  -- ^ What is being done, while it is: the browser's passkey dialog may
-  -- be open.
-  , trouble :: Maybe Text
-  -- ^ Why the last step failed, if it did.
-  }
-
 data State m = State
   { input :: Input m
-  , user :: Maybe UserId
-  , settings :: Maybe (Either Text Settings)
+  , machine :: Machine.Machine () Settings.Event Settings.Model
+  -- ^ The user's assistant settings, as read and changed
+  -- ("Wiki.App.Plugin.Assistant.Settings").
   , secure :: Bool
-  , sealing :: Bool
-  -- ^ Whether the browser can seal the keys here ('sealingHere').
   , scripted :: Bool
-  , typedKeys :: Map Provider Text
   , typedModels :: Map Provider Text
   -- ^ A model typed in the "Another" field, kept while another model is chosen.
   , checks :: Map Provider Check
@@ -195,24 +173,24 @@ data State m = State
   , typedCap :: Maybe Text
   -- ^ The page's cap as typed in its field, until it is kept: the estimate
   -- beside the field follows it.
-  , problem :: Maybe Text
-  , busy :: Bool
-  , sync :: Sync
-  , syncPassword :: Text
-  , syncPasswordField :: H.RefLabel
-  -- ^ The password typed to make a passkey, which signs the user in, so
-  -- that the server asks for it ("Wiki.Api.Vault").
-  , keyOwners :: Set KeyOwner
-  -- ^ The owners of the keys of the view's operations of the vault under
-  -- way ('owning'), let go when each ends and when the view closes.
+  , testing :: Set Provider
+  -- ^ The providers whose field checks a typed key.
+  , tested :: Map Provider ModelName
+  -- ^ The model the last check of a typed key passed with, for each
+  -- provider, to keep with the key once the field has kept it.
+  , heard :: Maybe (HS.Listener IO (Action m))
+  -- ^ Where the checks the fields run tell the view what they found.
   }
 
 data Action m
   = Initialize
   | Receive (Input m)
-  | TypedKey Provider Text
-  | TestAndKeep Provider
-  | Forget Provider
+  | SecretsMoved
+  | FromField Provider FieldOutput
+  | CheckStarted Provider
+  | CheckListed Provider Ready UTCTime (Either AssistantError [Listed])
+  | CheckFailed Provider Text Bool
+  | CheckPassed Provider ModelName
   | Choose Provider
   | ChooseModel Provider Text
   | TypedModel Provider Text
@@ -220,43 +198,28 @@ data Action m
   | Refresh Provider
   | ChooseService Provider Text
   | ChooseEffort Provider Text
-  | TurnOn
-  | TypedSyncPassword Text
-  | Unlock
-  | AddPasskey
-  | RemovePasskey CredentialId
-  | TurnOff
-  | AskEachTime Bool
   | TypedCap Text
   | KeepCap Text
-  | Finalize
 
-component :: forall query output m. (Typeable m, MonadUUID m, MonadUnliftIO m) => H.Component query (Input m) output m
+component :: forall query m. (Typeable m, MonadUUID m, MonadUnliftIO m) => H.Component query (Input m) OptionsOutput m
 component =
   H.mkComponent
     H.ComponentSpec
-      { initialState = \input -> do
-          syncPasswordField <- H.newRefLabel "assistant-passkey-password"
+      { initialState = \input ->
           pure
             State
               { input
-              , syncPasswordField
-              , user = userOf input
-              , settings = Nothing
+              , machine = Machine.new (Settings.initial (readerOf input) input.options)
               , secure = True
-              , sealing = True
               , scripted = False
-              , typedKeys = mempty
               , typedModels = mempty
               , checks = mempty
               , listings = mempty
               , otherModels = mempty
               , typedCap = Nothing
-              , problem = Nothing
-              , busy = False
-              , sync = noSync
-              , syncPassword = ""
-              , keyOwners = Set.empty
+              , testing = mempty
+              , tested = mempty
+              , heard = Nothing
               }
       , render
       , eval =
@@ -265,11 +228,10 @@ component =
               { H.handleAction = handleAction
               , H.initialize = Just Initialize
               , H.receive = Just . Receive
-              , H.finalize = Just Finalize
               }
       }
   where
-    render :: State m -> H.ComponentHTML (Action m) Empty m
+    render :: State m -> H.ComponentHTML (Action m) Slots m
     render st =
       [hh|
         <section class="assistant-settings">
@@ -278,15 +240,15 @@ component =
         </section>
       |]
       where
-        body = case (st.user, st.settings) of
-          (Nothing, _) -> [hh|<p class="sign-in-hint">Sign in to set the assistant up: its settings are kept in this browser for each user.</p>|]
-          -- A page rendered ahead of the program shows this too: the
-          -- settings belong to this browser, and no server has them.
-          (_, Nothing) -> [hh|<p class="loading">Reading the settings this browser keeps for you…</p>|]
-          (_, Just (Left why)) -> [hh|<p class="error" role="alert">{{ why }}</p>|]
-          (_, Just (Right s)) -> settingsView st s
+        m = Machine.current st.machine
+        body = case (st.input.user, Settings.settings m) of
+          (Nothing, _) -> [hh|<p class="sign-in-hint">Sign in to set the assistant up: its settings are kept for each user.</p>|]
+          -- A page rendered ahead of the program shows this too: the keys
+          -- are opened in this browser only.
+          (_, Nothing) -> [hh|<p class="loading">Reading your settings…</p>|]
+          (_, Just s) -> settingsView st s
 
-    settingsView :: State m -> Settings -> H.ComponentHTML (Action m) Empty m
+    settingsView :: State m -> Settings -> H.ComponentHTML (Action m) Slots m
     settingsView st s =
       [hh|
         <div class="assistant-settings-body">
@@ -294,21 +256,20 @@ component =
             The assistant in the editor edits a page with you, through Anthropic's Claude or OpenAI's models, with an API key of your own.
             These keys are a provider's, which you get from Anthropic or OpenAI; the keys a program signs in to this wiki with are under API keys.
             Each key is billed by its provider, to your account there, for every request the assistant makes.
-            It stays in this browser, kept for you alone and sealed with a key the browser keeps, and goes from here to its provider only, never to this wiki's server in the clear: with syncing on, the server keeps your keys sealed, and cannot open them.
+            It is sealed in your vault, which follows you to your other devices and which only you can unlock: this wiki's server keeps the vault and cannot open it. The browser sends a key to its provider only.
+            Your choice of provider, model, effort and service is kept on this wiki's server, unencrypted, so that it follows you too.
             Each request also sends the wiki's Markdown reference, about {{ aboutTokens (T.length markdownReference) }} of English text, which the provider caches where it can, so that a request soon after another costs less.
           </p>
+          <p class="account-note assistant-vault-note">Unlocking your vault, its passkeys, and whether this browser asks for an unlock each time the wiki opens, are under Settings, Security.</p>
           {% if not st.secure %}
             <p class="warning assistant-insecure" role="alert">
               This page was not served over HTTPS. Your key still goes to its provider over an encrypted connection, but anyone between you and this wiki could change this page to read what you type into it. Use the assistant from an HTTPS address of this wiki.
             </p>
-          {% end %}
-          {% if not st.sealing %}
             <p class="warning assistant-unsealed" role="alert">
-              This browser offers no encryption to a page served over plain HTTP, so your keys are kept in this browser as text, not sealed. Open this wiki at its HTTPS address to have them sealed.
+              This browser offers no encryption to a page served over plain HTTP, so your keys are kept in this browser as text, not sealed in your vault. Open this wiki at its HTTPS address to have them sealed.
             </p>
           {% end %}
-          {{ syncView st.syncPasswordField st.sync }}
-          <fieldset class="assistant-provider" disabled={{ st.busy }}>
+          <fieldset class="assistant-provider">
             <legend>The assistant asks</legend>
             {% for p in providers st.scripted %}
               <label class="choice">
@@ -321,7 +282,7 @@ component =
             {{ providerView st s p }}
           {% end %}
           {{ capView st s }}
-          {% for why in maybeToList st.problem %}
+          {% for why in maybeToList (Machine.current st.machine).problem %}
             <p class="error" role="alert">{{ why }}</p>
           {% end %}
         </div>
@@ -329,14 +290,14 @@ component =
 
     -- The page's cap: a number field, with the estimate of its tokens
     -- beside it as typed, or why what is typed cannot be kept.
-    capView :: State m -> Settings -> H.ComponentHTML (Action m) Empty m
+    capView :: State m -> Settings -> H.ComponentHTML (Action m) Slots m
     capView st s =
       [hh|
         <section class="assistant-page-cap-section" aria-label="The page's cap">
           <h2>The page</h2>
           <label class="field assistant-page-cap-field">
             <span>Characters of a page a message carries</span>
-            <input type="text" inputmode="numeric" class="assistant-page-cap" disabled={{ st.busy }} value={{ shown }} onValueInput={{ TypedCap }} onValueChange={{ KeepCap }}>
+            <input type="text" inputmode="numeric" class="assistant-page-cap" value={{ shown }} onValueInput={{ TypedCap }} onValueChange={{ KeepCap }}>
           </label>
           {% for n in rightToMaybe estimate %}
             <p class="account-note assistant-page-cap-estimate">{{ tokenEstimate n }}</p>
@@ -352,83 +313,7 @@ component =
         shown = fromMaybe (show kept) st.typedCap
         estimate = maybe (Right kept) pageCapFrom st.typedCap
 
-    -- Sync across devices (WP5.21 of docs/PLAN.md, "Wiki.App.Assistant.Keys").
-    syncView :: H.RefLabel -> Sync -> H.ComponentHTML (Action m) Empty m
-    syncView field sy = case sy.offer of
-      NoServer -> [hh|<span class="assistant-sync-none"></span>|]
-      NotSecure ->
-        [hh|
-          <section class="assistant-sync" aria-label="Sync across devices">
-            <h2>Sync across devices</h2>
-            <p class="account-note assistant-sync-unavailable">Syncing your keys across your devices needs a passkey, and a browser offers passkeys only on a page served over HTTPS: open this wiki at its HTTPS address to turn it on.</p>
-          </section>
-        |]
-      Offered ->
-        [hh|
-          <section class="assistant-sync" aria-label="Sync across devices">
-            <h2>Sync across devices</h2>
-            {% if sy.synced && sy.locked %}
-              <p class="assistant-sync-state assistant-sync-locked">Your keys sync from your other devices, and are locked in this browser.</p>
-              <div class="actions">
-                <button type="button" class="primary assistant-unlock" disabled={{ isJust sy.working }} onClick={{ const Unlock }}>Unlock with passkey</button>
-                <button type="button" class="danger assistant-sync-off" disabled={{ isJust sy.working }} onClick={{ const TurnOff }}>Turn off</button>
-              </div>
-              <p class="account-note assistant-type-here">or type a key here, below: it stays in this browser, and joins your synced keys once you unlock them.</p>
-              <p class="account-note assistant-locked-off">Lost every passkey? "Turn off" deletes the vault on the server, and needs no passkey; your passkeys stay, to sign in with. The keys in the vault are lost with it; keys typed in this browser stay here.</p>
-            {% else %}
-              {% if sy.synced %}
-                <p class="assistant-sync-state assistant-sync-on">Sync across devices: on. Your keys are sealed in a vault this wiki's server keeps and cannot open; one of your passkeys opens it on your other devices, with one touch.</p>
-                <ul class="assistant-passkeys">
-                  {% for pk in sy.passkeys %}
-                    <li class="assistant-passkey">
-                      <span class="assistant-passkey-name">{{ pk.name }}</span>
-                      {% if not pk.unlocks %}
-                        <span class="account-note"> (cannot unlock the keys)</span>
-                      {% end %}
-                      <button type="button" class="danger assistant-remove-passkey" disabled={{ isJust sy.working }} onClick={{ const (RemovePasskey pk.id) }}>Remove</button>
-                    </li>
-                  {% end %}
-                </ul>
-                {{ passwordField }}
-                <div class="actions">
-                  <button type="button" class="assistant-add-passkey" disabled={{ isJust sy.working }} onClick={{ const AddPasskey }}>Add passkey</button>
-                  <button type="button" class="danger assistant-sync-off" disabled={{ isJust sy.working }} onClick={{ const TurnOff }}>Turn off</button>
-                </div>
-                <label class="choice">
-                  <input type="checkbox" class="assistant-ask-each-time" checked={{ sy.askEachTime }} disabled={{ isJust sy.working }} onChange={{ const (AskEachTime (not sy.askEachTime)) }}>
-                  <span>Ask for the passkey each time the wiki opens</span>
-                </label>
-                <p class="account-note">Asked each time, this browser keeps no key that opens your settings, only the sealed vault. "Turn off" deletes the vault on the server, and needs no passkey; your keys stay in this browser.</p>
-              {% else %}
-                <p class="assistant-sync-state assistant-sync-off-state">Sync across devices: off. Your keys are sealed in this browser only.</p>
-                {{ passwordField }}
-                <div class="actions">
-                  <button type="button" class="assistant-sync-on-button" disabled={{ isJust sy.working }} onClick={{ const TurnOn }}>Turn on with a passkey</button>
-                </div>
-                <p class="account-note">Your browser asks you to make a passkey for this wiki: Touch ID, Windows Hello, your phone or a security key. One touch of it unlocks your keys on your other devices. The wiki's server keeps them sealed, and cannot open them.</p>
-              {% end %}
-            {% end %}
-            {% for doing in maybeToList sy.working %}
-              <p class="assistant-sync-working" role="status">{{ doing }}</p>
-            {% end %}
-            {% for why in maybeToList sy.trouble %}
-              <p class="error assistant-sync-problem" role="alert">{{ why }}</p>
-            {% end %}
-          </section>
-        |]
-      where
-        -- A new passkey signs the user in, so the server asks for their
-        -- password to make one. A passkey of theirs already, used instead,
-        -- needs none; nor does a user who signs in only with a provider.
-        passwordField =
-          [hh|
-            <label class="field">
-              <span>Your password, to make a new passkey (none if you sign in with a provider)</span>
-              <input type="password" class="assistant-passkey-password" autocomplete="current-password" disabled={{ isJust sy.working }} onValueInput={{ TypedSyncPassword }} {{ HP.ref field }}>
-            </label>
-          |]
-
-    providerView :: State m -> Settings -> Provider -> H.ComponentHTML (Action m) Empty m
+    providerView :: State m -> Settings -> Provider -> H.ComponentHTML (Action m) Slots m
     providerView st s p =
       [hh|
         <section class="assistant-provider-settings" {{ attr "data-provider" (providerKey p) }} aria-label={{ providerLabel p }}>
@@ -444,7 +329,7 @@ component =
             {% end %}
             <label class="field assistant-service-field">
               <span>Service</span>
-              <select class="assistant-service" disabled={{ st.busy || checking }} onValueChange={{ ChooseService p }}>
+              <select class="assistant-service" disabled={{ checking }} onValueChange={{ ChooseService p }}>
                 <option value="" selected={{ isNothing ps.baseUrl }}>{{ ownService }}</option>
                 {% for service in offered %}
                   <option value={{ service.baseUrl.text }} selected={{ ps.baseUrl == Just service.baseUrl }}>{{ service.name }} ({{ service.baseUrl.text }})</option>
@@ -463,33 +348,25 @@ component =
                 <p class="warning assistant-insecure-base-url" role="alert">This address is plain HTTP to another machine: your key and your pages would cross the network unencrypted, for anyone on the way to read. Use an HTTPS address, or a server on this machine.</p>
               {% end %}
             {% end %}
+            {{ secretField "secret" st.input.can.secrets FieldInput {name = secretOf p, check = checkFor st p s} (FromField p) }}
             {% if isJust ps.key %}
-              <p class="assistant-key-kept">A key is kept for {{ providerLabel p }} in this browser.</p>
               <div class="actions">
                 <button type="button" class="assistant-test" disabled={{ checking }} onClick={{ const (Test p) }}>Test the key</button>
-                <button type="button" class="danger assistant-forget" disabled={{ st.busy }} onClick={{ const (Forget p) }}>Forget</button>
               </div>
             {% else %}
-              <form class="assistant-key-form" {{ HE.preventingDefault (HE.onSubmit (const (TestAndKeep p))) }}>
-                <label class="field">
-                  <span>API key</span>
-                  <input type="password" class="assistant-key" autocomplete="off" spellcheck="false" value={{ typedKey }} disabled={{ checking }} onValueInput={{ TypedKey p }}>
-                </label>
-                <button type="submit" class="primary assistant-test-keep" disabled={{ st.busy || checking || nothingTyped }}>{{ if checking then "Checking…" else "Test and keep the key" :: Text }}</button>
-              </form>
               {% if isNothing (baseUrlOf p ps) %}
                 {% for url in maybeToList (keyPage p) %}
                   <p class="account-note">Make one at <a href={{ url }} target="_blank" rel="noopener noreferrer">{{ url }}</a>.</p>
                 {% end %}
               {% end %}
-              {% if usable p ps && nothingTyped %}
+              {% if usable p ps && not locked %}
                 <div class="actions">
                   <button type="button" class="assistant-test" disabled={{ checking }} onClick={{ const (Test p) }}>Test the connection (no key)</button>
                 </div>
               {% end %}
             {% end %}
           {% end %}
-          <fieldset class="assistant-model" disabled={{ st.busy || checking }}>
+          <fieldset class="assistant-model" disabled={{ checking }}>
             <legend>Model</legend>
             <div class="assistant-model-row">
               <select class="assistant-model-choice" aria-label={{ "The model of " <> providerLabel p }} onValueChange={{ ChooseModel p }}>
@@ -520,7 +397,7 @@ component =
           </fieldset>
           <label class="field assistant-effort-field">
             <span>Effort</span>
-            <select class="assistant-default-effort" disabled={{ st.busy || checking }} onValueChange={{ ChooseEffort p }}>
+            <select class="assistant-default-effort" disabled={{ checking }} onValueChange={{ ChooseEffort p }}>
               {% for e in efforts p %}
                 <option value={{ e }} selected={{ effortOf ps == e }}>{{ effortName e }}</option>
               {% end %}
@@ -532,6 +409,7 @@ component =
       |]
       where
         ps = settingsOf p s
+        locked = isJust (Settings.lockedKeys (Machine.current st.machine))
         choices = modelChoices p ps
         chosen = chosenModel p ps
         -- At another service's address there are two more causes. The
@@ -568,300 +446,192 @@ component =
           Just (Fetched n) -> Just [hh|<p class="assistant-listing assistant-listed" role="status">{{ show n :: Text }} models fetched from {{ providerLabel p }}, {{ show (length choices.recommended + length choices.others) :: Text }} of them offered for a chat.</p>|]
           Just (NotFetched why) -> Just [hh|<p class="error assistant-listing assistant-not-listed" role="alert">The list of models could not be fetched. {{ why }}</p>|]
         typedModel = Map.findWithDefault "" p st.typedModels
-        -- With a key typed, the only test offered is the one with that key:
-        -- "Test the connection (no key)" is hidden.
-        typedKey = Map.findWithDefault "" p st.typedKeys
-        nothingTyped = T.null (T.strip typedKey)
         effortName e = if e == defaultEffort then e <> " (default)" else e
-        checking = case Map.lookup p st.checks of
-          Just Checking -> True
-          _ -> False
+        -- The service and the model cannot change while a key is tested,
+        -- so that the key kept is the one tested at that address.
+        checking =
+          Set.member p st.testing || case Map.lookup p st.checks of
+            Just Checking -> True
+            _ -> False
         checkView = case Map.lookup p st.checks of
           Nothing -> Nothing
           Just Checking -> Just [hh|<p class="assistant-check" role="status">Asking {{ providerLabel p }}…</p>|]
           Just Works
             | p /= Scripted && isNothing ps.key -> Just [hh|<p class="assistant-check assistant-check-works" role="status">The connection works without a key, and {{ chosen.text }} is there.</p>|]
             | otherwise -> Just [hh|<p class="assistant-check assistant-check-works" role="status">The key works, and {{ chosen.text }} is there.</p>|]
-          Just Kept -> Just [hh|<p class="assistant-check assistant-check-works assistant-check-kept" role="status">The key works and is kept.</p>|]
+          Just KeptNow -> Just [hh|<p class="assistant-check assistant-check-works assistant-check-kept" role="status">The key works and is kept.</p>|]
           Just (Fails why) -> Just [hh|<p class="error assistant-check assistant-check-fails" role="alert">{{ why }}</p>|]
 
-    handleAction :: Action m -> H.HalogenM (State m) (Action m) Empty output m ()
+    handleAction :: Action m -> H.HalogenM (State m) (Action m) Slots OptionsOutput m ()
     handleAction = \case
       -- On a page rendered ahead of the program, the page stays as first
       -- rendered, and the program adopts it.
-      -- The keys of the operations the close cut off go, in this step.
-      Finalize -> Sync.releaseOwners (\st -> st.keyOwners) (\keyOwners st -> st {keyOwners})
       Initialize -> whenM (H.liftEffect =<< gets (\st -> st.input.can.here)) $ do
         can <- gets (\st -> st.input.can)
         secure <- H.liftEffect can.secure
-        sealing <- H.liftEffect can.assistant.secret.sealingHere
         scripted <- H.liftEffect can.assistant.models.scripted
-        modify (\st -> st {secure, sealing, scripted})
-        load
+        -- Where the fields' checks tell what they found, and the secrets'
+        -- changes, heard from before the first read.
+        HS.Subscribe {listener, emitter} <- H.liftEffect (liftIO HS.create)
+        void (H.subscribe emitter)
+        changes <- H.liftEffect can.secrets.changes
+        void (H.subscribe (SecretsMoved <$ changes))
+        modify (\st -> st {secure, scripted, heard = Just listener})
+        gets (\st -> Settings.Opened (readerOf st.input) st.input.options Nothing) >>= happen
+      -- The input, and the reader and the options in it, in one step.
       Receive input -> do
-        before <- gets (\st -> st.user)
-        modify (\st -> st {input, user = userOf input})
-        -- Another user signed in: load their settings, not the previous user's.
-        here <- H.liftEffect input.can.here
-        when (here && userOf input /= before) $ do
-          modify (\st -> st {settings = Nothing, typedKeys = mempty, typedModels = mempty, checks = mempty, listings = mempty, otherModels = mempty, problem = Nothing})
-          load
-      TypedKey p k -> modify (\st -> st {typedKeys = Map.insert p k st.typedKeys})
-      -- "Test and keep the key" (the owner, 2026-11-04). The typed key is
-      -- tried before it is kept, so that a wrong key is never kept, in two
-      -- steps. First the model list is fetched with it: a refused key (a
-      -- 401) stops there. Any other failure of the list goes on with the
-      -- model chosen, since a gateway may have no list. Then the message
-      -- test ('checkKey') runs with the model chosen if the list has it,
-      -- else with the list's first model. Only when it passes are the key
-      -- and that model kept. On a failure nothing is kept: the reason
-      -- shows by the field, the key stays in it, and the list stays shown,
-      -- so that another model can be chosen and the button pressed again.
-      TestAndKeep p ->
-        gets (\st -> (st.user, st.settings, Map.findWithDefault "" p st.typedKeys)) >>= \case
-          (Just user, Just (Right s), typed) | Just asked <- readyWith typed p s -> do
-            modify (\st -> st {checks = Map.insert p Checking st.checks, listings = Map.insert p Listing st.listings})
-            -- The provider's other inputs are disabled while the key is
-            -- tried, but the settings may still change meanwhile (another
-            -- device's change, taken in by 'change'). An answer counts only
-            -- for the same user and the same address: another user's
-            -- settings are not the ones the key was typed into, and an
-            -- answer from the old address says nothing of the new one. An
-            -- answer from an address no longer set keeps nothing.
-            let same = do
-                  (user', address) <- gets (\st -> (st.user, fmap (baseUrlOf p . settingsOf p) <$> st.settings))
-                  if user' /= Just user
-                    then pure False
-                    else
-                      if address == Just (Right asked.baseUrl)
-                        then pure True
-                        else do
-                          modify (\st -> st {checks = Map.insert p (Fails moved) st.checks})
-                          pure False
-                moved = "The base URL changed while the key was tested, so the key was not kept: test it again."
-                refuse e = do
-                  modify (\st -> st {checks = Map.insert p (Fails (errorText (serviceOf asked) (Just asked.key) e)) st.checks})
-                  change (withReached p (e.kind /= Unreachable))
-            now <- H.sync (liftIO getCurrentTime)
-            listed <- askProvider (\ms -> ms.list asked)
-            whenM same $ case listed of
-              Left e | e.kind == BadKey -> do
-                modify (\st -> st {listings = Map.delete p st.listings})
-                refuse e
-              Left e -> do
-                modify (\st -> st {listings = Map.insert p (NotFetched (errorText (serviceOf asked) (Just asked.key) e)) st.listings})
-                tryModel p user typed asked same refuse identity asked.model
-              Right models -> do
-                -- Shown at once, so that another model can be chosen if
-                -- the message test fails with this one.
-                change (withModels p models now)
-                modify (\st -> st {listings = Map.insert p (Fetched (length models)) st.listings})
-                listedSettings <- gets (\st -> either (const Nothing) Just =<< st.settings)
-                let ps = maybe (settingsOf p s) (settingsOf p) listedSettings
-                    choices = modelChoices p ps
-                    offered = map (\m -> m.id) (choices.recommended <> choices.others)
-                    chosen = chosenModel p ps
-                    model = if chosen `elem` offered then chosen else fromMaybe chosen (head offered)
-                tryModel p user typed asked same refuse (withModels p models now) model
-          _ -> pass
-      Forget p -> do
-        change (withKey p Nothing)
+        before <- gets (\st -> readerOf st.input)
+        modify (\st -> st {input})
+        -- Another reader: nothing shown of the former reader's stays.
+        when (readerOf input /= before) $
+          modify (\st -> st {typedModels = mempty, checks = mempty, listings = mempty, otherModels = mempty, testing = mempty, tested = mempty})
+        whenM (H.liftEffect input.can.here) (happen (Settings.Given (readerOf input) input.options))
+      SecretsMoved -> happen Settings.SecretsChanged
+      -- A field's check of a typed key ("Test and keep", the owner,
+      -- 2026-11-04): the model list fetched with it, then the smallest
+      -- request with the model ('checkFor'). The list is shown at once,
+      -- so that another model can be chosen if the request fails.
+      CheckStarted p -> modify (\st -> st {testing = Set.insert p st.testing, checks = Map.insert p Checking st.checks, listings = Map.insert p Listing st.listings})
+      CheckListed p asked at answer -> case answer of
+        Left e
+          | e.kind == BadKey -> modify (\st -> st {listings = Map.delete p st.listings})
+          | otherwise -> modify (\st -> st {listings = Map.insert p (NotFetched (errorText (serviceOf asked) (Just asked.key) e)) st.listings})
+        Right models -> do
+          -- Kept for the address it was fetched at only.
+          happen (Settings.Changed (\s -> if baseUrlOf p (settingsOf p s) == asked.baseUrl then withModels p models at s else s))
+          modify (\st -> st {listings = Map.insert p (Fetched (length models)) st.listings})
+      CheckFailed p why reached -> do
+        modify (\st -> st {testing = Set.delete p st.testing, checks = Map.insert p (Fails why) st.checks})
+        happen (Settings.Changed (withReached p reached))
+      CheckPassed p model -> modify (\st -> st {testing = Set.delete p st.testing, tested = Map.insert p model st.tested})
+      -- The key is kept: the model its check passed with is kept with it.
+      FromField p (Kept _) -> do
+        model <- gets (\st -> Map.lookup p st.tested)
+        modify (\st -> st {checks = Map.insert p KeptNow st.checks, tested = Map.delete p st.tested})
+        for_ model $ \m -> happen (Settings.Changed (\s -> if chosenModel p (settingsOf p s) == m then s else withModel p m.text s))
+        happen Settings.SecretsChanged
+      -- What was learnt with the key goes with it, as a new key may be
+      -- another account's.
+      FromField p (Removed _) -> do
         modify (\st -> st {checks = Map.delete p st.checks, listings = Map.delete p st.listings})
-      Choose p -> change (chooseProvider p)
+        happen (Settings.Changed (withKey p Nothing))
+        happen Settings.SecretsChanged
+      FromField _ Unlocked -> happen Settings.SecretsChanged
+      Choose p -> happen (Settings.Changed (chooseProvider p))
       -- "Other…": show its field, with the model typed there last, if any.
       ChooseModel p "" -> do
         modify (\st -> st {otherModels = Set.insert p st.otherModels})
         typed <- gets (\st -> Map.findWithDefault "" p st.typedModels)
         unless (T.null (T.strip typed)) $ do
-          change (withModel p typed)
+          happen (Settings.Changed (withModel p typed))
           modify (\st -> st {checks = Map.delete p st.checks})
       ChooseModel p m -> do
-        change (withModel p m)
+        happen (Settings.Changed (withModel p m))
         modify (\st -> st {checks = Map.delete p st.checks, otherModels = Set.delete p st.otherModels})
       TypedModel p m -> do
         modify (\st -> st {typedModels = Map.insert p m st.typedModels})
         unless (T.null (T.strip m)) $ do
-          change (withModel p m)
+          happen (Settings.Changed (withModel p m))
           modify (\st -> st {checks = Map.delete p st.checks})
       Test p ->
-        gets (\st -> st.settings) >>= \case
-          Just (Right s) | Right r <- readyFor p s -> do
+        gets (\st -> Settings.settings (Machine.current st.machine)) >>= \case
+          Just s | Right r <- readyFor p s -> do
             modify (\st -> st {checks = Map.insert p Checking st.checks})
             result <- askProvider (\ms -> ms.check r)
             modify (\st -> st {checks = Map.insert p (maybe Works (Fails . errorText (serviceOf r) (Just r.key)) result) st.checks})
             -- Record whether the provider responded at all; and once the
             -- key is known to work, fetch its model list too.
-            for_ result (\e -> change (withReached p (e.kind /= Unreachable)))
+            for_ result (\e -> happen (Settings.Changed (withReached p (e.kind /= Unreachable))))
             when (isNothing result) (fetchModels p)
           _ -> pass
       Refresh p -> fetchModels p
-      TurnOn -> withSyncPassword (\p -> syncStep "Waiting for your passkey…" (\sec u -> sec.turnOn u p))
-      TypedSyncPassword t -> modify (\st -> st {syncPassword = t})
-      Unlock -> syncStep "Waiting for your passkey…" (\sec -> sec.unlock)
-      AddPasskey -> withSyncPassword (\p -> syncStep "Waiting for a passkey you have, then for the new one…" (\sec u -> sec.addPasskey u p))
-      TurnOff -> syncStep "Turning syncing off…" (\sec -> sec.turnOff)
-      AskEachTime asking -> syncStep "Changing how this browser keeps the key…" (\sec u -> sec.askEachTime u asking)
-      RemovePasskey credential ->
-        gets (\st -> st.user)
-          >>= traverse_
-            ( \user -> do
-                modify (\st -> st {sync = st.sync {working = Just "Removing the passkey…", trouble = Nothing}})
-                sec <- gets (\st -> st.input.can.assistant.secret)
-                result <- owning user (sec.removePasskey user credential)
-                modify $ \st -> case result of
-                  Right left -> st {sync = st.sync {working = Nothing, passkeys = left}}
-                  Left why -> st {sync = st.sync {working = Nothing, trouble = Just why}}
-            )
-      ChooseEffort p e -> change (withEffort p e)
+      ChooseEffort p e -> happen (Settings.Changed (withEffort p e))
       TypedCap t -> modify (\st -> st {typedCap = Just t})
       -- A value that cannot be kept stays in the field, which says why.
       KeepCap t -> case pageCapFrom t of
         Right n -> do
           modify (\st -> st {typedCap = Nothing})
-          change (withPageCap n)
+          happen (Settings.Changed (withPageCap n))
         Left _ -> modify (\st -> st {typedCap = Just t})
       ChooseService p url -> do
-        change (withBaseUrl p url)
+        happen (Settings.Changed (withBaseUrl p url))
         modify (\st -> st {checks = Map.delete p st.checks, listings = Map.delete p st.listings})
         -- Fetch the other service's own list, if it can be reached.
-        gets (\st -> st.settings) >>= \case
-          Just (Right s) | usable p (settingsOf p s) && isJust (baseUrlOf p (settingsOf p s)) -> fetchModels p
+        gets (\st -> Settings.settings (Machine.current st.machine)) >>= \case
+          Just s | usable p (settingsOf p s) && isJust (baseUrlOf p (settingsOf p s)) -> fetchModels p
           _ -> pass
-
-    -- The message test of "Test and keep the key", with a typed key and a
-    -- model; then, if it passes, the key and the model kept. Keeping the
-    -- key discards the model list stored before it ('withKey'), so the
-    -- list fetched with the key is stored again with it ('relisted').
-    -- Once the browser stores the key, the page's state no longer holds
-    -- it. When storing fails, the key stays typed and the page shows why
-    -- ('change').
-    tryModel
-      :: Provider
-      -> UserId
-      -> Text
-      -> Ready
-      -> H.HalogenM (State m) (Action m) Empty output m Bool
-      -> (AssistantError -> H.HalogenM (State m) (Action m) Empty output m ())
-      -> (Settings -> Settings)
-      -> ModelName
-      -> H.HalogenM (State m) (Action m) Empty output m ()
-    tryModel p user typed asked same refuse relisted model = do
-      let r = Ready {provider = asked.provider, model, key = asked.key, effort = asked.effort, baseUrl = asked.baseUrl}
-      result <- askProvider (\ms -> ms.check r)
-      whenM same $ case result of
-        Just e -> refuse e
-        Nothing -> do
-          let keepModel ns = if chosenModel p (settingsOf p ns) == model then ns else withModel p model.text ns
-          change (keepModel . relisted . withKey p (Just typed))
-          kept <- gets (\st -> st.user == Just user && either (const False) (\ns -> isJust (settingsOf p ns).key) (fromMaybe (Left "") st.settings))
-          modify $ \st ->
-            if kept
-              then st {typedKeys = Map.delete p st.typedKeys, checks = Map.insert p Kept st.checks}
-              else st {checks = Map.delete p st.checks}
 
     -- Fetch a provider's model list with its key, and store it. The fetch
     -- also tells whether the provider can be reached from here.
-    fetchModels :: Provider -> H.HalogenM (State m) (Action m) Empty output m ()
+    fetchModels :: Provider -> H.HalogenM (State m) (Action m) Slots OptionsOutput m ()
     fetchModels p =
-      gets (\st -> st.settings) >>= \case
-        Just (Right s) | Right r <- readyFor p s -> do
+      gets (\st -> Settings.settings (Machine.current st.machine)) >>= \case
+        Just s | Right r <- readyFor p s -> do
           modify (\st -> st {listings = Map.insert p Listing st.listings})
           now <- H.sync (liftIO getCurrentTime)
           result <- askProvider (\ms -> ms.list r)
-          case result of
-            Left e -> do
-              change (withReached p (e.kind /= Unreachable))
-              modify (\st -> st {listings = Map.insert p (NotFetched (errorText (serviceOf r) (Just r.key) e)) st.listings})
-            Right listed -> do
-              change (withModels p listed now)
-              modify (\st -> st {listings = Map.insert p (Fetched (length listed)) st.listings})
+          happen (Settings.Listed p r now result)
+          modify $ \st -> case result of
+            Left e -> st {listings = Map.insert p (NotFetched (errorText (serviceOf r) (Just r.key) e)) st.listings}
+            Right listed -> st {listings = Map.insert p (Fetched (length listed)) st.listings}
         _ -> pass
-
-    load :: H.HalogenM (State m) (Action m) Empty output m ()
-    load =
-      gets (\st -> st.user)
-        >>= traverse_
-          ( \user -> do
-              sec <- gets (\st -> st.input.can.assistant.secret)
-              keys <- owning user (sec.load user)
-              offer <- offerHere
-              passkeys <- case keys of
-                Right k | k.synced -> either (const []) identity <$> H.async sec.passkeys
-                _ -> pure []
-              -- Only if the same user is still signed in.
-              whenM (gets (\st -> st.user == Just user)) $
-                modify (\st -> st {settings = Just ((\k -> k.settings) <$> keys), sync = (syncOf keys st.sync) {offer, passkeys}})
-          )
-
-    -- Whether this page can sync the keys: a server keeps vaults, and the
-    -- browser offers passkeys here.
-    offerHere :: H.HalogenM (State m) (Action m) Empty output m Offer
-    offerHere =
-      (gets (\st -> st.input.can.assistant.secret) >>= \sec -> H.async sec.syncing) >>= \case
-        False -> pure NoServer
-        True -> bool NotSecure Offered <$> (gets (\st -> st.input.can.assistant.secret) >>= \sec -> H.liftEffect sec.passkeysHere)
-
-    -- A step of syncing, which may wait on the browser's passkey dialog:
-    -- said while it runs, and then the settings and the passkeys as they
-    -- are after it, with why it failed if it did. A step that fails may
-    -- still have changed what this device keeps (turning on finds the
-    -- vault another device made, and follows it, locked), so the keys are
-    -- read again then.
-    -- The password typed for a new passkey, if any (a user who signs in
-    -- only with a provider has none), forgotten once used.
-    withSyncPassword :: (Maybe Password -> H.HalogenM (State m) (Action m) Empty output m ()) -> H.HalogenM (State m) (Action m) Empty output m ()
-    withSyncPassword act = do
-      typed <- gets (\st -> st.syncPassword)
-      -- The field is emptied with the state, so that what it shows is what
-      -- a retry sends, and no password is left in it.
-      modify (\st -> st {syncPassword = ""})
-      gets (\st -> st.syncPasswordField) >>= H.getRef >>= traverse_ (H.liftEffect . clearField)
-      act (if T.null typed then Nothing else Just (Password typed))
-
-    syncStep :: Text -> (Secret m -> UserId -> Vaulted m (Either Text Keys)) -> H.HalogenM (State m) (Action m) Empty output m ()
-    syncStep saying step =
-      gets (\st -> st.user)
-        >>= traverse_
-          ( \user -> do
-              modify (\st -> st {sync = st.sync {working = Just saying, trouble = Nothing}})
-              sec <- gets (\st -> st.input.can.assistant.secret)
-              result <- owning user (step sec user)
-              keys <- either (const (owning user (sec.read user))) (pure . Right) result
-              passkeys <- case keys of
-                Right k | k.synced -> either (const []) identity <$> H.async sec.passkeys
-                _ -> pure []
-              let trouble = either Just (const Nothing) result
-              modify $ \st -> case keys of
-                Right k -> st {settings = Just (Right k.settings), sync = (syncOf keys st.sync) {working = Nothing, passkeys, trouble}}
-                Left _ -> st {sync = st.sync {working = Nothing, trouble}}
-          )
 
     -- A request to a provider, through the capabilities the page gave,
     -- waited for.
-    askProvider :: (Models m -> m a) -> H.HalogenM (State m) (Action m) Empty output m a
+    askProvider :: (Models m -> m a) -> H.HalogenM (State m) (Action m) Slots OptionsOutput m a
     askProvider request = gets (\st -> st.input.can.assistant.models) >>= H.async . request
 
-    -- An operation of the user's keys, with the keys it registers in the
-    -- page under an owner of its own, which 'Finalize' lets go if the view
-    -- closes meanwhile ("Wiki.App.Plugin.Capability.Assistant"'s 'Sync.owning').
-    owning :: UserId -> Vaulted m a -> H.HalogenM (State m) (Action m) Empty output m a
-    owning = Sync.owning (\st -> st.keyOwners) (\keyOwners st -> st {keyOwners})
+    happen :: Settings.Event -> H.HalogenM (State m) (Action m) Slots OptionsOutput m ()
+    happen = Machine.happen machineSpec
 
-    -- Change the settings, and store them immediately.
-    change :: (Settings -> Settings) -> H.HalogenM (State m) (Action m) Empty output m ()
-    change f =
-      gets (\st -> (st.user, st.settings)) >>= \case
-        (Just user, Just (Right _)) -> do
-          modify (\st -> st {busy = True, problem = Nothing})
-          -- The change itself, not the settings it gives: when another
-          -- device changed the settings meanwhile, it is made again on
-          -- theirs.
-          sec <- gets (\st -> st.input.can.assistant.secret)
-          result <- owning user (sec.change user f)
-          modify $ \st -> case result of
-            Right k -> st {busy = False, settings = Just (Right k.settings), sync = syncOf result st.sync}
-            Left why -> st {busy = False, problem = Just why}
-        _ -> pass
+    machineSpec :: Machine.Spec () (State m) (Action m) Slots OptionsOutput m Settings.Event Settings.Effect Settings.Model
+    machineSpec = Machine.Spec {Machine.step = Settings.step, Machine.carry = carry, Machine.get = \st -> st.machine, Machine.set = \machine st -> st {machine}}
+
+    -- Each ask made with the capabilities the input last gave: those of
+    -- the reader the step asked for.
+    carry :: Settings.Effect -> Machine.Carry () (State m) (Action m) Slots OptionsOutput m Settings.Event
+    carry = \case
+      Settings.ReadKeys n -> Machine.AskWith (gets (\st -> st.input.can.secrets.get)) Machine.run (Settings.KeysRead n . either (Left . Failed . toS . displayException) identity)
+      Settings.ReadCache n -> Machine.AskWith (gets (\st -> st.input.can.local.load)) Machine.run (Settings.CacheRead n . join . rightToMaybe)
+      Settings.SaveCache n v -> Machine.AskWith (gets (\st -> st.input.can.local.save v)) Machine.run (Settings.CacheSaved n . either (Left . toS . displayException) identity)
+      Settings.SetOptions o -> Machine.Now (Sync.raise (SaveOptions o))
+      Settings.ListModels p r -> Machine.AskWith (gets (\st -> st.input.can.assistant.models.list r)) (\listing -> Machine.run ((,) <$> liftIO getCurrentTime <*> listing)) (Settings.listedAnswer p r)
+      Settings.Shown -> Machine.Now pass
+
+    -- The check of a key typed in a provider's field, before the field
+    -- keeps it: the model list fetched with the key, where a refused key
+    -- stops; then the smallest request with the model chosen if the list
+    -- has it, else with the list's first model. It tells the view what it
+    -- found as it goes. The settings are those the field was last given.
+    checkFor :: State m -> Provider -> Settings -> Text -> m (Either Text ())
+    checkFor st p s typed = case (st.heard, readyWith typed p s) of
+      (Nothing, _) -> pure (Left "The settings are still being read.")
+      (_, Nothing) -> pure (Left "Type a key first.")
+      (Just listener, Just asked) -> do
+        let tell = liftIO . HS.notify listener
+            models = st.input.can.assistant.models
+        tell (CheckStarted p)
+        at <- liftIO getCurrentTime
+        listed <- models.list asked
+        tell (CheckListed p asked at listed)
+        let refused e = let why = errorText (serviceOf asked) (Just asked.key) e in tell (CheckFailed p why (e.kind /= Unreachable)) $> Left why
+        case listed of
+          Left e | e.kind == BadKey -> refused e
+          _ -> do
+            let model = either (const asked.model) (\l -> modelOf p (withModels p l at s)) listed
+            models.check Ready {provider = asked.provider, model, key = asked.key, effort = asked.effort, baseUrl = asked.baseUrl} >>= \case
+              Just e -> refused e
+              Nothing -> tell (CheckPassed p model) $> Right ()
+
+-- | The model a key is tested with: the one chosen, if the provider's
+-- list has it, else the list's first.
+modelOf :: Provider -> Settings -> ModelName
+modelOf p s = if chosen `elem` offered then chosen else fromMaybe chosen (head offered)
+  where
+    ps = settingsOf p s
+    choices = modelChoices p ps
+    offered = map (\m -> m.id) (choices.recommended <> choices.others)
+    chosen = chosenModel p ps
 
 -- | The provider whose API a service speaks.
 apiProvider :: AssistantApi -> Provider
@@ -869,15 +639,7 @@ apiProvider = \case
   AnthropicApi -> Anthropic
   OpenAiApi -> OpenAI
 
-userOf :: Input m -> Maybe UserId
-userOf input = input.user
-
--- | Syncing before anything is known: not offered.
-noSync :: Sync
-noSync = Sync {offer = NoServer, synced = False, locked = False, askEachTime = False, passkeys = [], working = Nothing, trouble = Nothing}
-
--- | Syncing as the keys say it is, the rest as it was.
-syncOf :: Either Text Keys -> Sync -> Sync
-syncOf keys sy = case keys of
-  Right k -> Sync {offer = sy.offer, synced = k.synced, locked = k.locked, askEachTime = k.askEachTime, passkeys = sy.passkeys, working = sy.working, trouble = sy.trouble}
-  Left _ -> sy
+-- | The reader the input is for: the session's number and the user, as
+-- the host made its secrets for.
+readerOf :: Input m -> Settings.Reader
+readerOf input = input.can.secrets.field.reader

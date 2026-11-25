@@ -1,58 +1,61 @@
 -- | The writing assistant's agent: the assistant plugin's 'Agent'
 -- ("Wiki.App.Plugin"), which the editor mounts for its whole life.
 --
--- The agent holds the user's assistant settings for the editor. It reads
--- them when the editor opens, and asks each provider with a key for its
--- list of models: that list is what the panel offers, and also proof that
--- the provider can be reached from here. A provider that cannot be reached
--- (a network that blocks it) keeps its button, dimmed, with a note, and
--- the panel offers to try again. The agent stores the changes the panel
--- makes to the settings.
+-- The agent holds the user's assistant settings for the editor
+-- ("Wiki.App.Plugin.Assistant.Settings"): its options, as the host gives
+-- them; its keys, the plugin's secrets, read when the editor opens and
+-- again each time the secrets change; and what this browser learnt from
+-- the providers. Once they are read, it asks each provider with a key for
+-- its list of models: that list is what the panel offers, and also proof
+-- that the provider can be reached from here. A provider that cannot be
+-- reached (a network that blocks it) keeps its button, dimmed, with a
+-- note, and the panel offers to try again. A change the panel makes is
+-- split again: the options go to the host to keep, what was learnt to the
+-- cache.
 --
 -- Its buttons are the providers' ('buttonsOf'), which the editor draws as
 -- round bubbles at the top right of the text: a provider gets one once the
 -- user has a key for it, and a user with no key has one button,
--- "Assistant", which opens the panel to say where keys go. A provider's
--- button opens the panel with that provider, or closes it if it is open
--- with that provider. The panel ("Wiki.App.Plugin.Assistant.Panel") is
--- mounted the first time a button opens it, and kept with its
--- conversation while the editor shows the page.
+-- "Assistant", which opens the panel to say where keys go. Where the
+-- user's vault is locked in this browser, the keys cannot be read: the
+-- panel says to unlock it. A provider's button opens the panel with that
+-- provider, or closes it if it is open with that provider. The panel
+-- ("Wiki.App.Plugin.Assistant.Panel") is mounted the first time a button
+-- opens it, and kept with its conversation while the editor shows the
+-- page.
 module Wiki.App.Plugin.Assistant.Agent
   ( component
   , buttonsOf
+  , shownSettings
   )
 where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
 import Data.Row (type (.==))
-import Data.Set qualified as Set
 import Data.Time (getCurrentTime)
 import Halogen qualified as H
 import Halogen.HTML qualified as HH
+import Halogen.Machine qualified as Machine
+import Halogen.Sync qualified as Sync
 import Protolude hiding (State)
-import Wiki.App.Plugin (AgentButton (..), AgentInput (..), AgentOutput (..), AgentQuery (..), Capabilities (..), Editing (..), Face (..))
+import Wiki.App.Plugin (AgentButton (..), AgentInput (..), AgentOutput (..), AgentQuery (..), Capabilities (..), Editing (..), Face (..), Local (..), SecretField (..), Secrets (..), Unavailable (..))
 import Wiki.App.Plugin.Assistant.Icons (claudeColour, claudePath, openAiPath)
 import Wiki.App.Plugin.Assistant.Panel qualified as Panel
-import Wiki.App.Plugin.Capability.Assistant (Keys)
-import Wiki.App.Plugin.Capability.Assistant qualified as Capability (AssistantCapabilities (..), Keys (..), Models (..), Secret (..))
+import Wiki.App.Plugin.Assistant.Settings qualified as Settings
+import Wiki.App.Plugin.Capability.Assistant qualified as Capability (AssistantCapabilities (..), Models (..))
 import Wiki.Core.Assistant
-  ( AssistantError (kind)
-  , ErrorKind (Unreachable)
-  , Provider (..)
+  ( Provider (..)
   , ProviderSettings (..)
-  , Ready (baseUrl, key)
   , Settings (..)
   , baseUrlOf
   , chooseProvider
   , listStale
   , providerKey
   , providers
-  , readyFor
   , serviceName
   , settingsOf
   , usable
-  , withModels
   , withReached
   )
 
@@ -60,14 +63,9 @@ type Slots = ("panel" .== H.Slot Panel.Query Panel.Output ())
 
 data State m = State
   { input :: AgentInput m
-  , settings :: Maybe (Either Text Settings)
-  -- ^ The user's assistant settings, once read (or why they could not
-  -- be): which providers have a key and which cannot be reached, for the
-  -- buttons, and the panel's settings.
-  , problem :: Maybe Text
-  -- ^ Why a change of the settings could not be saved, if it could not.
-  , checking :: Set Provider
-  -- ^ The providers being asked for their list of models.
+  , machine :: Machine.Machine () Settings.Event Settings.Model
+  -- ^ The user's assistant settings, as read and changed
+  -- ("Wiki.App.Plugin.Assistant.Settings").
   , scripted :: Bool
   -- ^ Whether a test installed the scripted provider, which gets a button
   -- of its own.
@@ -82,12 +80,13 @@ data Action m
   = Initialize
   | Receive (AgentInput m)
   | FromPanel Panel.Output
+  | SecretsMoved
 
 component :: forall m. (Typeable m, MonadUUID m, MonadUnliftIO m) => H.Component AgentQuery (AgentInput m) AgentOutput m
 component =
   H.mkComponent
     H.ComponentSpec
-      { initialState = \input -> pure State {input, settings = Nothing, problem = Nothing, checking = mempty, scripted = False, panelMounted = False, buttons = []}
+      { initialState = \input -> pure State {input, machine = Machine.new (Settings.initial (readerOf input) input.options), scripted = False, panelMounted = False, buttons = []}
       , render
       , eval =
           H.mkEval
@@ -111,9 +110,9 @@ component =
       Panel.Input
         { optionsLink = st.input.can.optionsLink
         , models = st.input.can.assistant.models
-        , settings = st.settings
-        , problem = st.problem
-        , checking = st.checking
+        , settings = shownSettings m
+        , problem = m.problem
+        , checking = m.checking
         , document = editing.document
         , title = editing.title
         , body = editing.body
@@ -122,6 +121,8 @@ component =
         , decisions = editing.decisions
         , encrypted = editing.encrypted
         }
+      where
+        m = Machine.current st.machine
 
     handleQuery :: AgentQuery a -> H.HalogenM (State m) (Action m) Slots AgentOutput m (Maybe a)
     handleQuery = \case
@@ -141,16 +142,41 @@ component =
         when scripted $ do
           modify (\st -> st {scripted})
           publish
-        -- The assistant's settings, and whether each provider with a key
-        -- can be reached, in a fork: the page loads meanwhile.
+        -- The assistant's settings, read for the reader: the page loads
+        -- meanwhile. The secrets' changes are heard from before the first
+        -- read, so that none goes unheard.
         here <- gets (\st -> st.input.can.here)
-        whenM (H.liftEffect here) $ void (H.fork loadAssistant)
-      Receive input -> modify (\st -> st {input})
+        whenM (H.liftEffect here) $ do
+          changes <- gets (\st -> st.input.can.secrets.changes) >>= H.liftEffect
+          void (H.subscribe (SecretsMoved <$ changes))
+          gets (\st -> Settings.Opened (readerOf st.input) st.input.options (Just st.scripted)) >>= happen
+      -- The input, and the reader and the options in it, in one step.
+      Receive input -> do
+        modify (\st -> st {input})
+        whenM (H.liftEffect input.can.here) (happen (Settings.Given (readerOf input) input.options))
+      SecretsMoved -> happen Settings.SecretsChanged
       FromPanel Panel.Closed -> H.raise Closed
-      FromPanel (Panel.ChangeSettings f) -> changeAssistant f
-      FromPanel (Panel.Retry p) -> checkProvider p
-      FromPanel (Panel.Reached p reached) -> changeAssistant (withReached p reached)
+      FromPanel (Panel.ChangeSettings f) -> happen (Settings.Changed f)
+      FromPanel (Panel.Retry p) -> happen (Settings.Check p)
+      FromPanel (Panel.Reached p reached) -> happen (Settings.Changed (withReached p reached))
       FromPanel (Panel.DecideAll d) -> H.raise (DecideAll d)
+
+    happen :: Settings.Event -> H.HalogenM (State m) (Action m) Slots AgentOutput m ()
+    happen = Machine.happen machineSpec
+
+    machineSpec :: Machine.Spec () (State m) (Action m) Slots AgentOutput m Settings.Event Settings.Effect Settings.Model
+    machineSpec = Machine.Spec {Machine.step = Settings.step, Machine.carry = carry, Machine.get = \st -> st.machine, Machine.set = \machine st -> st {machine}}
+
+    -- Each ask made with the capabilities the input last gave: those of
+    -- the reader the step asked for.
+    carry :: Settings.Effect -> Machine.Carry () (State m) (Action m) Slots AgentOutput m Settings.Event
+    carry = \case
+      Settings.ReadKeys n -> Machine.AskWith (gets (\st -> st.input.can.secrets.get)) Machine.run (Settings.KeysRead n . either (Left . Failed . toS . displayException) identity)
+      Settings.ReadCache n -> Machine.AskWith (gets (\st -> st.input.can.local.load)) Machine.run (Settings.CacheRead n . join . rightToMaybe)
+      Settings.SaveCache n v -> Machine.AskWith (gets (\st -> st.input.can.local.save v)) Machine.run (Settings.CacheSaved n . either (Left . toS . displayException) identity)
+      Settings.SetOptions o -> Machine.Now (Sync.raise (SetOptions o))
+      Settings.ListModels p r -> Machine.AskWith (gets (\st -> st.input.can.assistant.models.list r)) (\listing -> Machine.run ((,) <$> liftIO getCurrentTime <*> listing)) (Settings.listedAnswer p r)
+      Settings.Shown -> Machine.Now publish
 
     -- A provider's button pressed to open the panel with it: the panel
     -- mounted, if it was not, before it is told the provider, and the
@@ -158,90 +184,43 @@ component =
     -- a provider that could not be reached, is asked again.
     openWith :: Provider -> H.HalogenM (State m) (Action m) Slots AgentOutput m ()
     openWith p = do
-      current <- gets (\st -> (\s -> s.provider) <$> (rightToMaybe =<< st.settings))
+      current <- gets (\st -> (\s -> s.provider) <$> Settings.settings (Machine.current st.machine))
       modify (\st -> st {panelMounted = True})
       H.tell "panel" () (Panel.UseProvider p)
-      unless (current == Just p) $ changeAssistant (chooseProvider p)
+      unless (current == Just p) $ happen (Settings.Changed (chooseProvider p))
       now <- H.sync (liftIO getCurrentTime)
-      gets (\st -> st.settings) >>= \case
-        Just (Right s) | listStale now (settingsOf p s) || (settingsOf p s).unreachable -> checkProvider p
+      gets (\st -> Settings.settings (Machine.current st.machine)) >>= \case
+        Just s | listStale now (settingsOf p s) || (settingsOf p s).unreachable -> happen (Settings.Check p)
         _ -> pass
 
-    -- Tell the editor the buttons, when they changed.
-    publish :: H.HalogenM (State m) (Action m) Slots AgentOutput m ()
-    publish = do
-      st <- get
-      let now = buttonsOf st.scripted st.settings
-      when (now /= st.buttons) $ do
-        modify (\s -> s {buttons = now})
-        H.raise (Buttons now)
+-- | Tell the editor the buttons, when they changed.
+publish :: (Sync.MonadSync (State m) (Action m) Slots AgentOutput m h) => h ()
+publish = do
+  st <- get
+  let now = buttonsOf st.scripted (shownSettings (Machine.current st.machine))
+  when (now /= st.buttons) $ do
+    modify (\s -> s {buttons = now})
+    Sync.raise (Buttons now)
 
-    -- Read the user's assistant settings, then ask each provider that can
-    -- be asked for its list of models. Settings that sync from the user's
-    -- other devices and are still locked on this one, with nothing typed
-    -- here meanwhile, say where to unlock them.
-    loadAssistant :: H.HalogenM (State m) (Action m) Slots AgentOutput m ()
-    loadAssistant =
-      gets (\st -> st.input.user) >>= \case
-        Nothing -> do
-          modify (\st -> st {settings = Just (Left "Sign in to use the assistant: its settings are kept for each user.")})
-          publish
-        Just user -> do
-          secret <- gets (\st -> st.input.can.assistant.secret)
-          settings <- H.async (secret.followed user) <&> (>>= unlockedSettings)
-          modify (\st -> st {settings = Just settings})
-          publish
-          scripted <- gets (\st -> st.scripted)
-          for_ (rightToMaybe settings) $ \s ->
-            traverse_ checkProvider [p | p <- providers scripted, usable p (settingsOf p s)]
+-- | The reader a surface's input is for: the session's number and the
+-- user, as the host made its secrets for.
+readerOf :: AgentInput m -> Settings.Reader
+readerOf input = input.can.secrets.field.reader
 
-    unlockedSettings :: Keys -> Either Text Settings
-    unlockedSettings k
-      | k.locked && not (any (\p -> usable p (settingsOf p k.settings)) [minBound .. maxBound]) =
-          Left "Your keys sync from your other devices and are locked in this browser: unlock them with a passkey on the assistant's settings page."
-      | otherwise = Right k.settings
-
-    -- Change the assistant's settings: at once in what the buttons and the
-    -- panel show, then in the stored settings, applying the change to them
-    -- as they are now (a provider check may have changed them meanwhile).
-    changeAssistant :: (Settings -> Settings) -> H.HalogenM (State m) (Action m) Slots AgentOutput m ()
-    changeAssistant f = do
-      modify (\st -> st {settings = fmap f <$> st.settings})
-      publish
-      gets (\st -> st.input.user)
-        >>= traverse_
-          ( \user -> do
-              secret <- gets (\st -> st.input.can.assistant.secret)
-              H.async (secret.keep user f) >>= \case
-                Right k -> modify (\st -> st {settings = Just (Right k.settings), problem = Nothing}) >> publish
-                Left why -> modify (\st -> st {problem = Just why})
-          )
-
-    -- Ask a provider for its list of models, in a fork: that is the list
-    -- the panel offers, and whether the provider can be reached from here
-    -- at all. Any response, even a refusal of the key, means it can be
-    -- reached; no response (a network that blocks it) means it cannot. The
-    -- result is kept only if the key and the address are still those it
-    -- was asked with.
-    checkProvider :: Provider -> H.HalogenM (State m) (Action m) Slots AgentOutput m ()
-    checkProvider p = do
-      st <- get
-      case rightToMaybe =<< st.settings of
-        Just s
-          | Right r <- readyFor p s
-          , not (Set.member p st.checking) -> do
-              modify (\st' -> st' {checking = Set.insert p st'.checking})
-              void . H.fork $ do
-                now <- H.sync (liftIO getCurrentTime)
-                result <- H.async (st.input.can.assistant.models.list r)
-                modify (\st' -> st' {checking = Set.delete p st'.checking})
-                changeAssistant $ \s' ->
-                  if either (const False) (\r' -> r'.key == r.key && r'.baseUrl == r.baseUrl) (readyFor p s')
-                    then case result of
-                      Right listed -> withModels p listed now s'
-                      Left e -> withReached p (e.kind /= Unreachable) s'
-                    else s'
-        _ -> pass
+-- | The settings as the panel and the buttons show them: 'Nothing' until
+-- they are read; where the vault is locked in this browser and no
+-- provider can be asked without a key, why the assistant cannot be used.
+shownSettings :: Settings.Model -> Maybe (Either Text Settings)
+shownSettings m = case (Settings.settings m, Settings.lockedKeys m) of
+  (Nothing, _) -> Nothing
+  (Just s, Just why)
+    | not (any (\p -> usable p (settingsOf p s)) [minBound .. maxBound]) -> Just (Left (lockedText why))
+  (Just s, _) -> Just (Right s)
+  where
+    lockedText = \case
+      Locked -> "Your vault is locked in this browser, and your API keys are sealed in it: unlock it in the assistant's settings, or under Settings, Security."
+      NoUser -> "Sign in to use the assistant: its settings are kept for each user."
+      Failed why -> "Your API keys could not be read: " <> why
 
 -- | The buttons the editor shows for the assistant: one per provider the
 -- user has a key for (OpenAI's API at another address needs none; the

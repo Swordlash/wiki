@@ -1,3 +1,5 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 -- | A plugin's secrets in the user's vault, sealed with the browser's real
 -- AES-GCM ("Wiki.App.Plugin.Host.Secrets", "Wiki.Core.Vault.Plugin"):
 -- kept and read back through the vault, padded so that the ciphertext's
@@ -5,12 +7,19 @@
 -- item is moved to another plugin's name. The vault on the server is the
 -- tests' model (@Test.VaultServer@); the rules of the store, with a fake
 -- of the cryptography, are the native suite's (@Test.PluginSecrets@).
+--
+-- The lock of tabs a change holds ("Wiki.App.Assistant"'s
+-- 'holdingAcrossTabs', @jsbits\/tabs.js@) is the browser's Web Lock: a
+-- request let go while it waits for another tab is withdrawn, its wait
+-- ends failed, never granted, and nothing holds the lock after.
 module Test.Browser.PluginSecrets (spec) where
 
-import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Control.Monad.IO.Unlift (MonadUnliftIO, withRunInIO)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Protolude
+import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, inBrowser, toJSText)
+import Halogen.JSBits.Promise (Promise (..), wait)
+import Protolude hiding (wait)
 import Test.Hspec.Halogen
 import Test.VaultServer
 import Wiki.App.Assistant (MonadAssistant (..), NewIdentity (..))
@@ -22,8 +31,37 @@ import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Vault (Ciphertext (..), Item (..), ItemName (..), Sealed (..), Vault (..), identityItem, itemOf, vaultFormat, withItem)
 import Wiki.Core.Vault.Plugin (paddingBlock, pluginSealingData)
 
+-- The test plays another tab that holds a lock: test/jsbits/test-locks.js.
+$( browserJS
+     ["jsbits/test-locks.js"]
+     [ ("js_lock_holdPromise", "wiki_test_lock_hold", Safe, [t|JSText -> IO (Promise ())|])
+     , ("js_lock_let_goPromise", "wiki_test_lock_let_go", Safe, [t|JSText -> IO (Promise ())|])
+     , ("js_lock_pendingPromise", "wiki_test_lock_pending", Safe, [t|JSText -> IO (Promise Int)|])
+     , ("js_lock_freePromise", "wiki_test_lock_free", Safe, [t|JSText -> IO (Promise Bool)|])
+     ]
+ )
+
+js_lock_hold :: JSText -> IO ()
+js_lock_hold a1 = if inBrowser then wait =<< js_lock_holdPromise a1 else pure inert
+
+js_lock_let_go :: JSText -> IO ()
+js_lock_let_go a1 = if inBrowser then wait =<< js_lock_let_goPromise a1 else pure inert
+
+js_lock_pending :: JSText -> IO Int
+js_lock_pending a1 = if inBrowser then wait =<< js_lock_pendingPromise a1 else pure inert
+
+js_lock_free :: JSText -> IO Bool
+js_lock_free a1 = if inBrowser then wait =<< js_lock_freePromise a1 else pure inert
+
 spec :: forall m -> (MonadBrowserTest m, MonadAssistant m, MonadVault m) => Spec
-spec m =
+spec m = do
+  it "withdraws a lock of tabs let go while it waits for another tab's: its wait fails, and nothing holds the lock after" $ runPage $ do
+    found <- unsafeIOToPageM (runTest (lockLetGoWhileQueued :: m Queued))
+    found.waitingBefore `shouldBe` 1
+    found.waitEnded `shouldBe` "failed"
+    found.waitingAfter `shouldBe` 0
+    found.freeAfter `shouldBe` True
+
   it "keeps a plugin's secrets sealed with AES-GCM, padded, and refuses them as another plugin's" $ runPage $ do
     outcome <- unsafeIOToPageM (runTest (roundTrip :: m Outcome))
     outcome.readBack `shouldBe` Right (Map.fromList [(token, "sk-ü-123"), (other, "two")])
@@ -80,6 +118,40 @@ roundTrip = do
   dropDeviceKey (vaultSlot u)
   forgetKey k
   pure Outcome {readBack, lengths = [afterOne, afterTwo], openedAsOwn, openedAsOther, readAsOther}
+
+-- | What the lock of tabs let go while it waited showed: the requests for
+-- it the browser queued before and after; how the wait for it ended; and
+-- whether the lock was free at once after the other tab let go.
+data Queued = Queued
+  { waitingBefore :: Int
+  , waitEnded :: Text
+  , waitingAfter :: Int
+  , freeAfter :: Bool
+  }
+
+-- | The test holds the lock as another tab would. The wiki asks for it,
+-- and a thread waits for the grant. The request is then let go, as the
+-- end of a change cancelled while it waits lets it go
+-- ('Wiki.App.Assistant.holdingAcrossTabs'): the wait must end at once,
+-- failed (its promise settled, so the callbacks on it are freed), and the
+-- request must leave the browser's queue, so that once the other tab lets
+-- go nothing holds the lock. The browser's queue is read after the
+-- request is made, and it answers in the order it was asked.
+lockLetGoWhileQueued :: (MonadAssistant m, MonadUnliftIO m) => m Queued
+lockLetGoWhileQueued = do
+  let name = "wiki-test-lock-let-go"
+  liftIO (js_lock_hold (toJSText name))
+  l <- requestTabLock name
+  waitingBefore <- liftIO (js_lock_pending (toJSText name))
+  ended <- liftIO newEmptyMVar
+  void $ withRunInIO $ \run ->
+    forkFinally (run (tabLockGranted l)) (putMVar ended . either (const "failed") (const ("granted" :: Text)))
+  releaseTabLock l
+  waitEnded <- liftIO (takeMVar ended)
+  waitingAfter <- liftIO (js_lock_pending (toJSText name))
+  liftIO (js_lock_let_go (toJSText name))
+  freeAfter <- liftIO (js_lock_free (toJSText name))
+  pure Queued {waitingBefore, waitEnded, waitingAfter, freeAfter}
 
 -- | The length of so many bytes in base64url without padding.
 unpadded :: Int -> Int

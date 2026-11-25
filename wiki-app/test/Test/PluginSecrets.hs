@@ -27,6 +27,7 @@ import Wiki.Api.Plugins (PluginId (..))
 import Wiki.App.Plugin (Manifest (..), SecretName (..), SecretSpec (..), Unavailable (..), builtin)
 import Wiki.App.Plugin.Host.Secrets
 import Wiki.App.Plugin.Registry (manifests)
+import Wiki.App.Vault (vaultSlot)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Vault (Item (..), ItemName (..), Vault (..), itemOf, withItem)
 import Wiki.Core.Vault.Plugin (decodeSecrets, encodeSecrets, maxPluginIdForSecrets, pluginItem, pluginSealingData, secretNameOk)
@@ -172,6 +173,45 @@ inTheVault = describe "in the user's vault" $ do
       other' -> expectationFailure ("read as the mail plugin's: " <> show other')
     on w d (putSecret alice mail token "mine") >>= (`shouldSatisfy` isLeft)
     itemOf (ItemName "plugin-mail") <$> vaultNow w `shouldReturn` Just moved
+
+  it "reads, as a surface starts, the copy this browser holds and asks the server nothing; with no copy, it reads the vault" $ do
+    (w, d) <- unlocked
+    on w d (putSecret alice notes token "sk-1") `shouldReturn` Right ()
+    -- The change kept the copy: nothing fetched for the read.
+    before <- (\s -> s.fetches) <$> serverState w.server
+    on w d (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
+    (\s -> s.fetches) <$> serverState w.server `shouldReturn` before
+    -- Shown able to fail: a browser that holds no copy reads the vault,
+    -- and keeps the copy for the next read.
+    other' <- newDevice w.counter True
+    withVaultKey other' alice w.vaultKey
+    on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
+    afterFirst <- (\s -> s.fetches) <$> serverState w.server
+    afterFirst `shouldSatisfy` (> before)
+    on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
+    (\s -> s.fetches) <$> serverState w.server `shouldReturn` afterFirst
+    -- Locked here, with the copy: locked, and nothing fetched.
+    modifyIORef' other'.keys (Map.delete (vaultSlot alice).text)
+    on w other' (readSecretsHere alice notes) `shouldReturn` Left Locked
+    (\s -> s.fetches) <$> serverState w.server `shouldReturn` afterFirst
+    -- A change on the first browser: the second's copy is older, and a
+    -- refresh reads the vault and announces it.
+    on w d (putSecret alice notes token "sk-2") `shouldReturn` Right ()
+    withVaultKey other' alice w.vaultKey
+    on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
+    on w other' (refreshSecrets alice notes)
+    on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-2")])
+
+  it "asks the server once whether there is a vault, where there is none, and then reads what this browser keeps" $ do
+    counter <- newIORef 0
+    server <- newServer Nothing
+    d <- newDevice counter True
+    let w = World {server, counter, vaultKey = 0}
+    on w d (readSecretsHere alice notes) `shouldReturn` Right mempty
+    first' <- (\s -> s.fetches) <$> serverState server
+    first' `shouldSatisfy` (> 0)
+    on w d (readSecretsHere alice notes) `shouldReturn` Right mempty
+    (\s -> s.fetches) <$> serverState server `shouldReturn` first'
 
   it "makes a change again when another device stored the vault first, at most three times in all" $ do
     (w, d) <- unlocked

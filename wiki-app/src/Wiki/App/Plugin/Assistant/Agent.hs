@@ -131,6 +131,13 @@ component =
           (_, False) -> H.tell "panel" () Panel.Hide
           (Nothing, True) -> modify (\st -> st {panelMounted = True})
           (Just p, True) -> openWith p
+        -- The keys as the server has them now, for the requests the panel
+        -- is about to make: the buttons were drawn from the copy this
+        -- browser holds, which another device may have changed since. A
+        -- change is announced, and heard as 'SecretsMoved'.
+        when opening $ do
+          refresh <- gets (\st -> st.input.can.secrets.refresh)
+          void (H.fork (H.async refresh))
         pure (Just next)
 
     handleAction :: Action m -> H.HalogenM (State m) (Action m) Slots AgentOutput m ()

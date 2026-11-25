@@ -826,6 +826,46 @@ userKeys m = describe "the user's keys" $ do
     (T.length before', before' /= after') `shouldBe` (79, True)
     closed again
 
+  -- Every way to unlock lost (the password forgotten, no passkey here):
+  -- the locked field offers nothing that empties the vault, says what a
+  -- reset loses and leads to Security; once a reset of the password made
+  -- the vault anew, the field takes a new key.
+  it "leads a locked field to Security, and takes a new key once a reset of the password made the vault anew" $ runOwn $ do
+    ui <- signedOutAt (UserSettings AssistantSection) "editor's password"
+    unsafeIOToPageM js_scripted
+    signIn ui "editor's password"
+    _ <- madeKeys
+    anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
+    findIn anthropic ".secret-field-value" >>= (`typeText` "test-key-anthropic-before")
+    findIn anthropic ".secret-field-keep" >>= click
+    findIn anthropic ".secret-field-set" >>= (`shouldHaveText` "Set")
+    unmount ui
+    unsafeIOToPageM (evaluate =<< js_new_device)
+    me <- signedInAs "user-editor"
+    answerWith "GET" "api/v1/session" 200 me
+    there <- startServer m (UserSettings AssistantSection)
+    locked <- find there ".assistant-provider-settings[data-provider='anthropic']"
+    findIn locked ".secret-field-lost" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "everything in the vault is lost")
+    findIn locked ".secret-field-security" >>= click
+    _ <- find there ".account-keys"
+    unmount there
+    resetPage <- restartedAt (ResetPassword (ResetToken "t1"))
+    find resetPage ".reset-form input[name=new]" >>= (`typeText` "a password set again")
+    find resetPage ".reset-form input[name=repeat]" >>= (`typeText` "a password set again")
+    find resetPage ".reset-form button[type=submit]" >>= click
+    _ <- find resetPage ".reset-sign-in"
+    field ["vault"] <$> vaultState `shouldReturn` Just Aeson.Null
+    unmount resetPage
+    again <- restartedAt (UserSettings AssistantSection)
+    signIn again "a password set again"
+    _ <- madeKeys
+    anew <- find again ".assistant-provider-settings[data-provider='anthropic']"
+    findIn anew ".secret-field-state" >>= (`shouldHaveText` "Not set")
+    findIn anew ".secret-field-value" >>= (`typeText` "test-key-anthropic-after")
+    findIn anew ".secret-field-keep" >>= click
+    findIn anew ".secret-field-set" >>= (`shouldHaveText` "Set")
+    closed again
+
   it "offers to unlock the keys with the password after a sign-in, and withdraws the offer at the sign-out" $ runOwn $ do
     ui <- signedOut "editor's password"
     signIn ui "editor's password"

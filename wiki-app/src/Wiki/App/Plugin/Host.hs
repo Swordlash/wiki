@@ -18,7 +18,7 @@ import Wiki.App.Editor.Browser (currentText, focusText, proposeEdit, trackedChan
 import Wiki.App.Plugin (Capabilities (..), Document (..), Local (..), Manifest (..), SecretField (..), Secrets (..), Unavailable (..), optionsLinkTo)
 import Wiki.App.Plugin.Capability.Assistant (AssistantCapabilities (..), Models (..))
 import Wiki.App.Plugin.Host.Secrets (loadLocal, putSecret, readSecrets, removeSecret, saveLocal)
-import Wiki.App.Route (Route (UserSettings), SettingsSection (AssistantSection))
+import Wiki.App.Route (Route (UserSettings), SettingsSection (AssistantSection, SecuritySection))
 import Wiki.App.View.Common (Context (..))
 import Wiki.App.View.SecretField qualified as SecretField
 import Wiki.Core.Id (UserId)
@@ -44,7 +44,7 @@ capabilities context manifest =
           { get = maybe (pure (Left NoUser)) (\u -> ownedFor u (readSecrets u manifest)) user
           , put = \name value -> maybe (pure (Left signedOut)) (\u -> ownedFor u (putSecret u manifest name value)) user
           , remove = \name -> maybe (pure (Left signedOut)) (\u -> ownedFor u (removeSecret u manifest name)) user
-          , field = SecretField {component = SecretField.component user manifest, reader = (context.sessionNumber, user)}
+          , field = SecretField {component = SecretField.component user manifest (optionsLinkTo context.router (UserSettings SecuritySection)), reader = (context.sessionNumber, user)}
           , changes = secretsChanges
           }
     , local =

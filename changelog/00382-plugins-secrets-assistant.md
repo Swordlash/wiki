@@ -34,8 +34,12 @@ title: The writing assistant's keys follow you in your vault
   wiki opens" (Settings, Security, Keys), that is once a visit, now for
   the assistant's keys too.
 
-- Lost every way to unlock your vault? The locked field offers to forget
-  every secret of the assistant, which needs no unlock, as "Turn off" did.
+- Lost every way to unlock your vault? The locked field says what is left
+  and links to Settings, Security: a reset of your password makes your
+  vault anew when the password was its only way to unlock it, and
+  everything in the vault is lost, the assistant's keys and your key pair
+  with it. You then keep your keys again in the same field. "Turn off",
+  which forgot the keys without an unlock, is gone with syncing.
 
 ## Other changes
 

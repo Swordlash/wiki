@@ -86,7 +86,7 @@ genMove :: Gen Move
 genMove =
   frequency
     [ (1, pure (Act Opened))
-    , (3, Act <$> elements [KeepPressed, KeepPressed, ForgetPressed, PasskeyPressed, PasswordPressed, ForgetAllPressed])
+    , (3, Act <$> elements [KeepPressed, KeepPressed, ForgetPressed, PasskeyPressed, PasswordPressed])
     , (2, Act . Typed <$> elements ["", "sk-1", "sk-1", "sk-2", "  "])
     , (1, Act . TypedPassword <$> elements ["", "pw", "pw"])
     , (1, Act . Rebound <$> elements ["", "a", "b"])
@@ -175,7 +175,7 @@ record (checks, s) answered effects =
         , counterexample "the value kept is cleared, unless typed again" $ case answered of
             Just (_, Put _, Done (Right ()), _) | not s.typedSince -> s'.model.typed == ""
             _ -> True
-        , counterexample "the secret read after an unlock, or all forgotten" $ case answered of
+        , counterexample "the secret read after an unlock" $ case answered of
             Just (_, job, Done (Right ()), _) | isUnlock job -> map snd asks == [Read]
             _ -> True
         ]
@@ -187,14 +187,12 @@ record (checks, s) answered effects =
     isUnlock = \case
       UnlockByPasskey -> True
       UnlockByPassword _ -> True
-      ForgetAll -> True
       _ -> False
     expectedTold = \case
       Put _ -> [KeptIt]
       Remove -> [RemovedIt]
       UnlockByPasskey -> [UnlockedIt]
       UnlockByPassword _ -> [UnlockedIt]
-      ForgetAll -> [RemovedIt]
       _ -> []
 
 -- | Whether a move is a change heard from elsewhere.
@@ -212,4 +210,3 @@ jobName = \case
   Remove -> "Remove"
   UnlockByPasskey -> "Unlock"
   UnlockByPassword _ -> "Unlock"
-  ForgetAll -> "ForgetAll"

@@ -66,7 +66,6 @@ module Wiki.App.Plugin.Host.Secrets
     readSecrets
   , putSecret
   , removeSecret
-  , forgetSecrets
   , maxTries
 
     -- * With the lock held
@@ -208,27 +207,6 @@ changeSecrets u manifest names change = announced $ runExceptT $ do
             Right _ -> for_ kept (\(store, _) -> writeStore u (Map.delete item store))
             Left (Conflict _) | tries < maxTries -> changing (tries + 1) item
             Left e -> throwError ("Your vault could not be changed: " <> wikiText e)
-
--- | Forget every secret of the plugin, in the vault and in this browser.
--- This needs no key: the plugin's item is taken out of the vault whole. It
--- is the way out for a user who can no longer unlock their vault.
-forgetSecrets :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> m (Either Text ())
-forgetSecrets u manifest = holdingDeviceRecords $ announced $ holdingAcrossTabs (secretsLock u) $ runExceptT $ do
-  item <- itemFor manifest
-  syncing <- lift vaultSync
-  when syncing (forgetting' 1 item)
-  store <- readStore u
-  when (Map.member item store) (writeStore u (Map.delete item store))
-  where
-    forgetting' tries item =
-      fetched >>= \case
-        Just s
-          | isJust (itemOf item s.vault) ->
-              lift (storeVault (Just s.tag) (withoutItem item s.vault)) >>= \case
-                Right _ -> pass
-                Left (Conflict _) | tries < maxTries -> forgetting' (tries + 1) item
-                Left e -> throwError ("Your vault could not be changed: " <> wikiText e)
-        _ -> pass
 
 -- | Announce a change of secrets once it is done
 -- ('announceSecretsChanged'), after the lock of tabs is let go.

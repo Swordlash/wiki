@@ -708,9 +708,12 @@ kept in each browser.
   assistant says to unlock it. With **Ask for a passkey or your password
   each time the wiki opens** (under **Keys**, in **Settings**, **Security**),
   that is once a visit.
-- **Lost every way to unlock your vault?** The locked field offers to
-  forget every secret of the assistant, which needs no unlock; you then
-  type your keys again.
+- **Lost every way to unlock your vault?** The locked field says what is
+  left, and links to **Security**: a reset of your password makes your
+  vault anew when the password was its only way to unlock it, and
+  everything in the vault is lost, your plugins' secrets and your key pair
+  with it. You then keep your keys again. Nothing else empties your
+  secrets without the vault's key.
 - **Keys from before** (kept in one browser, or synced with **Sync across
   devices**) are moved at the first sign-in or unlock with this version:
   the keys into your vault, the rest into the options. A browser that has

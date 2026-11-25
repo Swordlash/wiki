@@ -183,17 +183,8 @@ inTheVault = describe "in the user's vault" $ do
     on w d (putSecret alice notes token "never kept") >>= (`shouldSatisfy` isLeft)
     itemSecrets w notes `shouldReturn` Just (Map.fromList [(token, "kept at last")])
 
-  it "forgets a plugin's secrets without the vault key, here and in the vault" $ do
-    (w, d) <- unlocked
-    on w d (putSecret alice notes token "sk-1") `shouldReturn` Right ()
-    on w d (putSecret alice mail token "sk-2") `shouldReturn` Right ()
-    locked <- newDevice w.counter True
-    on w locked (forgetSecrets alice notes) `shouldReturn` Right ()
-    itemSecrets w notes `shouldReturn` Nothing
-    itemSecrets w mail `shouldReturn` Just (Map.fromList [(token, "sk-2")])
-
 -- | 'Op' is a change a plugin asks for.
-data Op = Put Manifest SecretName Text | Remove Manifest SecretName | Forget Manifest
+data Op = Put Manifest SecretName Text | Remove Manifest SecretName
 
 instance Show Op where
   showsPrec _ op rest = described <> rest
@@ -202,48 +193,43 @@ instance Show Op where
       described = toS $ case op of
         Put m n v -> "Put " <> m.id.text <> " " <> n.text <> " " <> show v
         Remove m n -> "Remove " <> m.id.text <> " " <> n.text
-        Forget m -> "Forget " <> m.id.text
 
 -- | The plugin an op is of.
 pluginOf :: Op -> Manifest
 pluginOf = \case
   Put m _ _ -> m
   Remove m _ -> m
-  Forget m -> m
 
 -- | Whether the plugin's manifest declares the op's name.
 declares :: Op -> Bool
 declares = \case
   Put m n _ -> n `elem` map (\s -> s.name) m.secrets
   Remove m n -> n `elem` map (\s -> s.name) m.secrets
-  Forget _ -> True
 
 -- | An op of one of the three plugins, with a name of any of them, so that
 -- some are refused.
-genOp :: Bool -> Gen Op
-genOp forgets = do
+genOp :: Gen Op
+genOp = do
   m <- elements [notes, mail, calendar]
   n <- SecretName <$> elements ["token", "other", "password", "key"]
-  frequency ([(5, Put m n <$> elements ["a", "b", "sk-ü", ""]), (3, pure (Remove m n))] <> [(1, pure (Forget m)) | forgets])
+  frequency [(5, Put m n <$> elements ["a", "b", "sk-ü", ""]), (3, pure (Remove m n))]
 
 -- | What an op makes of a plugin's secrets.
 applied :: Op -> Map SecretName Text -> Map SecretName Text
 applied = \case
   Put _ n v -> Map.insert n v
   Remove _ n -> Map.delete n
-  Forget _ -> const mempty
 
 -- | Run an op on a device, with the lock.
 runOp :: UserId -> Op -> Served (Fake MemDOM) (Either Text ())
 runOp u = \case
   Put m n v -> putSecret u m n v
   Remove m n -> removeSecret u m n
-  Forget m -> forgetSecrets u m
 
 isolation :: Spec
 isolation = describe "one plugin's change" $
   modifyMaxSuccess (const 60) . prop "leaves every other item and every wrap of the vault as it was, and gives the plugin what it asked for" $
-    forAll (listOf1 (genOp True)) $ \ops -> ioProperty $ do
+    forAll (listOf1 genOp) $ \ops -> ioProperty $ do
       (w, d) <- unlocked
       results <- for ops $ \op -> do
         before <- vaultNow w
@@ -300,11 +286,10 @@ heldOp :: UserId -> Op -> Served (Fake MemDOM) (Either Text ())
 heldOp u = \case
   Put m n v -> putSecretHeld u m n v
   Remove m n -> removeSecretHeld u m n
-  Forget _ -> panic "no forget made with the lock held"
 
--- | A change of a name the plugin declares, no forget among them.
+-- | A change of a name the plugin declares.
 declaredOp :: Gen Op
-declaredOp = genOp False `suchThat` declares
+declaredOp = genOp `suchThat` declares
 
 -- | Two tabs of one browser are two pages: each holds a lock of its own
 -- page, and both read and write the browser's one record of secrets. Tab
@@ -317,7 +302,7 @@ declaredOp = genOp False `suchThat` declares
 twoTabs :: Spec
 twoTabs = describe "two tabs of one browser, where the user has no vault" $
   modifyMaxSuccess (const 100) . prop "change what the browser keeps one after the other, so that neither writes over the other's change" $
-    forAll (listOf declaredOp) $ \seeds -> forAll (genOp True `suchThat` declares) $ \fromA -> forAll declaredOp $ \fromB -> ioProperty $ do
+    forAll (listOf declaredOp) $ \seeds -> forAll declaredOp $ \fromA -> forAll declaredOp $ \fromB -> ioProperty $ do
       counter <- newIORef 0
       server <- newServer Nothing
       d <- newDevice counter True
@@ -331,7 +316,7 @@ twoTabs = describe "two tabs of one browser, where the user has no vault" $
         void (forkIO tabB)
         waitingForLock d (not <$> isEmptyTMVar answerOfB)
       answerOfA <- on w d (runOp alice fromA)
-      -- A wrote nothing (a forget of nothing): B was not started.
+      -- A wrote nothing: B was not started.
       unstarted <- atomicModifyIORef' d.writeHooks (\h -> ([], not (null h)))
       when unstarted tabB
       answerB <- atomically (takeTMVar answerOfB)

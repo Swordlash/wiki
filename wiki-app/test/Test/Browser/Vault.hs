@@ -1159,6 +1159,10 @@ userKeys m = describe "the user's keys" $ do
       -- Unlocked here by the sign-in with the password.
       _ <- findIn there ".secret-field-value"
       unsafeIOToPageM (evaluate =<< js_stores_key (toJSText "vault:user-editor")) `shouldReturn` True
+      -- The page asks for the session again once another tab lets go of
+      -- the keys: the editor is still signed in.
+      me <- signedInAs "user-editor"
+      answerWith "GET" "api/v1/session" 200 me
       unsafeIOToPageM (evaluate =<< js_other_tab_drops (toJSText "vault:user-editor"))
       again <- find ui ".assistant-provider-settings[data-provider='anthropic']"
       findIn again ".secret-field-locked" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "locked in this browser")

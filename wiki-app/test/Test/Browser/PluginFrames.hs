@@ -328,7 +328,8 @@ spec m = describe "external plugins' frames" $ do
     waitQuiet
     unsafeIOToPageM ((\st -> st.externalPolicy) <$> readIORef wiki) `shouldReturn` ExternalWiki
     let encoded = toJSText . decodeUtf8 . Base64.encode . encodeUtf8
-    unsafeIOToPageM (js_choose_two_files (toJSText (".admin-external .plugin-add input[type=file]" :: Text)) "manifest.json" "application/json" (encoded exampleManifest) "doubled-words.js" "text/javascript" (encoded exampleCode))
+        js t = toJSText (t :: Text)
+    unsafeIOToPageM (js_choose_two_files (js ".admin-external .plugin-add input[type=file]") (js "manifest.json") (js "application/json") (encoded exampleManifest) (js "doubled-words.js") (js "text/javascript") (encoded exampleCode))
     waitQuiet
     find ui ".plugin-warning .plugin-hosts" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "It may connect to no other site")
     unsafeIOToPageM (Map.keys . (\st -> st.externalWiki) <$> readIORef wiki) `shouldReturn` []

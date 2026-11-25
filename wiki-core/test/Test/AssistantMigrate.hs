@@ -216,6 +216,7 @@ genDev vaultItem =
   oneof
     [ pure (Dev Nothing NoKey True False False, Nothing)
     , l1
+    , l1Reloaded
     , ownRecord OwnKey True -- L2
     , ownRecord NoKey True -- L3
     , l4
@@ -228,6 +229,13 @@ genDev vaultItem =
       inSlot <- arbitrary
       r <- record Nothing True copy
       pure (Dev (Just r) VaultKey (not inSlot) False False, Nothing)
+    -- L1 on a browser that asks for an unlock each time, after a reload:
+    -- the assistant's slot is empty, and the vault key is in the vault's
+    -- slot once the browser is unlocked, which opens the copy.
+    l1Reloaded = do
+      copy <- maybe (Just <$> genSettings) (\v -> Just <$> oneof [pure v, genSettings]) vaultItem
+      r <- record Nothing True copy
+      pure (Dev (Just Rec {number = r.number, own = r.own, follows = r.follows, copy = r.copy, askEachTime = True, learnt = r.learnt}) NoKey True False False, Nothing)
     ownRecord slot vaultSlot' = do
       s <- genSettings
       r <- record (Just s) False Nothing

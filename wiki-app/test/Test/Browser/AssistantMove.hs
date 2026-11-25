@@ -3,7 +3,9 @@
 -- vault's legacy item sealed with the browser's AES-GCM, as the assistant
 -- kept them before plugins, kept in the browser's IndexedDB, against a
 -- model of the server's vault (@Test.VaultServer@). L1 (it follows the
--- vault, whose key is in the assistant's slot only), L2 (sealed with the
+-- vault, whose key is in the assistant's slot only; and after a reload of
+-- a browser that asks for an unlock each time, unlocked through the vault's
+-- slot, the assistant's slot empty), L2 (sealed with the
 -- assistant's own key) and L4 (it follows a vault locked here, with a key
 -- typed meanwhile) are each moved to the plugin's secrets, and read back
 -- through the plugin's capability; the legacy places are emptied. L3
@@ -26,7 +28,7 @@ import Wiki.App.Assistant.Sync (Fetched (..), MonadVault (..))
 import Wiki.App.Plugin (Manifest (..), Unavailable)
 import Wiki.App.Plugin.Host.Secrets (readSecrets)
 import Wiki.App.Plugin.Registry (assistantId, manifests)
-import Wiki.App.Vault (vaultSlot)
+import Wiki.App.Vault (VaultDevice (..), readDevice, vaultSlot)
 import Wiki.Core.Assistant (Provider (..), Settings, defaultSettings, withKey, withModel)
 import Wiki.Core.Assistant.Split (keysOf, optionsValue)
 import Wiki.Core.Assistant.Vault (DeviceRecord (..), ServerCopy (..), assistantItem, learntOf, sealingData, secretsOf)
@@ -42,6 +44,13 @@ spec m = do
     found.secrets `shouldBe` Right (keysOf synced)
     found.legacyLeft `shouldBe` (False, False, False)
     found.vaultKeyKept `shouldBe` True
+
+  it "moves an L1 record after a reload on \"ask each time\", unlocked through the vault's slot: the copy opens with the vault key, and its \"ask each time\" becomes the vault's" $ runPage $ do
+    found <- unsafeIOToPageM (runTest (l1Reloaded :: m Found))
+    found.outcomes `shouldBe` [Right (Adopt (optionsValue synced)), Right Moved]
+    found.secrets `shouldBe` Right (keysOf synced)
+    found.legacyLeft `shouldBe` (False, False, False)
+    found.asksEachTime `shouldBe` True
 
   it "moves an L2 record sealed with the assistant's own key into the vault" $ runPage $ do
     found <- unsafeIOToPageM (runTest (l2 :: m Found))
@@ -63,6 +72,8 @@ data Found = Found
   , secrets :: Either Unavailable (Map SecretName Text)
   , legacyLeft :: (Bool, Bool, Bool)
   , vaultKeyKept :: Bool
+  , asksEachTime :: Bool
+  -- ^ Whether the vault asks for an unlock each time in this browser.
   }
 
 synced, own, typed :: Settings
@@ -120,11 +131,12 @@ ending server u outcomes = do
   record <- either (const True) isJust <$> deviceRecord u
   assistantKey <- isJust <$> deviceKey u
   vaultKeyKept <- isJust <$> deviceKey (vaultSlot u)
+  asking <- (\d -> d.askEachTime) <$> readDevice u
   dropDeviceKey u
   dropDeviceKey (vaultSlot u)
   void (keepDeviceRecord u Nothing)
   void (keepDeviceRecord (vaultSlot u) Nothing)
-  pure Found {outcomes, secrets, legacyLeft = (item, record, assistantKey), vaultKeyKept}
+  pure Found {outcomes, secrets, legacyLeft = (item, record, assistantKey), vaultKeyKept, asksEachTime = asking}
 
 l1 :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => m Found
 l1 = do
@@ -135,6 +147,18 @@ l1 = do
   -- syncing on before the vault had a slot of its own keeps it.
   _ <- keepDeviceKey u k False
   writeRecord' u DeviceRecord {sealed = Just sealed, server = Just copy, learnt = learntOf synced, askEachTime = False}
+  outcomes <- moving server u 4
+  ending server u outcomes
+
+l1Reloaded :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => m Found
+l1Reloaded = do
+  let u = UserId "user-move-l1-reloaded"
+  (k, server) <- newVault
+  (sealed, copy) <- withLegacyItem server k synced
+  -- The assistant's slot empty, as a reload left it on "ask each time";
+  -- the vault key in the vault's slot only, as an unlock keeps it.
+  _ <- keepDeviceKey (vaultSlot u) k False
+  writeRecord' u DeviceRecord {sealed = Just sealed, server = Just copy, learnt = learntOf synced, askEachTime = True}
   outcomes <- moving server u 4
   ending server u outcomes
 

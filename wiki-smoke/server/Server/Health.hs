@@ -38,8 +38,21 @@ spec smoke = describe "what the server says of itself" $
     available <- bool (logged .! "available")
     entries <- list (logged .! "entries")
     expect (available && not (null entries)) ("the activity: " <> show logged)
-    actions <- traverse (pure . textOr "" . (.! "action")) entries
-    expect ("group.create" `elem` actions) ("no group made in the activity: " <> show actions)
+    -- The group the walk made, however many entries the steps after it
+    -- wrote (the external plugins' steps install and remove several): the
+    -- log is read a page at a time, the newest first, as far back as it
+    -- goes.
+    let made seen offset page = do
+          actions <- traverse (pure . textOr "" . (.! "action")) =<< list (page .! "entries")
+          more <- bool (page .! "more")
+          let seen' = seen <> actions
+          if "group.create" `elem` actions
+            then pure ()
+            else
+              if more && not (null actions)
+                then get smoke.wiki Nothing (adminRoot <> "/admin/api/v1/admin/activity?offset=" <> tshow (offset + length actions)) >>= apiJson >>= made seen' (offset + length actions)
+                else expectationFailure ("no group made in the activity: " <> show seen')
+    made [] 0 logged
 
 -- | Whether the scrape has a line of the gauge and a whole number alone.
 gauge :: Text -> Text -> Bool

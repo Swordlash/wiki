@@ -278,6 +278,18 @@ while ! mkdir "\$FAIL_DIR/call-\$n" 2>/dev/null; do n=\$((n + 1)); done
 [ "\$n" != "\$FAIL_AT" ] || exit 1
 exec "$real_mv" "\$@"
 EOF
+# And a curl that records its config, the one the client gives on
+# descriptor 3 (the recorder above sees only the command line): it copies
+# the config to curl.config.last and adds it to curl.config, then runs the
+# real curl with that copy on descriptor 3.
+mkdir -p "$work/fakes/config"
+cat >"$work/fakes/config/curl" <<EOF
+#!/bin/sh
+cat /dev/fd/3 >"$work/curl.config.last"
+cat "$work/curl.config.last" >>"$work/curl.config"
+exec "$real_curl" "\$@" 3<"$work/curl.config.last"
+EOF
+chmod +x "$work/fakes/config/curl"
 chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv" "$work/fakes/pausecp/cp" "$work/fakes/failmv/mv"
 # The PATH the client runs with: the recording curl, and the failing jq
 # unless the MCP server is under test.
@@ -565,6 +577,7 @@ suite() {
   status=$?
   expect 8 "WIKI_PROXY is the proxy curl goes through"
   lacks curl.args "127.0.0.1:1" "the proxy is not on curl's command line"
+  insecure_setting
 
   # The configuration file, read only when nobody else may read it, through
   # a symbolic link too.
@@ -2237,6 +2250,97 @@ round_trip() {
   check "get of Edit's path and History's reaches History ($2)" cmp -s "$work/out" "$work/history"
   client get "$url${history_address}edit/"
   check "get of the URL of History's editor reaches History ($2)" cmp -s "$work/out" "$work/history"
+}
+
+# WIKI_INSECURE, seen in the config curl is given: "insecure" with 1, and
+# not when it is unset or 0; another value is refused before any request.
+# Every run with it says once on standard error that the certificate is not
+# checked, the MCP server too, whose standard output stays JSON-RPC alone.
+# The test's server is plain http, where the setting changes nothing, so
+# the requests still succeed.
+insecure_setting() {
+  # The client with the variables of the run first (as env takes them),
+  # then the shell and its arguments.
+  insecure_run() {
+    : >"$work/curl.config"
+    env -i PATH="$work/fakes/config:$PATH" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-insecure" \
+      "$@" <"$input" >"$work/out" 2>"$work/err"
+    status=$?
+  }
+  warnings() { grep -c "the server's certificate is not checked (WIKI_INSECURE)" "$work/err"; }
+  insecure_run "$shell" "$client" list
+  expect 0 "list without WIKI_INSECURE"
+  check "the recorder sees the config curl is given" grep -q '^user = ' "$work/curl.config"
+  if grep -qx insecure "$work/curl.config"; then fail "insecure in curl's config without WIKI_INSECURE"; else pass "no insecure in curl's config without WIKI_INSECURE"; fi
+  lacks err "not checked" "no warning without WIKI_INSECURE"
+  insecure_run WIKI_INSECURE=0 "$shell" "$client" list
+  expect 0 "list with WIKI_INSECURE=0"
+  if grep -qx insecure "$work/curl.config"; then fail "insecure in curl's config with WIKI_INSECURE=0"; else pass "no insecure in curl's config with WIKI_INSECURE=0"; fi
+  lacks err "not checked" "no warning with WIKI_INSECURE=0"
+  insecure_run WIKI_INSECURE=1 "$shell" "$client" list
+  expect 0 "list with WIKI_INSECURE=1"
+  check "insecure in curl's config with WIKI_INSECURE=1" grep -qx insecure "$work/curl.config"
+  check "WIKI_INSECURE=1 is said once on standard error ($(warnings) times)" [ "$(warnings)" = 1 ]
+  has out "Space: Team" "with WIKI_INSECURE=1, list lists the wiki"
+  insecure_run WIKI_INSECURE=yes "$shell" "$client" list
+  expect 2 "WIKI_INSECURE=yes is refused"
+  has err "WIKI_INSECURE must be 1 (do not check the server's certificate) or 0, not yes" "the refusal says what WIKI_INSECURE takes"
+  check "nothing is asked of the wiki with WIKI_INSECURE=yes" [ ! -s "$work/curl.config" ]
+
+  # With WIKI_CACERT: the CA bundle is given to curl alone, and not with
+  # WIKI_INSECURE=1, which says so. curl wants the file to be there, even
+  # over http, but does not read it there: an empty one does.
+  : >"$work/ca.pem"
+  insecure_run WIKI_CACERT="$work/ca.pem" "$shell" "$client" list
+  expect 0 "list with WIKI_CACERT over http"
+  check "WIKI_CACERT is in curl's config" grep -q '^cacert = ' "$work/curl.config"
+  insecure_run WIKI_CACERT="$work/ca.pem" WIKI_INSECURE=1 "$shell" "$client" list
+  expect 0 "list with WIKI_CACERT and WIKI_INSECURE=1"
+  check "WIKI_INSECURE=1 wins over WIKI_CACERT in curl's config" grep -qx insecure "$work/curl.config"
+  lacks curl.config "cacert" "no CA bundle in curl's config with WIKI_INSECURE=1"
+  has err "the server's certificate is not checked (WIKI_INSECURE), and WIKI_CACERT is not used" "the warning says WIKI_CACERT is not used"
+
+  # From the configuration file, where a value in the environment wins.
+  printf '# For the test\ninsecure = 1\n' >"$work/insecure-config"
+  chmod 600 "$work/insecure-config"
+  insecure_run WIKI_CONFIG="$work/insecure-config" "$shell" "$client" list
+  expect 0 "list with insecure = 1 in the configuration file"
+  check "insecure in curl's config from the configuration file" grep -qx insecure "$work/curl.config"
+  check "insecure = 1 is said once on standard error ($(warnings) times)" [ "$(warnings)" = 1 ]
+  insecure_run WIKI_CONFIG="$work/insecure-config" WIKI_INSECURE=0 "$shell" "$client" list
+  expect 0 "list with insecure = 1 in the file and WIKI_INSECURE=0"
+  if grep -qx insecure "$work/curl.config"; then fail "WIKI_INSECURE=0 does not win over the file"; else pass "WIKI_INSECURE=0 wins over insecure = 1 in the file"; fi
+  printf 'insecure = yes\n' >"$work/insecure-config"
+  insecure_run WIKI_CONFIG="$work/insecure-config" "$shell" "$client" list
+  expect 2 "insecure = yes in the configuration file is refused"
+  has err "insecure in $work/insecure-config, line 1, must be 1" "the refusal names the file and the line"
+  rm -f "$work/insecure-config"
+
+  # The MCP server: the warning once, on standard error, for several
+  # requests, and standard output JSON-RPC alone.
+  {
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    "$real_jq" -nc '{jsonrpc: "2.0", id: 2, method: "tools/call", params: {name: "wiki_list", arguments: {space: "team"}}}'
+    "$real_jq" -nc --arg page "$page" '{jsonrpc: "2.0", id: 3, method: "tools/call", params: {name: "wiki_read_page", arguments: {path: $page}}}'
+  } >"$work/insecure-mcp.in"
+  input=$work/insecure-mcp.in
+  insecure_run WIKI_INSECURE=1 "$shell" "$client" mcp
+  input=/dev/null
+  expect 0 "mcp with WIKI_INSECURE=1 ends when its input ends"
+  bad_lines=0
+  while IFS= read -r reply; do
+    printf '%s' "$reply" | "$real_jq" -e 'type == "object" and .jsonrpc == "2.0"' >/dev/null 2>&1 || bad_lines=$((bad_lines + 1))
+  done <"$work/out"
+  check "with WIKI_INSECURE=1, every line on mcp's standard output is a JSON-RPC message ($bad_lines are not)" [ "$bad_lines" = 0 ]
+  if "$real_jq" -e -s 'length == 3 and (map(select(.id >= 2)) | length == 2 and all(.result.isError == false))' "$work/out" >/dev/null; then
+    pass "with WIKI_INSECURE=1, mcp's tools answer"
+  else
+    fail "with WIKI_INSECURE=1, mcp's tools answer"
+    sed 's/^/  reply: /' "$work/out" | cut -c1-200 >&2
+  fi
+  check "mcp asked the wiki more than once with insecure ($(grep -cx insecure "$work/curl.config") times)" [ "$(grep -cx insecure "$work/curl.config")" -ge 2 ]
+  check "mcp says WIKI_INSECURE=1 once on standard error ($(warnings) times)" [ "$(warnings)" = 1 ]
 }
 
 # The MCP server through a pipe: requests of both the current revision

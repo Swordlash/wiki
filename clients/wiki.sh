@@ -154,13 +154,19 @@ is_count() {
 # Configuration
 
 # Where the wiki is, who signs in and through what (WIKI_URL, WIKI_USER,
-# WIKI_PASSWORD, WIKI_TOKEN, and for a workplace's network WIKI_PROXY and
-# WIKI_CACERT), from the environment, and for what the environment does
-# not give, from the configuration file (WIKI_CONFIG, by default
-# ~/.config/wiki/config), lines of "key = value" with the keys url, user,
-# password, token, proxy and cacert. The file is read only when nobody else
-# may read it.
-wiki_url='' wiki_user='' wiki_password='' wiki_token='' wiki_proxy='' wiki_cacert='' wiki_base='' wiki_mount='' signing_in=nobody
+# WIKI_PASSWORD, WIKI_TOKEN, and for a workplace's network WIKI_PROXY,
+# WIKI_CACERT and WIKI_INSECURE), from the environment, and for what the
+# environment does not give, from the configuration file (WIKI_CONFIG, by
+# default ~/.config/wiki/config), lines of "key = value" with the keys url,
+# user, password, token, proxy, cacert and insecure. The file is read only
+# when nobody else may read it.
+#
+# WIKI_INSECURE=1 tells curl not to check the server's certificate, for a
+# workplace whose certificates the command line does not always accept. It
+# gives up the protection of https: anyone on the network path can read the
+# password or the key and the pages. Every run says so once, on standard
+# error. It wins over WIKI_CACERT, which is then not given to curl.
+wiki_url='' wiki_user='' wiki_password='' wiki_token='' wiki_proxy='' wiki_cacert='' wiki_insecure='' wiki_base='' wiki_mount='' signing_in=nobody
 config_loaded=''
 load_config() {
   [ -z "$config_loaded" ] || return 0
@@ -199,6 +205,13 @@ load_config() {
     http://localhost | http://localhost[:/]* | http://127.* | http://\[::1\]*) ;;
     http://*) [ "$signing_in" = nobody ] || note "WIKI_URL is plain http: the password crosses the network unencrypted; use https" ;;
   esac
+  if [ "$wiki_insecure" = 1 ]; then
+    if [ -n "$wiki_cacert" ]; then
+      note "the server's certificate is not checked (WIKI_INSECURE), and WIKI_CACERT is not used"
+    else
+      note "the server's certificate is not checked (WIKI_INSECURE)"
+    fi
+  fi
   config_loaded=1
 }
 
@@ -209,6 +222,8 @@ load_config_quietly() {
   wiki_token=${WIKI_TOKEN:-}
   wiki_proxy=${WIKI_PROXY:-}
   wiki_cacert=${WIKI_CACERT:-}
+  wiki_insecure=${WIKI_INSECURE:-}
+  insecure_from=WIKI_INSECURE
   config_file=${WIKI_CONFIG:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/wiki/config}
   if [ -e "$config_file" ]; then
     if [ ! -f "$config_file" ]; then
@@ -250,13 +265,26 @@ load_config_quietly() {
         token) [ -n "${WIKI_TOKEN:-}" ] || wiki_token=$trimmed ;;
         proxy) [ -n "${WIKI_PROXY:-}" ] || wiki_proxy=$trimmed ;;
         cacert) [ -n "${WIKI_CACERT:-}" ] || wiki_cacert=$trimmed ;;
+        insecure)
+          if [ -z "${WIKI_INSECURE:-}" ]; then
+            wiki_insecure=$trimmed
+            insecure_from="insecure in $config_file, line $config_line,"
+          fi
+          ;;
         *)
-          fail "$EX_USAGE" "$config_file, line $config_line: unknown key $key (url, user, password, token, proxy, cacert)"
+          fail "$EX_USAGE" "$config_file, line $config_line: unknown key $key (url, user, password, token, proxy, cacert, insecure)"
           return
           ;;
       esac
     done <"$config_file"
   fi
+  case $wiki_insecure in
+    '' | 0 | 1) ;;
+    *)
+      fail "$EX_USAGE" "$insecure_from must be 1 (do not check the server's certificate) or 0, not $wiki_insecure"
+      return
+      ;;
+  esac
   case $wiki_password$wiki_user$wiki_token$wiki_proxy$wiki_cacert in
     *"$nl"* | *"$cr"*)
       fail "$EX_USAGE" "the login, the password, the token, the proxy or the CA bundle has a line break in it"
@@ -294,7 +322,8 @@ curl_quote() {
 # is read: one could turn on "fail" or change the output, which the
 # client's own options cannot all undo.
 #
-# The sign-in, the proxy and the CA bundle are a curl config read from
+# The sign-in, the proxy, the CA bundle and "insecure" (WIKI_INSECURE,
+# which leaves the CA bundle out) are a curl config read from
 # descriptor 3, a here-document: "user" for a login and password (HTTP
 # Basic), or an Authorization header for a key (WIKI_TOKEN), each value
 # quoted, so none of it is on curl's command line (a proxy's address may
@@ -308,7 +337,11 @@ wiki_curl() {
     settings="user = \"$(curl_quote "$wiki_user:$wiki_password")\""
   fi
   [ -z "$wiki_proxy" ] || settings="$settings${nl}proxy = \"$(curl_quote "$wiki_proxy")\""
-  [ -z "$wiki_cacert" ] || settings="$settings${nl}cacert = \"$(curl_quote "$wiki_cacert")\""
+  if [ "$wiki_insecure" = 1 ]; then
+    settings="$settings${nl}insecure"
+  elif [ -n "$wiki_cacert" ]; then
+    settings="$settings${nl}cacert = \"$(curl_quote "$wiki_cacert")\""
+  fi
   quiet_end
   curl -q --config /dev/fd/3 "$@" 3<<EOF
 $settings
@@ -3020,11 +3053,20 @@ file with WIKI_CONFIG), which must be readable by you alone (chmod 600):
                  in place of the login and password
   WIKI_PROXY     a proxy, as curl's --proxy takes it      proxy = http://proxy:3128
   WIKI_CACERT    a CA bundle, as curl's --cacert takes it  cacert = /etc/ssl/work.pem
+  WIKI_INSECURE  1: the server's certificate is not checked  insecure = 1
+                 (curl -k); 0 or unset: it is checked
 
 curl runs with -q, so ~/.curlrc is not read: a setting there cannot change
 the requests or how their answers are read. curl still takes a proxy from
 https_proxy, HTTPS_PROXY and NO_PROXY, and a CA bundle from CURL_CA_BUNDLE
 and SSL_CERT_FILE; WIKI_PROXY and WIKI_CACERT name them for wiki.sh alone.
+
+WIKI_INSECURE=1 is for a certificate the command line does not accept. It
+gives up what https protects: anyone on the network path between you and
+the wiki can read your password or key and the pages, and can change them.
+Prefer WIKI_CACERT with your company's CA bundle. With WIKI_INSECURE=1 each
+run says on standard error that the certificate is not checked, and
+WIKI_CACERT is not used.
 
 The password is given to curl through a file descriptor, never on its
 command line. Versions are remembered under WIKI_STATE_DIR (by default

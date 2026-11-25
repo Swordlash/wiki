@@ -2241,7 +2241,13 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   the editor) reads whether it had the focus from the old master,
   which is false while a row has it, so no row is opened with the
   focus; `Tasks.hs:533` ("1 box changed,
-  not saved yet" at rest after twenty seconds); `SlideEditor.hs:962`
+  not saved yet" at rest after twenty seconds): **fixed (#377), a
+  fault of the test**, with the group moved to reads once: the
+  examples hold the ticks' save across slow steps, and the HTTP
+  backend aborts a request after 30 s, so on a slow run the held save
+  timed out before its release; those examples now use a transport
+  without a limit (other groups that hold a request across slow
+  steps may meet the same limit); `SlideEditor.hs:962`
   and `Http.hs:1581` (a read while a fiber waits); `Contents.hs:114`
   and `Comments.hs:87` (the clipboard's promise); `Vault.hs:771` and
   `:602`. **`DeckViewer.hs:67`, found on CI twice (#316's run and #322's):
@@ -2764,8 +2770,23 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   provider's chat in one class, used far beyond the assistant, so
   both stay the host's and the assistant reaches them through
   capabilities (`Models`, `Secret`) that mirror its present needs.
-  **C is open (#374)**; **D is next (the owner, 2026-11-24, after
-  C).** **After D, the features behind the interface (the
+  **C merged (#374, six Codex rounds):** the settings' section
+  "Plugins" and the administrator's switch. The plugins' state is one
+  machine owned by the shell (`View/Plugins/Machine.hs`): one flight
+  for every plugins ask (the reads, a user's writes, the
+  administrator's saves), one queue, a read after every write's
+  answer, and the new session given to it in the step in which the
+  shell learns of another reader, before any wait. Two machines with
+  a snapshot each, as first built, cost four rounds: a later package
+  adds its writes to this machine. Left: `wikiPluginsOff` in the
+  backend class is no longer called by the application. **D1 merged
+  (#376):** a plugin's options in both backends, in the interface
+  (`options`, `SetOptions`, `SaveOptions`) and written through the
+  same machine; a plugin sees the value last chosen while its write
+  is out; no plugin sets options yet, so the shell's line that
+  carries the write out has no test until D3. **D2 (the secrets'
+  capability) and E2 (the bridge and `diagnostics`) are being built,
+  stacked.** **After D, the features behind the interface (the
   session's plan of 2026-11-24, read from the code):** **E**, the
   emoji: a `command` with a picker and the colon list's names, the
   picker drawn by the host from data (its HTML unchanged); off, no

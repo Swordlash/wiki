@@ -29,13 +29,13 @@ import Test.Browser.Encrypted qualified as E
 import Test.Browser.Http (Asked (..), answerWith, asked, holdAt, release, serveDemo, serverStartsWith, serverStops, startServer)
 import Test.Browser.Mount (openSettings, showSection, signOut)
 import Test.Hspec.Halogen
+import Test.LegacyKeys (Keys (..), readKeys)
 import Web.Storage.IndexedDB (MonadIndexedDB)
 import Web.Storage.IndexedDB qualified as IDB
 import Wiki.Api.Security (ResetToken (..))
 import Wiki.Api.ServerSettings (defaultHomePage)
 import Wiki.Api.Types (SessionInfo (..))
 import Wiki.App.Assistant (MonadAssistant (..), assistantDatabase, dropSlotsIfIO, vaultGenerationIO)
-import Test.LegacyKeys (Keys (..), readKeys)
 import Wiki.App.Backend (MonadWiki (..), Session (..), session)
 import Wiki.App.Backend.Encrypted (MonadEncryption (..))
 import Wiki.App.Backend.Mem (newMemWiki, runMemWiki)

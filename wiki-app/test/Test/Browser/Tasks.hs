@@ -248,12 +248,12 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
   it "keeps the page the reader went to when the answer about the page they left comes late" $ runPage $ do
     serverStarts
     serveDemo
-    let guide = demoPage "markdown-guide"
+    let guide = guideTasks
         guideAt = endpointUrl (\e -> e.spaces.pageAt guide.space (slugs ["markdown-guide"]))
     -- The save meets a newer version, and the page as it is now is held.
     answerRaw "PUT" ("api/v1/pages/" <> guide.id.text) 409 "{\"error\":\"Conflict\",\"message\":\"Saved since.\"}"
+    answerWith "GET" guideAt 200 guide
     ui <- startHolding (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
-    -- The guide is long, and its islands many.
     find ui ".page-body input[aria-label='Read it'][data-task]" >>= click
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
     holdAt "GET" guideAt
@@ -291,10 +291,11 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
   it "refuses to make the page a template while there are ticks, and keeps the page and the ticks when the page cannot be read again" $ runPage $ do
     serverStarts
     serveDemo
-    let guide = demoPage "markdown-guide"
+    let guide = guideTasks
         guideAt = endpointUrl (\e -> e.spaces.pageAt guide.space (slugs ["markdown-guide"]))
     -- Every save meets a newer version, and the page is read again.
     answerRaw "PUT" ("api/v1/pages/" <> guide.id.text) 409 "{\"error\":\"Conflict\",\"message\":\"Saved since.\"}"
+    answerWith "GET" guideAt 200 guide
     ui <- startServer m (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
     readIt ui >>= click
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
@@ -321,12 +322,13 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
   it "keeps the view and its ticks when a reload of the wiki it did not ask for fails" $ runPage $ do
     serverStarts
     serveDemo
-    let guide = demoPage "markdown-guide"
+    let guide = guideTasks
         guideAt = endpointUrl (\e -> e.spaces.pageAt guide.space (slugs ["markdown-guide"]))
         saveAt = "api/v1/pages/" <> guide.id.text
         saved = (guide :: Core.Page) {body = T.replace "- [ ] Read it" "- [x] Read it" guide.body, updatedAt = addUTCTime 60 guide.updatedAt}
     answerWith "PUT" saveAt 200 saved
     holdAt "PUT" saveAt
+    answerWith "GET" guideAt 200 guide
     ui <- startHolding (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
     readIt ui >>= click
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
@@ -537,12 +539,13 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
   it "keeps the ticks of a visit against a save of an earlier one that answers late" $ runPage $ do
     serverStarts
     serveDemo
-    let guide = demoPage "markdown-guide"
+    let guide = guideTasks
         guideAt = endpointUrl (\e -> e.spaces.pageAt guide.space (slugs ["markdown-guide"]))
         saveAt = "api/v1/pages/" <> guide.id.text
         saved = (guide :: Core.Page) {body = T.replace "- [ ] Read it" "- [x] Read it" guide.body, updatedAt = addUTCTime 60 guide.updatedAt}
     answerWith "PUT" saveAt 200 saved
     holdAt "PUT" saveAt
+    answerWith "GET" guideAt 200 guide
     ui <- startHolding (Page (slugs ["docs"]) (slugs ["markdown-guide"]))
     readIt ui >>= click
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
@@ -558,7 +561,6 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
     -- kept, on the page as it is now.
     answerWith "GET" guideAt 200 saved
     release
-    -- The guide is long: its reload takes a while.
     find ui ".page-ticks" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "kept on the new version")
     (readIt ui >>= (`getProperty` "checked")) `shouldReturn` "true"
     find ui ".page-ticks-count" >>= (`shouldHaveText` "1 box changed, not saved yet.")
@@ -638,12 +640,12 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
     -- that holds a request on purpose ('holdAt'), with no time limit on a
     -- request. The backend gives up on a request after thirty seconds
     -- ('Wiki.App.Backend.Http.Transport.requestTimeout') and aborts it.
-    -- A slow run can hold a request that long (the long guide is loaded
-    -- twice in some examples), and the request then fails as if the
-    -- server could not be reached: the late answer the example is about
-    -- never comes, and the example fails at rest. A negative limit is
-    -- none ('System.Timeout.timeout'). The suite's watchdog still stands
-    -- against a hang.
+    -- A slow run can hold a request that long (two examples hold a save
+    -- while the reader leaves and comes back). The request then fails as
+    -- if the server could not be reached: the late answer the example is
+    -- about never comes, and the example fails at rest. A negative limit
+    -- is none ('System.Timeout.timeout'). The suite's watchdog still
+    -- stands against a hang.
     startHolding :: Route -> PageM s (Mounted s Shell.Query Void m)
     startHolding at = do
       env <- unsafeIOToPageM (newHttpEnv (fetchTransport (const (-1))))
@@ -659,9 +661,7 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
     -- The tasks of the sorted list, in the order shown, and whether each
     -- box is ticked.
     sortedLabels ui = findAll ui ".page-body .sorted .task-text" >>= traverse textContent
-    -- The Markdown guide's task "Read it". The long guide's islands move
-    -- the box as they draw; their drawing is the program's work, which
-    -- the read waits for.
+    -- The Markdown guide's task "Read it".
     readIt ui = find ui ".page-body input[aria-label='Read it'][data-task]"
     sortedChecked ui = findAll ui ".page-body .sorted input" >>= traverse (fmap (== "true") . (`getProperty` "checked"))
 
@@ -670,6 +670,15 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
 tasksText :: Text
 tasksText =
   "# Tasks\n\n- [ ] Buy milk\n- [ ] Pack\n  - [ ] Shoes\n  - [ ] Coat\n\n{.sorted}\n- [x] Old\n- [ ] New\n- [ ] Next\n"
+
+-- | The demo's Markdown guide with only its tasks, for the examples that
+-- show it over the stand-in server. The whole guide is long: on a busy
+-- machine each render of it takes most of a second, with many islands to
+-- draw, and an example that shows it three times (a visit, a return, a
+-- reload) kept the program busy past the suite's watchdog. The examples
+-- are about the ticks, not the guide.
+guideTasks :: Core.Page
+guideTasks = (demoPage "markdown-guide" :: Core.Page) {Core.body = "# Markdown guide\n\n- [x] Write the page\n- [ ] Read it\n"}
 
 -- | A page of the demo, by its slug.
 demoPage :: Text -> Core.Page

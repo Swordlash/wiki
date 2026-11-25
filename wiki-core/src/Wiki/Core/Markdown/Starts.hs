@@ -206,18 +206,33 @@ cutsOf kept firstChange lineStart = (begins, below)
 -- brackets from the line's first character after at most three spaces, a
 -- label of plain text (no backslash, no bracket). Any other line holding
 -- @]:@ is not read ('Nothing'), and no start below it is used: the
--- completion reads more of the text there, as the whole text reads it. A
--- line that starts with @[@ and holds @]:@ in a code listing (a
--- TypeScript index signature, @[key: string]: number@) or in prose is
--- such a line too, and costs the text below it that shortcut: known, and
--- left.
+-- completion reads more of the text there, as the whole text reads it.
+--
+-- A line inside code is no suspect (#301): a TypeScript index signature,
+-- @[key: string]: number@, in a fence cost the whole text below it that
+-- shortcut. Code is what the parser reports as a code shape
+-- ('CodeShape'): a fence of any kind (code, a diagram, math, @html@),
+-- indented code, HTML, display math that is all of its paragraph; at any
+-- depth, in a quotation, an item or a footnote's definition. Its lines
+-- after its first hold no definition, with one exception: display math
+-- is a paragraph, and the definitions at the paragraph's start are in its
+-- shape, the first of them on its first line. So a code shape counts only
+-- where its first line, from the column the parser gives the shape, does
+-- not start with @[@. Its first line stays a suspect: a footnote's label
+-- may stand before the code on it (@[^n]: ```@). Only the shapes give
+-- this: a fence's mark seen in the text says nothing of whether the
+-- fence is inside an HTML block, or of where an item or a quotation
+-- around it ends. A line the parser does not report (a fence in the body
+-- of a footnote defined twice, which it drops) stays a suspect. A line in
+-- prose that the parser reads as no definition (inside a paragraph, which
+-- a definition cannot interrupt) is a suspect still: known, and left.
 --
 -- A definition counts wherever it is in the page: a reference elsewhere
 -- reads as a link, or a footnote's number, only because of it. So the
 -- completion, which reads the text from a start rather than from the top
 -- ('linesFromStart'), is handed those above the start, in one line each.
 blockDefinitions :: Text -> [Shape] -> [(Int, Maybe Text)]
-blockDefinitions source shapes = [(l, readOn l (Map.findWithDefault [] l byLine)) | (l, line, opened) <- zip3 [1 ..] lines' (drop 1 (scanl runOpened False lines')), opened, "]:" `T.isInfixOf` line]
+blockDefinitions source shapes = [(l, readOn l (Map.findWithDefault [] l byLine)) | (l, line, opened) <- zip3 [1 ..] lines' (drop 1 (scanl runOpened False lines')), opened, "]:" `T.isInfixOf` line, not (listed l)]
   where
     lines' = T.splitOn "\n" source
     sourceLines = Seq.fromList lines'
@@ -230,6 +245,14 @@ blockDefinitions source shapes = [(l, readOn l (Map.findWithDefault [] l byLine)
       | T.null (T.strip line) = False
       | otherwise = opened || "[" `T.isPrefixOf` T.dropWhile (\c -> isDigit c || c `elem` (" \t>-+*.)" :: [Char])) line
     lineText l = fromMaybe "" (Seq.lookup (l - 1) sourceLines)
+    -- The lines inside code that hold no definition, each run by its first
+    -- line, with its last: the lines after the first of a code shape
+    -- whose first line, from the column the parser gives it, does not
+    -- start with a bracket. Code shapes do not overlap, so the run that
+    -- may hold a line is the last that starts at or before it.
+    listings = IntMap.fromList [(l + 1, b) | s <- concatMap codeShapes shapes, Just (l, c) <- [minimumMay (map fst s.parts)], let b = snd (shapeLines s), l < b, Just rest <- [fromColumn c (lineText l)], not ("[" `T.isPrefixOf` rest)]
+    codeShapes s = [s | s.kind == CodeShape] <> concatMap codeShapes s.inner
+    listed l = maybe False (\(_, b) -> l <= b) (IntMap.lookupLE l listings)
     byLine = Map.fromListWith (flip (<>)) [(l, [(top, footnote)]) | (l, top, footnote) <- concatMap (definitionsIn True) shapes]
     -- Each definition's line, whether it is at the top level, and whether
     -- it is a footnote's.
@@ -263,6 +286,20 @@ blockDefinitions source shapes = [(l, readOn l (Map.findWithDefault [] l byLine)
         , not (T.any (`elem` ['\\', '[', ']', '^']) label) ->
             Just label
       _ -> Nothing
+
+-- | The text of a line from a column, as the parser counts columns (from
+-- 1, a tab to the next multiple of four, 'Shape'), or 'Nothing' where the
+-- column falls inside a tab or past the line's end.
+fromColumn :: Int -> Text -> Maybe Text
+fromColumn c = go 1
+  where
+    go col t
+      | col == c = Just t
+      | col > c = Nothing
+      | otherwise = case T.uncons t of
+          Just ('\t', rest) -> go (col + 4 - (col - 1) `mod` 4) rest
+          Just (_, rest) -> go (col + 1) rest
+          Nothing -> Nothing
 
 -- | 'Earlier' is what the editor keeps of its last check of the text
 -- ("Wiki.Core.Markdown.Problems"' 'Wiki.Core.Markdown.Problems.Checked'),

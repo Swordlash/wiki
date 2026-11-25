@@ -21,11 +21,12 @@ where
 
 import Data.Text qualified as T
 import Protolude
-import Test.Cases (longText, longTexts)
+import System.Mem (getAllocationCounter, setAllocationCounter)
+import Test.Cases (coverage, longText, longTexts)
 import Test.Hspec hiding (after, before)
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
-import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, frequency, property, (.&&.), (===))
-import Wiki.Core.Markdown.Ast (parseShapes)
+import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, conjoin, counterexample, cover, elements, forAll, forAllShow, frequency, property, (.&&.), (===))
+import Wiki.Core.Markdown.Ast (parseMarkdown, parseShapes)
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.Markdown.Edit qualified as Edit
 import Wiki.Core.Markdown.Problems (Checked (..), checkText)
@@ -49,9 +50,9 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
     it "reads no line where two definitions start, or one inside a quotation, an item or a footnote (Codex, #298's second round)" $ do
       let doc = "[^n]: > [^m]: note\n\n[^o]: [a]: /u\n\n> [b]: /q\n\n[c]: /v"
       fmap (blockDefinitions doc) (parseShapes doc) `shouldBe` Right [(1, Nothing), (3, Nothing), (5, Nothing), (7, Just "[c]: x")]
-    it "reads no line holding ]: that no shape reports, as a definition in a footnote defined twice, or one in a listing (Codex, #298's third round)" $ do
+    it "reads no line holding ]: that no shape reports, as a definition in a footnote defined twice, and counts none in a listing (Codex, #298's third round; #301)" $ do
       let doc = "[^n]: first\n\n[^n]: [r]: /url\n\nParagraph.\n\n```\n[s]: /listed\n```\n\n[c]: /v"
-      fmap (blockDefinitions doc) (parseShapes doc) `shouldBe` Right [(1, Just "[^n]: x"), (3, Nothing), (8, Nothing), (11, Just "[c]: x")]
+      fmap (blockDefinitions doc) (parseShapes doc) `shouldBe` Right [(1, Just "[^n]: x"), (3, Nothing), (11, Just "[c]: x")]
     it "suspects a line holding ]: only in a run of lines one of which starts with [ after its container marks (#298's third round)" $ do
       let doc =
             T.intercalate
@@ -74,7 +75,8 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
               , ""
               , "[c]: /v"
               ]
-      fmap (blockDefinitions doc) (parseShapes doc) `shouldBe` Right [(4, Nothing), (6, Nothing), (8, Nothing), (11, Nothing), (14, Nothing), (17, Just "[c]: x")]
+      -- The fence's line is in code, and no suspect (#301).
+      fmap (blockDefinitions doc) (parseShapes doc) `shouldBe` Right [(4, Nothing), (6, Nothing), (8, Nothing), (11, Nothing), (17, Just "[c]: x")]
     it "reads no label holding an escape, which the parser reads and this does not (Codex, #298)" $
       fmap (blockDefinitions "[^a\\]:b]: old\n\n[b\\]]: /u\n\n[c]: /v") (parseShapes "[^a\\]:b]: old\n\n[b\\]]: /u\n\n[c]: /v")
         `shouldBe` Right [(1, Nothing), (3, Nothing), (5, Just "[c]: x")]
@@ -101,6 +103,97 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
     it "reads the whole text above where nothing was checked, up to the limit" $ do
       linesFromStart noEarlier ["Some", "text"] `shouldBe` Just ["Some", "text"]
       linesFromStart noEarlier (replicate 100 (T.replicate 60 "x")) `shouldBe` Nothing
+
+  -- Issue #301: a line that looks like a definition inside a listing (a
+  -- TypeScript index signature in a fence) is no definition to the parser,
+  -- and costs the text below it no start.
+  describe "a definition-like line in a listing" $ do
+    it "answers below the issue's TypeScript fence on a long page from a start, as the whole text answers" $ do
+      let fence = ["```ts", "interface Prices {", "  [key: string]: number", "}", "```", ""]
+          filler = concat (replicate 40 [T.replicate 6 "Some more words. ", ""])
+          above = ["# Prices", ""] <> fence <> filler
+          slash = [SlashEntry {label = show command, keywords = [], sample = "", does = WritesCommand command} | command <- [Edit.Bold, Edit.Table]]
+          asked =
+            [ ("/" :: Text, [slashSource slash], "/ta")
+            , ("\\", [mathSource (mathCommands [])], "$\\fr")
+            , ("[[!", [wikiSource Presentation []], "[[!")
+            , ("[!", [wikiSource Presentation []], "> [!")
+            ]
+      for_ asked $ \(name, srcs, typed) -> do
+        let page = T.intercalate "\n" (above <> [typed])
+            handed = linesFromStart (earlierOf page) above
+            at above' = At {place = InText, above = above', before = typed, after = "", below = [], cutBelow = False}
+            whole = complete srcs (readLine above) (at above)
+        -- The text handed is the last paragraph alone, below the fence, and
+        -- a list opens there.
+        (name, length <$> handed, (\h -> complete srcs (readLine h) (at h)) <$> handed, isJust whole)
+          `shouldBe` (name, Just 2, Just whole, True)
+    it "counts no line inside a fence or indented code, and every line the parser reads as a definition" $ do
+      let doc =
+            T.intercalate
+              "\n"
+              [ "```ts"
+              , "[key: string]: number"
+              , "```"
+              , "[r]: /right-after"
+              , ""
+              , "- ```"
+              , "  [i]: /in-the-item"
+              , "[o]: /out-of-the-item"
+              , ""
+              , "> ~~~~"
+              , "> [q]: /quoted"
+              , "> ~~~"
+              , "> [q2]: /still-quoted"
+              , "> ~~~~"
+              , ""
+              , "    interface A {"
+              , "    [k]: number"
+              , ""
+              , "[^n]: A note."
+              , ""
+              , "    ```"
+              , "    [f]: /in-the-note"
+              , "    ```"
+              , ""
+              , "[a]: /u"
+              , "$$x$$"
+              , ""
+              , "```"
+              , "[open]: /to-the-end"
+              ]
+      fmap (blockDefinitions doc) (parseShapes doc)
+        `shouldBe` Right [(4, Just "[r]: x"), (8, Just "[o]: x"), (19, Just "[^n]: x"), (25, Just "[a]: x")]
+    -- The check finds the definitions after every pause in the typing, in
+    -- one pass over the lines, looking up only a line that holds ]: among
+    -- the code shapes ("Wiki.Core.Markdown.Starts" says how). Counted, not
+    -- timed: the bytes the work allocates, and those of the parse the check
+    -- makes first, which the shapes come from.
+    it "finds the definitions of a page of 16,000 fences, each holding a line like one, allocating in proportion to the page and little beside its parse" $ do
+      let n = longText 16000
+          page k = T.intercalate "\n" (concat (replicate k ["```ts", "[key: string]: number", "```", ""]))
+          allocatedFor k = do
+            let fences = page k
+            _ <- evaluate (T.length fences)
+            setAllocationCounter 0
+            shapes <- evaluate (fromRight [] (parseShapes fences))
+            _ <- evaluate (T.length (show shapes))
+            parsing <- negate <$> getAllocationCounter
+            setAllocationCounter 0
+            found <- evaluate (sum [l + maybe 0 T.length d | (l, d) <- blockDefinitions fences shapes])
+            left <- getAllocationCounter
+            pure (found, negate left, parsing)
+      (found, small, _) <- allocatedFor (n `div` 10)
+      (found', large, parsing) <- allocatedFor n
+      putStrLn ("the definitions of " <> show (n `div` 10) <> " and " <> show n <> " fences: " <> show (small `div` 1024) <> " KiB and " <> show (large `div` 1024) <> " KiB allocated, the parse " <> show (parsing `div` 1024) <> " KiB" :: Text)
+      -- Measured natively on 2026-11-25, unoptimised: 11.7 MB and 118 MB
+      -- for 1,600 and 16,000 fences (8.4 MB and 84 MB before #301, which
+      -- counted each fenced line), the parse 295 MB and 2.9 GB.
+      (found, found', large < 15 * small, large < parsing `div` 10) `shouldBe` (0, 0, True, True)
+    modifyMaxSuccess (* 5) . prop "counts every line the parser reads as a definition, and leaves out lines in listings" $
+      coverage (forAll genLabelled countsEveryDefinition)
+    longTexts . prop "answers below a listing from a start, as the whole text answers" $
+      coverage (forAllShow genBelowListing (show . fst) belowListing)
 
   -- Every trigger of the wiki's own completion, on generated places, with
   -- the starts of each mode: 200 cases natively, five on wasm
@@ -322,7 +415,122 @@ piece =
     , (2, elements [["- one", "- two", ""], ["- one", "", "- two", "", "- three", ""], ["1. one", "2. two", ""], ["- one", "", "  more of one", "- two"], ["- one", "", "- two"], ["1. one", "", "2. two", "3. three"], ["- one", "- two"]])
     , (2, elements [["> quoted", "> more", ""], ["> [!NOTE]", "> A box.", ""], ["> quoted", "lazy", ""]])
     , (2, elements [["```", "code", "```", ""], ["```math", "x^2", "```", ""], ["    indented code", ""], ["```"]])
+    , -- A line like a definition in a listing, or let out of one (#301).
+      (2, map (T.replace "{L}" "a") <$> listing True)
     , (1, elements [["<div>", "", "html", "", "</div>", ""], ["<!--", "comment", "-->", ""]])
     , (2, elements [["[[!div]]", "", "Inside.", "", "[[/div]]", ""], ["[[!div]]", ""], ["[[/div]]", ""], ["[[!notes]]", "Notes.", "[[/notes]]", ""], ["[[!spoiler]]{s}(More)", "Hidden.", ""]])
     , (1, elements [["# Heading", ""], ["Title", "===", ""], ["---", ""], ["| a | b |", "| - | - |", "| c | d |", ""]])
     ]
+
+----------------------------------------------------------------------
+-- Listings (#301)
+
+-- | Some lines with a line like a definition in a listing, @{L}@ standing
+-- for its label: in a fence of backticks or tildes, three or four of
+-- them, with an info string or none, closed by its mark, by a longer one,
+-- by a shorter one (which does not close it) or left open; with a fence
+-- inside that closes a fence of three; at the top level, in a quotation,
+-- an item, a quotation's item, a footnote's definition, indented by two
+-- spaces; the line like a definition written without its container's
+-- prefix, which ends the container and makes it a definition; in
+-- indented code; followed by a blank line, by a definition right after
+-- the listing, by a paragraph, or by nothing. Where a line like a
+-- definition may not be let out of its listing ('False'), it is never
+-- written without its container's prefix, and no fence inside closes the
+-- listing's.
+listing :: Bool -> Gen [Text]
+listing loose = do
+  (first', other) <- elements [("", ""), ("", ""), ("> ", "> "), ("- ", "  "), ("1. ", "   "), ("> - ", ">   "), ("[^f]: ", "    "), ("  ", "  ")]
+  mark <- elements ["```", "~~~", "````", "~~~~"]
+  info <- elements ["", "ts", "math", "html", "mermaid"]
+  body <-
+    elements $
+      [ ["[{L}]: /listed"]
+      , ["interface A {", "  [{L}]: number", "}"]
+      , ["[^{L}]: listed note"]
+      ]
+        <> [[T.take 3 mark, "[{L}]: /listed", T.take 3 mark] | loose || T.length mark > 3]
+  close <- elements [Just mark, Just (mark <> T.take 1 mark), Just (T.take 3 mark), Nothing]
+  dropped <- if loose then frequency [(5, pure False), (1, pure True)] else pure False
+  indented <- frequency [(5, pure False), (1, pure True)]
+  after' <- elements [[""], ["[{L}]: /real", ""], ["Text.", ""], []]
+  let prefixed l = (if dropped && "]:" `T.isInfixOf` l then "" else other) <> l
+      fenced = (first' <> mark <> info) : map prefixed body <> [other <> c | Just c <- [close]]
+      code = (first' <> "    interface A {") : map (prefixed . ("    " <>)) body
+  pure ((if indented then code else fenced) <> after')
+
+-- | Whether a line is one of 'listing''s lines like a definition, inside
+-- its listing or not.
+listedLine :: Text -> Bool
+listedLine l = any (`T.isInfixOf` l) ["]: /listed", "]: number", "]: listed note"]
+
+-- | A page of listings, paragraphs, definitions and display math, each
+-- line like a definition with a label of its own (@k1@, @k2@, …).
+genLabelled :: Gen [Text]
+genLabelled = do
+  pieces <- choose (1, 6) >>= \k -> replicateM k (frequency [(4, listing True), (1, pure ["Some text.", ""]), (1, elements definitions)])
+  pure (snd (mapAccumL label (1 :: Int) (concat pieces)))
+  where
+    -- Definitions, and the code shapes that hold definitions or follow
+    -- one on its line: display math that is all of a paragraph begun by
+    -- two definitions, and a fence on a footnote's line.
+    definitions = [["[{L}]: /real", ""], ["[{L}]: /real", "[{L}]: /second", "$$x$$", ""], ["[^{L}]: ```", "    [{L}]: /listed", "    ```", ""], ["$$", "[{L}]: /in-math", "$$", ""]]
+    label n l
+      | "{L}" `T.isInfixOf` l = (n + 1, T.replace "{L}" ("k" <> show n) l)
+      | otherwise = (n, l)
+
+-- | The lines the check counts as definitions ('blockDefinitions') hold
+-- every definition the parser reads: a label defined on a line is one a
+-- reference before the page reads as a link or a footnote's number. Each
+-- label is on one line of the page, so the line is the one that defines
+-- it. The coverage asks for pages with a definition read, and with a line
+-- like one left out.
+countsEveryDefinition :: [Text] -> Property
+countsEveryDefinition doc =
+  counterexample (toS text)
+    . cover 20 (not (null real)) "a definition read"
+    . cover 40 (any (\(l, _) -> l `notElem` counted) labelled) "a line like a definition left out"
+    $ conjoin [counterexample (toS ("line " <> show l <> " defines " <> label)) (l `elem` counted) | (l, label) <- real]
+  where
+    text = T.intercalate "\n" doc
+    counted = map fst (definitionsOf text)
+    labelled = [(l, label) | (l, line) <- zip [1 :: Int ..] doc, Just label <- [labelOf line]]
+    real = filter (defines . snd) labelled
+    labelOf line = do
+      let label = T.takeWhileEnd (/= '[') (fst (T.breakOn "]:" line))
+      guard ("k" `T.isPrefixOf` T.dropWhile (== '^') label && "]:" `T.isInfixOf` line)
+      pure label
+    defines label = firstBlock ("[" <> label <> "]\n\n" <> text) /= firstBlock ("[" <> label <> "]")
+    firstBlock t = either (const Nothing) head (parseMarkdown t)
+
+-- | A place below a listing, or between two: the listing (its lines like
+-- a definition inside it), a paragraph or a definition, a paragraph, the
+-- cursor's line with a trigger, and the lines below (another listing, a
+-- text longer than the completion reads below). The labels are those the
+-- cursor's line refers to.
+genBelowListing :: Gen (Case, [Source])
+genBelowListing = do
+  ls <- map (T.replace "{L}" "a") <$> listing False
+  more <- elements [[], ["Some text of a paragraph.", ""], ["[b]: /real", ""]]
+  let long = T.intercalate "\n\n" (replicate 70 "Words of a long text.")
+  below <- elements [[], ["", "Next."], ["", "```", "[a]: /listed", "```"], ["", "Next.", "", "After.", "", long], ["", "```", "[a]: /listed", "```", "", "Next.", "", long]]
+  (srcs, trigger, typed) <-
+    elements
+      [ ([slashSource [SlashEntry {label = show command, keywords = [], sample = "", does = WritesCommand command} | command <- [Edit.Bold, Edit.Table]]], "/ta", "/ta")
+      , ([mathSource (mathCommands [])], "\\fr", "$\\fr")
+      , ([wikiSource Presentation []], "[[!", "[[!")
+      , ([wikiSource Presentation []], "[!", "> [!")
+      ]
+  words' <- elements ["", "See [a] and [^a] "]
+  change <- arbitrary
+  let marked = T.intercalate "\n" (ls <> more <> ["Text before.", "", words' <> typed <> "‸"] <> below)
+  pure (caseAt marked trigger change, srcs)
+
+-- | Below a listing the answer is the whole text's; the coverage asks that
+-- a start below the listing is used, for most places.
+belowListing :: (Case, [Source]) -> Property
+belowListing (c, srcs) =
+  cover 40 (any listedLine c.above && maybe False (\h -> length h < length c.above && not (any listedLine h)) handed) "read from a start below the listing" $
+    alikeEverywhere srcs c
+  where
+    handed = linesFromStart (earlierOf (T.intercalate "\n" (c.above <> [c.before <> c.after] <> c.below))) c.above

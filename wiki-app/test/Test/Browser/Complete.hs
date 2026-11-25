@@ -28,11 +28,13 @@ import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (boxes))
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend.Mem.State (MemState (..))
+import Wiki.App.Help (guidePageSlug)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..), pageLinkText)
 import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
 import Wiki.Core.Markdown.Edit qualified as Edit
+import Wiki.Core.Page (Page (body, slug))
 
 -- The last key that reached the window: test/jsbits/test-keys.js. A row
 -- of a presentation's slide mode: test/jsbits/test-slides.js.
@@ -201,6 +203,26 @@ spec m = readsOnce Idle $ do
     markdown ui `shouldReturn` table
     press "Control+z"
     markdown ui `shouldReturn` typed
+
+  -- #301: a TypeScript index signature in a fence near the top of a long
+  -- page, a line like a link's definition, took every start below it, and
+  -- / opened nothing in the middle of the page. The check of the page made
+  -- when it is opened reads the fence as code.
+  it "opens the / menu in the middle of the long Markdown guide below a TypeScript fence near its top" $ runPage $ do
+    let fence = ["```ts", "interface Prices {", "  [key: string]: number", "}", "```", ""]
+        withFence st = st {pages = map (\p -> if p.slug == guidePageSlug then p {body = T.intercalate "\n" (take 2 (T.splitOn "\n" p.body) <> fence <> drop 2 (T.splitOn "\n" p.body))} else p) st.pages}
+    ui <- startChanged m withFence (Just "user-admin") guidePage <* waitQuiet
+    text <- editorText ui
+    guide <- markdown ui >>= \t -> t <$ (t `shouldSatisfy` (\g -> T.length g > 10_000 && "  [key: string]: number" `T.isInfixOf` g))
+    -- An empty line between two paragraphs in the middle, as for the table
+    -- above.
+    let (upTo, _) = T.breakOn "\n\n" (T.drop (T.length guide `div` 2) guide)
+        at = T.length guide `div` 2 + T.length upTo + 1
+        units = at + T.length (T.filter ((> 0xFFFF) . ord) (T.take at guide))
+    selectText ui units units
+    typeText text "/ta"
+    _ <- completionAnswered ui
+    (take 2 <$> labels ui) `shouldReturn` ["Table", "Task list"]
 
   it "takes Enter after a / alone as a new line, closes the / menu on Escape, and the same / does not open it again as letters are typed" $ runPage $ do
     ui <- editing helloEditor

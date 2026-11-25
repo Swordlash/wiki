@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 386
 title: External plugins are installed and managed in the settings
 ---
 

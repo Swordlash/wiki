@@ -2784,9 +2784,21 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   (`options`, `SetOptions`, `SaveOptions`) and written through the
   same machine; a plugin sees the value last chosen while its write
   is out; no plugin sets options yet, so the shell's line that
-  carries the write out has no test until D3. **D2 (the secrets'
-  capability) and E2 (the bridge and `diagnostics`) are being built,
-  stacked.** **After D, the features behind the interface (the
+  carries the write out has no test until D3. **D2 merged (#380, three Codex rounds):** a
+  plugin's secrets are one item of the vault, sealed with additional
+  data naming the plugin and padded; the capability closed over the
+  plugin and the reader; the host's field. A change of the secrets
+  kept in the browser holds a Web Lock across tabs (a page over plain
+  HTTP has none and keeps the fault; the assistant's own device
+  records have the same fault until D3 removes that path); fields
+  hear `wiki-secrets-changed` from the keys kept here and from the
+  host's writes, other tabs included. **D3 (the assistant moves, the
+  migration) is being built; E2 (the bridge and `diagnostics`) is
+  open as #381.** **Other small things of 2026-11-25 (the owner):**
+  `WIKI_INSECURE=1` in `clients/wiki.sh` (#378); plain HTTP on the
+  TLS port is redirected to HTTPS, and HSTS is sent only with
+  `--hsts`, off by default because it applies to the host name on
+  every port (#379). **After D, the features behind the interface (the
   session's plan of 2026-11-24, read from the code):** **E**, the
   emoji: a `command` with a picker and the colon list's names, the
   picker drawn by the host from data (its HTML unchanged); off, no

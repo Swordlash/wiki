@@ -39,6 +39,12 @@
 -- wins. An item that cannot be opened is never written over: the change
 -- fails, and says so.
 --
+-- An item is never taken out of the vault, even when its last secret is
+-- forgotten: it stays, sealing no secret, with the legacy places its
+-- secrets were moved from ("Wiki.Core.Vault.Plugin"'s 'Contents'). This
+-- browser's entry for a plugin stays the same way once made. Nothing here
+-- empties a plugin's secrets without the vault's key.
+--
 -- Before anything is stored, the vault key this browser holds for the user
 -- must open the vault fetched (it opens the user's key pair). A vault of
 -- another user, whose session the page now holds, is then not opened, and
@@ -72,7 +78,8 @@ module Wiki.App.Plugin.Host.Secrets
   , readSecretsHeld
   , putSecretHeld
   , removeSecretHeld
-  , keepMissingHeld
+  , readContentsHeld
+  , takeSourcesHeld
 
     -- * What this browser keeps
   , DeviceEntry (..)
@@ -89,6 +96,7 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.Aeson (FromJSON (..), ToJSON (..), Value, eitherDecodeStrict, encode, object, withObject, (.:), (.=))
 import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Protolude
 import Wiki.Api.Vault (StoredVault (..))
 import Wiki.App.Assistant (KeyRef, MonadAssistant (..), holdingAcrossTabs, holdingDeviceRecords)
@@ -97,8 +105,8 @@ import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Plugin (Manifest (..), PluginId (..), SecretName (..), SecretSpec (..), Unavailable (..))
 import Wiki.App.Vault (Step, fetched, forgetting, vaultKeyHere, wikiText)
 import Wiki.Core.Id (UserId (..))
-import Wiki.Core.Vault (Item (..), ItemName (..), Sealed, itemOf, withItem, withoutItem)
-import Wiki.Core.Vault.Plugin (decodeSecrets, encodeSecrets, foldIn, pluginItem, pluginSealingData)
+import Wiki.Core.Vault (Item (..), ItemName (..), Sealed, itemOf, withItem)
+import Wiki.Core.Vault.Plugin (Contents (..), decodeContents, encodeContents, foldContents, foldIn, noContents, pluginItem, pluginSealingData)
 
 --------------------------------------------------------------------------------
 -- Secrets
@@ -132,15 +140,21 @@ readSecrets u manifest = holdingDeviceRecords (readSecretsHeld u manifest)
 -- records already: the move of the assistant's legacy settings
 -- ("Wiki.App.Assistant.Migrate"), which reads them between its steps.
 readSecretsHeld :: (MonadAssistant m, MonadVault m) => UserId -> Manifest -> m (Either Unavailable (Map SecretName Text))
-readSecretsHeld u manifest = runExceptT $ do
+readSecretsHeld u manifest = fmap (\c -> declared manifest c.secrets) <$> readContentsHeld u manifest
+
+-- | What the plugin's item holds for the user, the legacy places taken
+-- with the secrets, as 'readSecrets' reads it: for the move of the
+-- assistant's legacy settings, with the lock held.
+readContentsHeld :: (MonadAssistant m, MonadVault m) => UserId -> Manifest -> m (Either Unavailable Contents)
+readContentsHeld u manifest = runExceptT $ do
   item <- withExceptT Failed (itemFor manifest)
   withExceptT Failed placeOf >>= \case
     InVault s -> do
       k <- lift (vaultKeyHere u (Just s)) >>= maybe (throwError Locked) pure
       inVault <- withExceptT Failed (forgetting k (openVaultItem k manifest.id item s))
       onDevice <- lift (keptHere u manifest.id item)
-      pure (declared manifest (foldIn inVault (maybe mempty snd onDevice)))
-    OnDevice _ -> withExceptT Failed (declared manifest . fromMaybe mempty <$> deviceSecrets u manifest.id item)
+      pure (foldContents inVault (maybe noContents snd onDevice))
+    OnDevice _ -> withExceptT Failed (fromMaybe noContents <$> deviceSecrets u manifest.id item)
 
 -- | Keep a value under one of the plugin's names, in the place of the one
 -- it had.
@@ -157,20 +171,30 @@ removeSecret u manifest name = holdingDeviceRecords (removeSecretHeld u manifest
 -- one page's change inside the other's, in one process that has one lock.
 -- The lock of tabs ('secretsLock') is taken here all the same.
 putSecretHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> SecretName -> Text -> m (Either Text ())
-putSecretHeld u manifest name value = changeSecrets u manifest [name] (Map.insert name value)
+putSecretHeld u manifest name value = changeSecrets u manifest [name] (\c -> Contents {secrets = Map.insert name value c.secrets, taken = c.taken})
 
 -- | 'removeSecret', for a caller that holds the lock already
 -- ('putSecretHeld').
 removeSecretHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> SecretName -> m (Either Text ())
-removeSecretHeld u manifest name = changeSecrets u manifest [name] (Map.delete name)
+removeSecretHeld u manifest name = changeSecrets u manifest [name] (\c -> Contents {secrets = Map.delete name c.secrets, taken = c.taken})
 
--- | Keep these values under the names the plugin's secrets do not hold
--- yet; a name they hold keeps its value ('Wiki.Core.Vault.Plugin.foldIn').
--- For a caller that holds the lock of this device's records: the move of
--- the assistant's legacy settings, which puts its keys in this way, so
--- that a key a browser changed since the move is not taken back.
-keepMissingHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> Map SecretName Text -> m (Either Text ())
-keepMissingHeld u manifest values = changeSecrets u manifest (Map.keys values) (`foldIn` values)
+-- | Take the secrets of these legacy places into the plugin's item, each
+-- place by its identity, in order: a place the item took before is
+-- skipped, and a place taken now fills only the names the item does not
+-- hold ('Wiki.Core.Vault.Plugin.foldIn'), and is recorded as taken. For
+-- a caller that holds the lock of this device's records: the move of the
+-- assistant's legacy settings.
+--
+-- Whether a place was taken is read from the item this change fetches,
+-- on each try: when another browser stored the vault in between, its move
+-- and a key forgotten since are read, and a forgotten key is not put back
+-- from a place already taken.
+takeSourcesHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> [(Text, Map SecretName Text)] -> m (Either Text ())
+takeSourcesHeld u manifest sources = changeSecrets u manifest (concatMap (Map.keys . snd) sources) (\c -> foldl' taking c sources)
+  where
+    taking c (place, values)
+      | Set.member place c.taken = c
+      | otherwise = Contents {secrets = foldIn c.secrets values, taken = Set.insert place c.taken}
 
 -- | 'secretsLock' is the name of the lock of tabs a change of a user's
 -- secrets of plugins holds (the module's header says why).
@@ -180,7 +204,7 @@ secretsLock u = "wiki-plugin-secrets:" <> u.text
 -- | Change the plugin's secrets for these names, after the names are
 -- checked against the manifest: nothing is read for a name it does not
 -- declare. The change holds the lock of tabs, and is announced once done.
-changeSecrets :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> [SecretName] -> (Map SecretName Text -> Map SecretName Text) -> m (Either Text ())
+changeSecrets :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> [SecretName] -> (Contents -> Contents) -> m (Either Text ())
 changeSecrets u manifest names change = announced $ runExceptT $ do
   for_ names $ \name ->
     unless (name `elem` map (\s -> s.name) manifest.secrets) $
@@ -196,11 +220,9 @@ changeSecrets u manifest names change = announced $ runExceptT $ do
           kept <- lift (keptHere u manifest.id item)
           stored <- forgetting k $ do
             current <- openVaultItem k manifest.id item s
-            let next = change (foldIn current (maybe mempty snd kept))
-            vault <-
-              if Map.null next
-                then pure (withoutItem item s.vault)
-                else (\sealed -> withItem item Item {keyId = Nothing, sealed} s.vault) <$> ExceptT (sealWith k (encodeSecrets next) (pluginSealingData manifest.id.text))
+            let next = change (foldContents current (maybe noContents snd kept))
+            -- Sealed and kept even with no secret left: the item stays.
+            vault <- (\sealed -> withItem item Item {keyId = Nothing, sealed} s.vault) <$> ExceptT (sealWith k (encodeContents next) (pluginSealingData manifest.id.text))
             lift (storeVault (Just s.tag) vault)
           case stored of
             -- What this browser kept for the plugin is in the vault now.
@@ -219,13 +241,13 @@ itemFor manifest = maybe (throwError ("The plugin " <> manifest.name <> " cannot
 
 -- | What the plugin's item in the vault holds: nothing when there is no
 -- item; an error when it cannot be opened with the key, or read.
-openVaultItem :: (MonadAssistant m) => KeyRef -> PluginId -> ItemName -> StoredVault -> Step m (Map SecretName Text)
+openVaultItem :: (MonadAssistant m) => KeyRef -> PluginId -> ItemName -> StoredVault -> Step m Contents
 openVaultItem k pluginId item s = case itemOf item s.vault of
-  Nothing -> pure mempty
+  Nothing -> pure noContents
   Just i ->
     lift (openWith k i.sealed (pluginSealingData pluginId.text)) >>= \case
       Left _ -> throwError "Your vault holds secrets of this plugin that cannot be opened: they were not sealed for it. Nothing was changed."
-      Right text -> ExceptT (pure (decodeSecrets text))
+      Right text -> ExceptT (pure (decodeContents text))
 
 -- | Only the names the manifest declares.
 declared :: Manifest -> Map SecretName Text -> Map SecretName Text
@@ -238,7 +260,7 @@ declared manifest = Map.filterWithKey (\n _ -> n `elem` map (\s -> s.name) manif
 -- the user has no vault to keep them in: sealed with this browser's key
 -- for the user's secrets, with the same additional data as the vault's
 -- item; or in the clear, where the page cannot seal.
-data DeviceEntry = SealedEntry Sealed | PlainEntry (Map SecretName Text)
+data DeviceEntry = SealedEntry Sealed | PlainEntry Contents
   deriving stock (Eq, Show)
 
 -- | Written as @{"sealed": {nonce, ciphertext}}@ or @{"plain": {...}}@.
@@ -271,13 +293,13 @@ writeStore u store = ExceptT (keepDeviceRecord (deviceSecretsSlot u) (if Map.nul
 
 -- | The plugin's secrets as this browser keeps them, if it keeps any; an
 -- error when they cannot be opened or read.
-deviceSecrets :: (MonadAssistant m) => UserId -> PluginId -> ItemName -> Step m (Maybe (Map SecretName Text))
+deviceSecrets :: (MonadAssistant m) => UserId -> PluginId -> ItemName -> Step m (Maybe Contents)
 deviceSecrets u pluginId item = readStore u >>= traverse (openEntry u pluginId) . Map.lookup item
 
 -- | What this browser keeps, and the plugin's secrets in it, when it
 -- keeps some for the plugin that it can open: what a change in the vault
 -- folds in. What cannot be opened is left where it is.
-keptHere :: (MonadAssistant m) => UserId -> PluginId -> ItemName -> m (Maybe (Map ItemName DeviceEntry, Map SecretName Text))
+keptHere :: (MonadAssistant m) => UserId -> PluginId -> ItemName -> m (Maybe (Map ItemName DeviceEntry, Contents))
 keptHere u pluginId item =
   rightToMaybe <$> runExceptT (readStore u) >>= \case
     Nothing -> pure Nothing
@@ -286,7 +308,7 @@ keptHere u pluginId item =
       Just entry -> fmap (store,) . rightToMaybe <$> runExceptT (openEntry u pluginId entry)
 
 -- | The secrets an entry holds.
-openEntry :: (MonadAssistant m) => UserId -> PluginId -> DeviceEntry -> Step m (Map SecretName Text)
+openEntry :: (MonadAssistant m) => UserId -> PluginId -> DeviceEntry -> Step m Contents
 openEntry u pluginId = \case
   PlainEntry m -> pure m
   SealedEntry sealed ->
@@ -294,21 +316,23 @@ openEntry u pluginId = \case
       Nothing -> throwError "This browser no longer holds the key it sealed your secrets with."
       Just k -> forgetting k $ do
         text <- ExceptT (openWith k sealed (pluginSealingData pluginId.text))
-        ExceptT (pure (decodeSecrets text))
+        ExceptT (pure (decodeContents text))
 
 -- | Change the plugin's secrets as this browser keeps them, sealed where it
--- can seal. What cannot be opened is not written over.
-changeOnDevice :: (MonadAssistant m) => UserId -> PluginId -> ItemName -> Bool -> (Map SecretName Text -> Map SecretName Text) -> Step m ()
+-- can seal. What cannot be opened is not written over. An entry made stays,
+-- with no secret left in it, as the vault's item does; a change that
+-- leaves nothing where there was no entry makes none.
+changeOnDevice :: (MonadAssistant m) => UserId -> PluginId -> ItemName -> Bool -> (Contents -> Contents) -> Step m ()
 changeOnDevice u pluginId item sealing change = do
   store <- readStore u
-  current <- maybe (pure mempty) (openEntry u pluginId) (Map.lookup item store)
-  let next = change current
-  entry <-
-    if
-      | Map.null next -> pure Nothing
-      | sealing -> Just . SealedEntry <$> sealHere next
-      | otherwise -> pure (Just (PlainEntry next))
-  writeStore u (Map.alter (const entry) item store)
+  existing <- traverse (openEntry u pluginId) (Map.lookup item store)
+  let next = change (fromMaybe noContents existing)
+  unless (isNothing existing && next == noContents) $ do
+    entry <-
+      if
+        | sealing -> SealedEntry <$> sealHere next
+        | otherwise -> pure (PlainEntry next)
+    writeStore u (Map.insert item entry store)
   where
     slot = deviceSecretsSlot u
     sealHere next = do
@@ -320,7 +344,7 @@ changeOnDevice u pluginId item sealing change = do
             -- which cannot be exported, kept on disk.
             k <- lift (newVaultKey False)
             lift (keepDeviceKey slot k True) >>= either (\why -> lift (forgetKey k) >> throwError why) (const (pure k))
-      forgetting k (ExceptT (sealWith k (encodeSecrets next) (pluginSealingData pluginId.text)))
+      forgetting k (ExceptT (sealWith k (encodeContents next) (pluginSealingData pluginId.text)))
 
 --------------------------------------------------------------------------------
 -- The cache

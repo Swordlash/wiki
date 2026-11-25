@@ -43,6 +43,29 @@
 -- the other's steps. A tab of an earlier version of the wiki that adds the
 -- legacy item again is moved again by the next run.
 --
+-- = Each legacy place taken once
+--
+-- The keys of a legacy place (the vault's item, this browser's record)
+-- go to the plugin's item together with the place's identity ('source':
+-- the item's nonce, the record's hash), in one write ('KeepKeys'). The
+-- item keeps the places it took ("Wiki.Core.Vault.Plugin"'s 'taken').
+-- A place taken is never taken again: a name the plugin's item lacks
+-- afterwards was forgotten since, and is not filled from that place, even
+-- while the place is still there (a run stopped before its drops, the
+-- options not yet the server's). A place with no key is taken too, so
+-- that the plugin's item is made, and says the settings were moved.
+--
+-- The plugin's item is never deleted once made, even with no key left
+-- in it ("Wiki.App.Plugin.Host.Secrets"). An L1 record's copy of the
+-- vault's settings, on a browser that has not moved yet, then never
+-- counts as the last copy once another browser moved the vault's item
+-- (see 'copyRedundant'):
+-- a key forgotten after the move does not come back from it. Only a reset
+-- of the password deletes the vault with the item in it. A browser that
+-- still holds a legacy copy and a key that opens it may then move that
+-- copy into the new vault: after a reset, nothing was forgotten one key at
+-- a time, and the copy is what is left of the settings.
+--
 -- = What wins
 --
 -- A key the plugin's secrets already hold wins over a legacy one of the
@@ -55,10 +78,10 @@
 --
 -- = Nothing deleted too early
 --
--- A legacy place is emptied only when every key it holds was read back
--- from the plugin's secrets, the options it holds are the server's, its
--- cache was kept, and its "ask each time" taken. What cannot be opened is
--- never emptied.
+-- A legacy place is emptied only when the plugin's item, read back, says
+-- the place was taken, the options it holds are the server's, its cache
+-- was kept, and its "ask each time" taken. What cannot be opened is never
+-- emptied.
 module Wiki.Core.Assistant.Migrate
   ( -- * What is found
     Found (..)
@@ -72,6 +95,7 @@ module Wiki.Core.Assistant.Migrate
   , isDrop
 
     -- * What the legacy places hold
+  , sources
   , legacyKeys
   , legacyOptions
   )
@@ -79,11 +103,13 @@ where
 
 import Data.Aeson (Value)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
+import Data.Text qualified as T
 import Protolude
 import Text.Show (Show (showsPrec))
 import Wiki.Core.Assistant (Settings)
 import Wiki.Core.Assistant.Split (blankOptions, keysOf, optionsValue)
-import Wiki.Core.Vault (Sealed)
+import Wiki.Core.Vault (Nonce (..), Sealed (..))
 import Wiki.Core.Vault.Plugin (SecretName)
 
 -- | 'InVault' is the vault's legacy item @assistant@, as this browser finds
@@ -101,6 +127,9 @@ data InVault
 data OnDevice = OnDevice
   { bytes :: ByteString
   -- ^ The record as stored: only this record is deleted.
+  , source :: Text
+  -- ^ The record's identity as a legacy place ('KeepKeys'): the same for
+  -- the same bytes.
   , own :: Maybe Settings
   -- ^ What only this browser holds: an L2 or L3 record's settings, or
   -- what was typed on an L4 browser while it was locked.
@@ -130,9 +159,6 @@ data Slot = NoKey | VaultKey | OwnKey
 -- | 'Found' is what a run reads before each step.
 data Found = Found
   { vault :: InVault
-  , pluginItem :: Bool
-  -- ^ Whether the vault holds the plugin's item: another browser moved
-  -- the settings, or the plugin kept a secret since.
   , record :: Maybe OnDevice
   , slot :: Slot
   , vaultSlot :: Bool
@@ -141,6 +167,9 @@ data Found = Found
   , target :: Maybe (Map SecretName Text)
   -- ^ The plugin's secrets as read now; 'Nothing' when they cannot be
   -- read (the vault is locked here).
+  , taken :: Set Text
+  -- ^ The legacy places the plugin's item took, as read with 'target';
+  -- none when it cannot be read.
   , options :: Maybe (Maybe Value)
   -- ^ The plugin's options as the server keeps them, 'Nothing' until the
   -- server's answer is known.
@@ -158,9 +187,12 @@ data Step
     KeepAsk
   | -- | The vault key in the assistant's slot kept in the vault's slot.
     CopyVaultKey
-  | -- | These keys kept in the plugin's secrets, under the names the
-    -- secrets lack. A name they hold keeps its value.
-    KeepKeys (Map SecretName Text)
+  | -- | The keys of these legacy places, by each place's identity, kept
+    -- in the plugin's secrets in this order, and the places recorded as
+    -- taken, in one write. A place the plugin's item took before is
+    -- skipped, as read in that write; a place taken now fills only the
+    -- names the secrets lack.
+    KeepKeys [(Text, Map SecretName Text)]
   | -- | What was learnt kept as the plugin's cache, which holds nothing.
     KeepLearnt Value
   | -- | These options kept on the server, if it holds none. The plugins'
@@ -181,7 +213,7 @@ instance Show Step where
     ( case s of
         KeepAsk -> "KeepAsk"
         CopyVaultKey -> "CopyVaultKey"
-        KeepKeys ks -> "KeepKeys " <> show (Map.keys ks)
+        KeepKeys ks -> "KeepKeys " <> show [(place, Map.keys k) | (place, k) <- ks]
         KeepLearnt _ -> "KeepLearnt"
         AdoptOptions _ -> "AdoptOptions"
         DropVaultItem _ -> "DropVaultItem"
@@ -206,14 +238,11 @@ plan f = asking <> copyKey <> keys <> learnt <> adopt <> drops
   where
     asking = [KeepAsk | Just r <- [f.record], r.follows, r.askEachTime, not f.askHere]
     copyKey = [CopyVaultKey | f.slot == VaultKey, not f.vaultSlot]
-    wanted = legacyKeys f
-    keys = case f.target of
-      Just held
-        | missing <- Map.difference wanted held
-        , not (Map.null missing) ->
-            [KeepKeys missing]
-      _ -> []
-    keysSafe = maybe (Map.null wanted) (\held -> Map.null (Map.difference wanted held)) f.target
+    -- The places not taken yet. Where the plugin's secrets cannot be read,
+    -- what they took is unknown: every place waits.
+    pending = [p | p@(place, _) <- sources f, isNothing f.target || Set.notMember place f.taken]
+    keys = [KeepKeys pending | isJust f.target, not (null pending)]
+    keysSafe = null pending
     learnt = [KeepLearnt v | Just r <- [f.record], Just v <- [r.learnt], not f.local]
     options = mfilter (not . blankOptions) (optionsValue <$> legacyOptions f)
     -- Also while the server's options are not known yet: the plugins'
@@ -238,15 +267,25 @@ plan f = asking <> copyKey <> keys <> learnt <> adopt <> drops
     recordDone r = not r.unopenable && (not r.follows || isJust r.copy || copyRedundant f)
 
 -- | Whether an L1 record's copy of the vault's settings says nothing the
--- vault does not: the vault still holds its item, or holds the plugin's,
--- which another browser moved it to. Otherwise (syncing was turned off on
--- another browser, by an earlier version of the wiki) the copy is the
--- settings' last copy, and is moved as this browser's own.
+-- vault does not: the vault still holds its item, or the plugin's item
+-- took a vault's item, which another browser moved. Otherwise (syncing was
+-- turned off on another browser, by an earlier version of the wiki) the
+-- copy is the settings' last copy, and is moved as this browser's own.
+--
+-- A plugin's item that took only browsers' own records (L2, L3) does not
+-- make the copy redundant: those never held the vault's settings. The
+-- plugin's item is never deleted once made, so once it took a vault's
+-- item, a copy here never counts as the last one again, and a key
+-- forgotten since does not come back from it.
 copyRedundant :: Found -> Bool
 copyRedundant f = case f.vault of
   ItemOpened _ _ -> True
   ItemLocked -> True
-  _ -> f.pluginItem
+  _ -> any (itemPlace `T.isPrefixOf`) f.taken
+
+-- | The start of a vault's item's identity as a legacy place ('sources').
+itemPlace :: Text
+itemPlace = "item:"
 
 -- | Whether the options wait for an unlock: the vault's item is there,
 -- locked, and this browser holds settings of its own, which the vault's
@@ -254,15 +293,30 @@ copyRedundant f = case f.vault of
 optionsBehindLock :: Found -> Bool
 optionsBehindLock f = f.vault == ItemLocked && any (\r -> isJust r.own) f.record
 
+-- | The legacy places this browser can read, each by its identity, with
+-- the keys it holds, in the order their keys win: the vault's item (by its
+-- nonce), then this browser's record (an L1 copy that is the last one,
+-- then the record's own). A record counts even with no key, and so does an
+-- item, so that the move of a place with none is recorded too.
+sources :: Found -> [(Text, Map SecretName Text)]
+sources f =
+  [(itemPlace <> s.nonce.text, keysOf settings) | ItemOpened s settings <- [f.vault]]
+    <> [(r.source, Map.union (maybe mempty keysOf (lastCopy f)) (maybe mempty keysOf r.own)) | Just r <- [f.record]]
+
 -- | The keys the legacy places hold, by secret's name: the vault's item's,
 -- then an L1 copy that is the last one, then this browser's own; the first
 -- wins for a name more than one has.
 legacyKeys :: Found -> Map SecretName Text
-legacyKeys f = Map.unions [maybe mempty keysOf (vaultSettings f), maybe mempty keysOf (lastCopy f), maybe mempty keysOf (f.record >>= \r -> r.own)]
+legacyKeys f = Map.unions (map snd (sources f))
 
--- | The settings whose options the legacy places hold: the vault's item's,
--- or else an L1 copy, when the vault no longer holds the item, or else this
--- browser's own. None while the vault's item is locked here.
+-- | The settings whose options the legacy places hold: the first of the
+-- vault's item's, an L1 copy's, and this browser's own whose options are
+-- not the defaults. None while the vault's item is locked here.
+--
+-- Settings whose options are the defaults say nothing to adopt, and do not
+-- hide a browser's own: otherwise a browser's own options would be adopted
+-- or not depending on whether another browser had emptied the vault's item
+-- first.
 --
 -- An L1 copy counts for the options even when the vault holds the
 -- plugin's item: that item is what this run's own keys made of it as
@@ -270,14 +324,11 @@ legacyKeys f = Map.unions [maybe mempty keysOf (vaultSettings f), maybe mempty k
 -- the server's already, which win.
 legacyOptions :: Found -> Maybe Settings
 legacyOptions f = case f.vault of
-  ItemOpened _ s -> Just s
   ItemLocked -> Nothing
-  _ -> (f.record >>= \r -> if r.follows then r.copy else Nothing) <|> (f.record >>= \r -> r.own)
-
-vaultSettings :: Found -> Maybe Settings
-vaultSettings f = case f.vault of
-  ItemOpened _ s -> Just s
-  _ -> Nothing
+  v ->
+    find
+      (not . blankOptions . optionsValue)
+      ([s | ItemOpened _ s <- [v]] <> [c | Just r <- [f.record], r.follows, Just c <- [r.copy]] <> [o | Just r <- [f.record], Just o <- [r.own]])
 
 -- | An L1 copy that is the settings' last copy ('copyRedundant').
 lastCopy :: Found -> Maybe Settings

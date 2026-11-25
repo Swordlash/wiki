@@ -34,6 +34,7 @@ import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Data.Aeson (eitherDecodeStrict, encode)
 import Data.ByteString.Lazy qualified as BSL
+import Data.Digest.Pure.SHA (sha256, showDigest)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Halogen.Subscription qualified as HS
@@ -44,7 +45,7 @@ import Wiki.App.Assistant (KeyRef, MonadAssistant (..), TabLock (..), heldHandle
 import Wiki.App.Assistant.Sync (MonadVault (..))
 import Wiki.App.Vault (vaultSlot)
 import Wiki.Core.Id (UserId (..))
-import Wiki.Core.Vault (Ciphertext (..), Item (..), KeyId (..), Sealed (..), Unlock (..), Vault (..), WrappedKey (..), identityData, identityItem, vaultFormat)
+import Wiki.Core.Vault (Ciphertext (..), Item (..), KeyId (..), Nonce (..), Sealed (..), Unlock (..), Vault (..), WrappedKey (..), identityData, identityItem, vaultFormat)
 
 -- | 'Device' is one browser's keys and records.
 data Device = Device
@@ -129,9 +130,13 @@ handleOf :: Int -> KeyRef
 handleOf = fromMaybe (panic "a key's number is never 0") . keyRefOf
 
 -- | What a seal with this key and data holds: the key, the data and the
--- text, in the clear.
+-- text, in the clear. The nonce is made from them, so that seals of two
+-- texts have two nonces, as AES-GCM's random nonces do: the move of the
+-- assistant's legacy settings tells a vault's item by its nonce.
 fakeSeal :: Int -> Text -> Text -> Sealed
-fakeSeal k ad text = Sealed {nonce = "AAAAAAAAAAAAAAAA", ciphertext = Ciphertext (decodeUtf8 (BSL.toStrict (encode (k, ad, text))))}
+fakeSeal k ad text = Sealed {nonce = Nonce (toS (take 16 (showDigest (sha256 sealed)))), ciphertext = Ciphertext (decodeUtf8 (BSL.toStrict sealed))}
+  where
+    sealed = encode (k, ad, text)
 
 -- | The text of a seal, if it was made with this key and data.
 fakeOpen :: Int -> Text -> Sealed -> Either Text Text

@@ -122,9 +122,9 @@ inTheVault = describe "in the user's vault" $ do
     itemSecrets w notes `shouldReturn` Just (Map.fromList [(token, "sk-1"), (other, "two")])
     on w d (removeSecret alice notes token) `shouldReturn` Right ()
     on w d (readSecrets alice notes) `shouldReturn` Right (Map.fromList [(other, "two")])
-    -- The last secret forgotten, the item goes.
+    -- The last secret forgotten, the item stays, with no secret.
     on w d (removeSecret alice notes other) `shouldReturn` Right ()
-    itemSecrets w notes `shouldReturn` Nothing
+    itemSecrets w notes `shouldReturn` Just mempty
     on w d (readSecrets alice notes) `shouldReturn` Right mempty
 
   it "refuses a name the manifest does not declare, before anything is read" $ do
@@ -340,8 +340,11 @@ inThisBrowser = describe "in this browser, where the user has no vault" $ do
     all isSealed (Map.elems store) `shouldBe` True
     here (removeSecret alice notes token) `shouldReturn` Right ()
     here (removeSecret alice mail token) `shouldReturn` Right ()
-    -- Nothing kept, nothing recorded.
-    Map.member "secrets:user-alice" <$> deviceRecords d `shouldReturn` False
+    -- Nothing kept: the entries stay, with no secret, as the vault's item
+    -- does.
+    store' <- storeOf d alice
+    Map.keys store' `shouldBe` [ItemName "plugin-mail", ItemName "plugin-notes"]
+    here (readSecrets alice notes) `shouldReturn` Right mempty
 
   it "keeps them here for a user with a server but no vault yet, and folds them into the vault once there is one" $ do
     counter <- newIORef 0

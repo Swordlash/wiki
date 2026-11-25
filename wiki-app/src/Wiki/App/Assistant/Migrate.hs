@@ -18,6 +18,17 @@
 -- plugins' state, and a later run, which reads the server's options as
 -- written, goes on to empty the legacy places.
 --
+-- = Each place once
+--
+-- The keys of a legacy place go to the plugin's item with the place's
+-- identity, in one write ('takeSourcesHeld'): the vault's item by its
+-- nonce, this browser's record by its hash
+-- ('Wiki.App.Assistant.Keys.recordSource'). Whether the
+-- place was taken is read in that write, from the item it fetches, so a
+-- key forgotten in between (here, in another tab, on another browser) is
+-- not put back from a place already taken. The legacy places are emptied
+-- once the item, read again, says they were taken.
+--
 -- = Safe to stop, and with other browsers and tabs
 --
 -- Each step is idempotent, and is taken only when what was read before it
@@ -56,8 +67,8 @@ import Wiki.App.Assistant (MonadAssistant (..), holdingAcrossTabs, holdingDevice
 import Wiki.App.Assistant.Keys (legacyRecordHere, readLegacy)
 import Wiki.App.Assistant.Sync (MonadVault (..))
 import Wiki.App.Backend (WikiError (..))
-import Wiki.App.Plugin (Manifest (..), PluginId (..))
-import Wiki.App.Plugin.Host.Secrets (keepMissingHeld, loadLocal, readSecretsHeld, saveLocal)
+import Wiki.App.Plugin (Manifest (..))
+import Wiki.App.Plugin.Host.Secrets (loadLocal, readContentsHeld, saveLocal, takeSourcesHeld)
 import Wiki.App.Plugin.Registry (assistantId, manifests)
 import Wiki.App.Vault (Step, VaultDevice (..), fetched, forgetting, keepKeysAsAsked, keepVaultKey, opensVault, readDevice, vaultKeyHere, vaultSlot, wikiText, writeDevice)
 import Wiki.Core.Assistant.Migrate (Found (..), InVault (..), Slot (..), plan)
@@ -65,7 +76,7 @@ import Wiki.Core.Assistant.Migrate qualified as Plan
 import Wiki.Core.Assistant.Vault (assistantItem, sealingData)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Vault (Item (..), itemOf, withoutItem)
-import Wiki.Core.Vault.Plugin (pluginItem)
+import Wiki.Core.Vault.Plugin (Contents (..))
 
 -- | 'Outcome' is how a run ended: nothing legacy is left in this browser
 -- or in the vault ('Moved'); something is, and waits for what a run
@@ -153,17 +164,17 @@ found u options = do
         Nothing -> pure NoKey
         Just k -> bool OwnKey VaultKey <$> forgetting k (opens k stored)
     inVaultSlot <- lift (deviceKey (vaultSlot u)) >>= maybe (pure False) (\k -> forgetting k (opens k stored))
-    target <- rightToMaybe <$> lift (readSecretsHeld u manifest)
+    contents <- rightToMaybe <$> lift (readContentsHeld u manifest)
     cached <- isJust <$> lift (loadLocal u assistantId)
     device <- lift (readDevice u)
     pure
       Found
         { vault
-        , pluginItem = isJust (stored >>= \s -> pluginItem assistantId.text >>= \n -> itemOf n s.vault)
         , record
         , slot
         , vaultSlot = inVaultSlot
-        , target
+        , target = (\c -> c.secrets) <$> contents
+        , taken = maybe mempty (\c -> c.taken) contents
         , options
         , local = cached
         , askHere = device.askEachTime
@@ -182,9 +193,9 @@ perform u = \case
     stored <- if syncing then fetched else pure Nothing
     lift (vaultKeyHere u stored) >>= traverse_ (\v -> forgetting v (keepKeysAsAsked u stored v))
   Plan.CopyVaultKey -> lift (deviceKey u) >>= traverse_ (\k -> forgetting k (keepVaultKey u k))
-  Plan.KeepKeys keys -> do
+  Plan.KeepKeys places -> do
     manifest <- assistantManifest
-    ExceptT (keepMissingHeld u manifest keys)
+    ExceptT (takeSourcesHeld u manifest places)
   Plan.KeepLearnt v -> ExceptT (saveLocal u assistantId v)
   -- The plugins' state's to write: the run ends before it.
   Plan.AdoptOptions _ -> pass

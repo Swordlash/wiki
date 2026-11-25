@@ -71,7 +71,8 @@ spec = describe "Wiki.App.View.SecretField" $ do
       click view (token ".secret-field-forget")
       settle view
       textOf view (token ".secret-field-state") `shouldReturn` "Not set"
-      kept `shouldReturn` Nothing
+      -- The item stays, with no secret.
+      kept `shouldReturn` Just mempty
       outputs view `shouldReturn` ([] :: [OptionsOutput])
 
   it "reads again in every field when the vault is unlocked or locked here, or a secret is kept elsewhere" $

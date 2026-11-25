@@ -5,14 +5,20 @@
 -- and "ask each time". A step changes the model as the application's
 -- runner changes the real places ("Wiki.App.Assistant.Migrate"): a
 -- conditional delete deletes only what was read, a key the plugin's
--- secrets hold keeps its value, options are taken only when the server
--- has none. A run reads the model, takes the plan's first step, and reads
--- again, as the runner does.
+-- secrets hold keeps its value, a legacy place is taken into the plugin's
+-- item once, options are taken only when the server has none. The
+-- plugin's item is deleted by nothing: its last key forgotten, it stays
+-- with no key, as the real store keeps it ("Wiki.App.Plugin.Host.Secrets";
+-- only a reset of the password deletes the whole vault, which no run
+-- does). A run reads the model, takes the plan's first step, and reads
+-- again, as the runner does. Keys are forgotten from the plugin's item
+-- between any two steps, on any browser that holds the vault key.
 module Test.AssistantMigrate (spec) where
 
 import Data.Aeson (Value)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
+import Data.Text qualified as T
 import Protolude
 import Test.AssistantSplit (genSettings)
 import Test.Cases (coverage)
@@ -23,7 +29,7 @@ import Wiki.Core.Assistant (Mode (..), Settings, defaultSettings, withMode)
 import Wiki.Core.Assistant.Migrate
 import Wiki.Core.Assistant.Split (blankOptions, keysOf, optionsValue)
 import Wiki.Core.Vault (Nonce (..), Sealed (..))
-import Wiki.Core.Vault.Plugin (SecretName, foldIn)
+import Wiki.Core.Vault.Plugin (Contents (..), SecretName, foldIn, noContents)
 
 --------------------------------------------------------------------------------
 -- The model
@@ -32,8 +38,8 @@ import Wiki.Core.Vault.Plugin (SecretName, foldIn)
 data World = World
   { item :: Maybe (Int, Settings)
   -- ^ The vault's legacy item, by the number of its seal.
-  , plugin :: Map SecretName Text
-  -- ^ The plugin's item; empty is none.
+  , plugin :: Maybe Contents
+  -- ^ The plugin's item, if it was made.
   , serverOptions :: Maybe Value
   , devices :: Map Int Dev
   , seals :: Int
@@ -81,11 +87,11 @@ observe d w =
         Just (n, s)
           | unlocked dev -> ItemOpened (sealOf n) s
           | otherwise -> ItemLocked
-    , pluginItem = not (Map.null w.plugin)
     , record =
         ( \r ->
             OnDevice
               { bytes = show r.number
+              , source = "record:" <> show r.number
               , own = r.own
               , copy = if unlocked dev then r.copy else Nothing
               , follows = r.follows
@@ -97,7 +103,8 @@ observe d w =
           <$> dev.held
     , slot = dev.keySlot
     , vaultSlot = dev.vaultKept
-    , target = if unlocked dev then Just w.plugin else Nothing
+    , target = if unlocked dev then Just (pluginSecrets w) else Nothing
+    , taken = if unlocked dev then maybe mempty (\c -> c.taken) w.plugin else mempty
     , options = Just w.serverOptions
     , local = dev.cached
     , askHere = dev.asks
@@ -110,8 +117,8 @@ perform :: Int -> Step -> World -> World
 perform d step w = case step of
   KeepAsk -> onDev (\x -> x {asks = True})
   CopyVaultKey -> onDev (\x -> if x.keySlot == VaultKey then x {vaultKept = True} else x)
-  KeepKeys ks
-    | unlocked dev -> w {plugin = foldIn w.plugin ks}
+  KeepKeys places
+    | unlocked dev -> w {plugin = Just (foldl' taking (fromMaybe noContents w.plugin) places)}
     | otherwise -> w
   KeepLearnt _ -> onDev (\x -> x {cached = True})
   AdoptOptions v -> w {serverOptions = w.serverOptions <|> Just v}
@@ -123,6 +130,40 @@ perform d step w = case step of
   where
     dev = deviceOf d w
     onDev f = w {devices = Map.adjust f d w.devices}
+    -- As the store takes a place, reading what was taken in the write.
+    taking c (place, ks)
+      | Set.member place c.taken = c
+      | otherwise = Contents {secrets = foldIn c.secrets ks, taken = Set.insert place c.taken}
+
+-- | The keys in the plugin's item; none when there is no item.
+pluginSecrets :: World -> Map SecretName Text
+pluginSecrets w = maybe mempty (\c -> c.secrets) w.plugin
+
+-- | A key forgotten on a browser that holds the vault key, as the
+-- plugin's field forgets it: the item stays, with the other keys.
+forget :: Int -> SecretName -> World -> World
+forget d k w
+  | unlocked (deviceOf d w) = w {plugin = (\c -> c {secrets = Map.delete k c.secrets}) <$> w.plugin}
+  | otherwise = w
+
+-- | The legacy places that hold a key of this name and that the plugin's
+-- item has not taken: those a run may still fill the name from. An L1
+-- copy counts only while it is the settings' last copy.
+untakenHolders :: SecretName -> World -> [Text]
+untakenHolders k w =
+  filter (`Set.notMember` takenNow) $
+    ["item:" <> show n | Just (n, s) <- [w.item], Map.member k (keysOf s)]
+      <> [ "record:" <> show r.number
+         | Just r <- map (\x -> x.held) (Map.elems w.devices)
+         , Map.member k (maybe mempty keysOf r.own) || (lastCopy && Map.member k (maybe mempty keysOf r.copy))
+         ]
+  where
+    takenNow = maybe mempty (\c -> c.taken) w.plugin
+    lastCopy = isNothing w.item && not (tookItem w)
+
+-- | Whether the plugin's item took a vault's legacy item.
+tookItem :: World -> Bool
+tookItem w = any ("item:" `T.isPrefixOf`) (maybe mempty (\c -> c.taken) w.plugin)
 
 -- | One step of a browser's run, if its plan has one.
 stepOn :: Int -> World -> Maybe (Step, World)
@@ -145,17 +186,18 @@ completed d w = maybe w snd (lastMay (runOn d w))
 
 -- | Every key's name that any place holds. An L1 record's copy of the
 -- vault's settings counts only while it is their last copy: while the
--- vault holds the legacy item or the plugin's, the copy is the vault's,
--- and a key forgotten there since is not to come back from it.
+-- vault holds the legacy item, or the plugin's item took one, the copy is
+-- the vault's, and a key forgotten there since is not to come back from
+-- it.
 heldNames :: World -> Set SecretName
 heldNames w =
   Set.unions
-    ( Map.keysSet w.plugin
+    ( Map.keysSet (pluginSecrets w)
         : maybe mempty (Map.keysSet . keysOf . snd) w.item
         : [Set.unions [maybe mempty (Map.keysSet . keysOf) r.own, if lastCopy then maybe mempty (Map.keysSet . keysOf) r.copy else mempty] | Just r <- map (\x -> x.held) (Map.elems w.devices)]
     )
   where
-    lastCopy = isNothing w.item && Map.null w.plugin
+    lastCopy = isNothing w.item && not (tookItem w)
 
 -- | Settings that are not the defaults: in Ask mode.
 settingsAsked :: Settings
@@ -182,7 +224,7 @@ genDev vaultItem =
     l1 = do
       -- The copy is the vault's item, or an older version of it, or the
       -- last copy when the vault has none.
-      copy <- maybe (Just <$> genSettings) (pure . Just) vaultItem
+      copy <- maybe (Just <$> genSettings) (\v -> Just <$> oneof [pure v, genSettings]) vaultItem
       inSlot <- arbitrary
       r <- record Nothing True copy
       pure (Dev (Just r) VaultKey (not inSlot) False False, Nothing)
@@ -209,7 +251,7 @@ genWorld :: Int -> Gen World
 genWorld n = do
   vaultItem <- oneof [pure Nothing, Just <$> genSettings]
   devs <- vectorOf n (fst <$> genDev vaultItem)
-  plugin <- oneof [pure mempty, keysOf <$> genSettings]
+  plugin <- oneof [pure Nothing, pure (Just noContents), (\s -> Just noContents {secrets = keysOf s}) <$> genSettings]
   options <- oneof [pure Nothing, Just . optionsValue <$> genSettings]
   pure World {item = (1,) <$> vaultItem, plugin, serverOptions = options, devices = Map.fromList (zip [1 ..] (map dedupe (zip [1 ..] devs))), seals = 2}
   where
@@ -234,7 +276,7 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
        in coverage . cover 20 (isJust (deviceOf 1 w).held) "a legacy record" . cover 10 (isJust w.item) "a legacy item" $
             moved 1 end
               .&&. isNothing end.item
-              .&&. end.plugin === foldIn w.plugin (legacyKeys found)
+              .&&. pluginSecrets end === foldIn (pluginSecrets w) (legacyKeys found)
               .&&. end.serverOptions === expectedOptions
               .&&. counterexample (show steps) (all isDrop (dropWhile (not . isDrop) steps))
 
@@ -256,8 +298,8 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
          in moved 1 together
               .&&. moved 2 together
               .&&. isNothing together.item
-              .&&. Map.keysSet together.plugin === Map.keysSet ab.plugin
-              .&&. conjoin [counterexample (show k) (Just v `elem` [Map.lookup k ab.plugin, Map.lookup k ba.plugin]) | (k, v) <- Map.toList together.plugin]
+              .&&. Map.keysSet (pluginSecrets together) === Map.keysSet (pluginSecrets ab)
+              .&&. conjoin [counterexample (show k) (Just v `elem` [Map.lookup k (pluginSecrets ab), Map.lookup k (pluginSecrets ba)]) | (k, v) <- Map.toList (pluginSecrets together)]
               .&&. counterexample "options" (together.serverOptions `elem` [ab.serverOptions, ba.serverOptions])
 
   prop "two unlocked browsers that follow the vault and hold nothing of their own end as one run" $
@@ -267,7 +309,7 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
        in forAll (listOf (elements [1, 2 :: Int])) $ \schedule ->
             let together = interleaved schedule w
                 inTurn = completed 2 (completed 1 w)
-             in (together.plugin, together.serverOptions, together.item) === (inTurn.plugin, inTurn.serverOptions, inTurn.item)
+             in (pluginSecrets together, together.serverOptions, together.item) === (pluginSecrets inTurn, inTurn.serverOptions, inTurn.item)
 
   prop "moves the legacy item an earlier tab adds again, the plugin's keys winning" $
     forAll (genUnlocked 1) $ \w ->
@@ -275,13 +317,37 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
         let first' = completed 1 w
             readded = first' {item = Just (first'.seals, readdedSettings), seals = first'.seals + 1}
             end = completed 1 readded
-         in isNothing end.item .&&. end.plugin === foldIn first'.plugin (keysOf readdedSettings)
+         in isNothing end.item .&&. pluginSecrets end === foldIn (pluginSecrets first') (keysOf readdedSettings)
 
   it "gives the options to adopt before the server's are known, and empties nothing until they are" $ do
     let s = settingsAsked
-        found' = Found {vault = NoItem, pluginItem = False, record = Just OnDevice {bytes = "r", own = Just s, copy = Nothing, follows = False, unopenable = False, askEachTime = False, learnt = Nothing}, slot = OwnKey, vaultSlot = True, target = Just mempty, options = Nothing, local = False, askHere = False}
+        found' = Found {vault = NoItem, record = Just OnDevice {bytes = "r", source = "record:r", own = Just s, copy = Nothing, follows = False, unopenable = False, askEachTime = False, learnt = Nothing}, slot = OwnKey, vaultSlot = True, target = Just mempty, taken = Set.fromList ["record:r"], options = Nothing, local = False, askHere = False}
     plan found' `shouldBe` [AdoptOptions (optionsValue s)]
     plan found' {options = Just (Just (optionsValue s))} `shouldBe` [DropRecord "r"]
+
+  it "takes a legacy place into the plugin's item before anything is emptied, even one with no key" $ do
+    let found' = Found {vault = NoItem, record = Just OnDevice {bytes = "r", source = "record:r", own = Just defaultSettings, copy = Nothing, follows = False, unopenable = False, askEachTime = False, learnt = Nothing}, slot = OwnKey, vaultSlot = True, target = Just mempty, taken = mempty, options = Just Nothing, local = False, askHere = False}
+    plan found' `shouldBe` [KeepKeys [("record:r", mempty)]]
+
+  prop "never brings back a key forgotten once every legacy place that held it was taken, on either browser" $
+    forAll (genUnlocked 2) $ \w ->
+      forAll (listOf genMove) $ \moves ->
+        let go (world, watched, checks) = \case
+              Left d -> case stepOn d world of
+                Nothing -> (world, watched, checks)
+                Just (s, world') -> (world', watched, [counterexample ("after " <> show s <> ": " <> show k) (Map.notMember k (pluginSecrets world')) | k <- watched] <> checks)
+              Right (d, i) ->
+                let names = Map.keys (pluginSecrets world)
+                 in case atMay names (i `mod` max 1 (length names)) of
+                      Just k
+                        | unlocked (deviceOf d world) ->
+                            let world' = forget d k world
+                             in (world', [k | null (untakenHolders k world')] <> watched, checks)
+                      _ -> (world, watched, checks)
+            (end, watchedAtEnd, checked) = foldl' go (w, [], []) moves
+            finished = completed 2 (completed 1 end)
+         in coverage . cover 10 (not (null watchedAtEnd)) "a key forgotten after its places were taken" $
+              conjoin checked .&&. conjoin [counterexample ("at the end: " <> show k) (Map.notMember k (pluginSecrets finished)) | k <- watchedAtEnd]
 
   prop "waits on a locked browser without emptying a place that holds a key, and moves it all once unlocked" $
     forAll (genWorld 1) $ \w0 ->
@@ -295,6 +361,8 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
               .&&. moved 1 end
               .&&. isNothing end.item
   where
+    -- A browser's next step, or a key forgotten on a browser.
+    genMove = oneof [Left <$> elements [1, 2 :: Int], (\d i -> Right (d, i)) <$> elements [1, 2 :: Int] <*> chooseInt (0, 5)]
     -- Two runs at once: each turn, the browser the schedule names takes
     -- its next step; then each runs to its end.
     interleaved schedule w = completed 2 (completed 1 (foldl' (\x d -> maybe x snd (stepOn d x)) w schedule))

@@ -238,6 +238,11 @@ library
       servant-client-core >= 0.20.3 && < 0.21,
       servant-multipart-api,
       servant-multipart-client >= 0.13 && < 0.14,
+      -- SHA-256 of a legacy record of the writing assistant, which names it
+      -- among the places its settings were moved from
+      -- (Wiki.App.Assistant.Keys): pure Haskell, so the same on both
+      -- targets and on a page with no WebCrypto (plain HTTP).
+      SHA >= 1.6.4 && < 1.7,
       template-haskell,
       text,
       time,
@@ -419,6 +424,7 @@ test-suite wiki-app-test
     build-depends:
         HUnit,
         QuickCheck,
+        SHA,
         aeson,
         base,
         base64-bytestring,

@@ -22,10 +22,14 @@ module Wiki.App.Assistant.Keys
   ( -- * The legacy record, read for the move
     readLegacy
   , legacyRecordHere
+  , recordSource
   )
 where
 
 import Data.Aeson (eitherDecodeStrict, toJSON)
+import Data.ByteString.Lazy qualified as BSL
+import Data.Digest.Pure.SHA (sha256, showDigest)
+import Data.Text qualified as T
 import Protolude
 import Wiki.App.Assistant (KeyRef, MonadAssistant (..))
 import Wiki.App.Vault (Step, forgetting)
@@ -41,6 +45,15 @@ import Wiki.Core.Id (UserId)
 -- the record is read, not opened.
 legacyRecordHere :: (MonadAssistant m) => UserId -> m Bool
 legacyRecordHere user = either (const False) isJust <$> deviceRecord user
+
+-- | A record's identity as a legacy place of the move
+-- ('Wiki.Core.Assistant.Migrate.source'): @record:@ and the first 32 hex
+-- digits of the SHA-256 of its bytes as stored. The same bytes give the
+-- same identity on every run, and a record written again (by a tab of an
+-- earlier version) is another place. A plain record (L3) has no nonce of
+-- its own to tell it by, so every record is told by its hash.
+recordSource :: ByteString -> Text
+recordSource bytes = "record:" <> T.take 32 (toS (showDigest (sha256 (BSL.fromStrict bytes))))
 
 -- | This browser's legacy record for the user, opened as far as it opens,
 -- with the vault key this browser holds, if any (the caller's to forget).
@@ -60,14 +73,14 @@ readLegacy user vaultKey =
     Nothing -> pure Nothing
     Just bytes -> case readStored bytes of
       Left _ -> pure (Just (unreadable bytes))
-      Right (OldSettings s) -> pure (Just OnDevice {bytes, own = Just s, copy = Nothing, follows = False, unopenable = False, askEachTime = False, learnt = learntIn s})
+      Right (OldSettings s) -> pure (Just OnDevice {bytes, source = recordSource bytes, own = Just s, copy = Nothing, follows = False, unopenable = False, askEachTime = False, learnt = learntIn s})
       Right (Current r) -> do
         slotKey <- lift (deviceKey user)
         opened <- forgettingMaybe slotKey $ case followed r of
           Just copySealed ->
             lift (opening slotKey copySealed) >>= \case
               -- L1: the assistant's key is the vault key.
-              Just copy -> pure OnDevice {bytes, own = Nothing, copy = Just copy, follows = True, unopenable = False, askEachTime = r.askEachTime, learnt = learntIn r.learnt}
+              Just copy -> pure OnDevice {bytes, source = recordSource bytes, own = Nothing, copy = Just copy, follows = True, unopenable = False, askEachTime = r.askEachTime, learnt = learntIn r.learnt}
               -- L4: what was typed while the vault was locked, sealed with
               -- the assistant's own key. Or L1 after a reload on "ask each
               -- time": the assistant's slot is empty, and what the record
@@ -77,13 +90,13 @@ readLegacy user vaultKey =
                 typed <- join <$> traverse (lift . opening slotKey) r.sealed
                 vaults :: Maybe Settings <- join <$> traverse (lift . opening vaultKey) r.sealed
                 let unopenable = isJust r.sealed && isNothing typed && isNothing vaults
-                pure OnDevice {bytes, own = typed, copy, follows = True, unopenable, askEachTime = r.askEachTime, learnt = learntIn r.learnt}
+                pure OnDevice {bytes, source = recordSource bytes, own = typed, copy, follows = True, unopenable, askEachTime = r.askEachTime, learnt = learntIn r.learnt}
           Nothing -> do
             own <- join <$> traverse (lift . opening slotKey) r.sealed
-            pure OnDevice {bytes, own, copy = Nothing, follows = False, unopenable = isJust r.sealed && isNothing own, askEachTime = r.askEachTime, learnt = learntIn r.learnt}
+            pure OnDevice {bytes, source = recordSource bytes, own, copy = Nothing, follows = False, unopenable = isJust r.sealed && isNothing own, askEachTime = r.askEachTime, learnt = learntIn r.learnt}
         pure (Just opened)
   where
-    unreadable bytes = OnDevice {bytes, own = Nothing, copy = Nothing, follows = False, unopenable = True, askEachTime = False, learnt = Nothing}
+    unreadable bytes = OnDevice {bytes, source = recordSource bytes, own = Nothing, copy = Nothing, follows = False, unopenable = True, askEachTime = False, learnt = Nothing}
     opening key sealed = case key of
       Nothing -> pure Nothing
       Just k ->

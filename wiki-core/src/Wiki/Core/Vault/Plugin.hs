@@ -20,6 +20,25 @@
 -- One item per plugin, and not one per secret, keeps the vault within the
 -- server's limit of 16 items, and needs no separator between a plugin's id
 -- and a secret's name in an item's name.
+--
+-- = What else an item holds
+--
+-- Beside the secrets, an item names the legacy places whose secrets were
+-- moved into it ('Contents'' 'taken'): the writing assistant's settings
+-- from before plugins ("Wiki.Core.Assistant.Migrate"). A place is taken
+-- once. A name the item lacks afterwards was forgotten since, and a later
+-- move does not fill it again from that place. The names are kept under
+-- the key @_taken@ of the same object, which no secret's name can be (a
+-- name has no underscore), so that an item written before is read as it
+-- was.
+--
+-- = Never deleted
+--
+-- An item is never taken out of the vault once made: a plugin whose last
+-- secret is forgotten keeps an item that seals no secret. The item tells
+-- the move of legacy settings that the settings were moved, and what was
+-- taken. Only a reset of the password, which deletes the whole vault,
+-- deletes it.
 module Wiki.Core.Vault.Plugin
   ( -- * A secret's name
     SecretName (..)
@@ -33,20 +52,29 @@ module Wiki.Core.Vault.Plugin
   , pluginDataPrefix
 
     -- * What an item seals
+  , Contents (..)
+  , noContents
+  , encodeContents
+  , decodeContents
   , encodeSecrets
   , decodeSecrets
   , paddingBlock
   , foldIn
+  , foldContents
+  , takenKey
   )
 where
 
 import Control.Monad.Fail (fail)
-import Data.Aeson (FromJSON (..), FromJSONKey (..), ToJSON (..), ToJSONKey (..), eitherDecodeStrict, encode)
+import Data.Aeson (FromJSON (..), FromJSONKey (..), ToJSON (..), ToJSONKey (..), Value (..), eitherDecodeStrict, encode, withObject)
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (FromJSONKeyFunction (..), toJSONKeyText)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
 import Data.Char (isAsciiLower)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Protolude
 import Wiki.Core.Vault (ItemName (..))
@@ -112,18 +140,58 @@ pluginSealingData pluginId = pluginDataPrefix <> pluginId
 paddingBlock :: Int
 paddingBlock = 256
 
--- | The text a plugin's item seals: its secrets as a JSON object, padded
+-- | 'Contents' is what a plugin's item holds: the secrets, by name, and
+-- the legacy places whose secrets were moved into it, by an identity the
+-- move gives each ('taken'; the module's header says why).
+data Contents = Contents
+  { secrets :: Map SecretName Text
+  , taken :: Set Text
+  }
+  deriving stock (Eq, Show)
+
+-- | An item with no secret and nothing taken: what a plugin with no item
+-- has.
+noContents :: Contents
+noContents = Contents {secrets = mempty, taken = mempty}
+
+-- | The key of the item's object that holds 'taken'.
+takenKey :: Text
+takenKey = "_taken"
+
+-- | One JSON object: the secrets, and 'taken' under 'takenKey' when it
+-- names anything.
+instance ToJSON Contents where
+  toJSON c = case toJSON c.secrets of
+    Object o
+      | not (Set.null c.taken) -> Object (KeyMap.insert (Key.fromText takenKey) (toJSON c.taken) o)
+    v -> v
+
+instance FromJSON Contents where
+  parseJSON = withObject "a plugin's secrets" $ \o -> do
+    taken <- maybe (pure mempty) parseJSON (KeyMap.lookup (Key.fromText takenKey) o)
+    secrets <- parseJSON (Object (KeyMap.delete (Key.fromText takenKey) o))
+    pure Contents {secrets, taken}
+
+-- | The text a plugin's item seals: its contents as a JSON object, padded
 -- with spaces to a multiple of 'paddingBlock' bytes of UTF-8.
-encodeSecrets :: Map SecretName Text -> Text
-encodeSecrets secrets = decodeUtf8 (bytes <> BS.replicate padding 0x20)
+encodeContents :: Contents -> Text
+encodeContents contents = decodeUtf8 (bytes <> BS.replicate padding 0x20)
   where
-    bytes = BSL.toStrict (encode secrets)
+    bytes = BSL.toStrict (encode contents)
     padding = (paddingBlock - BS.length bytes `mod` paddingBlock) `mod` paddingBlock
 
--- | The secrets an item's text holds ('encodeSecrets'), or why it holds
+-- | The contents an item's text holds ('encodeContents'), or why it holds
 -- none. The padding is ignored.
+decodeContents :: Text -> Either Text Contents
+decodeContents t = first (\why -> "A plugin's secrets that could not be read: " <> toS why) (eitherDecodeStrict (encodeUtf8 (T.stripEnd t)))
+
+-- | The text of an item that holds these secrets and nothing taken.
+encodeSecrets :: Map SecretName Text -> Text
+encodeSecrets secrets = encodeContents noContents {secrets}
+
+-- | The secrets an item's text holds ('decodeContents').
 decodeSecrets :: Text -> Either Text (Map SecretName Text)
-decodeSecrets t = first (\why -> "A plugin's secrets that could not be read: " <> toS why) (eitherDecodeStrict (encodeUtf8 (T.stripEnd t)))
+decodeSecrets = fmap (\c -> c.secrets) . decodeContents
 
 -- | Secrets kept in two places, put together into one: the first's, and
 -- the second's under the names the first does not have. Where both have a
@@ -132,3 +200,8 @@ decodeSecrets t = first (\why -> "A plugin's secrets that could not be read: " <
 -- kept before the user had a vault).
 foldIn :: Map SecretName Text -> Map SecretName Text -> Map SecretName Text
 foldIn = Map.union
+
+-- | 'foldIn' for whole contents: the secrets folded, the first's winning,
+-- and every place either took.
+foldContents :: Contents -> Contents -> Contents
+foldContents a b = Contents {secrets = foldIn a.secrets b.secrets, taken = a.taken <> b.taken}

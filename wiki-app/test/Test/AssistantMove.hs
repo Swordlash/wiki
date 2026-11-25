@@ -15,12 +15,14 @@ import Data.Aeson (Value, decodeStrict, encode)
 import Data.ByteString.Lazy qualified as BSL
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Protolude hiding (on)
 import Test.FakeVault
 import Test.Hspec hiding (after, before)
 import Test.VaultServer
 import Wiki.Api.Plugins (PluginId (..))
+import Wiki.App.Assistant.Keys (recordSource)
 import Wiki.App.Assistant.Migrate (Outcome (..), migrateAssistant, migrateAssistantHeld)
 import Wiki.App.Plugin (Manifest (..), Unavailable (..))
 import Wiki.App.Plugin.Host.Secrets (DeviceEntry (..), deviceSecretsSlot, localSlot, putSecret, readSecrets, removeSecret)
@@ -31,7 +33,7 @@ import Wiki.Core.Assistant.Split (keysOf, learntValue, optionsValue)
 import Wiki.Core.Assistant.Vault (DeviceRecord (..), ServerCopy (..), assistantItem, learntOf, sealingData, secretsOf)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Vault (Item (..), ItemName (..), Sealed, Vault (..), VaultTag (..), itemOf, withItem)
-import Wiki.Core.Vault.Plugin (SecretName (..), decodeSecrets, pluginItem, pluginSealingData)
+import Wiki.Core.Vault.Plugin (Contents (..), SecretName (..), decodeSecrets, pluginItem, pluginSealingData)
 
 spec :: Spec
 spec = describe "Wiki.App.Assistant.Migrate" $ do
@@ -114,6 +116,9 @@ pluginKeys w = do
     name <- pluginItem "assistant"
     i <- itemOf name v
     rightToMaybe (fakeOpen w.vaultKey (pluginSealingData "assistant") i.sealed >>= decodeSecrets)
+
+hasPluginItem :: World -> IO Bool
+hasPluginItem w = (\v -> isJust (pluginItem "assistant" >>= (`itemOf` v))) <$> vaultNow w
 
 hasLegacyItem :: World -> IO Bool
 hasLegacyItem w = isJust . itemOf assistantItem <$> vaultNow w
@@ -227,11 +232,13 @@ states = describe "moves each legacy state" $ do
   it "L3: settings kept as text, where the page cannot seal, stay in this browser as text" $ do
     w <- newWorld
     d <- newDevice w.counter False
-    putRecord d alice (BSL.toStrict (encode ownHere))
+    let record = BSL.toStrict (encode ownHere)
+    putRecord d alice record
     options <- newIORef Nothing
     moveAll w d options `shouldReturn` Right Moved
     store <- readIORef d.records
-    (decodeStrict =<< Map.lookup (deviceSecretsSlot alice).text store) `shouldBe` Just (Map.singleton (ItemName "plugin-assistant") (PlainEntry (keysOf ownHere)))
+    -- The record's keys, and the record as the place they were taken from.
+    (decodeStrict =<< Map.lookup (deviceSecretsSlot alice).text store) `shouldBe` Just (Map.singleton (ItemName "plugin-assistant") (PlainEntry Contents {secrets = keysOf ownHere, taken = Set.singleton (recordSource record)}))
     (\l -> l.record) <$> leftOn d `shouldReturn` False
     readIORef options `shouldReturn` Just (optionsValue ownHere)
 
@@ -364,6 +371,43 @@ together = describe "with other browsers and tabs" $ do
     Map.member (SecretName "anthropic") <$> pluginKeys w `shouldReturn` False
     Map.member (SecretName "openai") <$> pluginKeys w `shouldReturn` True
     (\l -> l.record) <$> leftOn b `shouldReturn` False
+
+  it "does not bring back from another browser's legacy copy every key forgotten after the move: the emptied item stays" $ do
+    w <- newWorld
+    withLegacyItem w synced
+    a <- newDevice w.counter True
+    b <- newDevice w.counter True
+    for_ [a, b] $ \d -> do
+      putKey d alice w.vaultKey
+      followingRecord w Nothing False synced >>= putRecord d alice
+    options <- newIORef Nothing
+    moveAll w a options `shouldReturn` Right Moved
+    for_ (Map.keys (keysOf synced)) $ \k -> on w a (removeSecret alice assistant k) `shouldReturn` Right ()
+    pluginKeys w `shouldReturn` mempty
+    -- The plugin's item is still there, with nothing in it, and says the
+    -- vault's item was moved.
+    hasPluginItem w `shouldReturn` True
+    (\l -> l.record) <$> leftOn b `shouldReturn` True
+    moveAll w b options `shouldReturn` Right Moved
+    pluginKeys w `shouldReturn` mempty
+    (\l -> l.record) <$> leftOn b `shouldReturn` False
+
+  it "takes a browser's own keys once: a key forgotten while the move waits for the options is not taken again" $ do
+    w <- newWorld
+    d <- newDevice w.counter True
+    withVaultKey d alice w.vaultKey
+    k <- newKey w
+    putKey d alice k
+    putRecord d alice (ownRecord k ownHere)
+    -- The options are not known yet: the run keeps the keys and waits.
+    on w d (migrateAssistant alice True Nothing) `shouldReturn` Right (Adopt (optionsValue ownHere))
+    pluginKeys w `shouldReturn` keysOf ownHere
+    on w d (removeSecret alice assistant (SecretName "anthropic")) `shouldReturn` Right ()
+    -- Shown able to fail: the record still holds the key.
+    (\l -> l.record) <$> leftOn d `shouldReturn` True
+    on w d (migrateAssistant alice True (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
+    pluginKeys w `shouldReturn` mempty
+    (\l -> l.record) <$> leftOn d `shouldReturn` False
 
   it "moves again the vault's item an earlier tab adds back, the plugin's keys winning, and the names it lacks taken" $ do
     w <- newWorld

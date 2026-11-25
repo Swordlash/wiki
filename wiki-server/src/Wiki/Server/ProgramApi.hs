@@ -1,13 +1,15 @@
 -- | The API for programs (WP5.138 of docs/PLAN.md, the owner's issue #338)
 -- as one servant type, 'ProgramApi': a page's Markdown, read and written
--- whole or a part at a time, a page's table of contents, the listing of the
+-- whole or a part at a time, a page's table of contents, its attachments
+-- (listed, read, attached and deleted), the listing of the
 -- spaces and their pages, the search, the Markdown reference, and the
 -- OpenAPI document of the API itself. The application serves it on the
 -- public listener, outside @api\/v1@, signed in by a login and password
 -- or an API key and never by the session's cookie ("Wiki.Server.App").
 --
 -- The handlers are those of "Wiki.Server.MarkdownApi",
--- "Wiki.Server.ContentsApi" and "Wiki.Server.ListApi". Every endpoint
+-- "Wiki.Server.ContentsApi", "Wiki.Server.AttachmentsApi" and
+-- "Wiki.Server.ListApi". Every endpoint
 -- signs in through one combinator, 'SignIn', whose check is
 -- 'signedInProgram', and the type does not compile with an endpoint that
 -- is not under it ('EverySignedIn'). The reference and the document are
@@ -38,13 +40,14 @@ import Network.HTTP.Types (status404)
 import Network.Wai (Application)
 import Protolude hiding (Handler)
 import Servant (CaptureAll, Context (..), Description, ErrorFormatters (..), Header, Header', Lenient, Optional, Server, StdMethod (..), Summary, defaultErrorFormatters, serveWithContext, (:<|>) (..), (:>))
-import Servant.API.MultiVerb (MultiVerb, RespondAs, WithHeaders)
+import Servant.API.MultiVerb (MultiVerb, RespondAs, RespondEmpty, WithHeaders)
 import Servant.OpenApi (toOpenApi)
 import Servant.OpenApi.Internal ()
 import Wiki.Api.Admin (WikiSettings (..))
 import Wiki.Core.Access (Access (..))
 import Wiki.Core.PageKind (PageKind)
 import Wiki.Server.Api (Env (..))
+import Wiki.Server.AttachmentsApi (AttachmentList, AttachmentPut, PutAnswers, deleteAttachmentAt, readAttachments, refuseOtherAttachmentMethods, writeAttachment)
 import Wiki.Server.ContentsApi (Contents, ContentsAnswer, MarkdownWrite, WriteAnswers, readContents, readMarkdown, refuseOtherMethods, writeMarkdown)
 import Wiki.Server.ListApi (Hits, NewSpace, SpaceCreated, SpaceEntry, TopLevel, createSpace, listSpace, listTop, search)
 import Wiki.Server.MarkdownApi (Asking (..), PageText, readReference, signedInProgram)
@@ -57,6 +60,7 @@ type ProgramApi =
   "api"
     :> ( "markdown" :> (MarkdownAddress :<|> Reference :<|> Undocumented :> MarkdownElsewhere)
            :<|> "contents" :> (ContentsAddress :<|> Undocumented :> ContentsElsewhere)
+           :<|> "attachments" :> (AttachmentsAddress :<|> Undocumented :> AttachmentsElsewhere)
            :<|> "list" :> (ListTopAddress :<|> ListSpaceAddress :<|> Undocumented :> ListElsewhere)
            :<|> "search" :> SearchAddress
            :<|> "openapi.json" :> DocumentAddress
@@ -72,6 +76,9 @@ type MarkdownElsewhere =
 
 type ContentsElsewhere =
   AsSent "address" "" :> CaptureAll "address" Text :> SignIn 'Always :> (ReadContents :<|> OtherMethods '[ 'GET, 'HEAD])
+
+type AttachmentsElsewhere =
+  AsSent "address" "" :> CaptureAll "address" Text :> SignIn 'Always :> (ReadAttachments :<|> WriteAttachment :<|> DeleteAttachment :<|> OtherMethods '[ 'GET, 'HEAD, 'PUT, 'DELETE])
 
 type ListElsewhere =
   AsSent "space" "" :> CaptureAll "space" Text :> SignIn 'Always :> (ListSpace :<|> CreateSpace :<|> OtherMethods '[ 'GET, 'HEAD, 'PUT])
@@ -143,6 +150,51 @@ type ReadContents =
     :> Description "The page's title, its version (the value of the Markdown's ETag, quotes included, to send as If-Match), the address of its Markdown, the address of its top when it has text before its first heading, and its headings in the page's order, nested by level, each with its anchor and the address of its section. The headings are those of the page's Contents list; a heading inside a block spoiler is listed under the heading whose section holds the spoiler, with inSpoiler true."
     :> Refuses 409 "The page is in an encrypted space, whose text the server cannot read (Stale)."
     :> MultiVerb 'GET '() '[WithHeaders '[Header "ETag" Version, Header "Cache-Control" CacheControl] ContentsAnswer (RespondAs Json 200 "The table of contents, with the page's version as the ETag." Contents)] ContentsAnswer
+
+-- | The address of a page's attachments.
+type AttachmentsAddress =
+  "s"
+    :> Refuses 404 "There is no page at the address, or one the user may not read: the same answer for both. With name, the page has no file of that name (the message gives the address of the page's list)."
+    :> AsSent "address" "The page's address in the browser after /s/, as for its Markdown: team/projects/p/the-wiki/, or team/ for the space's home page. It may be sent with its slashes escaped, as for its Markdown. A file is named by the parameter name, never by a further segment: a segment after the page's address is a page under it."
+    :> CaptureAll "address" Text
+    :> SignIn 'Always
+    :> (ReadAttachments :<|> WriteAttachment :<|> DeleteAttachment :<|> OtherMethods '[ 'GET, 'HEAD, 'PUT, 'DELETE])
+
+type ReadAttachments =
+  Named "readAttachments"
+    :> Summary "List a page's attachments, or read one's bytes"
+    :> Description "Without name, the page's attachments in the page's order, as JSON: each with its name, its size, its media type, its version (the ETag of its bytes, to send as If-Match), the address of its bytes, and the Markdown that refers to it in a page. With name, that file's bytes, as the browser's route serves them: of its media type, with X-Content-Type-Options: nosniff, a Content-Disposition that makes everything but images, video, audio and plain text a download, and a sandboxing Content-Security-Policy; the ETag is the hash of the bytes (If-None-Match with it answers 304), and Range is served."
+    :> Refuses 400 "The parameter name twice, without a value, or not UTF-8."
+    :> Refuses 409 "The page is in an encrypted space: its files are encrypted in its members' browsers (Stale)."
+    :> QueryArg "name" Text "The file's name, exactly as stored (the list's name), percent-encoded: a space is %20, and a + is a plus (%2B also). Without it, the list."
+    :> Served 'GET '[RespondAs Json 200 "Without name: the page's attachments." AttachmentList, RespondBytes 200 "With name: the file's bytes, of its own media type, with its ETag.", RespondEmpty 304 "With name and If-None-Match: the bytes have not changed since that ETag."] AttachmentList
+
+type WriteAttachment =
+  Named "writeAttachment"
+    :> Summary "Attach a file to a page, or replace one"
+    :> Description "The body is the file, and its Content-Type the media type stored (none is application/octet-stream), as the browser's upload attaches it, with the same rules: the user may edit the page, the file is at most 50 MB, and its name is not blank and has no slash, backslash or control character. A name is taken exactly as sent and never changed. The upload replaces a file of the same name, in its place, only over the version read: If-Match with its ETag replaces it (200), If-None-Match: * attaches only where there is none, and without either a taken name is refused (428). The page's text and its history do not change: write the answer's markdown into the page to show the file."
+    :> Refuses 400 "No name, a name the wiki does not take (blank, with a slash, a backslash or a control character, or with white space at an end), If-Match that is not a version, If-None-Match other than *, both of them, or a Content-Type that is not UTF-8."
+    :> Refuses 403 "The user may read the page but not edit it."
+    :> Refuses 409 "The page is in an encrypted space, whose files are encrypted in its members' browsers (Stale)."
+    :> Refuses 412 "If-Match names a version the file no longer has, or a file the page does not have; or If-None-Match: * and the page has a file of the name. Nothing is written."
+    :> Refuses 413 "The file is over 50 MB: by its Content-Length, before anything is read, or once the body is past the limit. Nothing is written."
+    :> Refuses 415 "The Content-Type is a form's (application/x-www-form-urlencoded, which curl sends for --data-binary unless told otherwise, or multipart/form-data): the body is the file itself, of its own media type."
+    :> Refuses 428 "The page has a file of the name already, and the request names no version of it: send If-Match to replace it. Nothing is written."
+    :> QueryArg "name" Text "The file's name: what the page's Markdown refers to it by. Percent-encoded: a space is %20, and a + is a plus (%2B also)."
+    :> Header' '[Optional, Lenient, Description "The version of the file to replace, its ETag as the list or a read gives it: a file replaced since is refused (412)."] "If-Match" Text
+    :> Header' '[Optional, Lenient, Description "* attaches the file only where the page has none of its name (412 where it has)."] "If-None-Match" Text
+    :> Upload "The file's bytes, as curl --data-binary @file sends them, with the file's media type as the Content-Type."
+    :> MultiVerb 'PUT '() PutAnswers AttachmentPut
+
+type DeleteAttachment =
+  Named "deleteAttachment"
+    :> Summary "Take a file off a page"
+    :> Description "The file goes from the page's attachments, as the browser's delete takes it off. A link to it in the page's text stays, and shows the file as missing."
+    :> Refuses 400 "No name, or a name that is not UTF-8."
+    :> Refuses 403 "The user may read the page but not edit it."
+    :> Refuses 409 "The page is in an encrypted space (Stale)."
+    :> QueryArg "name" Text "The file's name, exactly as stored, percent-encoded."
+    :> MultiVerb 'DELETE '() '[RespondEmpty 204 "The file is taken off the page."] ()
 
 -- | The address of the listing of the top level.
 type ListTopAddress =
@@ -246,7 +298,7 @@ programDocument mount =
   where
     about =
       T.unwords
-        [ "What a program on the user's own machine (a local assistant, a script) reads and writes in the wiki: a page's Markdown, whole or a section at a time, its table of contents, the listing of the spaces and their pages, and the search."
+        [ "What a program on the user's own machine (a local assistant, a script) reads and writes in the wiki: a page's Markdown, whole or a section at a time, its table of contents, its attachments, the listing of the spaces and their pages, and the search."
         , "Every request signs in with an API key of the user's (Authorization: Bearer, or X-API-Key) or with the user's login and password (HTTP Basic), and acts as the user: the spaces' permissions apply as they are."
         , "A key's right narrows what the user may do: read allows GET and HEAD, write the rest too."
         , "The session's cookie is never read here."
@@ -260,6 +312,7 @@ programServer :: Env -> Text -> Text -> Server ProgramApi
 programServer env mount address =
   (markdown ("s" :) :<|> (const readReference :<|> pass) :<|> markdown identity)
     :<|> (contents :<|> contents)
+    :<|> (attachments :<|> attachments)
     :<|> ((\u -> listTop env mount address u :<|> pass) :<|> spaces ("s" :) :<|> spaces identity)
     :<|> (\u -> search env mount address u :<|> pass)
     :<|> const (pure (OpenApiDocument (programDocument mount), CacheControl "no-cache") :<|> pass)
@@ -272,6 +325,13 @@ programServer env mount address =
         :<|> writeMarkdown env mount address u sent (written segments)
         :<|> refuseOtherMethods mount sent
     contents sent _ u = readContents env mount address u sent :<|> pass
+    -- The parameter name, as servant's query has it, is not read: the
+    -- handlers read it from the query as sent ("Wiki.Server.AttachmentsApi").
+    attachments sent _ u =
+      (\_ -> readAttachments env mount address u sent)
+        :<|> (\_ ifMatch ifNoneMatch incoming -> writeAttachment env mount address u sent ifMatch ifNoneMatch incoming)
+        :<|> (\_ -> deleteAttachmentAt env mount address u sent)
+        :<|> refuseOtherAttachmentMethods mount sent
     spaces written sent segments u =
       listSpace env mount address u sent
         :<|> createSpace env mount address u sent (written segments)
@@ -280,7 +340,8 @@ programServer env mount address =
 -- | The API for programs as a WAI application, on a listener that serves
 -- the wiki under this path (with a slash at each end), for a request the
 -- listener knows this of ('Asking'), whose path is given from @api@ on.
--- An address under @api\/markdown@, @api\/contents@ or @api\/list@ that
+-- An address under @api\/markdown@, @api\/contents@, @api\/attachments@
+-- or @api\/list@ that
 -- names nothing is answered by the handlers of the addresses beside it
 -- ('Undocumented'): signed in, then 404. Servant's own refusal of an
 -- address, should one reach it, is the API's 404; every other refusal is

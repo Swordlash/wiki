@@ -74,6 +74,7 @@ module Wiki.Api
   , StarsApi (..)
   , AssistantApi (..)
   , EncryptedApi (..)
+  , ExternalPluginsApi (..)
 
     -- * Sessions
   , WithCookie
@@ -107,11 +108,12 @@ import Wiki.Api.Info (ServerInfo)
 import Wiki.Api.Notifications (NotificationsApi (..))
 import Wiki.Api.Opaque (LoginChallenge, LoginFinish, LoginStart, NewAccountRecord, OldPasswordProof, PasswordRecord, PasswordRecordChange, ProofStart, RegistrationChallenge, RegistrationStart)
 import Wiki.Api.Plugins (PluginChoice, PluginId, PluginOptions, PluginStateChange, Plugins, WikiPlugins)
+import Wiki.Api.Plugins.External (ExternalPlugin, ExternalPlugins, ExternalPolicyChange)
 import Wiki.Api.Security (CurrentPassword, EmailChange, EmailState, OneTimeCode, RecoveryCodes, ResetRequest, ResetToken, SecondFactorState, SessionRef, SessionSummary, TotpEnrolment, UnsubscribeToken, VerificationToken)
 import Wiki.Api.ServerSettings (HomePage, MailTest, MailTestResult, ProviderChange, ProviderCheck, ServerSettings, ServerSettingsChange)
 import Wiki.Api.Stars (StarsApi (..))
 import Wiki.Api.Types
-import Wiki.Api.Upload (ArchiveUpload, AttachmentUpload, ImportApply, SealedAttachmentUpload)
+import Wiki.Api.Upload (ArchiveUpload, AttachmentUpload, ImportApply, PluginUpload, SealedAttachmentUpload)
 import Wiki.Api.Vault (AssertionOptions, AssertionResponse, PasskeyInfo, PublicKeyEntry, RegistrationOptions, RegistrationResponse, StoredVault, VaultChange)
 import Wiki.Api.Version (PageVersion, VersionTime, pageVersion)
 import Wiki.Api.WhatsNew (WhatsNew)
@@ -280,6 +282,48 @@ data WikiApi form mode = WikiApi
   -- not; someone not signed in and the server's operator have no choices.
   -- The addresses under @plugins\/\<id>\/@ are left to the plugins' own
   -- server halves (decision 69 of docs/PLAN.md).
+  , externalPlugins :: mode :- "external-plugins" :> NamedRoutes (ExternalPluginsApi form)
+  -- ^ External plugins: code someone else wrote, uploaded to the wiki and
+  -- run in a sandboxed frame ("Wiki.Api.Plugins.External"). They are not
+  -- under @plugins@, whose addresses belong to the plugins' own server
+  -- halves.
+  }
+  deriving stock (Generic)
+
+-- | 'ExternalPluginsApi': external plugins ("Wiki.Api.Plugins.External"):
+-- who may add them, the plugins installed, and the uploads that install
+-- them. An external plugin's code is served only inside its frame, at an
+-- address of the server's own ("Wiki.Server.PluginFrame"), not here.
+data ExternalPluginsApi form mode = ExternalPluginsApi
+  { list :: mode :- Get '[JSON] ExternalPlugins
+  -- ^ The policy, and the plugins the asker may run: the wiki's while the
+  -- policy is not @off@ (and always to an administrator), their own while
+  -- it is @users@. Anyone who may read the wiki may ask; someone not
+  -- signed in and the operator get no plugins of their own, and someone
+  -- not signed in none of the wiki's either.
+  , setPolicy :: mode :- "policy" :> ReqBody '[JSON] ExternalPolicyChange :> Put '[JSON] ExternalPlugins
+  -- ^ Set who may add plugins, as an administrator; the response is what
+  -- 'list' then answers the administrator. The activity log records it.
+  , installForWiki :: mode :- "wiki" :> MultipartForm form (PluginUpload form) :> Post '[JSON] ExternalPlugin
+  -- ^ Install a plugin for everyone, or replace the one of the same id, as
+  -- an administrator, whatever the policy. A manifest or a bundle that
+  -- breaks the rules is 'Wiki.Api.Error.Invalid', with the rule; a plugin
+  -- of the id installed already, without its bundle's hash as @replaces@
+  -- or with another, is 'Wiki.Api.Error.Conflict', as is a fifty-first.
+  -- The activity log records it.
+  , removeForWiki :: mode :- "wiki" :> Capture "plugin" PluginId :> DeleteNoContent
+  -- ^ Remove a plugin installed for everyone, as an administrator; one
+  -- that is not installed is 'Wiki.Api.Error.NotFound'. The users' own
+  -- state for its id is kept. The activity log records it.
+  , installMine :: mode :- "mine" :> MultipartForm form (PluginUpload form) :> Post '[JSON] ExternalPlugin
+  -- ^ Add a plugin of one's own, or replace one's own of the same id, as
+  -- 'installForWiki' does, while the policy is @users@
+  -- ('Wiki.Api.Error.Forbidden' otherwise, and for someone not signed in
+  -- or the operator). An id of one of the wiki's plugins is
+  -- 'Wiki.Api.Error.Conflict', as is a twenty-first plugin.
+  , removeMine :: mode :- "mine" :> Capture "plugin" PluginId :> DeleteNoContent
+  -- ^ Remove a plugin of one's own; one the user does not have is
+  -- 'Wiki.Api.Error.NotFound'. Allowed whatever the policy.
   }
   deriving stock (Generic)
 

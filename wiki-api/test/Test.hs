@@ -8,6 +8,7 @@ import Test.Backups qualified as Backups
 import Test.ContentPolicy qualified as ContentPolicy
 import Test.Error qualified as Error
 import Test.Events qualified as Events
+import Test.ExternalPlugins qualified as ExternalPlugins
 import Test.Hspec (hspec, parallel)
 import Test.Info qualified as Info
 import Test.Json qualified as Json
@@ -34,3 +35,4 @@ main = hspec . parallel $ do
   ContentPolicy.spec
   Users.spec
   WhatsNew.spec
+  ExternalPlugins.spec

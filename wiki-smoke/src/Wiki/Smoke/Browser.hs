@@ -23,6 +23,7 @@ module Wiki.Smoke.Browser
     -- * What a page may say
   , nothingWrongOnServer
   , expectedOnServer
+  , serviceWorkerInSandbox
   , holdsInPage
   )
 where

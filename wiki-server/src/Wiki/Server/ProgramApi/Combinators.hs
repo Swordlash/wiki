@@ -26,7 +26,12 @@
 --   one.
 -- * A body is read only with a @Content-Type@ the endpoint names, or
 --   refused with a 415. Here every body is taken, whatever its
---   @Content-Type@, as @curl --data-binary@ sends it ('Body').
+--   @Content-Type@, as @curl --data-binary@ sends it ('Body'). A file's
+--   body is not read whole at all: the handler reads it a chunk at a
+--   time ('Upload').
+-- * servant's answers are rendered from a value in memory. A file's bytes
+--   are served from disk by the handler's own WAI response ('Served'),
+--   which the document describes as the 'MultiVerb' it stands for.
 -- * servant writes a media type's parameters without a space
 --   (@text\/markdown;charset=utf-8@). Here Markdown is
 --   @text\/markdown; charset=utf-8@, as it always was ('RespondMarkdown').
@@ -62,6 +67,8 @@ module Wiki.Server.ProgramApi.Combinators
   , Sent (..)
   , AsSent
   , Body
+  , Upload
+  , Incoming (..)
   , OtherMethods
   , Refuses
   , Named
@@ -69,6 +76,8 @@ module Wiki.Server.ProgramApi.Combinators
 
     -- * The answers
   , Json
+  , Served
+  , RespondBytes
   , RespondMarkdown
   , markdownMediaType
   , Version (..)
@@ -92,7 +101,7 @@ import Data.Text qualified as T
 import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Network.HTTP.Media ((//), (/:))
 import Network.HTTP.Types (Header, Method, Status (..), hAllow, hCacheControl, hContentType, status405)
-import Network.Wai (Request (..), responseLBS, strictRequestBody)
+import Network.Wai (Request (..), RequestBodyLength (..), getRequestBodyChunk, responseLBS, strictRequestBody)
 import Network.Wai qualified as Wai
 import Protolude hiding (Handler, TypeError)
 import Servant (Accept (..), CaptureAll, Handler, HasContextEntry (..), HasServer (..), MimeRender (..), ReflectMethod (..), ServerError (..), StdMethod, (:<|>), (:>))
@@ -100,7 +109,7 @@ import Servant.API.MultiVerb (AsConstructor (..), MultiVerb, RespondAs, Response
 import Servant.API.Status (KnownStatus, statusVal)
 import Servant.OpenApi (HasOpenApi (..))
 import Servant.OpenApi.Internal (IsSwaggerResponse (..))
-import Servant.Server.Internal (addAuthCheck, addBodyCheck, delayedFailFatal, err405, leafRouter, passToServer, runAction, withRequest)
+import Servant.Server.Internal (addAuthCheck, addBodyCheck, addMethodCheck, delayedFailFatal, err405, leafRouter, methodCheck, passToServer, runAction, withRequest)
 import Servant.Server.Internal.ResponseRender (ResponseRender (..))
 import Servant.Server.Internal.RouteResult (RouteResult (..))
 import Servant.Types.Internal.Response (InternalResponse (InternalResponse))
@@ -355,6 +364,51 @@ instance (HasOpenApi api, KnownSymbol ct, KnownSymbol desc, ToSchema a) => HasOp
           & O.description ?~ toS (symbolVal (Proxy @desc))
           & O.content .~ InsOrd.fromList [(fromString (symbolVal (Proxy @ct)), mempty & O.schema ?~ ref)]
 
+-- | 'Upload' gives the handler the request's body as it arrives
+-- ('Incoming'), whatever its @Content-Type@, rather than read whole: the
+-- handler reads it a chunk at a time, and may stop before its end. A body
+-- that may be large (an attachment's file) is taken this way, so that the
+-- handler decides how much of it is read. The document gives it as bytes
+-- of any media type, with the description @desc@.
+data Upload (desc :: Symbol)
+
+-- | 'Incoming' is a request's body as it arrives: the next chunk of it
+-- (empty at its end), its length when the request declares one
+-- (@Content-Length@), and its @Content-Type@ as sent.
+data Incoming = Incoming
+  { chunk :: IO ByteString
+  , declared :: Maybe Word64
+  , mediaType :: Maybe ByteString
+  }
+
+instance (HasServer api ctx) => HasServer (Upload desc :> api) ctx where
+  type ServerT (Upload desc :> api) m = Incoming -> ServerT api m
+  hoistServerWithContext _ pc nt s = hoistServerWithContext (Proxy @api) pc nt . s
+  route _ ctx sub = route (Proxy @api) ctx (passToServer sub incoming)
+    where
+      incoming request =
+        Incoming
+          { chunk = getRequestBodyChunk request
+          , declared = case requestBodyLength request of
+              KnownLength n -> Just n
+              ChunkedBody -> Nothing
+          , mediaType = lookup hContentType (requestHeaders request)
+          }
+
+instance (HasOpenApi api, KnownSymbol desc) => HasOpenApi (Upload desc :> api) where
+  toOpenApi _ = toOpenApi (Proxy @api) & O.allOperations . O.requestBody ?~ Inline requestBody
+    where
+      requestBody =
+        mempty
+          & O.description ?~ toS (symbolVal (Proxy @desc))
+          & O.required ?~ True
+          & O.content .~ InsOrd.fromList [("*" // "*", mempty & O.schema ?~ Inline binarySchema)]
+
+-- | The schema of bytes of any kind: a string of binary format, as
+-- OpenAPI 3.0 writes a file.
+binarySchema :: Schema
+binarySchema = mempty & O.type_ ?~ O.OpenApiString & O.format ?~ "binary"
+
 -- | 'Sent' is a request's path and query as sent, percent-encoded, the
 -- query with its @?@: what the application's router reads, which is how
 -- the API reads a page's or a space's address ("Wiki.App.Route").
@@ -492,6 +546,47 @@ instance Accept Json where
 instance (ToJSON a) => MimeRender Json a where
   mimeRender _ = encode
 
+-- | 'Served' is an endpoint whose handler answers with a WAI response of
+-- its own: a file's bytes from disk, which servant's 'MultiVerb' would
+-- read into memory first, and which Warp serves with ranges and without a
+-- body for @HEAD@. It takes the method @method@ (and @HEAD@ for @GET@).
+-- The document gives it as the 'MultiVerb' of the same method, answers
+-- and result: what the handler answers with is among @as@.
+data Served (method :: StdMethod) (as :: [Type]) (r :: Type)
+
+instance (ReflectMethod method) => HasServer (Served method as r) ctx where
+  type ServerT (Served method as r) m = Request -> m Wai.Response
+  hoistServerWithContext _ _ nt s = nt . s
+  route _ _ action = leafRouter $ \env request respond ->
+    runAction (passToServer action identity `addMethodCheck` methodCheck (reflectMethod (Proxy @method)) request) env request respond Route
+
+instance (HasOpenApi (MultiVerb method '() as r)) => HasOpenApi (Served method as r) where
+  toOpenApi _ = toOpenApi (Proxy @(MultiVerb method '() as r))
+
+-- | 'RespondBytes' is, in the document, an answer of a file's bytes with
+-- this status, of the file's own media type, and the description @desc@.
+-- It is for 'Served' alone, whose handler makes the answer: the server
+-- never renders it.
+data RespondBytes (s :: Nat) (desc :: Symbol)
+
+type instance ResponseType (RespondBytes s desc) = LByteString
+
+instance (KnownStatus s) => ResponseRender cs (RespondBytes s desc) where
+  type ResponseStatus (RespondBytes s desc) = s
+  type ResponseBody (RespondBytes s desc) = LByteString
+  responseRender _ bytes = pure (InternalResponse (statusVal (Proxy @s)) (Seq.singleton (hContentType, "application/octet-stream")) bytes)
+
+instance AsConstructor '[LByteString] (RespondBytes s desc) where
+  toConstructor bytes = I bytes :* Nil
+  fromConstructor (I bytes :* Nil) = bytes
+
+instance (KnownSymbol desc) => IsSwaggerResponse (RespondBytes s desc) where
+  responseSwagger =
+    pure $
+      mempty
+        & O.description .~ toS (symbolVal (Proxy @desc))
+        & O.content .~ InsOrd.fromList [("*" // "*", mempty & O.schema ?~ Inline binarySchema)]
+
 -- | The media type of every Markdown this API sends.
 markdownMediaType :: ByteString
 markdownMediaType = "text/markdown; charset=utf-8"
@@ -544,6 +639,7 @@ type family JsonBodies api where
   JsonBodies (Body "application/json" a desc :> api) = a ': JsonBodies api
   JsonBodies ((x :: k) :> api) = JsonBodies api
   JsonBodies (MultiVerb method cs as r) = JsonAnswers as
+  JsonBodies (Served method as r) = JsonAnswers as
   JsonBodies api = '[]
 
 -- | The bodies of the answers of a 'MultiVerb' sent as 'Json'.

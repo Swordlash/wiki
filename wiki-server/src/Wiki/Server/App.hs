@@ -91,6 +91,7 @@ import Wiki.Server.Log (Logger, logRequests)
 import Wiki.Server.MarkdownApi (Asking (..))
 import Wiki.Server.McpApi (mcpApplication)
 import Wiki.Server.Metrics (observe)
+import Wiki.Server.PluginFrame (pluginFrameApplication)
 import Wiki.Server.ProgramApi (programApplication)
 import Wiki.Server.ProgramApi.Combinators (refusal, refusalResponse)
 import Wiki.Server.Render (renderPage, routeAddress, routeOf)
@@ -282,7 +283,7 @@ listenerRoutes logger env site l caller loggedAs request respond = do
         respond (responseLBS status401 [(hContentType, "application/json"), (hCacheControl, "private, no-cache"), (hVary, "Cookie")] "{\"error\":\"Unauthenticated\"}")
       keyRefused =
         respond . refusalResponse . refusal status401 "Unauthenticated" $
-          Just "An API key signs in only to the API for programs (api/markdown, api/contents, api/list and api/search). The application's API, api/v1, takes the browser's session."
+          Just "An API key signs in only to the API for programs (api/markdown, api/contents, api/attachments, api/list and api/search). The application's API, api/v1, takes the browser's session."
       asking = Asking {address = caller.address, loggedAs}
   if
     -- What a listener reports about the server to a machine, at its root.
@@ -294,7 +295,7 @@ listenerRoutes logger env site l caller loggedAs request respond = do
           [] | not (null mounted) -> redirect (encodeUtf8 l.mount)
           -- The API for programs, signed in by HTTP Basic or an API key,
           -- never by the cookie ("Wiki.Server.ProgramApi"): a page's
-          -- Markdown, its contents, the listing, the search, and the API's
+          -- Markdown, its contents, its attachments, the listing, the search, and the API's
           -- OpenAPI document. On the public listener only, since on the
           -- admin listener everyone would be the administrator.
           rest@("api" : endpoint) | programs endpoint -> case l.finding of
@@ -318,6 +319,9 @@ listenerRoutes logger env site l caller loggedAs request respond = do
             | endpoint == ["events"] -> eventsApplication env.storage env.events caller.who caller.origins request respond
             | otherwise -> api request {pathInfo = rest} respond
           "auth" : provider : more -> authApplication logger env caller l.mount provider more request respond
+          -- An external plugin's frame, for a signed-in user who may run
+          -- the plugin ("Wiki.Server.PluginFrame"); 404 to anyone else.
+          "plugin-frame" : rest -> pluginFrameApplication env.storage caller.who rest request respond
           -- A blog's feeds and the sitemap, with what anyone may read
           -- ("Wiki.Server.Feed"), whoever asks.
           ["sitemap.xml"] | readOnly -> sitemapApplication env.storage env.feeds l.mount request respond
@@ -354,9 +358,10 @@ listenerRoutes logger env site l caller loggedAs request respond = do
     api = sameOrigin (apiApplication env caller)
     pages template = renderPage logger env caller.who l.mount template
     -- The addresses of the API for programs, from @api@ on: everything
-    -- under @markdown@, @contents@ and @list@, the search, and the
+    -- under @markdown@, @contents@, @attachments@ and @list@, the search,
+    -- and the
     -- document. An address under @search@ is none of them.
     programs = \case
-      section : _ | section `elem` ["markdown", "contents", "list"] -> True
+      section : _ | section `elem` ["markdown", "contents", "attachments", "list"] -> True
       "search" : endpoint -> endpoint `elem` [[], [""]]
       endpoint -> endpoint == ["openapi.json"]

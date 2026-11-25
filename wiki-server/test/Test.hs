@@ -14,12 +14,14 @@ import Test.Server.Access qualified as Access
 import Test.Server.Accounts qualified as Accounts
 import Test.Server.Api qualified as Api
 import Test.Server.ApiKeys qualified as ApiKeys
+import Test.Server.AttachmentsApi qualified as AttachmentsApi
 import Test.Server.Backups qualified as Backups
 import Test.Server.BasicSignIn qualified as BasicSignIn
 import Test.Server.Comments qualified as Comments
 import Test.Server.Compress qualified as Compress
 import Test.Server.ContentsApi qualified as ContentsApi
 import Test.Server.Export qualified as Export
+import Test.Server.ExternalPlugins qualified as ExternalPlugins
 import Test.Server.Feed qualified as Feed
 import Test.Server.Guide qualified as Guide
 import Test.Server.Http qualified as Http
@@ -81,6 +83,7 @@ main = secureMain $ do
       when (selection == AllTests || selection == UnitTests) $ independent $ do
         Presence.spec
         ProgramApi.unitSpec
+        AttachmentsApi.unitSpec
         Totp.spec
         WebAuthn.spec
         Metrics.spec
@@ -127,12 +130,14 @@ main = secureMain $ do
           Mail.spec b
           MarkdownApi.spec b
           ContentsApi.spec b
+          AttachmentsApi.spec b
           ProgramApi.spec b
           Settings.spec b
           Backups.spec b
           BasicSignIn.spec b
           ApiKeys.spec b
           Plugins.spec b
+          ExternalPlugins.spec b
           McpApi.spec b
           Oidc.spec b
           Export.spec b

@@ -9,7 +9,7 @@
 -- handshake. The wiki writes only its tools. Each tool calls the function
 -- the HTTP API's handler calls for the same thing ('findPage',
 -- 'putMarkdown', 'listing', 'searching', 'contentsOf', 'sectionOf',
--- 'putSection'), as the key's user ('runAs'): the spaces' permissions hold
+-- 'putSection', 'attachmentList'), as the key's user ('runAs'): the spaces' permissions hold
 -- as in the browser, and a page the user may not read is not found.
 --
 -- = Signing in
@@ -79,6 +79,7 @@ import Wiki.Core.Slug (Slug)
 import Wiki.Server.Address (Origin, originOfUri)
 import Wiki.Server.Api (Env (..))
 import Wiki.Server.ApiKeys (KeyHolder (..))
+import Wiki.Server.AttachmentsApi (AttachmentList (..), attachmentList)
 import Wiki.Server.ContentsApi (SectionPut (..), contentsOf, putSection, sectionOf)
 import Wiki.Server.ContentsApi qualified as Contents
 import Wiki.Server.ListApi (Addresses (..), HitEntry (..), HitSpace (..), TopLevel (..), hasSearchWords, listing, searchSpace, searching)
@@ -140,6 +141,8 @@ instructions =
     , "Read before you write, and pass the version. wiki_read_page gives a page's Markdown and its version. wiki_write_page replaces the whole page, and takes base_version, the version you read: if the page has been saved since, nothing is written, and you read it again, merge your change into what it says now, and write with its new version. For a long page, read its outline (wiki_page_outline), then one section at a time (wiki_read_section), and the text before its first heading with top true. To change one section, write that section alone with wiki_write_section, from its heading on, over the version read: nothing outside it can change."
     , ""
     , "Look a construct of the wiki's Markdown up in wiki_markdown_reference before using it: a box, math, a diagram, a spoiler, a link to another page, a presentation. Called without a section, it lists the reference's sections; with one, it gives that section."
+    , ""
+    , "A page's files are listed by wiki_list_attachments, each with the Markdown that shows it in a page."
     , ""
     , "Every write is a version in the page's history, under the user's name: a change can be seen, compared and undone in the browser."
     ]
@@ -358,6 +361,18 @@ tools env mount own address holder =
               NewPageInvalid why -> Mcp.toolError why
               PutRefused NotFound -> Mcp.toolError ("There is no space at " <> pathOf sp [] <> " that the user may read, or the path names a space's home page, which every space has: see the spaces with wiki_list.")
               PutRefused e -> Mcp.toolError (refusalText at e)
+      }
+  , Tool
+      { name = "wiki_list_attachments"
+      , description = "List the files attached to a page, in the page's order: each with its name, its size in bytes, its media type, its version, address (where the wiki's HTTP API serves its bytes) and markdown, the Markdown that shows it in a page (an image, a video, a sound) or links to it (any other file), to write into the page's text as it is. The bytes are not given here: fetch them with GET at address on the wiki's origin, with the same API key as Authorization: Bearer, or with the shell client: wiki.sh attachment PAGE NAME."
+      , arguments = [pathArgument "The page's path, such as /s/team/p/on-call/."]
+      , required = ["path"]
+      , writes = False
+      , tooLong = \n -> "The page's list of files has " <> show n <> " characters, more than one answer holds: read it through the HTTP API, GET /api/attachments/ followed by the page's path."
+      , run = \args -> withPage args $ \at sp pp ->
+          findPage env address holder.user sp pp <&> \case
+            Left e -> Mcp.toolError (refusalText at e)
+            Right p -> jsonResult (object ["path" .= at, "attachments" .= (attachmentList mount (Route.pageRoute sp pp) p.attachments).attachments])
       }
   , Tool
       { name = "wiki_markdown_reference"

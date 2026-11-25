@@ -419,6 +419,8 @@ instance Copyable ApiKeys
 
 instance Copyable UserPlugins
 
+instance Copyable InstalledPlugins
+
 instance Copyable Vaults
 
 instance Copyable VaultItems
@@ -537,6 +539,7 @@ copiedTables =
   , plain wikiDb.passkeys
   , plain wikiDb.api_keys
   , plain wikiDb.user_plugins
+  , plain wikiDb.external_plugins
   , plain wikiDb.vaults
   , plain wikiDb.vault_items
   , plain wikiDb.public_keys

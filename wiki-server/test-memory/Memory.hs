@@ -1,7 +1,10 @@
 -- | The server's memory with large attachments (WP5.16c of docs/PLAN.md,
 -- finding 10 of docs/scalability-audit.md): an export of a wiki with 100
 -- MiB of attachments, and an upload of 50 MB, each keep the live heap under
--- 'bound', and the export imports back as the same wiki.
+-- 'bound', and the export imports back as the same wiki. So does the body
+-- of an upload through the API for programs ("Wiki.Server.AttachmentsApi"),
+-- read a chunk at a time: one of 50 MB is written whole, and one of 60 MB
+-- is cut at the limit.
 --
 -- A test suite of its own, because the live heap is measured for the whole
 -- process ('getRTSStats', with @+RTS -T@): the largest live heap any major
@@ -12,21 +15,24 @@
 module Main (main) where
 
 import Data.ByteString qualified as BS
+import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Map.Strict qualified as Map
 import GHC.Stats (RTSStats (..), getRTSStats)
 import Protolude
 import System.FilePath ((</>))
+import System.IO (withBinaryFile)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Mem (performMajorGC)
 import Test.HUnit (assertFailure)
 import Test.Hspec
 import Text.Printf (printf)
-import Wiki.App.Backend (MonadWiki (..))
+import Wiki.App.Backend (MonadWiki (..), maxAttachmentSize)
 import Wiki.Core.Attachment (Attachment (..))
 import Wiki.Core.Export (Archive (..), withoutHomeDocument)
 import Wiki.Core.HomePage (HomePage (..))
 import Wiki.Core.Page (Page (..))
 import Wiki.Core.Space (Space (..))
+import Wiki.Server.AttachmentsApi (Spooled (..), spool)
 import Wiki.Server.Import (readUploadFile)
 import Wiki.Server.Storage (Storage, Who (..), defaultConfig, exportArchive, importArchive, inDataDir, runStoredWiki, uploadAttachmentFile, withStorage, writeExport)
 
@@ -36,7 +42,7 @@ bound = 30 * 1024 * 1024
 
 main :: IO ()
 main = hspec . describe "the server's memory with large attachments" $
-  it "stays under the bound for an export of 100 MiB of attachments and an upload of 50 MB, and the export imports back as the same wiki" $
+  it "stays under the bound for an export of 100 MiB of attachments, an upload of 50 MB and a program's body of 60 MB, and the export imports back as the same wiki" $
     withSystemTempDirectory "wiki-memory" $ \dir ->
       withStorage defaultConfig (inDataDir (dir </> "wiki")) $ \st -> do
         page <- newPage st "Attachments"
@@ -51,6 +57,8 @@ main = hspec . describe "the server's memory with large attachments" $
           randomFile (dir </> "big") 50_000_000
           uploaded <- runStoredWiki other Administrator (uploadAttachmentFile target.id "big.bin" "application/octet-stream" (dir </> "big")) >>= ok
           uploaded.size `shouldBe` 50_000_000
+          spoolOf (dir </> "spooled") 50_000_000 `shouldReturn` Spooled
+          spoolOf (dir </> "spooled") 60_000_000 `shouldReturn` TooLarge
         afterUpload <- liveMax
         printf "largest live heap: %d KiB after making the wiki, %d KiB after its export, %d KiB after an upload of 50 MB (bound %d KiB)\n" (kib settled) (kib exported) (kib afterUpload) (kib bound)
         afterUpload `shouldSatisfy` (< bound)
@@ -84,6 +92,16 @@ randomFile file size =
           BS.hGet random (min left (1024 * 1024)) >>= BS.hPut out
           loop (left - 1024 * 1024)
      in loop size
+
+-- | A request's body of this many bytes, 64 KiB a chunk, read by the API
+-- for programs' upload ('spool') into a file, against the application's
+-- limit.
+spoolOf :: FilePath -> Int -> IO Spooled
+spoolOf file size = do
+  left <- newIORef size
+  let chunk = 64 * 1024
+      next = atomicModifyIORef' left (\n -> (max 0 (n - chunk), BS.replicate (max 0 (min n chunk)) 120))
+  withBinaryFile file WriteMode (spool (fromIntegral maxAttachmentSize) next)
 
 -- | The largest live heap a major collection has found so far, after one
 -- more.

@@ -68,12 +68,18 @@ module Wiki.Server.Api
 
     -- * Uploads
   , uploadOptions
+
+    -- * An attachment's bytes
+  , Form (..)
+  , attachmentAnswer
+  , attachmentTag
   )
 where
 
 import Control.Monad.UUID (MonadUUID (..))
 import Crypto.OPAQUE qualified as O
 import Data.Aeson (encode)
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
 import Data.List (lookup)
 import Data.Text qualified as T
@@ -90,7 +96,7 @@ import Protolude hiding (Handler)
 import Servant (Context (..), ErrorFormatters, Handler, NoContent (..), ServerError (..), addHeader, bodyParserErrorFormatter, defaultErrorFormatters, err304, err503, headerParseErrorFormatter, notFoundErrorFormatter, serveWithContext, urlParseErrorFormatter)
 import Servant.Multipart (MultipartOptions (..), Tmp, TmpBackendOptions (..))
 import Servant.Server.Generic (AsServer)
-import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
+import System.Directory (createDirectoryIfMissing, doesFileExist, getFileSize, removeFile)
 import System.FilePath (takeFileName)
 import System.IO (hClose, openBinaryTempFile)
 import Wiki.Api
@@ -110,11 +116,12 @@ import Wiki.Api.Notifications (Watching (..))
 import Wiki.Api.Opaque (LoginChallenge (..), LoginFinish (..), LoginStart (..), Message, NewAccountRecord (..), OldPasswordProof (..), PasswordRecordChange (..), ProofStart (..), RegistrationFor (..), RegistrationStart (..), Stretch)
 import Wiki.Api.Opaque qualified as Opaque
 import Wiki.Api.Plugins (PluginOptions (..), PluginStateChange (..))
+import Wiki.Api.Plugins.External (ExternalPolicyChange (..), checkBundle, maxBundleBytes, parseManifest)
 import Wiki.Api.Security (CurrentPassword (..), EmailChange (..), EmailState (..), OneTimeCode (..), RecoveryCodes (..), ResetRequest (..), ResetToken (..), TotpEnrolment (..), VerificationToken)
 import Wiki.Api.ServerSettings (Discovered (..), HomePage (showAnonymous), MailTest (..), MailTestResult (..), ProviderChange, ProviderCheck (..), ProviderSettingsOf (..), ServerSettingsOf (..), defaultHomePage, named, providerProblems, providerWith, redirectUri, secretState, serviceOrigin)
 import Wiki.Api.Stars (Starring (..))
 import Wiki.Api.Types
-import Wiki.Api.Upload (ArchiveUpload (..), AttachmentUpload (..), ImportApply (..), SealedAttachmentUpload (..))
+import Wiki.Api.Upload (ArchiveUpload (..), AttachmentUpload (..), ImportApply (..), PluginUpload (..), SealedAttachmentUpload (..))
 import Wiki.Api.Vault (AssertionOptions (..), AssertionResponse (..), PasskeyInfo (..), RegistrationOptions (..), RegistrationResponse (..), StoredVault (..))
 import Wiki.Api.Version (PageVersion (..), VersionTime (..))
 import Wiki.Api.WhatsNew (WhatsNew, newestEntry)
@@ -878,6 +885,19 @@ handlers env caller =
       -- operator get the wiki's set with no choices of their own. A closed
       -- wiki refuses someone not signed in before this ("Wiki.Server.App").
       plugins = liftIO (Plugins.pluginsFor env.storage who)
+    , -- External plugins ("Wiki.Server.Storage"'s 'externalPlugins' and
+      -- the operations after it). An upload's manifest and bundle are
+      -- checked here, before the storage is asked: the rules are the API's
+      -- ("Wiki.Api.Plugins.External").
+      externalPlugins =
+        ExternalPluginsApi
+          { list = wiki externalPlugins
+          , setPolicy = \body -> wiki (setExternalPolicy body.policy)
+          , installForWiki = installingPlugin TheWiki
+          , removeForWiki = \p -> wiki (removeExternal TheWiki p) $> NoContent
+          , installMine = installingPlugin Mine
+          , removeMine = \p -> wiki (removeExternal Mine p) $> NoContent
+          }
     , encrypted =
         EncryptedApi
           { space = wiki . spaceEncryption
@@ -1248,6 +1268,17 @@ handlers env caller =
     ask' = liftIO . runStoredWikiFrom env.storage who caller.address
     wiki :: StoredWiki IO (Either WikiError a) -> Handler a
     wiki program = ask' program >>= either (throwError . wikiError) pure
+    -- An external plugin's upload, checked and installed for its owner.
+    -- The bundle's size is read from its file before its bytes are, so
+    -- that a bundle far over the bound is not read into memory.
+    installingPlugin owner u = do
+      manifest <- either (refuse . ApiError.Invalid) pure (parseManifest (encodeUtf8 u.manifest))
+      size <- liftIO (getFileSize u.bundle)
+      when (size > fromIntegral maxBundleBytes) $
+        refuse (ApiError.Invalid ("A plugin's bundle is at most " <> show maxBundleBytes <> " bytes (2 MiB)."))
+      bytes <- liftIO (BS.readFile u.bundle)
+      _ <- either (refuse . ApiError.Invalid) pure (checkBundle bytes)
+      wiki (installExternal owner manifest bytes u.replaces)
     -- An import writes plain text, which an encrypted space never holds.
     notIntoEncrypted :: Archive -> Handler ()
     notIntoEncrypted archive = do
@@ -1621,28 +1652,52 @@ attachmentContent env who aid name request respond
           if not present
             then respond (refusal ApiError.NotFound)
             else do
-              let plainTag = case a.source of
-                    SourceBlob b -> encodeUtf8 b.text
-                    SourceUrl _ -> ""
-                  asked = isJust (lookup (encodeUtf8 interactiveParameter) (queryString request))
+              let asked = isJust (lookup (encodeUtf8 interactiveParameter) (queryString request))
                   interactive = asked && framesInteractively a.mediaType.text && loadedByFrame request
-                  (shownAs, policy, tag)
-                    | interactive = (inlineDisposition a, encodeUtf8 interactiveSvgPolicy, quoted (interactiveTag plainTag))
-                    | otherwise = (disposition a, "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox", quoted plainTag)
-                  quoted t = "\"" <> t <> "\""
-                  headers =
-                    [ (hContentType, encodeUtf8 (safeMediaType a.mediaType))
-                    , ("X-Content-Type-Options", "nosniff")
-                    , ("Content-Disposition", shownAs)
-                    , ("Content-Security-Policy", policy)
-                    , (hCacheControl, keptPrivately)
-                    , (hETag, tag)
-                    ]
-                      <> [framedVary | asked]
-              if lookup hIfNoneMatch (requestHeaders request) == Just tag
-                then respond (responseLBS status304 headers "")
-                else respond (responseFile status200 headers file Nothing)
+              respond (attachmentAnswer (if interactive then Interactive else Plain) keptPrivately [framedVary | asked] a file request)
         Right _ -> respond (refusal ApiError.NotFound)
+
+-- | 'Form' is which answer an attachment's bytes are given in: the plain
+-- one, or an SVG's interactive one ('attachmentContent').
+data Form = Plain | Interactive
+
+-- | The answer with an attachment's bytes, from its file, which is there:
+-- in this form, with this @Cache-Control@ and these headers besides. The
+-- browser's route ('attachmentContent') and the API for programs
+-- ("Wiki.Server.AttachmentsApi") both answer with it, so that a stored
+-- file has the same media type and the same protective headers whichever
+-- address serves it: @nosniff@, the @Content-Disposition@ that makes all
+-- but the types a browser shows safely a download, and the sandboxing
+-- @Content-Security-Policy@. The @ETag@ is the bytes' hash (the blob's id),
+-- and a request with that tag in @If-None-Match@ is answered 304. Warp
+-- serves a range of the file when one is asked for.
+attachmentAnswer :: Form -> ByteString -> [Header] -> Attachment -> FilePath -> Request -> Response
+attachmentAnswer form cacheControl more a file request =
+  if lookup hIfNoneMatch (requestHeaders request) == Just tag
+    then responseLBS status304 headers ""
+    else responseFile status200 headers file Nothing
+  where
+    plainTag = attachmentTag a
+    (shownAs, policy, tag) = case form of
+      Interactive -> (inlineDisposition a, encodeUtf8 interactiveSvgPolicy, quoted (interactiveTag plainTag))
+      Plain -> (disposition a, "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox", quoted plainTag)
+    quoted t = "\"" <> t <> "\""
+    headers =
+      [ (hContentType, encodeUtf8 (safeMediaType a.mediaType))
+      , ("X-Content-Type-Options", "nosniff")
+      , ("Content-Disposition", shownAs)
+      , ("Content-Security-Policy", policy)
+      , (hCacheControl, cacheControl)
+      , (hETag, tag)
+      ]
+        <> more
+
+-- | What identifies an attachment's bytes, unquoted: the hash its blob is
+-- named by, or nothing for an attachment on the web.
+attachmentTag :: Attachment -> ByteString
+attachmentTag a = case a.source of
+  SourceBlob b -> encodeUtf8 b.text
+  SourceUrl _ -> ""
 
 -- | The bytes a conversion staged for an attachment of a page, for the
 -- browser converting it to read back ('stagedBytesFile'): as they are, of

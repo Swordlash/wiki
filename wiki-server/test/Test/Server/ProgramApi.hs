@@ -47,6 +47,7 @@ import Test.Server.Fixture
 import Wiki.Api.Error (ApiError (..), Staleness)
 import Wiki.Core.PageKind (PageKind (..))
 import Wiki.Core.Search (Piece (..), Snippet (..))
+import Wiki.Server.AttachmentsApi (AttachmentEntry (..), AttachmentList (..))
 import Wiki.Server.ContentsApi (Contents (..), Heading (..), Written (..))
 import Wiki.Server.ListApi (HitEntry (..), HitSpace (..), Hits (..), NewSpace (..), PageEntry (..), SpaceEntry (..), TopLevel (..))
 import Wiki.Server.ProgramApi (OpenApiDocument (..), ProgramApi, programDocument)
@@ -60,7 +61,7 @@ unitSpec = describe "the OpenAPI document of the API for programs" $ do
     it "lists every JSON body of the API" $
       -- The bodies the type sends and takes as JSON, which the check above
       -- covers: one more there means an Arbitrary instance here.
-      length (typeReps (Proxy @(Nub (JsonBodies ProgramApi)))) `shouldBe` 7
+      length (typeReps (Proxy @(Nub (JsonBodies ProgramApi)))) `shouldBe` 9
     it "gives the application's own refusals the schema of a refusal" $ do
       let (defs, schema) = runDeclare (O.declareSchema (Proxy @RefusalBody)) mempty
           errors = [NotFound, Forbidden, Conflict "c", Invalid "i", Unauthenticated, TooManyRequests "t", SecondFactorRequired] <> map (`Stale` "s") [minBound .. maxBound :: Staleness]
@@ -113,6 +114,9 @@ operationsServed =
   , ("/api/markdown/s/{address}", "PUT")
   , ("/api/markdown/reference", "GET")
   , ("/api/contents/s/{address}", "GET")
+  , ("/api/attachments/s/{address}", "GET")
+  , ("/api/attachments/s/{address}", "PUT")
+  , ("/api/attachments/s/{address}", "DELETE")
   , ("/api/list", "GET")
   , ("/api/list/s/{space}", "GET")
   , ("/api/list/s/{space}", "PUT")
@@ -311,6 +315,9 @@ asked =
   , (("/api/markdown/s/{address}", "PUT"), Asked "/api/markdown/s/blog/p/a-new-page/?title=A%20new%20page" [("If-None-Match", "*")] "# A new page\n" 201 401)
   , (("/api/markdown/reference", "GET"), Asked "/api/markdown/reference" [] "" 200 200)
   , (("/api/contents/s/{address}", "GET"), Asked "/api/contents/s/blog/p/hello-world/" [] "" 200 401)
+  , (("/api/attachments/s/{address}", "GET"), Asked "/api/attachments/s/blog/p/hello-world/" [] "" 200 401)
+  , (("/api/attachments/s/{address}", "PUT"), Asked "/api/attachments/s/blog/p/hello-world/?name=notes.txt" [("Content-Type", "text/plain")] "Notes.\n" 201 401)
+  , (("/api/attachments/s/{address}", "DELETE"), Asked "/api/attachments/s/blog/p/hello-world/?name=no-such-file.txt" [] "" 404 401)
   , (("/api/list", "GET"), Asked "/api/list/?depth=1" [] "" 200 401)
   , (("/api/list/s/{space}", "GET"), Asked "/api/list/s/blog/" [] "" 200 401)
   , (("/api/list/s/{space}", "PUT"), Asked "/api/list/s/blog/notes/" [("Content-Type", "application/json")] "{\"title\": \"Notes\"}" 201 401)
@@ -363,6 +370,12 @@ instance Arbitrary Contents where
     where
       heading :: Int -> Gen Heading
       heading depth = Heading <$> choose (1, 6) <*> text <*> text <*> arbitrary <*> maybeText <*> (if depth <= 0 then pure [] else few (heading (depth - 1)))
+
+instance Arbitrary AttachmentEntry where
+  arbitrary = AttachmentEntry <$> text <*> choose (0, 52428800) <*> text <*> maybeText <*> text <*> text
+
+instance Arbitrary AttachmentList where
+  arbitrary = AttachmentList <$> few arbitrary
 
 instance Arbitrary PageKind where
   arbitrary = oneof [pure Document, pure Presentation, OtherKind <$> text]

@@ -77,6 +77,7 @@ library
       Wiki.Api.Notifications
       Wiki.Api.Opaque
       Wiki.Api.Plugins
+      Wiki.Api.Plugins.External
       Wiki.Api.Security
       Wiki.Api.ServerSettings
       Wiki.Api.Stars
@@ -98,11 +99,13 @@ library
       filepath,
       http-api-data,
       protolude,
+      scientific,
       servant >= 0.20.3 && < 0.21,
       servant-multipart-api >= 0.13 && < 0.14,
       template-haskell,
       text,
       time,
+      vector,
       wiki-core
 
 -- The API's types, natively and under Node on wasm through
@@ -122,6 +125,7 @@ test-suite wiki-api-test
       Test.ContentPolicy
       Test.Error
       Test.Events
+      Test.ExternalPlugins
       Test.Gen
       Test.Info
       Test.Json

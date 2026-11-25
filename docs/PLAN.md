@@ -2764,7 +2764,63 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   provider's chat in one class, used far beyond the assistant, so
   both stay the host's and the assistant reaches them through
   capabilities (`Models`, `Secret`) that mirror its present needs.
-  **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
+  **C is open (#374)**; **D is next (the owner, 2026-11-24, after
+  C).** **After D, the features behind the interface (the
+  session's plan of 2026-11-24, read from the code):** **E**, the
+  emoji: a `command` with a picker and the colon list's names, the
+  picker drawn by the host from data (its HTML unchanged); off, no
+  Emoji button and no list after a colon, while `:smile:` still shows
+  😄 (the parser's). **I**, Mermaid and TikZ, two plugins in one
+  package: a `block` (the host's islands still draw them) and a
+  `command` each; off, the fence shows as the listing `{.norender}`
+  gives, for that reader, in the prerender too, through
+  `Context.plugins`; exports, the feed and search belong to the page
+  and do not change. Then the calendar (WP5.92/93) as the first plugin
+  written as one, defining `pageKind`, `pageAction` and `sidebar`;
+  presentations' view half only after it, and only if still wanted.
+  **Decided by the session (small, reversible):** built-in features
+  moved behind the interface show no origin in grey in the completion
+  list (only external plugins will); the `html` frame stays the
+  host's (it is the wiki's own Markdown and its security model,
+  decision 72); the tree's `Mermaid` and `Tikz` constructors stay
+  until a block needs a generic one.
+  **External plugins, designed (2026-11-24; tried in Chromium 153, the
+  scripts in the session's scratchpad):** a frame loaded from the
+  wiki's own address with `Content-Security-Policy: sandbox
+  allow-scripts; … connect-src <approved hosts>` has an opaque origin
+  (no cookie, storage, IndexedDB or parent's DOM; `fetch` only to the
+  listed hosts, with `Origin: null`; no WebSocket, popups or
+  navigation), over plain HTTP too. **A gap in decision 69:**
+  `RTCPeerConnection` in such a frame reaches any host (STUN packets
+  were received; `webrtc 'block'` is ignored), while a dedicated
+  worker inside the frame has no WebRTC and keeps to `connect-src`;
+  an endless loop on the frame's main thread freezes the page unless
+  the browser isolates the frame, while in a worker it does not. So
+  `diagnostics` runs the plugin's code in a worker (fully confined),
+  and an `agent` panel, which needs a DOM, cannot be confined from
+  WebRTC: asked of the owner whether v1 ships `diagnostics` only. The
+  bundle is one JavaScript file, pinned by its SHA-256, served inline
+  under a hash in `script-src`; a manifest checked by one pure
+  function; the administrator sets a policy (off, the wiki's only,
+  users may add their own); schema step 26; four pull requests
+  (E1 server and frame, E2 the bridge and `diagnostics`, E3 the
+  settings, E4 `agent`). **E1 merged (#375):** the manifest and the
+  bundle's checks, the policy, the endpoints, step 26 and the frame
+  with the runtime that starts the code in a worker. The read is its
+  own `GET api/v1/external-plugins`, not fields on `GET
+  api/v1/plugins`. Left for E2: the application's read in both
+  backends, the editor's frame and the `MessagePort` protocol mapped
+  onto `diagnostics`, a test that the server's reserved ids hold
+  every id of the registry, and a browser test that the service
+  worker leaves `plugin-frame/` to the network (written, not yet
+  tested: the smoke context turns service workers off).
+  **The owner's decisions (2026-11-24, "Ok" to the session's three
+  proposals):** (1) a plugin's secrets go into the vault whenever the
+  user has one, so they follow the user across devices, sealed, and
+  "sync off" goes away for them; (2) "ask each time" covers the
+  assistant too (an unlock once a visit before it uses a key); (3) the
+  first version of external plugins has `diagnostics` only, run in a
+  worker; an external `agent` panel waits until it can be confined. **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
   requestować jakieś named keys per plugin z vaulta"):** named
   secrets per plugin in the vault as a general capability (get, put
   and remove by a name under the plugin's id, the names declared in

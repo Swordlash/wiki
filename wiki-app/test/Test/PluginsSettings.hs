@@ -572,7 +572,7 @@ play w = \case
           lost = w.losing
           a' = if lost then lostAnswer o.effect else a
           changes = if lost then w.changes + 1 else w.changes
-       in noted ("the server handles " <> show o.effect <> if lost then ", its answer lost" else "") w {backend, outs = earlier <> [o {answer = Just a', changesSeen = changes}] <> later', losing = False, changes, fresh = w.fresh && not lost}
+       in noted ("the server handles " <> show o.effect <> if lost then ", its answer lost" else "") w {backend, outs = earlier <> [o {answer = Just a', changesSeen = changes}] <> later', losing = False, changes, fresh = w.fresh && not lost, freshInstalled = w.freshInstalled && not lost}
     _ -> w
   Deliver i -> case atMay [(k, o, a) | (k, o) <- zip [0 :: Int ..] w.outs, Just a <- [o.answer]] i of
     Just (k, o, a) ->

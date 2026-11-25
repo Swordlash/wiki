@@ -963,7 +963,7 @@ component =
           <div class="admin-permissions-and-plugins">
             {{ HH.slot "view" AccessSlot AccessView.component AccessView.Input {context = ctx} FromView }}
             {% if st.settingsShown %}
-              {{ HH.slot "wikiPlugins" ((\u -> u.id) <$> st.session.user) WikiPluginsView.component (Machine.current st.pluginState) FromPlugins }}
+              {{ HH.slot "wikiPlugins" ((\u -> u.id) <$> st.session.user) WikiPluginsView.component WikiPluginsView.Input {model = Machine.current st.pluginState, demo = isJust st.demo} FromPlugins }}
             {% end %}
           </div>
         |]
@@ -1079,7 +1079,7 @@ component =
       PluginsSection ->
         [hh|
           <div class="settings-sections">
-            {{ HH.slot "plugins" who PluginsView.component PluginsView.Input {model = Machine.current st.pluginState, router = st.router} FromPlugins }}
+            {{ HH.slot "plugins" who PluginsView.component PluginsView.Input {model = Machine.current st.pluginState, router = st.router, demo = isJust st.demo} FromPlugins }}
           </div>
         |]
       NotificationsSection ->

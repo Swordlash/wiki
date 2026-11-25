@@ -2804,7 +2804,16 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   function; the administrator sets a policy (off, the wiki's only,
   users may add their own); schema step 26; four pull requests
   (E1 server and frame, E2 the bridge and `diagnostics`, E3 the
-  settings, E4 `agent`).
+  settings, E4 `agent`). **E1 merged (#375):** the manifest and the
+  bundle's checks, the policy, the endpoints, step 26 and the frame
+  with the runtime that starts the code in a worker. The read is its
+  own `GET api/v1/external-plugins`, not fields on `GET
+  api/v1/plugins`. Left for E2: the application's read in both
+  backends, the editor's frame and the `MessagePort` protocol mapped
+  onto `diagnostics`, a test that the server's reserved ids hold
+  every id of the registry, and a browser test that the service
+  worker leaves `plugin-frame/` to the network (written, not yet
+  tested: the smoke context turns service workers off).
   **The owner's decisions (2026-11-24, "Ok" to the session's three
   proposals):** (1) a plugin's secrets go into the vault whenever the
   user has one, so they follow the user across devices, sealed, and

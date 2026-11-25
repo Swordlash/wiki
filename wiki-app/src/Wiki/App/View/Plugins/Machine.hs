@@ -327,10 +327,11 @@ data Event
   | -- | The answer to the write of the policy sent under this ticket: the
     -- plugins as the administrator then reads them.
     PolicySaved Ask (Either WikiError ExternalPlugins)
-  | -- | The reader picked the files of a plugin for this owner, to add it
-    -- or to replace the plugin of this id whose row showed this hash, and
-    -- the view read and checked them ('chooseFiles').
-    FilesPicked Owner (Maybe (PluginId, Text)) (Either Text PluginFiles)
+  | -- | The reader picked, in the session of this number, the files of a
+    -- plugin for this owner, to add it or to replace the plugin of this id
+    -- whose row showed this hash, and the view read and checked them
+    -- ('chooseFiles'). Files read for an earlier session are dropped.
+    FilesPicked Int Owner (Maybe (PluginId, Text)) (Either Text PluginFiles)
   | -- | The reader dropped the files picked.
     PickDropped
   | -- | The reader confirmed the upload after the warning.
@@ -493,13 +494,15 @@ step event m = case event of
           (Right _, Nothing) -> m1
           (Left e, _) -> m1 {policyProblem = Just e}
      in landed asked m2 {wanted = True}
-  FilesPicked owner replacing read' ->
-    ( m
-        { picked = Just Picked {number = m.picks, owner, replacing, files = read' >>= fitting owner replacing}
-        , picks = m.picks + 1
-        }
-    , []
-    )
+  FilesPicked session owner replacing read'
+    | session /= m.session -> (m, [])
+    | otherwise ->
+        ( m
+            { picked = Just Picked {number = m.picks, owner, replacing, files = read' >>= fitting owner replacing}
+            , picks = m.picks + 1
+            }
+        , []
+        )
   PickDropped -> (m {picked = Nothing}, [])
   Confirmed c -> case m.picked of
     Just p

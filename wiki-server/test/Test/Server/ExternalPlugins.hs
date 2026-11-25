@@ -360,5 +360,13 @@ module' backing = describe "the module a plugin imports" $
       reply.status `shouldBe` 200
       header "Content-Type" reply `shouldBe` Just "text/javascript; charset=utf-8"
       header "Content-Disposition" reply `shouldBe` Just "attachment; filename=\"wiki-plugin.js\""
+      header "X-Content-Type-Options" reply `shouldBe` Just "nosniff"
       decodeUtf8 (BSL.toStrict reply.body) `shouldBe` wikiPluginModule
+      -- No session is needed, and none is made or kept: no cookie is set,
+      -- for nobody or for someone signed in.
+      header "Set-Cookie" reply `shouldBe` Nothing
+      editor <- sessionOf r "editor"
+      signedIn <- getUrlWith r (onPublic r "plugin/wiki-plugin.js") editor
+      signedIn.status `shouldBe` 200
+      header "Set-Cookie" signedIn `shouldBe` Nothing
       wikiPluginModule `shouldSatisfy` T.isInfixOf "export function plugin"

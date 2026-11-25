@@ -231,11 +231,14 @@ component =
       FilesChosen replacing ev -> do
         files <- H.sync (pluginFilesChosen ev)
         unless (null files) $ do
+          -- The session the files are picked in: a read that ends in
+          -- another is dropped by the model.
+          session <- gets (\st -> st.input.model.session)
           mine <- state (\st -> (st.picks + 1, st {picks = st.picks + 1, reading = True}))
           result <- H.async (liftIO (readPluginFiles files))
           -- Raised only if no later pick was made meanwhile.
           latest <- state (\st -> (st.picks == mine, if st.picks == mine then st {reading = False} else st))
-          when latest (H.raise (FilesPicked TheWiki replacing result))
+          when latest (H.raise (FilesPicked session TheWiki replacing result))
 
 -- | The wiki's plugins among those installed.
 wikis :: ExternalPlugins -> [ExternalPlugin]

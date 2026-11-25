@@ -704,9 +704,9 @@ play w = \case
     let picked' = case which of
           Just (i, v) -> fromMaybe (Left "no id") (filesOf <$> atMay pickIds i <*> pure v)
           Nothing -> chooseFiles "{}" (bundleText 0)
-     in afterEvent ("picks files for " <> show owner) (FilesPicked owner Nothing picked') w
+     in afterEvent ("picks files for " <> show owner) (FilesPicked w.turn owner Nothing picked') w
   PickReplace i v -> case atMay (rows w.model) i of
-    Just x -> afterEvent ("picks another version of " <> x.manifest.id.text) (FilesPicked (ownerOf x) (Just (x.manifest.id, x.bundle)) (filesOf x.manifest.id.text v)) w
+    Just x -> afterEvent ("picks another version of " <> x.manifest.id.text) (FilesPicked w.turn (ownerOf x) (Just (x.manifest.id, x.bundle)) (filesOf x.manifest.id.text v)) w
     Nothing -> w
   -- What the warning shows, confirmed: as the view draws the pick.
   Confirm -> case w.model.picked of
@@ -1207,7 +1207,15 @@ externalRuns = describe "external plugins, on the plugins' state" $ do
     let refusal w = (\p -> leftToMaybe p.files) =<< w.model.picked
     refusal (runOf [Pick TheWiki Nothing]) `shouldBe` Just "A plugin's manifest has the field manifest."
     refusal (runOf [Pick TheWiki (Just (0, 1))]) `shouldBe` Just "A plugin with the id spell is installed already: replace it from its row."
-    refusal (afterEvent "picks" (FilesPicked TheWiki (Just (PluginId "spell", "b-spell")) (filesOf "new" 0)) start) `shouldBe` Just "The manifest's id is new: a plugin replaced keeps its id, spell."
+    refusal (afterEvent "picks" (FilesPicked 0 TheWiki (Just (PluginId "spell", "b-spell")) (filesOf "new" 0)) start) `shouldBe` Just "The manifest's id is new: a plugin replaced keeps its id, spell."
+
+  it "drops files read for a session before the one the model is in" $ do
+    let w = runOf [SwitchUser]
+        stale = afterEvent "files read for the session before come in" (FilesPicked 0 Mine Nothing (filesOf "new" 0)) w
+    stale.model.picked `shouldBe` Nothing
+    -- Shown able to fail: the same files in the session the model is in.
+    let fresh = afterEvent "files read in this session come in" (FilesPicked 1 Mine Nothing (filesOf "new" 0)) w
+    isJust fresh.model.picked `shouldBe` True
 
   it "removes only a plugin a row shows, with the hash it shows" $ do
     (runOf [RemoveStale 0]).outs `shouldSatisfy` null

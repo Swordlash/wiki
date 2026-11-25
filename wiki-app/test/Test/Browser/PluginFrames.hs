@@ -69,7 +69,7 @@ import Wiki.App.Guide (exampleCode, exampleManifest)
 import Wiki.App.Islands (MonadIslands (..))
 import Wiki.App.Plugin.External (Heard (..))
 import Wiki.App.Plugin.External.Frames qualified as Frames
-import Wiki.App.Route (Route (..))
+import Wiki.App.Route (Route (..), SettingsSection (..))
 import Wiki.App.Route qualified as R
 import Wiki.App.Security (MonadSecurity)
 import Wiki.App.Shell qualified as Shell
@@ -80,6 +80,7 @@ import Wiki.Core.Page qualified as Core (Page (..))
 $( browserJS
      ["jsbits/test-plugin-frames.js", "jsbits/test-moves.js", "jsbits/test-files.js"]
      [ ("js_frames_open", "wiki_test_plugin_frames_open", Safe, [t|IO Int|])
+     , ("js_overflowing", "wiki_test_overflowing", Safe, [t|JSText -> Bool -> IO Int|])
      , ("js_choose_two_filesPromise", "wiki_test_choose_two_files", Safe, [t|JSText -> JSText -> JSText -> JSText -> JSText -> JSText -> JSText -> IO (Promise ())|])
      , ("js_watch_frame_moves", "wiki_test_watch_frame_moves", Safe, [t|IO ()|])
      , ("js_frame_moved", "wiki_test_frame_moved", Safe, [t|IO Bool|])
@@ -341,6 +342,39 @@ spec m = describe "external plugins' frames" $ do
     waitQuiet
     find ui ".editor-problems" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "problem")
     length <$> findAll ui ".editor-plugin-stopped" `shouldReturn` 0
+  -- A manifest's texts at their longest: a host of 253 characters among
+  -- ten, a name of 80 and a description of 300 with no break in either,
+  -- each drawn inside the plugin's row.
+  it "keeps a manifest's longest texts inside the plugin's row" $ runPage $ do
+    let long =
+          ExternalPlugin
+            { manifest =
+                ExternalManifest
+                  { id = PluginId "long"
+                  , name = T.replicate 80 "n"
+                  , version = "1.0.0"
+                  , description = T.replicate 300 "d"
+                  , api = 1
+                  , contributes = Set.singleton Diagnostics
+                  , permissions = Set.singleton DocumentRead
+                  , hosts = ("https://" <> T.replicate 245 "h" <> ".org") : ["https://h" <> show k <> ".example.org" | k <- [1 .. 9 :: Int]]
+                  }
+            , bundle = "0123abcd"
+            , size = 100
+            , mine = False
+            , installedAt = UTCTime (fromGregorian 2026 11 25) 0
+            }
+    wiki <- unsafeIOToPageM (newMemWiki ((demoState demoNow) {current = Just (UserId "user-editor"), externalPolicy = ExternalWiki, externalWiki = Map.fromList [(PluginId "long", long)]}))
+    router <- unsafeIOToPageM testRouter
+    unsafeIOToPageM forgetStorage
+    unsafeIOToPageM (Router.redirect router (UserSettings PluginsSection))
+    ui <- mount m (H.hoist (NT (runMemWiki wiki . runWritten)) component) ((input router) {Shell.demo = Nothing})
+    waitQuiet
+    let rows = ".plugin-external[data-plugin=long], .plugin-external[data-plugin=long] .plugin-hosts, .plugin-external[data-plugin=long] .plugin-description, .plugin-external[data-plugin=long] .plugin-name"
+    length <$> findAll ui ".plugin-external[data-plugin=long] .plugin-hosts" `shouldReturn` 1
+    unsafeIOToPageM (js_overflowing (toJSText (rows :: Text)) False) `shouldReturn` 0
+    -- Shown able to fail: the same texts unwrapped run out of their row.
+    unsafeIOToPageM (js_overflowing (toJSText (rows :: Text)) True) >>= (`shouldSatisfy` (> 0))
   where
     withExample st = st {externalPolicy = ExternalWiki, externalWiki = Map.fromList [(PluginId "doubled-words", installed "doubled-words" "Doubled words")]}
     helloWorld wiki = maybe (panic "no page Hello, world") identity . find' . Map.elems . (\st -> st.pages) <$> readIORef wiki

@@ -223,7 +223,7 @@ jobs:
           dist-newstyle/wasm-opt/cache
           dist-newstyle/wasm-opt/packagedb
           dist-newstyle/wasm-opt/src
-        key: ${{ env.compatibility }}-cabal-${{ env.CABAL_VERSION }}-${{ hashFiles('cabal*.project*', 'wiki-*/**', 'web/src/katex-macros.tex') }}
+        key: ${{ env.compatibility }}-cabal-${{ env.CABAL_VERSION }}-${{ hashFiles('cabal*.project*', 'wiki-*/**', 'web/src/katex-macros.tex', 'web/plugin/**') }}
         restore-keys: ${{ env.compatibility }}-
 
     # The maker's among them (`npm run` builds and runs the maker).

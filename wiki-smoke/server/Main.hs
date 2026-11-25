@@ -38,7 +38,8 @@
 --    off ("Server.Walk").
 -- 4. The demo's pages brought into the server, as its owner would
 --    ("Server.Migrate").
--- 5. Interactive SVGs (WP5.90) ("Server.Svg").
+-- 5. Interactive SVGs (WP5.90) ("Server.Svg"), and an external plugin's
+--    sandboxed frame (WP5.84) ("Server.Plugin").
 -- 6. Encrypted spaces (WP5.74), and the canary ("Server.Encrypted",
 --    "Server.Canary").
 -- 7. What the server says of itself: its health, its metrics, its
@@ -61,6 +62,7 @@ import Server.Encrypted qualified as Encrypted
 import Server.Health qualified as Health
 import Server.Migrate qualified as Migrate
 import Server.Offline qualified as Offline
+import Server.Plugin qualified as Plugin
 import Server.Provider (withProvider)
 import Server.Site
 import Server.Svg qualified as Svg
@@ -90,6 +92,7 @@ main = withServerSuite "the server's build, served by a real wiki-server" $ \bui
             Walk.spec smoke
             Migrate.spec smoke
             Svg.spec smoke
+            Plugin.spec smoke
             Encrypted.spec smoke
             Health.spec smoke
             Offline.spec smoke

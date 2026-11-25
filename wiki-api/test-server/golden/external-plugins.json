@@ -1,0 +1,49 @@
+{
+  "external": [
+    {
+      "bundle": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "installedAt": "2026-10-24T09:30:12.345678Z",
+      "manifest": {
+        "api": 1,
+        "contributes": {
+          "diagnostics": {}
+        },
+        "description": "Marks a word written twice.",
+        "hosts": [
+          "https://api.languagetool.org"
+        ],
+        "id": "doubled-words",
+        "manifest": 1,
+        "name": "Doubled words",
+        "permissions": [
+          "document.read"
+        ],
+        "version": "1.0.0"
+      },
+      "mine": false,
+      "size": 1234
+    },
+    {
+      "bundle": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "installedAt": "2026-10-25T00:00:00Z",
+      "manifest": {
+        "api": 1,
+        "contributes": {
+          "diagnostics": {}
+        },
+        "description": "Marks a word written twice.",
+        "hosts": [],
+        "id": "mine",
+        "manifest": 1,
+        "name": "Mine",
+        "permissions": [
+          "document.read"
+        ],
+        "version": "1.0.0"
+      },
+      "mine": true,
+      "size": 1234
+    }
+  ],
+  "policy": "users"
+}

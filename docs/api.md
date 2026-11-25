@@ -1024,8 +1024,8 @@ shows to anyone, as an invitation's.
 ### The API for programs
 
 Beside `/api/v1`, the public listener serves the API for programs (a local
-assistant, a script): `/api/markdown`, `/api/contents`, `/api/list` and
-`/api/search`, signed in by an API key or a login and password in each
+assistant, a script): `/api/markdown`, `/api/contents`, `/api/attachments`,
+`/api/list` and `/api/search`, signed in by an API key or a login and password in each
 request, never by the cookie (the README's "The API"). It is a servant type
 of its own, `Wiki.Server.ProgramApi` in `wiki-server`, and describes itself:
 `GET /api/openapi.json` is its OpenAPI 3 document, made from that type by
@@ -1037,6 +1037,30 @@ client generator, or give it to an assistant that is to use the wiki. The
 MCP server at `/mcp` is named in its description only, and `/api/v1` is not
 in it. `wiki-server/test/golden/openapi.json` holds the document, so that a
 change of the API shows in review.
+
+A page's attachments there (`Wiki.Server.AttachmentsApi`) go through the
+same storage calls as the routes above: the list is the page's `attachments`
+as `getPage` reads them, a file's bytes are served by the function that
+serves `api/v1/attachments/<attachment>/<name>` (the same `Content-Type`,
+`nosniff`, `Content-Disposition` and `Content-Security-Policy`, and the same
+`ETag`, the bytes' SHA-256; only `Cache-Control` differs, `private,
+no-cache`, since a name's file may be replaced), an upload goes through
+`uploadAttachmentFile`'s transaction with what the page must have under the
+name (`uploadAttachmentFileIf`: anything for the browser, none or the version
+read for the API), and a delete through `deleteAttachment`.
+
+| Method | Path | Body | Success | Errors |
+|---|---|---|---|---|
+| GET, HEAD | `api/attachments/s/<page address>` | | 200 `{"attachments": [{"name", "size", "mediaType", "version", "address", "markdown"}]}`, the page's order; `version` left out for a file on the web | 404, 409 |
+| GET, HEAD | `api/attachments/s/<page address>?name=<name>` | | the file's bytes, as above; 304 for `If-None-Match` with its `ETag`; a range for `Range` | 400, 404, 409 |
+| PUT | `api/attachments/s/<page address>?name=<name>` | the file, raw; its `Content-Type` the media type | 201 the file's entry, `Location` its address, `ETag` its version; 200 for a replace (`If-Match`) | 400, 403, 404, 409, 412, 413, 415, 428 |
+| DELETE | `api/attachments/s/<page address>?name=<name>` | | 204 | 400, 403, 404, 409 |
+
+`name` is taken from the query as sent, percent-decoded once, `+` kept as a
+plus. An upload is written to a temporary file in the data directory as it
+arrives, and stops at the first chunk past 50 MB; a `Content-Length` over
+that is refused (413) before the body is read, and the right to attach is
+asked before the body is read too.
 
 ### API keys
 
@@ -1177,6 +1201,53 @@ each other. Options are kept in the clear and the server reads nothing inside
 them: a plugin's secrets, such as an assistant's API key, belong in the vault
 (above), never in its options. A user's choices go with their account; a
 user's own changes are not in the activity log.
+
+### External plugins
+
+External plugins (`Wiki.Api.Plugins.External`, `Wiki.Server.PluginFrame`;
+decision 69 and WP5.84 of the plan): code someone else wrote, uploaded to the
+wiki and run in a sandboxed frame. The first version runs `diagnostics` only,
+in a worker inside the frame. They are under `external-plugins`, not
+`plugins`, whose addresses belong to the plugins' own server halves; so the
+answer of `GET api/v1/plugins` is as it was, and the application reads this
+list beside it.
+
+A plugin is uploaded as one form: its manifest, JSON, in the text part
+`manifest`; its code, one JavaScript file of at most 2 MiB in UTF-8, in the
+file part `bundle`; and, to replace the owner's plugin of the same id, that
+plugin's bundle's hash in the text part `replaces`. The manifest is at most
+16 kB and has these fields and no others: `manifest` (1), `id` (a plugin's
+id, not `assistant` or `errors`), `name` (1 to 80 characters), `version`
+(three numbers, `1.0.0`), `description` (at most 300 characters; may be
+left out), `api` (1, the protocol's version), `contributes`
+(`{"diagnostics": {}}`; an `agent` is refused, not supported yet),
+`permissions` (`["document.read"]`, which `diagnostics` needs) and `hosts`
+(at most 10 origins its code may connect to, `https://host` or
+`http://host:port`; may be left out). The server keeps the bundle in its blob
+store, named by its SHA-256.
+
+| Method | Path | Body | Response | Errors | |
+| ------ | ---- | ---- | -------- | ------ | - |
+| GET | `api/v1/external-plugins` | | `ExternalPlugins` `{"policy", "external"}`: who may add plugins, `"off"`, `"wiki"` (the administrator, for everyone) or `"users"` (each user for themself too), and the plugins the asker may run, each `ExternalPlugin` `{"manifest", "bundle", "size", "mine", "installedAt"}`: the wiki's while the policy is not `"off"` (and always to an administrator), then the asker's own while it is `"users"`; someone not signed in gets the policy and `[]` | 401 (a closed wiki, to someone not signed in) | (`list`) |
+| PUT | `api/v1/external-plugins/policy` | `ExternalPolicyChange` `{"policy"}` | `ExternalPlugins` as it then is; the activity log records `settings.external-plugins` | 403, 400 | (`setPolicy`) |
+| POST | `api/v1/external-plugins/wiki` | the form above | `ExternalPlugin`: installed for everyone, or replaced; the activity log records `plugin.install` or `plugin.replace`, with the version, the bundle's hash and the hosts | 403, 400 (the manifest or the bundle, with the rule), 409 (the id installed and no `replaces`, or another; a `replaces` with nothing to replace; a 51st plugin) | (`installForWiki`) |
+| DELETE | `api/v1/external-plugins/wiki/<id>` | | 204; the activity log records `plugin.remove` | 403, 404 | (`removeForWiki`) |
+| POST | `api/v1/external-plugins/mine` | the form above | `ExternalPlugin` with `"mine": true` | 401, 403 (the policy is not `"users"`, or the operator), 400, 409 (as above; an id of one of the wiki's; a 21st plugin) | (`installMine`) |
+| DELETE | `api/v1/external-plugins/mine/<id>` | | 204, whatever the policy | 401, 403, 404 | (`removeMine`) |
+
+A plugin runs in a frame the editor loads from
+`plugin-frame/<wiki|mine>/<id>/<bundle>/diagnostics`, outside the API: an
+HTML document of two inline scripts (the plugin's code as a JSON string, and
+the wiki's runtime, which starts it as a worker), under a
+`Content-Security-Policy` that starts with `sandbox allow-scripts`, allows the
+two scripts by their hashes, and connects to the manifest's hosts alone. It
+is served to a signed-in user who may run the plugin now (the policy, the
+owner, the current bundle, the plugin not off for the wiki, and a user's own
+not shadowed by one of the wiki's of the same id), and is 404 to anyone
+else, and to a request whose `Sec-Fetch-Dest` is not `iframe` or whose
+`Sec-Fetch-Site` is not `same-origin`. A bundle whose file no longer matches
+its hash is 409, and nothing runs. Plugins are kept when the policy narrows;
+a user's own go with their account, and are not in the activity log.
 
 ### Encrypted spaces
 

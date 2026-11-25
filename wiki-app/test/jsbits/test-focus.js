@@ -36,9 +36,25 @@ function wiki_test_press_outside() {
 }
 
 // Tell the wiki's tabs that a key was let go, as another tab's sign-out
-// does: the tab reloads the wiki (Test.Browser.Tasks).
-function wiki_test_tasks_tell_dropped(slot) {
-  const other = new BroadcastChannel("wiki-assistant-keys");
-  other.postMessage({ dropped: String(slot) });
-  other.close();
+// does: the tab reloads the wiki (Test.Browser.Tasks). The message
+// reaches this tab in a task of the browser's own, which no rest of the
+// program covers, so the promise says when the tab has heard it: the
+// vault's listener (wiki-app/jsbits/vault.js) dispatches
+// "wiki-keys-dropped" on the window as it lets the key go, and the shell's
+// listener, added before this one, has been called by then. True then,
+// false after the milliseconds given.
+function wiki_test_tasks_tell_dropped(slot, ms) {
+  return new Promise((resolve) => {
+    const done = (heard) => {
+      clearTimeout(timer);
+      globalThis.removeEventListener("wiki-keys-dropped", onHeard);
+      resolve(heard);
+    };
+    const onHeard = () => done(true);
+    const timer = setTimeout(() => done(false), ms);
+    globalThis.addEventListener("wiki-keys-dropped", onHeard);
+    const other = new BroadcastChannel("wiki-assistant-keys");
+    other.postMessage({ dropped: String(slot) });
+    other.close();
+  });
 }

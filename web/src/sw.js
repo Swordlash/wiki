@@ -129,6 +129,10 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin || !url.href.startsWith(scope)) return;
   const path = url.pathname.slice(new URL(scope).pathname.length);
   if (path.startsWith("auth/")) return;
+  // An external plugin's frame is the network's alone: the server checks,
+  // at each load, that the plugin may still run, and a copy kept here
+  // would run a plugin removed since (wiki-server's Wiki.Server.PluginFrame).
+  if (path.startsWith("plugin-frame/")) return;
   if (request.mode === "navigate") {
     event.respondWith(page(event, request));
   } else if (path.startsWith("api/v1/")) {

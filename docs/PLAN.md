@@ -2241,7 +2241,13 @@ would be a block's stand-in at most. To settle when WP5.84 is cut.
   the editor) reads whether it had the focus from the old master,
   which is false while a row has it, so no row is opened with the
   focus; `Tasks.hs:533` ("1 box changed,
-  not saved yet" at rest after twenty seconds); `SlideEditor.hs:962`
+  not saved yet" at rest after twenty seconds): **fixed (#377), a
+  fault of the test**, with the group moved to reads once: the
+  examples hold the ticks' save across slow steps, and the HTTP
+  backend aborts a request after 30 s, so on a slow run the held save
+  timed out before its release; those examples now use a transport
+  without a limit (other groups that hold a request across slow
+  steps may meet the same limit); `SlideEditor.hs:962`
   and `Http.hs:1581` (a read while a fiber waits); `Contents.hs:114`
   and `Comments.hs:87` (the clipboard's promise); `Vault.hs:771` and
   `:602`. **`DeckViewer.hs:67`, found on CI twice (#316's run and #322's):
@@ -2764,7 +2770,90 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   provider's chat in one class, used far beyond the assistant, so
   both stay the host's and the assistant reaches them through
   capabilities (`Models`, `Secret`) that mirror its present needs.
-  **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
+  **C merged (#374, six Codex rounds):** the settings' section
+  "Plugins" and the administrator's switch. The plugins' state is one
+  machine owned by the shell (`View/Plugins/Machine.hs`): one flight
+  for every plugins ask (the reads, a user's writes, the
+  administrator's saves), one queue, a read after every write's
+  answer, and the new session given to it in the step in which the
+  shell learns of another reader, before any wait. Two machines with
+  a snapshot each, as first built, cost four rounds: a later package
+  adds its writes to this machine. Left: `wikiPluginsOff` in the
+  backend class is no longer called by the application. **D1 merged
+  (#376):** a plugin's options in both backends, in the interface
+  (`options`, `SetOptions`, `SaveOptions`) and written through the
+  same machine; a plugin sees the value last chosen while its write
+  is out; no plugin sets options yet, so the shell's line that
+  carries the write out has no test until D3. **D2 merged (#380, three Codex rounds):** a
+  plugin's secrets are one item of the vault, sealed with additional
+  data naming the plugin and padded; the capability closed over the
+  plugin and the reader; the host's field. A change of the secrets
+  kept in the browser holds a Web Lock across tabs (a page over plain
+  HTTP has none and keeps the fault; the assistant's own device
+  records have the same fault until D3 removes that path); fields
+  hear `wiki-secrets-changed` from the keys kept here and from the
+  host's writes, other tabs included. **D3 (the assistant moves, the
+  migration) is being built; E2 (the bridge and `diagnostics`) is
+  open as #381.** **Other small things of 2026-11-25 (the owner):**
+  `WIKI_INSECURE=1` in `clients/wiki.sh` (#378); plain HTTP on the
+  TLS port is redirected to HTTPS, and HSTS is sent only with
+  `--hsts`, off by default because it applies to the host name on
+  every port (#379). **After D, the features behind the interface (the
+  session's plan of 2026-11-24, read from the code):** **E**, the
+  emoji: a `command` with a picker and the colon list's names, the
+  picker drawn by the host from data (its HTML unchanged); off, no
+  Emoji button and no list after a colon, while `:smile:` still shows
+  😄 (the parser's). **I**, Mermaid and TikZ, two plugins in one
+  package: a `block` (the host's islands still draw them) and a
+  `command` each; off, the fence shows as the listing `{.norender}`
+  gives, for that reader, in the prerender too, through
+  `Context.plugins`; exports, the feed and search belong to the page
+  and do not change. Then the calendar (WP5.92/93) as the first plugin
+  written as one, defining `pageKind`, `pageAction` and `sidebar`;
+  presentations' view half only after it, and only if still wanted.
+  **Decided by the session (small, reversible):** built-in features
+  moved behind the interface show no origin in grey in the completion
+  list (only external plugins will); the `html` frame stays the
+  host's (it is the wiki's own Markdown and its security model,
+  decision 72); the tree's `Mermaid` and `Tikz` constructors stay
+  until a block needs a generic one.
+  **External plugins, designed (2026-11-24; tried in Chromium 153, the
+  scripts in the session's scratchpad):** a frame loaded from the
+  wiki's own address with `Content-Security-Policy: sandbox
+  allow-scripts; … connect-src <approved hosts>` has an opaque origin
+  (no cookie, storage, IndexedDB or parent's DOM; `fetch` only to the
+  listed hosts, with `Origin: null`; no WebSocket, popups or
+  navigation), over plain HTTP too. **A gap in decision 69:**
+  `RTCPeerConnection` in such a frame reaches any host (STUN packets
+  were received; `webrtc 'block'` is ignored), while a dedicated
+  worker inside the frame has no WebRTC and keeps to `connect-src`;
+  an endless loop on the frame's main thread freezes the page unless
+  the browser isolates the frame, while in a worker it does not. So
+  `diagnostics` runs the plugin's code in a worker (fully confined),
+  and an `agent` panel, which needs a DOM, cannot be confined from
+  WebRTC: asked of the owner whether v1 ships `diagnostics` only. The
+  bundle is one JavaScript file, pinned by its SHA-256, served inline
+  under a hash in `script-src`; a manifest checked by one pure
+  function; the administrator sets a policy (off, the wiki's only,
+  users may add their own); schema step 26; four pull requests
+  (E1 server and frame, E2 the bridge and `diagnostics`, E3 the
+  settings, E4 `agent`). **E1 merged (#375):** the manifest and the
+  bundle's checks, the policy, the endpoints, step 26 and the frame
+  with the runtime that starts the code in a worker. The read is its
+  own `GET api/v1/external-plugins`, not fields on `GET
+  api/v1/plugins`. Left for E2: the application's read in both
+  backends, the editor's frame and the `MessagePort` protocol mapped
+  onto `diagnostics`, a test that the server's reserved ids hold
+  every id of the registry, and a browser test that the service
+  worker leaves `plugin-frame/` to the network (written, not yet
+  tested: the smoke context turns service workers off).
+  **The owner's decisions (2026-11-24, "Ok" to the session's three
+  proposals):** (1) a plugin's secrets go into the vault whenever the
+  user has one, so they follow the user across devices, sealed, and
+  "sync off" goes away for them; (2) "ask each time" covers the
+  assistant too (an unlock once a visit before it uses a key); (3) the
+  first version of external plugins has `diagnostics` only, run in a
+  worker; an external `agent` panel waits until it can be confined. **D, after A2 and B (the owner, 2026-11-24: "asystent mógłby
   requestować jakieś named keys per plugin z vaulta"):** named
   secrets per plugin in the vault as a general capability (get, put
   and remove by a name under the plugin's id, the names declared in

@@ -38,6 +38,7 @@ spec = describe "the deploy's front" $ do
   it "refuses what the shell refused, in its words" $ do
     parseOptions ["--texlive", "--no-texlive"] `shouldBe` Left "--texlive and --no-texlive exclude each other: give one"
     parseOptions ["--no-whats-new", "--whats-new"] `shouldBe` Left "--whats-new and --no-whats-new exclude each other: give one"
+    parseOptions ["--no-hsts", "--hsts"] `shouldBe` Left "--hsts and --no-hsts exclude each other: give one"
     parseOptions ["--frobnicate"] `shouldBe` Left "unknown option: --frobnicate (see --help)"
     parseOptions ["--server=yes"] `shouldBe` Left "unknown option: --server=yes (see --help)"
     either id (const "") (parseOptions ["--smtp-host=mail.example.org"]) `shouldSatisfy` ("--smtp-host is gone: " `isPrefixOf`)

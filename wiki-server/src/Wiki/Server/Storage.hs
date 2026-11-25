@@ -131,6 +131,14 @@ module Wiki.Server.Storage
   , wikiPluginsOff
   , setWikiPluginsOff
 
+    -- * External plugins
+  , Owner (..)
+  , externalPlugins
+  , setExternalPolicy
+  , installExternal
+  , removeExternal
+  , pluginFrameBundle
+
     -- * The backups
   , readBackups
   , readBackupSettings
@@ -164,6 +172,11 @@ module Wiki.Server.Storage
   , editingAs
   , threadsThen
   , uploadAttachmentFile
+  , Expected (..)
+  , Uploaded (..)
+  , uploadAttachmentFileIf
+  , attachingTo
+  , attachmentTooLarge
   , uploadSpaceIconFile
   , createPageAt
   , createSpaceAt
@@ -258,6 +271,7 @@ import Wiki.Api.Links (interactiveForm)
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), NotificationSettingsChange (..), Notifications (..), ReadMark, feedAddressOf, maxPeopleFound, searchable)
 import Wiki.Api.Opaque (NewAccountRecord (..), PasswordRecord (..), Stretch)
 import Wiki.Api.Plugins (PluginId (..), WikiPlugins (..), maxPluginsOff)
+import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), externalPolicyName, maxOwnPlugins, maxWikiPlugins)
 import Wiki.Api.Security (ResetToken (..), resetLifetime)
 import Wiki.Api.ServerSettings (HomePage, MailSettingsOf (..), ProviderSettingsOf (..), ServerSettingsChange, ServerSettingsOf (..), applyChange, checkHomePage, checkServerSettings, defaultHomePage, kindName, secretState, securityName)
 import Wiki.Api.ServerSettings qualified as SS
@@ -338,6 +352,7 @@ import Wiki.Server.Storage.Blobs (blobFile, collectBlobs, storeBlob, storeBlobFi
 import Wiki.Server.Storage.Check (TableRead (..), readEveryTable)
 import Wiki.Server.Storage.Comments qualified as Comments
 import Wiki.Server.Storage.Conversion
+import Wiki.Server.Storage.ExternalPlugins (Installed (..), deleteInstalled, insertInstalled, loadInstalled, loadOneInstalled, loadPolicy, replaceInstalled, storePolicy)
 import Wiki.Server.Storage.Layout (Database (..), PgDatabase (..), PgPrograms, attachmentsDir, backupsDir, defaultDatabase, defaultPgPrograms, postgresAt, temporaryDir)
 import Wiki.Server.Storage.Migrate (databaseVersion, knownVersion, migrateSaying, schemaVersion)
 import Wiki.Server.Storage.Notifications qualified as Notifications
@@ -1767,6 +1782,131 @@ wikiPluginsOff = run Reads (requireAdministrator >> WikiPlugins <$> db loadPlugi
 -- user left it. The change is written to the audit log.
 setWikiPluginsOff :: (MonadIO m) => WikiPlugins -> StoredWiki m (Either WikiError WikiPlugins)
 setWikiPluginsOff = run Writes . setWikiPluginsOffTx
+
+-- | 'Owner' is whose an external plugin is ("Wiki.Api.Plugins.External"):
+-- the wiki's, installed by the administrator for everyone, or the asking
+-- user's own.
+data Owner = TheWiki | Mine
+  deriving stock (Eq, Show)
+
+-- | The external plugins the asker may run, and who may add them
+-- ('Wiki.Api.Plugins.External.ExternalPlugins'): the wiki's to a signed-in
+-- user while the policy is not off, and always to an administrator; the
+-- asker's own while the policy lets users add theirs. Someone not signed
+-- in gets the policy alone.
+externalPlugins :: (MonadIO m) => StoredWiki m (Either WikiError ExternalPlugins)
+externalPlugins = run Reads externalPluginsTx
+
+-- | Set who may add external plugins, as an administrator. The plugins are
+-- kept whatever the policy. The result is what 'externalPlugins' then
+-- answers. The change is written to the audit log.
+setExternalPolicy :: (MonadIO m) => ExternalPolicy -> StoredWiki m (Either WikiError ExternalPlugins)
+setExternalPolicy policy = run Writes $ do
+  requireAdministrator
+  db (storePolicy policy)
+  record "settings.external-plugins" (settingsSubject "who may add plugins") [("policy", externalPolicyName policy)]
+  externalPluginsTx
+
+-- | Install an external plugin whose manifest and bundle were checked
+-- ('Wiki.Api.Plugins.External.parseManifest', 'Wiki.Api.Plugins.External.checkBundle'),
+-- or replace the owner's plugin of the same id when @replaces@ is its
+-- bundle's hash. The wiki's are installed by an administrator, whatever
+-- the policy, and written to the audit log; a user's own while the policy
+-- lets users add theirs ('Forbidden' otherwise), and never with an id of
+-- one of the wiki's. A plugin of the id with no @replaces@, or with
+-- another, is a 'Conflict', as is one more than the owner may have. The
+-- bundle goes into the blob store, named by its hash.
+installExternal :: (MonadIO m) => Owner -> ExternalManifest -> ByteString -> Maybe Text -> StoredWiki m (Either WikiError ExternalPlugin)
+installExternal owner manifest bytes replaces = run Writes $ do
+  ownerId <- case owner of
+    TheWiki -> requireAdministrator $> Nothing
+    Mine -> do
+      u <- notified
+      policy <- db loadPolicy
+      require (policy == ExternalUsers)
+      pure (Just u)
+  let pid = manifest.id.text
+  when (owner == Mine) $
+    db (loadOneInstalled Nothing manifest.id) >>= \case
+      Just _ -> failWith (Conflict ("The wiki has a plugin with the id " <> pid <> ", installed for everyone: a plugin of your own needs another id."))
+      Nothing -> pass
+  existing <- db (loadOneInstalled ownerId manifest.id)
+  case (existing, replaces) of
+    (Nothing, Just _) -> failWith (Conflict ("No plugin with the id " <> pid <> " is installed, so none is replaced: send the upload without replaces."))
+    (Just e, Nothing) -> failWith (Conflict ("A plugin with the id " <> pid <> " is installed already: to replace it, send its bundle's hash, " <> e.bundle.text <> ", as replaces."))
+    (Just e, Just r) | r /= e.bundle.text -> failWith (Conflict ("The plugin " <> pid <> " was replaced since: its bundle's hash is now " <> e.bundle.text <> "."))
+    _ -> pass
+  when (isNothing existing) $ do
+    let most = if owner == TheWiki then maxWikiPlugins else maxOwnPlugins
+    have <- length <$> db (loadInstalled ownerId)
+    when (have >= most) $
+      failWith (Conflict ((if owner == TheWiki then "The wiki has " else "You have ") <> show most <> " plugins installed already, the most it may: remove one first."))
+  dir <- asks (\x -> x.blobs)
+  blob <- liftIO (storeBlob dir bytes)
+  time <- now
+  rowId <- maybe newId (pure . (\e -> e.rowId)) existing
+  let installed = Installed {rowId, owner = ownerId, manifest, bundle = blob, size = fromIntegral (BS.length bytes), installedAt = time}
+  db (if isJust existing then replaceInstalled installed else insertInstalled installed)
+  when (owner == TheWiki) $
+    record
+      (if isJust existing then "plugin.replace" else "plugin.install")
+      (pluginSubject manifest)
+      [ ("version", manifest.version)
+      , ("bundle", blob.text)
+      , ("hosts", if null manifest.hosts then "none" else T.intercalate ", " manifest.hosts)
+      ]
+  pure (externalPluginOf (owner == Mine) installed)
+
+-- | Remove an external plugin: one of the wiki's, as an administrator,
+-- written to the audit log, or one of the asking user's own, whatever the
+-- policy. One the owner does not have is 'NotFound'. The users' own state
+-- for its id ("Wiki.Server.Plugins") is kept. Its bundle's file stays in
+-- the blob store until nothing refers to it ('collectBlobs').
+removeExternal :: (MonadIO m) => Owner -> PluginId -> StoredWiki m (Either WikiError ())
+removeExternal owner p = run Writes $ do
+  ownerId <- case owner of
+    TheWiki -> requireAdministrator $> Nothing
+    Mine -> Just <$> notified
+  found <- db (loadOneInstalled ownerId p) >>= maybe (failWith NotFound) pure
+  db (deleteInstalled ownerId p)
+  when (owner == TheWiki) $
+    record "plugin.remove" (pluginSubject found.manifest) [("version", found.manifest.version)]
+
+-- | The manifest of the external plugin whose frame is asked for, and the
+-- file of its bundle, with the bundle's id, if the asker may run it now:
+-- the plugin is the owner's, its bundle is this one (not a version
+-- replaced since), and it is not off for the whole wiki. The wiki's run
+-- for a signed-in user, and for the operator, while the policy is not
+-- off; a user's own for that user while the policy lets users add theirs,
+-- and not when the wiki has a plugin of the same id. Anyone else, and
+-- everything else, is 'Nothing', which the frame's route answers 404.
+pluginFrameBundle :: Storage -> Who -> Owner -> PluginId -> BlobId -> IO (Maybe (ExternalManifest, BlobId, FilePath))
+pluginFrameBundle st who owner p blob =
+  either (const Nothing) identity
+    <$> transact
+      st
+      who
+      Reads
+      ( do
+          ctx <- ask
+          policy <- db loadPolicy
+          off <- db loadPluginsOff
+          let signedIn = isJust ctx.user
+              mine = case ctx.user of
+                Just u | u.id /= administratorId -> Just u.id
+                _ -> Nothing
+          found <- case owner of
+            TheWiki | signedIn, policy /= ExternalOff -> db (loadOneInstalled Nothing p)
+            Mine
+              | Just u <- mine
+              , policy == ExternalUsers -> do
+                  shadowed <- isJust <$> db (loadOneInstalled Nothing p)
+                  if shadowed then pure Nothing else db (loadOneInstalled (Just u) p)
+            _ -> pure Nothing
+          pure $ case found of
+            Just i | i.bundle == blob, not (Set.member p off), Just file <- blobFile ctx.blobs i.bundle -> Just (i.manifest, i.bundle, file)
+            _ -> Nothing
+      )
 
 readBackups :: Storage -> Who -> IO (Either WikiError Backups)
 readBackups st who =
@@ -3291,30 +3431,88 @@ deletePageTx pid = do
 --------------------------------------------------------------------------------
 -- Attachments
 
--- | Attach a file, its bytes kept under their hash. The size is checked
--- before anything is hashed or written, so that a file too large costs
--- nothing but its reading.
 -- | Attach a file to a page. The file is this many bytes, which the last
 -- argument stores in the blob directory given to it, after the checks:
 -- bytes in memory ('uploadAttachment') or a file on disk
--- ('uploadAttachmentFile').
+-- ('uploadAttachmentFile'). The size is checked before anything is
+-- hashed or written, so that a file too large costs nothing but its
+-- reading. An attachment the page already has under the name is
+-- replaced, in its place among the page's.
 uploadAttachmentTx :: PageId -> Text -> Text -> Integer -> (FilePath -> IO BlobId) -> Tx Attachment
-uploadAttachmentTx pid name mediaType size store = do
+uploadAttachmentTx pid name mediaType size store =
+  uploadAttachmentIfTx AnyAttachment pid name mediaType size store >>= \case
+    Right done -> pure done.attachment
+    -- 'AnyAttachment' holds of every page.
+    Left _ -> failWith (Conflict "The attachment changed meanwhile.")
+
+-- | 'Expected' is what a page must have under an attachment's name for an
+-- upload to go ahead ('uploadAttachmentFileIf'): anything ('AnyAttachment',
+-- as the browser uploads), no attachment ('NoAttachment', an upload that
+-- only creates), or an attachment whose bytes are this blob
+-- ('AttachmentOf', a replace of the attachment that was read). The API for
+-- programs asks it, so that a replace is never made over bytes the
+-- program has not seen.
+data Expected = AnyAttachment | NoAttachment | AttachmentOf BlobId
+  deriving stock (Eq, Show)
+
+-- | 'Uploaded' is an attachment stored by an upload, and whether it took
+-- the place of one of the same name.
+data Uploaded = Uploaded
+  { attachment :: Attachment
+  , replaced :: Bool
+  }
+
+-- | 'uploadAttachmentTx' with what the page must have under the name
+-- ('Expected'), checked in the same transaction as the write, before the
+-- bytes are stored: 'Left' with what the page has under the name (an
+-- attachment, or 'Nothing') when the expectation does not hold, and
+-- nothing is written.
+uploadAttachmentIfTx :: Expected -> PageId -> Text -> Text -> Integer -> (FilePath -> IO BlobId) -> Tx (Either (Maybe Attachment) Uploaded)
+uploadAttachmentIfTx expected pid name mediaType size store = do
+  attachableTx pid
+  n <- either invalid pure (parseFileName name)
+  when (size > fromIntegral maxAttachmentSize) $
+    invalid attachmentTooLarge
+  there <- (>>= \p -> find (\a -> a.name == n) p.attachments) <$> db (loadPage pid)
+  let met = case (expected, there) of
+        (AnyAttachment, _) -> True
+        (NoAttachment, found) -> isNothing found
+        (AttachmentOf b, Just a) -> a.source == SourceBlob b
+        (AttachmentOf _, Nothing) -> False
+  if not met
+    then pure (Left there)
+    else do
+      let mt = uploadedMimeType mediaType
+      dir <- asks (\x -> x.blobs)
+      blob <- liftIO (store dir)
+      i <- newId
+      let attachment = Attachment {id = AttachmentId i, name = n, mediaType = mt, size = fromIntegral size, source = SourceBlob blob}
+      db (replaceAttachment pid attachment)
+      pure (Right Uploaded {attachment, replaced = isJust there})
+
+-- | What attaching a file to a page asks, before the file is looked at:
+-- the page, the right to change its attachments ('requireAttachTo'), and a
+-- space that takes plain attachments (an encrypted space does not, nor
+-- one being converted).
+attachableTx :: PageId -> Tx ()
+attachableTx pid = do
   p <- findNode pid
   c <- chainOfPage p
   requireAttachTo c pid
   requireOffered Offered.AttachPlain c
-  n <- either invalid pure (parseFileName name)
-  when (size > fromIntegral maxAttachmentSize) $
-    invalid ("An attachment can be at most " <> show (maxAttachmentSize `div` (1024 * 1024)) <> " MB.")
-  let mt = uploadedMimeType mediaType
-  dir <- asks (\x -> x.blobs)
-  blob <- liftIO (store dir)
-  i <- newId
-  let attachment = Attachment {id = AttachmentId i, name = n, mediaType = mt, size = fromIntegral size, source = SourceBlob blob}
-  -- One of the same name is replaced, in its place among the page's.
-  db (replaceAttachment pid attachment)
-  pure attachment
+
+-- | Whether the 'Who' may attach a file to a page now ('attachableTx'), or
+-- the 'WikiError' an upload would be refused with. The API for programs
+-- asks it before it reads an upload's body, so that a request the upload
+-- would refuse costs no transfer; the upload asks it again.
+attachingTo :: Storage -> Who -> PageId -> IO (Either WikiError ())
+attachingTo st who pid = transact st who Reads (attachableTx pid)
+
+-- | Why an attachment over 'maxAttachmentSize' is refused: the
+-- application's words, in every upload's refusal, by the browser's routes
+-- and the API for programs alike.
+attachmentTooLarge :: Text
+attachmentTooLarge = "An attachment can be at most " <> show (maxAttachmentSize `div` (1024 * 1024)) <> " MB."
 
 deleteAttachmentTx :: AttachmentId -> Tx ()
 deleteAttachmentTx aid = do
@@ -4405,6 +4603,28 @@ setWikiSettingsTx new = do
     ]
   pure new
 
+-- | What 'externalPlugins' answers, in a transaction.
+externalPluginsTx :: Tx ExternalPlugins
+externalPluginsTx = do
+  ctx <- ask
+  policy <- db loadPolicy
+  let administers = hasGlobalPermission ctx.principal ctx.grants Administer
+      signedIn = isJust ctx.user
+  wikis <- if administers || (signedIn && policy /= ExternalOff) then db (loadInstalled Nothing) else pure []
+  own <- case ctx.user of
+    Just u | u.id /= administratorId, policy == ExternalUsers -> db (loadInstalled (Just u.id))
+    _ -> pure []
+  pure ExternalPlugins {policy, external = map (externalPluginOf False) wikis <> map (externalPluginOf True) own}
+
+-- | An installed plugin as the API gives it: the asker's own or not.
+externalPluginOf :: Bool -> Installed -> ExternalPlugin
+externalPluginOf mine i = ExternalPlugin {manifest = i.manifest, bundle = i.bundle.text, size = fromIntegral i.size, mine, installedAt = i.installedAt}
+
+-- | How an audit log entry names an external plugin: by its id and its
+-- name.
+pluginSubject :: ExternalManifest -> Audit.Subject
+pluginSubject m = Audit.Subject {kind = "plugin", id = Just m.id.text, name = m.name}
+
 -- | Check and store the plugins off for the whole wiki: at most
 -- 'maxPluginsOff' of them.
 setWikiPluginsOffTx :: WikiPlugins -> Tx WikiPlugins
@@ -5210,7 +5430,7 @@ stageBytesTx pid aid lease size store = do
       metas <- db (loadSealedMetas pid)
       unless (Map.member aid metas) $ invalid "An attachment's name and media type are staged before its bytes."
       when (size > fromIntegral maxAttachmentSize + 16) $
-        invalid ("An attachment can be at most " <> show (maxAttachmentSize `div` (1024 * 1024)) <> " MB.")
+        invalid attachmentTooLarge
       blob <- liftIO (store dir)
       db (setSealedStagedBlob aid blob)
     Decrypting -> do
@@ -5218,7 +5438,7 @@ stageBytesTx pid aid lease size store = do
       unless (any (\r -> r.kind == "attachment" && r.item == aid.text) rows) $
         invalid "An attachment's name and media type are staged before its bytes."
       when (size > fromIntegral maxAttachmentSize) $
-        invalid ("An attachment can be at most " <> show (maxAttachmentSize `div` (1024 * 1024)) <> " MB.")
+        invalid attachmentTooLarge
       blob <- liftIO (store dir)
       db (setPlainStagedBlob pid aid blob)
 
@@ -5607,7 +5827,7 @@ uploadSealedAttachmentTx pid up size store = do
   unless (holdsBytes nonceBytes up.meta.bytesNonce.text) $
     invalid "This is not an attachment this wiki keeps: its nonce is not of its length."
   when (size > fromIntegral maxAttachmentSize + 16) $
-    invalid ("An attachment can be at most " <> show (maxAttachmentSize `div` (1024 * 1024)) <> " MB.")
+    invalid attachmentTooLarge
   page <- findPage pid
   when (any (\a -> a.id == up.id) page.attachments) $ failWith (Conflict "An attachment with this id exists already.")
   for_ up.replaces $ \old ->
@@ -6128,6 +6348,15 @@ uploadAttachmentFile :: (MonadIO m) => PageId -> Text -> Text -> FilePath -> Sto
 uploadAttachmentFile pid name mediaType file = do
   size <- liftIO (getFileSize file)
   run Writes (uploadAttachmentTx pid name mediaType size (\dir -> fst <$> storeBlobFile dir file))
+
+-- | 'uploadAttachmentFile' when the page has under the name what is
+-- 'Expected', checked in the upload's own transaction: 'Left' with what
+-- the page has under the name when it does not, and nothing is written.
+-- The API for programs uploads through it.
+uploadAttachmentFileIf :: (MonadIO m) => Expected -> PageId -> Text -> Text -> FilePath -> StoredWiki m (Either WikiError (Either (Maybe Attachment) Uploaded))
+uploadAttachmentFileIf expected pid name mediaType file = do
+  size <- liftIO (getFileSize file)
+  run Writes (uploadAttachmentIfTx expected pid name mediaType size (\dir -> fst <$> storeBlobFile dir file))
 
 -- | 'uploadSpaceIcon' with the image in a file, as 'uploadAttachmentFile'.
 uploadSpaceIconFile :: (MonadIO m) => SpaceId -> Text -> FilePath -> StoredWiki m (Either WikiError Space)

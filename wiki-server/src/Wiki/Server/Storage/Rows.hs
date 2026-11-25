@@ -983,16 +983,27 @@ loadIcons = catMaybes <$> runSelectReturningList (select ((\s -> s.icon) <$> fil
 blobAttached :: (Backend be) => BlobId -> Db be Bool
 blobAttached b = isJust <$> runSelectReturningOne (select (limit_ 1 ((\a -> a.id) <$> filter_ (\a -> a.blob `holds` val_ b.text) (all_ wikiDb.attachments))))
 
--- | The blobs the attachments, the spaces' icons and the users' avatars
--- name: the files of the blob store a database refers to
--- ("Wiki.Server.Storage.Blobs").
+-- | The blobs the attachments, the spaces' icons, the users' avatars and
+-- the external plugins' bundles name: the files of the blob store a
+-- database refers to ("Wiki.Server.Storage.Blobs").
 referencedBlobs :: (Backend be) => Db be (Set BlobId)
 referencedBlobs = do
   attached <- map fst <$> blobSizes
   icons <- loadIcons
   avatars <- loadAvatarBlobs
   staged <- loadStagedBlobs
-  pure (Set.fromList (attached <> [b | t <- icons, Just (IconImage b _) <- [decodeStrict' (encodeUtf8 t)]] <> avatars <> staged))
+  bundles <- loadBundleBlobs
+  pure (Set.fromList (attached <> [b | t <- icons, Just (IconImage b _) <- [decodeStrict' (encodeUtf8 t)]] <> avatars <> staged <> bundles))
+
+-- | The blobs of the external plugins' bundles (@external_plugins@, step
+-- 26). A database of a schema before them (a backup made by an older
+-- server) has none.
+loadBundleBlobs :: (Backend be) => Db be [BlobId]
+loadBundleBlobs = do
+  tables <- tableNames
+  if "external_plugins" `elem` tables
+    then map BlobId <$> runSelectReturningList (select ((\p -> p.bundle) <$> all_ wikiDb.external_plugins))
+    else pure []
 
 -- | The blobs staged while a space is converted, not yet in their rows'
 -- place: an encrypted attachment's bytes, staged while its space is

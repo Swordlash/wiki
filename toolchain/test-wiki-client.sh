@@ -278,6 +278,18 @@ while ! mkdir "\$FAIL_DIR/call-\$n" 2>/dev/null; do n=\$((n + 1)); done
 [ "\$n" != "\$FAIL_AT" ] || exit 1
 exec "$real_mv" "\$@"
 EOF
+# And a curl that records its config, the one the client gives on
+# descriptor 3 (the recorder above sees only the command line): it copies
+# the config to curl.config.last and adds it to curl.config, then runs the
+# real curl with that copy on descriptor 3.
+mkdir -p "$work/fakes/config"
+cat >"$work/fakes/config/curl" <<EOF
+#!/bin/sh
+cat /dev/fd/3 >"$work/curl.config.last"
+cat "$work/curl.config.last" >>"$work/curl.config"
+exec "$real_curl" "\$@" 3<"$work/curl.config.last"
+EOF
+chmod +x "$work/fakes/config/curl"
 chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv" "$work/fakes/pausecp/cp" "$work/fakes/failmv/mv"
 # The PATH the client runs with: the recording curl, and the failing jq
 # unless the MCP server is under test.
@@ -565,6 +577,7 @@ suite() {
   status=$?
   expect 8 "WIKI_PROXY is the proxy curl goes through"
   lacks curl.args "127.0.0.1:1" "the proxy is not on curl's command line"
+  insecure_setting
 
   # The configuration file, read only when nobody else may read it, through
   # a symbolic link too.
@@ -629,6 +642,7 @@ suite() {
   creating
   sections
   odd_anchors
+  attaching
   round_trip "$public_root" root
   round_trip "$public_wiki" base-path
   url=$public_root user=editor password=$editor_password state=$work/state-$1-a input=/dev/null
@@ -893,6 +907,39 @@ answers_by_kind() {
   fake_answer "$space" application/json create-space team/new
   expect 0 "create-space answered as the wiki answers succeeds"
   fake_location='' fake_status=200
+  # A file's bytes: 200 with the ETag of its SHA-256, 64 hex digits quoted.
+  hex=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  h="\"$hex\""
+  not_the_wikis 'bytes' application/octet-stream 200 none attachment /s/team/p/x/ a.txt
+  not_the_wikis 'bytes' application/octet-stream 200 '"abc"' attachment /s/team/p/x/ a.txt
+  not_the_wikis 'bytes' application/octet-stream 200 "$v" attachment /s/team/p/x/ a.txt
+  not_the_wikis 'bytes' application/octet-stream 206 "$h" attachment /s/team/p/x/ a.txt
+  fake_etag=$h
+  fake_answer 'bytes' application/octet-stream attachment /s/team/p/x/ a.txt
+  fake_etag=$v
+  expect 0 "attachment answered as the wiki answers succeeds"
+  # A file attached: 201, its entry named as asked, its version the ETag,
+  # and Location the address asked for.
+  entry="{\"name\":\"a.md\",\"size\":1,\"mediaType\":\"text/markdown\",\"version\":\"\\\"$hex\\\"\",\"address\":\"/api/attachments/s/team/p/x/?name=a.md\",\"markdown\":\"[a.md](attachment:a.md)\"}"
+  fake_location='/api/attachments/s/team/p/x/?name=a.md'
+  not_the_wikis "$entry" application/json 201 none attach /s/team/p/x/ "$work/fake.md" --name a.md
+  not_the_wikis "$entry" application/json 200 "$h" attach /s/team/p/x/ "$work/fake.md" --name a.md
+  not_the_wikis "$entry" application/json 201 "$h" attach /s/team/p/x/ "$work/fake.md" --name b.md
+  not_the_wikis '{"name":"a.md"}' application/json 201 "$h" attach /s/team/p/x/ "$work/fake.md" --name a.md
+  fake_location='/api/attachments/s/team/p/x/?name=b.md'
+  not_the_wikis "$entry" application/json 201 "$h" attach /s/team/p/x/ "$work/fake.md" --name a.md
+  fake_location='/api/attachments/s/team/p/x/?name=a.md' fake_status=201 fake_etag=$h
+  fake_answer "$entry" application/json attach /s/team/p/x/ "$work/fake.md" --name a.md
+  expect 0 "attach answered as the wiki answers succeeds"
+  has out "[a.md](attachment:a.md)" "attach prints the Markdown the wiki gave"
+  fake_location='' fake_status=200 fake_etag=$v
+  # A file taken off: 204 with no body.
+  not_the_wikis 'Gone.' text/plain 204 none detach /s/team/p/x/ a.md
+  not_the_wikis '' '' 200 none detach /s/team/p/x/ a.md
+  fake_status=204
+  fake_answer '' '' detach /s/team/p/x/ a.md
+  fake_status=200
+  expect 0 "detach answered as the wiki answers succeeds"
   # A page's contents: JSON of their shape, whose version is the ETag's.
   contents="{\"title\":\"X\",\"version\":\"\\\"2026-11-23T00:00:00Z\\\"\",\"markdown\":\"/api/markdown/s/team/p/x/\",\"headings\":[{\"level\":1,\"text\":\"X\",\"anchor\":\"x\",\"inSpoiler\":false,\"section\":\"/api/markdown/s/team/p/x/?section=x\",\"children\":[]}]}"
   not_the_wikis "$html" text/html 200 "$v" contents /s/team/p/x/
@@ -1384,6 +1431,7 @@ The rota changes.
       ["wiki_write_page", ["path", "markdown", "base_version"], ["path", "markdown", "base_version"]],
       ["wiki_write_section", ["path", "section", "own", "top", "markdown", "base_version"], ["path", "markdown", "base_version"]],
       ["wiki_create_page", ["path", "markdown", "title"], ["path", "markdown"]],
+      ["wiki_list_attachments", ["path"], ["path"]],
       ["wiki_markdown_reference", ["section"], []]]'
   client get "/s/team/projects/p/mcp-kind-$shell/"
   expect 4 "the call with an unknown argument created nothing"
@@ -1438,6 +1486,217 @@ EOF
     'map(select(.id == 8))[0].result | .isError == true and (.content[0].text | contains("has no section"))'
   client get "$sp"
   check "the page is as it was after the arguments the client cannot carry" cmp -s "$work/out" "$work/whole-before"
+}
+
+# A page's files: attached, listed, read back byte for byte (a file with
+# every byte value), a name taken, a file that is not a regular one, a
+# reader who may not attach, a file taken off, and the MCP server's
+# wiki_list_attachments against the list; at the root and under a base
+# path.
+attaching() {
+  files=$work/files-$shell
+  mkdir -p "$files"
+  chmod 700 "$files"
+  k=0
+  while [ "$k" -lt 256 ]; do
+    # shellcheck disable=SC2059
+    printf "\\$(printf '%03o' "$k")"
+    k=$((k + 1))
+  done >"$files/one of each"
+  cat "$files/one of each" "$files/one of each" "$files/one of each" "$files/one of each" >"$files/every byte.bin"
+  printf '\211PNG not really\n' >"$files/chart.png"
+  printf 'Notes, ż.\n' >"$files/notes.txt"
+  for at in "$public_root|root" "$public_wiki|base-path"; do
+    url=${at%|*} where=${at#*|}
+    user=editor password=$editor_password state=$work/state-$shell-files input=/dev/null
+    client attachments "$page"
+    expect 0 "attachments of a page with none ($where)"
+    has out "No files attached to $page." "attachments says there are none ($where)"
+    client attach "$page" "$files/every byte.bin"
+    expect 0 "attach a file with every byte value, its name with a space ($where)"
+    has out "[every byte.bin](<attachment:every byte.bin>)" "attach prints the Markdown that links to it ($where)"
+    has err "application/octet-stream" "attach says the media type it sent ($where)"
+    client attach team/projects the-wiki "$files/chart.png"
+    expect 0 "attach by a space's path and a page's path ($where)"
+    check "attach of a .png prints the Markdown that shows it as an image ($where)" first_line_matches "$work/out" '^!\[chart\.png\](attachment:chart\.png)$'
+    client attach "$page" "$files/notes.txt" --name 'a+b ż.txt'
+    expect 0 "attach under another name, with a plus and a letter outside ASCII ($where)"
+    client attachments "$page"
+    expect 0 "attachments ($where)"
+    has out "every byte.bin  (application/octet-stream, 1024 bytes)" "attachments shows a file's name, type and size ($where)"
+    has out "    ![chart.png](attachment:chart.png)" "attachments shows a file's Markdown, indented ($where)"
+    client attachments "$page" --json
+    expect 0 "attachments --json ($where)"
+    if "$real_jq" -e '.attachments | map(.name) == ["every byte.bin", "chart.png", "a+b ż.txt"]' "$work/out" >/dev/null; then pass "attachments --json gives the names byte for byte ($where)"; else fail "attachments --json gives the names byte for byte ($where)"; fi
+    cp "$work/out" "$work/attachments.json"
+    client attachment "$page" "every byte.bin" --out "$files/back.bin"
+    expect 0 "attachment --out ($where)"
+    check "attachment --out writes the file byte for byte ($where)" cmp -s "$files/back.bin" "$files/every byte.bin"
+    check "attachment --out writes no sidecar ($where)" [ ! -e "$files/back.bin.version" ]
+    client attachment team/projects the-wiki 'a+b ż.txt'
+    expect 0 "attachment to standard output, by a space's path, a page's path and a name ($where)"
+    check "attachment gives the bytes on standard output ($where)" cmp -s "$work/out" "$files/notes.txt"
+    client attachment "$page" "every byte"
+    expect 4 "attachment of a name the page does not have ($where)"
+    # A name that starts with a dash goes after --.
+    client attach "$page" "$files/notes.txt" --name -dash.txt
+    expect 0 "attach under a name that starts with a dash ($where)"
+    client attachment "$page" -dash.txt
+    expect 2 "without --, a name that starts with a dash is an option ($where)"
+    client attachment "$page" -- -dash.txt
+    expect 0 "attachment after -- ($where)"
+    check "attachment after -- gives the file ($where)" cmp -s "$work/out" "$files/notes.txt"
+    client detach "$page" -- -dash.txt
+    expect 0 "detach after -- ($where)"
+    # A name taken: nothing is sent over it.
+    client attach "$page" "$files/notes.txt" --name "every byte.bin"
+    expect 5 "attach to a name taken is refused ($where)"
+    has err "detach" "the refusal says to detach it first ($where)"
+    client attachment "$page" "every byte.bin"
+    check "the file of the name taken is as it was ($where)" cmp -s "$work/out" "$files/every byte.bin"
+    # What is not a regular file is not sent.
+    mkfifo "$files/a pipe"
+    : >"$work/curl.args"
+    for odd in "$files" "$files/a pipe" "$files/no such file"; do
+      client attach "$page" "$odd"
+      expect 2 "attach of $odd, not a regular file, is refused"
+    done
+    check "nothing was sent for what is not a regular file ($where)" [ ! -s "$work/curl.args" ]
+    rm -f "$files/a pipe"
+    # attachment --out writes nowhere through a link, and in no shared directory.
+    ln -s "$files/elsewhere" "$files/link.bin"
+    client attachment "$page" "every byte.bin" --out "$files/link.bin"
+    expect 2 "attachment --out to a symbolic link is refused ($where)"
+    check "nothing was written through the link ($where)" [ ! -e "$files/elsewhere" ]
+    rm -f "$files/link.bin"
+    mkdir -p "$files/shared"
+    chmod 1777 "$files/shared"
+    client attachment "$page" "every byte.bin" --out "$files/shared/x.bin"
+    expect 2 "attachment --out into a directory others can write is refused ($where)"
+    chmod 700 "$files/shared"
+    # A reader who may read the guide and not edit it (at the root, where
+    # the reader is a user).
+    if [ "$where" = root ]; then
+      client attach /s/guide/ "$files/notes.txt" --name "the editor's.txt"
+      expect 0 "the editor attaches a file to the guide"
+      user=reader password=$reader_password
+      client attachments /s/guide/
+      expect 0 "the reader lists the guide's files"
+      has out "the editor's.txt  (text/plain, " "the reader sees the editor's file"
+      client attach /s/guide/ "$files/notes.txt" --name reader.txt
+      expect 6 "the reader may not attach"
+      client detach /s/guide/ "the editor's.txt"
+      expect 6 "the reader may not detach"
+      user=editor password=$editor_password
+      client detach /s/guide/ "the editor's.txt"
+      expect 0 "the editor takes the file off the guide"
+    fi
+    # The MCP server's tool gives what the list gives.
+    {
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+      "$real_jq" -nc --arg path "$page" '{jsonrpc: "2.0", id: 2, method: "tools/call", params: {name: "wiki_list_attachments", arguments: {path: $path}}}'
+      "$real_jq" -nc '{jsonrpc: "2.0", id: 3, method: "tools/call", params: {name: "wiki_list_attachments", arguments: {path: "/s/team/projects/p/no-such-page/"}}}'
+    } >"$work/mcp-files.in"
+    env -i PATH="$curl_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-mcp" \
+      "$shell" "$client" mcp <"$work/mcp-files.in" >"$work/mcp-files.out" 2>"$work/mcp-files.err"
+    status=$?
+    expect 0 "mcp with wiki_list_attachments ends when its input ends ($where)"
+    if "$real_jq" -e -s --slurpfile listed "$work/attachments.json" --arg page "$page" \
+      'map(select(.id == 2))[0].result | .isError == false and (.content[0].text | fromjson | .path == $page and .attachments == $listed[0].attachments)' "$work/mcp-files.out" >/dev/null; then
+      pass "mcp: wiki_list_attachments gives the list attachments --json gives ($where)"
+    else
+      fail "mcp: wiki_list_attachments gives the list attachments --json gives ($where)"
+      sed 's/^/  reply: /' "$work/mcp-files.out" | cut -c1-300 >&2
+    fi
+    if "$real_jq" -e -s 'map(select(.id == 3))[0].result | .isError == true and (.content[0].text | contains("not found"))' "$work/mcp-files.out" >/dev/null; then
+      pass "mcp: wiki_list_attachments of a page not there is the tool's error ($where)"
+    else
+      fail "mcp: wiki_list_attachments of a page not there is the tool's error ($where)"
+    fi
+    # attachment --out over a page's file takes its sidecar away, so that
+    # the bytes are never put back as the page.
+    client get "$page" --out "$files/page.md"
+    expect 0 "get --out of the page before the file goes over it ($where)"
+    client attachment "$page" "every byte.bin" --out "$files/page.md"
+    expect 0 "attachment --out over a page's file ($where)"
+    check "attachment --out took the page's sidecar away ($where)" [ ! -e "$files/page.md.version" ]
+    check "attachment --out wrote the bytes ($where)" cmp -s "$files/page.md" "$files/every byte.bin"
+    : >"$work/curl.args"
+    client put "$page" --file "$files/page.md"
+    expect 2 "put --file of the file's bytes, with no sidecar, is refused ($where)"
+    check "nothing was sent for that put ($where)" [ ! -s "$work/curl.args" ]
+    # attach streams the file (--upload-file), never reading it into memory
+    # (--data-binary @).
+    : >"$work/curl.args"
+    client attach "$page" "$files/chart.png" --name streamed.png
+    expect 0 "attach of a file, streamed ($where)"
+    check "attach sends the file with --upload-file ($where)" grep -q -- "--upload-file $files/chart.png" "$work/curl.args"
+    if grep -q -- "--data-binary" "$work/curl.args"; then fail "attach does not read the file with --data-binary ($where)"; else pass "attach does not read the file with --data-binary ($where)"; fi
+    client attachment "$page" streamed.png
+    check "the streamed file reads back byte for byte ($where)" cmp -s "$work/out" "$files/chart.png"
+    client detach "$page" streamed.png
+    expect 0 "detach of the streamed file ($where)"
+    # A file over the wiki's limit, sparse on disk, under a limit of 100 MB
+    # of the client's memory (curl's --data-binary needs more than that for
+    # it): the wiki refuses it, and nothing is stored.
+    dd if=/dev/zero of="$files/big.bin" bs=1048576 count=0 seek=60 2>/dev/null
+    client attachments "$page" --json
+    cp "$work/out" "$work/before-big.json"
+    # ulimit -v is dash's and bash's, not POSIX's: tried first, and the
+    # check runs without it where the shell has none.
+    # shellcheck disable=SC3045
+    if (ulimit -v 100000) 2>/dev/null; then
+      status=$(
+        # shellcheck disable=SC3045
+        ulimit -v 100000
+        client attach "$page" "$files/big.bin"
+        printf '%s' "$status"
+      )
+      expect 6 "attach of a file over the limit, in 100 MB of memory, is refused by the wiki ($where)"
+      has err "(413)" "the refusal of a file over the limit is the wiki's 413 ($where)"
+    else
+      client attach "$page" "$files/big.bin"
+      expect 6 "attach of a file over the limit is refused by the wiki ($where)"
+      printf 'not run: ulimit -v under %s\n' "$shell"
+    fi
+    client attachments "$page" --json
+    check "nothing was stored for the file over the limit ($where)" cmp -s "$work/out" "$work/before-big.json"
+    rm -f "$files/big.bin"
+    # Standard output that cannot be written (a full disk) fails with a
+    # sentence, never as a success.
+    if [ -c /dev/full ]; then
+      full() {
+        env -i PATH="$curl_path" HOME="$home" WIKI_URL="$url" WIKI_USER="$user" WIKI_PASSWORD="$password" WIKI_STATE_DIR="$state" \
+          "$shell" "$client" "$@" </dev/null >/dev/full 2>"$work/err"
+        status=$?
+      }
+      full attach "$page" "$files/notes.txt" --name full.txt
+      expect 1 "attach to a full standard output fails ($where)"
+      has err "attached full.txt to $page, but the Markdown that shows it could not be written" "the failure says the file was attached ($where)"
+      full attachments "$page"
+      expect 1 "attachments to a full standard output fails ($where)"
+      has err "could not be written out whole" "attachments says what failed ($where)"
+      full attachments "$page" --json
+      expect 1 "attachments --json to a full standard output fails ($where)"
+      full attachment "$page" full.txt
+      expect 1 "attachment to a full standard output fails ($where)"
+      has err "could not be written out whole" "attachment says what failed ($where)"
+      client detach "$page" full.txt
+      expect 0 "detach of the file attached to a full output ($where)"
+    else
+      printf 'not run: /dev/full is not there\n'
+    fi
+    # Taken off.
+    for name in "every byte.bin" chart.png 'a+b ż.txt'; do
+      client detach "$page" "$name"
+      expect 0 "detach $name ($where)"
+    done
+    client detach "$page" chart.png
+    expect 4 "detach of a file taken off already ($where)"
+    client attachments "$page"
+    has out "No files attached to $page." "the page has no files once they are taken off ($where)"
+  done
+  url=$public_root user=editor password=$editor_password state=$work/state-$shell-a input=/dev/null
 }
 
 # get --out and put --file write only in a directory of the user's own:
@@ -1807,6 +2066,14 @@ wrong_answers() {
   done
   fake_answer '# A page' 'text/markdown; charset=utf-8' get /s/team/p/x/
   expect 0 "get, answered Markdown, succeeds"
+  for answer in '<html></html>|text/html' '{"attachments":[{"name":"x"}]}|application/json' '{"files":[]}|application/json'; do
+    body=${answer%|*} type=${answer##*|}
+    fake_answer "$body" "$type" attachments /s/team/p/x/
+    expect 1 "attachments, answered $body as ${type:-no type}, fails"
+    has err "is not the wiki's" "attachments, answered $body, says the answer is not the wiki's"
+  done
+  fake_answer '{"attachments":[]}' application/json attachments /s/team/p/x/
+  expect 0 "attachments, answered the wiki's own JSON, succeeds"
   for answer in 'ok|application/json' '<html></html>|text/html' '{"hits":[]} trailing|application/json' '{"hits":[]}|text/html'; do
     printf '%s' "${answer%|*}" >"$work/fake-body"
     {
@@ -1985,6 +2252,97 @@ round_trip() {
   check "get of the URL of History's editor reaches History ($2)" cmp -s "$work/out" "$work/history"
 }
 
+# WIKI_INSECURE, seen in the config curl is given: "insecure" with 1, and
+# not when it is unset or 0; another value is refused before any request.
+# Every run with it says once on standard error that the certificate is not
+# checked, the MCP server too, whose standard output stays JSON-RPC alone.
+# The test's server is plain http, where the setting changes nothing, so
+# the requests still succeed.
+insecure_setting() {
+  # The client with the variables of the run first (as env takes them),
+  # then the shell and its arguments.
+  insecure_run() {
+    : >"$work/curl.config"
+    env -i PATH="$work/fakes/config:$PATH" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-insecure" \
+      "$@" <"$input" >"$work/out" 2>"$work/err"
+    status=$?
+  }
+  warnings() { grep -c "the server's certificate is not checked (WIKI_INSECURE)" "$work/err"; }
+  insecure_run "$shell" "$client" list
+  expect 0 "list without WIKI_INSECURE"
+  check "the recorder sees the config curl is given" grep -q '^user = ' "$work/curl.config"
+  if grep -qx insecure "$work/curl.config"; then fail "insecure in curl's config without WIKI_INSECURE"; else pass "no insecure in curl's config without WIKI_INSECURE"; fi
+  lacks err "not checked" "no warning without WIKI_INSECURE"
+  insecure_run WIKI_INSECURE=0 "$shell" "$client" list
+  expect 0 "list with WIKI_INSECURE=0"
+  if grep -qx insecure "$work/curl.config"; then fail "insecure in curl's config with WIKI_INSECURE=0"; else pass "no insecure in curl's config with WIKI_INSECURE=0"; fi
+  lacks err "not checked" "no warning with WIKI_INSECURE=0"
+  insecure_run WIKI_INSECURE=1 "$shell" "$client" list
+  expect 0 "list with WIKI_INSECURE=1"
+  check "insecure in curl's config with WIKI_INSECURE=1" grep -qx insecure "$work/curl.config"
+  check "WIKI_INSECURE=1 is said once on standard error ($(warnings) times)" [ "$(warnings)" = 1 ]
+  has out "Space: Team" "with WIKI_INSECURE=1, list lists the wiki"
+  insecure_run WIKI_INSECURE=yes "$shell" "$client" list
+  expect 2 "WIKI_INSECURE=yes is refused"
+  has err "WIKI_INSECURE must be 1 (do not check the server's certificate) or 0, not yes" "the refusal says what WIKI_INSECURE takes"
+  check "nothing is asked of the wiki with WIKI_INSECURE=yes" [ ! -s "$work/curl.config" ]
+
+  # With WIKI_CACERT: the CA bundle is given to curl alone, and not with
+  # WIKI_INSECURE=1, which says so. curl wants the file to be there, even
+  # over http, but does not read it there: an empty one does.
+  : >"$work/ca.pem"
+  insecure_run WIKI_CACERT="$work/ca.pem" "$shell" "$client" list
+  expect 0 "list with WIKI_CACERT over http"
+  check "WIKI_CACERT is in curl's config" grep -q '^cacert = ' "$work/curl.config"
+  insecure_run WIKI_CACERT="$work/ca.pem" WIKI_INSECURE=1 "$shell" "$client" list
+  expect 0 "list with WIKI_CACERT and WIKI_INSECURE=1"
+  check "WIKI_INSECURE=1 wins over WIKI_CACERT in curl's config" grep -qx insecure "$work/curl.config"
+  lacks curl.config "cacert" "no CA bundle in curl's config with WIKI_INSECURE=1"
+  has err "the server's certificate is not checked (WIKI_INSECURE), and WIKI_CACERT is not used" "the warning says WIKI_CACERT is not used"
+
+  # From the configuration file, where a value in the environment wins.
+  printf '# For the test\ninsecure = 1\n' >"$work/insecure-config"
+  chmod 600 "$work/insecure-config"
+  insecure_run WIKI_CONFIG="$work/insecure-config" "$shell" "$client" list
+  expect 0 "list with insecure = 1 in the configuration file"
+  check "insecure in curl's config from the configuration file" grep -qx insecure "$work/curl.config"
+  check "insecure = 1 is said once on standard error ($(warnings) times)" [ "$(warnings)" = 1 ]
+  insecure_run WIKI_CONFIG="$work/insecure-config" WIKI_INSECURE=0 "$shell" "$client" list
+  expect 0 "list with insecure = 1 in the file and WIKI_INSECURE=0"
+  if grep -qx insecure "$work/curl.config"; then fail "WIKI_INSECURE=0 does not win over the file"; else pass "WIKI_INSECURE=0 wins over insecure = 1 in the file"; fi
+  printf 'insecure = yes\n' >"$work/insecure-config"
+  insecure_run WIKI_CONFIG="$work/insecure-config" "$shell" "$client" list
+  expect 2 "insecure = yes in the configuration file is refused"
+  has err "insecure in $work/insecure-config, line 1, must be 1" "the refusal names the file and the line"
+  rm -f "$work/insecure-config"
+
+  # The MCP server: the warning once, on standard error, for several
+  # requests, and standard output JSON-RPC alone.
+  {
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    "$real_jq" -nc '{jsonrpc: "2.0", id: 2, method: "tools/call", params: {name: "wiki_list", arguments: {space: "team"}}}'
+    "$real_jq" -nc --arg page "$page" '{jsonrpc: "2.0", id: 3, method: "tools/call", params: {name: "wiki_read_page", arguments: {path: $page}}}'
+  } >"$work/insecure-mcp.in"
+  input=$work/insecure-mcp.in
+  insecure_run WIKI_INSECURE=1 "$shell" "$client" mcp
+  input=/dev/null
+  expect 0 "mcp with WIKI_INSECURE=1 ends when its input ends"
+  bad_lines=0
+  while IFS= read -r reply; do
+    printf '%s' "$reply" | "$real_jq" -e 'type == "object" and .jsonrpc == "2.0"' >/dev/null 2>&1 || bad_lines=$((bad_lines + 1))
+  done <"$work/out"
+  check "with WIKI_INSECURE=1, every line on mcp's standard output is a JSON-RPC message ($bad_lines are not)" [ "$bad_lines" = 0 ]
+  if "$real_jq" -e -s 'length == 3 and (map(select(.id >= 2)) | length == 2 and all(.result.isError == false))' "$work/out" >/dev/null; then
+    pass "with WIKI_INSECURE=1, mcp's tools answer"
+  else
+    fail "with WIKI_INSECURE=1, mcp's tools answer"
+    sed 's/^/  reply: /' "$work/out" | cut -c1-200 >&2
+  fi
+  check "mcp asked the wiki more than once with insecure ($(grep -cx insecure "$work/curl.config") times)" [ "$(grep -cx insecure "$work/curl.config")" -ge 2 ]
+  check "mcp says WIKI_INSECURE=1 once on standard error ($(warnings) times)" [ "$(warnings)" = 1 ]
+}
+
 # The MCP server through a pipe: requests of both the current revision
 # (2026-07-28, with _meta) and the earlier one (initialize first), each tool
 # once, and what it must refuse.
@@ -2059,7 +2417,7 @@ Written through MCP: "quoted", back\slash, ż.
   }
   reply "initialize answers the client's revision, 2025-06-18" 'map(select(.id == 1))[0].result | .protocolVersion == "2025-06-18" and .serverInfo.name == "wiki.sh" and .capabilities.tools != null and (has("resultType") | not)'
   reply "ping answers an empty result" 'map(select(.id == 2))[0].result == {}'
-  reply "tools/list gives the nine tools" 'map(select(.id == 3))[0].result.tools | map(.name) == ["wiki_list", "wiki_search", "wiki_read_page", "wiki_page_outline", "wiki_read_section", "wiki_write_page", "wiki_write_section", "wiki_create_page", "wiki_markdown_reference"] and all(.inputSchema.type == "object")'
+  reply "tools/list gives the ten tools" 'map(select(.id == 3))[0].result.tools | map(.name) == ["wiki_list", "wiki_search", "wiki_read_page", "wiki_page_outline", "wiki_read_section", "wiki_write_page", "wiki_write_section", "wiki_create_page", "wiki_list_attachments", "wiki_markdown_reference"] and all(.inputSchema.type == "object")'
   reply "wiki_list lists a space" 'map(select(.id == 4))[0].result | .isError == false and (.content[0].text | contains("    The wiki  /s/team/projects/p/the-wiki/"))'
   reply "wiki_search finds the page" 'map(select(.id == 5))[0].result | .isError == false and (.content[0].text | contains("/s/team/projects/p/zazolc-gesla-jazn/"))'
   reply "wiki_read_page gives the version and the Markdown" --arg version "$version" "map(select(.id == 6))[0].result | .isError == false and (.content[0].text | contains(\$version)) and (.content[1].text | startswith(\"# The wiki\"))"
@@ -2077,7 +2435,7 @@ Written through MCP: "quoted", back\slash, ż.
   reply "a request without the client's capabilities is -32602" 'map(select(.id == 18))[0].error.code == -32602'
   reply "a batch is -32600" 'map(select(.error.code == -32600)) | length == 1'
   reply "initialize with a revision it does not speak answers its latest, 2025-11-25" 'map(select(.id == 20))[0].result.protocolVersion == "2025-11-25"'
-  reply "tools/list of the current revision carries its cache hints" 'map(select(.id == 21))[0].result | .resultType == "complete" and .ttlMs >= 0 and .cacheScope == "public" and (.tools | length) == 9'
+  reply "tools/list of the current revision carries its cache hints" 'map(select(.id == 21))[0].result | .resultType == "complete" and .ttlMs >= 0 and .cacheScope == "public" and (.tools | length) == 10'
   reply "wiki_write_page writes a page of 150 kB" 'map(select(.id == 22))[0].result.isError == false'
   reply "wiki_read_page reads it back byte for byte" --rawfile expected "$work/big-mcp" 'map(select(.id == 23))[0].result.content[1].text == $expected'
   reply "wiki_create_page makes a new page" 'map(select(.id == 24))[0].result | .isError == false and (.content[0].text | startswith("Created /s/team/projects/p/mcp-new-"))'

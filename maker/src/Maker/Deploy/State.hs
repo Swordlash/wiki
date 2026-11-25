@@ -35,6 +35,7 @@ stateKeys =
   , ("tls_cert", "tls_cert")
   , ("tls_key", "tls_key")
   , ("tls_ca", "tls_ca")
+  , ("hsts", "hsts")
   , ("https_host", "https_host")
   , ("serve_port", "serve_port")
   , ("db", "db")

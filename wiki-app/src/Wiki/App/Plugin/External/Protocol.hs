@@ -74,7 +74,7 @@ data Reported = Reported
 -- | The message a JSON value from a plugin is, or why it is none of the
 -- protocol's. Fields the protocol does not name are ignored.
 fromPlugin :: Value -> Either Text FromPlugin
-fromPlugin = first (\why -> "The plugin sent a message the wiki cannot read (" <> toS why <> ").") . parseEither message
+fromPlugin = first (\why -> "it sent a message the wiki cannot read (" <> toS why <> ").") . parseEither message
   where
     message = withObject "a message" $ \o ->
       (o .: "type" :: Parser Text) >>= \case
@@ -122,12 +122,12 @@ units c = if ord c > 0xFFFF then 2 else 1
 problemsIn :: Text -> Text -> [Reported] -> Either Text [Problem]
 problemsIn name text reported = do
   when (length reported > maxProblems) $
-    Left ("The plugin reported more than " <> show maxProblems <> " problems.")
+    Left ("it reported more than " <> show maxProblems <> " problems.")
   for_ reported $ \r -> do
     when (T.null (T.strip r.message) || T.length r.message > maxMessageLength) $
-      Left ("A problem's message is 1 to " <> show maxMessageLength <> " characters.")
+      Left ("it reported a problem whose message is not 1 to " <> show maxMessageLength <> " characters.")
     when (r.from < 0 || r.to < r.from) $
-      Left ("A problem runs from " <> show r.from <> " to " <> show r.to <> ", which is no range of the text.")
+      Left ("it reported a problem from " <> show r.from <> " to " <> show r.to <> ", which is no range of the text.")
   places <- placesOf text (concat [[r.from, r.to] | r <- reported])
   pure
     [ Problem {from = opening.line, to = lastLine, kind = FromPlugin, severity = r.severity, message = name <> ": " <> r.message}
@@ -154,7 +154,7 @@ placesOf text offsets = go (sort (ordNub offsets)) 0 (Place 1 False) (toS text)
     go wanted@(o : rest) at here cs
       | o == at = Map.insert o here <$> go rest at here cs
       | otherwise = case cs of
-          [] -> Left ("The offset " <> show o <> " is past the end of the text, " <> show at <> " units long.")
+          [] -> Left ("it reported the offset " <> show o <> ", past the end of the text, " <> show at <> " units long.")
           c : more
-            | o < at + units c -> Left ("The offset " <> show o <> " falls inside a character written with two UTF-16 units.")
+            | o < at + units c -> Left ("it reported the offset " <> show o <> ", inside a character written with two UTF-16 units.")
             | otherwise -> go wanted (at + units c) (if c == '\n' then Place (here.line + 1) True else Place here.line False) more

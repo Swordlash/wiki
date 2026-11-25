@@ -74,7 +74,7 @@ import Test.QuickCheck qualified as QC
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), WikiPlugins (..), maxPluginsPerUser, optionsNull, pluginIdRule)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Backend.Http.Cache (Cache (plugins), Reading (..), Stored (cache), afterWrite, changedBy, emptyCache, kept, storedAnswer, storedOf)
-import Wiki.App.Backend.Mem.State (MemState (..), pluginsIn, setPluginOptionsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
+import Wiki.App.Backend.Mem.State (MemState (..), pluginsIn, setPluginOptionsIfNoneIn, setPluginOptionsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Plugin (Manifest (..))
 import Wiki.App.Plugin.Registry (manifests, optionsFor)
@@ -199,6 +199,9 @@ handled u e st0 = case e of
     Left err -> (st0, Wrote (Left err))
     Right (st', c) -> (st' {current = st0.current}, Wrote (Right c))
   WriteOptions _ p o -> case setPluginOptionsIn p o st of
+    Left err -> (st0, Wrote (Left err))
+    Right (st', c) -> (st' {current = st0.current}, Wrote (Right c))
+  WriteOptionsIfNone _ p v -> case setPluginOptionsIfNoneIn p v st of
     Left err -> (st0, Wrote (Left err))
     Right (st', c) -> (st' {current = st0.current}, Wrote (Right c))
   SaveOff _ off -> case setWikiPluginsIn WikiPlugins {off} st of
@@ -525,6 +528,7 @@ play w = \case
       Load _ -> Read (Left (Unreachable "lost"))
       WriteState {} -> Wrote (Left (Unreachable "lost"))
       WriteOptions {} -> Wrote (Left (Unreachable "lost"))
+      WriteOptionsIfNone {} -> Wrote (Left (Unreachable "lost"))
       SaveOff {} -> SetSaved (Left (Unreachable "lost"))
     isSave = \case
       SaveOff {} -> True
@@ -547,6 +551,7 @@ writeOf = \case
   WriteState _ p s -> Just (StateWrite p s)
   SaveOff _ off -> Just (OffWrite off)
   WriteOptions _ p o -> Just (OptionsWrite p o)
+  WriteOptionsIfNone _ p v -> Just (AdoptWrite p v)
   Load _ -> Nothing
 
 -- | The HTTP backend's cache after an answer arrived, before the machine

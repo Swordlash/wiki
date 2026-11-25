@@ -795,7 +795,16 @@ handlers env caller =
             -- who is no user, has none, and is refused as on the other
             -- addresses of the account.
             setPluginState = \p body -> signedInUser >>= \u -> liftIO (Plugins.setPluginState env.storage u p body.state) >>= either (throwError . wikiError) pure
-          , setPluginOptions = \p body -> signedInUser >>= \u -> liftIO (Plugins.setPluginOptions env.storage u p (Just body.value)) >>= either (throwError . wikiError) pure
+          , -- With If-None-Match: * only where the user has none: options
+            -- there are 412, as a create-only write of a page is.
+            setPluginOptions = \p condition body ->
+              signedInUser >>= \u -> case condition of
+                Nothing -> liftIO (Plugins.setPluginOptions env.storage u p (Just body.value)) >>= either (throwError . wikiError) pure
+                Just "*" ->
+                  liftIO (Plugins.setPluginOptionsIfNone env.storage u p body.value) >>= \case
+                    Left (Conflict why) -> throwError (apiError (ApiError.Conflict why)) {errHTTPCode = 412, errReasonPhrase = "Precondition Failed"}
+                    other -> either (throwError . wikiError) pure other
+                Just _ -> refuse (ApiError.Invalid "The If-None-Match header here is * (write the options only where there are none), or nothing.")
           , clearPluginOptions = \p -> signedInUser >>= \u -> liftIO (Plugins.setPluginOptions env.storage u p Nothing) >>= either (throwError . wikiError) pure
           , secondFactorState = signedInUser >>= liftIO . secondFactorState env.storage
           , enrolTotp = \body -> do

@@ -1269,7 +1269,8 @@ instance (MonadIO m) => MonadWhatsNew (HttpWiki m) where
 instance (MonadIO m) => MonadPlugins (HttpWiki m) where
   pluginsNow = cached (\c -> c.plugins) endpoints.plugins (\a c -> c {Cache.plugins = Just a})
   setPluginState p s = write (endpoints.account.setPluginState p PluginStateChange {state = s})
-  setPluginOptions p v = write (endpoints.account.setPluginOptions p (PluginOptions v))
+  setPluginOptions p v = write (endpoints.account.setPluginOptions p Nothing (PluginOptions v))
+  setPluginOptionsIfNone p v = write (endpoints.account.setPluginOptions p (Just "*") (PluginOptions v))
   clearPluginOptions p = write (endpoints.account.clearPluginOptions p)
   wikiPluginsOff = send endpoints.admin.plugins
   setWikiPluginsOff new = write (endpoints.admin.setPlugins new)

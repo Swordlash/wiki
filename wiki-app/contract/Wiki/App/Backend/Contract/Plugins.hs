@@ -84,6 +84,17 @@ options = describe "a plugin's options" $ do
     -- Clearing what is not there changes nothing.
     run editor (clearPluginOptions errors) `shouldReturn` Right (chose PluginDefault Nothing)
 
+  it "are written where the user has none only, when asked so, and a state alone is none" $ \(Fixture run) -> do
+    _ <- run editor (setPluginState assistant PluginOn) >>= ok
+    run editor (setPluginOptionsIfNone assistant someOptions) `shouldReturn` Right (chose PluginOn (Just someOptions))
+    let other = object ["v" .= (2 :: Int)]
+    run editor (setPluginOptionsIfNone assistant other) >>= \case
+      Left (Conflict _) -> pass
+      r -> expectationFailure ("expected a conflict, got " <> show r)
+    ((\p -> p.mine) <$> (run editor pluginsNow >>= ok)) `shouldReturn` Map.fromList [(assistant, chose PluginOn (Just someOptions))]
+    run editor (setPluginOptionsIfNone errors other) `shouldReturn` Right (chose PluginDefault (Just other))
+    run editor (setPluginOptionsIfNone errors Null) >>= (`shouldFailWith` Invalid optionsNull)
+
   it "are at most 16 kB of JSON" $ \(Fixture run) -> do
     run editor (setPluginOptions assistant (sized maxOptionsBytes)) `shouldReturn` Right (chose PluginDefault (Just (sized maxOptionsBytes)))
     run editor (setPluginOptions assistant (sized (maxOptionsBytes + 1))) >>= (`shouldFailWith` Invalid optionsTooLarge)

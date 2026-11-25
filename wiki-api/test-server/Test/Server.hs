@@ -170,7 +170,7 @@ stubs =
           , -- The assistant's options are the sample's; another plugin has
             -- none, so each answer shows which plugin and what body arrived.
             setPluginState = \p body -> pure PluginChoice {state = body.state, options = if p == PluginId "assistant" then Just "kept" else Nothing}
-          , setPluginOptions = \p body -> pure PluginChoice {state = if p == PluginId "assistant" then PluginOn else PluginDefault, options = Just body.value}
+          , setPluginOptions = \p _ body -> pure PluginChoice {state = if p == PluginId "assistant" then PluginOn else PluginDefault, options = Just body.value}
           , clearPluginOptions = \p -> pure PluginChoice {state = if p == PluginId "assistant" then PluginOn else PluginDefault, options = Nothing}
           , secondFactorState = pure Sample.secondFactor
           , enrolTotp = \body -> if body.password == Just (Password "the current one") then pure Sample.enrolment else refuse Unauthenticated

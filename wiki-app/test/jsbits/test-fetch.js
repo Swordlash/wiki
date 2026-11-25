@@ -414,6 +414,11 @@ function wiki_test_server_plugins() {
       if (request.method === "PUT") {
         const value = JSON.parse(request.body);
         if (value === null) return json(400, { error: "Invalid", message: "Options are not null: clear them with DELETE." });
+        // If-None-Match: * writes them only where there are none, as the
+        // server does.
+        const condition = Object.entries(request.headers).find(([k]) => k.toLowerCase() === "if-none-match")?.[1];
+        if (condition !== undefined && condition !== "*") return json(400, { error: "Invalid", message: "The If-None-Match header here is * (write the options only where there are none), or nothing." });
+        if (condition === "*" && mine.has(id)) return json(412, { error: "Conflict", message: "You have options for this plugin already, and If-None-Match: * asks to write them only where there are none. Nothing was written." });
         mine.set(id, value);
         return json(200, choice(id));
       }

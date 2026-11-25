@@ -15,7 +15,7 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Database.Beam (all_, runSelectReturningList, select)
-import Network.HTTP.Types (Header, hContentType, methodDelete, methodGet, methodPut)
+import Network.HTTP.Types (Header, hContentType, hIfNoneMatch, methodDelete, methodGet, methodPut)
 import Protolude
 import Test.Database (Backing)
 import Test.HUnit (assertFailure)
@@ -119,6 +119,26 @@ nothingStored backing = describe "with nothing stored" $ do
 
 choosing :: Backing -> Spec
 choosing backing = describe "a user's choice" $ do
+  it "writes options with If-None-Match: * only where the user has none: a state alone is none, options there are 412" $ withUsers backing $ \r -> do
+    editor <- sessionOf r "editor"
+    let onlyIfNone = [(hIfNoneMatch, "*")]
+    -- A state with no options: written.
+    (putState r editor assistant PluginOn >>= jsonAs 200) `shouldReturn` chose PluginOn Nothing
+    (putOptions r (onlyIfNone <> editor) assistant (encode someOptions) >>= jsonAs 200) `shouldReturn` chose PluginOn (Just someOptions)
+    -- Options there: refused, and nothing written.
+    let other = object ["model" .= ("another" :: Text)]
+    (putOptions r (onlyIfNone <> editor) assistant (encode other) >>= jsonAs 412) >>= \case
+      Conflict _ -> pass
+      e -> assertFailure ("expected Conflict, got " <> show e)
+    ((\p -> p.mine) <$> pluginsAs r editor) `shouldReturn` Map.fromList [(assistant, chose PluginOn (Just someOptions))]
+    -- Without the header, the options are replaced as before.
+    (putOptions r editor assistant (encode other) >>= jsonAs 200) `shouldReturn` chose PluginOn (Just other)
+    -- No row at all: written.
+    (putOptions r (onlyIfNone <> editor) errors (encode other) >>= jsonAs 200) `shouldReturn` chose PluginDefault (Just other)
+    -- Any other condition is not one this route takes.
+    _ <- putOptions r ((hIfNoneMatch, "\"v1\"") : editor) errors (encode other) >>= invalidAs
+    pass
+
   it "sets the state and the options each apart, and keeps nothing for a plugin given back to its default with no options" $ withUsers backing $ \r -> do
     editor <- sessionOf r "editor"
     (putState r editor assistant PluginOn >>= jsonAs 200) `shouldReturn` chose PluginOn Nothing

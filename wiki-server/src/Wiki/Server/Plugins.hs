@@ -21,6 +21,8 @@ module Wiki.Server.Plugins
   ( pluginsFor
   , setPluginState
   , setPluginOptions
+  , setPluginOptionsIfNone
+  , optionsThere
   )
 where
 
@@ -29,11 +31,11 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
 import Protolude
-import Wiki.Api.Plugins (PluginChoice, PluginId, PluginState, Plugins (..), maxOptionsBytes, optionsTooLarge)
+import Wiki.Api.Plugins (PluginChoice (..), PluginId, PluginState, Plugins (..), maxOptionsBytes, optionsTooLarge)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.Core.Id (UserId)
 import Wiki.Server.Storage (Storage, Who (..), reading, writingEither)
-import Wiki.Server.Storage.Plugins (loadChoices, loadPluginsOff, writeOptions, writeState)
+import Wiki.Server.Storage.Plugins (loadChoice, loadChoices, loadPluginsOff, writeOptions, writeState)
 
 -- | What is on, for whoever asks: the plugins off for the wiki, and a
 -- user's own choices. Someone not signed in and the server's operator,
@@ -65,3 +67,28 @@ setPluginOptions :: Storage -> UserId -> PluginId -> Maybe Value -> IO (Either W
 setPluginOptions st u p options = case BSL.toStrict . encode <$> options of
   Just bytes | BS.length bytes > maxOptionsBytes -> pure (Left (Invalid optionsTooLarge))
   text -> writingEither st (writeOptions u p (decodeUtf8 <$> text))
+
+-- | 'setPluginOptions' with a value, only if the user has no options for
+-- the plugin: the request's @If-None-Match: *@. The options are read and
+-- written in one transaction on the writer, where no other write runs
+-- between, so two such writes for one plugin cannot both find none.
+-- Options there already are 'Conflict' ('optionsThere'), and nothing is
+-- written. A row with a state and no options has none.
+--
+-- The move of the writing assistant's settings from before plugins adopts
+-- them this way ("Wiki.App.Assistant.Migrate"): options another browser
+-- moved first, or the user chose since, are kept.
+setPluginOptionsIfNone :: Storage -> UserId -> PluginId -> Value -> IO (Either WikiError PluginChoice)
+setPluginOptionsIfNone st u p options = case BSL.toStrict (encode options) of
+  bytes
+    | BS.length bytes > maxOptionsBytes -> pure (Left (Invalid optionsTooLarge))
+    | otherwise ->
+        writingEither st $
+          loadChoice u p >>= \before ->
+            if isJust before.options
+              then pure (Left (Conflict optionsThere))
+              else writeOptions u p (Just (decodeUtf8 bytes))
+
+-- | Why options written only where there are none were not written.
+optionsThere :: Text
+optionsThere = "You have options for this plugin already, and If-None-Match: * asks to write them only where there are none. Nothing was written."

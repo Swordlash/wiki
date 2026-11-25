@@ -10,10 +10,14 @@
 -- another tab), until a run finds nothing legacy left ('done'). The run
 -- at the start of a session looks at this browser only, and asks the
 -- server nothing when it keeps nothing legacy; the runs after a change of
--- the secrets look at the vault too ('vaultToo'). A run
--- that waits (for an unlock, for the server's options) is asked again at
--- the next change. A new page asks again at its start, so that a legacy
--- item an earlier tab added again is moved.
+-- the secrets look at the vault too ('vaultToo'). A run that waits for an
+-- unlock is asked again at the next change. A run that ends with options
+-- to adopt, or that waits for the server's options to be known, is asked
+-- again when what the plugins' state knows of the assistant's options
+-- changes ('OptionsLearnt': the plugins read, the adopted options written,
+-- or refused because the server had some): the legacy places are then
+-- emptied with nothing else needed. A new page asks again at its start,
+-- so that a legacy item an earlier tab added again is moved.
 --
 -- = One run at a time
 --
@@ -33,12 +37,15 @@ module Wiki.App.View.Migration.Machine
   , Effect (..)
   , initial
   , step
+  , optionsLearnt
   )
 where
 
 import Data.Aeson (Value)
 import Protolude hiding (reader)
 import Wiki.App.Assistant.Migrate (Outcome (..))
+import Wiki.App.Plugin.Registry (assistantId, optionsFor)
+import Wiki.App.View.Plugins.Machine qualified as Plugins
 import Wiki.Core.Id (UserId)
 
 -- | 'Model' is the move's state, for the shell.
@@ -69,6 +76,9 @@ data Event
     Given Int (Maybe UserId)
   | -- | The secrets changed in this browser.
     Nudged
+  | -- | What the plugins' state knows of the assistant's options changed
+    -- ('optionsLearnt').
+    OptionsLearnt
   | -- | The answer of the run of this number.
     Answered Int (Either Text Outcome)
   deriving stock (Eq, Show)
@@ -97,6 +107,11 @@ step event m = case event of
   Nudged
     | m.done -> (m, [])
     | otherwise -> asking m {vaultToo = True}
+  -- Whether the run looks at the vault stays as it was: the options do
+  -- not say that this browser keeps anything legacy.
+  OptionsLearnt
+    | m.done -> (m, [])
+    | otherwise -> asking m
   Answered n answer -> case m.out of
     Just (out, askedIn)
       | out == n ->
@@ -112,6 +127,15 @@ answered session answer m = case answer of
   Right Waiting -> (m {problem = Nothing}, [])
   Right (Adopt v) -> (m {problem = Nothing}, [AdoptOptions session v])
   Left why -> (m {problem = Just why}, [])
+
+-- | Whether a step of the plugins' state changed what it knows of the
+-- assistant's options as the server keeps them: the shell then steps
+-- 'OptionsLearnt'. Only a change: a write that keeps failing changes
+-- nothing, and asks no run.
+optionsLearnt :: Plugins.Model -> Plugins.Model -> Bool
+optionsLearnt before after = known before /= known after
+  where
+    known m = optionsFor assistantId <$> Plugins.knownNow m
 
 -- | A run asked for the reader, or wanted after the one out.
 asking :: Model -> (Model, [Effect])

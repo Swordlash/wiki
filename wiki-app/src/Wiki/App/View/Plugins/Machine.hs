@@ -54,7 +54,10 @@
 -- none for the plugin and none were chosen since ('OptionsAdopted'): other
 -- options were moved by another browser, or chosen by the user. Before
 -- what is on is read in the session, they wait for the read
--- ('adopting').
+-- ('adopting'). The write is the server's to decide, too ('AdoptWrite',
+-- @If-None-Match: *@): two browsers that both read "none" cannot both
+-- write, and a refusal (the server has options) is no failure; the read
+-- that follows gives the plugin the server's.
 --
 -- = Who is signed in
 --
@@ -94,7 +97,7 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Protolude
 import Wiki.Api.Plugins (PluginChoice (..), PluginId, PluginState (..), Plugins (..), WikiPlugins (..))
-import Wiki.App.Backend (WikiError)
+import Wiki.App.Backend (WikiError (..))
 import Wiki.App.View.Latest (Ask, Asks, madeAfter, newAsk, noAsks, supersede, takes)
 
 -- | 'Model' is the plugins' state.
@@ -146,6 +149,9 @@ data Write
   | -- | The user's options for a plugin: a value, or 'Nothing' to clear
     -- them.
     OptionsWrite PluginId (Maybe Value)
+  | -- | Options found by a move of the plugin's legacy settings, written
+    -- only if the server keeps none for the plugin ('OptionsAdopted').
+    AdoptWrite PluginId Value
   deriving stock (Eq, Show)
 
 -- | 'Event' is everything that happens to the plugins' state.
@@ -170,6 +176,10 @@ data Event
   | -- | The answer to the write of a plugin's options sent under this
     -- ticket: the user's choice for it after the write.
     OptionsWritten Ask PluginId (Either WikiError PluginChoice)
+  | -- | The answer to the write of adopted options sent under this ticket:
+    -- the user's choice after it, or 'Conflict' when the server keeps
+    -- options for the plugin already, and wrote nothing.
+    AdoptWritten Ask PluginId (Either WikiError PluginChoice)
   | -- | The move of a plugin's legacy settings, started in the session of
     -- this number, found these options: kept if the server keeps none for
     -- the plugin and none were chosen since.
@@ -191,6 +201,9 @@ data Effect
   | -- | Set the user's options for a plugin, or clear them ('Nothing');
     -- the answer comes back as 'OptionsWritten'.
     WriteOptions Ask PluginId (Maybe Value)
+  | -- | Set the user's options for a plugin only if the server keeps none;
+    -- the answer comes back as 'AdoptWritten'.
+    WriteOptionsIfNone Ask PluginId Value
   | -- | Set the plugins off for the wiki; the answer comes back as 'Saved'.
     SaveOff Ask (Set PluginId)
   deriving stock (Eq, Show)
@@ -253,6 +266,16 @@ step event m = case event of
   OptionsWritten asked p answer ->
     let waits = any (\(_, w) -> w `writesOptions` p) m.queued
      in wrote asked p answer m {writingOptions = if waits then m.writingOptions else Map.delete p m.writingOptions}
+  AdoptWritten asked _ _
+    | not (ofSession asked m) -> landed asked m
+  AdoptWritten asked p answer ->
+    let waits = any (\(_, w) -> w `writesOptions` p) m.queued
+        m1 = m {writingOptions = if waits then m.writingOptions else Map.delete p m.writingOptions}
+     in case answer of
+          -- The server keeps options already: nothing to say, and the read
+          -- that follows gives them.
+          Left (Conflict _) -> landed asked m1 {wanted = True}
+          _ -> wrote asked p answer m1
   OptionsAdopted session p v
     | session /= m.session -> (m, [])
     | isNothing (knownNow m) -> (m {adopting = Map.insert p v m.adopting}, [])
@@ -276,11 +299,13 @@ step event m = case event of
         landed asked m2 {wanted = True}
 
 -- | Options found by a move adopted for a plugin: written, unless the
--- plugin has options, the server's or chosen since ('shownOptions').
+-- plugin has options, the server's or chosen since ('shownOptions'), or a
+-- choice of its options is out or waits (a clear chosen is a choice too).
+-- The server writes them only if it keeps none ('AdoptWrite').
 adopt :: PluginId -> Value -> Model -> (Model, [Effect])
 adopt p v m
-  | isJust (shownOptions m p) = (m, [])
-  | otherwise = writingNow (OptionsWrite p (Just v)) m {writingOptions = Map.insert p (Just v) m.writingOptions, refused = Map.delete p m.refused}
+  | isJust (shownOptions m p) || Map.member p m.writingOptions = (m, [])
+  | otherwise = writingNow (AdoptWrite p v) m {writingOptions = Map.insert p (Just v) m.writingOptions, refused = Map.delete p m.refused}
 
 -- | The options waiting for what is on to be read, adopted once it is.
 adoptWaiting :: Model -> (Model, [Effect])
@@ -364,11 +389,13 @@ writes w p = case w of
   StateWrite q _ -> q == p
   OffWrite _ -> False
   OptionsWrite _ _ -> False
+  AdoptWrite _ _ -> False
 
 -- | Whether a write is one of this plugin's options.
 writesOptions :: Write -> PluginId -> Bool
 writesOptions w p = case w of
   OptionsWrite q _ -> q == p
+  AdoptWrite q _ -> q == p
   StateWrite {} -> False
   OffWrite _ -> False
 
@@ -377,6 +404,7 @@ isOffWrite = \case
   OffWrite _ -> True
   StateWrite {} -> False
   OptionsWrite {} -> False
+  AdoptWrite {} -> False
 
 -- | The answer to a read taken, if no answer to a later ask was. A failure
 -- is shown only where nothing is held: what is held is kept.
@@ -425,7 +453,12 @@ writingNow w m
     same q = case (q, w) of
       (StateWrite a _, StateWrite b _) -> a == b
       (OffWrite _, OffWrite _) -> True
+      -- The options last chosen for one plugin take the turn of options
+      -- chosen or adopted before. Adopted options never take a choice's
+      -- turn: they are not adopted while one is out or waits ('adopt').
       (OptionsWrite a _, OptionsWrite b _) -> a == b
+      (AdoptWrite a _, OptionsWrite b _) -> a == b
+      (AdoptWrite a _, AdoptWrite b _) -> a == b
       _ -> False
 
 sendRead :: Model -> (Model, [Effect])
@@ -440,6 +473,7 @@ send w m =
             StateWrite p s -> WriteState ticket p s
             OffWrite off -> SaveOff ticket off
             OptionsWrite p o -> WriteOptions ticket p o
+            AdoptWrite p v -> WriteOptionsIfNone ticket p v
         ]
       )
 
@@ -449,4 +483,5 @@ askOf = \case
   Load a -> Just a
   WriteState a _ _ -> Just a
   WriteOptions a _ _ -> Just a
+  WriteOptionsIfNone a _ _ -> Just a
   SaveOff a _ -> Just a

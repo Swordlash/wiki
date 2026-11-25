@@ -147,6 +147,8 @@ import Halogen.Machine qualified as Machine
 import Halogen.Query.Event.Window qualified as Window
 import Halogen.Router (Follow, Router)
 import Halogen.Router qualified as Router
+import Halogen.Subscription qualified as HS
+import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (State)
@@ -520,6 +522,12 @@ data State m = State
   -- ("Wiki.App.View.Migration.Machine"). The shell runs it, so that a run
   -- goes on whatever view is shown, and gives the options it finds to
   -- the plugins' state.
+  , optionsLearnt :: Maybe (HS.Listener IO ())
+  -- ^ Where a step of the plugins' state tells the shell that what it
+  -- knows of the assistant's options changed
+  -- ('MigrationMachine.optionsLearnt'): the shell's own subscription, made
+  -- at the start in a browser, which steps the move's machine on the
+  -- shell's loop ('OptionsLearnt').
   }
 
 -- | Whose changes a route followed away would lose ('leaving'): what the
@@ -551,6 +559,7 @@ data Action
   | Arrived Route
   | KeysDropped
   | SecretsChanged
+  | OptionsLearnt
   | Followed (Follow Route)
   | ToggleSwitcher
   | CloseSwitcher
@@ -662,6 +671,7 @@ component =
                   , droppedUnsaved = False
                   , pluginState = Machine.new (PluginsMachine.initialWith readPlugins 0)
                   , assistantMove = MigrationMachine.initial
+                  , optionsLearnt = Nothing
                   , worldAsks = noAsks
                   , hereAsks = noAsks
                   , backlinkAsks = noAsks
@@ -1631,6 +1641,11 @@ component =
         whenM (H.liftEffect assistantHere) $ do
           secrets <- H.liftEffect secretsChanges
           void $ H.subscribe (SecretsChanged <$ secrets)
+          -- Made and kept in this step, before the plugins' state is
+          -- stepped again.
+          learnt <- H.liftEffect (liftIO HS.create)
+          void $ H.subscribe (OptionsLearnt <$ learnt.emitter)
+          modify (\st -> st {optionsLearnt = Just learnt.listener})
           migrationGiven
         handleAction InstallChanged
         router <- gets (\st -> st.router)
@@ -1688,6 +1703,7 @@ component =
       -- of an encrypted space stays open here, and the session is asked
       -- for again, with everything shown.
       SecretsChanged -> migrationStep MigrationMachine.Nudged
+      OptionsLearnt -> migrationStep MigrationMachine.OptionsLearnt
       KeysDropped -> do
         readerChanging
         H.async forgetEncrypted
@@ -2139,14 +2155,21 @@ component =
 
     -- The plugins' state, run by the shell so that its asks outlive the
     -- views that made them.
-    pluginsSpec :: Machine.Spec () (State m) Action Slots output m PluginsMachine.Event PluginsMachine.Effect PluginsMachine.Model
-    pluginsSpec = Machine.Spec {Machine.step = PluginsMachine.step, Machine.carry = carryPlugins, Machine.get = \st -> st.pluginState, Machine.set = \machine st -> st {pluginState = machine}}
+    -- Each step also tells, after its own effects, when it changed what is
+    -- known of the assistant's options, so that the move of the legacy
+    -- settings goes on ('MigrationMachine.optionsLearnt').
+    pluginsSpec :: Machine.Spec () (State m) Action Slots output m PluginsMachine.Event (Either PluginsMachine.Effect ()) PluginsMachine.Model
+    pluginsSpec = Machine.Spec {Machine.step = pluginsStep, Machine.carry = either carryPlugins (const learnt), Machine.get = \st -> st.pluginState, Machine.set = \machine st -> st {pluginState = machine}}
+      where
+        pluginsStep e m = let (m', effects) = PluginsMachine.step e m in (m', map Left effects <> [Right () | MigrationMachine.optionsLearnt m m'])
+        learnt = Machine.Now (gets (\st -> st.optionsLearnt) >>= traverse_ (\l -> Sync.sync (liftIO (HS.notify l ()))))
 
     carryPlugins :: PluginsMachine.Effect -> Machine.Carry () (State m) Action Slots output m PluginsMachine.Event
     carryPlugins = \case
       PluginsMachine.Load asked -> Machine.Ask (Machine.run pluginsNow) (PluginsMachine.Loaded asked . answerOf)
       PluginsMachine.WriteState asked p s -> Machine.Ask (Machine.run (setPluginState p s)) (PluginsMachine.Written asked p . answerOf)
       PluginsMachine.WriteOptions asked p o -> Machine.Ask (Machine.run (maybe (clearPluginOptions p) (setPluginOptions p) o)) (PluginsMachine.OptionsWritten asked p . answerOf)
+      PluginsMachine.WriteOptionsIfNone asked p v -> Machine.Ask (Machine.run (setPluginOptionsIfNone p v)) (PluginsMachine.AdoptWritten asked p . answerOf)
       PluginsMachine.SaveOff asked off -> Machine.Ask (Machine.run (setWikiPluginsOff WikiPlugins {off})) (PluginsMachine.Saved asked . answerOf)
 
     -- Whose changes not saved the content shown holds, if any: an

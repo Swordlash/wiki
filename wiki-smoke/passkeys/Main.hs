@@ -1,6 +1,8 @@
--- | The assistant's keys across devices end to end (WP5.21 of
--- docs/PLAN.md), in the user's vault, which the first sign-in with a
--- password makes (WP5.74b1): the server's build of the wiki, served by a
+-- | The user's vault and the writing assistant's keys in it, end to end
+-- (WP5.21, WP5.74b1 and WP5.84 of docs/PLAN.md): the vault the first
+-- sign-in with a password makes, a passkey that unlocks it, added under
+-- Security, and the assistant's key kept as the plugin's secret, which the
+-- assistant's field unlocks with the passkey: the server's build of the wiki, served by a
 -- real wiki-server, in headless Chromium with a virtual authenticator
 -- (Chromium's own WebAuthn, through DevTools' WebAuthn domain), which makes
 -- and uses real passkeys with the PRF extension. So the browser's
@@ -70,7 +72,7 @@ data Passkeys = Passkeys
   }
 
 spec :: Passkeys -> SpecWith Playwright
-spec p = describe "the assistant's keys in the vault" $ onWalkPage serverContext setup $ do
+spec p = describe "the vault, its passkeys and the assistant's keys in it" $ onWalkPage serverContext setup $ do
   let step' = step p.chain
 
   -- Ada's session, signed in through the header's form in a browser of
@@ -89,110 +91,68 @@ spec p = describe "the assistant's keys in the vault" $ onWalkPage serverContext
     own .! "keyId" `shouldBe` first' .! "vault" .! "items" .! "identity" .! "keyId"
     addCookies (pageContext w.page) [sessionCookie p.origin s]
 
-  step' "turns syncing on in the vault with a real passkey with the PRF extension, and the server keeps the keys sealed" $ \w -> do
+  step' "keeps the assistant's key sealed in the vault, and unlocks the vault with a real passkey with the PRF extension, under Security" $ \w -> do
     let page = w.page
     _ :: Value <- cdp page "WebAuthn.enable" (object [])
     added :: Value <- cdp page "WebAuthn.addVirtualAuthenticator" (object ["options" .= authenticatorOptions "internal"])
     text (added .! "authenticatorId") >>= writeIORef p.authenticator . Just
     visit page (p.origin <> "/settings/assistant/")
     let anthropic = locator page ".assistant-provider-settings[data-provider='anthropic']"
-    fill (locator anthropic ".assistant-key") "a-test-key-for-anthropic"
-    click (locator anthropic ".assistant-key-form button")
+    -- The host's field of the key. Ada signed in in a browser of her own,
+    -- so this one does not hold her vault's key yet: the field unlocks the
+    -- vault with her password first.
+    waitQuiet page
+    locked <- count (locator anthropic ".secret-field-locked")
+    when (locked > 0) $ do
+      fill (locator anthropic ".secret-field-password") password
+      click (locator anthropic ".secret-field-unlock-password")
+      waitQuiet page
+      noProblem page ".secret-field-problem" "unlocking with the password"
+    fill (locator anthropic ".secret-field-value") "a-test-key-for-anthropic"
+    click (locator anthropic ".secret-field-keep")
     -- Keeping a key fetches the provider's models, from the scripted
-    -- provider here.
+    -- provider here, and stores the vault.
     waitQuiet page
-    count (locator anthropic ".assistant-key-kept") `shouldReturn` 1
-    -- Making a passkey asks for the password: a passkey signs Ada in. The
-    -- vault her sign-in made opens with the password alone, which
-    -- unwraps its key for the new passkey to wrap.
-    fill (locator page ".assistant-passkey-password") password
-    click (locator page ".assistant-sync-on-button")
+    noProblem page ".secret-field-problem" "keeping the key"
+    count (locator anthropic ".secret-field-set") `shouldReturn` 1
+    kept <- vaultNow p
+    expect (not (isNull (kept .! "vault" .! "items" .! "plugin-assistant")) && not (isNull (kept .! "vault" .! "items" .! "identity"))) "the vault does not hold the assistant's secrets and the key pair"
+    raw <- readIORef p.session >>= \s -> api p.wiki s "GET" "assistant/vault" Nothing []
+    expect (not ("a-test-key-for-anthropic" `Text.isInfixOf` bodyText raw)) "the server holds the key in the clear"
+    -- A passkey too, under Security: making it asks for the password (a
+    -- passkey signs Ada in), which unwraps the vault's key for the
+    -- passkey to wrap.
+    visit page (p.origin <> "/settings/security/")
+    fill (locator page "input[name='keys-password']") password
+    click (locator page ".keys-passkey-add")
     waitQuiet page
-    noSyncProblem page "turning syncing on"
-    count (locator page ".assistant-sync-on") `shouldReturn` 1
+    noProblem page ".keys-error" "adding a passkey to the vault"
     vault <- vaultNow p
     length (passkeyWraps vault) `shouldBe` 1
     expect (not (isNull (vault .! "vault" .! "wraps" .! "password"))) "the password's wrap is gone"
-    expect (not (isNull (vault .! "vault" .! "items" .! "assistant")) && not (isNull (vault .! "vault" .! "items" .! "identity"))) "the vault does not hold the settings and the key pair"
-    raw <- readIORef p.session >>= \s -> api p.wiki s "GET" "assistant/vault" Nothing []
-    expect (not ("a-test-key-for-anthropic" `Text.isInfixOf` bodyText raw)) "the server holds the key in the clear"
     nothingWrong page
 
-  -- Asked each time: after a reload the vault is locked, and one use of
-  -- the passkey, whose assertion the server checks, unlocks it.
-  step' "asked each time, locks the vault after a reload, and a use of the passkey, checked by the server, unlocks it" $ \w -> do
+  -- Asked each time: after a reload the vault is locked, and the
+  -- assistant's field unlocks it with one use of the passkey, whose
+  -- assertion the server checks.
+  step' "asked each time, locks the vault after a reload, and the assistant's field unlocks it with the passkey, checked by the server" $ \w -> do
     let page = w.page
         anthropic = locator page ".assistant-provider-settings[data-provider='anthropic']"
-    click (locator page ".assistant-ask-each-time")
+    click (locator page ".keys-ask-each-time")
     waitQuiet page
-    isChecked (locator page ".assistant-ask-each-time") `shouldReturn` True
-    reload page
-    waitStarted page
-    -- The vault is read from this browser's IndexedDB and the server.
+    isChecked (locator page ".keys-ask-each-time") `shouldReturn` True
+    visit page (p.origin <> "/settings/assistant/")
+    -- The secrets are read from the server's vault and this browser.
     waitQuiet page
-    click (locator page ".assistant-unlock")
+    count (locator anthropic ".secret-field-locked") `shouldReturn` 1
+    click (locator anthropic ".secret-field-unlock-passkey")
     waitQuiet page
-    count (locator page ".assistant-sync-on") `shouldReturn` 1
-    count (locator anthropic ".assistant-key-kept") `shouldReturn` 1
+    noProblem page ".secret-field-problem" "unlocking with the passkey"
+    count (locator anthropic ".secret-field-set") `shouldReturn` 1
     passkeys <- passkeysNow p
     case passkeys of
       [used] -> expect (not (isNull (used .! "lastUsedAt"))) "the server checked no use of the passkey"
       other -> expectationFailure ("the passkeys: " <> show other)
-    nothingWrong page
-
-  -- A second passkey, kept elsewhere (a security key): one use of the
-  -- first passkey gives the vault key, which is wrapped for the new one.
-  -- The first authenticator would refuse to make it (the server names the
-  -- first passkey as one to exclude), and with two at once Chromium asks
-  -- the wrong one for the first passkey; so the test swaps them between
-  -- the two calls. The page's navigator.credentials.create is wrapped to
-  -- wait for the test's word: it says it has been asked, the test swaps
-  -- the authenticators, and lets it go on.
-  step' "adds a second passkey, which unlocks the vault too" $ \w -> do
-    let page = w.page
-    _ :: Value <-
-      evaluate
-        page
-        "(() => {\
-        \  const create = navigator.credentials.create.bind(navigator.credentials);\
-        \  navigator.credentials.create = (options) => new Promise((go) => {\
-        \    window.wikiTestCreateGo = go;\
-        \    window.wikiTestCreateAsked = true;\
-        \  }).then(() => create(options));\
-        \  return true;\
-        \})()"
-    fill (locator page ".assistant-passkey-password") password
-    click (locator page ".assistant-add-passkey")
-    -- The program is waiting for the passkey's creation, which the test
-    -- holds: waitQuiet would wait for the test itself. So the hook's
-    -- word, a condition on the page's own script.
-    holdsInPage page "window.wikiTestCreateAsked === true"
-    firstId <- readIORef p.authenticator >>= maybe (fail "no first authenticator") pure
-    _ :: Value <- cdp page "WebAuthn.removeVirtualAuthenticator" (object ["authenticatorId" .= firstId])
-    _ :: Value <- cdp page "WebAuthn.addVirtualAuthenticator" (object ["options" .= authenticatorOptions "usb"])
-    _ :: Value <- evaluate page "(() => { window.wikiTestCreateGo(); return true; })()"
-    waitQuiet page
-    noSyncProblem page "adding a passkey"
-    count (locator page ".assistant-passkey") `shouldReturn` 2
-    both <- passkeysNow p
-    unlocks <- traverse (bool . (.! "unlocks")) both
-    unlocks `shouldBe` [True, True]
-    nothingWrong page
-
-  -- Turned off, the settings leave the vault; the vault stays, holding
-  -- the key pair, and so do the ways it unlocks.
-  step' "turned off, takes the settings out of the vault, which keeps the key pair, the key in the browser, and the passkeys" $ \w -> do
-    let page = w.page
-        anthropic = locator page ".assistant-provider-settings[data-provider='anthropic']"
-    click (locator page ".assistant-sync-off")
-    waitQuiet page
-    count (locator page ".assistant-sync-off-state") `shouldReturn` 1
-    left <- vaultNow p
-    expect (isNull (left .! "vault" .! "items" .! "assistant")) "the settings are still in the vault"
-    expect (not (isNull (left .! "vault" .! "items" .! "identity"))) "the key pair left the vault with the settings"
-    count (locator anthropic ".assistant-key-kept") `shouldReturn` 1
-    kept <- passkeysNow p >>= traverse (bool . (.! "unlocks"))
-    kept `shouldBe` [True, True]
     nothingWrong page
 
   -- Signed out, the passkey left on the authenticator signs Ada in alone:
@@ -228,12 +188,13 @@ authenticatorOptions transport =
     , "automaticPresenceSimulation" .= True
     ]
 
--- | Fail with what the page says, if it says syncing has a problem.
-noSyncProblem :: Page -> String -> IO ()
-noSyncProblem page what = do
-  problems <- count (locator page ".assistant-sync-problem")
+-- | Fail with what the page says, if it shows a problem in the elements
+-- this selects.
+noProblem :: Page -> Text -> String -> IO ()
+noProblem page selector what = do
+  problems <- count (locator page selector)
   when (problems > 0) $ do
-    said <- textContent (locator page ".assistant-sync-problem")
+    said <- textContent (locator page selector)
     expectationFailure (what <> ": " <> Text.unpack said)
 
 -- | Ada's vault, as the server has it.

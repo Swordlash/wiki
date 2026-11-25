@@ -3755,6 +3755,28 @@ if command -v openssl >/dev/null 2>&1; then
   assert_contains "$case_dir/status-ca" "checked against --tls-ca $certs/other-ca.crt"
   pass 'the certificate is remembered; one .pem serves as both; --tls-ca checks it for its name, and warns when it does not verify'
 
+  # Strict-Transport-Security is off until --hsts: --hsts reaches the
+  # unit as wiki-server's --hsts, is remembered, and --status says so;
+  # --no-hsts drops it. A state that says hsts=no, as one written before
+  # --hsts did, is off.
+  assert_lacks "$HOME/$unit" '--hsts'
+  deploy --no-build --hsts >"$case_dir/hsts" 2>&1 || fail 'a redeploy with --hsts failed'
+  assert_contains "$HOME/$unit" "--tls-key \"$certs/wiki.pem\" --hsts"
+  [ "$(state hsts)" = yes ] || fail "--hsts was remembered as '$(state hsts)'"
+  deploy --no-build >"$case_dir/hsts-again" 2>&1 || fail 'a redeploy with --hsts remembered failed'
+  assert_contains "$HOME/$unit" ' --hsts'
+  deploy --status >"$case_dir/status-hsts" 2>&1
+  assert_contains "$case_dir/status-hsts" 'every HTTPS answer carries Strict-Transport-Security (--hsts); --no-hsts stops sending it'
+  deploy --no-build --no-hsts >"$case_dir/no-hsts" 2>&1 || fail 'a redeploy with --no-hsts failed'
+  assert_lacks "$HOME/$unit" '--hsts'
+  [ -z "$(state hsts)" ] || fail "--no-hsts was remembered as '$(state hsts)'"
+  deploy --status >"$case_dir/status-no-hsts" 2>&1
+  assert_lacks "$case_dir/status-no-hsts" 'Strict-Transport-Security'
+  printf 'hsts=no\n' >>"$HOME/.config/wiki-demo/wiki-demo.state"
+  deploy --no-build >"$case_dir/old-no-hsts" 2>&1 || fail 'a redeploy with hsts=no in the state failed'
+  assert_lacks "$HOME/$unit" '--hsts'
+  pass '--hsts in the unit, remembered and said by --status, dropped by --no-hsts; hsts=no is off'
+
   # Back to tailscale serve: the certificate is dropped, the address goes
   # back to 127.0.0.1 and the port's rule is closed. On another port, as
   # the one on 0.0.0.0 holds 127.0.0.1 too until it stops.
@@ -3795,6 +3817,10 @@ if command -v openssl >/dev/null 2>&1; then
   refused --server --sqlite --tls-ca "$certs/ca.crt"
   refusal="the demo's static server speaks plain HTTP, so --tls-cert is for the wiki's server"
   refused --static --tls-cert "$certs/wiki.crt" --tls-key "$certs/wiki.key"
+  refusal='--hsts and --no-hsts are for wiki-server serving HTTPS itself'
+  refused --server --sqlite --behind-proxy --hsts
+  refusal='--hsts and --no-hsts exclude each other'
+  refused --hsts --no-hsts
   assert_lacks "$EVENTS" 'bootstrap'
   assert_lacks "$EVENTS" 'npm'
   [ ! -f "$HOME/.config/wiki-demo/wiki-demo.state" ] || fail 'a refused deploy wrote a state'

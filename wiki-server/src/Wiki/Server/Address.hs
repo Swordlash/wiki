@@ -25,6 +25,7 @@ module Wiki.Server.Address
     -- * The wiki's origin
   , Origin (..)
   , parseOrigin
+  , addressOrigin
   , showOrigin
   , ownOrigin
   , ownOrigins

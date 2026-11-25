@@ -64,9 +64,9 @@ padding = describe "what an item seals" $ do
        in coverage . cover 10 (sealed > paddingBlock) "longer than a block" $
             sealed `mod` paddingBlock === 0 .&&. sealed - bare < paddingBlock .&&. sealed > 0
 
-  it "is as long for one short secret as for three" $
-    T.length (encodeSecrets (Map.fromList [(SecretName "a", "x")]))
-      `shouldBe` T.length (encodeSecrets (Map.fromList [(SecretName "a", "xyz"), (SecretName "b", "é"), (SecretName "c", "sk-123")]))
+  it "is as many bytes for one short secret as for three" $
+    BS.length (encodeUtf8 (encodeSecrets (Map.fromList [(SecretName "a", "x")])))
+      `shouldBe` BS.length (encodeUtf8 (encodeSecrets (Map.fromList [(SecretName "a", "xyz"), (SecretName "b", "é"), (SecretName "c", "sk-123")])))
 
   it "is a block for no secrets" $
     BS.length (encodeUtf8 (encodeSecrets mempty)) `shouldBe` paddingBlock

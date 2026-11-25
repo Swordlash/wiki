@@ -44,9 +44,13 @@ import Wiki.Core.Markdown.Problems (Problem)
 -- | The manifest of an external plugin, as the registry reads manifests:
 -- its id, name and description. An external plugin is on for a user who
 -- made no choice: the wiki's was installed for everyone by the
--- administrator, and a user's own was added by that user.
+-- administrator, and a user's own was added by that user. It keeps no
+-- secrets: named secrets for external plugins are left for later (the
+-- external plugins' design), and the manifest is read only for whether
+-- the plugin is on. Nothing of the host's ("Wiki.App.Plugin.Host") is
+-- given to it: it runs in its frame, and is sent the page's text alone.
 manifestOf :: ExternalPlugin -> Manifest
-manifestOf p = Manifest {id = p.manifest.id, name = p.manifest.name, description = p.manifest.description, onByDefault = True}
+manifestOf p = Manifest {id = p.manifest.id, name = p.manifest.name, description = p.manifest.description, onByDefault = True, secrets = []}
 
 -- | The installed plugins that may run, by the policy, as the server
 -- serves their frames: the wiki's while the policy is not off (an

@@ -37,6 +37,7 @@ import Test.Passwords qualified as Passwords
 import Test.PluginImports qualified as PluginImports
 import Test.Plugins qualified as Plugins
 import Test.PluginsDom qualified as PluginsDom
+import Test.PluginsExternal qualified as PluginsExternal
 import Test.PluginsSettings qualified as PluginsSettings
 import Test.Policy qualified as Policy
 import Test.Preview qualified as Preview
@@ -103,6 +104,7 @@ main = do
       Plugins.spec
       PluginsSettings.spec
       PluginsDom.spec
+      PluginsExternal.spec
       PluginImports.spec
       Complete.spec
       Licence.spec

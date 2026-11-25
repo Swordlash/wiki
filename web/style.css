@@ -6606,6 +6606,19 @@ div.server-secret > span:first-child {
   margin: 0;
 }
 
+/* A plugin's switch and why its last change was refused
+   (Wiki.App.View.Plugins' switchView): the two lie in the row's column
+   as the row's other lines do. */
+.plugin-choice {
+  display: contents;
+}
+
+.plugin-unlisted {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
 .plugin-head {
   display: flex;
   flex-wrap: wrap;

@@ -63,7 +63,7 @@ import Wiki.App.Route (Route (..), SettingsSection (..), route)
 import Wiki.App.Route qualified as R
 import Wiki.App.Security (MonadSecurity)
 import Wiki.App.Shell qualified as Shell
-import Wiki.App.View.Common (Context (..))
+import Wiki.App.View.Common (Context (..), errorMessage)
 import Wiki.App.View.Editor qualified as Editor
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Slug (Slug, mkSlug)
@@ -109,6 +109,9 @@ data Holding = Holding
   , filesChosen :: Maybe (IORef [ChosenFile])
   -- ^ The files a file input's change brings, standing in for the
   -- browser's.
+  , stateRefused :: Bool
+  -- ^ Whether every write of a user's state of a plugin fails, as one
+  -- the network loses does.
   }
 
 -- | 'Holder' is the demo's backend, as 'Holding' says.
@@ -168,9 +171,10 @@ instance (MonadPlugins m, MonadIO m) => MonadPlugins (Holder m) where
     whenM (Holder (asks (\h -> h.readHeld))) (heldBy "the plugins on")
     Holder (asks (\h -> h.failing)) >>= bool (lift pluginsNow) (pure (Left (Unreachable "the network")))
   setPluginState p s =
-    Holder (asks (\h -> h.afterHandled)) >>= \case
-      True -> lift (setPluginState p s) <* heldBy ("state " <> p.text)
-      False -> heldBy ("state " <> p.text) >> lift (setPluginState p s)
+    Holder (asks (\h -> (h.stateRefused, h.afterHandled))) >>= \case
+      (True, _) -> pure (Left (Unreachable "the network"))
+      (False, True) -> lift (setPluginState p s) <* heldBy ("state " <> p.text)
+      (False, False) -> heldBy ("state " <> p.text) >> lift (setPluginState p s)
   setWikiPluginsOff w = heldBy "the wiki's set" >> lift (setWikiPluginsOff w)
   externalPluginsNow = do
     whenM (Holder (asks (\h -> h.readHeld))) (heldBy "the plugins installed")
@@ -218,7 +222,7 @@ withSection st body = withShellAt st free (UserSettings PluginsSection) (\view _
 
 -- | Nothing held, nothing failed.
 free :: Holding
-free = Holding {gate = Nothing, failing = False, afterHandled = False, readHeld = False, framesAsked = Nothing, filesChosen = Nothing}
+free = Holding {gate = Nothing, failing = False, afterHandled = False, readHeld = False, framesAsked = Nothing, filesChosen = Nothing, stateRefused = False}
 
 -- | Each plugin's row: its id, whether it shows on, and its switch's
 -- state.
@@ -728,3 +732,32 @@ externalSettings = describe "Wiki.App.View.Plugins' external plugins, in the she
       quiet
       Map.keys . (\st -> st.externalWiki) <$> readIORef wiki `shouldReturn` []
       length <$> findAll view ".admin-external-plugin" `shouldReturn` 0
+
+  -- Codex's first round on #386: a refused switch of an external plugin
+  -- went back without a word, as the external row drew only the refusals
+  -- of uploads and removals.
+  it "says on an external plugin's row why its switch was refused, as on a built-in one's, and puts the switch back" $
+    withShellAtWith onServer (withInstalled ExternalUsers) free {stateRefused = True} (UserSettings PluginsSection) $ \view _ _ quiet -> do
+      let switchOn at = element view (at <> " .plugin-toggle") >>= checked
+      for_ [".plugin-external[data-owner=wiki][data-plugin=spell]", ".plugin[data-plugin=assistant]"] $ \at -> do
+        switchOn at `shouldReturn` True
+        click view (at <> " .plugin-toggle")
+        quiet
+        (findAll view (at <> " .plugin-refused") >>= traverse N.textContent) `shouldReturn` ["Not changed: " <> errorMessage (Unreachable "the network")]
+        switchOn at `shouldReturn` True
+
+  -- An upload of the reader's own refused because the administrator
+  -- changed the policy meanwhile: the read after it lists no plugin of the
+  -- reader's and offers no upload, and the refusal is drawn all the same.
+  it "says why an upload of the reader's own was refused when the policy no longer lets users add theirs" $
+    for_ [ExternalWiki, ExternalOff] $ \policy -> do
+      chosen <- newIORef []
+      readsOf <- newIORef []
+      withShellAtWith onServer (withInstalled ExternalUsers) free {filesChosen = Just chosen} (UserSettings PluginsSection) $ \view _ wiki quiet -> do
+        pick view chosen ".plugin-add input[type=file]" [fileOf readsOf "new.json" (manifestOf "new"), fileOf readsOf "new.js" "wikiPlugin.plugin({ diagnostics: () => [] });"]
+        quiet
+        modifyIORef' wiki (\st -> st {externalPolicy = policy})
+        click view ".plugin-warning .plugin-confirm"
+        quiet
+        length <$> findAll view ".plugin-add" `shouldReturn` 0
+        (policy,) <$> (findAll view ".plugins-external .plugin-refused" >>= traverse N.textContent) `shouldReturn` (policy, ["Not done: " <> errorMessage Forbidden])

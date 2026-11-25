@@ -134,14 +134,11 @@ component =
     row st m known manifest =
       [hh|
         <li class={{ "plugin plugin-" <> if isOnNow then "on" else "off" :: Text }} data-plugin={{ manifest.id.text }}>
-          {{ switchHead m known manifest }}
+          {{ switchView m known manifest }}
           <p class="plugin-description account-note">{{ manifest.description }}</p>
           {{ stateNote m known manifest }}
           {% if manifest.id == assistantId %}
             <a class="plugin-options" {{ Router.linkProps st.input.router Followed (UserSettings AssistantSection) }}>Its options are under Writing assistant</a>
-          {% end %}
-          {% for e in maybeToList (Map.lookup manifest.id m.refused) %}
-            <p class="error plugin-refused" role="alert">{{ "Not changed: " <> refusalText e }}</p>
           {% end %}
         </li>
       |]
@@ -167,6 +164,7 @@ component =
                   <section class="plugins-external" aria-label="External plugins">
                     <h3>External plugins</h3>
                     <p class="account-note plugins-external-off" role="note">External plugins are off on this wiki: none runs.</p>
+                    {{ unlistedView m Set.empty }}
                   </section>
                 |]
             | otherwise ->
@@ -180,8 +178,9 @@ component =
                       {% end %}
                     </ul>
                     {% if installed.policy == ExternalUsers %}
-                      {{ adding st m installed }}
+                      {{ adding st m }}
                     {% end %}
+                    {{ unlistedView m (Set.fromList [p.manifest.id | p <- installed.external, p.mine]) }}
                   </section>
                 |]
 
@@ -189,7 +188,7 @@ component =
     externalRow m known installed p =
       [hh|
         <li class={{ "plugin plugin-external plugin-" <> if isOnNow then "on" else "off" :: Text }} data-plugin={{ p.manifest.id.text }} data-owner={{ if p.mine then "mine" else "wiki" :: Text }}>
-          {{ switchHead m known manifest }}
+          {{ switchView m known manifest }}
           <p class="plugin-about account-note">{{ ownerText (ownerOf p) <> " · version " <> p.manifest.version }}</p>
           {% if not (T.null p.manifest.description) %}
             <p class="plugin-description account-note">{{ p.manifest.description }}</p>
@@ -234,10 +233,10 @@ component =
           Just picked | picked.owner == Mine, (fst <$> picked.replacing) == replaced -> warning picked Happen
           _ -> HH.text ""
 
-    -- The user's own plugins: the warning for the files picked, the
-    -- refusals of uploads of no plugin listed, and the input to pick them.
-    adding :: State -> Model -> ExternalPlugins -> H.ComponentHTML Action Empty m
-    adding st m installed =
+    -- The input to pick the files of a plugin of the user's own, and the
+    -- warning for the files picked.
+    adding :: State -> Model -> H.ComponentHTML Action Empty m
+    adding st m =
       [hh|
         <div class="plugin-add">
           <label class="button plugin-add-files">
@@ -248,45 +247,66 @@ component =
           {% if st.reading %}
             <p class="plugin-reading" role="status">Reading the files…</p>
           {% end %}
-          {% for c in addedChanging %}
-            <p class="plugin-changing" role="status">{{ changeText c }}</p>
-          {% end %}
-          {% for e in addedRefused %}
-            <p class="error plugin-refused" role="alert">{{ "Not done: " <> refusalText e }}</p>
-          {% end %}
           {% for picked in maybeToList adding' %}
             {{ warning picked Happen }}
           {% end %}
         </div>
       |]
       where
-        listed = Set.fromList [p.manifest.id | p <- installed.external, p.mine]
-        notListed :: ((Owner, PluginId), a) -> Maybe a
-        notListed ((o, i), x) = if o == Mine && Set.notMember i listed then Just x else Nothing
-        addedRefused = mapMaybe notListed (Map.toList m.externalRefused)
-        addedChanging = mapMaybe notListed (Map.toList m.changing)
         adding' = case m.picked of
           Just picked | picked.owner == Mine, isNothing picked.replacing -> Just picked
           _ -> Nothing
 
-    -- A plugin's name and its switch.
-    switchHead :: Model -> Plugins -> Manifest -> H.ComponentHTML Action Empty m
-    switchHead m known manifest =
+    -- The uploads and removals of the user's own plugins that no row
+    -- shows, out or refused: a plugin being added, or one whose row is
+    -- gone because the administrator changed the policy meanwhile. They
+    -- are drawn under every policy, so that a refusal is seen even when
+    -- the policy no longer lists the user's own plugins.
+    unlistedView :: Model -> Set PluginId -> H.ComponentHTML Action Empty m
+    unlistedView m shown
+      | null unlistedChanging && null unlistedRefused = HH.text ""
+      | otherwise =
+          [hh|
+            <div class="plugin-unlisted">
+              {% for c in unlistedChanging %}
+                <p class="plugin-changing" role="status">{{ changeText c }}</p>
+              {% end %}
+              {% for e in unlistedRefused %}
+                <p class="error plugin-refused" role="alert">{{ "Not done: " <> refusalText e }}</p>
+              {% end %}
+            </div>
+          |]
+      where
+        unlisted :: Map (Owner, PluginId) a -> [a]
+        unlisted = Map.elems . Map.filterWithKey (\(o, i) _ -> o == Mine && Set.notMember i shown)
+        unlistedChanging = unlisted m.changing
+        unlistedRefused = unlisted m.externalRefused
+
+    -- A plugin's name, its switch, and why the last change of the switch
+    -- was refused. Built-in and external rows both draw their switch with
+    -- it, so that a refused change is said on either.
+    switchView :: Model -> Plugins -> Manifest -> H.ComponentHTML Action Empty m
+    switchView m known manifest =
       [hh|
-        <div class="plugin-head">
-          <span class="plugin-name">{{ manifest.name }}</span>
-          <label class="plugin-switch">
-            <input
-              type="checkbox"
-              role="switch"
-              class="plugin-toggle"
-              aria-label={{ manifest.name }}
-              checked={{ isOnNow }}
-              disabled={{ Set.member manifest.id known.offForWiki }}
-              onChange={{ const (Happen (Chosen manifest.id (if isOnNow then PluginOff else PluginOn))) }}
-            >
-            <span class="plugin-state">{{ if isOnNow then "On" else "Off" :: Text }}</span>
-          </label>
+        <div class="plugin-choice">
+          <div class="plugin-head">
+            <span class="plugin-name">{{ manifest.name }}</span>
+            <label class="plugin-switch">
+              <input
+                type="checkbox"
+                role="switch"
+                class="plugin-toggle"
+                aria-label={{ manifest.name }}
+                checked={{ isOnNow }}
+                disabled={{ Set.member manifest.id known.offForWiki }}
+                onChange={{ const (Happen (Chosen manifest.id (if isOnNow then PluginOff else PluginOn))) }}
+              >
+              <span class="plugin-state">{{ if isOnNow then "On" else "Off" :: Text }}</span>
+            </label>
+          </div>
+          {% for e in maybeToList (Map.lookup manifest.id m.refused) %}
+            <p class="error plugin-refused" role="alert">{{ "Not changed: " <> refusalText e }}</p>
+          {% end %}
         </div>
       |]
       where

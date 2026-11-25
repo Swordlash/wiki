@@ -35,6 +35,7 @@ import Test.LivePreviewDom qualified as LivePreviewDom
 import Test.Manifest qualified as Manifest
 import Test.Passwords qualified as Passwords
 import Test.PluginImports qualified as PluginImports
+import Test.PluginSecrets qualified as PluginSecrets
 import Test.Plugins qualified as Plugins
 import Test.PluginsDom qualified as PluginsDom
 import Test.PluginsSettings qualified as PluginsSettings
@@ -44,6 +45,8 @@ import Test.Problems qualified as Problems
 import Test.Readme qualified as Readme
 import Test.Rect qualified as Rect
 import Test.Route qualified as Route
+import Test.SecretField qualified as SecretField
+import Test.SecretFieldDom qualified as SecretFieldDom
 import Test.Server qualified as Server
 import Test.SettingsDom qualified as SettingsDom
 import Test.Shell qualified as Shell
@@ -104,9 +107,13 @@ main = do
       PluginsSettings.spec
       PluginsDom.spec
       PluginImports.spec
+      PluginSecrets.spec
+      SecretField.spec
+      SecretFieldDom.spec
       Complete.spec
       Licence.spec
       Readme.spec
     around_ (holding maxBound) $ do
       Hydrate.storageSpec
       Assistant.spec
+      PluginSecrets.storageSpec

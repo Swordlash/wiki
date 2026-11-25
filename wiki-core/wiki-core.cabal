@@ -116,6 +116,7 @@ library
       Wiki.Core.Url
       Wiki.Core.User
       Wiki.Core.Vault
+      Wiki.Core.Vault.Plugin
       Wiki.Core.Version
   other-modules:
       Wiki.Core.Template.Embed
@@ -213,6 +214,7 @@ test-suite wiki-core-test
       Test.Title
       Test.User
       Test.Vault
+      Test.VaultPlugin
   build-depends:
       QuickCheck,
       aeson,

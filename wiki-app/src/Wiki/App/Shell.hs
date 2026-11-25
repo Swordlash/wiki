@@ -176,9 +176,9 @@ import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Islands qualified as Islands
 import Wiki.App.Live (Feed (..), Live (..))
 import Wiki.App.Offline (browserOnline, install, installAvailable, installChanges, offlineCopy)
-import Wiki.App.Plugin (Options (..), OptionsInput (..), OptionsOutput (..))
+import Wiki.App.Plugin (Manifest (..), Options (..), OptionsInput (..), OptionsOutput (..), Plugin (..))
 import Wiki.App.Plugin.Host (capabilities)
-import Wiki.App.Plugin.Registry (assistantId, optionsFor, optionsOf, plugins, pluginsOn)
+import Wiki.App.Plugin.Registry (assistantId, optionsFor, plugins, pluginsOn)
 import Wiki.App.Recent (rememberVisit)
 import Wiki.App.Route (AdminSection, Route (..), SettingsSection (..), adminSections, locationRoute, sectionName, sectionTitle, settingsName, settingsSections, settingsTitle, settledRoute)
 import Wiki.App.Route qualified as R
@@ -1070,13 +1070,13 @@ component =
         |]
       -- The writing assistant's settings are its plugin's options, which
       -- are there whether the plugin is on or off.
-      AssistantSection -> case head [o | (i, o) <- optionsOf plugins, i == assistantId] of
-        Just (Options options) ->
+      AssistantSection -> case head [(p.manifest, o) | p <- plugins, Just o <- [p.options], p.manifest.id == assistantId] of
+        Just (manifest, Options options) ->
           HH.slot
             "pluginOptions"
             (assistantId, who)
             options
-            OptionsInput {user = who, options = optionsFor assistantId (context st).plugins, can = capabilities (context st)}
+            OptionsInput {user = who, options = optionsFor assistantId (context st).plugins, can = capabilities (context st) manifest}
             (FromPluginOptions assistantId)
         Nothing -> HH.text ""
       where

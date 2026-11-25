@@ -117,6 +117,7 @@ library
       Wiki.App.Plugin.Capability.Assistant
       Wiki.App.Plugin.Errors
       Wiki.App.Plugin.Host
+      Wiki.App.Plugin.Host.Secrets
       Wiki.App.Plugin.Registry
       Wiki.App.Offline
       Wiki.App.Recent
@@ -178,6 +179,8 @@ library
       Wiki.App.View.SearchHit
       Wiki.App.View.SearchPanel
       Wiki.App.View.SearchResults
+      Wiki.App.View.SecretField
+      Wiki.App.View.SecretField.Machine
       Wiki.App.View.Security
       Wiki.App.View.Server
       Wiki.App.View.SignIn
@@ -383,7 +386,9 @@ test-suite wiki-app-test
         Test.Live
         Test.Manifest
         Test.Passwords
+        Test.FakeVault
         Test.PluginImports
+        Test.PluginSecrets
         Test.Plugins
         Test.PluginsDom
         Test.PluginsSettings
@@ -395,12 +400,16 @@ test-suite wiki-app-test
         Test.Rect
         Test.Route
         Test.Scripted
+        Test.SecretField
+        Test.SecretFieldDom
+        Test.SecretsPlugin
         Test.Server
         Test.Shell
         Test.Threads
         Test.Deck
         Test.Ticking
         Test.Users
+        Test.VaultServer
     build-depends:
         HUnit,
         QuickCheck,
@@ -482,6 +491,7 @@ test-suite wiki-app-browser-test
       Test.Browser.Permissions
       Test.Browser.Persist
       Test.Browser.Personal
+      Test.Browser.PluginSecrets
       Test.Browser.Avatars
       Test.Browser.Policy
       Test.Browser.Problems
@@ -505,16 +515,19 @@ test-suite wiki-app-browser-test
       Test.Browser.Vault
       Test.Browser.Workspace
       Test.Counting
+      Test.VaultServer
   build-depends:
       aeson,
       base,
       base64-bytestring,
       bytestring,
       containers,
+      primitive,
       protolude,
       row-types,
       text,
       time,
+      transformers,
       unliftio-core,
       haskell-halogen-core,
       haskell-halogen-jsbits,

@@ -51,6 +51,7 @@ import Test.Template qualified as Template
 import Test.Title qualified as Title
 import Test.User qualified as User
 import Test.Vault qualified as Vault
+import Test.VaultPlugin qualified as VaultPlugin
 
 main :: IO ()
 main = hspec . parallel . wasmCases $ do
@@ -102,3 +103,4 @@ main = hspec . parallel . wasmCases $ do
   Export.spec
   User.spec
   Vault.spec
+  VaultPlugin.spec

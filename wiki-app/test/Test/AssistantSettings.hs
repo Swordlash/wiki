@@ -10,7 +10,7 @@ import Data.Map.Strict qualified as Map
 import Protolude
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
-import Test.QuickCheck (Gen, chooseInt, counterexample, forAll, frequency, listOf, (.&&.), (===))
+import Test.QuickCheck (Gen, chooseInt, counterexample, forAll, frequency, listOf, property, (.&&.), (===))
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..))
 import Wiki.App.Assistant.Migrate (Outcome (..))
 import Wiki.App.Backend (WikiError (..))
@@ -209,7 +209,12 @@ migrationMachine = describe "Wiki.App.View.Migration.Machine" $ do
   prop "empties the legacy places with no other change once the options are the server's, whatever the order of the answers" $
     forAll (listOf genMoveOrder) $ \moves ->
       let end = drainShell (foldl' (flip moveIn) startShell moves)
-       in counterexample (show (map (\o -> o.ask) end.pending, end.mig, end.legacy, end.server)) (end.mig.done && not end.legacy && isJust end.server)
+          lastChosen = lastMay [chosenOptions n | ChooseOptions n <- moves]
+       in counterexample (show (map (\o -> o.ask) end.pending, end.mig, end.legacy, end.server)) $
+            (end.mig.done && not end.legacy && isJust end.server)
+              -- The user's last choice is the server's: adopted options
+              -- never write over it.
+              .&&. maybe (property True) (\c -> end.server === Just c) lastChosen
 
 -- | 'Shell' is the part of the shell that runs the move and the plugins'
 -- state, as "Wiki.App.Shell" runs them: the two machines, the asks out,
@@ -228,11 +233,11 @@ data Pending = Pending {ask :: Text, answer :: Shell -> Shell}
 
 -- | What happens: the secrets change in this browser, or the ask out at
 -- this place answers.
-data MoveOrder = SecretsChange | AnswerAt Int
+data MoveOrder = SecretsChange | AnswerAt Int | ChooseOptions Int
   deriving stock (Show)
 
 genMoveOrder :: Gen MoveOrder
-genMoveOrder = frequency [(1, pure SecretsChange), (4, AnswerAt <$> chooseInt (0, 4))]
+genMoveOrder = frequency [(1, pure SecretsChange), (4, AnswerAt <$> chooseInt (0, 4)), (1, ChooseOptions <$> chooseInt (1, 3))]
 
 -- | A session of Alice's, the move and the plugins' read asked, as the
 -- shell starts them.
@@ -242,6 +247,7 @@ startShell = plugEvent P.Refresh (migEvent (M.Given 1 (Just alice)) (Shell {mig 
 moveIn :: MoveOrder -> Shell -> Shell
 moveIn = \case
   SecretsChange -> migEvent M.Nudged
+  ChooseOptions n -> plugEvent (P.OptionsChosen assistantP (Just (chosenOptions n)))
   AnswerAt i -> \sh -> case splitAt (i `mod` max 1 (length sh.pending)) sh.pending of
     (earlier, p : later) -> p.answer sh {pending = earlier <> later}
     _ -> sh
@@ -290,6 +296,10 @@ plugEvent e sh =
       _ -> identity
     choice o = PluginChoice {state = PluginDefault, options = o}
     pluginsOf y = Plugins {offForWiki = mempty, mine = maybe mempty (\v -> Map.singleton assistantP (choice (Just v))) y.server}
+
+-- | Options the user chooses.
+chosenOptions :: Int -> Value
+chosenOptions n = object ["chosen" .= n]
 
 -- | The legacy settings' options a run finds, and the plugin's id.
 legacyFound :: Value

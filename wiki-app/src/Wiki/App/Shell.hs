@@ -133,6 +133,7 @@ where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
+import Data.Aeson (Value)
 import Data.Map.Strict qualified as Map
 import Data.Row.Internal (LT (..), Row (R))
 import Data.Set qualified as Set
@@ -154,7 +155,7 @@ import Web.Event.Event (Event)
 import Web.Storage.Storage (StorageKind (..))
 import Web.Storage.Storage qualified as Storage
 import Wiki.Api.Links (archiveExportUrl)
-import Wiki.Api.Plugins (Plugins (..), WikiPlugins (..))
+import Wiki.Api.Plugins (PluginId, Plugins (..), WikiPlugins (..))
 import Wiki.Api.ServerSettings (HomePage (showAnonymous, title))
 import Wiki.App.Account (Accounts (..), SignInError (..))
 import Wiki.App.Assistant (MonadAssistant, announceSignIn, closeKeyOwnersOf, keysDroppedElsewhere, listenToOtherTabs)
@@ -176,9 +177,9 @@ import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Islands qualified as Islands
 import Wiki.App.Live (Feed (..), Live (..))
 import Wiki.App.Offline (browserOnline, install, installAvailable, installChanges, offlineCopy)
-import Wiki.App.Plugin (Options (..), OptionsInput (..))
+import Wiki.App.Plugin (Options (..), OptionsInput (..), OptionsOutput (..))
 import Wiki.App.Plugin.Host (capabilities)
-import Wiki.App.Plugin.Registry (assistantId, optionsOf, plugins, pluginsOn)
+import Wiki.App.Plugin.Registry (assistantId, optionsFor, optionsOf, plugins, pluginsOn)
 import Wiki.App.Recent (rememberVisit)
 import Wiki.App.Route (AdminSection, Route (..), SettingsSection (..), adminSections, locationRoute, sectionName, sectionTitle, settingsName, settingsSections, settingsTitle, settledRoute)
 import Wiki.App.Route qualified as R
@@ -296,6 +297,7 @@ type Slots =
     '[ "editor" :-> H.Slot Editor.Query ViewOutput (SpaceId, [Slug])
      , "invite" :-> H.Slot (Const Void) InviteView.Output ()
      , "part" :-> H.Slot (Const Void) Void PartSlot
+     , "pluginOptions" :-> H.Slot (Const Void) OptionsOutput (PluginId, Maybe UserId)
      , "plugins" :-> H.Slot (Const Void) PluginsMachine.Event (Maybe UserId)
      , "reset" :-> H.Slot (Const Void) ResetView.Output ()
      , "signIn" :-> H.Slot SignInView.Query SignInView.Output ()
@@ -350,7 +352,6 @@ data PartSlot
     SecuritySlot (Maybe UserId)
   | ApiKeysSlot (Maybe UserId)
   | NotificationsSlot (Maybe UserId)
-  | AssistantSettingsSlot (Maybe UserId)
   | WhatsNewSlot
   | UserSpacesSlot
   deriving stock (Eq, Ord)
@@ -567,6 +568,7 @@ data Action
   | FromAccount SignInView.Output
   | ChangePassword (Maybe UserId) SignInMethodsView.Output
   | FromPlugins PluginsMachine.Event
+  | FromPluginOptions PluginId OptionsOutput
   | SessionChanged Session
   | OpenSignIn
   | FromInvite InviteView.Output
@@ -1070,7 +1072,13 @@ component =
       -- The writing assistant's settings are its plugin's options, which
       -- are there whether the plugin is on or off.
       AssistantSection -> case head [o | (i, o) <- optionsOf plugins, i == assistantId] of
-        Just (Options options) -> HH.slot_ "part" (AssistantSettingsSlot who) options OptionsInput {user = who, can = capabilities (context st)}
+        Just (Options options) ->
+          HH.slot
+            "pluginOptions"
+            (assistantId, who)
+            options
+            OptionsInput {user = who, options = optionsFor assistantId (context st).plugins, can = capabilities (context st)}
+            (FromPluginOptions assistantId)
         Nothing -> HH.text ""
       where
         who = (\u -> u.id) <$> st.session.user
@@ -1772,6 +1780,11 @@ component =
       FromView (Showing page) -> modify (\st -> st {shown = Just page})
       -- The plugins' state, which the shell keeps ('pluginState').
       FromPlugins e -> Machine.happen pluginsSpec e
+      -- A plugin's options, from its settings or its agent in the editor:
+      -- the plugins' state writes them, so that leaving the view does not
+      -- cut the write off.
+      FromView (PluginOptions p o) -> chooseOptions p o
+      FromPluginOptions p (SaveOptions o) -> chooseOptions p o
       FromView Entered -> do
         now <- H.liftEffect historyEntry
         modify (\st -> st {entry = now})
@@ -2072,6 +2085,13 @@ component =
           dirty <- isJust <$> unsavedShown
           void . Latest.answered worldAsksOf setWorldAsks ticket $ \st ->
             if dirty && st.world == WorldReady then st {stale = Just e} else st {world = WorldFailed e}
+
+    -- A plugin's options as one of its surfaces set them ('Nothing'
+    -- clears them). Nothing is written yet: the plugins' machine takes
+    -- them as an event in the next change, and no plugin sets its options
+    -- before then.
+    chooseOptions :: PluginId -> Maybe Value -> H.HalogenM (State m) Action Slots output m ()
+    chooseOptions _ _ = pass
 
     -- The plugins' state given the session's number: a new one forgets
     -- what it held, and drops a write chosen in the session before. The

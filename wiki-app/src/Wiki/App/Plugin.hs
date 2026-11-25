@@ -6,6 +6,11 @@
 -- the plugin gives the wiki, and the host calls it: 'Diagnostics',
 -- problems the editor marks in the text; an 'Agent', which works on the
 -- page beside the author; and 'Options', the plugin's settings. A
+-- plugin's own options, which the server keeps for each user in the clear
+-- (decision 69), come with the input of each of its surfaces, and a
+-- surface changes them by telling the host ('SetOptions',
+-- 'SaveOptions'): the host writes them, and the write goes on after the
+-- surface has gone. A
 -- capability is what the plugin may ask of the host: read the document
 -- and propose a change to it, link to its settings ('Capabilities'). A
 -- surface is what the plugin draws itself: for a built-in plugin, a
@@ -46,6 +51,7 @@ module Wiki.App.Plugin
     -- * Options
   , Options (..)
   , OptionsInput (..)
+  , OptionsOutput (..)
 
     -- * Capabilities
   , Capabilities (..)
@@ -64,6 +70,7 @@ module Wiki.App.Plugin
 where
 
 import DOM.HTML.Indexed qualified as I
+import Data.Aeson (Value)
 import Halogen qualified as H
 import Halogen.HTML.Properties qualified as HP
 import Halogen.Router (Follow, Router)
@@ -155,18 +162,23 @@ newtype Agent m = Agent {surface :: H.Component AgentQuery (AgentInput m) AgentO
 data AgentQuery a = Press Text Bool a
 
 -- | 'AgentOutput' is what an agent tells the host: the buttons it has now;
--- that it closed itself (its own close button, or Escape); or that the
--- author accepted or rejected all of the changes it proposed.
+-- that it closed itself (its own close button, or Escape); that the author
+-- accepted or rejected all of the changes it proposed; or the plugin's
+-- options as they are to be kept from now on ('Nothing' clears them).
 data AgentOutput
   = Buttons [AgentButton]
   | Closed
   | DecideAll Decision
+  | SetOptions (Maybe Value)
 
 -- | 'AgentInput' is what the host gives an agent each time the editor
--- renders: who is signed in, the page being edited once it is loaded, and
--- the capabilities.
+-- renders: who is signed in, the plugin's options, the page being edited
+-- once it is loaded, and the capabilities.
 data AgentInput m = AgentInput
   { user :: Maybe UserId
+  , options :: Maybe Value
+  -- ^ The plugin's options for the user: as the server keeps them, or as
+  -- last set while their write is out. 'Nothing' when there are none.
   , editing :: Maybe Editing
   , can :: Capabilities m
   }
@@ -216,14 +228,22 @@ data Face = Logo Text (Maybe Text) | ChatGlyph | Letter Text
 
 -- | 'Options' is a plugin's settings: a component the settings page shows
 -- in a section of its own.
-newtype Options m = Options {surface :: H.Component (Const Void) (OptionsInput m) Void m}
+newtype Options m = Options {surface :: H.Component (Const Void) (OptionsInput m) OptionsOutput m}
 
 -- | 'OptionsInput' is what the settings page gives a plugin's options: who
--- is signed in, and the capabilities.
+-- is signed in, the plugin's options ('AgentInput''s @options@), and the
+-- capabilities.
 data OptionsInput m = OptionsInput
   { user :: Maybe UserId
+  , options :: Maybe Value
   , can :: Capabilities m
   }
+
+-- | 'OptionsOutput' is what a plugin's settings tell the host: the
+-- plugin's options as they are to be kept from now on ('Nothing' clears
+-- them).
+newtype OptionsOutput = SaveOptions (Maybe Value)
+  deriving stock (Eq, Show)
 
 --------------------------------------------------------------------------------
 -- Capabilities

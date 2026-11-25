@@ -21,12 +21,14 @@ module Wiki.App.Plugin.Registry
   , Contributed (..)
   , contributed
   , optionsOf
+  , optionsFor
   , assistantId
   )
 where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
+import Data.Aeson (Value)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Protolude
@@ -99,3 +101,8 @@ contributed chosenIds given =
 -- where the user may keep its keys and turn it on again.
 optionsOf :: [Plugin m] -> [(PluginId, Options m)]
 optionsOf given = [(p.manifest.id, o) | p <- given, Just o <- [p.options]]
+
+-- | A plugin's options for the reader, as what is on holds them: what its
+-- surfaces are given ('Wiki.App.Plugin.AgentInput''s @options@).
+optionsFor :: PluginId -> Plugins -> Maybe Value
+optionsFor p known = (\c -> c.options) =<< Map.lookup p known.mine

@@ -70,6 +70,19 @@
 -- ahead of the program (by the prerender or the server), which has no
 -- access to the settings, says that the settings are being read, and the
 -- program adopts that page unchanged.
+--
+-- The keys are first read from the copy of the vault this browser holds
+-- ("Wiki.App.Plugin.Host.Secrets"), which can be older than the vault:
+-- another device may have kept a key since. So the view also asks the
+-- vault once as it opens ('Secrets''s @refresh@), and once for each other
+-- reader: a newer vault is announced, and the view and its fields read
+-- again. The view asks it for all its fields, which ask nothing
+-- themselves. On the address the page started at, from what the page
+-- carries ('OptionsInput''s @adopted@), the view asks nothing: a page the
+-- server rendered asks the server nothing as the program adopts it, as
+-- the rest of the page does. There the copy is shown, until the reader
+-- goes to another address (the address the view then opens at is not
+-- adopted) or a change of the secrets is announced.
 module Wiki.App.Plugin.Assistant.Options
   ( component
   )
@@ -181,6 +194,9 @@ data State m = State
   -- provider, to keep with the key once the field has kept it.
   , heard :: Maybe (HS.Listener IO (Action m))
   -- ^ Where the checks the fields run tell the view what they found.
+  , refreshed :: Maybe Settings.Reader
+  -- ^ The reader the vault was last asked for as the view opened
+  -- ('refreshShown'): once for each reader.
   }
 
 data Action m
@@ -221,6 +237,7 @@ component =
               , testing = mempty
               , tested = mempty
               , heard = Nothing
+              , refreshed = Nothing
               }
       , render
       , eval =
@@ -479,6 +496,9 @@ component =
         void (H.subscribe (SecretsMoved <$ changes))
         modify (\st -> st {secure, scripted, heard = Just listener})
         gets (\st -> Settings.Opened (readerOf st.input) st.input.options Nothing) >>= happen
+        -- Last: the first read above is of the copy, and waits for no
+        -- answer of the vault's.
+        refreshShown
       -- The input, and the reader and the options in it, in one step.
       Receive input -> do
         before <- gets (\st -> readerOf st.input)
@@ -486,7 +506,10 @@ component =
         -- Another reader: nothing shown of the former reader's stays.
         when (readerOf input /= before) $
           modify (\st -> st {typedModels = mempty, checks = mempty, listings = mempty, otherModels = mempty, testing = mempty, tested = mempty})
-        whenM (H.liftEffect input.can.here) (happen (Settings.Given (readerOf input) input.options))
+        whenM (H.liftEffect input.can.here) $ do
+          happen (Settings.Given (readerOf input) input.options)
+          -- Another reader, or the address the page started at left.
+          refreshShown
       SecretsMoved -> happen Settings.SecretsChanged
       -- A field's check of a typed key ("Test and keep", the owner,
       -- 2026-11-04): the model list fetched with it, then the smallest
@@ -576,6 +599,20 @@ component =
             Left e -> st {listings = Map.insert p (NotFetched (errorText (serviceOf r) (Just r.key) e)) st.listings}
             Right listed -> st {listings = Map.insert p (Fetched (length listed)) st.listings}
         _ -> pass
+
+    -- The vault asked once for the reader the input is for, unless the view
+    -- is on the address the page started at (the module's header says
+    -- why). The reader is marked in the step that decides, before the ask
+    -- waits, so that an input given meanwhile asks nothing again. The
+    -- answer is no event: a newer vault is announced, and heard as
+    -- 'SecretsMoved', by the fields too.
+    refreshShown :: H.HalogenM (State m) (Action m) Slots OptionsOutput m ()
+    refreshShown = do
+      st <- get
+      let who = readerOf st.input
+      when (not st.input.adopted && st.refreshed /= Just who) $ do
+        modify (\s -> s {refreshed = Just who})
+        H.async st.input.can.secrets.refresh
 
     -- A request to a provider, through the capabilities the page gave,
     -- waited for.

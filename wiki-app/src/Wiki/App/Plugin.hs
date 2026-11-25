@@ -267,11 +267,19 @@ data Face = Logo Text (Maybe Text) | ChatGlyph | Letter Text
 newtype Options m = Options {surface :: H.Component (Const Void) (OptionsInput m) OptionsOutput m}
 
 -- | 'OptionsInput' is what the settings page gives a plugin's options: who
--- is signed in, the plugin's options ('AgentInput''s @options@), and the
--- capabilities.
+-- is signed in, the plugin's options ('AgentInput''s @options@), whether
+-- the page was adopted, and the capabilities.
 data OptionsInput m = OptionsInput
   { user :: Maybe UserId
   , options :: Maybe Value
+  , adopted :: Bool
+  -- ^ Whether the settings are shown at the address the page started at,
+  -- from what the page carries: a page the server rendered asks the server
+  -- nothing as the program adopts it. The secrets then show what this
+  -- browser holds of them. False once the reader has gone to another
+  -- address: settings shown then read the secrets from the server as they
+  -- open ('Secrets''s @refresh@), since the copy this browser holds can be
+  -- older than the vault.
   , can :: Capabilities m
   }
 
@@ -345,8 +353,8 @@ data Secrets m = Secrets
   -- starts, which asks the server nothing ("Wiki.App.Plugin.Host.Secrets").
   , refresh :: m ()
   -- ^ Read them from the server, for when they are needed fresh (a
-  -- request about to be made): a change since is announced, and 'changes'
-  -- tells of it.
+  -- request about to be made, settings that show them opened): a change
+  -- since is announced, and 'changes' tells of it.
   , put :: SecretName -> Text -> m (Either Text ())
   , remove :: SecretName -> m (Either Text ())
   , field :: SecretField m

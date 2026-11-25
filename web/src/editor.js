@@ -1539,11 +1539,13 @@ const toolbarKeys = new Set(["Ctrl-b", "Ctrl-e", "Ctrl-k"]);
 const textKeys = standardKeymap.filter((binding) => !toolbarKeys.has(binding.mac) && binding.key !== "Escape");
 
 // Enter in a list or a quotation (WP5.124 (a) of docs/PLAN.md, #187). What
-// Enter writes is decided in Haskell (Wiki.Core.Markdown.Enter's enter,
+// Enter writes is decided in Haskell (Wiki.Core.Markdown.Enter's edit,
 // with the wiki's own parser): a line break alone, a line break and the
-// start of the next item or quoted line, or the cursor's line replaced,
-// an empty item or quoted line gone up a level. This asks it and makes
-// the answer one transaction, one step of the undo. A selection, several
+// start of the next item or quoted line, an item split in two at the
+// cursor, or the cursor's line replaced, an empty item or quoted line
+// gone up a level; and after a new item of a numbered list, the numbers
+// of the items after it. This asks it and makes the answer one
+// transaction, one step of the undo. A selection, several
 // cursors, a host without the callback, an ask that throws or comes back
 // unanswered are a line break and nothing more: Enter never does
 // nothing.
@@ -1572,16 +1574,22 @@ const enterStarts = StateField.define({
   },
 });
 
-// What Enter writes at a position of a state, asked of Haskell through the
-// host's wikiEnter (Wiki.App.Editor.Browser's enterCallback): {insert}, the
-// text after a line break, or {line}, what the position's line becomes; null
-// for a line break alone. The callback answers before it returns, on the
-// object it is given, and is asked twice. First where the text it reads
-// starts and ends (Wiki.Core.Markdown.Starts' textRange): it is given the
-// starts the last check kept, as mapped through the changes since, each
-// with where its line now starts and ends, and answers "from to", or
-// nothing past the limit. Then what Enter writes, given that text before
-// the position and after it.
+// What Enter does at a position of a state, asked of Haskell through the
+// host's wikiEnter (Wiki.App.Editor.Browser's enterCallback): {change,
+// renumbered, cursor, longer} (Wiki.Core.Markdown.Enter's Edit), each
+// change [from, to, old, insert] with its range in UTF-16 units from the
+// position, and the cursor's place after them the same way; null for a
+// line break alone. The callback answers before it returns, on the object
+// it is given. First where the text it reads starts and ends
+// (Wiki.Core.Markdown.Starts' textRange): it is given the starts the last
+// check kept, as mapped through the changes since, each with where its
+// line now starts and ends, and answers "from to longer", or nothing past
+// the limit. Then what Enter does, given that text before the position
+// and after it, and whether it ends where the page does. Where the answer
+// says that a numbered list may go on past that text (longer), it is
+// asked once more with the text up to where a longer one ends, and the
+// numbers of that answer are taken if its change on the cursor's line is
+// the same.
 const askEnter = (host, state, pos) => {
   const enter = host.wikiEnter;
   const kept = state.field(enterStarts, false);
@@ -1595,29 +1603,43 @@ const askEnter = (host, state, pos) => {
     return [start, at.from, at.to, /^[^ \t]/.test(at.text)];
   });
   const cut = { cut: JSON.stringify({ kept: starts, firstChange: kept.firstChange, lineStart: line.from, lineEnd: line.to, length: doc.length }), range: null };
-  const ask = { cut: null, before: "", after: "", insert: null, line: null };
   try {
     enter(cut);
     if (typeof cut.range !== "string") return null;
-    const [from, to] = cut.range.split(" ").map(Number);
-    if (!(Number.isInteger(from) && Number.isInteger(to) && from <= pos && pos <= to && to <= doc.length)) return null;
-    ask.before = state.sliceDoc(from, pos);
-    ask.after = state.sliceDoc(pos, to);
-    enter(ask);
+    const [from, to, longer] = cut.range.split(" ").map(Number);
+    if (!(Number.isInteger(from) && Number.isInteger(to) && Number.isInteger(longer) && from <= pos && pos <= to && to <= longer && longer <= doc.length)) return null;
+    const asked = (end) => {
+      const ask = { cut: null, before: state.sliceDoc(from, pos), after: state.sliceDoc(pos, end), ends: end === doc.length, answer: null };
+      enter(ask);
+      return typeof ask.answer === "string" ? JSON.parse(ask.answer) : null;
+    };
+    const answer = asked(to);
+    if (answer === null || !answer.longer) return answer;
+    const again = longer > to ? asked(longer) : null;
+    const same = again !== null && !again.longer && JSON.stringify(again.change) === JSON.stringify(answer.change) && again.cursor === answer.cursor;
+    return same ? again : { ...answer, renumbered: [] };
   } catch {
     return null;
   }
-  if (typeof ask.insert === "string") return { insert: ask.insert };
-  if (typeof ask.line === "string") return { line: ask.line };
-  return null;
 };
 
-// The transaction of an answer of askEnter at a cursor, in a state whose
-// cursor's line is the line asked about.
+// The transaction of an answer of askEnter at a cursor, or null where a
+// change's range is not in the state or does not hold the text the answer
+// says it holds: a wrong offset writes nothing.
 const enterAnswered = (state, head, answer) => {
-  const line = state.doc.lineAt(head);
-  const change = answer.line === undefined ? { from: head, insert: `\n${answer.insert}` } : { from: line.from, to: line.to, insert: answer.line };
-  return { changes: change, selection: EditorSelection.cursor(change.from + change.insert.length), scrollIntoView: true, userEvent: "input" };
+  const changes = [answer.change, ...(Array.isArray(answer.renumbered) ? answer.renumbered : [])].map((change) => {
+    const [from, to, old, insert] = Array.isArray(change) ? change : [];
+    return { from: head + from, to: head + to, old, insert };
+  });
+  const sound = (change) =>
+    Number.isInteger(change.from) && Number.isInteger(change.to) && 0 <= change.from && change.from <= change.to && change.to <= state.doc.length && typeof change.insert === "string" && state.sliceDoc(change.from, change.to) === change.old;
+  if (!changes.every(sound) || !Number.isInteger(answer.cursor)) return null;
+  return {
+    changes: changes.map(({ from, to, insert }) => ({ from, to, insert })),
+    selection: EditorSelection.cursor(head + answer.cursor),
+    scrollIntoView: true,
+    userEvent: "input",
+  };
 };
 
 // The editor's Enter in the master: askEnter's answer, or a line break.
@@ -1631,8 +1653,9 @@ const markupEnter = (host) => ({
     const { state } = view;
     const { main } = state.selection;
     const answer = state.selection.ranges.length === 1 && main.empty ? askEnter(host, state, main.head) : null;
-    if (answer === null) return insertNewline(view);
-    view.dispatch(enterAnswered(state, main.head, answer));
+    const transaction = answer === null ? null : enterAnswered(state, main.head, answer);
+    if (transaction === null) return insertNewline(view);
+    view.dispatch(transaction);
     return true;
   },
   shift: insertNewline,
@@ -2505,7 +2528,9 @@ export function attachRow(masterHost, rowHost, key, focus) {
   // makes the row's lines code); the master's text, cut where the master's
   // starts say (enterStarts), does. A row the
   // master does not hold as it is (a moment between the two), or a
-  // cursor's line that starts before the row, is a plain line break.
+  // cursor's line that starts before the row, is a plain line break. The
+  // numbers of a list's items past the row's end are not the row's to
+  // change: there the new item is written and no number changed.
   const rowEnter = {
     key: "Enter",
     run: (rowView) => {
@@ -2520,8 +2545,9 @@ export function attachRow(masterHost, rowHost, key, focus) {
         master.sliceDoc(now.from, now.to) === state.doc.toString() &&
         master.doc.lineAt(now.from + main.head).from === now.from + state.doc.lineAt(main.head).from;
       const answer = usable ? askEnter(masterHost, master, now.from + main.head) : null;
-      if (answer === null) return insertNewline(rowView);
-      rowView.dispatch(enterAnswered(state, main.head, answer));
+      const transaction = answer === null ? null : (enterAnswered(state, main.head, answer) ?? enterAnswered(state, main.head, { ...answer, renumbered: [] }));
+      if (transaction === null) return insertNewline(rowView);
+      rowView.dispatch(transaction);
       return true;
     },
     shift: insertNewline,

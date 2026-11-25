@@ -1,7 +1,8 @@
 -- | Enter in the editor's text ("Wiki.Core.Markdown.Enter"): unit cases
 -- written with the cursor at @‸@, each the text before Enter and after
 -- it; and properties over generated documents, with the wiki's own parser
--- as the oracle (decision 83).
+-- as the oracle (decision 83), and over generated lists ('Listed'), with a
+-- model of what a split and a renumbering write.
 --
 -- The documents are made of chunks, each a few lines in containers: the
 -- containers it keeps of the chunk before (a quotation's marks again, an
@@ -16,18 +17,20 @@
 -- where a blank chunk falls between items.
 module Test.Markdown.Enter (spec) where
 
+import Data.List (findIndex)
 import Data.Text qualified as T
 import GHC.Conc (getAllocationCounter)
 import Protolude
 import Test.Cases (coverage, longTexts)
 import Test.Hspec hiding (after, before)
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
-import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, conjoin, counterexample, cover, elements, frequency, listOf1, oneof, property, (.&&.), (===))
+import Test.QuickCheck (Arbitrary (..), Gen, Property, choose, conjoin, counterexample, cover, elements, frequency, listOf1, oneof, property, vectorOf, (.&&.), (===))
 import Wiki.Core.Markdown.Ast (Block, Shape (..), ShapeKind (..), parseMarkdown, parseShapes, parseWithSpans)
 import Wiki.Core.Markdown.Ast qualified as A
-import Wiki.Core.Markdown.Enter
+import Wiki.Core.Markdown.Enter hiding (Change (..))
+import Wiki.Core.Markdown.Enter qualified as E
 import Wiki.Core.Markdown.Problems qualified as Problems
-import Wiki.Core.Markdown.Starts (Kept (..), blockStarts, textRange)
+import Wiki.Core.Markdown.Starts (Kept (..), blockStarts, longerEnd, textRange)
 import Wiki.Core.PageKind (PageKind (..))
 
 spec :: Spec
@@ -47,7 +50,7 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     it "goes on after an item's later line" $ press "- one\n  more‸" `shouldBe` "- one\n  more\n- ‸"
     it "goes on after a loose list's item" $ press "- a\n\n- b‸" `shouldBe` "- a\n\n- b\n- ‸"
     it "goes on after a loose list's first item, the blank line after the new one" $ press "- a‸\n\n- b" `shouldBe` "- a\n- ‸\n\n- b"
-    it "leaves the numbers below as they are" $ press "1. a‸\n2. b" `shouldBe` "1. a\n2. ‸\n2. b"
+    it "renumbers the items below" $ press "1. a‸\n2. b" `shouldBe` "1. a\n2. ‸\n3. b"
     it "goes on after an item's second paragraph" $ press "- one\n\n  more‸" `shouldBe` "- one\n\n  more\n- ‸"
     it "goes on after a lazy line of an item" $ press "- one\nlazy‸" `shouldBe` "- one\nlazy\n- ‸"
     -- Codex's round 8 on #292: a tab in the item's text is no tab among
@@ -98,11 +101,127 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     "1.\tone‸" `becomes` "1.\tone\n‸"
     "- [ ]\tone‸" `becomes` "- [ ]\tone\n‸"
     "999999999. a‸" `becomes` "999999999. a\n‸"
-    "- on‸e" `becomes` "- on\n‸e"
     "8. a\n9. b‸\n   - child" `becomes` "8. a\n9. b\n‸\n   - child"
     "- a\n  ‸" `becomes` "- a\n  \n‸"
     "[^a]: - note‸" `becomes` "[^a]: - note\n‸"
     "| a | b |\n| - | - |‸" `becomes` "| a | b |\n| - | - |\n‸"
+
+  -- #301: Enter in the text of an item's first line, with text after the
+  -- cursor, splits the item. The text before the cursor stays as it is,
+  -- blanks included; the blanks after it go; the item's later lines go
+  -- with the new item.
+  describe "an item split at the cursor" $ do
+    "- on‸e" `becomes` "- on\n- ‸e"
+    "- one ‸two" `becomes` "- one \n- ‸two"
+    "- one‸ two" `becomes` "- one\n- ‸two"
+    "- one‸   two" `becomes` "- one\n- ‸two"
+    "* a‸b" `becomes` "* a\n* ‸b"
+    "+ a‸b" `becomes` "+ a\n+ ‸b"
+    "1. a‸b" `becomes` "1. a\n2. ‸b"
+    "1) a‸b" `becomes` "1) a\n2) ‸b"
+    "- [x] do‸ne" `becomes` "- [x] do\n- [ ] ‸ne"
+    "- [ ] to‸do" `becomes` "- [ ] to\n- [ ] ‸do"
+    "1. [x] a‸b" `becomes` "1. [x] a\n2. ‸b"
+    "  -   spaced‸ out" `becomes` "  -   spaced\n  -   ‸out"
+    "- a\n  - b‸c" `becomes` "- a\n  - b\n  - ‸c"
+    "> - a‸b" `becomes` "> - a\n> - ‸b"
+    "- > - a‸b" `becomes` "- > - a\n  > - ‸b"
+    "- a‸b\n  more" `becomes` "- a\n- ‸b\n  more"
+    "- a‸b\nlazy" `becomes` "- a\n- ‸b\nlazy"
+    "- a‸b\n  - child" `becomes` "- a\n- ‸b\n  - child"
+    "- a‸b\n\n  second" `becomes` "- a\n- ‸b\n\n  second"
+    "- a‸b\n- c" `becomes` "- a\n- ‸b\n- c"
+    "- a `x` ‸b" `becomes` "- a `x` \n- ‸b"
+    "- [a](u)‸ b" `becomes` "- [a](u)\n- ‸b"
+    "- 🎉 a‸b 🎉" `becomes` "- 🎉 a\n- ‸b 🎉"
+    "- a\tb‸c" `becomes` "- a\tb\n- ‸c"
+
+  -- With the cursor elsewhere on a line than the contract says, Enter is
+  -- a line break and nothing more: no edit at all.
+  describe "a plain line break in the middle of a line" $ do
+    let plainCases =
+          [ ("at the start of the item's text, as before", "- ‸one")
+          , ("among the marks", "-‸ one")
+          , ("at the start of a task's text", "- [ ] ‸one")
+          , ("in a task's box", "- [‸ ] one")
+          , ("before blanks alone", "- a‸  ")
+          , ("on an item's later line", "- a\n  b‸c")
+          , ("in an item's second paragraph", "- a\n\n  b‸c")
+          , ("on a lazy line", "- a\nb‸c")
+          , ("in a paragraph", "text‸more")
+          , ("in a quotation", "> a‸b")
+          , ("in a box", "> [!NOTE]\n> a‸b")
+          , ("in a heading", "# He‸ading")
+          , ("in a heading in an item", "- # He‸ading")
+          , ("in a footnote's definition", "[^a]: - no‸te")
+          , ("in a footnote's list", "[^a]: text\n\n    - no‸te")
+          , ("in a fence", "```\n- a‸b\n```")
+          , ("in indented code", "    - a‸b")
+          , ("with a tab after the bullet", "-\ta‸b")
+          , ("with a tab after a number", "1.\ta‸b")
+          , ("with a line indented by a tab", "- a\n\t- b‸c")
+          , ("with a tab right after the cursor", "- a ‸\tb")
+          , ("in inline code", "- `co‸de`")
+          , ("in math", "- $x‸y$")
+          , ("in a link's text", "- [li‸nk](u)")
+          , ("in a link's address", "- [link](u‸v)")
+          , ("in brackets left open", "- [la‸bel]")
+          , ("between a link's text and its label", "- [a]‸[b]")
+          , ("in emphasis", "- *em‸ph*")
+          , ("in strong emphasis", "- **str‸ong**")
+          , ("in an emoji's name", "- :ta‸da:")
+          , ("in a mention", "- @lo‸gin")
+          , ("in an inline spoiler", "- ||hid‸den||")
+          , ("before a heading's mark", "- a ‸# b")
+          , ("before a bullet", "- a ‸- b")
+          , ("before a number", "- a ‸1. b")
+          , ("before a quotation's mark", "- a ‸> b")
+          , ("before a task's box", "- a ‸[ ] b")
+          , ("with a carriage return in the text", "- a‸b\r\n- c")
+          , ("in an item longer than the limit", "- a‸b" <> T.replicate textLimit "c")
+          , -- The item's second paragraph, indented to "9. "'s text, would
+            -- not be in "10. "'s.
+            ("where the new number's width takes a paragraph out", "9. a‸b\n\n   para")
+          ]
+    for_ plainCases $ \(name, marked') -> it name $ do
+      let (before, rest) = T.breakOn "‸" marked'
+      (enter before (T.drop 1 rest), edit True before (T.drop 1 rest)) `shouldBe` (NewLine, Nothing)
+
+  -- #301: after a new item of a numbered list, the items after it in that
+  -- list are renumbered, where they were numbered one after another.
+  describe "the numbers after a new item" $ do
+    "1. a‸b\n2. c\n3. d" `becomes` "1. a\n2. ‸b\n3. c\n4. d"
+    "3) a‸\n4) b" `becomes` "3) a\n4) ‸\n5) b"
+    "> 1. a‸\n> 2. b" `becomes` "> 1. a\n> 2. ‸\n> 3. b"
+    "1. a\n   1. x‸\n   2. y\n2. b" `becomes` "1. a\n   1. x\n   2. ‸\n   3. y\n2. b"
+    "1. a‸\n2. b\n\n- c\n\n1. d" `becomes` "1. a\n2. ‸\n3. b\n\n- c\n\n1. d"
+    "1. a‸\n2. b\n\n\n3. c" `becomes` "1. a\n2. ‸\n3. b\n\n\n4. c"
+    it "leaves a list numbered 1. 1. 1. as it is" $ press "1. a‸\n1. b\n1. c" `shouldBe` "1. a\n2. ‸\n1. b\n1. c"
+    it "leaves a list with a gap in its numbers as it is" $ press "1. a‸\n2. b\n5. c" `shouldBe` "1. a\n2. ‸\n2. b\n5. c"
+    it "renumbers past nine, a later line kept as it is in the paragraph" $ press "8. a‸\n9. b\n   more" `shouldBe` "8. a\n9. ‸\n10. b\n   more"
+    it "leaves the numbers where a wider one would take a paragraph out of its item" $ press "8. a‸\n9. b\n\n   para" `shouldBe` "8. a\n9. ‸\n9. b\n\n   para"
+    it "leaves a list going up from an empty nested item as it is" $ press "1. a\n   - b\n   - ‸\n2. c" `shouldBe` "1. a\n   - b\n2. ‸\n2. c"
+    -- The numbers' places in UTF-16 units from the cursor: an emoji is
+    -- two of them.
+    it "gives the numbers' places in UTF-16 units" $
+      fmap (.renumbered) (edit True "1. a" "🎉b\n2. c")
+        `shouldBe` Just [E.Change 4 5 "2" "3"]
+    it "renumbers after an emoji" $ press "1. 🎉 a‸b 🎉\n2. 🎉 c\n3. d" `shouldBe` "1. 🎉 a\n2. ‸b 🎉\n3. 🎉 c\n4. d"
+    -- A page longer than the text Enter reads: the editor hands over the
+    -- items around the cursor's, then a longer text for the numbers.
+    it "renumbers a list on a long page from the longer text the editor hands over" $ do
+      let items = T.intercalate "\n" [show i <> ". Item " <> show i <> "." | i <- [1 .. 30 :: Int]]
+          (before, after) = T.breakOn "\n3. " (items <> "\n\n" <> T.intercalate "\n" (replicate 200 "Some more text."))
+      fmap (\e -> (e.change, length e.renumbered, take 1 e.renumbered, e.longer)) (editorEdit before after)
+        `shouldBe` Just (E.Change 0 0 "" "\n3. ", 28, [E.Change 1 2 "3" "4"], False)
+    it "renumbers nothing where the list goes on past the longer text" $ do
+      let items = T.intercalate "\n" [show i <> ". Item " <> show i <> "." | i <- [1 .. 400 :: Int]]
+          (before, after) = T.breakOn "\n3. " items
+      fmap (\e -> (e.change, e.renumbered)) (editorEdit before after) `shouldBe` Just (E.Change 0 0 "" "\n3. ", [])
+    it "says where the list may go on past the text, and renumbers in the text it then gets" $ do
+      let (before, after) = ("1. a", "\n2. b")
+      (fmap (.longer) (edit False before after), fmap (.longer) (edit False before (after <> "\n\nEnd.")), fmap (.longer) (edit True before after))
+        `shouldBe` (Just True, Just False, Just False)
 
   -- Each case the reviews of #292 found in the JavaScript built on the
   -- library, made of the generator's own chunks, so that the properties
@@ -229,6 +348,7 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
         NewLine -> property True
         NewLineWith t -> counterexample "a new line's start with a line break in it" (not ("\n" `T.isInfixOf` t))
         LineBecomes t -> counterexample "a line with a line break in it" (not ("\n" `T.isInfixOf` t))
+        SplitWith _ _ -> counterexample "a split at a line's end" False
     -- The parser reads the cursor's line as code or HTML (alone, or in a
     -- quotation or an item): Enter is a plain line break.
     prop "breaks the line alone in code and HTML" $ \doc ->
@@ -314,6 +434,63 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
             $ cover 15 (any isQuoted answers) "a new quoted line"
             $ cover 10 (any isUp answers) "a line gone up"
             $ cover 50 (NewLine `elem` answers) "a plain line break" True
+
+  -- #301 over generated lists ('Listed'), the cursor on an item's first
+  -- line: at its end, in its text, among its marks.
+  describe "in a generated list" $ do
+    -- What Enter writes is what the model says ('modelPress'): a split, a
+    -- new item, the numbers after either, or a plain line break where the
+    -- model says the parser reads the cut otherwise.
+    prop "writes what the model of a split and of the numbers says" $ \l ->
+      let (before, after) = cursorOf l
+       in counterexample (toS (before <> "‸" <> after))
+            $ coverage
+            $ cover 25 (splits l) "a split"
+            $ cover 3 (cutInside l) "a cut inside code, math, a link or emphasis"
+            $ cover 10 (renumbers l) "numbers rewritten"
+            $ cover 1 (renumbers l && widens l) "a number one digit wider"
+            -- At the end of a line, where a new item starts is the rule
+            -- of #292, which the properties above check; the model is of
+            -- what comes after a new item there.
+            $ if not (inText l) && enter before after == NewLine
+              then property True
+              else press (before <> "‸" <> after) === modelPress l
+    -- The parser's reading of a split, apart from the model: one list has
+    -- one more item, the two items' texts joined are the old item's, the
+    -- rest of the page is the same, and the cursor is at the start of the
+    -- new item's text.
+    prop "splits one item in two, as the parser reads it, the cursor at the new item's text" $ \l ->
+      let (before, after) = cursorOf l
+       in counterexample (toS (before <> "‸" <> after)) $ case enter before after of
+            SplitWith blanks start -> splitReadBack before after blanks start
+            _ -> property True
+    prop "takes the edit back with its inverse" $ \l ->
+      let (before, after) = cursorOf l
+       in counterexample (toS (before <> "‸" <> after)) $ case edit True before after of
+            Just e -> undone before after e === Just (before <> after)
+            Nothing -> property True
+    -- From the texts the editor hands over (from the start the last check
+    -- kept, then a longer one where the answer asks for it), the edit is
+    -- the whole text's.
+    prop "edits from the editor's texts as from the whole text" $ \l ->
+      let (before, after) = cursorOf l
+       in counterexample (toS (before <> "‸" <> after)) (editorEdit before after === edit True before after)
+
+  -- Enter in the middle of any line of the generated documents: a split
+  -- the parser reads as one, which the inverse edit takes back, or a plain
+  -- line break; never anything else.
+  prop "splits an item read back as one, or breaks the line alone, in the middle of any line" $ \doc ->
+    let text = render doc
+     in counterexample (toS text) $
+          conjoin
+            [ counterexample (toS (before <> "‸" <> after)) $ case enter before after of
+                NewLine -> property True
+                SplitWith blanks start ->
+                  splitReadBack before after blanks start
+                    .&&. (undone before after =<< edit True before after) === Just text
+                other -> counterexample ("not a split: " <> show other) False
+            | (before, after) <- midLines text
+            ]
   where
     isNewItem = \case
       NewLineWith t -> not (T.null (T.strip (T.filter (/= '>') t)))
@@ -328,13 +505,58 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
 ----------------------------------------------------------------------
 -- Unit cases
 
--- | The text after Enter at the @‸@, with the cursor at @‸@.
+-- | The text after Enter at the @‸@, with the cursor at @‸@: the edit
+-- applied ('edit', with the text ending where the page does), or a line
+-- break.
 press :: Text -> Text
 press marked' =
   let (before, rest) = T.breakOn "‸" marked'
       after = T.drop 1 rest
-      (written', rest') = written before after (enter before after)
-   in written' <> "‸" <> rest'
+   in case applied before after =<< edit True before after of
+        Just (new, at) -> T.take at new <> "‸" <> T.drop at new
+        Nothing -> before <> "\n‸" <> after
+
+-- | The text after an edit, and the cursor's place in it, in characters:
+-- each change's range read in UTF-16 units from the cursor, as the editor
+-- reads it. Nothing where a range does not hold the text the change says
+-- it holds.
+applied :: Text -> Text -> Edit -> Maybe (Text, Int)
+applied before after e = do
+  let text = before <> after
+      at u
+        | u >= 0 = T.length before + unitsIn after u
+        | otherwise = T.length before - unitsIn (T.reverse before) (negate u)
+      ranges = sortOn (\(a, _, _, _) -> a) [(at a, at b, old, new) | E.Change a b old new <- e.change : e.renumbered]
+  guard (and [T.take (b - a) (T.drop a text) == old | (a, b, old, _) <- ranges])
+  let new = replacing [(a, b, t) | (a, b, _, t) <- ranges] text
+  pure (new, unitsIn new (utf16Length before + e.cursor))
+
+-- | The changes of an edit taken back: each the range its new text holds
+-- in the text after the edit, its old text put back.
+undone :: Text -> Text -> Edit -> Maybe Text
+undone before after e = do
+  (new, _) <- applied before after e
+  let at u
+        | u >= 0 = T.length before + unitsIn after u
+        | otherwise = T.length before - unitsIn (T.reverse before) (negate u)
+      ranges = sortOn (\(a, _, _, _) -> a) [(at a, at b, old, t) | E.Change a b old t <- e.change : e.renumbered]
+      -- Where each change's new text starts after the edit: moved by
+      -- what the changes before it added.
+      shifts = scanl (\s (a, b, _, t) -> s + T.length t - (b - a)) 0 ranges
+      back = [(a + s, a + s + T.length t, old) | ((a, _, old, t), s) <- zip ranges shifts]
+  pure (replacing back new)
+
+-- | A text with ranges replaced, in characters, in order.
+replacing :: [(Int, Int, Text)] -> Text -> Text
+replacing changes t = go 0 changes
+  where
+    go at = \case
+      [] -> T.drop at t
+      (a, b, new) : rest -> T.take (a - at) (T.drop at t) <> new <> go b rest
+
+-- | How many characters of a text make so many UTF-16 units.
+unitsIn :: Text -> Int -> Int
+unitsIn t u = length (takeWhile (<= u) (scanl (+) 0 (map (\c -> if ord c > 0xFFFF then 2 else 1) (T.unpack t)))) - 1
 
 becomes :: Text -> Text -> Spec
 becomes old new = it (show old <> " becomes " <> show new) (press old `shouldBe` new)
@@ -782,6 +1004,347 @@ longDeck = T.intercalate "\n" (["# Long", ""] <> concatMap slide [1 .. 60 :: Int
           <> repeat ""
     para :: Int -> Int -> [Text]
     para n k = ["A sentence of slide " <> show n <> ", line " <> show i <> "." | i <- [1 .. k]]
+
+----------------------------------------------------------------------
+-- Splits and numbers (#301)
+
+-- | Some places in the middle of each line of a text (after its first
+-- character, in its middle, before its last), as the text before the
+-- cursor and after it.
+midLines :: Text -> [(Text, Text)]
+midLines text =
+  [ (T.take at text, T.drop at text)
+  | (start, l) <- zip (scanl (\a l -> a + T.length l + 1) 0 ls) ls
+  , T.length l >= 2
+  , k <- ordNub [1, T.length l `div` 2, T.length l - 1]
+  , let at = start + k
+  ]
+  where
+    ls = T.splitOn "\n" text
+
+-- | The parser reads a split as one: the top-level blocks are the old
+-- ones with one list's item split in two, the two items' first
+-- paragraphs' text joined by the blanks taken out being the old one's
+-- (in plain text, 'A.plainText'), the rest of the old item in the new
+-- one; and the cursor is where the new item's text starts.
+splitReadBack :: Text -> Text -> Int -> Text -> Property
+splitReadBack before after blanks start =
+  let (before', after') = written before after (SplitWith blanks start)
+      new = before' <> after'
+      cut = T.takeWhileEnd (\c -> c == ' ' || c == '\t') (T.takeWhileEnd (/= '\n') before) <> T.take blanks after
+      n = T.count "\n" before' + 1
+      line = T.takeWhileEnd (/= '\n') before' <> T.takeWhile (/= '\n') after'
+      column = T.length (T.takeWhileEnd (/= '\n') before') + 1
+      -- Where the new item's text starts, as the parser reads it: its
+      -- paragraph's start, or for a task, after its box and the blanks
+      -- after it (the parser starts a task's paragraph after the box's
+      -- @]@; in a numbered list a box is text).
+      textAt c =
+        let rest = T.drop (c - 1) line
+            unboxed = if "[ ] " `T.isPrefixOf` rest then T.drop 4 rest else rest
+         in [c, c + T.length rest - T.length (T.dropWhile (== ' ') unboxed)]
+   in case (parseMarkdown (before <> after), parseMarkdown new, parseShapes new) of
+        (Right old, Right blocks, Right shapes) ->
+          counterexample (show (old, blocks)) (oneSplit cut old blocks)
+            .&&. counterexample "the cursor is not where the new item's text starts" (any (\((l, c), _) -> l == n && column `elem` textAt c) (concatMap (.parts) (filter ((== TextShape) . (.kind)) (shapesAt shapes n))))
+        _ -> counterexample "no parse" False
+
+-- | Whether some blocks are others with one list's item split in two at a
+-- cut ('splitReadBack'), everything else the same.
+oneSplit :: Text -> [Block] -> [Block] -> Bool
+oneSplit cut olds news =
+  length olds == length news && case [(o, n) | (o, n) <- zip olds news, o /= n] of
+    [(o, n)] -> inBlock o n
+    _ -> False
+  where
+    inBlock o n = case (o, n) of
+      (A.List kind items, A.List kind' items') | kind == kind' -> splitItems items items' || inItems items items'
+      (A.BlockQuote bs, A.BlockQuote bs') -> oneSplit cut bs bs'
+      (A.Alert k h bs, A.Alert k' h' bs') -> k == k' && h == h' && oneSplit cut bs bs'
+      (A.Div a bs, A.Div a' bs') -> a == a' && oneSplit cut bs bs'
+      (A.Spoiler h bs, A.Spoiler h' bs') -> h == h' && oneSplit cut bs bs'
+      _ -> False
+    inItems items items' =
+      length items == length items' && case [(i, i') | (i, i') <- zip items items', i /= i'] of
+        [(A.ListItem task bs, A.ListItem task' bs')] -> task == task' && oneSplit cut bs bs'
+        _ -> False
+    splitItems items items' =
+      length items' == length items + 1
+        && or
+          [ take i items == take i items' && drop (i + 1) items == drop (i + 2) items' && pieces o a b
+          | (i, o) <- zip [0 ..] items
+          , Just a <- [atMay items' i]
+          , Just b <- [atMay items' (i + 1)]
+          ]
+    pieces (A.ListItem task (p : rest)) (A.ListItem task1 [p1]) (A.ListItem task2 (p2 : rest')) =
+      task1 == task && task2 == (False <$ task) && rest == rest' && joined p p1 p2
+    pieces _ _ _ = False
+    joined p p1 p2 = case (p, p1, p2) of
+      (A.Para xs, A.Para ys, A.Para zs) -> A.plainText xs == A.plainText ys <> cut <> A.plainText zs
+      (A.Plain xs, A.Plain ys, A.Plain zs) -> A.plainText xs == A.plainText ys <> cut <> A.plainText zs
+      _ -> False
+
+-- | What the editor's Enter does, over the texts it hands over, for a
+-- text its last check read as it is: the edit for the text from the start
+-- the check kept ('textRange'); where that edit says the list may go on
+-- past the text, the edit for the longer text ('longerEnd') if its change
+-- on the cursor's line is the same, else that change with no number
+-- rewritten (web/src/editor.js's askEnter).
+editorEdit :: Text -> Text -> Maybe Edit
+editorEdit before after = do
+  let now = before <> after
+      len = T.length now
+      ls = T.splitOn "\n" now
+      offsets = scanl (\a l -> a + T.length l + 1) 0 ls
+      kept =
+        [ Kept {at, lineFrom = at, lineTo = at + T.length l, flush = maybe False (\(c, _) -> c /= ' ' && c /= '\t') (T.uncons l)}
+        | s <- either (const [1]) (blockStarts now) (parseShapes now)
+        , Just at <- [atMay offsets (s - 1)]
+        , Just l <- [atMay ls (s - 1)]
+        ]
+      cursor = T.length before
+      lineStart = T.length (T.dropWhileEnd (/= '\n') before)
+      lineEnd = cursor + T.length (T.takeWhile (/= '\n') after)
+      slice a b = T.take (b - a) (T.drop a now)
+  (begins, ends) <- textRange kept len lineStart lineEnd len
+  longer <- longerEnd kept len lineStart lineEnd len
+  e <- edit (ends == len) (slice begins cursor) (slice cursor ends)
+  if not e.longer
+    then pure e
+    else case edit (longer == len) (slice begins cursor) (slice cursor longer) of
+      Just again | not again.longer && again.change == e.change && again.cursor == e.cursor -> pure again
+      _ -> pure (E.Edit e.change [] e.cursor False)
+
+-- | A list for Enter on one of its items' first lines: what it is in, its
+-- items' bullet (none for a numbered list) or its numbers' delimiter,
+-- its first number and how the numbers go on, its items, whether it is
+-- loose, what is above it and below it, and the cursor: the item and the
+-- column on its first line, from 0.
+data Listed = Listed
+  { holder :: Around
+  , bullet :: Maybe Char
+  , delimiter :: Char
+  , start :: Int
+  , numbering :: Numbering
+  , entries :: [Entry]
+  , loose :: Bool
+  , above :: Bool
+  , below :: Below
+  , item :: Int
+  , column :: Int
+  }
+  deriving stock (Show)
+
+-- | What a list is in: nothing, a quotation, an item of a list around.
+data Around = Bare | Quoted | InItem
+  deriving stock (Eq, Show)
+
+-- | How a numbered list's numbers go: one after another, all the same, or
+-- with a gap after the second.
+data Numbering = OneAfterAnother | AllTheSame | WithAGap
+  deriving stock (Eq, Show)
+
+-- | An item: a task's box (what is between its brackets), the words of
+-- its first line, and what comes after that line.
+data Entry = Entry
+  { box :: Maybe Char
+  , tokens :: [Token]
+  , more :: More
+  }
+  deriving stock (Show)
+
+-- | A word of an item's text: plain, or written over several characters
+-- that a cut inside would break (code, math, a link, emphasis, an emoji's
+-- name, an inline spoiler).
+data Token = Word Text | Construct Text
+  deriving stock (Show)
+
+-- | What follows an item's first line in the item: nothing, a line
+-- indented to its text, a lazy line, a second paragraph, a nested list.
+data More = NoMore | Continued | LazyLine | Second | Nested
+  deriving stock (Eq, Show)
+
+-- | What is below the list: nothing, a paragraph, a list of another kind.
+data Below = NothingBelow | ParagraphBelow | ListBelow
+  deriving stock (Eq, Show)
+
+instance Arbitrary Listed where
+  arbitrary = do
+    holder <- elements [Bare, Bare, Quoted, InItem]
+    bullet <- elements [Just '-', Just '*', Just '+', Nothing, Nothing, Nothing]
+    delimiter <- elements ['.', ')']
+    start <- elements [1, 1, 7, 8, 9, 98, 99]
+    numbering <- frequency [(6, pure OneAfterAnother), (1, pure AllTheSame), (1, pure WithAGap)]
+    k <- choose (1, 6)
+    entries <- vectorOf k $ do
+      box <- if isJust bullet then frequency [(3, pure Nothing), (1, Just <$> elements [' ', 'x'])] else pure Nothing
+      tokens <- choose (1, 4) >>= \m -> vectorOf m (frequency [(4, Word <$> elements ["alpha", "beta", "gamma", "🎉", "naïve"]), (2, Construct <$> elements ["`code span`", "$x+y$", "[a link](u)", "*em text*", "**strong**", ":tada:", "||hidden||"])])
+      more <- frequency [(4, pure NoMore), (1, pure Continued), (1, pure LazyLine), (1, pure Second), (1, pure Nested)]
+      pure Entry {box, tokens, more}
+    loose <- frequency [(4, pure False), (1, pure True)]
+    above <- elements [False, True]
+    below <- elements [NothingBelow, ParagraphBelow, ListBelow]
+    item <- choose (0, k - 1)
+    let listed column = Listed {holder, bullet, delimiter, start, numbering, entries, loose, above, below, item, column}
+        line = firstLineOf' (listed 0)
+        textStart = textStartOf (listed 0)
+    listed <$> frequency [(6, choose (textStart + 1, max (textStart + 1) (T.length line - 1))), (2, pure (T.length line)), (1, choose (0, T.length line))]
+
+-- | The number of a numbered list's item.
+numberOf :: Listed -> Int -> Int
+numberOf l i = case l.numbering of
+  OneAfterAnother -> l.start + i
+  AllTheSame -> l.start
+  WithAGap -> l.start + i + (if i >= 2 then 3 else 0)
+
+-- | An item's mark.
+markOf :: Listed -> Int -> Text
+markOf l i = maybe (show (numberOf l i) <> T.singleton l.delimiter) T.singleton l.bullet
+
+-- | What every line of the list starts with, for what it is in, and a
+-- blank line there.
+prefixOf' :: Listed -> (Text, Text)
+prefixOf' l = case l.holder of
+  Bare -> ("", "")
+  Quoted -> ("> ", ">")
+  InItem -> ("  ", "")
+
+-- | An item's first line, its prefix included.
+itemLine :: Listed -> Int -> Text
+itemLine l i =
+  let e = fromMaybe (Entry Nothing [] NoMore) (atMay l.entries i)
+   in fst (prefixOf' l) <> markOf l i <> " " <> boxOf e <> T.unwords (map tokenText e.tokens)
+
+boxOf :: Entry -> Text
+boxOf e = maybe "" (\c -> "[" <> T.singleton c <> "] ") e.box
+
+tokenText :: Token -> Text
+tokenText = \case
+  Word t -> t
+  Construct t -> t
+
+-- | The cursor's item's first line.
+firstLineOf' :: Listed -> Text
+firstLineOf' l = itemLine l l.item
+
+-- | Where the cursor's item's text starts on its first line.
+textStartOf :: Listed -> Int
+textStartOf l =
+  let e = fromMaybe (Entry Nothing [] NoMore) (atMay l.entries l.item)
+   in T.length (fst (prefixOf' l)) + T.length (markOf l l.item) + 1 + T.length (boxOf e)
+
+-- | The list's lines, each an item's first line (with the item) or not.
+listedLines :: Listed -> [(Maybe Int, Text)]
+listedLines l = top <> body <> bottom
+  where
+    (prefix, blank) = prefixOf' l
+    top = map (Nothing,) $ case l.holder of
+      Bare -> if l.above then ["Intro.", ""] else []
+      Quoted -> if l.above then ["> Intro.", ">"] else []
+      InItem -> (if l.above then ["Intro.", ""] else []) <> ["- Outer", ""]
+    body = intercalate [(Nothing, blank) | l.loose] [(Just i, itemLine l i) : map ((Nothing,) . maybe blank (prefix <>)) (moreOf i e) | (i, e) <- zip [0 ..] l.entries]
+    moreOf i e =
+      let indent = T.replicate (T.length (markOf l i) + 1) " "
+       in case e.more of
+            NoMore -> []
+            Continued -> [Just (indent <> "more words")]
+            LazyLine -> [Just "lazy words"]
+            Second -> [Nothing, Just (indent <> "second paragraph")]
+            Nested -> [Just (indent <> "- child")]
+    bottom = map (Nothing,) $ case l.below of
+      NothingBelow -> []
+      ParagraphBelow -> ["", "After."]
+      ListBelow -> ["", if l.bullet == Just '-' then "+ other" else "- other"]
+
+-- | The text before the cursor and after it.
+cursorOf :: Listed -> (Text, Text)
+cursorOf l =
+  let ls = listedLines l
+      n = fromMaybe 0 (findIndex ((== Just l.item) . fst) ls)
+      text = T.intercalate "\n" (map snd ls)
+      at = sum (map ((+ 1) . T.length . snd) (take n ls)) + min l.column (T.length (firstLineOf' l))
+   in (T.take at text, T.drop at text)
+
+-- | Whether the cursor is in the text of its item's first line, with text
+-- after it.
+inText :: Listed -> Bool
+inText l = l.column > textStartOf l && l.column < T.length (firstLineOf' l)
+
+-- | Whether the cut is strictly inside a word written over several
+-- characters.
+cutInside :: Listed -> Bool
+cutInside l =
+  inText l
+    && or
+      [ a < o && o < a + T.length t
+      | (a, Construct t) <- zip (scanl (\p tok -> p + T.length (tokenText tok) + 1) 0 tokens) tokens
+      ]
+  where
+    tokens = maybe [] (.tokens) (atMay l.entries l.item)
+    o = l.column - textStartOf l
+
+-- | Whether a numbered item's next number is one digit wider.
+wider :: Listed -> Int -> Bool
+wider l i = isNothing l.bullet && T.length (show (numberOf l i + 1) :: Text) > T.length (show (numberOf l i) :: Text)
+
+-- | Whether an item has lines after its first that a wider number would
+-- take out of it: a second paragraph or a nested list, indented to its
+-- text.
+indentedBelow :: Listed -> Int -> Bool
+indentedBelow l i = maybe False (\e -> e.more `elem` [Second, Nested]) (atMay l.entries i)
+
+-- | Whether the model splits the item: not where the new item's number is
+-- one digit wider and the item has a line indented to its text below,
+-- which the new item would hold otherwise (a line of its paragraph would
+-- become a lazy line, which Enter does not write).
+splits :: Listed -> Bool
+splits l = inText l && not (cutInside l) && not (wider l l.item && maybe False (\e -> e.more `elem` [Continued, Second, Nested]) (atMay l.entries l.item))
+
+-- | Whether the model adds an item: a split, or Enter at the end of an
+-- item's only line.
+adds :: Listed -> Bool
+adds l = splits l || (l.column >= T.length (firstLineOf' l) && maybe False ((== NoMore) . (.more)) (atMay l.entries l.item))
+
+-- | The items after the cursor's.
+laterItems :: Listed -> [Int]
+laterItems l = [l.item + 1 .. length l.entries - 1]
+
+-- | Whether the model renumbers the items after the new one: those of a
+-- numbered list, numbered one after another from the cursor's item, none
+-- of them with a wider number and lines indented below.
+renumbers :: Listed -> Bool
+renumbers l =
+  adds l
+    && isNothing l.bullet
+    && not (null (laterItems l))
+    && map (numberOf l) (laterItems l) == take (length (laterItems l)) [numberOf l l.item + 1 ..]
+    && not (any (\i -> wider l i && indentedBelow l i) (laterItems l))
+
+-- | Whether a number the model rewrites is one digit wider.
+widens :: Listed -> Bool
+widens l = any (wider l) (laterItems l)
+
+-- | What the model writes: the text after Enter with the cursor at @‸@.
+modelPress :: Listed -> Text
+modelPress l
+  | not (adds l) = before <> "\n‸" <> after
+  | otherwise = T.intercalate "\n" (map (\(_, t) -> t) above' <> [kept, startLine] <> map renumbered below')
+  where
+    (before, after) = cursorOf l
+    ls = listedLines l
+    n = fromMaybe 0 (findIndex ((== Just l.item) . fst) ls)
+    above' = take n ls
+    below' = drop (n + 1) ls
+    line = firstLineOf' l
+    e = fromMaybe (Entry Nothing [] NoMore) (atMay l.entries l.item)
+    (prefix, _) = prefixOf' l
+    next = maybe (show (numberOf l l.item + 1) <> T.singleton l.delimiter) T.singleton l.bullet
+    start' = prefix <> next <> " " <> (if isJust e.box then "[ ] " else "")
+    kept = T.take l.column line
+    startLine = start' <> "‸" <> T.dropWhile (== ' ') (T.drop l.column line)
+    renumbered (Just i, t)
+      | renumbers l = prefix <> show (numberOf l i + 1) <> T.singleton l.delimiter <> T.drop (T.length prefix + T.length (markOf l i)) t
+    renumbered (_, t) = t
 
 ----------------------------------------------------------------------
 -- Lists and quotations written plainly

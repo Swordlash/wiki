@@ -9,11 +9,12 @@
 -- = The input
 --
 -- The editor gives the machine an 'Input' with each render: the session's
--- number, which plugins are on ("Wiki.Api.Plugins"), the text to diagnose
--- (the editor's text as last checked), and whether the page is in an
--- encrypted space. Each field changes in the step that takes the input
--- ('Given'): a new text is a new 'version', a new session forgets what was
--- installed and reads it again, and the frames follow at once.
+-- number, which plugins are on ("Wiki.Api.Plugins"), whether that is this
+-- session's read of them, the text to diagnose (the editor's text as last
+-- checked), and whether the page is in an encrypted space. Each field
+-- changes in the step that takes the input ('Given'): a new text is a new
+-- 'version', a new session forgets what was installed and reads it again,
+-- and the frames follow at once.
 --
 -- = Which plugins run
 --
@@ -22,7 +23,11 @@
 -- wanted while one is out is sent when that one answers. An answer of an
 -- earlier session changes nothing. The plugins that run are the ones that
 -- are on ("Wiki.App.Plugin.Registry"'s 'externalOn'), and none in an
--- encrypted space. Each has one frame, made when the plugin starts to run
+-- encrypted space. None runs either until this session's read of what is
+-- on has answered ('choicesRead'): until then the shell holds the
+-- defaults, under which a plugin the reader turned off is on, and a
+-- plugin is sent the page's text only when the reader's own choices say
+-- it may be. A read of them that fails keeps every plugin stopped. Each has one frame, made when the plugin starts to run
 -- and closed when it stops: turned off, removed, replaced by another
 -- version (another bundle), or stopped for misbehaving. A plugin stopped
 -- stays stopped while the same version stays on, so its frame is not made
@@ -43,8 +48,10 @@
 -- A plugin is stopped, its frame closed and its problems dropped, when it
 -- does not say it is ready within 'startWithin' seconds, does not answer
 -- an ask within 'answerWithin', fails, sends what the protocol does not
--- have, reports problems outside the text, or its frame goes to another
--- page. The wait for each is a pause under the frame's number, cancelled
+-- have, sends a message it was not asked for (a second @ready@, an answer
+-- to no ask out or under another ticket, or more messages than it was
+-- asked for, which the frame's JavaScript counts), reports problems
+-- outside the text, or its frame goes to another page. The wait for each is a pause under the frame's number, cancelled
 -- when the answer comes, so it is never taken for a later ask's.
 --
 -- = Frames, by number
@@ -82,7 +89,7 @@ import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), Ex
 import Wiki.App.Backend (WikiError)
 import Wiki.App.Plugin.External (Heard (..))
 import Wiki.App.Plugin.External.Frame (FrameSaid (..))
-import Wiki.App.Plugin.External.Protocol (FromPlugin (..), diagnose, fromPlugin, problemsIn)
+import Wiki.App.Plugin.External.Protocol (FromPlugin (..), diagnose, fromPlugin, maxMessageLength, problemsIn)
 import Wiki.App.Plugin.Registry (externalOn)
 
 -- | 'Input' is what the editor gives the machine with each render.
@@ -92,6 +99,11 @@ data Input = Input
   -- @sessionNumber@).
   , known :: Plugins
   -- ^ Which plugins are on, as the shell last read them.
+  , choicesRead :: Bool
+  -- ^ Whether 'known' is this session's read of what is on
+  -- ("Wiki.App.View.Common"'s @pluginsRead@), and not the defaults the
+  -- shell holds until that read answers, or when it failed. No plugin
+  -- runs while it is not.
   , text :: Maybe Text
   -- ^ The text to diagnose: the editor's text as last checked, once the
   -- page is loaded.
@@ -227,7 +239,7 @@ initial input =
 -- in this session, and none in an encrypted space.
 wanted :: Model -> [ExternalPlugin]
 wanted m
-  | m.input.encrypted = []
+  | m.input.encrypted || not m.input.choicesRead = []
   | otherwise = maybe [] (externalOn m.input.known) (m.installed >>= rightToMaybe)
 
 -- | The plugins stopped, with why, in the order of their ids.
@@ -294,7 +306,8 @@ frameNumbered n m = find (\(_, f) -> f.number == n) (Map.toList m.frames)
 heardFrom :: PluginId -> Frame -> FrameSaid -> Model -> (Model, [Effect])
 heardFrom p f said m = case said of
   Navigated -> stop p "its frame went to another page." m
-  Unreadable -> stop p "it sent a message that cannot be read, or one over 1 MiB." m
+  Unreadable -> stop p "it sent a message that is not text of at most 1 MiB, or not JSON." m
+  Unasked -> stop p "it sent a message it was not asked for." m
   Message value -> case fromPlugin value of
     Left why -> stop p why m
     Right Ready -> case f.phase of
@@ -309,8 +322,9 @@ heardFrom p f said m = case said of
               ( m {frames = Map.insert p f {phase = Idle (Just out.version)} m.frames, heard = Map.insert p Heard {text = out.text, problems} m.heard}
               , [StopWaiting f.number]
               )
-      -- An answer to no ask out: late, or under a number never sent.
-      _ -> (m, [])
+      -- An answer to no ask out, or under another number: the plugin
+      -- answers once an ask, and only the ask out.
+      _ -> stop p "it sent an answer it was not asked for." m
 
 -- | A plugin stopped: its frame closed, its problems dropped, and why
 -- kept while the same version is on.
@@ -318,9 +332,15 @@ stop :: PluginId -> Text -> Model -> (Model, [Effect])
 stop p why m = case Map.lookup p m.frames of
   Nothing -> (m, [])
   Just f ->
-    ( m {frames = Map.delete p m.frames, heard = Map.delete p m.heard, stopped = Map.insert p Stopped {plugin = f.plugin, reason = T.dropWhileEnd (== '.') why} m.stopped}
+    ( m {frames = Map.delete p m.frames, heard = Map.delete p m.heard, stopped = Map.insert p Stopped {plugin = f.plugin, reason = reasonOf why} m.stopped}
     , [StopWaiting f.number, Close f.number]
     )
+
+-- | Why a plugin was stopped, as the editor shows it: without its full
+-- stop, and cut to 'maxMessageLength' characters, since part of it may be
+-- the plugin's own words (its @failed@ message).
+reasonOf :: Text -> Text
+reasonOf why = T.dropWhileEnd (== '.') (if T.length why > maxMessageLength then T.take maxMessageLength why <> "…" else why)
 
 -- | After a step: the frames brought in line with the plugins wanted
 -- (frames closed for the plugins no longer wanted, made for the plugins

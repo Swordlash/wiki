@@ -1007,6 +1007,7 @@ externalInput st =
   Frames.Input
     { session = st.input.context.sessionNumber
     , known = st.input.context.plugins
+    , choicesRead = st.input.context.pluginsRead
     , text = case st.loaded of
         Ready _ -> Just st.checkedText
         _ -> Nothing

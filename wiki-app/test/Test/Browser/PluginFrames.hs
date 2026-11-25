@@ -67,7 +67,7 @@ instance (MonadUUID m) => MonadUUID (Written m) where
 instance (MonadIslands m) => MonadIslands (Written m) where
   openPluginFrame container address = lift . openPluginFrame container written
     where
-      written = case filter (\p -> ("/" <> p <> "/") `T.isInfixOf` address) ["doubled-words", "looping"] of
+      written = case filter (\p -> ("/" <> p <> "/") `T.isInfixOf` address) ["doubled-words", "looping", "tangled-raw", "flooding-raw"] of
         p : _ -> "plugin-frames/" <> p <> ".html"
         [] -> address
 
@@ -99,7 +99,7 @@ wikiWith ps = newMemWiki ((demoState demoNow) {current = Just (UserId "user-edit
 
 spec :: forall m -> (MonadBrowserTest m, MonadIslands m, MonadUUID m) => Spec
 spec m = describe "external plugins' frames" $ do
-  let input text = Frames.Input {session = 0, known = noPlugins, text = Just text, encrypted = False}
+  let input text = Frames.Input {session = 0, known = noPlugins, choicesRead = True, text = Just text, encrypted = False}
       frames wiki = H.hoist (NT (runMemWiki wiki . runWritten)) (Frames.component :: H.Component (Const Void) Frames.Input Frames.Output (Written (MemWiki m)))
       lastHeard ui = (\os -> case lastMay os of Just (Frames.Heard h) -> h; Nothing -> mempty) <$> outputs ui
 
@@ -132,3 +132,29 @@ spec m = describe "external plugins' frames" $ do
     stopped `shouldSatisfy` T.isInfixOf "The plugin Looping was stopped: it did not answer within 10 seconds"
     length <$> findAll ui "iframe" `shouldReturn` 0
     lastHeard ui `shouldReturn` mempty
+
+  -- Frames without the wiki's runtime, whose page takes the port itself:
+  -- the host keeps its rules whatever the runtime would have passed on.
+  it "stops a frame that sends a small graph of shared parts, before writing it out, and the page goes on" $ runPage $ do
+    wiki <- unsafeIOToPageM (wikiWith [installed "tangled-raw" "Tangled"])
+    openBefore <- unsafeIOToPageM js_frames_open
+    ui <- mount m (frames wiki) (input "Any text.")
+    waitQuiet
+    stopped <- find ui ".editor-plugin-stopped" >>= textContent
+    stopped `shouldSatisfy` T.isInfixOf "The plugin Tangled was stopped: it sent a message that is not text of at most 1 MiB, or not JSON"
+    length <$> findAll ui "iframe" `shouldReturn` 0
+    unsafeIOToPageM js_frames_open `shouldReturn` openBefore
+
+  it "stops a frame that floods its port at its first message beyond those asked for, and the page goes on" $ runPage $ do
+    wiki <- unsafeIOToPageM (wikiWith [installed "flooding-raw" "Flooding"])
+    openBefore <- unsafeIOToPageM js_frames_open
+    ui <- mount m (frames wiki) (input "Any text.")
+    waitQuiet
+    stopped <- find ui ".editor-plugin-stopped" >>= textContent
+    -- Its second ready comes either before the program has asked it for
+    -- anything, beyond what it may send, or after, a second ready: the
+    -- browser's order of the two, and either stops it there.
+    stopped `shouldSatisfy` \s ->
+      any (`T.isInfixOf` s) ["The plugin Flooding was stopped: it sent a message it was not asked for", "The plugin Flooding was stopped: it said it was ready a second time"]
+    length <$> findAll ui "iframe" `shouldReturn` 0
+    unsafeIOToPageM js_frames_open `shouldReturn` openBefore

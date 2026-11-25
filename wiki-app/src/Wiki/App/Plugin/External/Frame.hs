@@ -10,7 +10,20 @@
 -- frame one end of a new @MessageChannel@ in the message
 -- @{wikiPlugin: "connect", api: 1}@, which the wiki's runtime in the frame
 -- takes (@web\/plugin\/runtime.js@). Every message after that goes over the
--- port. The program reaches the frame through 'PluginFrame' only, which
+-- port, as a string of JSON, both ways.
+--
+-- Nothing the plugin sends is worked on beyond what it is, and no more
+-- than the host asked for. The JavaScript takes a message only when it is
+-- a string of at most 'maxFrameMessage' characters, which it checks
+-- before anything else: an object, however small, could stand for a
+-- graph whose JSON is exponentially larger. And it takes only as many
+-- messages as the host allows: one, its @ready@, once connected, and one
+-- more for each message the host posts. A message beyond those closes
+-- the port at once, so a plugin that floods the port reaches the program
+-- once ('Unasked'). The program checks the length again ('saidOf'), so
+-- that its JSON parse is bounded whatever the JavaScript let through.
+--
+-- The program reaches the frame through 'PluginFrame' only, which
 -- the class "Wiki.App.Islands.Monad" hands out ('openPluginFrame'), so a
 -- test can stand a plugin of its own in the frame's place.
 module Wiki.App.Plugin.External.Frame
@@ -18,12 +31,13 @@ module Wiki.App.Plugin.External.Frame
   , FrameSaid (..)
   , openFrame
   , saidOf
+  , maxFrameMessage
   )
 where
 
-import Data.Aeson (Value, decodeStrict', encode, withObject, (.:?))
-import Data.Aeson.Types (parseMaybe)
+import Data.Aeson (Value, decodeStrict', encode)
 import Data.ByteString.Lazy qualified as BSL
+import Data.Text qualified as T
 import Halogen.JSBits (Callback, JSText, Safety (..), browserJS, freeCallback, inBrowser, jsValText, mkSyncCallback, toJSText)
 import Protolude
 -- With its constructor: the FFI passes the value inside the newtype.
@@ -48,13 +62,21 @@ data PluginFrame = PluginFrame
 
 -- | 'FrameSaid' is what comes from a plugin's frame: a message the plugin
 -- (or the wiki's runtime around it) sent over the port, as JSON; that the
--- frame went to another page; or a message that could not be read, or
--- was too large.
+-- frame went to another page; a message that is not a string of at most
+-- 'maxFrameMessage' characters, or not JSON; or a message beyond the ones
+-- the host asked for, after which the port is closed.
 data FrameSaid
   = Message Value
   | Navigated
   | Unreadable
+  | Unasked
   deriving stock (Eq, Show)
+
+-- | The longest message a plugin may send, in characters (UTF-16 units in
+-- the JavaScript, which checks it first; characters here, never more).
+-- Five hundred problems of the longest message fit with room to spare.
+maxFrameMessage :: Int
+maxFrameMessage = 1024 * 1024
 
 -- | Make a plugin's frame of this address in this element, and hand each
 -- thing it says to the function. Natively there is no browser: the frame
@@ -72,15 +94,16 @@ openFrame container address said
           }
   | otherwise = pure PluginFrame {post = \_ -> pass, close = pass}
 
--- | What the frame's JavaScript said, from its JSON: @{message: …}@,
--- @{navigated: true}@ or @{unreadable: true}@ (@jsbits/plugin-frames.js@).
+-- | What the frame's JavaScript said (@jsbits/plugin-frames.js@): a letter,
+-- then for a message the plugin's string as it came. @m@ and the message,
+-- @n@ the frame went to another page, @u@ a message that is not a string
+-- or is too long, @x@ a message beyond those asked for. A message longer
+-- than 'maxFrameMessage', or not JSON, is 'Unreadable': the length is
+-- checked before the parse, which is then bounded by it.
 saidOf :: Text -> FrameSaid
-saidOf text = fromMaybe Unreadable $ do
-  value <- decodeStrict' (encodeUtf8 text)
-  flip parseMaybe value . withObject "what a frame said" $ \o -> do
-    message <- o .:? "message"
-    navigated <- o .:? "navigated"
-    pure $ case (message, navigated) of
-      (Just m, _) -> Message m
-      (Nothing, Just True) -> Navigated
-      _ -> Unreadable
+saidOf said = case T.uncons said of
+  Just ('m', message)
+    | T.compareLength message maxFrameMessage /= GT -> maybe Unreadable Message (decodeStrict' (encodeUtf8 message))
+  Just ('n', "") -> Navigated
+  Just ('x', "") -> Unasked
+  _ -> Unreadable

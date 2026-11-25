@@ -39,7 +39,7 @@ spec smoke = describe "external plugins" $ do
   step smoke.chain "runs a plugin's code in a worker of its sandboxed frame, which reaches the host its manifest names and nothing of the wiki's or another site's, has no WebRTC, and loops without stopping the page" $ \pw ->
     withElsewhere $ \allowed ->
       withElsewhere $ \other -> plugins smoke pw allowed other
-  step smoke.chain "marks in the editor what the example plugin finds, shows a plugin that loops stopped while the page goes on, and leaves the plugin's frame to the network past the service worker" $ \pw ->
+  step smoke.chain "marks in the editor what the example plugin finds, shows plugins that loop, send a graph of shared parts or flood their port stopped while the page goes on, and leaves the plugin's frame to the network past the service worker" $ \pw ->
     inTheEditor smoke pw
 
 -- | Another site, on localhost: the paths that reached it, in order.
@@ -84,8 +84,9 @@ plugins smoke pw allowed other = do
     visit page (address smoke "/")
     -- The page frames the plugin and connects to it as the editor will:
     -- the frame's first load, then a MessagePort in the first message.
-    -- Each message from the plugin is written into an element of the
-    -- page's own, outside the program's.
+    -- Each message from the plugin, a string of JSON as the runtime
+    -- passes on, is written into an element of the page's own, outside
+    -- the program's.
     _ :: Value <-
       evaluateWith
         page
@@ -96,7 +97,7 @@ plugins smoke pw allowed other = do
         \  frame.addEventListener('load', () => { \
         \    loads += 1; if (loads !== 1) return; \
         \    const channel = new MessageChannel(); window.pluginPort = channel.port1; \
-        \    channel.port1.onmessage = (e) => { out.textContent = JSON.stringify(e.data); }; \
+        \    channel.port1.onmessage = (e) => { out.textContent = typeof e.data === 'string' ? e.data : 'not a string'; }; \
         \    frame.contentWindow.postMessage({ wikiPlugin: 'connect', api: 1 }, '*', [channel.port2]); \
         \  }); \
         \  frame.src = path; document.body.appendChild(frame); return null; }"
@@ -133,7 +134,7 @@ plugins smoke pw allowed other = do
     -- (in the frame's page it would hold the wiki's too, where the browser
     -- does not give the frame a process of its own). Removing the frame
     -- ends the worker.
-    _ :: Value <- evaluate page "(() => { window.pluginPort.postMessage({ type: 'loop' }); return null; })()"
+    _ :: Value <- evaluate page "(() => { window.pluginPort.postMessage(JSON.stringify({ type: 'loop' })); return null; })()"
     _ <- awaitText said ("\"type\":\"looping\"" `Text.isInfixOf`)
     evaluate page "1 + 1" `shouldReturn` (2 :: Int)
     _ :: Value <- evaluate page "(() => { document.getElementById('plugin-frame').remove(); return null; })()"
@@ -161,7 +162,7 @@ hostileWorker wiki allowed other =
     , "const out = {};"
     , "const attempt = async (name, f) => { try { out[name] = String(await f()); } catch (e) { out[name] = 'threw ' + e.name; } };"
     , "self.onmessage = async (event) => {"
-    , "  const data = event.data;"
+    , "  const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;"
     , "  if (data && data.wikiPlugin === 'connect') {"
     , "    await attempt('connected', () => 'api ' + data.api);"
     , "    await attempt('origin', () => self.origin);"
@@ -174,9 +175,9 @@ hostileWorker wiki allowed other =
     , "    await attempt('fetchOther', () => fetch(OTHER + '/other').then((r) => 'status ' + r.status));"
     , "    await attempt('socket', () => new Promise((ok) => { const w = new WebSocket(OTHER.replace('http', 'ws') + '/socket'); w.onopen = () => ok('open'); w.onerror = () => ok('error'); }));"
     , "    await attempt('importScripts', () => { importScripts(OTHER + '/script.js'); return 'imported'; });"
-    , "    postMessage({ type: 'report', report: out });"
+    , "    postMessage(JSON.stringify({ type: 'report', report: out }));"
     , "  } else if (data && data.type === 'loop') {"
-    , "    postMessage({ type: 'looping' });"
+    , "    postMessage(JSON.stringify({ type: 'looping' }));"
     , "    for (;;) {}"
     , "  }"
     , "};"
@@ -185,11 +186,13 @@ hostileWorker wiki allowed other =
     quoted t = "'" <> t <> "'"
 
 -- | The example plugin installed for everyone over the API, as an
--- administrator would install it (examples/plugins/doubled-words), and a
--- plugin whose diagnostics never return; the editor of a page of the
--- walk's, where the first marks "the the" and the second is stopped
--- while the page goes on; and a frame of the plugin's address, loaded in
--- a page the service worker controls, which the worker does not keep.
+-- administrator would install it (examples/plugins/doubled-words), a
+-- plugin whose diagnostics never return, one that sends a small graph of
+-- shared parts whose JSON would be exponentially large, and one that
+-- floods its port; the editor of a page of the walk's, where the first
+-- marks "the the" and the others are stopped, each saying why, while the
+-- page goes on; and a frame of the plugin's address, loaded in a page the
+-- service worker controls, which the worker does not keep.
 inTheEditor :: Smoke -> Playwright -> IO ()
 inTheEditor smoke pw = do
   s <- adminSession smoke
@@ -214,6 +217,12 @@ inTheEditor smoke pw = do
   _ <-
     upload smoke.wiki s "external-plugins/wiki" "bundle" "looping.js" "text/javascript" "wikiPlugin.plugin({ diagnostics: () => { for (;;) {} } });\n" [("manifest", Text.decodeUtf8 (LazyByteString.toStrict (Aeson.encode looping)))]
       >>= expectStatus 200 "installing the plugin that loops"
+  -- A graph of 2^40 paths in 41 arrays, posted as it is; and a plugin
+  -- that says it is ready, then posts without end.
+  let hostile pid name = object ["manifest" .= (1 :: Int), "id" .= (pid :: Text), "name" .= (name :: Text), "version" .= ("1.0.0" :: Text), "api" .= (1 :: Int), "contributes" .= object ["diagnostics" .= object []], "permissions" .= ["document.read" :: Text]]
+      installing pid name bundleCode = upload smoke.wiki s "external-plugins/wiki" "bundle" (pid <> ".js") "text/javascript" bundleCode [("manifest", Text.decodeUtf8 (LazyByteString.toStrict (Aeson.encode (hostile pid name))))] >>= expectStatus 200 ("installing " <> Text.unpack pid)
+  _ <- installing "tangled" "Tangled" "let x = []; for (let i = 0; i < 40; i++) x = [x, x]; postMessage(x);\n"
+  _ <- installing "flooding" "Flooding" "wikiPlugin.plugin({ diagnostics: () => [] }); for (;;) postMessage('{\"type\":\"ready\"}');\n"
   let frameAddress = "/plugin-frame/wiki/doubled-words/" <> bundle <> "/diagnostics"
       editorAt = "/s/smoke-space/p/first-page/edit/"
       stopped page = locator page "#app .editor-plugin-stopped"
@@ -228,8 +237,10 @@ inTheEditor smoke pw = do
     -- plugin stopped.
     waitQuiet page
     hasText (stopped page) "The plugin Looping was stopped: it did not answer within 10 seconds"
-    -- The page went on all the while, and the frame that loops is gone:
-    -- one frame is left, the example's.
+    hasText (stopped page) "The plugin Tangled was stopped: it failed: it sent a message that is not text of at most 1 MiB"
+    hasText (stopped page) "The plugin Flooding was stopped"
+    -- The page went on all the while, and the frames of the plugins
+    -- stopped are gone: one frame is left, the example's.
     evaluate page "1 + 1" `shouldReturn` (2 :: Int)
     count (locator page "#app .editor-plugin-frames iframe") `shouldReturn` 1
     -- The author writes a word twice; once the text is checked and the
@@ -260,5 +271,7 @@ inTheEditor smoke pw = do
 
   _ <- asAdmin smoke "DELETE" "external-plugins/wiki/doubled-words" Nothing >>= expectStatus 204 "removing the example plugin"
   _ <- asAdmin smoke "DELETE" "external-plugins/wiki/looping" Nothing >>= expectStatus 204 "removing the plugin that loops"
+  _ <- asAdmin smoke "DELETE" "external-plugins/wiki/tangled" Nothing >>= expectStatus 204 "removing the tangled plugin"
+  _ <- asAdmin smoke "DELETE" "external-plugins/wiki/flooding" Nothing >>= expectStatus 204 "removing the flooding plugin"
   _ <- asAdmin smoke "PUT" "external-plugins/policy" (Just (object ["policy" .= ("off" :: Text)])) >>= expectStatus 200 "turning external plugins off"
   pure ()

@@ -12,7 +12,9 @@
 -- 'SaveOptions'): the host writes them, and the write goes on after the
 -- surface has gone. A
 -- capability is what the plugin may ask of the host: read the document
--- and propose a change to it, link to its settings ('Capabilities'). A
+-- and propose a change to it, link to its settings, keep secrets in the
+-- user's vault ('Secrets') and a cache in this browser ('Local')
+-- ('Capabilities'). A
 -- surface is what the plugin draws itself: for a built-in plugin, a
 -- Halogen component. The small things are data that the host draws, so
 -- that they look like the wiki's own: an agent's buttons
@@ -34,6 +36,7 @@ module Wiki.App.Plugin
   , Manifest (..)
   , PluginId (..)
   , builtin
+  , SecretSpec (..)
 
     -- * Diagnostics
   , Diagnostics (..)
@@ -56,6 +59,20 @@ module Wiki.App.Plugin
     -- * Capabilities
   , Capabilities (..)
   , Document (..)
+
+    -- * Secrets
+  , Secrets (..)
+  , SecretName (..)
+  , Unavailable (..)
+  , SecretField (..)
+  , FieldSlot
+  , fieldSlot
+  , FieldInput (..)
+  , FieldOutput (..)
+  , secretField
+  , Local (..)
+
+    -- * Links
   , OptionsLink
   , optionsLinkTo
   , LinkClick
@@ -71,7 +88,9 @@ where
 
 import DOM.HTML.Indexed qualified as I
 import Data.Aeson (Value)
+import Data.Row (HasType)
 import Halogen qualified as H
+import Halogen.HTML qualified as HH
 import Halogen.HTML.Properties qualified as HP
 import Halogen.Router (Follow, Router)
 import Halogen.Router qualified as Router
@@ -86,28 +105,44 @@ import Wiki.Core.Assistant.Prompt (Span)
 import Wiki.Core.Id (UserId)
 import Wiki.Core.Markdown.Problems (IslandPlace, Problem)
 import Wiki.Core.Markdown.Render (IslandKey)
+import Wiki.Core.Vault.Plugin (SecretName (..))
 
 -- 'PluginId' is a plugin's name for the program, the server's type
 -- ("Wiki.Api.Plugins"): short, in lower case, and the same in every
 -- version of the plugin. Which plugins are on is a set of these.
 
 -- | 'Manifest' is what the wiki knows of a plugin before it runs any of
--- it: its id, its name and description as the settings list them, and
--- whether it is on for a user who made no choice ('onByDefault'). The
--- server keeps only the users' choices and the administrator's set, so
--- the default is the manifest's.
+-- it: its id, its name and description as the settings list them,
+-- whether it is on for a user who made no choice ('onByDefault'), and the
+-- secrets it keeps in the user's vault ('secrets'). The server keeps only
+-- the users' choices and the administrator's set, so the default is the
+-- manifest's.
 data Manifest = Manifest
   { id :: PluginId
   , name :: Text
   , description :: Text
   , onByDefault :: Bool
+  , secrets :: [SecretSpec]
+  -- ^ The secrets the plugin may keep, by name. The host refuses any
+  -- other name ('Secrets').
   }
   deriving stock (Eq, Show)
 
 -- | The manifest of a plugin built into the wiki: its id, its name and its
--- description. A built-in plugin is on by default.
+-- description. A built-in plugin is on by default, and keeps no secrets
+-- until it declares them.
 builtin :: Text -> Text -> Text -> Manifest
-builtin pluginId name description = Manifest {id = PluginId pluginId, name, description, onByDefault = True}
+builtin pluginId name description = Manifest {id = PluginId pluginId, name, description, onByDefault = True, secrets = []}
+
+-- | 'SecretSpec' is a secret a plugin declares in its manifest: its name
+-- ('SecretName'), and the label and description the host's field shows
+-- for it ('SecretField').
+data SecretSpec = SecretSpec
+  { name :: SecretName
+  , label :: Text
+  , description :: Text
+  }
+  deriving stock (Eq, Show)
 
 -- | 'Plugin' is a plugin, in the monad the application's components run
 -- in: its manifest, and each contribution it makes, or 'Nothing' for one
@@ -251,13 +286,22 @@ newtype OptionsOutput = SaveOptions (Maybe Value)
 -- | 'Capabilities' is what a plugin may ask of the host, as functions:
 -- whether a browser is there to run it ('here'; a page rendered ahead of
 -- the program has none); whether the page is a secure context ('secure');
--- a link to the plugin's settings ('optionsLink'); and the capabilities
--- that only the writing assistant uses
+-- a link to the plugin's settings ('optionsLink'); its secrets, in the
+-- user's vault ('secrets'); its cache in this browser ('local'); and the
+-- capabilities that only the writing assistant uses
 -- ("Wiki.App.Plugin.Capability.Assistant").
+--
+-- The host makes the record for one plugin and one reader
+-- ("Wiki.App.Plugin.Host"), and makes it again each time it renders. The
+-- plugin's id and the reader are inside its functions: no function takes
+-- a plugin's id, so a plugin can reach only its own secrets and its own
+-- cache.
 data Capabilities m = Capabilities
   { here :: m Bool
   , secure :: m Bool
   , optionsLink :: OptionsLink
+  , secrets :: Secrets m
+  , local :: Local m
   , assistant :: AssistantCapabilities m
   }
 
@@ -273,6 +317,100 @@ data Document = Document
   , propose :: Int -> Edit -> IO (Either Refusal (Replacement, [Int]))
   , tracked :: IO [Change]
   }
+
+--------------------------------------------------------------------------------
+-- Secrets
+
+-- | 'Secrets' is a plugin's secrets, such as an API key: kept sealed in the
+-- user's vault, which follows them to their other devices, under the names
+-- the plugin's manifest declares ('SecretSpec'). Where the user has no
+-- vault to keep them in (the demo, a page over plain HTTP, a user who has
+-- not made one), they are kept in this browser, sealed where it can seal.
+--
+-- 'get' reads every secret the plugin keeps, by name, or says why it
+-- cannot ('Unavailable'). 'put' keeps a value under a name, in the place of
+-- the one it had; 'remove' forgets one. A name the manifest does not
+-- declare is refused before anything is read. 'field' is the host's form
+-- for one secret, which unlocks the vault where it is locked
+-- ('secretField'). Each function but 'field' waits: call it in 'H.async'.
+data Secrets m = Secrets
+  { get :: m (Either Unavailable (Map SecretName Text))
+  , put :: SecretName -> Text -> m (Either Text ())
+  , remove :: SecretName -> m (Either Text ())
+  , field :: SecretField m
+  }
+
+-- | 'Unavailable' is why a plugin's secrets cannot be read: the user's
+-- vault is locked in this browser ('Locked': the host's field unlocks it);
+-- nobody is signed in ('NoUser'); or something failed, with what to tell
+-- the reader ('Failed').
+data Unavailable = Locked | NoUser | Failed Text
+  deriving stock (Eq, Show)
+
+-- | 'SecretField' is the host's form for one of a plugin's secrets: its
+-- label, whether it is set, a field to type a new value into, "Keep" and
+-- "Forget", and the vault's unlock where the vault is locked. A value kept
+-- is never shown again. The plugin puts it in its surface with
+-- 'secretField'.
+data SecretField m = SecretField
+  { component :: H.Component (Const Void) (FieldInput m) FieldOutput m
+  , reader :: (Int, Maybe UserId)
+  -- ^ The reader the field's functions are made for: the session's number
+  -- and the user.
+  }
+
+-- | 'FieldSlot' is the address of a 'SecretField' among a surface's
+-- children: the reader it is made for, and the secret's name. A new reader
+-- is a new address, so the field is made again for them, and none is kept
+-- that still reads the former reader's secrets.
+data FieldSlot = FieldSlot Int (Maybe UserId) SecretName
+  deriving stock (Eq, Ord)
+
+-- | The address of a field of these secrets for a secret's name.
+fieldSlot :: Secrets m -> SecretName -> FieldSlot
+fieldSlot s name = let (session, user) = s.field.reader in FieldSlot session user name
+
+-- | 'FieldInput' is what a plugin gives a 'SecretField': the secret's name,
+-- one the manifest declares, and a check of a value before it is kept,
+-- with what to tell the reader when it fails (the assistant tries an API
+-- key). The check waits; the field shows that it is checking.
+data FieldInput m = FieldInput
+  { name :: SecretName
+  , check :: Text -> m (Either Text ())
+  }
+
+-- | 'FieldOutput' is what a 'SecretField' tells the plugin: a value was kept
+-- under the name, or the name's value was forgotten, or the field unlocked
+-- the vault, so that the plugin reads its secrets again ('get').
+data FieldOutput = Kept SecretName | Removed SecretName | Unlocked
+  deriving stock (Eq, Show)
+
+-- | A 'SecretField' for one secret, in a surface whose children include
+-- fields under the given label:
+--
+-- > type Slots = ("secret" .== H.Slot (Const Void) FieldOutput FieldSlot)
+-- > ... secretField "secret" can.secrets FieldInput {name, check} FromField
+secretField
+  :: forall label
+  ->forall action slots m
+   . (HasType label (H.Slot (Const Void) FieldOutput FieldSlot) slots, KnownSymbol label)
+  => Secrets m
+  -> FieldInput m
+  -> (FieldOutput -> action)
+  -> H.ComponentHTML action slots m
+secretField label s input onOutput = HH.slot label (fieldSlot s input.name) s.field.component input onOutput
+
+-- | 'Local' is the plugin's cache in this browser, for this user: one JSON
+-- value, kept in the clear, which no other device sees (the assistant's
+-- lists of models). 'load' reads it, 'Nothing' when nothing is kept;
+-- 'save' replaces it, or says why it could not. Both wait.
+data Local m = Local
+  { load :: m (Maybe Value)
+  , save :: Value -> m (Either Text ())
+  }
+
+--------------------------------------------------------------------------------
+-- Links
 
 -- | 'OptionsLink' is a link to a plugin's settings, which the application
 -- follows itself ('optionsLinkProps', 'followOptionsLink').

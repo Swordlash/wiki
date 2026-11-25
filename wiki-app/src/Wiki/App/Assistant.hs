@@ -75,6 +75,8 @@ module Wiki.App.Assistant
   , announceSignIn
   , keysDroppedElsewhere
   , heldHandle
+  , TabLock (..)
+  , holdingAcrossTabs
   , PasskeyTicket
   , Used (..)
   , PasskeyRefusal (..)
@@ -99,6 +101,7 @@ import Halogen.JSBits.Fields (Member (..), jsFields)
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.Query.Event.Window qualified as WindowEvent
 import Halogen.Subscription (Emitter)
+import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad (BrowserDOM)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Halogen.VDom.DOM.Monad.Mem (MemDOM)
@@ -126,7 +129,7 @@ import Wiki.Core.Url (Url (..))
 -- results are JSON, or a key's handle (0 for none). One splice holds both
 -- files: a module has room for one.
 $( browserJS
-     ["jsbits/assistant.js", "jsbits/vault.js"]
+     ["jsbits/assistant.js", "jsbits/vault.js", "jsbits/tabs.js"]
      [ ("js_open", "wiki_assistant_open", Safe, [t|JSText -> Callback -> IO Int|])
      , ("js_send", "wiki_assistant_send", Safe, [t|Int -> JSText -> JSText -> IO ()|])
      , ("js_answer", "wiki_assistant_answer", Safe, [t|Int -> Int -> JSText -> Bool -> IO ()|])
@@ -167,6 +170,11 @@ $( browserJS
      , ("js_passkey_sign_inPromise", "wiki_passkey_sign_in", Safe, [t|JSText -> Bool -> Int -> IO (Promise JSText)|])
      , ("js_passkey_offer_ticket", "wiki_passkey_offer_ticket", Safe, [t|IO Int|])
      , ("js_passkey_abort", "wiki_passkey_abort", Safe, [t|IO ()|])
+     , ("js_secrets_changed", "wiki_vault_secrets_changed", Safe, [t|IO ()|])
+     , ("js_on_secrets_changed", "wiki_vault_on_secrets_changed", Safe, [t|Callback -> IO ()|])
+     , ("js_tab_lock_request", "wiki_tab_lock_request", Safe, [t|JSText -> IO Int|])
+     , ("js_tab_lock_grantedPromise", "wiki_tab_lock_granted", Safe, [t|Int -> IO (Promise ())|])
+     , ("js_tab_lock_release", "wiki_tab_lock_release", Safe, [t|Int -> IO ()|])
      ]
  )
 
@@ -222,6 +230,9 @@ js_slots = if inBrowser then wait =<< js_slotsPromise else pure inert
 
 js_generation :: IO Int
 js_generation = if inBrowser then wait =<< js_generationPromise else pure inert
+
+js_tab_lock_granted :: Int -> IO ()
+js_tab_lock_granted a1 = if inBrowser then wait =<< js_tab_lock_grantedPromise a1 else pure inert
 
 js_drop_if :: Int -> JSText -> IO Bool
 js_drop_if a1 a2 = if inBrowser then wait =<< js_drop_ifPromise a1 a2 else pure inert
@@ -330,6 +341,12 @@ data Used = Used
   , wrapping :: Maybe KeyRef
   }
   deriving stock (Show)
+
+-- | 'TabLock' is a request for a lock that the wiki's tabs in this browser
+-- share ('requestTabLock'), by its number in @jsbits\/tabs.js@; 0 where
+-- the browser has no such locks.
+newtype TabLock = TabLock Int
+  deriving stock (Eq, Show)
 
 -- | 'PasskeyTicket': the number of a sign-in with a passkey, which starts
 -- only while the number is current ('passkeyTicket').
@@ -495,6 +512,41 @@ class (Monad m) => MonadAssistant m where
   dropDeviceKey :: UserId -> m ()
   default dropDeviceKey :: (MonadTrans t, MonadAssistant n, m ~ t n) => UserId -> m ()
   dropDeviceKey = lift . dropDeviceKey
+
+  -- | The changes of what the users' secrets read as in this page: a key
+  -- kept or let go on this device (a vault unlocked or locked, by this
+  -- tab or another), and a secret of a plugin kept or forgotten, by this
+  -- tab or another ('announceSecretsChanged'). A view that shows whether
+  -- a secret is set, or whether the vault is locked, reads again on each.
+  -- Made in place: call it with 'Halogen.liftEffect'.
+  secretsChanges :: m (Emitter IO ())
+  default secretsChanges :: (MonadTrans t, MonadAssistant n, m ~ t n) => m (Emitter IO ())
+  secretsChanges = lift secretsChanges
+
+  -- | Tell this page and the wiki's other tabs that a secret of a plugin
+  -- was kept or forgotten ('secretsChanges').
+  announceSecretsChanged :: m ()
+  default announceSecretsChanged :: (MonadTrans t, MonadAssistant n, m ~ t n) => m ()
+  announceSecretsChanged = lift announceSecretsChanged
+
+  -- | Ask for the lock of this name that every tab of the wiki in this
+  -- browser shares (the browser's Web Locks). It returns at once, with the
+  -- request: 'tabLockGranted' waits until the lock is held, and
+  -- 'releaseTabLock' lets it go, or gives the request up if it is not
+  -- held yet. Use 'holdingAcrossTabs', which always lets it go.
+  requestTabLock :: Text -> m TabLock
+  default requestTabLock :: (MonadTrans t, MonadAssistant n, m ~ t n) => Text -> m TabLock
+  requestTabLock = lift . requestTabLock
+
+  -- | Wait until the lock requested is held.
+  tabLockGranted :: TabLock -> m ()
+  default tabLockGranted :: (MonadTrans t, MonadAssistant n, m ~ t n) => TabLock -> m ()
+  tabLockGranted = lift . tabLockGranted
+
+  -- | Let go of the lock requested, held or not yet. It returns at once.
+  releaseTabLock :: TabLock -> m ()
+  default releaseTabLock :: (MonadTrans t, MonadAssistant n, m ~ t n) => TabLock -> m ()
+  releaseTabLock = lift . releaseTabLock
 
   -- | Whether passkeys can be used here: a browser with WebAuthn, on a
   -- secure page.
@@ -706,6 +758,11 @@ instance MonadAssistant BrowserDOM where
     k <- evaluate =<< js_device_key (toJSText user.text) owner
     pure (if k == 0 then Nothing else Just (KeyRef k))
   dropDeviceKey user = liftIO (evaluate =<< js_drop_key (toJSText user.text))
+  secretsChanges = liftIO secretsHeard
+  announceSecretsChanged = liftIO js_secrets_changed
+  requestTabLock name = liftIO (TabLock <$> js_tab_lock_request (toJSText name))
+  tabLockGranted (TabLock n) = liftIO (when (n /= 0) (evaluate =<< js_tab_lock_granted n))
+  releaseTabLock (TabLock n) = liftIO (when (n /= 0) (js_tab_lock_release n))
   passkeysHere = liftIO js_passkeys_here
   sealingHere = liftIO js_sealing_here
   createPasskeyBy (KeyOwner owner) options salt info = liftIO $ do
@@ -791,6 +848,13 @@ instance MonadAssistant MemDOM where
   keepDeviceKeyBy _ _ _ _ = pure (Left noBrowser)
   deviceKeyBy _ _ = pure Nothing
   dropDeviceKey _ = pass
+
+  -- No key is kept here, and the page is the only one.
+  secretsChanges = liftIO ((\s -> s.emitter) <$> HS.create)
+  announceSecretsChanged = pass
+  requestTabLock _ = pure (TabLock 0)
+  tabLockGranted _ = pass
+  releaseTabLock _ = pass
   passkeysHere = pure False
   sealingHere = pure False
   createPasskeyBy _ _ _ _ = pure (Left (PasskeyFailed noBrowser))
@@ -998,6 +1062,32 @@ deviceRecordsLock = unsafePerformIO (newMVar ())
 -- cancelled fork's included.
 holdingDeviceRecords :: (MonadUnliftIO m) => m a -> m a
 holdingDeviceRecords action = withRunInIO (\run -> withMVar deviceRecordsLock (const (run action)))
+
+-- | 'secretsHearing' is the page's one emitter of 'secretsChanges', once
+-- made: the window's @wiki-secrets-changed@ event, which
+-- @jsbits\/vault.js@ dispatches, listened for from the first call on.
+secretsHearing :: MVar (Maybe (Emitter IO ()))
+secretsHearing = unsafePerformIO (newMVar Nothing)
+{-# NOINLINE secretsHearing #-}
+
+-- | 'secretsChanges' in the browser: the page's emitter, made and
+-- listening at the first call. Natively nothing is ever heard.
+secretsHeard :: IO (Emitter IO ())
+secretsHeard = modifyMVar secretsHearing $ \case
+  Just e -> pure (Just e, e)
+  Nothing -> do
+    HS.Subscribe {listener, emitter} <- HS.create
+    when inBrowser (js_on_secrets_changed =<< mkSyncCallback (const (HS.notify listener ())))
+    pure (Just emitter, emitter)
+
+-- | Run this holding the lock of this name that the wiki's tabs in this
+-- browser share ('requestTabLock'): a tab that asks for it meanwhile waits
+-- until this ends. The lock is let go however the run ends, a cancelled
+-- fork's included; the request is made in place, so a fork cancelled
+-- while it waits gives up its request. Where the browser has no such
+-- locks (a page over plain HTTP), it runs without one.
+holdingAcrossTabs :: (MonadAssistant m, MonadUnliftIO m) => Text -> m a -> m a
+holdingAcrossTabs name action = withRunInIO (\run -> bracket (run (requestTabLock name)) (run . releaseTabLock) (\l -> run (tabLockGranted l >> action)))
 
 recordIn :: (MonadIndexedDB m, MonadUnliftIO m) => UserId -> m (Either Text (Maybe ByteString))
 recordIn user = failingAs (readRecord assistantDatabase user)

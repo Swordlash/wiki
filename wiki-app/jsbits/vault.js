@@ -63,6 +63,7 @@ function wikiVaultListen() {
   wikiVaultChannel = new BroadcastChannel("wiki-assistant-keys");
   wikiVaultChannel.onmessage = (event) => {
     if (event.data?.signedIn === true) globalThis.wikiVaultSignedIn = true;
+    if (event.data?.secretsChanged === true) globalThis.dispatchEvent?.(new CustomEvent("wiki-secrets-changed"));
     const slot = event.data?.dropped;
     if (typeof slot !== "string") return;
     wikiVaultLetGo(slot);
@@ -86,6 +87,31 @@ function wiki_vault_signed_in() {
   globalThis.wikiVaultSignedIn = true;
   wikiVaultListen();
   wikiVaultChannel?.postMessage({ signedIn: true });
+}
+
+// What the users' secrets read as changed: a key kept or let go on this
+// device (a vault unlocked or locked), or a plugin's secret kept or
+// forgotten. This page and the wiki's other tabs are told, with the event
+// wiki-secrets-changed, which each field of a secret listens for
+// (Wiki.App.View.SecretField) to read again. It is sent once the change is
+// stored: a read that follows finds it.
+function wikiVaultSecretsChanged() {
+  wikiVaultListen();
+  globalThis.dispatchEvent?.(new CustomEvent("wiki-secrets-changed"));
+  wikiVaultChannel?.postMessage({ secretsChanged: true });
+}
+
+// A plugin's secret was kept or forgotten (Wiki.App.Plugin.Host.Secrets).
+function wiki_vault_secrets_changed() {
+  wikiVaultSecretsChanged();
+}
+
+// Call the callback on each wiki-secrets-changed event of this page, from
+// now on, including those another tab's messages give. The page makes one
+// such listener (Wiki.App.Assistant's secretsChanges).
+function wiki_vault_on_secrets_changed(callback) {
+  wikiVaultListen();
+  globalThis.addEventListener?.("wiki-secrets-changed", () => callback(null));
 }
 
 // Listen to the wiki's other tabs from the page's start, not only from the
@@ -147,6 +173,7 @@ async function wiki_vault_drop_if(generation, slots) {
       wikiVaultLetGo(String(slot));
       wikiVaultChannel?.postMessage({ dropped: String(slot) });
     }
+    wikiVaultSecretsChanged();
   }
   return dropped;
 }
@@ -441,6 +468,7 @@ async function wiki_vault_keep_key(user, handle, onDisk, owner) {
     } finally {
       db?.close();
     }
+    wikiVaultSecretsChanged();
     return "";
   } catch (error) {
     return String(error?.message ?? error);
@@ -481,6 +509,7 @@ async function wiki_vault_drop_key(user) {
   } catch {
     // Nothing stored.
   }
+  wikiVaultSecretsChanged();
 }
 
 // Whether passkeys can be used here: WebAuthn, which a browser offers

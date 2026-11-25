@@ -1674,7 +1674,7 @@ component =
     -- is closed; until it opens, it draws nothing.
     agentSlot :: State -> Maybe Plugin.Editing -> Maybe (H.ComponentHTML Action Slots m)
     agentSlot st seen =
-      (\(manifest, agent) -> HH.slot "agent" () agent.surface Plugin.AgentInput {user = me st, options = optionsFor manifest.id st.input.context.plugins, editing = seen, can = capabilities st.input.context} (FromAgent manifest.id))
+      (\(manifest, agent) -> HH.slot "agent" () agent.surface Plugin.AgentInput {user = me st, options = optionsFor manifest.id st.input.context.plugins, editing = seen, can = capabilities st.input.context manifest} (FromAgent manifest.id))
         <$> (contributed (pluginsOn st.input.context) plugins).agent
 
     -- The agent beside the text, in its frame once it has opened.

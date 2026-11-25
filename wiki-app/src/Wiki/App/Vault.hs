@@ -56,6 +56,8 @@ module Wiki.App.Vault
   , Settled (..)
   , afterSignIn
   , opensVault
+  , vaultKeyHere
+  , fetched
   , keepVaultKey
   , keepSharedKey
 

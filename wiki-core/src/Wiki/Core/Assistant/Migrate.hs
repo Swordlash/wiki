@@ -136,6 +136,9 @@ data OnDevice = OnDevice
   , copy :: Maybe Settings
   -- ^ An L1 record's copy of the vault's settings, when the vault key
   -- here opens it.
+  , copied :: Maybe Text
+  -- ^ The nonce of the vault's item the copy is of: two browsers' copies
+  -- of one item are one legacy place ('sources').
   , follows :: Bool
   -- ^ Whether the record follows the vault (L1, L4).
   , unopenable :: Bool
@@ -295,13 +298,23 @@ optionsBehindLock f = f.vault == ItemLocked && any (\r -> isJust r.own) f.record
 
 -- | The legacy places this browser can read, each by its identity, with
 -- the keys it holds, in the order their keys win: the vault's item (by its
--- nonce), then this browser's record (an L1 copy that is the last one,
--- then the record's own). A record counts even with no key, and so does an
--- item, so that the move of a place with none is recorded too.
+-- nonce); an L1 copy that is the settings' last copy, by the nonce of the
+-- item it is a copy of, so that the copies two browsers keep of one item
+-- are one place, taken once; and this browser's record, for what it holds
+-- of its own. A record counts even with no key, and so does an item, so
+-- that the move of a place with none is recorded too.
+--
+-- Copies of two versions of the item are two places: a key forgotten after
+-- one was moved can come back from the other, if the other holds it.
 sources :: Found -> [(Text, Map SecretName Text)]
 sources f =
   [(itemPlace <> s.nonce.text, keysOf settings) | ItemOpened s settings <- [f.vault]]
-    <> [(r.source, Map.union (maybe mempty keysOf (lastCopy f)) (maybe mempty keysOf r.own)) | Just r <- [f.record]]
+    <> [(copyPlace <> n, keysOf c) | Just c <- [lastCopy f], Just r <- [f.record], Just n <- [r.copied]]
+    <> [(r.source, maybe mempty keysOf r.own) | Just r <- [f.record]]
+
+-- | The start of a last copy's identity as a legacy place ('sources').
+copyPlace :: Text
+copyPlace = "copy:"
 
 -- | The keys the legacy places hold, by secret's name: the vault's item's,
 -- then an L1 copy that is the last one, then this browser's own; the first

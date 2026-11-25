@@ -43,6 +43,10 @@ data World = World
   , serverOptions :: Maybe Value
   , devices :: Map Int Dev
   , seals :: Int
+  , copiesMoved :: Set Int
+  -- ^ The items, by number, a browser emptied its record of a copy of
+  -- while that copy was the settings' last: the test's own account, kept
+  -- apart from what the plugin's item says it took.
   }
   deriving stock (Eq, Show)
 
@@ -62,7 +66,9 @@ data Rec = Rec
   { number :: Int
   , own :: Maybe Settings
   , follows :: Bool
-  , copy :: Maybe Settings
+  , copy :: Maybe (Int, Settings)
+  -- ^ An L1 record's copy of the vault's item, by the number of the
+  -- item's seal, which is its nonce.
   , askEachTime :: Bool
   , learnt :: Maybe Value
   }
@@ -93,7 +99,8 @@ observe d w =
               { bytes = show r.number
               , source = "record:" <> show r.number
               , own = r.own
-              , copy = if unlocked dev then r.copy else Nothing
+              , copy = if unlocked dev then snd <$> r.copy else Nothing
+              , copied = show . fst <$> r.copy
               , follows = r.follows
               , unopenable = False
               , askEachTime = r.askEachTime
@@ -125,7 +132,11 @@ perform d step w = case step of
   DropVaultItem s
     | (sealOf . fst <$> w.item) == Just s -> w {item = Nothing}
     | otherwise -> w
-  DropRecord b -> onDev (\x -> if ((\r -> show r.number) <$> x.held) == Just b then x {held = Nothing} else x)
+  DropRecord b -> case (\x -> x.held) (deviceOf d w) of
+    Just r
+      | show r.number == b ->
+          (onDev (\x -> x {held = Nothing})) {copiesMoved = w.copiesMoved <> Set.fromList [n | lastCopyWorld w, Just (n, _) <- [r.copy]]}
+    _ -> w
   DropSlotKey -> onDev (\x -> if isNothing x.held then x {keySlot = NoKey} else x)
   where
     dev = deviceOf d w
@@ -151,15 +162,18 @@ forget d k w
 -- copy counts only while it is the settings' last copy.
 untakenHolders :: SecretName -> World -> [Text]
 untakenHolders k w =
-  filter (`Set.notMember` takenNow) $
-    ["item:" <> show n | Just (n, s) <- [w.item], Map.member k (keysOf s)]
-      <> [ "record:" <> show r.number
-         | Just r <- map (\x -> x.held) (Map.elems w.devices)
-         , Map.member k (maybe mempty keysOf r.own) || (lastCopy && Map.member k (maybe mempty keysOf r.copy))
-         ]
+  filter (`Set.notMember` takenNow) (["item:" <> show n | Just (n, s) <- [w.item], Map.member k (keysOf s)] <> ["record:" <> show r.number | r <- records, Map.member k (maybe mempty keysOf r.own)])
+    -- A last copy of an item counts until a browser emptied its record
+    -- of a copy of that item: the copies of one item are one place.
+    <> ["copy:" <> show n | lastCopyWorld w, r <- records, Just (n, c) <- [r.copy], Set.notMember n w.copiesMoved, Map.member k (keysOf c)]
   where
     takenNow = maybe mempty (\c -> c.taken) w.plugin
-    lastCopy = isNothing w.item && not (tookItem w)
+    records = [r | Just r <- map (\x -> x.held) (Map.elems w.devices)]
+
+-- | Whether an L1 copy is the settings' last copy: the vault has no
+-- legacy item, and none was moved.
+lastCopyWorld :: World -> Bool
+lastCopyWorld w = isNothing w.item && not (tookItem w)
 
 -- | Whether the plugin's item took a vault's legacy item.
 tookItem :: World -> Bool
@@ -194,7 +208,7 @@ heldNames w =
   Set.unions
     ( Map.keysSet (pluginSecrets w)
         : maybe mempty (Map.keysSet . keysOf . snd) w.item
-        : [Set.unions [maybe mempty (Map.keysSet . keysOf) r.own, if lastCopy then maybe mempty (Map.keysSet . keysOf) r.copy else mempty] | Just r <- map (\x -> x.held) (Map.elems w.devices)]
+        : [Set.unions [maybe mempty (Map.keysSet . keysOf) r.own, if lastCopy then maybe mempty (Map.keysSet . keysOf . snd) r.copy else mempty] | Just r <- map (\x -> x.held) (Map.elems w.devices)]
     )
   where
     lastCopy = isNothing w.item && not (tookItem w)
@@ -211,8 +225,8 @@ moved d w = let x = deviceOf d w in isNothing x.held && x.keySlot == NoKey
 -- Generators
 
 -- | One browser in one of the legacy states, or with none.
-genDev :: Maybe Settings -> Gen (Dev, Maybe Settings)
-genDev vaultItem =
+genDev :: (Int, Settings) -> Gen (Dev, Maybe Settings)
+genDev item =
   oneof
     [ pure (Dev Nothing NoKey True False False, Nothing)
     , l1
@@ -222,10 +236,12 @@ genDev vaultItem =
     , l4
     ]
   where
+    -- The copy is of the vault's item, or of an older version of it. When
+    -- the vault has no item (syncing was turned off elsewhere), the item is
+    -- the one it last had: two browsers may hold copies of that one.
+    aCopy = Just <$> oneof [pure item, (,) <$> chooseInt (100000, 200000) <*> genSettings]
     l1 = do
-      -- The copy is the vault's item, or an older version of it, or the
-      -- last copy when the vault has none.
-      copy <- maybe (Just <$> genSettings) (\v -> Just <$> oneof [pure v, genSettings]) vaultItem
+      copy <- aCopy
       inSlot <- arbitrary
       r <- record Nothing True copy
       pure (Dev (Just r) VaultKey (not inSlot) False False, Nothing)
@@ -233,7 +249,7 @@ genDev vaultItem =
     -- the assistant's slot is empty, and the vault key is in the vault's
     -- slot once the browser is unlocked, which opens the copy.
     l1Reloaded = do
-      copy <- maybe (Just <$> genSettings) (\v -> Just <$> oneof [pure v, genSettings]) vaultItem
+      copy <- aCopy
       r <- record Nothing True copy
       pure (Dev (Just Rec {number = r.number, own = r.own, follows = r.follows, copy = r.copy, askEachTime = True, learnt = r.learnt}) NoKey True False False, Nothing)
     ownRecord slot vaultSlot' = do
@@ -244,8 +260,7 @@ genDev vaultItem =
     -- hold: it opens once the browser is unlocked.
     l4 = do
       typed <- oneof [pure Nothing, Just <$> genSettings]
-      copy <- maybe (Just <$> genSettings) (pure . Just) vaultItem
-      r <- record typed True copy
+      r <- record typed True (Just item)
       pure (Dev (Just r) OwnKey False False False, typed)
     record own follows copy = do
       askEachTime <- if follows then arbitrary else pure False
@@ -258,10 +273,12 @@ genDev vaultItem =
 genWorld :: Int -> Gen World
 genWorld n = do
   vaultItem <- oneof [pure Nothing, Just <$> genSettings]
-  devs <- vectorOf n (fst <$> genDev vaultItem)
+  -- The item the vault has, or had before syncing was turned off.
+  lastItem <- maybe genSettings pure vaultItem
+  devs <- vectorOf n (fst <$> genDev (1, lastItem))
   plugin <- oneof [pure Nothing, pure (Just noContents), (\s -> Just noContents {secrets = keysOf s}) <$> genSettings]
   options <- oneof [pure Nothing, Just . optionsValue <$> genSettings]
-  pure World {item = (1,) <$> vaultItem, plugin, serverOptions = options, devices = Map.fromList (zip [1 ..] (map dedupe (zip [1 ..] devs))), seals = 2}
+  pure World {item = (1,) <$> vaultItem, plugin, serverOptions = options, devices = Map.fromList (zip [1 ..] (map dedupe (zip [1 ..] devs))), seals = 2, copiesMoved = mempty}
   where
     -- Each record its own number, so that a delete names one record.
     dedupe (i, d) = d {held = (\r -> Rec {number = r.number * 10 + i, own = r.own, follows = r.follows, copy = r.copy, askEachTime = r.askEachTime, learnt = r.learnt}) <$> d.held}
@@ -313,7 +330,7 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
   prop "two unlocked browsers that follow the vault and hold nothing of their own end as one run" $
     forAll (genUnlocked 2) $ \w0 ->
       let w = w0 {devices = Map.map followsOnly w0.devices}
-          followsOnly d = d {held = (\r -> Rec {number = r.number, own = Nothing, follows = True, copy = snd <$> w0.item, askEachTime = r.askEachTime, learnt = r.learnt}) <$> d.held}
+          followsOnly d = d {held = (\r -> Rec {number = r.number, own = Nothing, follows = True, copy = w0.item, askEachTime = r.askEachTime, learnt = r.learnt}) <$> d.held}
        in forAll (listOf (elements [1, 2 :: Int])) $ \schedule ->
             let together = interleaved schedule w
                 inTurn = completed 2 (completed 1 w)
@@ -329,12 +346,12 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
 
   it "gives the options to adopt before the server's are known, and empties nothing until they are" $ do
     let s = settingsAsked
-        found' = Found {vault = NoItem, record = Just OnDevice {bytes = "r", source = "record:r", own = Just s, copy = Nothing, follows = False, unopenable = False, askEachTime = False, learnt = Nothing}, slot = OwnKey, vaultSlot = True, target = Just mempty, taken = Set.fromList ["record:r"], options = Nothing, local = False, askHere = False}
+        found' = Found {vault = NoItem, record = Just OnDevice {bytes = "r", source = "record:r", own = Just s, copy = Nothing, copied = Nothing, follows = False, unopenable = False, askEachTime = False, learnt = Nothing}, slot = OwnKey, vaultSlot = True, target = Just mempty, taken = Set.fromList ["record:r"], options = Nothing, local = False, askHere = False}
     plan found' `shouldBe` [AdoptOptions (optionsValue s)]
     plan found' {options = Just (Just (optionsValue s))} `shouldBe` [DropRecord "r"]
 
   it "takes a legacy place into the plugin's item before anything is emptied, even one with no key" $ do
-    let found' = Found {vault = NoItem, record = Just OnDevice {bytes = "r", source = "record:r", own = Just defaultSettings, copy = Nothing, follows = False, unopenable = False, askEachTime = False, learnt = Nothing}, slot = OwnKey, vaultSlot = True, target = Just mempty, taken = mempty, options = Just Nothing, local = False, askHere = False}
+    let found' = Found {vault = NoItem, record = Just OnDevice {bytes = "r", source = "record:r", own = Just defaultSettings, copy = Nothing, copied = Nothing, follows = False, unopenable = False, askEachTime = False, learnt = Nothing}, slot = OwnKey, vaultSlot = True, target = Just mempty, taken = mempty, options = Just Nothing, local = False, askHere = False}
     plan found' `shouldBe` [KeepKeys [("record:r", mempty)]]
 
   prop "never brings back a key forgotten once every legacy place that held it was taken, on either browser" $
@@ -356,6 +373,18 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
             finished = completed 2 (completed 1 end)
          in coverage . cover 10 (not (null watchedAtEnd)) "a key forgotten after its places were taken" $
               conjoin checked .&&. conjoin [counterexample ("at the end: " <> show k) (Map.notMember k (pluginSecrets finished)) | k <- watchedAtEnd]
+
+  prop "takes the copies two browsers keep of one item once: a key forgotten after the first moved does not come back from the second" $
+    -- Syncing was turned off elsewhere: the vault has no item, and both
+    -- browsers keep a copy of the one it last had.
+    forAll genSettings $ \lost -> forAll (chooseInt (100, 10000)) $ \n ->
+      let copyOf i = Dev (Just Rec {number = n * 10 + i, own = Nothing, follows = True, copy = Just (1, lost), askEachTime = False, learnt = Nothing}) VaultKey True False False
+          w = World {item = Nothing, plugin = Nothing, serverOptions = Just (optionsValue lost), devices = Map.fromList [(1, copyOf 1), (2, copyOf 2)], seals = 2, copiesMoved = mempty}
+          first' = completed 1 w
+          forgotten = foldl' (flip (forget 1)) first' (Map.keys (pluginSecrets first'))
+          end = completed 2 forgotten
+       in coverage . cover 50 (not (Map.null (keysOf lost))) "keys in the copy" $
+            pluginSecrets first' === keysOf lost .&&. pluginSecrets end === mempty .&&. moved 2 end
 
   prop "waits on a locked browser without emptying a place that holds a key, and moves it all once unlocked" $
     forAll (genWorld 1) $ \w0 ->

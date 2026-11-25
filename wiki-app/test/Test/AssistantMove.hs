@@ -392,6 +392,29 @@ together = describe "with other browsers and tabs" $ do
     pluginKeys w `shouldReturn` mempty
     (\l -> l.record) <$> leftOn b `shouldReturn` False
 
+  it "takes the copies two browsers keep of the vault's last item once, when syncing was turned off elsewhere: a key forgotten after the first moved does not come back" $ do
+    w <- newWorld
+    withLegacyItem w synced
+    a <- newDevice w.counter True
+    b <- newDevice w.counter True
+    -- Two records of their own (one asks each time), with copies of one
+    -- item.
+    for_ [(a, False), (b, True)] $ \(d, asking) -> do
+      putKey d alice w.vaultKey
+      followingRecord w Nothing asking synced >>= putRecord d alice
+    -- An earlier version turned syncing off on a third browser: the item
+    -- went, and the two copies are the settings' last.
+    vaultNow w >>= setVault w.server . (\v -> v {items = Map.delete assistantItem v.items})
+    hasLegacyItem w `shouldReturn` False
+    options <- newIORef Nothing
+    moveAll w a options `shouldReturn` Right Moved
+    pluginKeys w `shouldReturn` keysOf synced
+    for_ (Map.keys (keysOf synced)) $ \k -> on w a (removeSecret alice assistant k) `shouldReturn` Right ()
+    (\l -> l.record) <$> leftOn b `shouldReturn` True
+    moveAll w b options `shouldReturn` Right Moved
+    pluginKeys w `shouldReturn` mempty
+    (\l -> l.record) <$> leftOn b `shouldReturn` False
+
   it "takes a browser's own keys once: a key forgotten while the move waits for the options is not taken again" $ do
     w <- newWorld
     d <- newDevice w.counter True

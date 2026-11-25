@@ -65,6 +65,7 @@ module Wiki.Api.ContentPolicy
   , pagePolicy
   , headerPolicy
   , interactiveSvgPolicy
+  , pluginFramePolicy
 
     -- * The assistant's hosts
   , providerHosts
@@ -161,6 +162,39 @@ interactiveSvgPolicy =
       -- as tried (see "Wiki.Core.Markdown.Frame"); it holds where known.
       ("webrtc", ["'block'"])
     ]
+
+-- | The policy the server sends with an external plugin's frame
+-- ("Wiki.Server.PluginFrame", "Wiki.Api.Plugins.External"): the frame's
+-- two inline scripts run, the wiki's runtime and the line that holds the
+-- plugin's code, each allowed by the base64 of its SHA-256; the runtime
+-- starts the code as a worker from a @blob:@ address; and the code
+-- connects to the hosts given, the ones its manifest names, and nowhere
+-- else. The worker is under this policy too, since a worker made from a
+-- @blob:@ address takes its maker's (tried in Chromium 153: its @fetch@ to
+-- a host given works, and to any other is refused).
+--
+-- Everything else is refused. The sandbox gives the frame an opaque
+-- origin even where it is shown outside a frame, so no cookie, storage
+-- or page of the wiki's is reached; no other script, style, image, font
+-- or frame loads; no form is sent; and only the wiki's own pages may
+-- frame it. @webrtc 'block'@ is for the browsers that know it: Chromium
+-- does not, and a worker has no WebRTC anyway.
+pluginFramePolicy :: [Text] -> [Text] -> Text
+pluginFramePolicy hosts scriptHashes =
+  renderPolicy
+    ( [ ("sandbox", T.words scriptSandbox)
+      , ("default-src", ["'none'"])
+      , ("script-src", ["'sha256-" <> h <> "'" | h <- scriptHashes])
+      , ("worker-src", ["blob:"])
+      ]
+        <> [("connect-src", hosts) | not (null hosts)]
+        <> [ ("frame-src", ["'none'"])
+           , ("base-uri", ["'none'"])
+           , ("form-action", ["'none'"])
+           , ("frame-ancestors", ["'self'"])
+           , ("webrtc", ["'block'"])
+           ]
+    )
 
 -- | The providers' API addresses: Anthropic's and OpenAI's, which the
 -- page's @connect-src@ allows in every wiki. They are the sources of the

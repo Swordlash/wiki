@@ -45,6 +45,7 @@ module Wiki.Server.Storage.Schema
   , Passkeys (..)
   , ApiKeys (..)
   , UserPlugins (..)
+  , InstalledPlugins (..)
   , Vaults (..)
   , VaultItems (..)
   , PublicKeys (..)
@@ -864,6 +865,10 @@ deriving stock instance Eq (UserPlugins Identity)
 
 deriving stock instance Show (UserPlugins Identity)
 
+deriving stock instance Eq (InstalledPlugins Identity)
+
+deriving stock instance Show (InstalledPlugins Identity)
+
 deriving stock instance Eq (EmailVerifications Identity)
 
 deriving stock instance Show (EmailVerifications Identity)
@@ -1161,6 +1166,30 @@ instance Table UserPlugins where
     deriving anyclass (Beamable)
   primaryKey r = UserPluginKey r.user_id r.plugin_id
 
+-- | An external plugin installed (@external_plugins@, step 26,
+-- "Wiki.Server.Storage.ExternalPlugins"): its row's own id, its owner
+-- ('Nothing' for the wiki's, installed for everyone), the id its manifest
+-- gives it, the manifest as JSON text, the blob of its bundle (the
+-- SHA-256 of the bytes in hex), the bundle's size, and when it was
+-- installed or last replaced.
+data InstalledPlugins f = InstalledPluginRow
+  { id :: Columnar f Text
+  , owner_id :: Columnar f (Maybe Text)
+  , plugin_id :: Columnar f Text
+  , manifest :: Columnar f Text
+  , bundle :: Columnar f Text
+  , bundle_size :: Columnar f Int64
+  , installed_at :: Columnar f UTCTime
+  }
+  deriving stock (Generic)
+  deriving anyclass (Beamable)
+
+instance Table InstalledPlugins where
+  newtype PrimaryKey InstalledPlugins f = InstalledPluginKey (Columnar f Text)
+    deriving stock (Generic)
+    deriving anyclass (Beamable)
+  primaryKey r = InstalledPluginKey r.id
+
 --------------------------------------------------------------------------------
 -- The database
 
@@ -1207,6 +1236,7 @@ data WikiDb f = WikiDb
   , conversion_leases :: f (TableEntity ConversionLeases)
   , api_keys :: f (TableEntity ApiKeys)
   , user_plugins :: f (TableEntity UserPlugins)
+  , external_plugins :: f (TableEntity InstalledPlugins)
   }
   deriving stock (Generic)
   deriving anyclass (Database be)

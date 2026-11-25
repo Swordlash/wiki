@@ -40,11 +40,12 @@ import Wiki.Api.Links (attachmentUrl, avatarUrl, links, pageExportUrl, searchQue
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), NotificationSettingsChange (..), Notifications (..), ReadMark (..), Watching (..), feedAddressOf)
 import Wiki.Api.Opaque (LoginChallenge (..), LoginFinish (..), LoginStart (..), Message (..), NewAccountRecord (..), OldPasswordProof (..), PasswordRecord (..), PasswordRecordChange (..), ProofStart (..), RegistrationChallenge (..), RegistrationFor (..), RegistrationStart (..), Stretch (..))
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginOptions (..), PluginState (..), PluginStateChange (..), WikiPlugins (..))
+import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), ExternalPolicyChange (..), parseManifest)
 import Wiki.Api.Security (CurrentPassword (..), EmailChange (..), EmailState (..), OneTimeCode (..), RecoveryCodes (..), ResetRequest (..), ResetToken (..), SecondFactorState (..), SessionRef (..), UnsubscribeToken (..), VerificationToken (..))
 import Wiki.Api.ServerSettings (MailTest (..), MailTestResult (..), ProviderChange, ProviderCheck (..), ProviderSettingsOf (..), SecretState (..), ServerSettingsOf (..))
 import Wiki.Api.Stars (StarredPage (..), Starring (..))
 import Wiki.Api.Types
-import Wiki.Api.Upload (ArchiveUpload (..), AttachmentUpload (..), ImportApply (..))
+import Wiki.Api.Upload (ArchiveUpload (..), AttachmentUpload (..), ImportApply (..), PluginUpload (..))
 import Wiki.Api.Vault (AssertionOptions (..), AssertionResponse (..), NewPublicKey (..), PasskeyInfo (..), PublicKeyEntry (..), StoredVault (..), VaultChange (..))
 import Wiki.Api.Version (PageVersion (..), VersionTime (..), pageVersion)
 import Wiki.Core.Anchor (Anchor (..))
@@ -382,6 +383,18 @@ stubs =
           , finishAssertion = \_ -> pure Sample.passkeyInfo
           }
     , plugins = pure Sample.plugins
+    , -- External plugins: the sample's list; an upload is answered with
+      -- the sample, its manifest as sent, and refused when it names a
+      -- version to replace that is not the sample's.
+      externalPlugins =
+        ExternalPluginsApi
+          { list = pure Sample.externalPlugins
+          , setPolicy = \body -> pure ExternalPlugins {policy = body.policy, external = Sample.externalPlugins.external}
+          , installForWiki = installed False
+          , removeForWiki = \p -> if p == Sample.externalManifest.id then pure NoContent else refuse NotFound
+          , installMine = installed True
+          , removeMine = \_ -> refuse NotFound
+          }
     , -- The routes of encrypted spaces know no space: the server's own
       -- tests ("Test.Server.Encrypted" of wiki-server) answer them.
       encrypted =
@@ -421,6 +434,17 @@ stubs =
           , commit = \_ _ _ -> refuse NotFound
           }
     }
+
+-- | The stub's answer to a plugin's upload: the sample, with the
+-- manifest as sent and the bundle's size, its owner's or the wiki's; a
+-- replacement of a version other than the sample's is refused, as the
+-- server refuses it.
+installed :: Bool -> PluginUpload Tmp -> Handler ExternalPlugin
+installed mine u = case parseManifest (encodeUtf8 u.manifest) of
+  Left why -> refuse (Invalid why)
+  Right manifest
+    | maybe False (/= Sample.externalPlugin.bundle) u.replaces -> refuse (Conflict "The plugin was replaced since.")
+    | otherwise -> liftIO (BS.readFile u.bundle) <&> \bytes -> Sample.externalPlugin {manifest, size = BS.length bytes, mine}
 
 -- | The options of a sign-in with a passkey alone: the sample's, naming
 -- no passkey.
@@ -692,6 +716,21 @@ spec = describe "a server of the API's type" $ do
       answers (getAt links.admin.plugins) 200 Sample.wikiPlugins
       answers (sendJson methodPut links.admin.setPlugins WikiPlugins {off = mempty}) 200 WikiPlugins {off = mempty}
       status <$> request methodPut links.admin.setPlugins [(hContentType, "application/json")] "{\"off\": [\"9lives\"]}" `shouldReturn` 400
+    it "lists external plugins, sets who may add them, and installs one from a manifest and a bundle" $ do
+      let e = links.externalPlugins
+      (e.list, e.setPolicy, e.installForWiki, e.removeForWiki (PluginId "doubled-words"), e.installMine, e.removeMine (PluginId "mine"))
+        `shouldBe` ("api/v1/external-plugins", "api/v1/external-plugins/policy", "api/v1/external-plugins/wiki", "api/v1/external-plugins/wiki/doubled-words", "api/v1/external-plugins/mine", "api/v1/external-plugins/mine/mine")
+      answers (getAt e.list) 200 Sample.externalPlugins
+      answers (sendJson methodPut e.setPolicy ExternalPolicyChange {policy = ExternalWiki}) 200 ExternalPlugins {policy = ExternalWiki, external = Sample.externalPlugins.external}
+      status <$> request methodPut e.setPolicy [(hContentType, "application/json")] "{\"policy\": \"everyone\"}" `shouldReturn` 400
+      let manifest = decodeUtf8 (BSL.toStrict (encode Sample.externalManifest))
+          bundle = ("bundle", "plugin.js", "text/javascript", "self.onmessage = () => {};")
+      answers (multipart e.installForWiki [("manifest", manifest)] [bundle]) 200 Sample.externalPlugin {size = 26}
+      answers (multipart e.installMine [("manifest", manifest), ("replaces", Sample.externalPlugin.bundle)] [bundle]) 200 Sample.externalPlugin {size = 26, mine = True}
+      answers (multipart e.installForWiki [("manifest", manifest), ("replaces", "0")] [bundle]) 409 (Conflict "The plugin was replaced since.")
+      status <$> multipart e.installForWiki [] [bundle] `shouldReturn` 400
+      status <$> request methodDelete (e.removeForWiki (PluginId "doubled-words")) [] "" `shouldReturn` 204
+      status <$> request methodDelete (e.removeMine (PluginId "Mine")) [] "" `shouldReturn` 400
     it "signs in with a passkey, alone or as the second step, in two steps each" $ do
       (links.beginPasskeySignIn, links.beginSecondFactorPasskey) `shouldBe` ("api/v1/session/passkey", "api/v1/session/second-factor/passkey")
       answers (request methodPost links.beginPasskeySignIn [] "") 200 anyPasskey

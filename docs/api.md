@@ -1202,6 +1202,53 @@ them: a plugin's secrets, such as an assistant's API key, belong in the vault
 (above), never in its options. A user's choices go with their account; a
 user's own changes are not in the activity log.
 
+### External plugins
+
+External plugins (`Wiki.Api.Plugins.External`, `Wiki.Server.PluginFrame`;
+decision 69 and WP5.84 of the plan): code someone else wrote, uploaded to the
+wiki and run in a sandboxed frame. The first version runs `diagnostics` only,
+in a worker inside the frame. They are under `external-plugins`, not
+`plugins`, whose addresses belong to the plugins' own server halves; so the
+answer of `GET api/v1/plugins` is as it was, and the application reads this
+list beside it.
+
+A plugin is uploaded as one form: its manifest, JSON, in the text part
+`manifest`; its code, one JavaScript file of at most 2 MiB in UTF-8, in the
+file part `bundle`; and, to replace the owner's plugin of the same id, that
+plugin's bundle's hash in the text part `replaces`. The manifest is at most
+16 kB and has these fields and no others: `manifest` (1), `id` (a plugin's
+id, not `assistant` or `errors`), `name` (1 to 80 characters), `version`
+(three numbers, `1.0.0`), `description` (at most 300 characters; may be
+left out), `api` (1, the protocol's version), `contributes`
+(`{"diagnostics": {}}`; an `agent` is refused, not supported yet),
+`permissions` (`["document.read"]`, which `diagnostics` needs) and `hosts`
+(at most 10 origins its code may connect to, `https://host` or
+`http://host:port`; may be left out). The server keeps the bundle in its blob
+store, named by its SHA-256.
+
+| Method | Path | Body | Response | Errors | |
+| ------ | ---- | ---- | -------- | ------ | - |
+| GET | `api/v1/external-plugins` | | `ExternalPlugins` `{"policy", "external"}`: who may add plugins, `"off"`, `"wiki"` (the administrator, for everyone) or `"users"` (each user for themself too), and the plugins the asker may run, each `ExternalPlugin` `{"manifest", "bundle", "size", "mine", "installedAt"}`: the wiki's while the policy is not `"off"` (and always to an administrator), then the asker's own while it is `"users"`; someone not signed in gets the policy and `[]` | 401 (a closed wiki, to someone not signed in) | (`list`) |
+| PUT | `api/v1/external-plugins/policy` | `ExternalPolicyChange` `{"policy"}` | `ExternalPlugins` as it then is; the activity log records `settings.external-plugins` | 403, 400 | (`setPolicy`) |
+| POST | `api/v1/external-plugins/wiki` | the form above | `ExternalPlugin`: installed for everyone, or replaced; the activity log records `plugin.install` or `plugin.replace`, with the version, the bundle's hash and the hosts | 403, 400 (the manifest or the bundle, with the rule), 409 (the id installed and no `replaces`, or another; a `replaces` with nothing to replace; a 51st plugin) | (`installForWiki`) |
+| DELETE | `api/v1/external-plugins/wiki/<id>` | | 204; the activity log records `plugin.remove` | 403, 404 | (`removeForWiki`) |
+| POST | `api/v1/external-plugins/mine` | the form above | `ExternalPlugin` with `"mine": true` | 401, 403 (the policy is not `"users"`, or the operator), 400, 409 (as above; an id of one of the wiki's; a 21st plugin) | (`installMine`) |
+| DELETE | `api/v1/external-plugins/mine/<id>` | | 204, whatever the policy | 401, 403, 404 | (`removeMine`) |
+
+A plugin runs in a frame the editor loads from
+`plugin-frame/<wiki|mine>/<id>/<bundle>/diagnostics`, outside the API: an
+HTML document of two inline scripts (the plugin's code as a JSON string, and
+the wiki's runtime, which starts it as a worker), under a
+`Content-Security-Policy` that starts with `sandbox allow-scripts`, allows the
+two scripts by their hashes, and connects to the manifest's hosts alone. It
+is served to a signed-in user who may run the plugin now (the policy, the
+owner, the current bundle, the plugin not off for the wiki, and a user's own
+not shadowed by one of the wiki's of the same id), and is 404 to anyone
+else, and to a request whose `Sec-Fetch-Dest` is not `iframe` or whose
+`Sec-Fetch-Site` is not `same-origin`. A bundle whose file no longer matches
+its hash is 409, and nothing runs. Plugins are kept when the policy narrows;
+a user's own go with their account, and are not in the activity log.
+
 ### Encrypted spaces
 
 The pages of an encrypted space (WP5.74b2 and b3, `Wiki.Core.Encrypted`)

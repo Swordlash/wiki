@@ -496,6 +496,7 @@ test-suite wiki-app-browser-test
       Test.Browser.Permissions
       Test.Browser.Persist
       Test.Browser.Personal
+      Test.Browser.AssistantMove
       Test.Browser.PluginSecrets
       Test.Browser.Avatars
       Test.Browser.Policy

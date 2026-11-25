@@ -34,6 +34,7 @@ import Test.Browser.Permissions qualified as Permissions
 import Test.Browser.Persist qualified as Persist
 import Test.Browser.Avatars qualified as Avatars
 import Test.Browser.Personal qualified as Personal
+import Test.Browser.AssistantMove qualified as AssistantMove
 import Test.Browser.PluginSecrets qualified as PluginSecrets
 import Test.Browser.Policy qualified as Policy
 import Test.Browser.Problems qualified as Problems
@@ -138,6 +139,7 @@ spec = do
   describe "The assistant's keys across devices, and the user's keys" (Vault.spec BrowserDOM)
   describe "HPKE, as encrypted spaces will seal keys" Hpke.spec
   describe "A plugin's secrets in the vault" (PluginSecrets.spec BrowserDOM)
+  describe "The move of the assistant's legacy settings" (AssistantMove.spec BrowserDOM)
   describe "Encrypted spaces" (Encrypted.spec BrowserDOM)
   describe "What's new" (WhatsNew.spec BrowserDOM)
 #endif

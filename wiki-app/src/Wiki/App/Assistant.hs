@@ -175,6 +175,7 @@ $( browserJS
      , ("js_tab_lock_request", "wiki_tab_lock_request", Safe, [t|JSText -> IO Int|])
      , ("js_tab_lock_grantedPromise", "wiki_tab_lock_granted", Safe, [t|Int -> IO (Promise ())|])
      , ("js_tab_lock_release", "wiki_tab_lock_release", Safe, [t|Int -> IO ()|])
+     , ("js_drop_record_ifPromise", "wiki_vault_drop_record_if", Safe, [t|JSText -> JSText -> IO (Promise Bool)|])
      ]
  )
 
@@ -230,6 +231,9 @@ js_slots = if inBrowser then wait =<< js_slotsPromise else pure inert
 
 js_generation :: IO Int
 js_generation = if inBrowser then wait =<< js_generationPromise else pure inert
+
+js_drop_record_if :: JSText -> JSText -> IO Bool
+js_drop_record_if a1 a2 = if inBrowser then wait =<< js_drop_record_ifPromise a1 a2 else pure inert
 
 js_tab_lock_granted :: Int -> IO ()
 js_tab_lock_granted a1 = if inBrowser then wait =<< js_tab_lock_grantedPromise a1 else pure inert
@@ -457,6 +461,14 @@ class (Monad m) => MonadAssistant m where
   keepDeviceRecord :: UserId -> Maybe ByteString -> m (Either Text ())
   default keepDeviceRecord :: (MonadTrans t, MonadAssistant n, m ~ t n) => UserId -> Maybe ByteString -> m (Either Text ())
   keepDeviceRecord user = lift . keepDeviceRecord user
+
+  -- | Delete what this device keeps for a user only if it is still these
+  -- bytes: decided and done in one transaction of the store, so that a tab
+  -- of an earlier version that writes the record in between keeps its
+  -- write. Whether it was deleted.
+  dropDeviceRecordIf :: UserId -> ByteString -> m (Either Text Bool)
+  default dropDeviceRecordIf :: (MonadTrans t, MonadAssistant n, m ~ t n) => UserId -> ByteString -> m (Either Text Bool)
+  dropDeviceRecordIf user = lift . dropDeviceRecordIf user
 
   -- | A new vault key (AES-GCM), which can be exported only if asked: to
   -- be wrapped for a passkey.
@@ -742,6 +754,7 @@ instance MonadAssistant BrowserDOM where
   assistantHere = pure inBrowser
   deviceRecord = recordIn
   keepDeviceRecord = keepRecordIn
+  dropDeviceRecordIf user bytes = liftIO (Right <$> (evaluate =<< js_drop_record_if (toJSText user.text) (toJSText (decodeUtf8 bytes))))
   newVaultKeyBy (KeyOwner owner) exportable = liftIO (KeyRef <$> (evaluate =<< js_new_key exportable owner))
   sealWith (KeyRef k) text info = liftIO $ do
     answer <- evaluate . fromJSText =<< js_seal k (toJSText text) (toJSText info)
@@ -840,6 +853,14 @@ instance MonadAssistant MemDOM where
   assistantHere = pure False
   deviceRecord = recordIn
   keepDeviceRecord = keepRecordIn
+
+  -- The in-memory document runs one program at a time: nothing writes
+  -- between the read and the delete.
+  dropDeviceRecordIf user bytes =
+    recordIn user >>= \case
+      Right (Just now) | now == bytes -> fmap (const True) <$> keepRecordIn user Nothing
+      Right _ -> pure (Right False)
+      Left why -> pure (Left why)
   newVaultKeyBy _ _ = pure (KeyRef 0)
   sealWith _ _ _ = pure (Left noBrowser)
   openWith _ _ _ = pure (Left noBrowser)

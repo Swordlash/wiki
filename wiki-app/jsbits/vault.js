@@ -822,3 +822,48 @@ function wiki_passkey_abort() {
   wikiPasskeySignIn?.abort();
   wikiPasskeySignIn = null;
 }
+
+// Delete a user's record of the assistant's database (Wiki.App.Assistant's
+// assistantDatabase: "wiki-assistant", store "settings") only if it still
+// holds these bytes (the record's JSON, as text), deciding and deleting in
+// one transaction: a tab of an earlier version that writes the record in
+// between keeps its write, which the move of the record reads next.
+// Whether the record was deleted; false where it could not be read.
+async function wiki_vault_drop_record_if(user, expected) {
+  const want = new TextEncoder().encode(String(expected));
+  let db;
+  try {
+    db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("wiki-assistant", 1);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains("settings")) request.result.createObjectStore("settings");
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } catch {
+    return false;
+  }
+  try {
+    return await new Promise((resolve) => {
+      const transaction = db.transaction("settings", "readwrite");
+      const store = transaction.objectStore("settings");
+      let dropped = false;
+      const read = store.get(String(user));
+      read.onsuccess = () => {
+        const kept = read.result;
+        if (kept == null) return;
+        const have = ArrayBuffer.isView(kept) ? new Uint8Array(kept.buffer, kept.byteOffset, kept.byteLength) : new Uint8Array(kept);
+        if (have.length === want.length && have.every((b, i) => b === want[i])) {
+          store.delete(String(user));
+          dropped = true;
+        }
+      };
+      transaction.oncomplete = () => resolve(dropped);
+      transaction.onerror = () => resolve(false);
+      transaction.onabort = () => resolve(false);
+    });
+  } finally {
+    db.close();
+  }
+}

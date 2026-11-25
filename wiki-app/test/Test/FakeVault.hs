@@ -167,6 +167,7 @@ deviceRecords d = readIORef d.records
 instance (MonadAssistant m, MonadIO m) => MonadAssistant (Fake m) where
   deviceRecord slot = device >>= \d -> liftIO (Right . Map.lookup slot.text <$> readIORef d.records)
   keepDeviceRecord slot record = device >>= \d -> liftIO (writing d >> modifyIORef' d.records (Map.alter (const record) slot.text)) $> Right ()
+  dropDeviceRecordIf slot bytes = device >>= \d -> liftIO (writing d >> atomicModifyIORef' d.records (\rs -> if Map.lookup slot.text rs == Just bytes then (Map.delete slot.text rs, Right True) else (rs, Right False)))
   newVaultKeyBy _ _ = handleOf <$> fresh
   sealWith k text ad = pure (Right (fakeSeal (heldHandle k) ad text))
   openWith k sealed ad = pure (fakeOpen (heldHandle k) ad sealed)

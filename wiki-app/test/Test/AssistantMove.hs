@@ -282,6 +282,22 @@ together = describe "with other browsers and tabs" $ do
     (\l -> l.record) <$> leftOn a `shouldReturn` False
     (\l -> l.record) <$> leftOn b `shouldReturn` False
 
+  it "keeps a record an earlier tab writes between the move's read and its delete, and moves it next" $ do
+    w <- newWorld
+    d <- newDevice w.counter True
+    withVaultKey d alice w.vaultKey
+    own <- newKey w
+    putKey d alice own
+    putRecord d alice (ownRecord own ownHere)
+    let later = withKey OpenAI (Just "sk-open-later") ownHere
+    -- The first write on the browser is the cache's; the second, the
+    -- record's delete, finds the record the earlier tab wrote just before.
+    beforeNextWrite d pass
+    beforeNextWrite d (putRecord d alice (ownRecord own later))
+    on w d (migrateAssistant alice (Just (Just (optionsValue ownHere)))) `shouldReturn` Right Moved
+    pluginKeys w `shouldReturn` keysOf later
+    (\l -> l.record) <$> leftOn d `shouldReturn` False
+
   it "moves again the vault's item an earlier tab adds back, the plugin's keys winning, and the names it lacks taken" $ do
     w <- newWorld
     withLegacyItem w synced

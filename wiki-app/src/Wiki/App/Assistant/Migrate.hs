@@ -24,7 +24,8 @@
 -- says it is still needed. A run stopped anywhere leaves a state the next
 -- run reads and goes on from. A delete deletes only what was read: the
 -- vault's item over the version fetched, if it is still the one read, and
--- this browser's record if it is still the bytes read. Another browser
+-- this browser's record if it is still the bytes read, checked and
+-- deleted in one transaction of the browser's store. Another browser
 -- that moves the same vault item meanwhile, or a tab of an earlier version
 -- of the wiki that writes the legacy item or record again, is read by the
 -- next step.
@@ -32,9 +33,12 @@
 -- The whole run holds the lock of this device's records (within the
 -- page) and a lock that the wiki's tabs in this browser share, so that two
 -- tabs of this version run one after the other. A tab of an earlier
--- version takes neither: between this run's read of the legacy record and
--- its delete, such a tab can write it again, and what it wrote then is
--- lost. That window is one IndexedDB read long.
+-- version takes neither, and the conditional deletes are what keep its
+-- writes. One window is left: an earlier tab that writes a new record
+-- sealed with the assistant's key after the record is deleted and before
+-- that key is let go ('Wiki.Core.Assistant.Migrate.DropSlotKey', which
+-- reads first that no record is there) leaves a record this browser can
+-- no longer open, and it is left where it is.
 module Wiki.App.Assistant.Migrate
   ( Outcome (..)
   , migrateAssistant
@@ -182,8 +186,7 @@ perform u = \case
               Left (Conflict _) -> pass
               Left e -> throwError ("Your vault could not be changed: " <> wikiText e)
       _ -> pass
-  Plan.DropRecord bytes ->
-    ExceptT (deviceRecord u) >>= \case
-      Just now | now == bytes -> ExceptT (keepDeviceRecord u Nothing)
-      _ -> pass
+  -- Deleted only if still the bytes read, in one transaction: a record
+  -- an earlier tab writes meanwhile stays, and the next step reads it.
+  Plan.DropRecord bytes -> void (ExceptT (dropDeviceRecordIf u bytes))
   Plan.DropSlotKey -> unlessM (lift (legacyRecordHere u)) (lift (dropDeviceKey u))

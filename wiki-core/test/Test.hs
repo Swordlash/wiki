@@ -3,6 +3,8 @@ module Main (main) where
 import Protolude
 import Test.Anchor qualified as Anchor
 import Test.Assistant qualified as Assistant
+import Test.AssistantMigrate qualified as AssistantMigrate
+import Test.AssistantSplit qualified as AssistantSplit
 import Test.Attachment qualified as Attachment
 import Test.Blog qualified as Blog
 import Test.Cases (wasmCases)
@@ -100,6 +102,8 @@ main = hspec . parallel . wasmCases $ do
   Template.spec
   Title.spec
   Assistant.spec
+  AssistantSplit.spec
+  AssistantMigrate.spec
   Export.spec
   User.spec
   Vault.spec

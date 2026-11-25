@@ -63,8 +63,10 @@ library
       Wiki.Core.Anchor
       Wiki.Core.Assistant
       Wiki.Core.Assistant.Edit
+      Wiki.Core.Assistant.Migrate
       Wiki.Core.Assistant.Prompt
       Wiki.Core.Assistant.Reference
+      Wiki.Core.Assistant.Split
       Wiki.Core.Assistant.Vault
       Wiki.Core.Attachment
       Wiki.Core.Audit
@@ -166,6 +168,8 @@ test-suite wiki-core-test
   other-modules:
       Test.Anchor
       Test.Assistant
+      Test.AssistantMigrate
+      Test.AssistantSplit
       Test.Attachment
       Test.Blog
       Test.Cases

@@ -91,6 +91,7 @@ library
       Wiki.App.Backend.Mem.Persist
       Wiki.App.Backend.Mem.State
       Wiki.App.Backend.Notifications
+      Wiki.App.Backend.Plugins
       Wiki.App.Backend.Stars
       Wiki.App.Backend.WhatsNew
       Wiki.App.Browser
@@ -131,6 +132,9 @@ library
       Wiki.App.View.Access
       Wiki.App.View.ApiKeys
       Wiki.App.View.ApiKeys.Machine
+      Wiki.App.View.Plugins
+      Wiki.App.View.Plugins.Machine
+      Wiki.App.View.WikiPlugins
       Wiki.App.View.Activity
       Wiki.App.View.Backups
       Wiki.App.View.Invite
@@ -379,6 +383,8 @@ test-suite wiki-app-test
         Test.Passwords
         Test.PluginImports
         Test.Plugins
+        Test.PluginsDom
+        Test.PluginsSettings
         Test.Policy
         Test.Preview
         Test.Problems

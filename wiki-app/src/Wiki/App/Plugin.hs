@@ -69,6 +69,7 @@ import Halogen.HTML.Properties qualified as HP
 import Halogen.Router (Follow, Router)
 import Halogen.Router qualified as Router
 import Protolude
+import Wiki.Api.Plugins (PluginId (..))
 import Wiki.App.Editor.Browser (clearField, focusElement)
 import Wiki.App.Plugin.Capability.Assistant (AssistantCapabilities)
 import Wiki.App.Route (Route)
@@ -79,25 +80,27 @@ import Wiki.Core.Id (UserId)
 import Wiki.Core.Markdown.Problems (IslandPlace, Problem)
 import Wiki.Core.Markdown.Render (IslandKey)
 
--- | 'PluginId' is a plugin's name for the program: short, in lower case,
--- and the same in every version of the plugin. Which plugins are on is a
--- set of these.
-newtype PluginId = PluginId Text
-  deriving stock (Eq, Ord, Show)
+-- 'PluginId' is a plugin's name for the program, the server's type
+-- ("Wiki.Api.Plugins"): short, in lower case, and the same in every
+-- version of the plugin. Which plugins are on is a set of these.
 
 -- | 'Manifest' is what the wiki knows of a plugin before it runs any of
--- it: its id, and its name and description as the settings list them.
+-- it: its id, its name and description as the settings list them, and
+-- whether it is on for a user who made no choice ('onByDefault'). The
+-- server keeps only the users' choices and the administrator's set, so
+-- the default is the manifest's.
 data Manifest = Manifest
   { id :: PluginId
   , name :: Text
   , description :: Text
+  , onByDefault :: Bool
   }
   deriving stock (Eq, Show)
 
 -- | The manifest of a plugin built into the wiki: its id, its name and its
--- description.
+-- description. A built-in plugin is on by default.
 builtin :: Text -> Text -> Text -> Manifest
-builtin pluginId name description = Manifest {id = PluginId pluginId, name, description}
+builtin pluginId name description = Manifest {id = PluginId pluginId, name, description, onByDefault = True}
 
 -- | 'Plugin' is a plugin, in the monad the application's components run
 -- in: its manifest, and each contribution it makes, or 'Nothing' for one

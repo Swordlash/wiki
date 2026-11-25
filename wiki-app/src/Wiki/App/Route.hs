@@ -344,6 +344,9 @@ data SettingsSection
   | -- | The user's API keys ("Wiki.App.View.ApiKeys"): what a program signs
     -- in to the wiki's API with, as the user.
     ApiKeysSection
+  | -- | The plugins built into the wiki ("Wiki.App.View.Plugins"): each
+    -- one turned on or off for the user, or left to its default.
+    PluginsSection
   | -- | The notifications mailed, and the feed of them.
     NotificationsSection
   | -- | The writing assistant's settings (WP4.19 of docs/PLAN.md): the
@@ -363,6 +366,7 @@ settingsName = \case
   ProfileSection -> "profile"
   SecuritySection -> "security"
   ApiKeysSection -> "api-keys"
+  PluginsSection -> "plugins"
   NotificationsSection -> "notifications"
   AssistantSection -> "assistant"
 
@@ -373,6 +377,7 @@ settingsTitle = \case
   ProfileSection -> "Profile"
   SecuritySection -> "Security"
   ApiKeysSection -> "API keys"
+  PluginsSection -> "Plugins"
   NotificationsSection -> "Notifications"
   AssistantSection -> "Writing assistant"
 

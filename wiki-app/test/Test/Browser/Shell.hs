@@ -15,9 +15,9 @@ import Data.Time (addUTCTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
 import Halogen.JSBits.Promise (Promise (..), wait)
-import Halogen.Router.Duplex (encodeComponent)
+import Halogen.Router.Duplex (encodeComponent, print)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
-import Protolude hiding (find, wait)
+import Protolude hiding (find, print, wait)
 import Test.Browser.Mount (clickButton, showSection, slugs, start, startChanged, startOn, startWith)
 import Test.Browser.Text (editorText, markdown)
 import Test.Hspec.Halogen
@@ -27,7 +27,7 @@ import Wiki.App.Backend.Mem (MemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
-import Wiki.App.Route (Route (..), SettingsSection (..))
+import Wiki.App.Route (Route (..), SettingsSection (..), route)
 import Wiki.App.Route qualified as R
 import Wiki.Core.Id (PageId (..))
 import Wiki.Core.Page (Page (body, id, space, title, updatedAt))
@@ -73,7 +73,7 @@ spec m = do
     find ui ".user-menu .settings-entry" >>= click
     find ui ".settings-view h1" >>= (`shouldHaveText` "Profile")
     length <$> findAll ui ".user-menu" `shouldReturn` 0
-    (findAll ui ".settings-nav-link" >>= traverse textContent) `shouldReturn` ["Profile", "Security", "API keys", "Notifications", "Writing assistant"]
+    (findAll ui ".settings-nav-link" >>= traverse textContent) `shouldReturn` ["Profile", "Security", "API keys", "Plugins", "Notifications", "Writing assistant"]
     _ <- find ui ".settings-page-profile .account-personal .personal-space-enable"
     showSection ui SecuritySection
     find ui ".settings-view h1" >>= (`shouldHaveText` "Security")
@@ -100,6 +100,44 @@ spec m = do
     find ui ".settings-page-assistant .assistant-settings h1" >>= (`shouldHaveText` "Writing assistant")
     find ui ".settings-nav-link[aria-current=page]" >>= (`shouldHaveText` "Writing assistant")
     location `shouldReturn` "#/settings/assistant/"
+    unmount ui
+
+  -- The settings' section "Plugins" (WP5.84): the writing assistant
+  -- turned off there leaves the editor without its button; turned on
+  -- again, the button is back, without a reload. The reads look once,
+  -- with the program quiet.
+  readsOnce Quiet $ it "turns the writing assistant off in the settings, which takes its button from the editor, and on again" $ runPage $ do
+    ui <- start m (Just "user-editor") (UserSettings PluginsSection)
+    let toggle = ".plugin[data-plugin=assistant] .plugin-toggle"
+        editorAt = toJSText ("#" <> print route (EditPage (slugs ["blog"]) (slugs ["hello-world"])))
+        settingsAt = toJSText ("#" <> print route (UserSettings PluginsSection))
+        assistantAt = toJSText ("#" <> print route (UserSettings AssistantSection))
+    find ui toggle >>= click
+    find ui ".plugin[data-plugin=assistant] .plugin-state" >>= (`shouldHaveText` "Off")
+    unsafeIOToPageM (js_go_to_fragment_heard editorAt)
+    _ <- editorText ui
+    _ <- find ui "nav.editor-providers"
+    length <$> findAll ui "nav.editor-providers .editor-provider" `shouldReturn` 0
+    -- Its settings are still there, with a line that says it is off.
+    unsafeIOToPageM (js_go_to_fragment_heard assistantAt)
+    find ui ".settings-page-assistant .assistant-settings h1" >>= (`shouldHaveText` "Writing assistant")
+    find ui ".settings-plugin-off" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "The assistant is off")
+    unsafeIOToPageM (js_go_to_fragment_heard settingsAt)
+    find ui toggle >>= click
+    find ui ".plugin[data-plugin=assistant] .plugin-state" >>= (`shouldHaveText` "On")
+    unsafeIOToPageM (js_go_to_fragment_heard editorAt)
+    _ <- editorText ui
+    length <$> findAll ui "nav.editor-providers .editor-provider" `shouldReturn` 1
+    unmount ui
+
+  -- The assistant off for everyone, from the administration: its
+  -- settings are still there, with the line that says it is off.
+  readsOnce Quiet $ it "keeps the assistant's settings when the administrator turns it off for everyone" $ runPage $ do
+    ui <- start m (Just "user-admin") (Admin R.Permissions)
+    find ui ".admin-plugin[data-plugin=assistant] .admin-plugin-off" >>= click
+    unsafeIOToPageM (js_go_to_fragment_heard (toJSText ("#" <> print route (UserSettings AssistantSection))))
+    find ui ".settings-page-assistant .assistant-settings h1" >>= (`shouldHaveText` "Writing assistant")
+    find ui ".settings-plugin-off" >>= textContent >>= (`shouldSatisfy` T.isPrefixOf "The assistant is off")
     unmount ui
 
   it "lists the public spaces on the front page for someone not signed in" $ runPage $ do

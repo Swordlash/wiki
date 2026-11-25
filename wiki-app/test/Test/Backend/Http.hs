@@ -15,6 +15,7 @@ import Data.ByteString.Lazy qualified as BSL
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (lookup)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
 import GHC.Generics (C, D, S)
@@ -43,6 +44,7 @@ import Wiki.Api.Import (ImportChoices (..), ImportPlan (..), ImportSummary (..),
 import Wiki.Api.Links (searchUrl)
 import Wiki.Api.Notifications (Notifications (..), ReadMark (..))
 import Wiki.Api.Opaque (PasswordRecord (..), PasswordRecordChange (..), RegistrationChallenge (..))
+import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..))
 import Wiki.Api.ServerSettings (defaultHomePage)
 import Wiki.Api.Stars (StarredPage)
 import Wiki.Api.Types (SessionInfo (..))
@@ -54,6 +56,7 @@ import Wiki.App.Backend.Admin (MonadAdmin (..))
 import Wiki.App.Backend.Comments (MonadComments (..))
 import Wiki.App.Backend.Http
 import Wiki.App.Backend.Http.Cache (Cache (..), CachedDraft (..), Reading (..), Stored (..), afterEvent, afterWrite, cachedPage, changedBy, contentChangedBy, emptyCache, storedAnswer, storedOf, withBacklinks, withDraft, withPageAt, withPageLocation, withPages, withSearch, withSession, withSpaceAt, withSpaces)
+import Wiki.App.Backend.Http.Cache qualified as Cache
 import Wiki.App.Backend.Http.Client (endpointUrl, fromSessionInfo)
 import Wiki.App.Backend.Http.Preload (decodePreload, encodePreload)
 import Wiki.App.Backend.Mem.State (MemState (..))
@@ -1004,6 +1007,10 @@ preload = describe "what a page it is rendered into carries" $ do
   it "reads back as the cache it was written from" $
     decodePreload (encodePreload cache) `shouldBe` Right cache
 
+  it "carries which plugins are on, read with the session" $ do
+    let known = Plugins {offForWiki = Set.fromList [PluginId "errors"], mine = Map.fromList [(PluginId "assistant", PluginChoice {state = PluginOff, options = Nothing})]}
+        withKnown = emptyCache {Cache.plugins = Just (Right known)}
+    decodePreload (encodePreload withKnown) `shouldBe` Right withKnown
   it "carries the page shown by itself, beside its space's list of summaries" $ do
     let withPage = withPageAt hello.space (slugs "hello-world") (Right hello) cache
     decodePreload (encodePreload withPage) `shouldBe` Right withPage
@@ -1018,7 +1025,7 @@ preload = describe "what a page it is rendered into carries" $ do
 
   it "writes what is not kept as nothing, and nothing as null" $
     encodePreload (withSpaceAt (slugs "away") (Left (Unreachable "offline")) emptyCache)
-      `shouldBe` "{\"activity\":null,\"backlinks\":null,\"backups\":null,\"directory\":null,\"drafts\":[],\"homeDocument\":null,\"invitations\":null,\"invitationsAt\":null,\"notices\":null,\"pageCounts\":null,\"pageLocations\":null,\"pages\":[],\"pagesAt\":[],\"people\":null,\"postDetails\":null,\"searches\":[],\"server\":null,\"session\":null,\"settings\":null,\"spaces\":null,\"spacesAt\":[],\"stars\":null,\"status\":null,\"texEngine\":null,\"threads\":null,\"userPages\":null,\"versionLists\":[],\"versions\":[],\"watches\":null,\"whatsNew\":null}"
+      `shouldBe` "{\"activity\":null,\"backlinks\":null,\"backups\":null,\"directory\":null,\"drafts\":[],\"homeDocument\":null,\"invitations\":null,\"invitationsAt\":null,\"notices\":null,\"pageCounts\":null,\"pageLocations\":null,\"pages\":[],\"pagesAt\":[],\"people\":null,\"plugins\":null,\"postDetails\":null,\"searches\":[],\"server\":null,\"session\":null,\"settings\":null,\"spaces\":null,\"spacesAt\":[],\"stars\":null,\"status\":null,\"texEngine\":null,\"threads\":null,\"userPages\":null,\"versionLists\":[],\"versions\":[],\"watches\":null,\"whatsNew\":null}"
 
   it "says why a payload cannot be read" $
     decodePreload "{\"spaces\": 3}" `shouldSatisfy` isLeft

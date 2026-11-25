@@ -200,6 +200,7 @@ import Wiki.Api.Admin (Directory, Invitations, ServerStatus, TexEngine, UserPage
 import Wiki.Api.Backups (Backups)
 import Wiki.Api.Events (PageEvent (..), applyEvent)
 import Wiki.Api.Notifications (Notifications (..))
+import Wiki.Api.Plugins (Plugins)
 import Wiki.Api.ServerSettings (ServerSettings)
 import Wiki.Api.Stars (StarredPage)
 import Wiki.Api.WhatsNew (WhatsNew)
@@ -303,6 +304,10 @@ data Cache = Cache
   , whatsNew :: Maybe (Either WikiError WhatsNew)
   -- ^ 'Wiki.App.Backend.WhatsNew.whatsNew': the server's version and
   -- changelog entries, which change only when the server is replaced.
+  , plugins :: Maybe (Either WikiError Plugins)
+  -- ^ 'Wiki.App.Backend.Plugins.pluginsNow': the plugins off for the
+  -- wiki and the reader's choices, which the shell reads with the
+  -- session, and which are kept as long as the session is.
   }
   deriving stock (Eq, Show)
 
@@ -414,6 +419,7 @@ emptyCache =
     , watches = mempty
     , stars = Nothing
     , whatsNew = Nothing
+    , plugins = Nothing
     }
 
 -- | Whether a response is cached. A successful one is, and so are the

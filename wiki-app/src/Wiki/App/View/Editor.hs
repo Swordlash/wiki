@@ -2132,13 +2132,24 @@ component =
           f.unwatch page
       -- The work belongs to the editor: a reload of the wiki around it
       -- (after a change elsewhere, or someone signing in) leaves it alone.
-      Receive input -> modify $ \st ->
-        -- The pages' paths and links change only with the pages, the
-        -- space, or the page's own path.
-        let macros = outerMacrosOf st.shippedMacros input
-         in if (input.space, input.pages, input.path) == (st.input.space, st.input.pages, st.input.path)
-              then st {input, outerMacros = macros}
-              else st {input, linkables = linkablesOf input, outerMacros = macros}
+      Receive input -> do
+        before <- gets (\st -> pluginsOn st.input.context)
+        modify $ \st ->
+          -- The pages' paths and links change only with the pages, the
+          -- space, or the page's own path.
+          let macros = outerMacrosOf st.shippedMacros input
+           in if (input.space, input.pages, input.path) == (st.input.space, st.input.pages, st.input.path)
+                then st {input, outerMacros = macros}
+                else st {input, linkables = linkablesOf input, outerMacros = macros}
+        -- The plugins that are on changed (in the settings, here or after
+        -- a read of the session): an agent no longer given leaves with its
+        -- buttons and its frame, and the problems are counted again with
+        -- the diagnostics now given.
+        let now = pluginsOn input.context
+        when (now /= before) $ do
+          when (isNothing (contributed now (plugins @IO)).agent) $
+            modify (\st -> st {agentButtons = [], assistantOpen = False, assistantMounted = False})
+          publishProblems
       -- Cancel, from the preview shown alone, takes the preview's entry of
       -- the history, as Save and close does (see "Wiki.App.Shell").
       Followed f@(Router.Follow route _) -> do

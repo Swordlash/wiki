@@ -146,13 +146,15 @@ inTheVault = describe "in the user's vault" $ do
     setVault w.server (withItem (ItemName "plugin-notes") Item {keyId = Nothing, sealed} v)
     on w d (readSecrets alice notes) `shouldReturn` Right (Map.fromList [(token, "kept")])
 
-  it "answers that the vault is locked where this browser holds no key to it, and writes nothing" $ do
+  it "answers that the vault is locked where this browser holds no key to it, and writes nothing but its copy of what the vault holds" $ do
     (w, _) <- unlocked
     locked <- newDevice w.counter True
     on w locked (readSecrets alice notes) `shouldReturn` Left Locked
     on w locked (putSecret alice notes token "sk-1") >>= (`shouldSatisfy` isLeft)
     (\s -> s.stores) <$> serverState w.server `shouldReturn` 0
-    deviceRecords locked `shouldReturn` mempty
+    -- The copy says the vault holds no item of the plugin's: a surface
+    -- that starts knows the vault is locked here without asking.
+    Map.keys <$> deviceRecords locked `shouldReturn` [(heldSlot alice (ItemName "plugin-notes")).text]
 
   it "does not open the vault of another user with this user's key" $ do
     (w, d) <- unlocked
@@ -174,44 +176,56 @@ inTheVault = describe "in the user's vault" $ do
     on w d (putSecret alice mail token "mine") >>= (`shouldSatisfy` isLeft)
     itemOf (ItemName "plugin-mail") <$> vaultNow w `shouldReturn` Just moved
 
-  it "reads, as a surface starts, the copy this browser holds and asks the server nothing; with no copy, it reads the vault" $ do
+  it "asks the server once whether there is a vault, for the field, where there is none, and then reads what this browser keeps" $ do
+    counter <- newIORef 0
+    server <- newServer Nothing
+    d <- newDevice counter True
+    let w = World {server, counter, vaultKey = 0}
+        fetches = (\s -> s.fetches) <$> serverState server
+    -- As a surface starts: nothing asked, and with no vault key here and
+    -- nothing known of a vault, the vault may be locked.
+    on w d (readSecretsHere alice notes) `shouldReturn` Left Locked
+    fetches `shouldReturn` 0
+    on w d (readSecretsForField alice notes) `shouldReturn` Right mempty
+    first' <- fetches
+    first' `shouldSatisfy` (> 0)
+    -- Known now: there is no vault, and nothing is asked again.
+    on w d (readSecretsForField alice notes) `shouldReturn` Right mempty
+    on w d (readSecretsHere alice notes) `shouldReturn` Right mempty
+    fetches `shouldReturn` first'
+
+  it "reads, as a surface starts, the copy this browser holds and asks the server nothing; the field reads the vault where there is no copy" $ do
     (w, d) <- unlocked
+    let fetches = (\s -> s.fetches) <$> serverState w.server
     on w d (putSecret alice notes token "sk-1") `shouldReturn` Right ()
     -- The change kept the copy: nothing fetched for the read.
-    before <- (\s -> s.fetches) <$> serverState w.server
+    before <- fetches
     on w d (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
-    (\s -> s.fetches) <$> serverState w.server `shouldReturn` before
-    -- Shown able to fail: a browser that holds no copy reads the vault,
-    -- and keeps the copy for the next read.
+    fetches `shouldReturn` before
+    -- Another browser, which holds no copy: as a surface starts it reads
+    -- what it keeps, and asks nothing; the field reads the vault, and
+    -- keeps the copy.
     other' <- newDevice w.counter True
     withVaultKey other' alice w.vaultKey
+    on w other' (readSecretsHere alice notes) `shouldReturn` Right mempty
+    fetches `shouldReturn` before
+    on w other' (readSecretsForField alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
+    afterField <- fetches
+    afterField `shouldSatisfy` (> before)
     on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
-    afterFirst <- (\s -> s.fetches) <$> serverState w.server
-    afterFirst `shouldSatisfy` (> before)
-    on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
-    (\s -> s.fetches) <$> serverState w.server `shouldReturn` afterFirst
+    fetches `shouldReturn` afterField
     -- Locked here, with the copy: locked, and nothing fetched.
     modifyIORef' other'.keys (Map.delete (vaultSlot alice).text)
     on w other' (readSecretsHere alice notes) `shouldReturn` Left Locked
-    (\s -> s.fetches) <$> serverState w.server `shouldReturn` afterFirst
+    on w other' (readSecretsForField alice notes) `shouldReturn` Left Locked
+    fetches `shouldReturn` afterField
     -- A change on the first browser: the second's copy is older, and a
-    -- refresh reads the vault and announces it.
+    -- refresh reads the vault and keeps the newer one.
     on w d (putSecret alice notes token "sk-2") `shouldReturn` Right ()
     withVaultKey other' alice w.vaultKey
     on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
     on w other' (refreshSecrets alice notes)
     on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-2")])
-
-  it "asks the server once whether there is a vault, where there is none, and then reads what this browser keeps" $ do
-    counter <- newIORef 0
-    server <- newServer Nothing
-    d <- newDevice counter True
-    let w = World {server, counter, vaultKey = 0}
-    on w d (readSecretsHere alice notes) `shouldReturn` Right mempty
-    first' <- (\s -> s.fetches) <$> serverState server
-    first' `shouldSatisfy` (> 0)
-    on w d (readSecretsHere alice notes) `shouldReturn` Right mempty
-    (\s -> s.fetches) <$> serverState server `shouldReturn` first'
 
   it "makes a change again when another device stored the vault first, at most three times in all" $ do
     (w, d) <- unlocked

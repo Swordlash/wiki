@@ -49,7 +49,7 @@ import Protolude hiding (State)
 import Wiki.App.Assistant (KeyOwner, MonadAssistant (..), closeKeyOwner, openKeyOwner)
 import Wiki.App.Assistant.Sync (MonadVault, owned)
 import Wiki.App.Plugin (FieldInput (..), FieldOutput (..), LinkClick, Manifest (..), OptionsLink, SecretName (..), SecretSpec (..), Unavailable (..), followOptionsLink, optionsLinkProps)
-import Wiki.App.Plugin.Host.Secrets (putSecret, readSecretsHere, removeSecret)
+import Wiki.App.Plugin.Host.Secrets (putSecret, readSecretsForField, removeSecret)
 import Wiki.App.Vault (unlockWithPasskey, unlockWithPassword)
 import Wiki.App.View.SecretField.Machine (Answer (..), Effect (..), Event (..), Job (..), Model (..), Shown (..), Told (..), busy, initialBound, needsOwner, step)
 import Wiki.Core.Id (UserId)
@@ -200,7 +200,7 @@ component user manifest security =
         work u name = \case
           -- As this browser holds it: a page the server rendered asks
           -- nothing as it starts ("Wiki.App.Plugin.Host.Secrets").
-          Read -> ReadAs . shownOf name <$> readSecretsHere u manifest
+          Read -> ReadAs . shownOf name <$> readSecretsForField u manifest
           Put value -> Done <$> putSecret u manifest name value
           Remove -> Done <$> removeSecret u manifest name
           UnlockByPasskey -> Done . void <$> unlockWithPasskey u

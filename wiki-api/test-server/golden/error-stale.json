@@ -1,0 +1,5 @@
+{
+  "error": "Stale",
+  "message": "A draft kept on the server is not possible in an encrypted space: its pages are encrypted in its members' browsers, and the server cannot read them.",
+  "state": "space-encrypted"
+}

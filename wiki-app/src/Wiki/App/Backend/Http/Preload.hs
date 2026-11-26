@@ -75,7 +75,7 @@ preloadId = "wiki-preload"
 -- were added later. The starred pages are @stars@, the server's
 -- changelog @whatsNew@, and which plugins are on @plugins@, each an answer
 -- or @null@; the external plugins the reader may run are
--- @externalPlugins@, an answer, there only when an editor read them. The administration's reads are an object with their
+-- @externalPlugins@, an answer, there when the first load read them. The administration's reads are an object with their
 -- response or @error@, or @null@. @people@ is by login, or @null@ when
 -- empty. A preload written before a field existed reads as without it.
 preloadJSON :: Cache -> Value

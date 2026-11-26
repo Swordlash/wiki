@@ -12,6 +12,7 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck (Gen, chooseInt, counterexample, forAll, frequency, listOf, property, (.&&.), (===))
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..))
+import Wiki.Api.Plugins.External (noExternalPlugins)
 import Wiki.App.Assistant.Migrate (Outcome (..))
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Plugin (SecretName (..), Unavailable (..))
@@ -294,6 +295,8 @@ plugEvent e sh =
   where
     carry = \case
       P.Load t -> \x -> x {pending = x.pending <> [Pending "load" (\y -> plugEvent (P.Loaded t (Right (pluginsOf y))) y)]}
+      -- The second request of a read: no external plugins.
+      P.LoadInstalled t -> \x -> x {pending = x.pending <> [Pending "load installed" (plugEvent (P.LoadedInstalled t (Right noExternalPlugins)))]}
       P.WriteOptionsIfNone t q v -> \x -> x {pending = x.pending <> [Pending "adopt" (\y -> if isJust y.server then plugEvent (P.AdoptWritten t q (Left (Conflict "there"))) y else plugEvent (P.AdoptWritten t q (Right (choice (Just v)))) y {server = Just v})]}
       P.WriteOptions t q o -> \x -> x {pending = x.pending <> [Pending "write" (\y -> plugEvent (P.OptionsWritten t q (Right (choice o))) y {server = o})]}
       _ -> identity
@@ -338,8 +341,13 @@ adopting = describe "the plugins' state adopting the options a move found" $ do
         (m2, e2) = P.step P.Refresh m1
         ticket = fromMaybe (panic "no read") (head [a | P.Load a <- e2])
     writes e1 `shouldBe` []
-    writes (snd (P.step (P.Loaded ticket (Right none)) m2)) `shouldBe` [Just found]
-    writes (snd (P.step (P.Loaded ticket (Right withOptions)) m2)) `shouldBe` []
+    -- The read's second request goes first; the adopted options' write
+    -- after its answer, decided by the first.
+    let afterRead read' = case P.step (P.Loaded ticket (Right read')) m2 of
+          (m3, [P.LoadInstalled next]) -> writes (snd (P.step (P.LoadedInstalled next (Right noExternalPlugins)) m3))
+          (_, other) -> panic ("not the read's second request: " <> show other)
+    afterRead none `shouldBe` [Just found]
+    afterRead withOptions `shouldBe` []
 
   it "asks the server to write them only where it holds none, and takes its refusal as no failure, reading what it holds" $ do
     let (m1, e1) = P.step (P.OptionsAdopted 0 assistant found) (P.initialWith (Just none) 0)

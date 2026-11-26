@@ -310,10 +310,10 @@ data Cache = Cache
   -- wiki and the reader's choices, which the shell reads with the
   -- session, and which are kept as long as the session is.
   , externalPlugins :: Maybe (Either WikiError ExternalPlugins)
-  -- ^ 'Wiki.App.Backend.externalPluginsNow': the external plugins the
-  -- reader may run, which the editor reads as it opens, kept as
-  -- 'plugins' is, so that an editor the server prerendered asks nothing
-  -- as it is adopted.
+  -- ^ 'Wiki.App.Backend.Plugins.externalPluginsNow': the external plugins
+  -- the reader may run, which the shell reads with 'plugins' and keeps as
+  -- 'plugins' is kept, so that a page the server prerendered asks for
+  -- neither as it is adopted.
   }
   deriving stock (Eq, Show)
 

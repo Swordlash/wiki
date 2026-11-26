@@ -136,6 +136,39 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     "- 🎉 a‸b 🎉" `becomes` "- 🎉 a\n- ‸b 🎉"
     "- a\tb‸c" `becomes` "- a\tb\n- ‸c"
 
+  -- #301: Enter in the middle of a later line of an item's first
+  -- paragraph, indented or lazy, splits the item there too. The lines
+  -- above the cursor's stay in the item; the rest of the cursor's line and
+  -- every line of the item below it go with the new item.
+  describe "an item split on a later line of its first paragraph" $ do
+    "- a\n  b‸c" `becomes` "- a\n  b\n- ‸c"
+    "- a\n  b‸ c" `becomes` "- a\n  b\n- ‸c"
+    "- a\n  b ‸c" `becomes` "- a\n  b \n- ‸c"
+    "- a\n  b\n  c‸d" `becomes` "- a\n  b\n  c\n- ‸d"
+    "- a\n    b‸c" `becomes` "- a\n    b\n- ‸c"
+    "- a\nb‸c" `becomes` "- a\nb\n- ‸c"
+    "* a\n  b‸c" `becomes` "* a\n  b\n* ‸c"
+    "1) a\n   b‸c" `becomes` "1) a\n   b\n2) ‸c"
+    "- [x] a\n  b‸c" `becomes` "- [x] a\n  b\n- [ ] ‸c"
+    "- [ ] a\nb‸c" `becomes` "- [ ] a\nb\n- [ ] ‸c"
+    "- a\n  - b\n    c‸d" `becomes` "- a\n  - b\n    c\n  - ‸d"
+    "- a\n  - b\nc‸d" `becomes` "- a\n  - b\nc\n  - ‸d"
+    "> - a\n>   b‸c" `becomes` "> - a\n>   b\n> - ‸c"
+    "> - a\n> b‸c" `becomes` "> - a\n> b\n> - ‸c"
+    "> [!NOTE]\n> - a\n>   b‸c" `becomes` "> [!NOTE]\n> - a\n>   b\n> - ‸c"
+    "- a\n  b‸c\n  more" `becomes` "- a\n  b\n- ‸c\n  more"
+    "- a\n  b‸c\n  - child" `becomes` "- a\n  b\n- ‸c\n  - child"
+    "- a\n  b‸c\n\n  second" `becomes` "- a\n  b\n- ‸c\n\n  second"
+    "- a\n  b‸c\n- d" `becomes` "- a\n  b\n- ‸c\n- d"
+    "- [a](u)\n  b‸c" `becomes` "- [a](u)\n  b\n- ‸c"
+    -- An item whose text starts on the line after its mark.
+    "-\n  a‸b" `becomes` "-\n  a\n- ‸b"
+    -- Nothing below the cursor's line is in the item, so a wider number
+    -- moves nothing.
+    "9. a\n   b‸c" `becomes` "9. a\n   b\n10. ‸c"
+    "1. a\n   b‸c\n2. d\n3. e" `becomes` "1. a\n   b\n2. ‸c\n3. d\n4. e"
+    "8. a\n   b‸c\n9. d" `becomes` "8. a\n   b\n9. ‸c\n10. d"
+
   -- With the cursor elsewhere on a line than the contract says, Enter is
   -- a line break and nothing more: no edit at all.
   describe "a plain line break in the middle of a line" $ do
@@ -145,9 +178,27 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
           , ("at the start of a task's text", "- [ ] ‸one")
           , ("in a task's box", "- [‸ ] one")
           , ("before blanks alone", "- a‸  ")
-          , ("on an item's later line", "- a\n  b‸c")
           , ("in an item's second paragraph", "- a\n\n  b‸c")
-          , ("on a lazy line", "- a\nb‸c")
+          , ("on a later line of an item's second paragraph", "- a\n\n  b\n  c‸d")
+          , ("at the start of a later line's text", "- a\n  ‸bc")
+          , ("at the start of a lazy line", "- a\n‸bc")
+          , ("among a later line's indentation", "- a\n ‸ bc")
+          , ("at the end of a later line with more of the item below", "- a\n  b‸\n  c")
+          , ("on a later line of a quotation", "> a\n> b‸c")
+          , ("on a later line of a box", "> [!NOTE]\n> a\n> b‸c")
+          , ("on a later line in a footnote's list", "[^a]: text\n\n    - a\n      b‸c")
+          , ("on a later line of a table in an item", "- | a | b |\n  | - | - |\n  | c‸d | e |")
+          , ("on a later line of a fence in an item", "- a\n\n  ```\n  b‸c\n  ```")
+          , ("with a tab after a later line's indentation", "- a\n  \tb‸c")
+          , ("with a later line indented by a tab", "- a\n\tb‸c")
+          , ("in brackets opened on an earlier line", "- [la\n  be‸l]")
+          , ("in a link's text over two lines", "- [li\n  n‸k](u)")
+          , ("in inline code over two lines", "- `a\n  b‸c`")
+          , ("in emphasis over two lines", "- *a\n  b‸c*")
+          , ("between a tag of HTML on an earlier line and its end", "- <span class=\"x\">a\n  b‸c</span>")
+          , ("where the first half would end in a heading's underline", "- a\n  -‸b")
+          , ("where the first half would end in a heading's other underline", "- a\n  =‸b")
+          , ("on a later line of an item longer than the limit", "- a\n  b‸c" <> T.replicate textLimit "c")
           , ("in a paragraph", "text‸more")
           , ("in a quotation", "> a‸b")
           , ("in a box", "> [!NOTE]\n> a‸b")
@@ -185,6 +236,9 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
           , -- The item's second paragraph, indented to "9. "'s text, would
             -- not be in "10. "'s.
             ("where the new number's width takes a paragraph out", "9. a‸b\n\n   para")
+          , -- The line below, indented to "9. "'s text, would be a lazy
+            -- line of "10. "'s paragraph.
+            ("where the new number's width makes the line below lazy", "9. a\n   b‸c\n   d")
           ]
     for_ plainCases $ \(name, marked') -> it name $ do
       let (before, rest) = T.breakOn "‸" marked'
@@ -280,6 +334,18 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     kept "HTML that reads on over a heading and a list" "- a\n<a>\n# Heading\n- ‸" NewLine
     kept "an end marker after a start marker in a paragraph" "plain\n[[!notes]]\n\n- a\n[[/notes]]‸" NewLine
     kept "an item after a footnote's definition" "[^1]: text\n\n    more\n\n- a‸" (NewLineWith "- ")
+    -- A property's seed 634744112 at 4,000 cases, shrunk by hand: the
+    -- line of attributes in the item above gives them to the cursor's
+    -- item, and the parser puts them on its fence, which a split moves
+    -- into the new item. The page refuses the split; a text cut at the
+    -- cursor's item, which took the attributes, would not see why.
+    kept "an item's later line, under an item holding a line of attributes" "+ {#a .b}\n+ a\n  b‸c\n  ```\n  code\n  ```" NewLine
+    -- A top-level line of attributes wraps the list in a div, which the
+    -- split leaves as it is: the list stays a start.
+    kept "an item's later line, in a list under a line of attributes" "{#a .b}\n\n- a\n  b‸c\n  ```\n  code\n  ```" (SplitWith 0 "- ")
+    it "counts no start at an item that took attributes" $ do
+      let text = "+ {#a .b}\n+ a\n+ b\n\n{#c}\n\nPara.\n\nEnd."
+      fmap (blockStarts text) (parseShapes text) `shouldBe` Right [1, 3, 5, 7, 9]
     -- Codex's round 6 on #292: the check read "- a\n\nx\n\n  b", and the
     -- paragraph between was deleted since. Its start and the item's below
     -- map onto one place, which counted twice cut "  b" off.
@@ -464,7 +530,8 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
             $ cover 50 (NewLine `elem` answers) "a plain line break" True
 
   -- #301 over generated lists ('Listed'), the cursor on an item's first
-  -- line: at its end, in its text, among its marks.
+  -- line or on the later line of its first paragraph: at its end, in its
+  -- text, among its marks or its indentation.
   describe "in a generated list" $ do
     -- What Enter writes is what the model says ('modelPress'): a split, a
     -- new item, the numbers after either, or a plain line break where the
@@ -474,6 +541,8 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
        in counterexample (toS (before <> "‸" <> after))
             $ coverage
             $ cover 25 (splits l) "a split"
+            $ cover 1 (splits l && onLater l && maybe False ((== Continued) . (.more)) (atMay l.entries l.item)) "a split on an item's indented later line"
+            $ cover 1 (splits l && onLater l && maybe False ((== LazyLine) . (.more)) (atMay l.entries l.item)) "a split on an item's lazy line"
             $ cover 3 (cutInside l) "a cut inside code, math, a link or emphasis"
             $ cover 10 (renumbers l) "numbers rewritten"
             $ cover 1 (renumbers l && widens l) "a number one digit wider"
@@ -508,11 +577,14 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
 
   -- Enter in the middle of any line of the generated documents: a split
   -- the parser reads as one, which the inverse edit takes back, or a plain
-  -- line break; never anything else.
+  -- line break; never anything else. The documents' items have later
+  -- lines, indented and lazy, so some splits are on those.
   prop "splits an item read back as one, or breaks the line alone, in the middle of any line" $ \doc ->
     let text = render doc
-     in counterexample (toS text) $
-          conjoin
+     in counterexample (toS text)
+          $ coverage
+          $ cover 5 (any (uncurry splitsOnLaterLine) (midLines text)) "a split on an item's later line"
+          $ conjoin
             [ counterexample (toS (before <> "‸" <> after)) $ case enter before after of
                 NewLine -> property True
                 SplitWith blanks start ->
@@ -1050,6 +1122,18 @@ longDeck = T.intercalate "\n" (["# Long", ""] <> concatMap slide [1 .. 60 :: Int
 ----------------------------------------------------------------------
 -- Splits and numbers (#301)
 
+-- | Whether Enter splits an item with the cursor on a line on which no
+-- item starts: a later line of the item's first paragraph.
+splitsOnLaterLine :: Text -> Text -> Bool
+splitsOnLaterLine before after = case (enter before after, parseShapes (before <> after)) of
+  (SplitWith _ _, Right shapes) -> not (any startsHere (shapesAt shapes n))
+  _ -> False
+  where
+    n = T.count "\n" before + 1
+    startsHere s = case s.kind of
+      ItemShape _ _ -> fmap (fst . fst) (head s.parts) == Just n
+      _ -> False
+
 -- | Some places in the middle of each line of a text (after its first
 -- character, in its middle, before its last), as the text before the
 -- cursor and after it.
@@ -1170,11 +1254,13 @@ askedOf (given, taken, ends) (given', taken', ends') = do
       Just again | not again.longer && again.change == e.change && again.cursor == e.cursor -> pure again
       _ -> pure (E.Edit e.change [] e.cursor False)
 
--- | A list for Enter on one of its items' first lines: what it is in (the
--- outermost first), its items' bullet (none for a numbered list) or its numbers' delimiter,
--- its first number and how the numbers go on, its items, whether it is
--- loose, what is above it and below it, and the cursor: the item and the
--- column on its first line, from 0.
+-- | A list for Enter on one of its items' first lines, or on the line
+-- after it: what it is in (the outermost first), its items' bullet (none
+-- for a numbered list) or its numbers' delimiter, its first number and
+-- how the numbers go on, its items, whether it is loose, what is above it
+-- and below it, and the cursor: the item, whether it is on the item's
+-- later line (where the item has one, 'onLater'), and the column on its
+-- line, from 0.
 data Listed = Listed
   { holders :: [Around]
   , bullet :: Maybe Char
@@ -1186,6 +1272,7 @@ data Listed = Listed
   , above :: Bool
   , below :: Below
   , item :: Int
+  , later :: Bool
   , column :: Int
   }
   deriving stock (Show)
@@ -1244,8 +1331,9 @@ instance Arbitrary Listed where
     above <- elements [False, True]
     below <- elements [NothingBelow, ParagraphBelow, ListBelow]
     item <- choose (0, k - 1)
-    let listed column = Listed {holders, bullet, delimiter, start, numbering, entries, loose, above, below, item, column}
-        line = firstLineOf' (listed 0)
+    later <- frequency [(2, pure False), (1, pure True)]
+    let listed column = Listed {holders, bullet, delimiter, start, numbering, entries, loose, above, below, item, later, column}
+        line = cursorLine (listed 0)
         textStart = textStartOf (listed 0)
     listed <$> frequency [(6, choose (textStart + 1, max (textStart + 1) (T.length line - 1))), (2, pure (T.length line)), (1, choose (0, T.length line))]
 
@@ -1290,15 +1378,34 @@ tokenText = \case
   Word t -> t
   Construct t -> t
 
--- | The cursor's item's first line.
-firstLineOf' :: Listed -> Text
-firstLineOf' l = maybe "" snd (find ((== Just l.item) . fst) (listedLines l))
+-- | Whether the cursor is on its item's later line: the line after the
+-- item's first, in the item's first paragraph, indented or lazy.
+onLater :: Listed -> Bool
+onLater l = l.later && maybe False (isJust . laterWords) (atMay l.entries l.item)
 
--- | Where the cursor's item's text starts on its first line.
+-- | The words of an item's later line in its first paragraph, where it
+-- has one.
+laterWords :: Entry -> Maybe Text
+laterWords e = case e.more of
+  Continued -> Just "more words"
+  LazyLine -> Just "lazy words"
+  _ -> Nothing
+
+-- | Where the cursor's line is among the list's lines.
+cursorIndex :: Listed -> Int
+cursorIndex l = fromMaybe 0 (findIndex ((== Just l.item) . fst) (listedLines l)) + (if onLater l then 1 else 0)
+
+-- | The cursor's line: its item's first line, or the line after it.
+cursorLine :: Listed -> Text
+cursorLine l = maybe "" snd (atMay (listedLines l) (cursorIndex l))
+
+-- | Where the cursor's item's text starts on the cursor's line.
 textStartOf :: Listed -> Int
 textStartOf l =
   let e = fromMaybe (Entry Nothing [] NoMore) (atMay l.entries l.item)
-   in T.length (firstLineOf' l) - T.length (ownLine l l.item) + T.length (markOf l l.item) + 1 + T.length (boxOf e)
+   in case laterWords e of
+        Just ws | onLater l -> T.length (cursorLine l) - T.length ws
+        _ -> T.length (cursorLine l) - T.length (ownLine l l.item) + T.length (markOf l l.item) + 1 + T.length (boxOf e)
 
 -- | The list's lines, each an item's first line (with the item) or not:
 -- the list's own, in what it is in, the innermost first, with what is
@@ -1332,21 +1439,21 @@ listedLines l = top <> foldr wrap body l.holders <> bottom
 cursorOf :: Listed -> (Text, Text)
 cursorOf l =
   let ls = listedLines l
-      n = fromMaybe 0 (findIndex ((== Just l.item) . fst) ls)
+      n = cursorIndex l
       text = T.intercalate "\n" (map snd ls)
-      at = sum (map ((+ 1) . T.length . snd) (take n ls)) + min l.column (T.length (firstLineOf' l))
+      at = sum (map ((+ 1) . T.length . snd) (take n ls)) + min l.column (T.length (cursorLine l))
    in (T.take at text, T.drop at text)
 
--- | Whether the cursor is in the text of its item's first line, with text
--- after it.
+-- | Whether the cursor is in the text of its line, with text after it.
 inText :: Listed -> Bool
-inText l = l.column > textStartOf l && l.column < T.length (firstLineOf' l)
+inText l = l.column > textStartOf l && l.column < T.length (cursorLine l)
 
 -- | Whether the cut is strictly inside a word written over several
--- characters.
+-- characters (on an item's first line: its later line has plain words).
 cutInside :: Listed -> Bool
 cutInside l =
   inText l
+    && not (onLater l)
     && or
       [ a < o && o < a + T.length t
       | (a, Construct t) <- zip (scanl (\p tok -> p + T.length (tokenText tok) + 1) 0 tokens) tokens
@@ -1366,16 +1473,17 @@ indentedBelow :: Listed -> Int -> Bool
 indentedBelow l i = maybe False (\e -> e.more `elem` [Second, Nested]) (atMay l.entries i)
 
 -- | Whether the model splits the item: not where the new item's number is
--- one digit wider and the item has a line indented to its text below,
--- which the new item would hold otherwise (a line of its paragraph would
--- become a lazy line, which Enter does not write).
+-- one digit wider and the item has a line indented to its text below the
+-- cursor's, which the new item would hold otherwise (a line of its
+-- paragraph would become a lazy line, which Enter does not write). On the
+-- item's later line, nothing of the item is below the cursor's line.
 splits :: Listed -> Bool
-splits l = inText l && not (cutInside l) && not (wider l l.item && maybe False (\e -> e.more `elem` [Continued, Second, Nested]) (atMay l.entries l.item))
+splits l = inText l && not (cutInside l) && not (not (onLater l) && wider l l.item && maybe False (\e -> e.more `elem` [Continued, Second, Nested]) (atMay l.entries l.item))
 
 -- | Whether the model adds an item: a split, or Enter at the end of an
--- item's only line.
+-- item's last line, its only line or its later line.
 adds :: Listed -> Bool
-adds l = splits l || (l.column >= T.length (firstLineOf' l) && maybe False ((== NoMore) . (.more)) (atMay l.entries l.item))
+adds l = splits l || (l.column >= T.length (cursorLine l) && (onLater l || maybe False ((== NoMore) . (.more)) (atMay l.entries l.item)))
 
 -- | The items after the cursor's.
 laterItems :: Listed -> [Int]
@@ -1404,10 +1512,10 @@ modelPress l
   where
     (before, after) = cursorOf l
     ls = listedLines l
-    n = fromMaybe 0 (findIndex ((== Just l.item) . fst) ls)
+    n = cursorIndex l
     above' = take n ls
     below' = drop (n + 1) ls
-    line = firstLineOf' l
+    line = cursorLine l
     e = fromMaybe (Entry Nothing [] NoMore) (atMay l.entries l.item)
     prefix = laterPrefix l
     next = maybe (show (numberOf l l.item + 1) <> T.singleton l.delimiter) T.singleton l.bullet

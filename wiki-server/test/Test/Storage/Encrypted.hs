@@ -1125,6 +1125,27 @@ spec backing = describe "encrypted spaces in the storage" $ do
       map (\x -> x.title) <$> (ok =<< as p.ada (listPages s.id)) >>= (`shouldContain` ["Zanzibar notes"])
       as p.ada (findPagesByTitle (titleQuery "zanzibar")) `shouldReturn` Right []
 
+    it "says a page's text is not taken plain from the start of its space's encryption, as its draft is refused, and in an encrypted space" $ withEncrypted backing $ \st p secret -> do
+      let as :: UserId -> StoredWiki IO a -> IO a
+          as u = runStoredWiki st (AsUser u)
+          staleWith code = \case
+            Left (Stale c _) -> c == code
+            _ -> False
+      s <- privateSpace st p.ada "Plans"
+      page <- ok =<< as p.ada (createPage s.id Nothing "Zanzibar notes" "Plain until its turn.")
+      as p.ada (plainNow page.id) `shouldReturn` Right ()
+      void (ok =<< as p.ada (startEncrypting s.id StartEncrypting {keys = [startKey p s.id]}))
+      -- The page still reads plain until its turn; its text is not taken
+      -- plain, with the code a draft of it is refused with.
+      map (\x -> x.title) <$> (ok =<< as p.ada (listPages s.id)) >>= (`shouldContain` ["Zanzibar notes"])
+      as p.ada (plainNow page.id) >>= (`shouldSatisfy` staleWith ConversionRuns)
+      as p.ada (saveDraft page.id page.updatedAt "Zanzibar notes" "Typed.") >>= (`shouldSatisfy` staleWith ConversionRuns)
+      -- Someone who may not view the space is answered as for no page.
+      as p.bob (plainNow page.id) `shouldReturn` Left NotFound
+      let pid = PageId "6f1c9a2e-8b4d-4c3f-9e7a-1d2b3c4d5e6f"
+      void (ok =<< as p.ada (createSealedPage secret.id (newPage pid Nothing 'a')))
+      as p.ada (plainNow pid) >>= (`shouldSatisfy` staleWith SpaceIsEncrypted)
+
     it "turns a space's encryption off page by page, and leaves no ciphertext, key or grant of it" $ withSystemTempDirectory "conversion" $ \dir -> withEncrypted backing $ \st p secret -> do
       let as :: UserId -> StoredWiki IO a -> IO a
           as u = runStoredWiki st (AsUser u)

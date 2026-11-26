@@ -26,7 +26,7 @@ import Protolude hiding (find)
 import Test.Harness.MemDom
 import Test.Hspec
 import Wiki.Api.Plugins (PluginId (..))
-import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPolicy (..), Permission (..), framePath)
+import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Permission (..), framePath)
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Assistant.Sync (MonadVault)
 import Wiki.App.Backend
@@ -40,6 +40,7 @@ import Wiki.App.Plugin.External.Frame (FrameSaid (..), PluginFrame (..))
 import Wiki.App.Plugin.External.Machine (answerWithin)
 import Wiki.App.Plugin.External.Protocol (utf16Length)
 import Wiki.App.Route (Route (..), route)
+import Wiki.App.View.Common qualified as Common
 import Wiki.App.View.Editor qualified as Editor
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Slug (Slug, mkSlug)
@@ -158,7 +159,9 @@ spec = describe "Wiki.App.Plugin.External.Frames in the editor, on the in-memory
         blog <- orPanic <$> getSpace (slugs ["blog"])
         ps <- orPanic <$> listPages blog.id
         pure (me, spaces, blog, ps)
-      let input = Editor.Input {context = viewContextAs router me spaces 0, space = blog, pages = ps, path = slugs ["hello-world"], feed = Nothing, home = False}
+      -- The plugin installed, as the shell's plugins' state read it.
+      let installed = ExternalPlugins {policy = ExternalWiki, external = [doubled]}
+          input = Editor.Input {context = (viewContextAs router me spaces 0) {Common.external = installed}, space = blog, pages = ps, path = slugs ["hello-world"], feed = Nothing, home = False}
           problems view = find view ".editor-problems" >>= maybe (pure Nothing) (fmap Just . N.textContent)
           asked stand = mapMaybe askOf <$> readIORef stand.posted
       withView run Editor.component input $ \view -> do

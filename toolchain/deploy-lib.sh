@@ -30,7 +30,9 @@
 #     has passed toolchain/check-tex.sh) and the CTAN mirror given for it
 #     (texlive_mirror, empty for the default), and the Perl the deploy
 #     built from source for TeX Live's installer (perl_dir, empty when the
-#     machine's own perl did);
+#     machine's own perl did), and whether the PDF exports are off by
+#     --no-pdf (pdf_exports: no, or empty, as in a state file from before
+#     the option, for a TeX step that checks the TeX as usual);
 #   - a target directory holding a marker file, .wiki-demo-deployment, which
 #     names the deployment: only a directory carrying it is ever emptied or
 #     deleted. Named with --prefix, the directory holds the state too
@@ -192,6 +194,7 @@ state_write() {
     printf 'texlive_dir=%s\n' "${texlive_dir:-}"
     printf 'texlive_mirror=%s\n' "${texlive_mirror:-}"
     printf 'perl_dir=%s\n' "${perl_dir:-}"
+    printf 'pdf_exports=%s\n' "${pdf_exports:-}"
     printf 'whats_new=%s\n' "${whats_new:-}"
     printf 'git_commit=%s\n' "${git_commit:-}"
   } >"$state_file.tmp"
@@ -507,6 +510,7 @@ undeploy() {
   texlive_dir=$(state_get texlive_dir)
   texlive_mirror=$(state_get texlive_mirror)
   perl_dir=$(state_get perl_dir)
+  pdf_exports=$(state_get pdf_exports)
   whats_new=$(state_get whats_new)
   git_commit=$(state_get git_commit)
   # A deployment that moved from PostgreSQL to --sqlite still has the

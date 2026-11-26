@@ -1,3 +1,5 @@
+{-# LANGUAGE MultiWayIf #-}
+
 -- | The HTTP backend: the implementation of 'Wiki.App.Backend.MonadWiki'
 -- that talks to @wiki-server@ over its HTTP API (@wiki-api@,
 -- docs/api.md). The application uses it when the page it is served in
@@ -133,11 +135,12 @@ import Wiki.Api.Links qualified as Links
 import Wiki.Api.Notifications (Notifications (..), NotificationsApi (..), Watching (..), searchable)
 import Wiki.Api.Opaque (LoginChallenge (..), LoginFinish (..), LoginStart (..), Message, NewAccountRecord (..), OldPasswordProof (..), PasswordRecord (..), PasswordRecordChange (..), PasswordWrapChange (..), ProofStart (..), RegistrationChallenge (..), RegistrationFor (..), RegistrationStart (..))
 import Wiki.Api.Plugins (PluginOptions (..), PluginStateChange (..))
+import Wiki.Api.Plugins.External (ExternalPolicyChange (..), Owner (..))
 import Wiki.Api.Security (CurrentPassword (..), EmailChange (..), OneTimeCode (..), ResetRequest (..))
 import Wiki.Api.ServerSettings (MailTest (..))
 import Wiki.Api.Stars (StarredPage (..), Starring (..), StarsApi (..))
 import Wiki.Api.Types
-import Wiki.Api.Upload (ArchiveUpload (..), AttachmentUpload (..), ImportApply (..), SealedAttachmentUpload (..), SealedUpload (..))
+import Wiki.Api.Upload (ArchiveUpload (..), AttachmentUpload (..), ImportApply (..), PluginUpload (..), SealedAttachmentUpload (..), SealedUpload (..))
 import Wiki.Api.Vault (PublicKeyEntry (..), VaultChange (..))
 import Wiki.Api.Version (PageVersion (..), VersionTime (..))
 import Wiki.App.Account (MonadAccount (..), SignInError (..))
@@ -780,6 +783,9 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
   -- same read for any space: an encrypted space's paths are plain.
   pageLocation pid = pageContent (\c -> Map.lookup pid c.pageLocations) (endpoints.pages.location pid) (withPageLocation pid)
 
+  -- Asked of the server each time, never cached ('plainHere').
+  plainNow = plainHere
+
   -- Page content: another page's save changes the list. The server
   -- answers it for a page of an encrypted space too, empty, since it
   -- cannot read the text of the pages there.
@@ -789,13 +795,16 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
     writeOnce $
       encryptedFetched sid (write (getResponse <$> endpoints.spaces.createPage sid NewPage {parent, title, body, kind})) (\current -> renewingThen sid (freshKey sid current >>= sealedCreatePage kind sid parent title body))
         >>= keepingSpaces (\p -> [(p.id, p.space)])
+
+  -- Never sent again when the server refuses it for the space's state
+  -- ('writeOnce'); refused before it is sent when the guard of a plain
+  -- write says no ('plainPageWrite'), with that answer.
   savePage pid base title body =
-    writeOnce $
-      sealedPage pid >>= \case
-        Nothing -> plainPageWrite pid (write (getResponse <$> endpoints.pages.save pid (PageVersion base) PageEdit {title, body}))
-        -- The page's key as held when the save is sent: a renewal of the
-        -- space's key gives the page a new one.
-        Just (sid, _) -> renewingThen sid (sealedPage pid >>= maybe (pure (Left (Conflict inEncryptedSpace))) (\(_, k) -> sealedSavePage sid pid k base title body))
+    sealedPage pid >>= \case
+      Nothing -> plainPageWrite pid (writeOnce (write (getResponse <$> endpoints.pages.save pid (PageVersion base) PageEdit {title, body})))
+      -- The page's key as held when the save is sent: a renewal of the
+      -- space's key gives the page a new one.
+      Just (sid, _) -> writeOnce (renewingThen sid (sealedPage pid >>= maybe (pure (Left (Conflict inEncryptedSpace))) (\(_, k) -> sealedSavePage sid pid k base title body)))
   movePage pid space parent = write (endpoints.pages.move pid PageMove {space, parent})
   setPageTemplate pid template = write (endpoints.pages.template pid PageTemplate {template})
   setPageKind pid kind = write (endpoints.pages.kind pid PageKindChange {kind})
@@ -805,10 +814,9 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
   -- bytes and its name and media type, and sent as ciphertext
   -- ('sealedUpload'); never as plain bytes, even to be refused.
   uploadAttachment pid name mediaType bytes =
-    writeOnce $
-      sealedPage pid >>= \case
-        Nothing -> plainPageWrite pid (write (withBoundary (endpoints.pages.upload pid) AttachmentUpload {name, mediaType, payload = toS bytes}))
-        Just (sid, _) -> renewingThen sid (sealedPage pid >>= maybe (pure (Left (Conflict inEncryptedSpace))) (\(_, k) -> sealedUpload sid pid k name mediaType bytes))
+    sealedPage pid >>= \case
+      Nothing -> plainPageWrite pid (writeOnce (write (withBoundary (endpoints.pages.upload pid) AttachmentUpload {name, mediaType, payload = toS bytes})))
+      Just (sid, _) -> writeOnce (renewingThen sid (sealedPage pid >>= maybe (pure (Left (Conflict inEncryptedSpace))) (\(_, k) -> sealedUpload sid pid k name mediaType bytes)))
   deleteAttachment aid = write_ (endpoints.attachments.delete aid) <* forgetAttachments (\i _ -> i == aid)
 
   -- The server serves an attachment's bytes at an API address, which the
@@ -896,8 +904,10 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
   -- Sent as it is, and not cached: each answer is for the letters typed
   -- once. The server leaves the encrypted spaces out, and nothing here
   -- adds their pages: a title the browser decrypted is not offered where
-  -- it would be written into a page the server can read.
-  findPagesByTitle q = send (endpoints.pagesTitled (Just q.letters) q.except (Just q.limit))
+  -- it would be written into a page the server can read. Letters typed
+  -- in a page are its text: the editor asks 'plainNow' of the page
+  -- first.
+  findPagesByTitle q = send (getResponse <$> endpoints.pagesTitled (Just q.letters) q.except (Just q.limit))
 
   -- A page of an encrypted space has no draft: the server would read it,
   -- and the editor does not keep one anywhere else.
@@ -943,11 +953,6 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
     sealedPage pid >>= \case
       Just (sid, k) -> sealedVersion sid pid k at >>= either (pure . Left) (\v -> sealedSavePage sid pid k base v.title v.body)
       Nothing -> write (getResponse <$> endpoints.pages.restore pid (VersionTime at) (PageVersion base))
-
-  -- Cached as the plugins that are on are ('pluginsNow'): an editor the
-  -- server prerendered then asks nothing as it is adopted, and a write or
-  -- a sign-in empties the cache, after which an editor reads it again.
-  externalPluginsNow = cached (\c -> c.externalPlugins) endpoints.externalPlugins.list (\a c -> c {Cache.externalPlugins = Just a})
 
 -- | The administration's backend, over the API's @admin\/…@ endpoints. The
 -- directory is cached like any read, so that the administration page the
@@ -1039,30 +1044,29 @@ instance (MonadIO m) => MonadComments (HttpWiki m) where
   -- A page of an encrypted space has its comments encrypted: its threads
   -- are read and written through the encrypted routes, their anchors and
   -- comments encrypted here, and never sent as plain text, even to be
-  -- refused. Deleting and resolving carry no text, and go by the plain
-  -- routes.
+  -- refused. Deleting carries no text and is answered with none: it goes
+  -- by the plain routes with no question asked before it ('commentChange').
+  -- Resolving goes by the plain routes too, but its answer is the thread,
+  -- so for a page held here as plain it asks first ('commentWrite').
   listThreads pid =
     afterStale (Just pid) $
       sealedPage pid >>= \case
         Just (sid, _) -> sealedListThreads sid pid
         Nothing -> plainPageRead pid (cached (\c -> Map.lookup pid c.threads) (endpoints.comments pid).list (withThreads pid))
   openThread pid anchor body =
-    writeOnce $
-      sealedPage pid >>= \case
-        Just (sid, _) -> renewingThen sid (sealedOpenThread sid pid anchor body)
-        Nothing -> commentWrite pid ((endpoints.comments pid).open NewThread {anchor, body})
+    sealedPage pid >>= \case
+      Just (sid, _) -> writeOnce (renewingThen sid (sealedOpenThread sid pid anchor body))
+      Nothing -> commentWrite pid ((endpoints.comments pid).open NewThread {anchor, body})
   reply pid tid body =
-    writeOnce $
-      sealedPage pid >>= \case
-        Just (sid, _) -> renewingThen sid (sealedComment sid pid tid Nothing body)
-        Nothing -> commentWrite pid ((endpoints.comments pid).reply tid CommentText {body})
+    sealedPage pid >>= \case
+      Just (sid, _) -> writeOnce (renewingThen sid (sealedComment sid pid tid Nothing body))
+      Nothing -> commentWrite pid ((endpoints.comments pid).reply tid CommentText {body})
   editComment pid tid cid body =
-    writeOnce $
-      sealedPage pid >>= \case
-        Just (sid, _) -> renewingThen sid (sealedComment sid pid tid (Just cid) body)
-        Nothing -> commentWrite pid ((endpoints.comments pid).edit tid cid CommentText {body})
-  deleteComment pid tid cid = commentWrite_ pid ((endpoints.comments pid).deleteComment tid cid)
-  deleteThread pid tid = commentWrite_ pid ((endpoints.comments pid).delete tid)
+    sealedPage pid >>= \case
+      Just (sid, _) -> writeOnce (renewingThen sid (sealedComment sid pid tid (Just cid) body))
+      Nothing -> commentWrite pid ((endpoints.comments pid).edit tid cid CommentText {body})
+  deleteComment pid tid cid = commentChange pid (void ((endpoints.comments pid).deleteComment tid cid))
+  deleteThread pid tid = commentChange pid (void ((endpoints.comments pid).delete tid))
   setResolved pid tid resolved =
     sealedPage pid >>= \case
       Just (sid, _) ->
@@ -1072,21 +1076,29 @@ instance (MonadIO m) => MonadComments (HttpWiki m) where
           Right _ -> sealedListThreads sid pid <&> (>>= maybe (Left NotFound) Right . find (\t -> t.id == tid))
       Nothing -> commentWrite pid ((endpoints.comments pid).resolve tid ThreadResolution {resolved})
 
--- | A write to a page's comments, after which the page's cached threads are
--- removed ('afterComment'). Refused here for a page of an encrypted space
--- ('plainPageWrite').
+-- | A plain change of a page's comments whose request or answer carries
+-- text of the page: a thread opened, a reply, a comment edited, and a
+-- thread resolved, whose answer is the thread with its quote and comments.
+-- Sent only once the guard of a plain write says yes ('plainPageWrite'),
+-- and never sent again ('writeOnce'). For a page whose space was encrypted
+-- elsewhere, the server would answer a resolve with a thread with no quote
+-- and blank comments. The page's cached threads are removed after it
+-- ('afterComment').
 commentWrite :: (MonadIO m) => PageId -> HttpWiki IO a -> HttpWiki m (Either WikiError a)
 commentWrite pid endpoint = do
-  result <- plainPageWrite pid (send endpoint)
+  result <- plainPageWrite pid (writeOnce (send endpoint))
   modifyCache (afterComment pid)
   pure result
 
--- | The same, for a write whose response has no body.
-commentWrite_ :: (MonadIO m) => PageId -> HttpWiki IO NoContent -> HttpWiki m (Either WikiError ())
-commentWrite_ pid endpoint = do
-  -- A deletion carries no text: sent for a page of an encrypted space too.
-  encrypted <- isJust <$> sealedPage pid
-  result <- if encrypted then send_ endpoint else plainPageWrite pid (send_ endpoint)
+-- | A change of a page's comments whose request and answer both carry no
+-- text of the page: a comment or a thread deleted, answered with no body.
+-- Sent as it is, for a page of an encrypted space too, with no question
+-- asked first. A change whose answer carries text, such as a resolve,
+-- answered with the thread, asks first ('commentWrite'). The page's cached
+-- threads are removed after it ('afterComment').
+commentChange :: (MonadIO m) => PageId -> HttpWiki IO a -> HttpWiki m (Either WikiError a)
+commentChange pid endpoint = do
+  result <- send endpoint
   modifyCache (afterComment pid)
   pure result
 
@@ -1275,6 +1287,21 @@ instance (MonadIO m) => MonadWhatsNew (HttpWiki m) where
 -- it.
 instance (MonadIO m) => MonadPlugins (HttpWiki m) where
   pluginsNow = cached (\c -> c.plugins) endpoints.plugins (\a c -> c {Cache.plugins = Just a})
+
+  -- Cached as the plugins that are on are: a page the server prerendered
+  -- carries both, read with the first load, and asks for neither as it is
+  -- adopted; a write or a sign-in empties the cache.
+  externalPluginsNow = cached (\c -> c.externalPlugins) endpoints.externalPlugins.list (\a c -> c {Cache.externalPlugins = Just a})
+  setExternalPolicy policy = write (endpoints.externalPlugins.setPolicy ExternalPolicyChange {policy})
+  installExternal owner manifest bytes replaces =
+    write (withBoundary installing PluginUpload {manifest, replaces, bundle = toS bytes})
+    where
+      installing = case owner of
+        TheWiki -> endpoints.externalPlugins.installForWiki
+        Mine -> endpoints.externalPlugins.installMine
+  removeExternal owner p = write_ $ case owner of
+    TheWiki -> endpoints.externalPlugins.removeForWiki p
+    Mine -> endpoints.externalPlugins.removeMine p
   setPluginState p s = write (endpoints.account.setPluginState p PluginStateChange {state = s})
   setPluginOptions p v = write (endpoints.account.setPluginOptions p Nothing (PluginOptions v))
   setPluginOptionsIfNone p v = write (endpoints.account.setPluginOptions p (Just "*") (PluginOptions v))
@@ -1739,10 +1766,11 @@ data Held = Held
   -- ^ The pages of encrypted spaces read here, with their keys as stored
   -- (wrapped): what tells a save of one of them from a plain save.
   , heldSpaces :: Map PageId SpaceId
-  -- ^ The space of every page read or made here, plain ones too: what a
-  -- plain write of a page checks against the current list of spaces
-  -- ('plainPageWrite'), since a page's own record may predate its space's
-  -- encryption.
+  -- ^ The space of every page read or made here, plain ones too, as last
+  -- read: what a plain read of a page by its id checks against a gate
+  -- ('plainPageRead'), so that no request more is made for it. A page
+  -- moved since is still under its old space here; a plain write does not
+  -- go by it, but asks the server where the page is now ('plainHere').
   , heldFound :: Map SpaceId [(PageSummary, Text)]
   -- ^ Each space's pages decrypted for the search, with their texts:
   -- fetched at the first search that needs them, and forgotten at every
@@ -2241,38 +2269,85 @@ freshKey sid given = maybe given fst . Map.lookup sid . (\h -> h.heldKeys) <$> r
 
 -- | 'encryptedOr' for a write, which sends a title and a text, with the
 -- list of spaces fetched first ('freshSpaces'), so that no plain text is
--- ever sent to the server for an encrypted space, even to be refused.
--- Also the question whether a space's key is held here.
+-- ever sent to the server for an encrypted space, even to be refused. A
+-- space the list does not name is 'NotFound', as the server would answer,
+-- and nothing is sent: the reader's access to it may have been taken away
+-- after it was encrypted, and the list then says nothing of its
+-- encryption. The front page's space is the one no list names: a request
+-- more, for the front page, when this tab has not read it. (A list the service
+-- worker answered from its copy, offline, is taken as the server's: see
+-- "Known gaps" in docs/PLAN.md.)
 encryptedFetched :: (MonadIO m) => SpaceId -> HttpWiki m (Either WikiError a) -> (KeyId -> HttpWiki m (Either WikiError a)) -> HttpWiki m (Either WikiError a)
 encryptedFetched sid plain sealed =
   freshSpaces >>= \case
-    Right spaces | Just k <- encryptionIn sid spaces -> sealed k
-    Right _ -> plain
+    Right spaces
+      | Just k <- encryptionIn sid spaces -> sealed k
+      | any (\s -> s.id == sid) spaces -> plain
+      | otherwise ->
+          -- The front page's space, which no list names, is plain and at
+          -- the top for good ('homeSpaceOf'): known here once the front
+          -- page was read, and read now otherwise.
+          (\h -> h.heldHome) <$> readHeld >>= \case
+            Just home -> if home == sid then plain else pure (Left NotFound)
+            Nothing ->
+              getHomeDocument >>= \case
+                Right (home, _) | homeSpaceOf home == Just sid -> plain
+                Right _ -> pure (Left NotFound)
+                Left e -> pure (Left e)
     Left e -> pure (Left e)
 
--- | A plain write about a page that may carry its text or text about it: a
--- save, a draft, an attachment, a comment. It is refused here, and nothing
--- is sent, for a page of an encrypted space: one read here from an
--- encrypted space ('heldPages'), or one whose space is encrypted in the
--- list of spaces fetched now. The list is fetched for a page whose space
--- is known ('heldSpaces'): the page may have been read before its space
--- was encrypted. A page never read here has no known space and is written
--- as it is: the editor and the page view always read a page before they
--- write it.
+-- | A plain write about a page whose request or answer may carry its text
+-- or text about it: a save, a draft, an attachment, a comment, a resolve.
+-- It is sent only once the server has said, just before, that it takes the
+-- page's text plain now ('plainHere'); otherwise it is refused here, and
+-- nothing of it is sent. A refusal for the space's state is 'Stale' with
+-- the server's code, as the server's own refusal of the write would be,
+-- never a 'Conflict': the editor takes a conflict for someone else's save,
+-- and offers to merge. Its words say that nothing was sent.
+--
+-- The server's yes may be old by the time the write is sent: a conversion
+-- of the space may have started since, or a later question about the same
+-- page may already have been refused while this answer was on its way. A
+-- write of text then reaches the server, which refuses it and keeps
+-- nothing. A resolve is refused during a conversion, but taken in a space
+-- encrypted since, and answered with the thread as the server holds it
+-- there: no quote, and blank comments.
 plainPageWrite :: (MonadIO m) => PageId -> HttpWiki m (Either WikiError a) -> HttpWiki m (Either WikiError a)
 plainPageWrite pid plain =
-  readHeld >>= \h -> case (Map.lookup pid h.heldPages, Map.lookup pid h.heldSpaces) of
-    (Just _, _) -> pure (Left (Conflict inEncryptedSpace))
-    -- Read encrypted here, its space plain since: what was written from
-    -- it is not sent plain unasked.
-    _ | Set.member pid h.heldWasSealed -> pure (Left (Conflict "This page's space is no longer encrypted: what was written here, from the page as it was read encrypted, was not sent. Reload the page as it is now, plain."))
-    (Nothing, Nothing) -> plain
-    (Nothing, Just sid) ->
-      freshSpaces >>= \case
-        Left e -> pure (Left e)
-        Right spaces
-          | isJust (encryptionIn sid spaces) -> pure (Left (Conflict "This page's space has been encrypted since the page was opened: nothing was sent. Open the page again."))
-          | otherwise -> plain
+  plainHere pid >>= \case
+    Right () -> plain
+    -- Not a conflict of versions: the space's state, with its code, as the
+    -- server refuses such a write, in the reader's words.
+    Left (Stale ConversionRuns _) -> pure (Left (Stale ConversionRuns "This page's space is being encrypted or decrypted now: nothing was sent. Open the page again once that is done."))
+    Left (Stale st _) -> pure (Left (Stale st "This page's space has been encrypted since the page was opened: nothing was sent. Open the page again."))
+    -- 'NotFound' (a page deleted, or no longer open to the reader) and
+    -- every other refusal are the server's, as the write would have had.
+    Left e -> pure (Left e)
+
+-- | 'plainNow': whether the page's text may be sent plain now, asked
+-- before a save, a draft, an attachment, a comment or a resolve
+-- ('plainPageWrite').
+-- Refused here, without a request, for a page read here encrypted ('heldPages'),
+-- and for one read so whose space is plain since ('heldWasSealed'): what
+-- was written from it is not sent plain unasked. Any other page is asked
+-- about by its id (@pages\/\<page>\/plain@), wherever this tab last read
+-- it: the server answers for the page where it is now, and a list of
+-- spaces could not (one read before the page moved, or before the reader
+-- lost access to the space, or a copy the service worker kept). The
+-- service worker never answers that request from a copy
+-- (@web\/src\/sw.js@), so offline the question fails ('Unreachable'). There
+-- is no shortcut for the front page's space: the page may have moved out
+-- of it.
+--
+-- A refusal for the space's state ('Stale') makes the tab read the list
+-- of spaces again ('send'), as any such refusal does.
+plainHere :: (MonadIO m) => PageId -> HttpWiki m (Either WikiError ())
+plainHere pid =
+  readHeld >>= \h ->
+    if
+      | Map.member pid h.heldPages -> pure (Left (Conflict inEncryptedSpace))
+      | Set.member pid h.heldWasSealed -> pure (Left (Conflict "This page's space is no longer encrypted: what was written here, from the page as it was read encrypted, was not sent. Reload the page as it is now, plain."))
+      | otherwise -> void <$> send (getResponse <$> endpoints.pages.plain pid)
 
 -- | Why a plain write of a page of an encrypted space is not sent.
 inEncryptedSpace :: Text
@@ -3814,12 +3889,18 @@ startConversionOf sid way = case way of
 
 -- | Encrypted spaces over the API's @encrypted\/@ routes.
 instance (MonadIO m) => MonadEncryption (HttpWiki m) where
+  -- From the list of spaces fetched now: a space it does not name is not
+  -- encrypted, as far as this tab can tell.
   keyState sid =
-    encryptedFetched sid (pure (Right NotEncrypted)) $ \current -> do
-      immediate <- HttpWiki (asks (\env -> env.immediate))
-      if immediate
-        then pure (Left (Invalid inServer))
-        else fmap (either identity (const KeyReady)) <$> openKey NoRefresh sid current
+    freshSpaces >>= \case
+      Left e -> pure (Left e)
+      Right spaces -> case encryptionIn sid spaces of
+        Nothing -> pure (Right NotEncrypted)
+        Just current -> do
+          immediate <- HttpWiki (asks (\env -> env.immediate))
+          if immediate
+            then pure (Left (Invalid inServer))
+            else fmap (either identity (const KeyReady)) <$> openKey NoRefresh sid current
 
   -- The key is made here, sealed to the user's own public key, and sent
   -- with the request that turns the space encrypted; the page keeps it.

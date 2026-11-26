@@ -1,0 +1,29 @@
+---
+pr: 393
+title: The local deploy can turn PDF exports off without checking TeX
+technical: true
+---
+
+## New features
+
+- `sh toolchain/deploy-local.sh --server --no-pdf` deploys the wiki's
+  server with no PDF exports. The deploy's TeX step checks no TeX, installs
+  none and asks nothing. It says so in one line, and the server runs with
+  `--no-pdf`. Before, `--no-texlive` only declined TeX Live under the
+  toolchain, and the deploy still checked the machine's own TeX at every
+  run.
+
+  ```
+  deploy-local: PDF exports: off by --no-pdf, so no TeX is checked or installed and the server runs with --no-pdf (remembered; --pdf turns them on again)
+  ```
+
+  The upgrade's rehearsal starts its servers with `--no-pdf` too: the
+  new program always, and the program the wiki runs now when that
+  program takes the option. So does the move to PostgreSQL, and the
+  wizard tries no TeX before it opens.
+
+  Later deploys remember it, and `--status` says so. `--pdf` turns the
+  PDF exports on again: the next deploy checks the TeX as before. A TeX
+  Live already installed under the toolchain stays where it is. The
+  configuration wizard offers it as a fourth answer to its question about
+  PDF exports.

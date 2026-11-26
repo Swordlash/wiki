@@ -20,8 +20,13 @@
 -- writes it in their time zone and language, which a page rendered before
 -- the program runs, on a server in its own time zone, cannot know. The
 -- page shows it in UTC until then.
+--
+-- So is a file input's choice of files ('pluginFilesChosen'): the browser
+-- holds the files, and natively there are none, so that a native test
+-- stands in for the browser with files of its own.
 module Wiki.App.Islands.Monad
   ( MonadIslands (..)
+  , ChosenFile (..)
   , MathMode (..)
   , Drawing (..)
   , drawnProblem
@@ -38,11 +43,13 @@ import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, isNull, jsVal
 import Halogen.JSBits.Promise (Promise)
 import Halogen.JSBits.Promise qualified as Promise
 import Halogen.VDom.DOM.Monad (BrowserDOM)
+import Numeric.Natural (Natural)
 import Protolude
 import Web.DOM.Internal.Types (Element (..))
 import Web.Event.CustomEvent (CustomEvent (..))
 import Web.Event.Event (Event)
 import Wiki.App.Browser (localTime)
+import Wiki.App.Editor.Browser (PickedFile (..), chosenFiles, pickedFiles, readPickedFile)
 import Wiki.App.Plugin.External.Frame (FrameSaid, PluginFrame, openFrame)
 import Wiki.Core.Markdown.Tikz (TikzDocument (..))
 import Wiki.Core.Math (Macros (..))
@@ -191,6 +198,24 @@ class (Monad m) => MonadIslands m where
   default openPluginFrame :: (MonadTrans t, MonadIslands n, m ~ t n) => Element -> Text -> (FrameSaid -> IO ()) -> m PluginFrame
   openPluginFrame container address = lift . openPluginFrame container address
 
+  -- | The files a file input's change event brought, each with its name
+  -- and its size, as the browser tells them, and a way to read its bytes
+  -- that has not run yet: a file too large is refused before it is read.
+  -- The input is emptied, so that choosing the same files again is also a
+  -- change. Natively there are none.
+  pluginFilesChosen :: Event -> m [ChosenFile]
+  default pluginFilesChosen :: (MonadTrans t, MonadIslands n, m ~ t n) => Event -> m [ChosenFile]
+  pluginFilesChosen = lift . pluginFilesChosen
+
+-- | 'ChosenFile' is a file the reader chose, not read yet: its name, its
+-- size in bytes, and the read of its bytes, which waits for the browser,
+-- so that it is run off the component's loop ('Halogen.async').
+data ChosenFile = ChosenFile
+  { name :: Text
+  , size :: Natural
+  , bytes :: IO ByteString
+  }
+
 instance (MonadIslands m) => MonadIslands (ReaderT r m)
 
 -- | The page's libraries. Natively the bindings are inert stubs and this
@@ -225,6 +250,10 @@ instance MonadIslands BrowserDOM where
   renderTime at element = liftIO $ localTime at >>= element.textContent_set
 
   openPluginFrame container address = liftIO . openFrame container address
+
+  pluginFilesChosen event = do
+    picked <- chosenFiles event >>= pickedFiles
+    pure [ChosenFile {name = p.name, size = p.size, bytes = readPickedFile p} | p <- picked]
 
 -- | What a @wiki-island-drawn@ event says of a diagram or a picture just
 -- drawn: the library's error, or nothing when the drawing succeeded (the
@@ -262,6 +291,7 @@ instance MonadIslands MemDOM where
   renderTime at element = localTime at >>= (`asText` element)
   -- No browser, so no plugin runs: a frame that never answers.
   openPluginFrame container address = liftIO . openFrame container address
+  pluginFilesChosen _ = pure []
 
 asText :: Text -> Element -> MemDOM ()
 asText text element = elementToNode element >>= setTextContent text

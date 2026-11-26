@@ -1258,7 +1258,8 @@ a Haskell program with [brick](https://hackage.haskell.org/package/brick), compi
 your machine with the maker's own cabal project. So the wrapper first checks the C
 compiler and libraries (`toolchain/check-native.sh --with-wizard`, which adds terminfo,
 below), installs GHC and cabal (`toolchain/bootstrap.sh native --with-wizard`), and then
-runs it, through `sh toolchain/maker.sh tui deploy`. The first run compiles brick and
+runs it, through `sh toolchain/maker.sh tui deploy`. Neither check tries `xelatex`
+(`--without-tex`): compiling the wizard needs no TeX. The first run compiles brick and
 vty, which takes a few minutes; cabal keeps them, and later runs start at once.
 Everything the wizard does can be done with the options below, which it only writes
 out.
@@ -1861,6 +1862,30 @@ shown as it comes and kept in `<toolchain>/.wiki-toolchain/texlive/install.log`.
   no PDFs unless a TeX of the machine's works, and its administration's Server section
   says why. Without a terminal and without either option nothing is asked or installed,
   and the deploy says how to ask for it.
+- `--no-pdf` turns the PDF exports off: the TeX step checks no TeX, installs none and
+  asks nothing, says `PDF exports: off by --no-pdf` in one line, and the unit runs
+  `wiki-server serve` with `--no-pdf`. `--no-texlive` still uses a TeX of the machine's
+  that works, and checks it at every deploy; `--no-pdf` uses none and checks nothing. The
+  state file keeps it (`pdf_exports=no`; a state file without the key, as one from before
+  the option, means the TeX step runs as described here), and later runs keep the PDFs
+  off until `--pdf`, which takes it back: the next TeX step checks the TeX again. A TeX
+  Live under the toolchain stays where it is, in the state too, for `--pdf` to use
+  again. `--no-pdf` goes with `--no-texlive`; with `--texlive` it is refused, as `--pdf`
+  with `--no-pdf` is, and `--texlive` alone on a deployment whose PDFs are off by
+  `--no-pdf` is refused until `--pdf` is given with it. The wizard's PDF question offers
+  it as its fourth answer (`texlive=off` in an answer file). With the PDFs off, nothing
+  else of the deploy tries TeX either: the checks of the native build are given
+  `--without-tex`, and the upgrade's rehearsal (`wiki-server rehearse`) starts the new
+  program's server with `--no-pdf` (`rehearse --no-pdf`) and the old program's too
+  (`--old-no-pdf`) when that program takes the option: its own `serve --help`, which
+  runs nothing, lists `--no-pdf`. An old program built before the option is not given
+  it, and its server tries its TeX once before it serves, which the deploy says in one
+  line. So do both servers, with a line that says why, when the wiki-server that runs
+  `rehearse` was built before it took the two switches (its `rehearse --help` lists
+  neither): an older build, which `--no-build` reuses; a deploy without `--no-build`
+  builds it again. The move to PostgreSQL builds its wiki-server, and gives both. `--pdf` and `--no-pdf` are
+  refused with `--rollback`, which puts the kept deployment back as it was, its unit
+  included, and with `--stop` and `--status`.
 - Whenever the TeX step ends without an `xelatex` that works (the one the service finds
   fails or there is none, and nothing was installed; the install or its check failed;
   `--no-texlive`, or the answer no), the unit runs `wiki-server serve` with `--no-pdf`:
@@ -1886,7 +1911,9 @@ shown as it comes and kept in `<toolchain>/.wiki-toolchain/texlive/install.log`.
   `--texlive` uses it again.
 - Nothing about TeX stops the deploy: PDFs are optional. `--status` says whether the
   engine works, at which path, and whether it is the toolchain's TeX Live; for a unit
-  with `--no-pdf` it says `PDF exports: off in the unit (--no-pdf)` instead.
+  with `--no-pdf` it says `PDF exports: off in the unit (--no-pdf)` instead, or
+  `PDF exports: off by --no-pdf (remembered)` when the deploy's `--no-pdf` set it, and
+  checks nothing.
 - `undeploy-local.sh` leaves the toolchain's TeX Live, and the Perl built for it, where
   they are, as it leaves the toolchain; `--purge` of a deployment under a prefix deletes them with the prefix.
 
@@ -2148,8 +2175,8 @@ to the demo, keeping `data/`.
   no PDF formats, refuses a PDF export ("PDF exports are off on this server (its
   --no-pdf option)."), logs `tex-engine` with `status=off`, and the Server
   section says that PDF exports are off by that option, with no "Check again".
-  The deploy sets it when it finds no `xelatex` that works and installs none
-  (below). A `xelatex` that is
+  The deploy sets it when it finds no `xelatex` that works and installs none,
+  and when it is given `--no-pdf` itself (below). A `xelatex` that is
   found but fails has usually lost its format file (`sudo fmtutil-sys --byfmt
   xelatex`, or `fmtutil-user --byfmt xelatex` as the server's user), or the
   server's service runs with a `PATH` or `HOME` other than your shell's, so that
@@ -3961,7 +3988,9 @@ builds it.
 `sh toolchain/maker.sh check native [--without-postgres] [--with-wizard]
 [--without-tex]` is the check of what the native build of `wiki-server` needs, the
 same as `toolchain/check-native.sh`; `bootstrap.sh native` runs it after the
-packages. The script stays for the deploy, which runs it before there is a GHC.
+packages, without trying `xelatex` when given `--without-tex` (the deploy gives it when
+the PDF exports are off by `--no-pdf`, and the wizard's wrapper always). The script
+stays for the deploy, which runs it before there is a GHC.
 
 The builds and the tests are the maker's too. `npm run build-native`, `test-native`,
 `build-wasm`, `build-wasm-opt`, `serve`, `test-wasm` and `test` check that the

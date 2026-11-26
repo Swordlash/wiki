@@ -22,7 +22,7 @@ import Wiki.Api.Admin (AdministratorFlag (..), CreateSpacesFlag (..), GroupName 
 import Wiki.Api.ApiKeys (KeyRight (..), NewApiKey (..))
 import Wiki.Api.Backups (BackupRecord (..), Backups (..), Trigger (..))
 import Wiki.Api.Comments (CommentText (..), NewThread (..), ThreadResolution (..))
-import Wiki.Api.Error (ApiError (..))
+import Wiki.Api.Error (ApiError (..), Staleness (..))
 import Wiki.Api.Events (ClientMessage (..), PageEvent (..), Readers (..), ServerMessage (..))
 import Wiki.Api.Info (Capabilities (..), Health (..), SearchKind (..), ServerInfo (..))
 import Wiki.Api.Notifications (NotificationSettingsChange (..), ReadMark (..), Watching (..))
@@ -154,6 +154,9 @@ spec = describe "golden JSON" $ do
     golden "error-unauthenticated" Unauthenticated
     golden "error-too-many-requests" (TooManyRequests "Too many failed attempts to sign in as ada: try again in 15 minutes.")
     golden "error-second-factor-required" SecondFactorRequired
+    -- A page's space encrypted since the browser read it: what @plain@
+    -- answers before a plain write is sent ('Wiki.Api.PagesApi').
+    golden "error-stale" (Stale SpaceIsEncrypted "A draft kept on the server is not possible in an encrypted space: its pages are encrypted in its members' browsers, and the server cannot read them.")
   describe "requests" $ do
     golden "new-space" NewSpace {parent = Just (SpaceId "s1"), name = "Guides"}
     golden "plugin-state-change" PluginStateChange {state = PluginDefault}

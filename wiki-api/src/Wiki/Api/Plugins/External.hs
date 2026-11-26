@@ -48,8 +48,11 @@ module Wiki.Api.Plugins.External
   , ExternalPolicyChange (..)
 
     -- * What is installed
+  , Owner (..)
+  , ownerOf
   , ExternalPlugin (..)
   , ExternalPlugins (..)
+  , noExternalPlugins
   , maxWikiPlugins
   , maxOwnPlugins
   , framePath
@@ -433,6 +436,17 @@ newtype ExternalPolicyChange = ExternalPolicyChange {policy :: ExternalPolicy}
 --------------------------------------------------------------------------------
 -- What is installed
 
+-- | 'Owner' is whose an external plugin is: the wiki's, installed by the
+-- administrator for everyone ('TheWiki'), or the asking user's own
+-- ('Mine'). A plugin is told apart from another by its owner, its id and
+-- its bundle's hash.
+data Owner = TheWiki | Mine
+  deriving stock (Eq, Ord, Show)
+
+-- | Whose an installed plugin is, as its field 'mine' says.
+ownerOf :: ExternalPlugin -> Owner
+ownerOf p = if p.mine then Mine else TheWiki
+
 -- | 'ExternalPlugin' is an installed external plugin: its manifest, the
 -- SHA-256 of its bundle in lowercase hex (the blob it is kept as), the
 -- bundle's size in bytes, whether it is the asker's own ('mine') or the
@@ -462,6 +476,11 @@ data ExternalPlugins = ExternalPlugins
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)
+
+-- | No plugins, under the policy that runs none: what a wiki starts with,
+-- and what the application holds until it has read what is installed.
+noExternalPlugins :: ExternalPlugins
+noExternalPlugins = ExternalPlugins {policy = ExternalOff, external = []}
 
 -- | The most plugins the wiki installs for everyone.
 maxWikiPlugins :: Int

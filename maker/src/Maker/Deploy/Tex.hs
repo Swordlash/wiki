@@ -9,6 +9,11 @@
 -- With @pdf@ @no@ the unit runs wiki-server with @--no-pdf@. It never stops
 -- the deploy: without a TeX that works, the server offers no PDFs.
 --
+-- With @pdf_exports@ @no@ (the deploy's @--no-pdf@, remembered until
+-- @--pdf@) the step checks nothing, installs nothing and asks nothing: it
+-- says so in one line and answers @pdf@ @no@. The state's TeX Live and
+-- Perl stay as they are, on disk and in the state, for a later @--pdf@.
+--
 -- It is @toolchain/deploy-local.sh@'s @tex_step@, with its messages; the
 -- shell keeps the few helpers @--status@ uses.
 module Maker.Deploy.Tex
@@ -65,6 +70,10 @@ data Tex = Tex
 texStep :: Plan -> IO Plan
 texStep p
   | get p "mode" /= "server" = pure p
+  | get p "pdf_exports" == "no" = do
+      let kept = let dir = get p "texlive_dir" in if null dir then "" else "; the toolchain's TeX Live stays in " <> dir
+      say ("PDF exports: off by --no-pdf, so no TeX is checked or installed and the server runs with --no-pdf" <> kept <> " (remembered; --pdf turns them on again)")
+      pure (set "tex_bin" "" (set "pdf" "no" p))
   | otherwise = do
       t <- Tex <$> newIORef (get p "texlive") <*> newIORef (get p "texlive_dir") <*> newIORef (get p "perl_dir") <*> newIORef "" <*> newIORef "no"
       step p t

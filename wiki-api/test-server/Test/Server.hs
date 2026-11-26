@@ -32,7 +32,7 @@ import Wiki.Api.ApiKeys (ApiKeyId (..), ApiKeyInfo (..), KeyRight (..), NewApiKe
 import Wiki.Api.Auth (Purpose (..), callbackPath, startUrl)
 import Wiki.Api.Backups (Backups (..))
 import Wiki.Api.Comments (CommentText (..), NewThread (..), ThreadResolution (..))
-import Wiki.Api.Error (ApiError (..), errorStatus)
+import Wiki.Api.Error (ApiError (..), Staleness (..), errorStatus)
 import Wiki.Api.Export (ExportFormat (..), formatMediaType, formatName)
 import Wiki.Api.Import (ImportChoices (..), ImportPlan (..), ImportSummary (..), SpacePlan (..), SpaceStatus (..))
 import Wiki.Api.Info (Capabilities (..), SearchKind (..), ServerInfo (..))
@@ -231,6 +231,15 @@ stubs =
                 else pure (versioned Sample.page {Page.id = p, Page.title = edit.title, Page.body = edit.body, Page.updatedAt = Sample.later})
           , move = \p body -> pure Sample.page {Page.id = p, Page.space = body.space, Page.parent = body.parent}
           , location = \p -> if p == Sample.page.id then pure PageLocation {space = [Sample.slug "docs"], page = [Sample.slug "tour"]} else refuse NotFound
+          , -- The sample page is plain, p2's space encrypted, "other" not
+            -- there; any other id is read back, so that a test sees which
+            -- page the route was asked about.
+            plain = \p -> case () of
+              _
+                | p == Sample.page.id -> pure (addHeader "private, no-store" NoContent)
+                | p == PageId "p2" -> refuse (Stale SpaceIsEncrypted "A draft kept on the server is not possible in an encrypted space.")
+                | p == PageId "other" -> refuse NotFound
+                | otherwise -> refuse (Invalid ("Asked whether " <> p.text <> " is plain."))
           , backlinks = \p -> if p == Sample.page.id then pure [Backlink {page = PageId "p2", title = "Glossary", location = PageLocation {space = [Sample.slug "docs"], page = [Sample.slug "glossary"]}}] else refuse NotFound
           , shift = \p body -> pure Sample.page {Page.id = p, Page.position = fromEnum body.shift}
           , template = \p body -> pure Sample.page {Page.id = p, Page.template = body.template}
@@ -263,7 +272,8 @@ stubs =
                   else responseLBS (toEnum 404) [(hContentType, "application/json")] (encode NotFound)
           }
     , pagesTitled = \q except limit ->
-        pure [TitleHit {page = PageId (maybe "(none)" show limit), space = fromMaybe (SpaceId "") except, spacePath = [], pagePath = [], title = fromMaybe "(none)" q}]
+        pure . addHeader "private, no-store" $
+          [TitleHit {page = PageId (maybe "(none)" show limit), space = fromMaybe (SpaceId "") except, spacePath = [], pagePath = [], title = fromMaybe "(none)" q}]
     , search = \q space only limit templates ->
         let query = searchQueryOf q space only limit templates
          in pure
@@ -787,6 +797,16 @@ spec = describe "a server of the API's type" $ do
       answers (getAt (links.pages.location p)) 200 PageLocation {space = [Sample.slug "docs"], page = [Sample.slug "tour"]}
       answers (getAt (links.pages.location (PageId "other"))) 404 NotFound
 
+    it "says whether the server takes one's text plain now: yes, the space encrypted, or no such page" $ do
+      r <- getAt (links.pages.plain p)
+      (status r, simpleBody r, header "Cache-Control" r) `shouldBe` (204, "", Just "private, no-store")
+      answers (getAt (links.pages.plain (PageId "p2"))) 409 (Stale SpaceIsEncrypted "A draft kept on the server is not possible in an encrypted space.")
+      answers (getAt (links.pages.plain (PageId "other"))) 404 NotFound
+
+    it "reads a page whose id is titled as that page, not as the lookup by title" $ do
+      links.pages.plain (PageId "titled") `shouldBe` "api/v1/pages/titled/plain"
+      answers (getAt "api/v1/pages/titled/plain") 400 (Invalid "Asked whether titled is plain.")
+
     it "lists the pages that link to one, or says that no page has its id" $ do
       answers (getAt (links.pages.backlinks p)) 200 [Backlink {page = PageId "p2", title = "Glossary", location = PageLocation {space = [Sample.slug "docs"], page = [Sample.slug "glossary"]}}]
       answers (getAt (links.pages.backlinks (PageId "other"))) 404 NotFound
@@ -861,9 +881,9 @@ spec = describe "a server of the API's type" $ do
         `shouldBe` Just [Snippet [Piece (show (True, (searchQuery "x").limit, False)) False]]
 
   describe "pages by title" $ do
-    it "reads back the letters, the space left out and the limit its address was made from" $ do
+    it "reads back the letters, the space left out and the limit its address was made from, in an answer no cache keeps" $ do
       r <- getAt (links.pagesTitled (Just "on c") (Just s) (Just 5))
-      status r `shouldBe` 200
+      (status r, header "Cache-Control" r) `shouldBe` (200, Just "private, no-store")
       map (\(h :: TitleHit) -> (h.title, h.space, h.page)) <$> jsonBody r `shouldBe` Just [("on c", s, PageId "5")]
 
     it "is not read as a page's id" $ do

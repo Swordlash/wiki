@@ -205,7 +205,6 @@ import Numeric.Natural (Natural)
 import Protolude
 import Wiki.Api.Error (Staleness (..))
 import Wiki.Api.Export (ExportFormat)
-import Wiki.Api.Plugins.External (ExternalPlugins)
 import Wiki.Api.ServerSettings (AssistantService, HomePage, defaultHomePage)
 import Wiki.Core.Access (Access (..))
 import Wiki.Core.Attachment (Attachment)
@@ -677,6 +676,30 @@ class (Monad m) => MonadWiki m where
   default pageLocation :: (MonadTrans t, m ~ t n, MonadWiki n) => PageId -> m (Either WikiError PageLocation)
   pageLocation = lift . pageLocation
 
+  -- | Whether the server takes the text of a page as plain text now: what
+  -- the browser asks before it sends any of it (a save, a draft, an
+  -- attachment, a comment; a lookup of letters typed may use it later).
+  -- 'Right' when the current user may view the page and no space of its
+  -- chain, where the page is now, is encrypted or being converted.
+  -- Otherwise the refusal:
+  -- 'NotFound' for a page the user may not view, as 'pageLocation' gives;
+  -- 'Stale' with the draft's codes ('Wiki.Api.Error.ConversionRuns',
+  -- 'Wiki.Api.Error.SpaceIsEncrypted') for one whose space is encrypted or
+  -- being converted. Only the right to view the page counts: someone who
+  -- may only comment is answered as an editor is. The HTTP backend also
+  -- refuses, with a 'Conflict' and without asking, a page it read
+  -- encrypted: what was written from it is never sent plain.
+  --
+  -- The answer comes from the server at the time of the question: another
+  -- tab may move the page, encrypt its space, or take the user's access
+  -- away, and a list of spaces read before, or answered from a copy the
+  -- service worker kept, would not say so. A conversion may still start
+  -- between the answer and the write sent after it; the server refuses
+  -- that write, but its text has reached the server by then.
+  plainNow :: PageId -> m (Either WikiError ())
+  default plainNow :: (MonadTrans t, m ~ t n, MonadWiki n) => PageId -> m (Either WikiError ())
+  plainNow = lift . plainNow
+
   -- | The pages that link to a page, its backlinks (issue #189): each page
   -- whose text has a link that leads to it, as "Wiki.App.Backlinks" counts
   -- a link, listed once, in 'Wiki.Core.Backlink.backlinkOrder'. A page's
@@ -934,20 +957,6 @@ class (Monad m) => MonadWiki m where
   default restoreVersion :: (MonadTrans t, m ~ t n, MonadWiki n) => PageId -> UTCTime -> UTCTime -> m (Either WikiError Page)
   restoreVersion p v = lift . restoreVersion p v
 
-  -- * External plugins
-
-  -- | The external plugins the user may run, and who may add them, as
-  -- @GET api\/v1\/external-plugins@ answers ("Wiki.Api.Plugins.External"):
-  -- the wiki's while the policy is not off (and always to an
-  -- administrator), the user's own while it lets users add theirs. The
-  -- editor reads it when it opens, to run the plugins that are on
-  -- ("Wiki.App.Plugin.External.Frames"). It is here and not in
-  -- "Wiki.App.Backend.Plugins" because the editor reaches the backend
-  -- through this class. The demo has none.
-  externalPluginsNow :: m (Either WikiError ExternalPlugins)
-  default externalPluginsNow :: (MonadTrans t, m ~ t n, MonadWiki n) => m (Either WikiError ExternalPlugins)
-  externalPluginsNow = lift externalPluginsNow
-
 -- | A component's handlers reach the backend through its monad.
 -- Each method runs in 'H.async': the handler waits for it, and the rest
 -- of the tree goes on meanwhile.
@@ -981,6 +990,7 @@ instance (MonadWiki m) => MonadWiki (HalogenM st act slots output m) where
   postDetails = H.async . postDetails
   getPage s = H.async . getPage s
   pageLocation = H.async . pageLocation
+  plainNow = H.async . plainNow
   pageBacklinks = H.async . pageBacklinks
   createPage s p t = H.async . createPage s p t
   createPageOf k s p t = H.async . createPageOf k s p t
@@ -1005,7 +1015,6 @@ instance (MonadWiki m) => MonadWiki (HalogenM st act slots output m) where
   listVersions p = H.async . listVersions p
   getVersion p = H.async . getVersion p
   restoreVersion p v = H.async . restoreVersion p v
-  externalPluginsNow = H.async externalPluginsNow
 
 -- | 'MonadLoad' tells whether the backend can answer at once (return the
 -- result synchronously, without waiting for the network), and runs reads

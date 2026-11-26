@@ -24,9 +24,9 @@ import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Editor.Complete
 import Wiki.App.Editor.Tools (Control (..), controlName, htmlTags, notOffered, slashEntries, toolbarGroups)
-import Wiki.App.Route (PageLink (..), pageLinkText, pageRoute, resolvePageLink)
+import Wiki.App.Route (PageLink (..), oneLine, pageLinkText, pageRoute, resolvePageLink)
 import Wiki.Core.Assistant.Reference (markdownReference)
-import Wiki.Core.Id (PageId (..), SpaceId)
+import Wiki.Core.Id (PageId (..), SpaceId (..))
 import Wiki.Core.Markdown (Destination (..), classifyDestination)
 import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), Footnote (..), Inline (..), ListItem (..), allInlines, parseMarkdown, plainText)
 import Wiki.Core.Markdown.Ast qualified as Ast
@@ -423,6 +423,30 @@ spec = describe "Wiki.App.Editor.Complete" $ do
             found <- answered [elsewhereSource spaceNames [hitIn "team" ["plans"] "Plans | Q3"]] "| h | i |\n| --- | --- |\n| [[pl | x |" (Request {line = 3, before = "| [[pl", after = " | x |", nodes = ["Paragraph", "Document"]})
             fst . skeletonText . (.skeleton) <$> head found.candidates
       inCell `shouldBe` Just "[[/s/team/p/plans/\\|Plans \\| Q3]]"
+    it "offers a page only of a space the editor holds, at the path it holds" $ do
+      let plans = hitIn "team" ["plans"] "Plans"
+          moved = TitleHit {page = plans.page, space = plans.space, spacePath = slugs ["elsewhere"], pagePath = plans.pagePath, title = plans.title}
+          unknown = TitleHit {page = plans.page, space = SpaceId "space-new", spacePath = plans.spacePath, pagePath = plans.pagePath, title = plans.title}
+      answered [elsewhereSource spaceNames [moved, unknown]] "[[pl" (lineRequest "[[pl" "") `shouldBe` Nothing
+      (map (.label) . (.candidates) <$> answered [elsewhereSource spaceNames [moved, hitIn "team" ["plans"] "Plans"]] "[[pl" (lineRequest "[[pl" "")) `shouldBe` Just ["Plans"]
+    -- Round 4 of #389's review: a reply made before a space's encryption
+    -- began is no list of that space's pages once the editor holds the
+    -- space as encrypted, or being encrypted.
+    -- Round 5 of #389's review: the spaces held are worked out from a map
+    -- of the spaces by id; each path is still the space's whole chain.
+    it "holds each space at the path of its chain from the top level, a subspace's under its parent's" $ do
+      let spaces = Map.elems (demoState demoNow).spaces
+          pathOf slugName = [h.path | s <- spaces, slugText s.slug == slugName, Just h <- [Map.lookup s.id (heldSpaces spaces)]]
+      pathOf "projects" `shouldBe` [slugs ["team", "projects"]]
+      pathOf "team" `shouldBe` [slugs ["team"]]
+      Map.keysSet (heldSpaces spaces) `shouldBe` Map.keysSet (Map.fromList [(s.id, ()) | s <- spaces])
+    it "offers no page of a space the editor holds as encrypted, or being encrypted or decrypted" $ do
+      let plans = hitIn "team" ["plans"] "Plans"
+          sealedTeam = Map.adjust (\h -> h {plain = False}) plans.space spaceNames
+      answered [elsewhereSource sealedTeam [plans]] "[[pl" (lineRequest "[[pl" "") `shouldBe` Nothing
+      (map (.label) . (.candidates) <$> answered [elsewhereSource sealedTeam [plans, hitIn "projects" ["plans"] "Plans of projects"]] "[[pl" (lineRequest "[[pl" "")) `shouldBe` Just ["Plans of projects"]
+    it "writes a title's line breaks as one space each" $
+      (fst . skeletonText . (.skeleton) <$> (answered [elsewhereSource spaceNames [hitIn "team" ["plans"] "Plans\n\n  for Q3"]] "[[pl" (lineRequest "[[pl" "") >>= head . (.candidates))) `shouldBe` Just "[[/s/team/p/plans/|Plans for Q3]]"
     it "offers nothing but after [[, and nothing with no page found" $ do
       offeredElsewhere "[[!di" "" `shouldBe` Nothing
       answered elsewhere "`[[on`" (Request {line = 1, before = "`[[on", after = "`", nodes = ["InlineCode", "Paragraph", "Document"]}) `shouldBe` Nothing
@@ -779,7 +803,7 @@ slugs = map (either (panic . show) identity . mkSlug)
 -- | Titles that slugify alike, that a link's address cannot hold, or its
 -- label, and plain ones.
 titles :: [Text]
-titles = ["On-call", "On call", "on-call", "Guide", "guide", "Plans | Q3", "A]b", "Ops/Dev", "Q&A", "Who is on call?", "Café", "Notes: 2026", "x", "Deep", "Ops", "Release 2.0", "[draft]"]
+titles = ["On-call", "On call", "on-call", "Guide", "guide", "Plans | Q3", "A]b", "Ops/Dev", "Q&A", "Who is on call?", "Café", "Notes: 2026", "x", "Deep", "Ops", "Release 2.0", "[draft]", "Line\nbreak", "Two\n\nparagraphs", "Spaced \n  out\r\n"]
 
 -- | A tree of pages under a home page, each title from 'titles', each slug
 -- its title's, made unique among its siblings as the wiki does (@-2@).
@@ -829,7 +853,7 @@ linksResolve pages =
     spaces = space : filter (\s -> s.id /= space.id) (Map.elems (demoState demoNow).spaces)
     spacePath = [space.slug]
     pathOf p = fromMaybe (panic "no path") (S.pagePath space (\i -> find (\q -> q.id == i) pages) p.id)
-    target p = (pageRoute spacePath (pathOf p), p.title)
+    target p = (pageRoute spacePath (pathOf p), oneLine p.title)
     -- What a written link is read as: where it leads, and its text.
     readsAs linking written' = case parseMarkdown written' of
       Right blocks
@@ -856,7 +880,7 @@ linksResolve pages =
     joined = \case
       [] -> "."
       segments -> T.intercalate "/" segments
-    labelOf = T.replace "]" "&#93;" . T.replace "&" "&amp;"
+    labelOf = T.replace "]" "&#93;" . T.replace "&" "&amp;" . oneLine
     -- 'pageLinkText''s rule for a title as the last segment.
     titleAllowed t = T.all (\c -> isAlphaNum c || c == ' ' || c == '-') t && T.strip t == t && not (T.null t)
 
@@ -923,10 +947,10 @@ otherSpaces =
   , slugText s.slug == slugName
   ]
 
--- | The demo's spaces' names, by their ids, as the editor gives them to
--- 'elsewhereSource'.
-spaceNames :: Map.Map SpaceId Text
-spaceNames = Map.fromList [(s.id, s.name) | s <- Map.elems (demoState demoNow).spaces]
+-- | The demo's spaces but the Docs, by their ids, each with its name and
+-- its path, plain, as the editor gives them to 'elsewhereSource'.
+spaceNames :: Map.Map SpaceId HeldSpace
+spaceNames = Map.fromList [(s.id, HeldSpace {name = s.name, path = slugs path, plain = True}) | (s, path) <- otherSpaces]
 
 -- | A page the lookup found in the demo's space of this slug, at its path
 -- there, with its title.
@@ -1008,8 +1032,8 @@ elsewhereResolves c =
     keptLabel = T.stripPrefix "|" c.rest <|> T.stripPrefix "\\|" c.rest
     expectedLabel
       | Just kept <- keptLabel = T.replace "&amp;" "&" (T.dropEnd 2 kept)
-      | home = fromMaybe c.hit.title (Map.lookup c.hit.space spaceNames)
-      | otherwise = c.hit.title
+      | home = maybe c.hit.title (\h -> h.name) (Map.lookup c.hit.space spaceNames)
+      | otherwise = oneLine c.hit.title
     target = pageRoute c.hit.spacePath c.hit.pagePath
     spaces' = Map.elems (demoState demoNow).spaces
     docsPath = [space.slug]

@@ -870,6 +870,18 @@ class (Monad m) => MonadWiki m where
   default findPagesByTitle :: (MonadTrans t, m ~ t n, MonadWiki n) => TitleQuery -> m (Either WikiError [TitleHit])
   findPagesByTitle = lift . findPagesByTitle
 
+  -- | Whether the space of this page is known to be plain now: neither
+  -- encrypted nor being encrypted or decrypted. The editor asks it before
+  -- each lookup of other spaces' pages by letters typed in the page
+  -- ('findPagesByTitle', #301): the letters are the page's text, which a
+  -- server must not read for a page of an encrypted space, and the
+  -- editor's own picture of the space may be older than another tab's
+  -- change of it. 'False' where it cannot be known now. A backend that
+  -- holds the pages itself sends the letters nowhere, and says 'True'.
+  plainSource :: PageId -> m Bool
+  default plainSource :: (MonadTrans t, m ~ t n, MonadWiki n) => PageId -> m Bool
+  plainSource = lift . plainSource
+
   -- * Drafts
 
   -- | The signed-in user's draft of a page ("Wiki.Core.Draft"), if they
@@ -999,6 +1011,7 @@ instance (MonadWiki m) => MonadWiki (HalogenM st act slots output m) where
   fetchExport t = H.async . fetchExport t
   searchPages = H.async . searchPages
   findPagesByTitle = H.async . findPagesByTitle
+  plainSource = H.async . plainSource
   getDraft = H.async . getDraft
   saveDraft p v t = H.async . saveDraft p v t
   discardDraft = H.async . discardDraft

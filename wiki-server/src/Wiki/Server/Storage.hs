@@ -1646,6 +1646,9 @@ instance (MonadIO m) => MonadWiki (StoredWiki m) where
   releaseUrls _ = pass
   searchPages = answer [] . searchPagesTx
   findPagesByTitle = run Reads . findPagesByTitleTx
+
+  -- The server holds the pages: the letters go nowhere from here.
+  plainSource _ = pure True
   getDraft = run Reads . getDraftTx
   saveDraft pid base title = run Writes . saveDraftTx pid base title
   discardDraft = run Writes . discardDraftTx

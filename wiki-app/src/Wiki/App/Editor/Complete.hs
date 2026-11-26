@@ -22,6 +22,8 @@ module Wiki.App.Editor.Complete
   , macroCommands
   , pageMacroCommands
   , pageSource
+  , HeldSpace (..)
+  , heldSpaces
   , elsewhereSource
   , Readings
   , noReadings
@@ -50,8 +52,9 @@ import Wiki.Core.Math (definedMacros)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind)
 import Wiki.Core.PageMatch (Matchable (..), TitleHit (..), matchRank, matchable, typedLetters)
+import Wiki.Core.Permission (spaceChain)
 import Wiki.Core.Slug (Slug, slugText)
-import Wiki.Core.Space (Space, pagePath)
+import Wiki.Core.Space (Space (conversion, encryption, id, name, slug), pagePath)
 
 -- | 'Request' is CodeMirror's question: the cursor's line, from 1, in the
 -- whole text (the master's, for a row of a presentation edited slide by
@@ -250,29 +253,53 @@ linkWritten typed address label
       (Just l, EscapedLabel) -> "\\|" <> T.replace "|" "\\|" l
       _ -> ""
 
+-- | 'HeldSpace' is a space as the editor holds it, for the pages of other
+-- spaces after @[[@ (#301): its name, its path from the top level, and
+-- whether it is plain (neither encrypted nor being encrypted or
+-- decrypted). The lookup's machine ("Wiki.App.Editor.Elsewhere.Machine")
+-- closes the list when one of these changes, and 'elsewhereSource' offers
+-- a page only of a space held plain at the same path.
+data HeldSpace = HeldSpace
+  { name :: Text
+  , path :: [Slug]
+  , plain :: Bool
+  }
+  deriving stock (Eq, Show)
+
+-- | The spaces given, as the editor holds them, by id: each space's path
+-- is the slugs of its chain of spaces from the top level.
+heldSpaces :: [Space] -> Map.Map SpaceId HeldSpace
+heldSpaces spaces =
+  Map.fromList
+    [ (s.id, HeldSpace {name = s.name, path = map (\c -> c.slug) (spaceChain spaces s.id), plain = isNothing s.encryption && isNothing s.conversion})
+    | s <- spaces
+    ]
+
 -- | The pages of other spaces after @[[@ (#301): the pages the lookup of
 -- pages by title found ("Wiki.Core.PageMatch"'s 'TitleHit'), in the order
 -- it gave them. The lookup leaves out the space of the page edited, whose
 -- pages 'pageSource' offers. Each entry shows the page's title, and in
--- grey the name of its space (from the names given, by the space's id)
+-- grey the name of its space (from the spaces given, by the space's id)
 -- and where it is: the space's path and the page's path, or the space's
 -- path for its home page.
 --
 -- A hit is offered only when its space, by its id, is one the editor
--- holds (the spaces given, each with its name and its path) at the same
--- path: the preview resolves the link written against the spaces the
--- editor holds, and a space created or moved since the editor heard of
--- the spaces is offered once it has.
+-- holds plain at the same path ('HeldSpace'): the preview resolves the
+-- link written against the spaces the editor holds, and a space created
+-- or moved since the editor heard of the spaces is offered once it has.
+-- A space the editor holds as encrypted, or being encrypted or decrypted,
+-- is not offered: the answer may have been made before the space's
+-- encryption began.
 --
 -- Choosing one writes a link to the page's own address with its title as
 -- the label ('ownPageLinkText'): @[[\/s\/eng\/p\/onboarding\/|Onboarding]]@.
 -- A space's home page is the space's address, @[[\/s\/eng\/|Engineering]]@,
 -- labelled with the space's name. The label is written as 'linkWritten'
 -- writes it: escaped in a table's cell, and the reader's own label kept.
-elsewhereSource :: Map.Map SpaceId (Text, [Slug]) -> [TitleHit] -> Source
+elsewhereSource :: Map.Map SpaceId HeldSpace -> [TitleHit] -> Source
 elsewhereSource held hits wanted
   | wanted.typed.trigger /= LinkToPage = []
-  | otherwise = [candidate hit name | hit <- hits, Just (name, path) <- [Map.lookup hit.space held], path == hit.spacePath]
+  | otherwise = [candidate hit s.name | hit <- hits, Just s <- [Map.lookup hit.space held], s.plain, s.path == hit.spacePath]
   where
     candidate hit spaceName =
       Candidate

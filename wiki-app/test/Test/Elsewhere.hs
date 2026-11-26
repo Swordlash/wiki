@@ -1,15 +1,17 @@
 -- | The rules of the editor's lookup of other spaces' pages after @[[@
 -- ("Wiki.App.Editor.Elsewhere.Machine", #301), over generated orders of
--- questions, pauses ending, answers of the lookups, and changes of the
--- reader, the space and whether the page is sealed, against a model of
--- the server: which spaces each reader may view, an encrypted space that
--- is never searched, and the ranking and the limit of
--- "Wiki.Core.PageMatch". At most one lookup out; none while the page is
--- sealed; none for letters asked under another reader or space; every
--- question replied to once, before any newer question; a reply holding
--- only the answer to its own lookup, under its own reader; and, once the
--- events stop, the last question replied to with the server's pages. The
--- real component on the in-memory DOM is "Test.EditorDom"'s.
+-- questions, pauses ending, answers of the checks and the lookups, and
+-- changes of the reader, the space, whether the page is sealed and the
+-- spaces held, against a model of the server: which spaces each reader may
+-- view, an encrypted space that is never searched, and the ranking and the
+-- limit of "Wiki.Core.PageMatch". At most one ask out, a check or a
+-- lookup; no lookup while the page is sealed; a lookup only on the yes of
+-- its own question's check, for the question still waiting, asked under
+-- the input as it is; every question replied to once, before any newer
+-- question; a reply holding only the answer to its own lookup, under its
+-- own reader; and, once the events stop, the last question replied to
+-- with the server's pages. The real component on the in-memory DOM is
+-- "Test.EditorDom"'s.
 module Test.Elsewhere (spec) where
 
 import Data.Map.Strict qualified as Map
@@ -18,7 +20,7 @@ import Protolude
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.QuickCheck
-import Wiki.App.Editor.Complete (Request (..))
+import Wiki.App.Editor.Complete (HeldSpace (..), Request (..))
 import Wiki.App.Editor.Elsewhere.Machine
 import Wiki.Core.Id (PageId (..), SpaceId (..))
 import Wiki.Core.PageMatch (TitleHit (..), TitleQuery (..), maxLetters, rankTitles)
@@ -32,60 +34,107 @@ spec = describe "Wiki.App.Editor.Elsewhere.Machine" $ do
           (sim, checks) = drain played
        in checkCoverage
             . cover 20 (sim.stale > 0) "an answer dropped as another question's"
-            . cover 10 (sim.queued > 0) "a question asked once the lookup out answered"
-            . cover 10 (sim.changedWithOut > 0) "the input changed while a lookup was out"
+            . cover 10 (sim.queued > 0) "a question checked once the ask out answered"
+            . cover 10 (sim.changedWithOut > 0) "the input changed while an ask was out"
+            . cover 10 (sim.lateChecks > 0) "a check answered after its question was gone"
+            . cover 5 (not (null sim.refused)) "a check answered no"
             . cover 10 (not (null sim.abandoned)) "a question given up"
             . cover 30 (any isJust (Map.elems sim.replies)) "a question replied to with pages"
             $ conjoin (reverse checks) .&&. lastAnswered sim
 
-  it "looks up the last letters once the pause ends, and replies with what the server found" $ do
-    let (m1, e1) = step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial 0 spaceA False)
+  it "checks the space once the pause ends, looks up the last letters on a yes, and replies with what the server found" $ do
+    let (m1, e1) = step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial (inputOf given0))
     e1 `shouldBe` [StopPause, Pause]
     let (m2, e2) = step Paused m1
-    e2 `shouldBe` [Lookup (Ticket 0) TitleQuery {letters = "onb", except = Just spaceA, limit = elsewhereShown, typedIn = Nothing}]
-    let found = serverHits 0 (TitleQuery {letters = "onb", except = Just spaceA, limit = elsewhereShown, typedIn = Nothing})
-        (m3, e3) = step (Found (Ticket 0) (Just found)) m2
-    e3 `shouldBe` [Reply 1 (requestFor 1 "onb") (Just found)]
-    (m3.waiting, m3.out) `shouldBe` (Nothing, Nothing)
+    e2 `shouldBe` [Check (Ticket 0)]
+    let (m3, e3) = step (Checked (Ticket 0) True) m2
+    e3 `shouldBe` [Lookup (Ticket 0) (queryOf "onb" spaceA)]
+    let found = serverHits 0 (queryOf "onb" spaceA)
+        (m4, e4) = step (Found (Ticket 0) (Just found)) m3
+    e4 `shouldBe` [Reply 1 (requestFor 1 "onb") (Just found)]
+    (m4.waiting, m4.out) `shouldBe` (Nothing, Nothing)
 
-  it "asks the server nothing from a sealed page, nor for one letter, and replies at once" $ do
-    snd (step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial 0 spaceA True)) `shouldBe` [StopPause, Reply 1 (requestFor 1 "onb") Nothing]
-    snd (step (Asked 1 (requestFor 1 "o") (Just " o ")) (initial 0 spaceA False)) `shouldBe` [StopPause, Reply 1 (requestFor 1 "o") Nothing]
+  it "replies with nothing, and looks nothing up, when the check says the space is not plain" $ do
+    let checking = fst (step Paused (fst (step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial (inputOf given0)))))
+        (m, e) = step (Checked (Ticket 0) False) checking
+    e `shouldBe` [Reply 1 (requestFor 1 "onb") Nothing]
+    (m.waiting, m.out) `shouldBe` (Nothing, Nothing)
+
+  -- Round 4 of #389's review: a question given up, replaced, or dropped by
+  -- a change of input while its check is out sends no lookup when the
+  -- check says yes.
+  it "sends no lookup when the check answers after its question was given up, replaced, or dropped by a change of input" $ do
+    let checking = fst (step Paused (fst (step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial (inputOf given0)))))
+        afterYes event = step (Checked (Ticket 0) True) (fst (step event checking))
+    snd (afterYes (Abandoned 1)) `shouldBe` []
+    snd (afterYes (Asked 2 (requestFor 2 "onbo") (Just "onbo"))) `shouldBe` []
+    snd (afterYes (Inputs (inputOf (1, spaceA, False, 0)))) `shouldBe` []
+    -- The turn is free again: the newer question is checked once its
+    -- pause ends, under a ticket of its own.
+    snd (step Paused (fst (afterYes (Asked 2 (requestFor 2 "onbo") (Just "onbo"))))) `shouldBe` [Check (Ticket 1)]
+
+  it "asks the server nothing from a sealed page, nor for one letter, nor where no link opens, and replies at once, with no pause" $ do
+    snd (step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial (inputOf (0, spaceA, True, 0)))) `shouldBe` [StopPause, Reply 1 (requestFor 1 "onb") Nothing]
+    snd (step (Asked 1 (requestFor 1 "o") (Just " o ")) (initial (inputOf given0))) `shouldBe` [StopPause, Reply 1 (requestFor 1 "o") Nothing]
+    snd (step (Asked 1 (requestFor 1 "") Nothing) (initial (inputOf given0))) `shouldBe` [StopPause, Reply 1 (requestFor 1 "") Nothing]
 
   it "drops the question waiting when the reader changes, and the answer of its lookup with it" $ do
-    let (m1, _) = step Paused (fst (step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial 0 spaceA False)))
-        (m2, e2) = step (Inputs 1 spaceA False) m1
+    let looking = fst (step (Checked (Ticket 0) True) (fst (step Paused (fst (step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial (inputOf given0)))))))
+        (m2, e2) = step (Inputs (inputOf (1, spaceA, False, 0))) looking
     e2 `shouldBe` [Reply 1 (requestFor 1 "onb") Nothing, StopPause, Close]
     snd (step (Found (Ticket 0) (Just [])) m2) `shouldBe` []
     -- The same input again changes nothing.
-    step (Inputs 1 spaceA False) m2 `shouldBe` (m2, [])
+    step (Inputs (inputOf (1, spaceA, False, 0))) m2 `shouldBe` (m2, [])
 
   it "sends no lookup for a question given up before its pause ended, and replies to it with nothing" $ do
-    let (m1, _) = step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial 0 spaceA False)
+    let (m1, _) = step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial (inputOf given0))
         (m2, e2) = step (Abandoned 1) m1
     e2 `shouldBe` [StopPause, Reply 1 (requestFor 1 "onb") Nothing]
     step Paused m2 `shouldBe` (m2, [])
 
   it "asks nothing for more letters than the server takes" $
-    snd (step (Asked 1 (requestFor 1 "long") (Just (T.replicate (maxLetters + 1) "o"))) (initial 0 spaceA False)) `shouldBe` [StopPause, Reply 1 (requestFor 1 "long") Nothing]
+    snd (step (Asked 1 (requestFor 1 "long") (Just (T.replicate (maxLetters + 1) "o"))) (initial (inputOf given0))) `shouldBe` [StopPause, Reply 1 (requestFor 1 "long") Nothing]
 
-  it "closes the list shown when the reader changes after the pages were replied" $ do
-    let asked = fst (step Paused (fst (step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial 0 spaceA False))))
-        (replied, _) = step (Found (Ticket 0) (Just (serverHits 0 (TitleQuery {letters = "onb", except = Just spaceA, limit = elsewhereShown, typedIn = Nothing})))) asked
-    snd (step (Inputs 1 spaceA False) replied) `shouldBe` [StopPause, Close]
-    snd (step (Inputs 0 spaceB False) replied) `shouldBe` [StopPause, Close]
-    snd (step (Inputs 0 spaceA True) replied) `shouldBe` [StopPause, Close]
+  -- Round 4 of #389's review: a refresh of the spaces can take a space
+  -- away, move it, or mark it encrypted, with the reader and the space
+  -- edited unchanged; a list open then was made against the spaces before.
+  it "closes the list shown when the reader, the space, the sealing or the spaces held change after the pages were replied" $ do
+    let looking = fst (step (Checked (Ticket 0) True) (fst (step Paused (fst (step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial (inputOf given0)))))))
+        (replied, _) = step (Found (Ticket 0) (Just (serverHits 0 (queryOf "onb" spaceA)))) looking
+    for_ [(1, spaceA, False, 0), (0, spaceB, False, 0), (0, spaceA, True, 0), (0, spaceA, False, 1), (0, spaceA, False, 2)] $ \changed ->
+      (changed, snd (step (Inputs (inputOf changed)) replied)) `shouldBe` (changed, [StopPause, Close])
+
+-- | 'Given' is the input as the test tells it: the reader's session, the
+-- space edited, whether the page is sealed, and which of the test's maps
+-- of spaces held ('spacesOf').
+type Given = (Int, SpaceId, Bool, Int)
+
+given0 :: Given
+given0 = (0, spaceA, False, 0)
+
+-- | The machine's input for a 'Given'.
+inputOf :: Given -> Input
+inputOf (session, space, sealed, held) = Input {session, space, sealed, spaces = spacesOf held}
+
+-- | The spaces the editor holds: every space plain at its own path; the
+-- second space encrypted since; or the third moved under the first.
+spacesOf :: Int -> Map SpaceId HeldSpace
+spacesOf held = Map.fromList [(s, HeldSpace {name = s.text, path = toList (mkSlug (pathOf s)), plain = not (held == 1 && s == spaceB)}) | s <- [spaceA, spaceB, spaceC]]
+  where
+    pathOf s
+      | held == 2 && s == spaceC = "moved"
+      | otherwise = s.text
 
 -- | 'Move' is what happens to the machine next: a question with letters
 -- (or none, where no list of pages opens), the end of the pause if one
--- runs, the answer of the lookup out (or its failure), or the input as it
--- is now.
+-- runs, the answer of the ask out (a check's yes or no, a lookup's pages
+-- or its failure), or the input as it is now.
 data Move
   = Ask (Maybe Text)
   | Abandon
   | PauseEnds
   | Answer Bool
-  | Input Int SpaceId Bool
+  | Change Given
   deriving stock (Show)
 
 genMove :: Gen Move
@@ -94,58 +143,71 @@ genMove =
     [ (4, Ask <$> elements [Just "on", Just "onb", Just "no", Just "o", Just "op", Just "zz", Just (T.replicate (maxLetters + 1) "o"), Nothing])
     , (1, pure Abandon)
     , (4, pure PauseEnds)
-    , (4, Answer <$> frequency [(5, pure True), (1, pure False)])
-    , (2, Input <$> elements [0, 0, 1] <*> elements [spaceA, spaceA, spaceB] <*> frequency [(5, pure False), (1, pure True)])
+    , (6, Answer <$> frequency [(5, pure True), (1, pure False)])
+    , (2, (,,,) <$> elements [0, 0, 1] <*> elements [spaceA, spaceA, spaceB] <*> frequency [(5, pure False), (1, pure True)] <*> elements [0, 0, 0, 1, 2] <&> Change)
     ]
 
+-- | 'Out' is an ask out, on the test's side: a check, or a lookup with the
+-- reader it was sent under.
+data Out
+  = OutCheck Ticket
+  | OutLookup Ticket TitleQuery Int
+  deriving stock (Show)
+
 -- | What the test knows as the moves are played: the model; whether a
--- pause runs; the lookups out, each with the reader it was sent under;
--- the questions asked, by number, with their letters and the reader,
--- the space and whether the page was sealed when they were asked; each
--- question's replies, and the input when each was made; the question each
--- lookup was sent for (the last one asked then), and the questions whose
--- lookup failed; the input as it is now; and counts for the coverage.
+-- pause runs; the asks out; the questions asked, by number, with their
+-- letters and the input when they were asked; each question's replies,
+-- and the input when each was made; the question each check and each
+-- lookup was sent for (the last one asked then), the questions whose
+-- check said no, and those whose lookup failed; the input as it is now;
+-- and counts for the coverage.
 data Sim = Sim
   { model :: Model
   , pausing :: Bool
-  , sent :: [(Ticket, TitleQuery, Int)]
-  , asked :: Map Int (Maybe Text, (Int, SpaceId, Bool))
+  , out :: [Out]
+  , asked :: Map Int (Maybe Text, Given)
   , replies :: Map Int (Maybe [TitleHit])
   , replyCounts :: Map Int Int
-  , repliedUnder :: Map Int (Int, SpaceId, Bool)
+  , repliedUnder :: Map Int Given
+  , checkedFor :: Map Ticket Int
   , sentFor :: Map Ticket Int
+  , refused :: [Int]
   , failed :: [Int]
   , abandoned :: [Int]
   -- ^ The questions CodeMirror gave up.
-  , displayed :: Maybe (Int, SpaceId, Bool)
+  , displayed :: Maybe Given
   -- ^ The pages of other spaces CodeMirror shows: the input of the
   -- question they were replied to, until a newer question is asked (the
   -- library asks again, and shows none of them meanwhile) or the list is
   -- closed.
-  , inputs :: (Int, SpaceId, Bool)
+  , inputs :: Given
   , stale :: Int
   , queued :: Int
   , changedWithOut :: Int
+  , lateChecks :: Int
   }
 
 start :: (Sim, [Property])
 start =
   ( Sim
-      { model = initial 0 spaceA False
+      { model = initial (inputOf given0)
       , pausing = False
-      , sent = []
+      , out = []
       , asked = mempty
       , replies = mempty
       , replyCounts = mempty
       , repliedUnder = mempty
+      , checkedFor = mempty
       , sentFor = mempty
+      , refused = []
       , failed = []
       , displayed = Nothing
       , abandoned = []
-      , inputs = (0, spaceA, False)
+      , inputs = given0
       , stale = 0
       , queued = 0
       , changedWithOut = 0
+      , lateChecks = 0
       }
   , []
   )
@@ -169,22 +231,34 @@ play (sim, checks) = \case
   PauseEnds
     | sim.pausing -> stepped sim {pausing = False} checks Paused
     | otherwise -> (sim, checks)
-  Answer ok -> case sim.sent of
-    (ticket, query, session) : rest ->
-      let found = if ok then Just (serverHits session query) else Nothing
+  Answer ok -> case sim.out of
+    asking : rest ->
+      let ticket = case asking of
+            OutCheck t -> t
+            OutLookup t _ _ -> t
           waitingTicket = sim.model.waiting >>= (.ticket)
           counted =
             sim
-              { sent = rest
-              , failed = [n | not ok, Just n <- [Map.lookup ticket sim.sentFor]] <> sim.failed
+              { out = rest
               , stale = sim.stale + (if waitingTicket /= Just ticket then 1 else 0)
               , queued = sim.queued + (if waitingTicket /= Just ticket && maybe False (\q -> q.paused && isNothing q.ticket) sim.model.waiting then 1 else 0)
               }
-       in stepped counted checks (Found ticket found)
+       in case asking of
+            OutCheck _ ->
+              stepped
+                counted
+                  { refused = [n | not ok, Just n <- [Map.lookup ticket sim.checkedFor]] <> sim.refused
+                  , lateChecks = sim.lateChecks + (if waitingTicket /= Just ticket then 1 else 0)
+                  }
+                checks
+                (Checked ticket ok)
+            OutLookup _ query session ->
+              let found = if ok then Just (serverHits session query) else Nothing
+               in stepped counted {failed = [n | not ok, Just n <- [Map.lookup ticket sim.sentFor]] <> sim.failed} checks (Found ticket found)
     [] -> (sim, checks)
-  Input session space sealed ->
-    let changed = (session, space, sealed) /= sim.inputs
-     in stepped sim {inputs = (session, space, sealed), changedWithOut = sim.changedWithOut + (if changed && not (null sim.sent) then 1 else 0)} checks (Inputs session space sealed)
+  Change given ->
+    let changed = given /= sim.inputs
+     in stepped sim {inputs = given, changedWithOut = sim.changedWithOut + (if changed && not (null sim.out) then 1 else 0)} checks (Inputs (inputOf given))
 
 -- | Step the machine with an event, carry out its effects on the test's
 -- side, and check them.
@@ -193,17 +267,22 @@ stepped sim checks event =
   let (model, effects) = step event sim.model
       sim' = foldl' carry sim {model} effects
       latest = Map.size sim'.asked
-      (session, space, sealed) = sim.inputs
+      (session, space, sealed, _) = sim.inputs
       lookups = [q | Lookup _ q <- effects]
       newChecks =
-        [ counterexample ("at most one lookup out, after " <> show event) (length sim'.sent <= 1)
+        [ counterexample ("at most one ask out, a check or a lookup, after " <> show event) (length sim'.out <= 1)
         , counterexample ("no lookup while sealed, after " <> show event) (not sealed || null lookups)
         , counterexample ("each lookup for the last question, asked under the input as it is, after " <> show event) $
             conjoin
               [ case Map.lookup latest sim.asked of
-                  Just (Just letters, askedUnder) -> (q.letters, q.except, askedUnder) === (letters, Just space, (session, space, sealed))
+                  Just (Just letters, askedUnder) -> (q.letters, q.except, askedUnder) === (letters, Just space, sim.inputs)
                   other -> counterexample (show other) (property False)
               | q <- lookups
+              ]
+        , counterexample ("each lookup on the yes of the check sent for the same question, in that step, after " <> show event) $
+            conjoin
+              [ (event, Map.lookup ticket sim.checkedFor) === (Checked ticket True, Just latest)
+              | Lookup ticket _ <- effects
               ]
         , counterexample ("each question replied to once, after " <> show event) (all (<= 1) sim'.replyCounts)
         , counterexample ("every question before the last replied to, after " <> show event) $
@@ -215,8 +294,8 @@ stepped sim checks event =
         , counterexample ("a reply with pages only to its own lookup, under its own reader, after " <> show event) $
             conjoin
               [ case Map.lookup n sim.asked of
-                  Just (Just letters, (askedSession, askedSpace, _)) ->
-                    (askedSession, hits) === (session, serverHits session (TitleQuery {letters, except = Just askedSpace, limit = elsewhereShown, typedIn = Nothing}))
+                  Just (Just letters, (askedSession, askedSpace, _, _)) ->
+                    (askedSession, hits) === (session, serverHits session (queryOf letters askedSpace))
                   other -> counterexample (show other) (property False)
               | Reply n _ (Just hits) <- effects
               ]
@@ -224,12 +303,13 @@ stepped sim checks event =
    in (sim', newChecks <> checks)
 
 -- | Carry out an effect on the test's side: a pause armed or stopped, a
--- lookup sent under the reader of the moment, a reply counted.
+-- check or a lookup sent under the reader of the moment, a reply counted.
 carry :: Sim -> Effect -> Sim
 carry sim = \case
   Pause -> sim {pausing = True}
   StopPause -> sim {pausing = False}
-  Lookup ticket query -> let (session, _, _) = sim.inputs in sim {sent = sim.sent <> [(ticket, query, session)], sentFor = Map.insert ticket (Map.size sim.asked) sim.sentFor}
+  Check ticket -> sim {out = sim.out <> [OutCheck ticket], checkedFor = Map.insert ticket (Map.size sim.asked) sim.checkedFor}
+  Lookup ticket query -> let (session, _, _, _) = sim.inputs in sim {out = sim.out <> [OutLookup ticket query session], sentFor = Map.insert ticket (Map.size sim.asked) sim.sentFor}
   Reply n _ hits ->
     sim
       { replies = Map.insert n hits sim.replies
@@ -241,22 +321,23 @@ carry sim = \case
       }
   Close -> sim {displayed = Nothing}
 
--- | When the events stop: the pause ends, and every lookup answers, until
--- nothing is left to happen.
+-- | When the events stop: the pause ends, and every ask answers (a check
+-- yes, a lookup with pages), until nothing is left to happen.
 drain :: (Sim, [Property]) -> (Sim, [Property])
 drain (sim, checks)
   | sim.pausing = drain (play (sim, checks) PauseEnds)
-  | not (null sim.sent) = drain (play (sim, checks) (Answer True))
+  | not (null sim.out) = drain (play (sim, checks) (Answer True))
   | otherwise = (sim, checks)
 
 -- | Once the events stop, the last question has had its one reply: the
 -- server's pages for its letters when it was asked with letters enough,
 -- on a page not sealed, under the input still in force when it was
--- replied to, and its lookup did not fail; nothing otherwise.
+-- replied to, its check said yes and its lookup did not fail; nothing
+-- otherwise.
 lastAnswered :: Sim -> Property
 lastAnswered sim = case Map.lookupMax sim.asked of
   Nothing -> property True
-  Just (n, (letters, askedUnder@(session, space, sealed))) ->
+  Just (n, (letters, askedUnder@(session, space, sealed, _))) ->
     counterexample "the last question's reply" $
       (Map.lookup n sim.replyCounts, Map.lookup n sim.replies)
         === ( Just 1
@@ -264,13 +345,18 @@ lastAnswered sim = case Map.lookupMax sim.asked of
                 Just l
                   | Map.lookup n sim.repliedUnder == Just askedUnder
                   , n `notElem` sim.failed
+                  , n `notElem` sim.refused
                   , n `notElem` sim.abandoned
                   , T.length l <= maxLetters
                   , not sealed
                   , T.length (T.strip l) >= 2 ->
-                      Just (serverHits session (TitleQuery {letters = l, except = Just space, limit = elsewhereShown, typedIn = Nothing}))
+                      Just (serverHits session (queryOf l space))
                 _ -> Nothing
             )
+
+-- | The lookup of these letters from a page of this space.
+queryOf :: Text -> SpaceId -> TitleQuery
+queryOf letters space = TitleQuery {letters, except = Just space, limit = elsewhereShown}
 
 ----------------------------------------------------------------------
 -- The model of the server

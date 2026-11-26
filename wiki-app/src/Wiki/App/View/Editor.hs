@@ -409,7 +409,7 @@ import Wiki.Core.Assistant.Prompt (Span (..))
 import Wiki.Core.Attachment (Attachment (..), FileName (..), MimeType (..))
 import Wiki.Core.Diff (Diff (..), diffText)
 import Wiki.Core.Draft qualified as D
-import Wiki.Core.Id (PageId, SpaceId, UserId)
+import Wiki.Core.Id (PageId, UserId)
 import Wiki.Core.Markdown (attachmentReference)
 import Wiki.Core.Markdown.Box (BoxKind (name), boxChoices)
 import Wiki.Core.Markdown.Edit
@@ -431,13 +431,12 @@ import Wiki.Core.Page (Page, PageSummary, titleLine, withTitleLine)
 -- the work's fields of the same names.
 import Wiki.Core.Page qualified as P
 import Wiki.Core.PageKind qualified as Kind
-import Wiki.Core.PageMatch (TitleQuery (typedIn))
-import Wiki.Core.Permission (GlobalPermission (Administer), Grants (access), hasGlobalPermission, spaceChain)
+import Wiki.Core.Permission (GlobalPermission (Administer), Grants (access), hasGlobalPermission)
 import Wiki.Core.SlideRows (RowKey (..), Rows)
 import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.Slides qualified as Slides
 import Wiki.Core.Slug (Slug)
-import Wiki.Core.Space (Space (conversion, encryption, id, mathMacros, name, slug))
+import Wiki.Core.Space (Space (conversion, encryption, id, mathMacros, name))
 import Wiki.Core.User (Login (..), User (displayName, id, login))
 import Wiki.Core.Version (Author (..), Version (author))
 
@@ -1211,7 +1210,7 @@ component =
               , emojiQuery = ""
               , readings = Complete.noReadings
               , linkables = linkablesOf input
-              , elsewhere = Machine.new (elsewhereInputs input Elsewhere.initial)
+              , elsewhere = Machine.new (Elsewhere.initial (elsewhereInput input))
               , shippedMacros = ""
               , outerMacros = outerMacrosOf "" input
               , pageMacroNames = []
@@ -2185,10 +2184,11 @@ component =
       -- The work belongs to the editor: a reload of the wiki around it
       -- (after a change elsewhere, or someone signing in) leaves it alone.
       Receive input -> do
-        -- The reader, the space and whether the page is sealed go to the
-        -- lookup of other spaces' pages first, before anything waits: a
-        -- question asked under the input before is dropped in this step.
-        elsewhereStep (elsewhereInputs input Elsewhere.Inputs)
+        -- The reader, the space, whether the page is sealed and the spaces
+        -- held go to the lookup of other spaces' pages first, before
+        -- anything waits: a question asked under the input before is
+        -- dropped in this step.
+        elsewhereStep (Elsewhere.Inputs (elsewhereInput input))
         before <- gets (\st -> pluginsOn st.input.context)
         modify $ \st ->
           -- The pages' paths and links change only with the pages, the
@@ -2671,21 +2671,19 @@ component =
         -- What was typed meanwhile can be saved as a draft now.
         whenM (gets isDirty) scheduleAutosave
 
-    -- Watch the page for who else is editing it, once it is loaded, and
-    -- announce that this tab is as soon as that is known: at once if the
-    -- channel has received it already (another view in this tab watches
-    -- the page too), otherwise when it arrives.
+    -- A step of the lookup of other spaces' pages ('elsewhereSpec').
     elsewhereStep :: Elsewhere.Event -> H.HalogenM State Action Slots ViewOutput m ()
     elsewhereStep = Machine.happen elsewhereSpec
 
     -- The lookup of other spaces' pages after @[[@, run by
     -- "Halogen.Machine": its step, then its effects, with no other event
-    -- of the lookup in between. The pause and the lookup are asks, whose
-    -- answers are later steps; the reply is written in place, against the
-    -- text the editor holds then ('Complete.answer', which answers nothing
-    -- once the cursor's line has changed), so a late reply writes no list
-    -- for a line typed over since. A lookup that fails, or throws, replies
-    -- nothing: the space's own pages stay as they are, with no second group.
+    -- of the lookup in between. The pause, the check and the lookup are
+    -- asks, whose answers are later steps; the reply is written in place,
+    -- against the text the editor holds then ('Complete.answer', which
+    -- answers nothing once the cursor's line has changed), so a late reply
+    -- writes no list for a line typed over since. A check that fails, or
+    -- throws, answers no; a lookup that fails, or throws, replies nothing:
+    -- the space's own pages stay as they are, with no second group.
     elsewhereSpec :: Machine.Spec Pausing State Action Slots ViewOutput m Elsewhere.Event Elsewhere.Effect Elsewhere.Model
     elsewhereSpec = Machine.Spec {Machine.step = Elsewhere.step, Machine.carry = carryElsewhere, Machine.get = \st -> st.elsewhere, Machine.set = \elsewhere st -> st {elsewhere}}
 
@@ -2693,25 +2691,29 @@ component =
     carryElsewhere = \case
       Elsewhere.Pause -> Machine.AskUnder Pausing (Machine.delayCounted elsewhereDelay) (const Elsewhere.Paused)
       Elsewhere.StopPause -> Machine.Cancel Pausing
-      -- Sent with the page the letters were typed in, whose space the
-      -- backend checks again as it sends ('TitleQuery''s @typedIn@). With
-      -- no page loaded there are no letters to look up: nothing is sent.
-      Elsewhere.Lookup ticket query ->
+      -- Whether the space of the page loaded is plain now, as the backend
+      -- knows it ('plainSource'). With no page loaded there are no letters
+      -- to look up: no.
+      Elsewhere.Check ticket ->
         Machine.AskWith
           (gets (\st -> case st.loaded of Ready w -> Just w.page.id; _ -> Nothing))
-          (\page -> Machine.run (maybe (pure (Right [])) (\p -> findPagesByTitle query {typedIn = Just p}) page))
-          (Elsewhere.Found ticket . either (const Nothing) rightToMaybe)
+          (\page -> Machine.run (maybe (pure False) plainSource page))
+          (Elsewhere.Checked ticket . fromRight False)
+      Elsewhere.Lookup ticket query -> Machine.Ask (Machine.run (findPagesByTitle query)) (Elsewhere.Found ticket . either (const Nothing) rightToMaybe)
       Elsewhere.Reply i request hits -> Machine.Now $ do
         found <- state $ \st -> case (st.loaded, hits) of
           (Ready w, Just pages) ->
-            let spaces = st.input.context.spaces
-                held = Map.fromList [(s.id, (s.name, map (\c -> c.slug) (spaceChain spaces s.id))) | s <- spaces]
+            let held = Complete.heldSpaces st.input.context.spaces
                 (elsewhereList, readings) = Complete.answer [Complete.elsewhereSource held pages] st.earlier st.readings w.body request
              in (elsewhereList, st {readings})
           _ -> (Nothing, st)
         gets (\st -> st.hostElement) >>= traverse_ (\h -> Sync.sync (answerElsewhere h i found))
       Elsewhere.Close -> Machine.Now (gets (\st -> st.hostElement) >>= traverse_ (Sync.sync . closeCompletions))
 
+    -- Watch the page for who else is editing it, once it is loaded, and
+    -- announce that this tab is as soon as that is known: at once if the
+    -- channel has received it already (another view in this tab watches
+    -- the page too), otherwise when it arrives.
     watchPage :: H.HalogenM State Action Slots ViewOutput m ()
     watchPage = do
       st <- get
@@ -3746,11 +3748,18 @@ elsewhereDelay :: NominalDiffTime
 elsewhereDelay = 0.15
 
 -- | What the lookup of other spaces' pages is told of the input: the
--- reader's session, the space, and whether the page is sealed, its text
+-- reader's session, the space, whether the page is sealed, its text
 -- encrypted or being encrypted or decrypted (no lookup asks the server
--- for letters of such a text).
-elsewhereInputs :: Input -> (Int -> SpaceId -> Bool -> a) -> a
-elsewhereInputs input f = f input.context.sessionNumber input.space.id (isJust input.space.encryption || isJust input.space.conversion)
+-- for letters of such a text), and the spaces held, against which a
+-- reply's pages are offered ('Complete.heldSpaces').
+elsewhereInput :: Input -> Elsewhere.Input
+elsewhereInput input =
+  Elsewhere.Input
+    { session = input.context.sessionNumber
+    , space = input.space.id
+    , sealed = isJust input.space.encryption || isJust input.space.conversion
+    , spaces = Complete.heldSpaces input.context.spaces
+    }
 
 -- | The pages of the input's space a link from the page edited may name,
 -- with their paths and links ('Complete.linkables'), worked out in full

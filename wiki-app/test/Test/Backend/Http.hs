@@ -72,7 +72,6 @@ import Wiki.Core.Draft (Draft (..))
 import Wiki.Core.Id (AttachmentId (..), BlobId (..), NotificationId (..), PageId (..), SpaceId (..), UserId (..))
 import Wiki.Core.Notification (Notification (..), PageLocation (..))
 import Wiki.Core.Page (Page (..), summaryOf)
-import Wiki.Core.PageMatch (TitleQuery (..), titleQuery)
 import Wiki.Core.Path (parsePath, pathOf)
 import Wiki.Core.Search (SearchHit, SearchQuery (..), searchQuery)
 import Wiki.Core.Slug (Slug)
@@ -260,28 +259,35 @@ requests = describe "its requests" $ do
     runHttpWiki env (createPage hello.space Nothing "New" "Text") >>= (`shouldSatisfy` isLeft)
     -- A search limited to the space is not sent.
     runHttpWiki env (searchPages (searchQuery "words") {space = Just hello.space, includeSubspaces = True}) `shouldReturn` []
-    -- Nor the editor's lookup of other spaces' pages by letters typed in
-    -- the page (#301): they are its text.
-    runHttpWiki env (findPagesByTitle (titleQuery "Edi") {except = Just hello.space, typedIn = Just hello.id}) >>= (`shouldSatisfy` isLeft)
+    -- Nor is the space plain to the editor's lookup of other spaces'
+    -- pages by letters typed in the page (#301), which sends them only
+    -- after a yes: they are its text.
+    runHttpWiki env (plainSource hello.id) `shouldReturn` False
     sent <- readIORef asked
-    [(methodOf r, requestUrl r) | r <- sent, methodOf r /= "GET" || any (`T.isPrefixOf` requestUrl r) ["api/v1/search", "api/v1/pages/titled"]] `shouldBe` []
+    [(methodOf r, requestUrl r) | r <- sent, methodOf r /= "GET" || "api/v1/search" `T.isPrefixOf` requestUrl r] `shouldBe` []
 
-  -- #301: the editor's lookup by letters typed in a page goes out only
-  -- when the page's space is known plain now. A list of spaces that no
-  -- longer holds it (the reader's access taken away, the space perhaps
-  -- encrypted meanwhile) sends nothing.
-  it "sends no lookup of letters typed in a page whose space the list fetched now does not hold" $ do
+  -- #301: the editor looks up letters typed in a page only once the
+  -- backend says the page's space is plain now ('plainSource'). A list of
+  -- spaces fetched now that no longer holds the space (the reader's
+  -- access taken away, the space perhaps encrypted meanwhile) says no; a
+  -- list that holds it plain says yes. Only the list is asked for.
+  it "says a page's space is plain only when the list of spaces fetched now holds it plain" $ do
     let blog = fromMaybe (panic "no blog") (Map.lookup hello.space demo.spaces)
-    (transport, asked) <- scripted $ \r ->
-      if
-        | requestUrl r == "api/v1/spaces" -> ok ([] :: [Space])
-        | requestUrl r == endpointUrl (\e -> e.spaces.pageAt hello.space (slugs "hello-world")) -> ok hello
-        | otherwise -> ok ([] :: [Space])
-    env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
-    runHttpWiki env (getPage hello.space (slugs "hello-world")) `shouldReturn` Right hello
-    runHttpWiki env (findPagesByTitle (titleQuery "Edi") {except = Just hello.space, typedIn = Just hello.id}) >>= (`shouldSatisfy` isLeft)
-    sent <- readIORef asked
-    [requestUrl r | r <- sent, "api/v1/pages/titled" `T.isPrefixOf` requestUrl r] `shouldBe` []
+        pageUrl = endpointUrl (\e -> e.spaces.pageAt hello.space (slugs "hello-world"))
+        plainWith listed = do
+          (transport, asked) <- scripted $ \r ->
+            if
+              | requestUrl r == "api/v1/spaces" -> ok listed
+              | requestUrl r == pageUrl -> ok hello
+              | otherwise -> status 500 ""
+          env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
+          runHttpWiki env (getPage hello.space (slugs "hello-world")) `shouldReturn` Right hello
+          plain <- runHttpWiki env (plainSource hello.id)
+          sent <- readIORef asked
+          pure (plain, [requestUrl r | r <- sent, requestUrl r /= pageUrl])
+    plainWith ([] :: [Space]) `shouldReturn` (False, ["api/v1/spaces"])
+    plainWith [blog] `shouldReturn` (True, ["api/v1/spaces"])
+    plainWith [blog {encryption = Just (KeyId "a-key")}] `shouldReturn` (False, ["api/v1/spaces"])
 
   -- #255's tenth review: a space that asks each time it is opened, in the
   -- middle of turning its encryption off, after a write emptied the cache.

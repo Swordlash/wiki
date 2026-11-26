@@ -272,6 +272,9 @@ instance (MonadIO m) => MonadWiki (MemWiki m) where
     pure (void result)
   searchPages = query . searchPagesIn
   findPagesByTitle = query . findPagesByTitleIn
+
+  -- The demo's pages are in the browser: the letters go nowhere.
+  plainSource _ = pure True
   getDraft = query . getDraftIn
   saveDraft pid base title body = writeAt (saveDraftIn pid base title body)
   discardDraft = write . discardDraftIn

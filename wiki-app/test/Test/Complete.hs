@@ -400,6 +400,14 @@ spec = describe "Wiki.App.Editor.Complete" $ do
           unknown = TitleHit {page = plans.page, space = SpaceId "space-new", spacePath = plans.spacePath, pagePath = plans.pagePath, title = plans.title}
       answered [elsewhereSource spaceNames [moved, unknown]] "[[pl" (lineRequest "[[pl" "") `shouldBe` Nothing
       (map (.label) . (.candidates) <$> answered [elsewhereSource spaceNames [moved, hitIn "team" ["plans"] "Plans"]] "[[pl" (lineRequest "[[pl" "")) `shouldBe` Just ["Plans"]
+    -- Round 4 of #389's review: a reply made before a space's encryption
+    -- began is no list of that space's pages once the editor holds the
+    -- space as encrypted, or being encrypted.
+    it "offers no page of a space the editor holds as encrypted, or being encrypted or decrypted" $ do
+      let plans = hitIn "team" ["plans"] "Plans"
+          sealedTeam = Map.adjust (\h -> h {plain = False}) plans.space spaceNames
+      answered [elsewhereSource sealedTeam [plans]] "[[pl" (lineRequest "[[pl" "") `shouldBe` Nothing
+      (map (.label) . (.candidates) <$> answered [elsewhereSource sealedTeam [plans, hitIn "projects" ["plans"] "Plans of projects"]] "[[pl" (lineRequest "[[pl" "")) `shouldBe` Just ["Plans of projects"]
     it "writes a title's line breaks as one space each" $
       (fst . skeletonText . (.skeleton) <$> (answered [elsewhereSource spaceNames [hitIn "team" ["plans"] "Plans\n\n  for Q3"]] "[[pl" (lineRequest "[[pl" "") >>= head . (.candidates))) `shouldBe` Just "[[/s/team/p/plans/|Plans for Q3]]"
     it "offers nothing but after [[, and nothing with no page found" $ do
@@ -889,9 +897,9 @@ otherSpaces =
   ]
 
 -- | The demo's spaces but the Docs, by their ids, each with its name and
--- its path, as the editor gives them to 'elsewhereSource'.
-spaceNames :: Map.Map SpaceId (Text, [Slug])
-spaceNames = Map.fromList [(s.id, (s.name, slugs path)) | (s, path) <- otherSpaces]
+-- its path, plain, as the editor gives them to 'elsewhereSource'.
+spaceNames :: Map.Map SpaceId HeldSpace
+spaceNames = Map.fromList [(s.id, HeldSpace {name = s.name, path = slugs path, plain = True}) | (s, path) <- otherSpaces]
 
 -- | A page the lookup found in the demo's space of this slug, at its path
 -- there, with its title.
@@ -973,7 +981,7 @@ elsewhereResolves c =
     keptLabel = T.stripPrefix "|" c.rest <|> T.stripPrefix "\\|" c.rest
     expectedLabel
       | Just kept <- keptLabel = T.replace "&amp;" "&" (T.dropEnd 2 kept)
-      | home = maybe c.hit.title fst (Map.lookup c.hit.space spaceNames)
+      | home = maybe c.hit.title (\h -> h.name) (Map.lookup c.hit.space spaceNames)
       | otherwise = oneLine c.hit.title
     target = pageRoute c.hit.spacePath c.hit.pagePath
     spaces' = Map.elems (demoState demoNow).spaces

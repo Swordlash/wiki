@@ -14,10 +14,12 @@
 -- editor renders the textarea's text only as its content, the text it was
 -- loaded with, so no render writes the field while it is typed in.
 --
--- The second shows the lookup of other spaces' pages after @[[@ (#301)
--- run by the component, its lookups held in a gate: a question asked
--- while a lookup is out sends none, and is looked up once that lookup
--- answers. The rules of the replies are "Test.Elsewhere"'s.
+-- The others show the lookup of other spaces' pages after @[[@ (#301) run
+-- by the component, its checks of the space and its lookups held in
+-- gates: a question asked while a lookup is out sends none, and is looked
+-- up once that lookup answers; and a question given up while its check is
+-- out sends no lookup when the check says yes. The rules of the replies
+-- are "Test.Elsewhere"'s.
 module Test.EditorDom (spec) where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -46,7 +48,7 @@ import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..), route)
 import Wiki.App.View.Editor qualified as Editor
-import Wiki.Core.Id (UserId (..))
+import Wiki.Core.Id (PageId, UserId (..))
 import Wiki.Core.PageMatch (TitleHit, TitleQuery (..))
 import Wiki.Core.Slug (Slug, mkSlug)
 import Wiki.Core.Space (Space (id))
@@ -90,41 +92,64 @@ spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $ do
   it "looks up other spaces' pages one at a time: a question asked while a lookup is out is looked up once it answers" $
     withTestClock $ \clock -> do
       wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-editor")})
-      gate <- newGate
+      gates <- Gates <$> newGate <*> newGate
       let run :: Looked (MemWiki MemDOM) a -> MemDOM a
-          run = runMemWiki wiki . runLooked gate
-          idle = advance clock 0.001
-          lettersHeld = map (\h -> h.asked.letters)
+          run = runMemWiki wiki . runLooked gates
       (router, input) <- editorInput (runMemWiki wiki)
       withView run Editor.component input $ \view -> do
-        settle view
-        field <- find view ".editor-text" >>= maybe (panic "the editor has no textarea") pure
-        host <- find view ".editor-cm" >>= maybe (panic "the editor has no element for CodeMirror") pure
-        let question n typed = do
-              typeIntoNode field ("# Hello, world\n\nSee [[" <> typed)
-              idle
-              N.dispatch "wiki-complete-elsewhere" (object ["detail" .= object ["id" .= n, "line" .= (3 :: Int), "before" .= ("See [[" <> typed), "after" .= ("" :: Text), "nodes" .= ("Paragraph Document" :: Text)]]) host
-              idle
-        -- The first question: its lookup goes out once the pause ends.
-        question (1 :: Int) "on"
+        ask' <- questions view clock
+        let both = holds gates.checks <> holds gates.lookups
+            -- The check of the page's space, which the backend answers
+            -- yes.
+            plainNow = waitHeld gates.checks ((== 1) . length) >>= traverse_ (\h -> answer gates.checks h True)
+        -- The first question: its check goes out once the pause ends, and
+        -- on its yes the lookup.
+        ask' (1 :: Int) "on"
         advance clock Editor.elsewhereDelay
-        first' <- waitHeld gate ((== ["on"]) . lettersHeld)
+        plainNow
+        first' <- waitHeld gates.lookups ((== ["on"]) . lettersHeld)
         -- A second question, while the first lookup is out: its pause
         -- ends, and nothing more goes out. (The check of the number held
         -- fails when a lookup goes out for each question: shown so with
         -- the machine's rule taken away.)
-        question 2 "onb"
+        ask' 2 "onb"
         advance clock Editor.elsewhereDelay
-        settleHolding view (holds gate)
-        lettersHeld <$> held gate `shouldReturn` ["on"]
+        settleHolding view both
+        lettersHeld <$> held gates.lookups `shouldReturn` ["on"]
+        length <$> held gates.checks `shouldReturn` 0
         -- The first lookup answers: its answer is no reply to the second
-        -- question, which is looked up now.
-        traverse_ (\h -> answer gate h (Right [])) first'
-        later <- waitHeld gate ((== ["onb"]) . lettersHeld)
+        -- question, which is checked and looked up now.
+        traverse_ (\h -> answer gates.lookups h (Right [])) first'
+        plainNow
+        later <- waitHeld gates.lookups ((== ["onb"]) . lettersHeld)
         map (\h -> h.asked.except) later `shouldBe` [Just input.space.id]
-        traverse_ (\h -> answer gate h (Right [])) later
-        settleHolding view (holds gate)
-        held gate >>= (`shouldBe` []) . lettersHeld
+        traverse_ (\h -> answer gates.lookups h (Right [])) later
+        settleHolding view both
+        held gates.lookups >>= (`shouldBe` []) . lettersHeld
+      Router.stop router
+
+  -- Round 4 of #389's review: Escape, or letters typed over, while the
+  -- check of the space is out. The check's yes comes after the question
+  -- is gone, and no lookup carries its letters. (Shown failing with the
+  -- machine keeping a question given up once its check is out.)
+  it "sends no lookup when the question is given up while the check of the space is out" $
+    withTestClock $ \clock -> do
+      wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-editor")})
+      gates <- Gates <$> newGate <*> newGate
+      let run :: Looked (MemWiki MemDOM) a -> MemDOM a
+          run = runMemWiki wiki . runLooked gates
+      (router, input) <- editorInput (runMemWiki wiki)
+      withView run Editor.component input $ \view -> do
+        ask' <- questions view clock
+        host <- find view ".editor-cm" >>= maybe (panic "the editor has no element for CodeMirror") pure
+        ask' (1 :: Int) "onb"
+        advance clock Editor.elsewhereDelay
+        checking <- waitHeld gates.checks ((== 1) . length)
+        N.dispatch "wiki-complete-elsewhere-abandoned" (object ["detail" .= object ["id" .= (1 :: Int)]]) host
+        advance clock 0.001
+        traverse_ (\h -> answer gates.checks h True) checking
+        settleHolding view (holds gates.checks <> holds gates.lookups)
+        lettersHeld <$> held gates.lookups `shouldReturn` []
       Router.stop router
   where
     slugs :: [Text] -> [Slug]
@@ -135,6 +160,20 @@ spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $ do
       property "value" node >>= \case
         Just (N.ScalarText t) -> pure t
         _ -> N.textContent node
+    lettersHeld = map (\h -> h.asked.letters)
+    -- Once the editor is loaded: ask CodeMirror's question about the pages
+    -- of other spaces, with this number, after "See [[" and these letters,
+    -- typed first in the textarea.
+    questions view clock = do
+      settle view
+      field <- find view ".editor-text" >>= maybe (panic "the editor has no textarea") pure
+      host <- find view ".editor-cm" >>= maybe (panic "the editor has no element for CodeMirror") pure
+      let idle = advance clock 0.001
+      pure $ \n typed -> do
+        typeIntoNode field ("# Hello, world\n\nSee [[" <> typed)
+        idle
+        N.dispatch "wiki-complete-elsewhere" (object ["detail" .= object ["id" .= n, "line" .= (3 :: Int), "before" .= ("See [[" <> typed), "after" .= ("" :: Text), "nodes" .= ("Paragraph Document" :: Text)]]) host
+        idle
     -- The editor's input at the blog's first post, signed in as the
     -- demo's editor, and the router it is given.
     editorInput :: (forall a. MemWiki MemDOM a -> MemDOM a) -> IO (Router.Router Route, Editor.Input)
@@ -149,16 +188,23 @@ spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $ do
         pure (me, spaces, blog, ps)
       pure (router, Editor.Input {context = viewContextAs router me spaces 0, space = blog, pages = ps, path = slugs ["hello-world"], feed = Nothing, home = False})
 
--- | The in-memory backend with the lookups of pages by title held in a
--- gate, until the test answers each.
-newtype Looked m a = Looked (ReaderT (Gate TitleQuery (Either WikiError [TitleHit])) m a)
+-- | The gates of 'Looked': the checks of a page's space ('plainSource')
+-- and the lookups of pages by title.
+data Gates = Gates
+  { checks :: Gate PageId Bool
+  , lookups :: Gate TitleQuery (Either WikiError [TitleHit])
+  }
+
+-- | The in-memory backend with the checks of a page's space and the
+-- lookups of pages by title held in gates, until the test answers each.
+newtype Looked m a = Looked (ReaderT Gates m a)
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO, PrimMonad)
 
 instance MonadTrans Looked where
   lift = Looked . lift
 
-runLooked :: Gate TitleQuery (Either WikiError [TitleHit]) -> Looked m a -> m a
-runLooked gate (Looked m) = runReaderT m gate
+runLooked :: Gates -> Looked m a -> m a
+runLooked gates (Looked m) = runReaderT m gates
 
 deriving newtype instance (MonadDOM m) => MonadDOM (Looked m)
 
@@ -170,7 +216,8 @@ instance (MonadUUID m) => MonadUUID (Looked m) where
   generateV4 = lift generateV4
 
 instance (MonadWiki m, MonadIO m) => MonadWiki (Looked m) where
-  findPagesByTitle q = Looked (ask >>= \gate -> liftIO (hold gate q))
+  findPagesByTitle q = Looked (ask >>= \gates -> liftIO (hold gates.lookups q))
+  plainSource p = Looked (ask >>= \gates -> liftIO (hold gates.checks p))
 
 instance (MonadWiki m, MonadIO m) => MonadLoad (Looked m) where
   atOnce = fmap Just

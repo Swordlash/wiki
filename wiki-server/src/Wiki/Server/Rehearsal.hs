@@ -55,10 +55,18 @@
 -- ("Wiki.Server"). The scratch directory is the caller's: it is made here
 -- (readable only by the owner, as @data/@ is, since the copy holds the
 -- wiki's secrets) and deleted however the rehearsal ends.
+--
+-- A deployment whose PDF exports are off (the deploy's @--no-pdf@) starts
+-- the rehearsal's servers with @--no-pdf@ too, so that neither tries its
+-- TeX engine before it serves (up to 20 seconds for one that hangs):
+-- this program with @rehearse --no-pdf@, and the old one with
+-- @--old-no-pdf@, which the deploy gives only when the old program's unit
+-- runs it with @--no-pdf@ already, the proof that it takes the option.
 module Wiki.Server.Rehearsal
   ( -- * The command
     RehearsalOptions (..)
   , rehearsalParser
+  , serveCommands
   , RehearsalOutcome (..)
   , runRehearsal
   , isolateCopy
@@ -174,6 +182,14 @@ data RehearsalOptions = RehearsalOptions
   -- database, with its password file. The migrated copy is copied into it,
   -- and the new program serves it there. It is the caller's to make and to
   -- drop.
+  , noPdf :: Bool
+  -- ^ Whether this program serves the copy with @--no-pdf@
+  -- (@rehearse --no-pdf@), so that it does not try its TeX engine.
+  , oldNoPdf :: Bool
+  -- ^ Whether the old program serves the copy with @--no-pdf@ too
+  -- (@rehearse --old-no-pdf@). Only for an old program known to take the
+  -- option: one older than it refuses to start, and the rehearsal ends
+  -- with 'OldNotDriven'.
   }
   deriving stock (Eq, Show)
 
@@ -186,6 +202,20 @@ rehearsalParser =
     <*> optional ((,) <$> strOption (long "scratch-database" <> metavar "URL" <> help "A PostgreSQL database for the copy, postgres://USER@HOST:PORT/NAME (overwritten)") <*> optional (strOption (long "scratch-database-password-file" <> metavar "FILE" <> help "The file that holds the scratch database's password")))
     <*> optional (strOption (long "scratch-pg-restore" <> metavar "PROGRAM" <> help "The pg_restore that restores into the scratch database"))
     <*> optional ((,) <$> option (databaseUrl "put the password in --move-to-database-password-file FILE") (long "move-to-database" <> metavar "URL" <> help "Rehearse a move to PostgreSQL: copy the migrated copy into this empty database, postgres://USER@HOST:PORT/NAME, and serve it there with this program") <*> optional (strOption (long "move-to-database-password-file" <> metavar "FILE" <> help "The file that holds that database's password")))
+    <*> switch (long "no-pdf" <> help "Serve the migrated copy with this program's --no-pdf, which tries no TeX engine")
+    <*> switch (long "old-no-pdf" <> help "Serve the copy with the old program's --no-pdf too; only for an old program that takes the option")
+
+-- | 'serveCommands' is the command lines of the rehearsal's two servers
+-- after the program: the old program's on the copy, then this program's on
+-- the migrated copy, each given its place's options. Each listens on ports
+-- the system gives, and takes @--no-pdf@ when the options say so. This
+-- program also takes @--no-guide@, so that a copy with no spaces stays
+-- without the guide.
+serveCommands :: RehearsalOptions -> [[Char]] -> [[Char]] -> ([[Char]], [[Char]])
+serveCommands o oldPlace newPlace =
+  ( ["serve"] <> oldPlace <> listenAnywhere <> ["--no-pdf" | o.oldNoPdf]
+  , ["serve"] <> newPlace <> listenAnywhere <> ["--no-guide"] <> ["--no-pdf" | o.noPdf]
+  )
 
 -- | 'RehearsalOutcome' is how a rehearsal ended. The program's exit code
 -- tells them apart for the deploy: 0, 6, 7 and 1.
@@ -242,7 +272,7 @@ rehearse o = either identity identity <$> runExceptT steps
             Right (Left why) -> throwError (OldNotDriven ("The check of " <> name <> " could not prepare the copy with the old program: " <> why))
             Right (Right s) -> pure (Seeded name (before s) after)
         -- The old program on the copy, and what each check keeps of it.
-        fixtures <- withServer (o.scratch </> "old.log") o.old (placeArgs scratchChoice) (serveArgs scratchChoice []) (throwError . OldNotDriven) $ \server ->
+        fixtures <- withServer (o.scratch </> "old.log") o.old (placeArgs scratchChoice) (fst (serveCommands o (placeArgs scratchChoice) [])) (throwError . OldNotDriven) $ \server ->
           for seeded $ \(Seeded name before after) ->
             liftIO (try (before manager server)) >>= \case
               Left (e :: SomeException) -> throwError (OldNotDriven ("The check of " <> name <> " could not use the old program's wiki: " <> show e))
@@ -274,11 +304,10 @@ rehearse o = either identity identity <$> runExceptT steps
             CopyFailed why -> broken ("The copy could not be moved to PostgreSQL: " <> why)
       -- This program on the migrated copy, and each check's verdict.
       self <- liftIO getExecutablePath
-      results <- withServer (o.scratch </> "new.log") self (placeArgs servedChoice) (serveArgs servedChoice ["--no-guide"]) (broken . ("The new program did not serve the migrated copy: " <>)) $ \server ->
+      results <- withServer (o.scratch </> "new.log") self (placeArgs servedChoice) (snd (serveCommands o [] (placeArgs servedChoice))) (broken . ("The new program did not serve the migrated copy: " <>)) $ \server ->
         for fixtures $ \(name, after) -> (name,) <$> liftIO (after server)
       let lines' = [either (\why -> name <> ": failed: " <> why) (const (name <> ": passed")) r | (name, r) <- results]
       pure (if all (isRight . snd) results then Rehearsed lines' else ChecksFailed lines')
-    serveArgs choice extra = ["serve"] <> placeArgs choice <> listenAnywhere <> extra
     placeArgs choice = ["--data", o.scratch] <> databaseArgs choice
     databaseArgs = \case
       SqliteChosen file -> ["--sqlite", file]

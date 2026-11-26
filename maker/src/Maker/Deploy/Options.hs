@@ -7,7 +7,8 @@
 --
 -- The options are read one by one, in order, as the shell's loop read
 -- them, because some messages depend on the order (@--texlive@ after
--- @--no-texlive@ is refused at the second). 'optionNames' lists every
+-- @--no-texlive@ is refused at the second, @--no-pdf@ after @--texlive@
+-- too). 'optionNames' lists every
 -- option the reader knows, for the check that the deploy's header, this
 -- reader and the wizard name the same options.
 module Maker.Deploy.Options
@@ -62,6 +63,10 @@ data Options = Options
   -- Strict-Transport-Security.
   , optProxy :: Bool
   , optTexlive :: String
+  , optPdf :: String
+  -- ^ @no@ after @--no-pdf@, @yes@ after @--pdf@, empty when neither is
+  -- given: whether the server makes PDF exports at all. @--no-pdf@ turns
+  -- the TeX step off, and the deploy remembers it until @--pdf@.
   , optTexliveMirror :: String
   , optTexliveInstaller :: String
   , optPerlSource :: String
@@ -112,6 +117,7 @@ defaultOptions =
     , optHsts = ""
     , optProxy = False
     , optTexlive = ""
+    , optPdf = ""
     , optTexliveMirror = ""
     , optTexliveInstaller = ""
     , optPerlSource = ""
@@ -172,12 +178,14 @@ table =
   , ("--no-build", Flag (\o -> Right o {build = False}))
   , ("--semaphore", Flag (\o -> Right o {optSemaphore = "on"}))
   , ("--no-semaphore", Flag (\o -> Right o {optSemaphore = "off"}))
-  , ("--texlive", Flag (exclusive (.optTexlive) "no" "--texlive and --no-texlive exclude each other: give one" (\o -> o {optTexlive = "yes"})))
-  , ("--no-texlive", Flag (exclusive (.optTexlive) "yes" "--texlive and --no-texlive exclude each other: give one" (\o -> o {optTexlive = "no"})))
-  , ("--whats-new", Flag (exclusive (.optWhatsNew) "no" "--whats-new and --no-whats-new exclude each other: give one" (\o -> o {optWhatsNew = "yes"})))
-  , ("--no-whats-new", Flag (exclusive (.optWhatsNew) "yes" "--whats-new and --no-whats-new exclude each other: give one" (\o -> o {optWhatsNew = "no"})))
-  , ("--hsts", Flag (exclusive (.optHsts) "no" "--hsts and --no-hsts exclude each other: give one" (\o -> o {optHsts = "yes"})))
-  , ("--no-hsts", Flag (exclusive (.optHsts) "yes" "--hsts and --no-hsts exclude each other: give one" (\o -> o {optHsts = "no"})))
+  , ("--texlive", Flag (exclusive (.optTexlive) "no" "--texlive and --no-texlive exclude each other: give one" (exclusive (.optPdf) "no" "--texlive and --no-pdf exclude each other: give one" (\o -> Right o {optTexlive = "yes"}))))
+  , ("--no-texlive", Flag (exclusive (.optTexlive) "yes" "--texlive and --no-texlive exclude each other: give one" (\o -> Right o {optTexlive = "no"})))
+  , ("--pdf", Flag (exclusive (.optPdf) "no" "--pdf and --no-pdf exclude each other: give one" (\o -> Right o {optPdf = "yes"})))
+  , ("--no-pdf", Flag (exclusive (.optPdf) "yes" "--pdf and --no-pdf exclude each other: give one" (exclusive (.optTexlive) "yes" "--texlive and --no-pdf exclude each other: give one" (\o -> Right o {optPdf = "no"}))))
+  , ("--whats-new", Flag (exclusive (.optWhatsNew) "no" "--whats-new and --no-whats-new exclude each other: give one" (\o -> Right o {optWhatsNew = "yes"})))
+  , ("--no-whats-new", Flag (exclusive (.optWhatsNew) "yes" "--whats-new and --no-whats-new exclude each other: give one" (\o -> Right o {optWhatsNew = "no"})))
+  , ("--hsts", Flag (exclusive (.optHsts) "no" "--hsts and --no-hsts exclude each other: give one" (\o -> Right o {optHsts = "yes"})))
+  , ("--no-hsts", Flag (exclusive (.optHsts) "yes" "--hsts and --no-hsts exclude each other: give one" (\o -> Right o {optHsts = "no"})))
   , ("--texlive-mirror", Value (\v o -> o {optTexliveMirror = v}))
   , ("--texlive-installer", Value (\v o -> o {optTexliveInstaller = v}))
   , ("--perl-source", Value (\v o -> o {optPerlSource = v}))
@@ -192,9 +200,9 @@ table =
   , ("--yes", Flag (\o -> Right o {yes = True}))
   ]
   where
-    exclusive field other message set o
+    exclusive field other message next o
       | field o == other = Left message
-      | otherwise = Right (set o)
+      | otherwise = next o
 
 -- | The names of the options the deploy takes, the help's among them.
 -- @--dir@, the old name of @--prefix@, is one of them.

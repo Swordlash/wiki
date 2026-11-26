@@ -487,6 +487,24 @@ env PATH="$case_dir/pgsql-16/bin:$case_dir/bin:$no_dpkg" sh "$case_dir/repo/tool
 [ ! -s "$EVENTS" ] || fail "native without pg_config installed something: $(cat "$EVENTS")"
 pass 'native installs GHC and cabal alone, with no wasm toolchain, Node, Chromium or fourmolu, on Debian or not, and checks what the native build needs after the Debian packages, libpq through pg_config on PATH, or, with --without-postgres, neither libpq-dev from Debian nor libpq in the check'
 
+# native --without-tex passes the option to the check, which then tries no
+# xelatex: the deploy gives it when the PDF exports are off by --no-pdf,
+# and the wizard's wrapper always. The fixture's toolchain/check-tex.sh is
+# a fake that writes a line into a file at each call; plain native shows
+# that the check calls it.
+cp "$case_dir/repo/toolchain/check-tex.sh" "$case_dir/check-tex.sh.real"
+tex_probes=$case_dir/tex-probes
+printf '#!/bin/sh\nprintf "check-tex.sh ran\\n" >>"%s"\nprintf "not-found\\n"\nexit 2\n' "$tex_probes" >"$case_dir/repo/toolchain/check-tex.sh"
+env PATH="$case_dir/pgsql-16/bin:$case_dir/bin:$no_dpkg" sh "$case_dir/repo/toolchain/bootstrap.sh" native >"$case_dir/native-tex" 2>&1 ||
+  fail "native with the fake check-tex.sh failed: $(cat "$case_dir/native-tex")"
+assert_contains "$tex_probes" 'check-tex.sh ran'
+: >"$tex_probes"
+env PATH="$case_dir/pgsql-16/bin:$case_dir/bin:$no_dpkg" sh "$case_dir/repo/toolchain/bootstrap.sh" native --without-tex >"$case_dir/native-without-tex" 2>&1 ||
+  fail "native --without-tex failed: $(cat "$case_dir/native-without-tex")"
+[ ! -s "$tex_probes" ] || fail "native --without-tex ran check-tex.sh: $(cat "$tex_probes")"
+cp "$case_dir/check-tex.sh.real" "$case_dir/repo/toolchain/check-tex.sh"
+pass 'native --without-tex: the check of the native build runs no check-tex.sh, which plain native runs'
+
 # The configuration wizard (toolchain/configure.sh) runs native
 # --without-postgres --with-wizard. On Debian without libncurses-dev and
 # without root, that stops at the Debian packages, naming it; native

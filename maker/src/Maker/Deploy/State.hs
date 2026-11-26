@@ -51,6 +51,7 @@ stateKeys =
   , ("texlive_dir", "texlive_dir")
   , ("texlive_mirror", "texlive_mirror")
   , ("perl_dir", "perl_dir")
+  , ("pdf_exports", "pdf_exports")
   , ("whats_new", "whats_new")
   , ("git_commit", "git_commit")
   ]

@@ -37,6 +37,12 @@ spec = describe "the deploy's front" $ do
     parseOptions ["--server", "-h"] `shouldBe` Right Help
   it "refuses what the shell refused, in its words" $ do
     parseOptions ["--texlive", "--no-texlive"] `shouldBe` Left "--texlive and --no-texlive exclude each other: give one"
+    parseOptions ["--no-pdf", "--pdf"] `shouldBe` Left "--pdf and --no-pdf exclude each other: give one"
+    parseOptions ["--pdf", "--no-pdf"] `shouldBe` Left "--pdf and --no-pdf exclude each other: give one"
+    parseOptions ["--texlive", "--no-pdf"] `shouldBe` Left "--texlive and --no-pdf exclude each other: give one"
+    parseOptions ["--no-pdf", "--texlive"] `shouldBe` Left "--texlive and --no-pdf exclude each other: give one"
+    fmap (fmap (\o -> (o.optPdf, o.optTexlive))) (parsedOf ["--no-pdf", "--no-texlive"]) `shouldBe` Right (Just ("no", "no"))
+    fmap (fmap (\o -> (o.optPdf, o.optTexlive))) (parsedOf ["--pdf", "--texlive"]) `shouldBe` Right (Just ("yes", "yes"))
     parseOptions ["--no-whats-new", "--whats-new"] `shouldBe` Left "--whats-new and --no-whats-new exclude each other: give one"
     parseOptions ["--no-hsts", "--hsts"] `shouldBe` Left "--hsts and --no-hsts exclude each other: give one"
     parseOptions ["--frobnicate"] `shouldBe` Left "unknown option: --frobnicate (see --help)"

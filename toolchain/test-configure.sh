@@ -194,6 +194,29 @@ expect "sh toolchain/deploy-local.sh --server --prefix $TMP/srv/tex --sqlite --b
   "prefix=$TMP/srv/tex" texlive=machine
 pass 'the PDF exports from the state: texlive=yes is --texlive with its mirror, and this machine'"'"'s TeX over it is --no-texlive'
 
+# No PDF exports at all: texlive=off is --no-pdf, for the server only. A
+# state that remembers them off (pdf_exports=no) gives --no-pdf again,
+# whatever its texlive says; any other answer over it gives --pdf first,
+# which turns them on again, and that answer's own options after it.
+expect 'sh toolchain/deploy-local.sh --server --sqlite --no-pdf --behind-proxy --port 8090 --admin-port 8081' \
+  mode=server db=sqlite texlive=off way=proxy port=8090
+expect 'sh toolchain/deploy-local.sh --static --behind-proxy --port 8090' \
+  mode=static texlive=off way=proxy port=8090
+mkdir -p "$TMP/srv/nopdf/state"
+printf 'name=wiki-demo\ndir=%s/srv/nopdf\nport=8090\nmode=server\nadmin_port=8091\nway=proxy\ndb=sqlite\ntexlive=yes\ntexlive_dir=%s/srv/nopdf/toolchain/.wiki-toolchain/texlive/2026\npdf_exports=no\n' "$TMP" "$TMP" >"$TMP/srv/nopdf/state/wiki-demo.state"
+expect "sh toolchain/deploy-local.sh --server --prefix $TMP/srv/nopdf --sqlite --no-pdf --behind-proxy --port 8090 --admin-port 8091" \
+  "prefix=$TMP/srv/nopdf"
+expect "sh toolchain/deploy-local.sh --server --prefix $TMP/srv/nopdf --sqlite --pdf --texlive --behind-proxy --port 8090 --admin-port 8091" \
+  "prefix=$TMP/srv/nopdf" texlive=toolchain
+expect "sh toolchain/deploy-local.sh --server --prefix $TMP/srv/nopdf --sqlite --pdf --no-texlive --behind-proxy --port 8090 --admin-port 8091" \
+  "prefix=$TMP/srv/nopdf" texlive=machine
+sed -i '/^texlive=yes$/d' "$TMP/srv/nopdf/state/wiki-demo.state"
+expect "sh toolchain/deploy-local.sh --server --prefix $TMP/srv/nopdf --sqlite --pdf --behind-proxy --port 8090 --admin-port 8091" \
+  "prefix=$TMP/srv/nopdf" texlive=machine
+expect "sh toolchain/deploy-local.sh --server --prefix $TMP/srv/nopdf --sqlite --pdf --no-texlive --behind-proxy --port 8090 --admin-port 8091" \
+  "prefix=$TMP/srv/nopdf" texlive=none
+pass 'no PDF exports: texlive=off is --no-pdf, remembered from pdf_exports=no, and another answer over it takes --pdf first'
+
 # The page off in the state (whats_new=no) stays off, with --no-whats-new;
 # turned on again, --whats-new forgets it.
 mkdir -p "$TMP/srv/news/state"

@@ -1605,7 +1605,7 @@ mathSource commands wanted = case wanted.typed.trigger of
     -- alike, and the property of "Test.Markdown.CompleteMath" checks every
     -- name offered on its own.
     environments place readsBack
-      | null matching || not (environmentFits at readsBack.baseline) || not (readsBack.readsWith together) = []
+      | null matching || not (environmentFits place at readsBack.baseline) || not (readsBack.readsWith together) = []
       | otherwise = [(e.opening, environmentCandidate e) | e <- matching]
       where
         matching = [e | e <- environmentsInOrder, place == InDisplay || not e.displayOnly, typedName `T.isPrefixOf` e.opening]
@@ -1690,14 +1690,26 @@ environmentWritten prefix e rest =
 -- An @\\end@ that ends an environment begun before the cursor
 -- (@\\begin{aligned} x &= \\be‸ \\end{aligned}@) is no reason. With no
 -- reading of the math, no environment is offered.
-environmentFits :: At -> Maybe (MathPlace, Text) -> Bool
-environmentFits at baseline =
+--
+-- In display math whose TeX ends on the cursor's line (display math being
+-- typed, which the parser read closed after that line, or closed on the
+-- line below), the lines below count too, up to a blank line or a line
+-- that starts with @$$@ or a fence's backticks or tildes: once the math
+-- is closed, they may be in it (@$$@, @\\be‸@, @a & b@,
+-- @\\end{pmatrix}@).
+environmentFits :: MathPlace -> At -> Maybe (MathPlace, Text) -> Bool
+environmentFits place at baseline =
   not ("{" `T.isPrefixOf` T.dropWhile isBlank at.after) && maybe False (not . endsUnbegun . snd) baseline
   where
     endsUnbegun tex =
       let (upTo, atWord) = T.breakOn ("\\" <> mathWord) tex
           opened = foldl' (\depth step -> max 0 (depth + step)) 0 (environmentSteps upTo)
-       in any (< 0) (scanl (+) opened (environmentSteps (T.drop (T.length mathWord + 1) atWord)))
+          afterWord = T.drop (T.length mathWord + 1) atWord
+          below
+            | place == InDisplay && not ("\n" `T.isInfixOf` T.strip afterWord) = T.concat ["\n" <> l | l <- takeWhile inMathBelow at.below]
+            | otherwise = ""
+       in any (< 0) (scanl (+) opened (environmentSteps (afterWord <> below)))
+    inMathBelow l = let t = T.dropWhile isBlank l in not (T.null t) && not (any (`T.isPrefixOf` t) ["$$", "```", "~~~"])
 
 -- | The steps of depth of environments a text of TeX takes, in order: 1 for
 -- each @\\begin@, -1 for each @\\end@. A backslash starts a control word

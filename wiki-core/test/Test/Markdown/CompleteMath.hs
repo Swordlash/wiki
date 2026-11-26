@@ -14,7 +14,7 @@ import Test.Cases (longTexts)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.Markdown.CompleteStarts (alikeEverywhere, caseAt)
-import Test.QuickCheck (Arbitrary (..), Gen, Property, classify, conjoin, counterexample, elements, forAll, property, (.&&.), (===))
+import Test.QuickCheck (Arbitrary (..), Gen, Property, classify, conjoin, counterexample, elements, forAll, once, property, (.&&.), (===))
 import Wiki.Core.Markdown.Ast (Block (..), Inline (..), ListItem (..), parseMarkdown)
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.Math.KatexCommands (katexArguments, katexCommands, katexEnvironments)
@@ -95,14 +95,18 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
         , "$\\be‸ = 1$"
         , "$\\begin{pmatrix} \\be‸ \\end{pmatrix}$"
         , "$$\n\\begin{aligned}\nx &= \\be‸ \\\\\ny &= 2\n\\end{aligned}\n$$"
+        , "$$\n\\begin{aligned}\n\\be‸\n\\end{aligned}"
+        , "$$\n\\be‸\n$$\n\n\\end{pmatrix}"
         ]
       $ \marked -> (marked, elem (labelOf "pmatrix") <$> environmentsAt marked) `shouldBe` (marked, Just True)
-    it "offers none where what follows may be the environment's own: a brace, or an \\end of an environment not begun before the cursor"
+    it "offers none where what follows may be the environment's own: a brace, or an \\end of an environment not begun before the cursor, on the lines below display math being typed too"
       $ for_
         [ "$\\be‸{pmatrix}$"
         , "$\\be‸ {pmatrix} a \\end{pmatrix}$"
         , "$\\be‸ a & b \\end{pmatrix}$"
         , "$$\n\\be‸\na & b \\\\\nc & d\n\\end{pmatrix}\n$$"
+        , "$$\n\\be‸\na & b\n\\end{pmatrix}"
+        , "```math\n\\be‸\n\\end{cases}"
         , "$\\begin{matrix} a \\end{matrix} \\be‸ \\end{matrix}$"
         ]
       $ \marked -> (marked, environmentsAt marked) `shouldBe` (marked, Just [])
@@ -180,6 +184,15 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
       writing (readLine at.above) `shouldBe` Just (LineAsText "$\\fr$" (1, 4))
     modifyMaxSuccess (`div` 2) . longTexts . prop "writes braces only where the whole text, written and its places filled, reads as it did with the command alone, the braces in the math, over long texts" $
       forAll genPlace bracesReadBack
+    -- The property meets every environment in math only now and then: here
+    -- each one is checked on its own, in a formula and in display math.
+    it "writes each environment so that the whole text reads as it did, its begin and end in the math, in a formula, display math, a math fence and a quotation (#301)"
+      $ once
+      $ conjoin
+        [ (marked, length . filter ("\\begin{" `T.isPrefixOf`) . map (.label) <$> listAt [] marked) === (marked, Just count) .&&. bracesReadBack place'
+        | (place', count) <- [(("$\\beg", "$"), 19), (("Text $a = \\beg", " + 1$ b"), 19), (("$$\n\\beg", "\n$$"), 27), (("```math\n\\beg", "\n```"), 27), (("> $$\n> \\beg", "\n> $$"), 27)]
+        , let marked = fst place' <> "‸" <> snd place'
+        ]
     prop "writes as many pairs of braces as KaTeX's tables give a command, and its name alone for every other" $
       forAll (elements [c | c <- katexCommands, T.length c > 2]) $ \name ->
         case find ((== name) . (.label)) =<< listAt [] ("$" <> T.dropEnd 1 name <> "‸$") of

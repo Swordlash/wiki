@@ -61,12 +61,21 @@ import Wiki.Core.Markdown.Enter (textLimit)
 -- inside it; so is a footnote's definition. A block right after another
 -- is read as it is because of the one before: an item may start a list
 -- after a paragraph's line only if it has text, and is no task then.
+--
+-- A block or an item that took attributes is no start. A line of
+-- attributes alone gives them to the next block, over blank lines, and
+-- out of the item it is in: @+ {#a}@ gives them to the next item, and the
+-- parser then puts them on a block inside that item (a fence). A cut at
+-- such a block leaves the line of attributes out, so the part after the
+-- cut reads otherwise, and an item split there would not be read as the
+-- page reads it. A block's own braces (@# Title {#id}@) count too: the
+-- start before it is taken instead, which reads a little more text.
 blockStarts :: Text -> [Shape] -> [Int]
 blockStarts source shapes =
-  ordNub (1 : sort ([a | s <- shapes, s.kind /= NoteShape, let { a = fst (shapeLines s) }, a > 1, afterBlank a, not (inNote a)] <> items))
+  ordNub (1 : sort ([a | s <- shapes, s.kind /= NoteShape, null s.attributes, let { a = fst (shapeLines s) }, a > 1, afterBlank a, not (inNote a)] <> items))
   where
     -- The items after the first of a list at the page's own level.
-    items = [fst (shapeLines i) | s <- shapes, s.kind == ListShape, i <- drop 1 s.inner, not (inNote (fst (shapeLines i)))]
+    items = [fst (shapeLines i) | s <- shapes, s.kind == ListShape, i <- drop 1 s.inner, null i.attributes, not (inNote (fst (shapeLines i)))]
     -- The footnotes' definitions, each by its first line, with its last:
     -- they do not overlap, so the one that may hold a line is the last
     -- that starts at or before it.

@@ -1175,16 +1175,20 @@ const emojiSource = (names, whole) => {
 // asks the parser whether it is in math.
 const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$|(^|[ \t])\/[A-Za-z]*$|\\[A-Za-z]+$/;
 
-// elsewhereGate is what may open the group "In other spaces" of the list
-// after [[ (elsewhereSource): a [[ on the line before the cursor with no
-// ]] after it, so that prose typed after a link closed on the line asks
-// nothing. Haskell decides the rest with the parser: the letters after
-// the last [[, if a link to a page opens a list there
-// (Wiki.App.Editor.Complete's linkLetters), and whether they are few or
-// many enough to look up (Wiki.App.Editor.Elsewhere.Machine). Where
-// nothing is looked up, the component replies with nothing at once, with
-// no pause.
-const elsewhereGate = /\[\[(?:(?!\]\]).)*$/;
+// elsewhereGate is whether the line before the cursor may open the group
+// "In other spaces" of the list after [[ (elsewhereSource): its last [[
+// comes after its last ]], or it has a [[ and no ]], so that prose typed
+// after a link closed on the line asks nothing. It compares the places
+// of the two, each found once from the end, so it is linear in the line:
+// a regular expression that looks for a ]] after each [[ is quadratic,
+// and runs at every pause of the typing. A ]] cannot start inside a [[,
+// so overlaps need no care: [[[ asks, and [[a]]] does not. Haskell
+// decides the rest with the parser: the letters after the last [[, if a
+// link to a page opens a list there (Wiki.App.Editor.Complete's
+// linkLetters), and whether they are few or many enough to look up
+// (Wiki.App.Editor.Elsewhere.Machine). Where nothing is looked up, the
+// component replies with nothing at once, with no pause.
+const elsewhereGate = (before) => before.lastIndexOf("[[") > before.lastIndexOf("]]");
 
 // The "/" whose menu Escape closed, by position in each state, kept
 // where the text around them moves: the letters typed after such a "/"
@@ -1524,7 +1528,7 @@ const listOf = (host, context, place, found, section) => {
 const elsewhereSection = { name: "In other spaces", rank: 1 };
 const elsewhereSource = (host, elsewhere, whole) => (context) => {
   const place = placeOf(context, whole);
-  if (!elsewhereGate.test(place.before)) return null;
+  if (!elsewhereGate(place.before)) return null;
   const asked = new Promise((resolve) => {
     elsewhere.ask(JSON.stringify(place.detail), place.detail, context.view).then(resolve);
     context.addEventListener("abort", () => resolve(null), { onDocChange: true });

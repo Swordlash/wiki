@@ -2888,17 +2888,34 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   built and in review: the editor's group (#389), splitting an item
   on its later lines (#390), a math command's braces from KaTeX's
   own arities (#391, on #389), and `\begin…\end` after it (#392).
-  **Found by #389's rounds in the code before it, and left for a
-  pull request of their own:** `plainPageWrite` refuses only a space
-  the fresh list marks encrypted, so a draft, a save, an upload or
-  a comment goes out plain when the list no longer holds the space
-  (encrypted, and the reader's access taken away, with the editor's
-  tab left open); the mentions' lookup of people trusts the editor's
-  snapshot of the space, so typed letters go to `people/search`
-  after another tab starts encrypting it; the mentions' asker keeps
-  its answers by letters for the editor's life, across a change of
-  reader. #389's own lookup has none of the three
-  (`plainSourceLookup`, `Inputs`, no kept answers). **Held requests (#385, after #377):** the
+  **The guard of a plain write asks the server by the page (#394,
+  found by #389's rounds in the code before it).** Before a save, a
+  draft, an attachment, a comment's text or a resolve goes out
+  plain, the HTTP backend asks `GET api/v1/pages/<page>/plain`
+  (`plainNow`: 204, 409 with the draft's codes, 404), which the
+  service worker leaves to the network; a refusal is `Stale` with
+  the reader's words, and the editor's merge offers nothing for
+  another page at the edited page's address. The guard before it
+  went by the space the tab last read the page in, and by a list of
+  spaces that could leave the space out (access taken away) or come
+  from the worker's copy. **Left:** a yes is old when it is used if
+  a conversion began since, or if a later question about the page
+  was refused while the yes was on its way (the owner, 2026-11-26:
+  left; the reads of the spaces' list are numbered against this,
+  the questions are not): the text reaches the server, which
+  refuses it and keeps nothing, and a resolve in a space encrypted
+  in that window is taken and answered without the thread's text;
+  `createPage`, with no page to ask about, reads the list of
+  spaces, which the worker may answer from its copy; the refusal
+  "no longer encrypted" is still a conflict and opens the merge
+  view. **Still open, for a design of its own:** what a view sends
+  of typed text outside a write (the letters after `@`, the logins
+  a draft mentions, in both previews) goes by the view's snapshot of
+  the space, and the mentions' asker keeps its answers by letters
+  across a change of reader. Two rounds of #394 showed that a view
+  which asks, waits and then sends is not closed by rechecks: it
+  needs one backend call keyed by the page, as the write guard is.
+  **Held requests (#385, after #377):** the
   browser examples that hold a request start over a backend with no
   time limit, through one helper (`holdingEnv`, `startHolding` in
   `Test.Browser.Http`); left: five holds in `Test/Browser/Vault.hs`

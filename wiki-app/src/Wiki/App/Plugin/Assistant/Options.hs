@@ -116,8 +116,7 @@ import Wiki.App.Plugin.Capability.Assistant
   , Models (..)
   )
 import Wiki.Core.Assistant
-  ( ApiKey (..)
-  , AssistantError (..)
+  ( AssistantError (..)
   , ErrorKind (BadKey, Unreachable)
   , Listed
   , Model (..)
@@ -161,7 +160,7 @@ import Wiki.Core.Assistant
   , withReached
   )
 import Wiki.Core.Assistant.Reference (markdownReference)
-import Wiki.Core.Assistant.Split (secretOf)
+import Wiki.Core.Assistant.Split (keptValue, secretOf, serviceFor, serviceText)
 import Wiki.Core.Url (Url (..))
 
 -- | What the settings page gives the view ('Wiki.App.Plugin.OptionsInput').
@@ -382,6 +381,9 @@ component =
               {% end %}
             {% end %}
             {{ secretField "secret" st.input.can.secrets FieldInput {name = secretOf p, check = checkFor st p s, binding = serviceBinding p s} (FromField p) }}
+            {% for why in maybeToList (Settings.keyElsewhere (Machine.current st.machine) p) %}
+              <p class="warning assistant-key-elsewhere" role="alert">{{ why }}</p>
+            {% end %}
             {% if isJust ps.key %}
               <div class="actions">
                 <button type="button" class="assistant-test" disabled={{ checking }} onClick={{ const (Test p) }}>Test the key</button>
@@ -665,7 +667,11 @@ component =
     -- has it, else with the list's first model. It tells the view what it
     -- found as it goes. The settings are those the field was last given.
     -- A key that passes is answered as it was tried ('readyWith' trims
-    -- it), and the field keeps that key, not the text typed.
+    -- it), with the service it was tried against ('keptValue'): the field
+    -- keeps that key for that service, not the text typed. The service is
+    -- made from the settings the field's binding is made from
+    -- ('serviceBinding'), so a key is kept for the binding its check was
+    -- asked under, which the field compares when the check answers.
     checkFor :: State m -> Provider -> Settings -> Text -> m (Either Text Text)
     checkFor st p s typed = case (st.heard, readyWith typed p s) of
       (Nothing, _) -> pure (Left "The settings are still being read.")
@@ -684,15 +690,16 @@ component =
             let model = either (const asked.model) (\l -> modelOf p (withModels p l at s)) listed
             models.check Ready {provider = asked.provider, model, key = asked.key, effort = asked.effort, baseUrl = asked.baseUrl} >>= \case
               Just e -> refused e
-              Nothing -> tell (CheckPassed p model) $> Right asked.key.text
+              Nothing -> tell (CheckPassed p model) $> Right (keptValue (serviceFor p s) asked.key)
 
 -- | The service a key's check tries it against, as a key's field binds
 -- the check to it ('Wiki.App.Plugin.FieldInput'): the provider, and the
--- address chosen, none for the provider's own. A key checked against one
+-- address chosen, the provider's own included
+-- ('Wiki.Core.Assistant.Split.serviceFor'). A key checked against one
 -- service is then never kept for another, if the options change while the
--- check is out.
+-- check is out; and the key is kept with that service ('checkFor').
 serviceBinding :: Provider -> Settings -> Text
-serviceBinding p s = providerKey p <> " " <> maybe "" (\u -> u.text) (baseUrlOf p (settingsOf p s))
+serviceBinding p s = serviceText (serviceFor p s)
 
 -- | The model a key is tested with: the one chosen, if the provider's
 -- list has it, else the list's first.

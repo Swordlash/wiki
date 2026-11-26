@@ -716,8 +716,11 @@ spec m = readsOnce Quiet $ do
     findIn anthropic ".assistant-service" >>= (`getProperty` "value") >>= (`shouldBe` "")
     _ <- perform (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-service") (toJSText gateway))
     (\s -> (settingsOf Anthropic s).baseUrl) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (Url gateway))
-    (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ApiKey "gw-token"))
-    -- The other service's own list, fetched at once with the key.
+    -- The key was kept for Anthropic's own service: it is not sent to the
+    -- gateway, and the settings say so.
+    (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
+    findIn anthropic ".assistant-key-elsewhere" >>= textContent >>= (`shouldSatisfy` T.isInfixOf ("is for another address: https://api.anthropic.com. Enter the key for " <> gateway))
+    -- The other service's own list, fetched at once, without the key.
     findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
     findIn anthropic ".assistant-service" >>= (`getProperty` "value") >>= (`shouldBe` gateway)
     length <$> findAllIn anthropic ".assistant-insecure-base-url" `shouldReturn` 0

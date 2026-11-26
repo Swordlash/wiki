@@ -193,6 +193,10 @@ data Input m = Input
   , models :: Models m
   , settings :: Maybe (Either Text Settings)
   -- ^ The user's settings, once the editor has read them.
+  , keyElsewhere :: Provider -> Maybe Text
+  -- ^ What to say of a provider whose key was kept for another address
+  -- than the one the settings name, and which the settings therefore hold
+  -- no key for ("Wiki.App.Plugin.Assistant.Settings"'s @keyElsewhere@).
   , problem :: Maybe Text
   -- ^ Why storing a change of the settings failed, if it did.
   , checking :: Set Provider
@@ -614,6 +618,17 @@ component =
                     </p>
                   |]
         | Just why <- st.input.problem -> Just [hh|<p class="error assistant-setup" role="alert">{{ why }}</p>|]
+      -- A key kept for another address is not used: the panel says so,
+      -- whether or not the provider can be asked without it.
+      Just (Right s)
+        | Just why <- st.input.keyElsewhere s.provider ->
+            Just
+              [hh|
+                <p class="assistant-setup assistant-key-elsewhere" role="alert">
+                  {{ why <> " " }}
+                  <a {{ optionsLinkProps st.input.optionsLink Followed }}>Open the assistant's settings</a>
+                </p>
+              |]
       Just (Right s) -> case ready s of
         Left why ->
           Just
@@ -861,7 +876,7 @@ component =
     sendMessage :: State m -> Text -> H.HalogenM (State m) (Action m) Empty Output m ()
     sendMessage st text = case (st.input.settings, st.input.document) of
       (Just (Right s), Just document) -> case ready s of
-        Left why -> addEntry (Trouble why)
+        Left why -> addEntry (Trouble (fromMaybe why (st.input.keyElsewhere s.provider)))
         Right kept -> do
           -- The effort of this conversation, which the settings do not
           -- keep.

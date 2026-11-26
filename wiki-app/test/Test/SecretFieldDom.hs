@@ -25,7 +25,8 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Control.Monad.UUID (MonadUUID (..))
-import Data.IORef (atomicModifyIORef', newIORef)
+import Data.Aeson (Value)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Halogen.Router qualified as Router
@@ -38,7 +39,7 @@ import Test.Hspec
 import Test.SecretsPlugin (endpointName, secretive, secretiveManifest, tokenName)
 import Test.VaultServer
 import Wiki.Api.Plugins (Plugins (..))
-import Wiki.App.Assistant (MonadAssistant (..))
+import Wiki.App.Assistant (MonadAssistant (..), Opening (..))
 import Wiki.App.Assistant.Sync (MonadVault)
 import Wiki.App.Backend (anonymousIn)
 import Wiki.App.Backend qualified as B
@@ -52,7 +53,10 @@ import Wiki.App.Route (Route (..), route)
 import Wiki.App.Vault (vaultSlot)
 import Wiki.App.View.Plugins.Machine qualified as PluginsMachine
 import Wiki.Core.Access (Access (..))
+import Wiki.Core.Assistant (ApiKey (..), Provider (..), Ready (..), defaultSettings, withBaseUrl)
+import Wiki.Core.Assistant.Split (keptValue, optionsValue, secretOf, serviceFor)
 import Wiki.Core.Id (UserId (..))
+import Wiki.Core.Url (Url (..))
 import Wiki.Core.User (Login (..), User (..))
 import Wiki.Core.Vault (Item (..), ItemName (..), itemOf)
 import Wiki.Core.Vault.Plugin (decodeSecrets, pluginSealingData)
@@ -218,9 +222,123 @@ spec = describe "Wiki.App.View.SecretField" $ do
         setInput view (given Nothing)
         settle view
         textOf view ".assistant-setup" >>= (`shouldSatisfy` (not . T.isInfixOf refusal))
+
+  -- Codex's seventh round on #382: a key kept for Anthropic's own service
+  -- reached a gateway that options from elsewhere named. The key here was
+  -- kept for Anthropic's own service, and the options name a gateway.
+  it "says in the assistant's settings that a key kept for another address is not used, and sends it to no other address" $
+    withKeptElsewhere $ \run can asked -> do
+      let given options = OptionsInput {user = Just alice, options = Just options, refused = Nothing, adopted = True, can}
+          anthropic selector = "[data-provider=anthropic] " <> selector
+      withView run AssistantOptions.component (given atGateway) $ \view -> do
+        settle view
+        textOf view (anthropic ".secret-field-state") `shouldReturn` "Set"
+        textOf view (anthropic ".assistant-key-elsewhere") >>= (`shouldSatisfy` T.isInfixOf "for another address: https://api.anthropic.com. Enter the key for https://gateway.example/anthropic")
+        -- The connection tested at the gateway, without the key.
+        click view (anthropic ".assistant-test")
+        settle view
+        gatewayAsks <- asked
+        gatewayAsks `shouldSatisfy` any (\r -> r.baseUrl == Just gateway)
+        filter (\r -> r.key == officialKey) gatewayAsks `shouldBe` []
+        -- Anthropic's own service chosen: the key is used there.
+        setInput view (given (optionsValue defaultSettings))
+        settle view
+        isJust <$> find view (anthropic ".assistant-key-elsewhere") `shouldReturn` False
+        click view (anthropic ".assistant-test")
+        settle view
+        filter (\r -> r.key == officialKey) <$> asked >>= (`shouldSatisfy` (\rs -> not (null rs) && all (\r -> isNothing r.baseUrl) rs))
+        -- The gateway chosen again, and a key typed for it: checked at the
+        -- gateway, kept for it, and used there.
+        setInput view (given atGateway)
+        settle view
+        void (element view (anthropic ".assistant-key-elsewhere"))
+        typeInto view (anthropic ".secret-field-value") "sk-ant-gateway"
+        click view (anthropic ".secret-field-keep")
+        settle view
+        isJust <$> find view (anthropic ".assistant-key-elsewhere") `shouldReturn` False
+        click view (anthropic ".assistant-test")
+        settle view
+        filter (\r -> r.key == ApiKey "sk-ant-gateway") <$> asked >>= (`shouldSatisfy` (\rs -> not (null rs) && all (\r -> r.baseUrl == Just gateway) rs))
+
+  it "says in the editor's panel that a key kept for another address is not used, and sends it to no other address" $
+    withKeptElsewhere $ \run can asked -> do
+      let editing = Editing {title = "A page", body = "Some text.", selection = Nothing, pending = 0, decisions = mempty, encrypted = False, document = Nothing}
+      withView run AssistantAgent.component AgentInput {user = Just alice, options = Just atGateway, refused = Nothing, editing = Just editing, can} $ \view -> do
+        settle view
+        tell view (Press "anthropic" True)
+        settle view
+        textOf view ".assistant-setup" >>= (`shouldSatisfy` T.isInfixOf "for another address: https://api.anthropic.com")
+        -- The gateway's list asked for, without the key.
+        gatewayAsks <- asked
+        gatewayAsks `shouldSatisfy` any (\r -> r.baseUrl == Just gateway)
+        filter (\r -> r.key == officialKey) gatewayAsks `shouldBe` []
   where
     token selector = "[data-secret=token] " <> selector
     endpoint selector = "[data-secret=endpoint] " <> selector
+
+-- | The gateway the options of 'withKeptElsewhere' name for Anthropic.
+gateway :: Url
+gateway = Url "https://gateway.example/anthropic"
+
+-- | Options that send Anthropic's requests to 'gateway'.
+atGateway :: Value
+atGateway = optionsValue (withBaseUrl Anthropic gateway.text defaultSettings)
+
+-- | The key 'withKeptElsewhere' keeps, for Anthropic's own service.
+officialKey :: ApiKey
+officialKey = ApiKey "sk-ant-official"
+
+-- | A test on the writing assistant, for Alice, whose Anthropic key is
+-- kept for Anthropic's own service: how to run on her browser, the
+-- capabilities the host makes for the assistant, and every request the
+-- providers were asked, in order.
+withKeptElsewhere :: ((forall a. Recording (Served (Fake MemDOM)) a -> MemDOM a) -> Capabilities (Recording (Served (Fake MemDOM))) -> IO [Ready] -> IO ()) -> IO ()
+withKeptElsewhere test = do
+  counter <- newIORef 0
+  k <- atomicModifyIORef' counter (\n -> (n + 1, n + 1))
+  server <- newServer (Just (userVault k))
+  d <- newDevice counter True
+  withVaultKey d alice k
+  manifest <- maybe (panic "the assistant is in the registry") pure (head [m | m <- manifests, m.id == assistantId])
+  requests <- newIORef []
+  let run :: Recording (Served (Fake MemDOM)) a -> MemDOM a
+      run (Recording r) = onDevice d (served server (runReaderT r requests))
+  runMemDOM (run (putSecret alice manifest (secretOf Anthropic) (keptValue (serviceFor Anthropic defaultSettings) officialKey))) `shouldReturn` Right ()
+  router <- runMemDOM (onDevice d (served server (Router.newRouter "/" Unknown route)))
+  let session = (anonymousIn Open) {B.user = Just User {id = alice, login = Login "alice", displayName = "Alice", avatar = Nothing}}
+  test run (capabilities (viewContextAs router session [] 0) manifest) (reverse <$> readIORef requests)
+
+-- | 'Recording' is a browser of the tests where the writing assistant
+-- runs, as 'Browsing' is, whose providers record every request they are
+-- asked: the key and the address each would have carried.
+newtype Recording m a = Recording (ReaderT (IORef [Ready]) m a)
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO, PrimMonad)
+
+instance MonadTrans Recording where
+  lift = Recording . lift
+
+deriving newtype instance (MonadDOM m) => MonadDOM (Recording m)
+
+deriving newtype instance (MonadAttributes m) => MonadAttributes (Recording m)
+
+deriving newtype instance (MonadBrowserDOM m) => MonadBrowserDOM (Recording m)
+
+instance (MonadIO m) => MonadUUID (Recording m) where
+  generateV4 = liftIO generateV4
+
+instance (MonadAssistant m, MonadIO m) => MonadAssistant (Recording m) where
+  assistantHere = pure True
+
+  -- Every provider lists no model, and accepts every key.
+  listModels r = recorded r $> Right []
+  checkKey r = recorded r $> Nothing
+  openTalk opening heard = recorded opening.ready >> lift (openTalk opening heard)
+
+instance (MonadVault m, MonadIO m) => MonadVault (Recording m)
+
+-- | Record a request the providers were asked.
+recorded :: (MonadIO m) => Ready -> Recording m ()
+recorded r = Recording (ask >>= \ref -> liftIO (modifyIORef' ref (r :)))
 
 alice :: UserId
 alice = UserId "user-alice"

@@ -52,6 +52,7 @@ module Wiki.App.Plugin.Assistant.Settings
   , initial
   , step
   , settings
+  , keyElsewhere
   , lockedKeys
   , listedAnswer
   , notKept
@@ -65,8 +66,9 @@ import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Protolude hiding (Reader, reader)
 import Text.Show (Show (showsPrec))
 import Wiki.App.Plugin (SecretName, Unavailable)
-import Wiki.Core.Assistant (AssistantError (..), ErrorKind (Failed, Unreachable), Listed, Provider, Ready (..), Settings, providers, readyFor, settingsOf, usable, withModels, withReached)
-import Wiki.Core.Assistant.Split (fromParts, learntValue, optionsValue)
+import Wiki.Core.Assistant (AssistantError (..), ErrorKind (Failed, Unreachable), Listed, Provider, Ready (..), Settings, addressOf, providers, readyFor, settingsOf, usable, withModels, withReached)
+import Wiki.Core.Assistant.Split (elsewhereText, fromParts, learntValue, optionsValue)
+import Wiki.Core.Assistant.Split qualified as Split
 import Wiki.Core.Id (UserId)
 
 -- | 'Reader' is who the settings are read for: the session's number and
@@ -180,6 +182,16 @@ initial reader options =
 settings :: Model -> Maybe Settings
 settings m = case (m.keys, m.learnt) of
   (Just keys, Just learnt) -> Just (fromParts m.options (fromRight mempty keys) learnt)
+  _ -> Nothing
+
+-- | What a surface says of a provider whose key was kept for another
+-- address than the one the options name now: the key is not used
+-- ('Wiki.Core.Assistant.Split.fromParts'), and the sentence says for which
+-- address it was kept. Read from the same keys and options as 'settings',
+-- so the sentence and the requests agree.
+keyElsewhere :: Model -> Provider -> Maybe Text
+keyElsewhere m p = case (m.keys, settings m) of
+  (Just (Right keys), Just s) -> (\kept -> elsewhereText p kept (addressOf p (settingsOf p s))) <$> Split.keyElsewhere m.options keys p
   _ -> Nothing
 
 -- | What a surface says when the server refused to keep a change of the

@@ -112,6 +112,7 @@ component =
         { optionsLink = st.input.can.optionsLink
         , models = st.input.can.assistant.models
         , settings = shownSettings m
+        , keyElsewhere = Settings.keyElsewhere m
         , -- A write of the options the server refused, said where the
           -- panel said a failed save before the options moved to the
           -- server; else a failed write of the cache.

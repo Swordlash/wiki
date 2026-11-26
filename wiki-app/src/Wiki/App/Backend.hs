@@ -205,7 +205,6 @@ import Numeric.Natural (Natural)
 import Protolude
 import Wiki.Api.Error (Staleness (..))
 import Wiki.Api.Export (ExportFormat)
-import Wiki.Api.Plugins.External (ExternalPlugins)
 import Wiki.Api.ServerSettings (AssistantService, HomePage, defaultHomePage)
 import Wiki.Core.Access (Access (..))
 import Wiki.Core.Attachment (Attachment)
@@ -934,20 +933,6 @@ class (Monad m) => MonadWiki m where
   default restoreVersion :: (MonadTrans t, m ~ t n, MonadWiki n) => PageId -> UTCTime -> UTCTime -> m (Either WikiError Page)
   restoreVersion p v = lift . restoreVersion p v
 
-  -- * External plugins
-
-  -- | The external plugins the user may run, and who may add them, as
-  -- @GET api\/v1\/external-plugins@ answers ("Wiki.Api.Plugins.External"):
-  -- the wiki's while the policy is not off (and always to an
-  -- administrator), the user's own while it lets users add theirs. The
-  -- editor reads it when it opens, to run the plugins that are on
-  -- ("Wiki.App.Plugin.External.Frames"). It is here and not in
-  -- "Wiki.App.Backend.Plugins" because the editor reaches the backend
-  -- through this class. The demo has none.
-  externalPluginsNow :: m (Either WikiError ExternalPlugins)
-  default externalPluginsNow :: (MonadTrans t, m ~ t n, MonadWiki n) => m (Either WikiError ExternalPlugins)
-  externalPluginsNow = lift externalPluginsNow
-
 -- | A component's handlers reach the backend through its monad.
 -- Each method runs in 'H.async': the handler waits for it, and the rest
 -- of the tree goes on meanwhile.
@@ -1005,7 +990,6 @@ instance (MonadWiki m) => MonadWiki (HalogenM st act slots output m) where
   listVersions p = H.async . listVersions p
   getVersion p = H.async . getVersion p
   restoreVersion p v = H.async . restoreVersion p v
-  externalPluginsNow = H.async externalPluginsNow
 
 -- | 'MonadLoad' tells whether the backend can answer at once (return the
 -- result synchronously, without waiting for the network), and runs reads

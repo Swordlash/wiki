@@ -271,7 +271,7 @@ import Wiki.Api.Links (interactiveForm)
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), NotificationSettingsChange (..), Notifications (..), ReadMark, feedAddressOf, maxPeopleFound, searchable)
 import Wiki.Api.Opaque (NewAccountRecord (..), PasswordRecord (..), Stretch)
 import Wiki.Api.Plugins (PluginId (..), WikiPlugins (..), maxPluginsOff)
-import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), externalPolicyName, maxOwnPlugins, maxWikiPlugins)
+import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Owner (..), externalPolicyName, maxOwnPlugins, maxWikiPlugins)
 import Wiki.Api.Security (ResetToken (..), resetLifetime)
 import Wiki.Api.ServerSettings (HomePage, MailSettingsOf (..), ProviderSettingsOf (..), ServerSettingsChange, ServerSettingsOf (..), applyChange, checkHomePage, checkServerSettings, defaultHomePage, kindName, secretState, securityName)
 import Wiki.Api.ServerSettings qualified as SS
@@ -1652,7 +1652,6 @@ instance (MonadIO m) => MonadWiki (StoredWiki m) where
   listVersions pid = run Reads . listVersionsTx pid
   getVersion pid = run Reads . getVersionTx pid
   restoreVersion pid at = saving . (withWriters <=< restoreVersionTx pid at)
-  externalPluginsNow = externalPlugins
 
   -- A document is made by the server's API, which runs pandoc and the TeX
   -- engine ("Wiki.Server.Export") and reads the page through this backend.
@@ -1785,12 +1784,6 @@ wikiPluginsOff = run Reads (requireAdministrator >> WikiPlugins <$> db loadPlugi
 -- user left it. The change is written to the audit log.
 setWikiPluginsOff :: (MonadIO m) => WikiPlugins -> StoredWiki m (Either WikiError WikiPlugins)
 setWikiPluginsOff = run Writes . setWikiPluginsOffTx
-
--- | 'Owner' is whose an external plugin is ("Wiki.Api.Plugins.External"):
--- the wiki's, installed by the administrator for everyone, or the asking
--- user's own.
-data Owner = TheWiki | Mine
-  deriving stock (Eq, Show)
 
 -- | The external plugins the asker may run, and who may add them
 -- ('Wiki.Api.Plugins.External.ExternalPlugins'): the wiki's to a signed-in

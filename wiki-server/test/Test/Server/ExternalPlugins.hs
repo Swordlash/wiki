@@ -35,7 +35,7 @@ import Wiki.Api.Plugins (PluginId (..), WikiPlugins (..))
 import Wiki.Api.Plugins.External
 import Wiki.Core.Audit (AuditEntry (..))
 import Wiki.Core.Id (BlobId (..), UserId (..))
-import Wiki.Server.PluginFrame (codeScript, frameScripts, scriptHash)
+import Wiki.Server.PluginFrame (codeScript, frameScripts, scriptHash, wikiPluginModule)
 import Wiki.Server.Storage (reading, withStorageAside)
 import Wiki.Server.Storage.Blobs (blobFile, blobOf)
 import Wiki.Server.Storage.Layout (attachmentsDir)
@@ -48,6 +48,7 @@ spec backing = describe "external plugins" $ do
   ownPlugins backing
   frames backing
   removing backing
+  module' backing
 
 -- | The demo with passwords for the editor, the reader and the admin.
 withUsers :: Backing -> (Running -> IO a) -> IO a
@@ -350,3 +351,22 @@ removing backing = describe "removing" $ do
     _ :: Account <- sendJson r methodPut (onAdmin r (links.admin.setDisabled (UserId "user-reader"))) AccountDisabled {disabled = True} >>= jsonAs 200
     (\x -> x.status) <$> send r methodDelete (onAdmin r (links.admin.removeUser (UserId "user-reader"))) [] "" `shouldReturn` 204
     ownersOf `shouldReturn` [(Just "user-editor", "mine")]
+
+module' :: Backing -> Spec
+module' backing = describe "the module a plugin imports" $
+  it "is web/plugin/wiki-plugin.js, to download, for anyone" $
+    withUsers backing $ \r -> do
+      reply <- getUrl r (onPublic r "plugin/wiki-plugin.js")
+      reply.status `shouldBe` 200
+      header "Content-Type" reply `shouldBe` Just "text/javascript; charset=utf-8"
+      header "Content-Disposition" reply `shouldBe` Just "attachment; filename=\"wiki-plugin.js\""
+      header "X-Content-Type-Options" reply `shouldBe` Just "nosniff"
+      decodeUtf8 (BSL.toStrict reply.body) `shouldBe` wikiPluginModule
+      -- No session is needed, and none is made or kept: no cookie is set,
+      -- for nobody or for someone signed in.
+      header "Set-Cookie" reply `shouldBe` Nothing
+      editor <- sessionOf r "editor"
+      signedIn <- getUrlWith r (onPublic r "plugin/wiki-plugin.js") editor
+      signedIn.status `shouldBe` 200
+      header "Set-Cookie" signedIn `shouldBe` Nothing
+      wikiPluginModule `shouldSatisfy` T.isInfixOf "export function plugin"

@@ -2,7 +2,10 @@
 -- user's choices for the plugins, as tests of the rules of
 -- "Wiki.App.Backend.Plugins" and "Wiki.Api.Plugins": a plugin's state and
 -- its options are set apart, the options are bounded, and @null@ is no
--- options.
+-- options. And the external plugins ("Wiki.Api.Plugins.External"): who
+-- may add them, the uploads that install and replace them, the removals,
+-- and each refusal in the server's words, so that the in-memory backend
+-- the settings' tests run over refuses as the server does.
 --
 -- Like the backend's contract ("Wiki.App.Backend.Contract", whose
 -- 'Fixture' it takes), it runs against the in-memory backend and the HTTP
@@ -11,17 +14,20 @@
 module Wiki.App.Backend.Contract.Plugins (spec) where
 
 import Data.Aeson (Value (..), object, toJSON, (.=))
+import Data.ByteString qualified as BS
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Protolude hiding (reader)
 import Test.HUnit (assertFailure)
 import Test.Hspec
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), maxOptionsBytes, maxPluginsPerUser, optionsNull, optionsTooLarge)
+import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Owner (..), maxBundleBytes, maxOwnPlugins)
 import Wiki.App.Backend (WikiError (..))
-import Wiki.App.Backend.Contract (As (..), Fixture (..))
+import Wiki.App.Backend.Contract (As (..), Fixture (..), Run)
 import Wiki.App.Backend.Plugins
 
-editor, reader :: As
+admin, editor, reader :: As
+admin = As "admin"
 editor = As "editor"
 reader = As "reader"
 
@@ -35,6 +41,7 @@ spec :: forall m -> (MonadPlugins m) => (ActionWith (Fixture m) -> IO ()) -> Spe
 spec _ withFixture = around withFixture $ describe "MonadPlugins contract" $ do
   options
   refusing
+  external
 
 --------------------------------------------------------------------------------
 -- Helpers
@@ -128,3 +135,98 @@ refusing = describe "refuses" $ do
     run reader (setPluginOptions (PluginId "p1") someOptions) `shouldReturn` Right (chose PluginDefault (Just someOptions))
     _ <- run reader (clearPluginOptions (PluginId "p1")) >>= ok
     run reader (setPluginOptions (PluginId "one-more") (object [])) `shouldReturn` Right (chose PluginDefault (Just (object [])))
+
+--------------------------------------------------------------------------------
+-- External plugins
+
+-- | A manifest of a plugin of this id, as its file holds it.
+manifestOf :: Text -> Text
+manifestOf pid = "{\"manifest\": 1, \"id\": \"" <> pid <> "\", \"name\": \"Doubled words\", \"version\": \"1.0.0\", \"api\": 1, \"contributes\": {\"diagnostics\": {}}, \"permissions\": [\"document.read\"], \"hosts\": [\"https://api.example.org\"]}"
+
+-- | A plugin's code.
+bundleOf :: Text -> ByteString
+bundleOf v = encodeUtf8 ("wikiPlugin.plugin({ diagnostics: () => [] }); // " <> v)
+
+-- | What an installed plugin is, but for when it was installed, which is
+-- the backend's clock's.
+seenAs :: ExternalPlugin -> (Text, Text, Int, Bool, [Text])
+seenAs p = (p.manifest.id.text, p.bundle, p.size, p.mine, p.manifest.hosts)
+
+-- | The plugins listed to a reader, as 'seenAs' sees each.
+listed :: (MonadPlugins m) => Run m -> As -> IO (ExternalPolicy, [(Text, Text, Int, Bool, [Text])])
+listed run as' = run as' externalPluginsNow >>= ok <&> \l -> (l.policy, map seenAs l.external)
+
+external :: (MonadPlugins m) => SpecWith (Fixture m)
+external = describe "external plugins" $ do
+  it "are off at first, and the policy is an administrator's to set" $ \(Fixture run) -> do
+    listed run editor `shouldReturn` (ExternalOff, [])
+    run editor (setExternalPolicy ExternalUsers) >>= (`shouldFailWith` Forbidden)
+    (\l -> l.policy) <$> (run admin (setExternalPolicy ExternalWiki) >>= ok) `shouldReturn` ExternalWiki
+    listed run editor `shouldReturn` (ExternalWiki, [])
+    listed run Anonymous `shouldReturn` (ExternalWiki, [])
+
+  it "are installed for everyone by an administrator, whatever the policy, and replaced by the hash of the bundle they replace" $ \(Fixture run) -> do
+    run editor (installExternal TheWiki (manifestOf "doubled") (bundleOf "1") Nothing) >>= (`shouldFailWith` Forbidden)
+    first' <- run admin (installExternal TheWiki (manifestOf "doubled") (bundleOf "1") Nothing) >>= ok
+    seenAs first' `shouldSatisfy` (\(i, h, n, mine, hosts) -> i == "doubled" && T.length h == 64 && n == BS.length (bundleOf "1") && not mine && hosts == ["https://api.example.org"])
+    -- Listed to the administrator under the policy off, and to a user
+    -- once it is on.
+    listed run admin `shouldReturn` (ExternalOff, [seenAs first'])
+    listed run editor `shouldReturn` (ExternalOff, [])
+    _ <- run admin (setExternalPolicy ExternalWiki) >>= ok
+    listed run editor `shouldReturn` (ExternalWiki, [seenAs first'])
+    -- Again without replaces, or with a hash it does not have.
+    run admin (installExternal TheWiki (manifestOf "doubled") (bundleOf "2") Nothing)
+      >>= (`shouldFailWith` Conflict ("A plugin with the id doubled is installed already: to replace it, send its bundle's hash, " <> first'.bundle <> ", as replaces."))
+    run admin (installExternal TheWiki (manifestOf "doubled") (bundleOf "2") (Just "0000"))
+      >>= (`shouldFailWith` Conflict ("The plugin doubled was replaced since: its bundle's hash is now " <> first'.bundle <> "."))
+    run admin (installExternal TheWiki (manifestOf "other") (bundleOf "2") (Just first'.bundle))
+      >>= (`shouldFailWith` Conflict "No plugin with the id other is installed, so none is replaced: send the upload without replaces.")
+    second' <- run admin (installExternal TheWiki (manifestOf "doubled") (bundleOf "2") (Just first'.bundle)) >>= ok
+    second'.bundle `shouldNotBe` first'.bundle
+    listed run editor `shouldReturn` (ExternalWiki, [seenAs second'])
+    -- The hash seen before the replacement is stale now.
+    run admin (installExternal TheWiki (manifestOf "doubled") (bundleOf "3") (Just first'.bundle))
+      >>= (`shouldFailWith` Conflict ("The plugin doubled was replaced since: its bundle's hash is now " <> second'.bundle <> "."))
+
+  it "are removed for everyone by an administrator only, and once" $ \(Fixture run) -> do
+    _ <- run admin (installExternal TheWiki (manifestOf "doubled") (bundleOf "1") Nothing) >>= ok
+    run editor (removeExternal TheWiki (PluginId "doubled")) >>= (`shouldFailWith` Forbidden)
+    run admin (removeExternal TheWiki (PluginId "doubled")) `shouldReturn` Right ()
+    listed run admin `shouldReturn` (ExternalOff, [])
+    run admin (removeExternal TheWiki (PluginId "doubled")) >>= (`shouldFailWith` NotFound)
+
+  it "are a user's own while users may add theirs, listed to their owner only, and never with an id of the wiki's" $ \(Fixture run) -> do
+    run editor (installExternal Mine (manifestOf "mine") (bundleOf "1") Nothing) >>= (`shouldFailWith` Forbidden)
+    _ <- run admin (setExternalPolicy ExternalUsers) >>= ok
+    run Anonymous (installExternal Mine (manifestOf "mine") (bundleOf "1") Nothing) >>= (`shouldFailWith` Forbidden)
+    own <- run editor (installExternal Mine (manifestOf "mine") (bundleOf "1") Nothing) >>= ok
+    own.mine `shouldBe` True
+    listed run editor `shouldReturn` (ExternalUsers, [seenAs own])
+    listed run reader `shouldReturn` (ExternalUsers, [])
+    -- An id the wiki has is the wiki's.
+    _ <- run admin (installExternal TheWiki (manifestOf "spell") (bundleOf "1") Nothing) >>= ok
+    run editor (installExternal Mine (manifestOf "spell") (bundleOf "1") Nothing)
+      >>= (`shouldFailWith` Conflict "The wiki has a plugin with the id spell, installed for everyone: a plugin of your own needs another id.")
+    -- Under the policy wiki, the user's own are kept and not listed, and
+    -- removed all the same.
+    _ <- run admin (setExternalPolicy ExternalWiki) >>= ok
+    map (\(i, _, _, mine, _) -> (i, mine)) . snd <$> listed run editor `shouldReturn` [("spell", False)]
+    run editor (removeExternal Mine (PluginId "mine")) `shouldReturn` Right ()
+    run editor (removeExternal Mine (PluginId "mine")) >>= (`shouldFailWith` NotFound)
+
+  it "are at most twenty of a user's own" $ \(Fixture run) -> do
+    _ <- run admin (setExternalPolicy ExternalUsers) >>= ok
+    for_ [1 .. maxOwnPlugins] $ \n -> run editor (installExternal Mine (manifestOf ("p" <> show n)) (bundleOf (show n)) Nothing) >>= ok
+    run editor (installExternal Mine (manifestOf "one-more") (bundleOf "x") Nothing)
+      >>= (`shouldFailWith` Conflict "You have 20 plugins installed already, the most it may: remove one first.")
+
+  it "refuse a manifest or a bundle that breaks the rules, with the rule, before anything else" $ \(Fixture run) -> do
+    let refusedWith as' manifest bundle = run as' (installExternal TheWiki manifest bundle Nothing)
+    refusedWith admin "{}" (bundleOf "1") >>= (`shouldFailWith` Invalid "A plugin's manifest has the field manifest.")
+    refusedWith admin (manifestOf "errors") (bundleOf "1") >>= (`shouldFailWith` Invalid "The id errors is a plugin's built into the wiki: choose another.")
+    refusedWith admin (manifestOf "doubled") "  " >>= (`shouldFailWith` Invalid "A plugin's bundle is empty.")
+    refusedWith admin (manifestOf "doubled") (BS.replicate (maxBundleBytes + 1) 32) >>= (`shouldFailWith` Invalid "A plugin's bundle is at most 2097152 bytes (2 MiB).")
+    -- The upload is read before anyone is asked for.
+    refusedWith editor "{}" (bundleOf "1") >>= (`shouldFailWith` Invalid "A plugin's manifest has the field manifest.")
+    listed run admin `shouldReturn` (ExternalOff, [])

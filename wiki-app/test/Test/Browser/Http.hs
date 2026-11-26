@@ -1323,8 +1323,10 @@ views m = describe "the application over it" $ do
         _ <- notifications
         -- The wiki's home, whose icon is the favicon away from the spaces.
         _ <- getHomeDocument
-        -- Which plugins are on, read with the session.
+        -- Which plugins are on and which external plugins are installed,
+        -- read with the session.
         _ <- pluginsNow
+        _ <- externalPluginsNow
         pure ((\p -> p.id) <$> rightToMaybe page)
     carried <- unsafeIOToPageM (cacheOf reading)
     serverStops
@@ -1523,8 +1525,10 @@ comments m = describe "a page's comments" $ do
       _ <- starred
       -- The wiki's home, whose icon is the wiki's favicon.
       _ <- getHomeDocument
-      -- Which plugins are on, read with the session.
+      -- Which plugins are on and which external plugins are installed,
+      -- read with the session.
       _ <- pluginsNow
+      _ <- externalPluginsNow
       pure (page, threads)
     carried <- unsafeIOToPageM (cacheOf reading)
     serverStops

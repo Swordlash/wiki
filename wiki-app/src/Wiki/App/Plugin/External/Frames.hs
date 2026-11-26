@@ -36,11 +36,10 @@ import Protolude hiding (State)
 import System.IO.Error (userError)
 import Wiki.Api.Plugins (PluginId (..))
 import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..))
-import Wiki.App.Backend (MonadLoad (..), MonadWiki (..), WikiError (..))
 import Wiki.App.Islands.Monad (MonadIslands (..))
 import Wiki.App.Plugin.External (Heard)
 import Wiki.App.Plugin.External.Frame (FrameSaid, PluginFrame (..))
-import Wiki.App.Plugin.External.Machine (Effect (..), Event (..), Input (..), Model (..), Stopped (..), answerWithin, initialRead, restInEncrypted, startWithin, step, stoppedPlugins)
+import Wiki.App.Plugin.External.Machine (Effect (..), Event (..), Input (..), Model (..), Stopped (..), answerWithin, initial, restInEncrypted, startWithin, step, stoppedPlugins)
 
 -- | What the component tells the editor: what each external plugin that
 -- runs last answered, whenever that changes.
@@ -64,19 +63,13 @@ data Action
   | Finalize
 
 -- | The component, given the editor's 'Input' with each render.
-component :: forall query m. (MonadLoad m, MonadIslands m, MonadUUID m, MonadIO m) => H.Component query Input Output m
+component :: forall query m. (MonadIslands m, MonadUUID m, MonadIO m) => H.Component query Input Output m
 component =
   H.mkComponent
     H.ComponentSpec
       { initialState = \input -> do
           container <- H.newRefLabel "editor-plugin-frames"
-          -- Read at once when the backend can ('atOnce'), as the editor
-          -- reads its page: on the server's prerender the read is then
-          -- part of the render, and its answer in the page's preload, not
-          -- a race with the render's end; in a browser it answers from
-          -- that preload, or is read when the machine starts.
-          answered <- atOnce externalPluginsNow
-          pure State {machine = Machine.new (initialRead input answered), container, opened = mempty, listener = Nothing}
+          pure State {machine = Machine.new (initial input), container, opened = mempty, listener = Nothing}
       , render
       , eval =
           H.mkEval
@@ -124,7 +117,6 @@ component =
 
     carry :: Effect -> Machine.Carry Int State Action Empty Output m Event
     carry = \case
-      ReadInstalled ticket -> Machine.Ask (Machine.run externalPluginsNow) (Read ticket . either (Left . Unreachable . toS . displayException) identity)
       -- The frame is made and kept in one step, then its wait starts.
       Open n ticket address ->
         Machine.AskUnderWith

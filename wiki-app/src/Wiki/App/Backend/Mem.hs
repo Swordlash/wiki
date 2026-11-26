@@ -278,7 +278,6 @@ instance (MonadIO m) => MonadWiki (MemWiki m) where
   listVersions pid q = needVersions (unreadHistory pid) >> query (listVersionsIn pid q)
   getVersion pid at = needVersions (unreadHistory pid) >> query (getVersionIn pid at)
   restoreVersion pid at base = needVersions (unreadHistory pid) >> writeAt (restoreVersionIn pid at base) >>= withWritersRead
-  externalPluginsNow = query externalPluginsIn
 
   -- The demo's object URLs are its own attachments' bytes, which it keeps
   -- for as long as it holds the attachment: no view owns them.

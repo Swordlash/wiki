@@ -140,6 +140,7 @@ library
       Wiki.App.View.Access
       Wiki.App.View.ApiKeys
       Wiki.App.View.ApiKeys.Machine
+      Wiki.App.View.PluginUpload
       Wiki.App.View.Plugins
       Wiki.App.View.Migration.Machine
       Wiki.App.View.Plugins.Machine

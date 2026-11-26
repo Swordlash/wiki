@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 389
 title: Link to a page of another space by typing [[ and its title
 technical: false
 ---

@@ -142,6 +142,10 @@ data Context = Context
   -- each, as the shell last read them with the session
   -- ('Wiki.App.Plugin.Registry.pluginsOn' reads it). Nothing off and
   -- nothing chosen until the read answers, and when it fails.
+  , optionsRefused :: Map PluginId WikiError
+  -- ^ Why the reader's last write of each plugin's options was refused,
+  -- for the plugin's surfaces ('Wiki.App.Plugin.Registry.refusalFor');
+  -- "Wiki.App.View.Plugins.Machine"'s @optionsRefused@.
   , pluginsRead :: Bool
   -- ^ Whether 'plugins' is what this session's read answered, and not
   -- the defaults held until it does, or when it failed

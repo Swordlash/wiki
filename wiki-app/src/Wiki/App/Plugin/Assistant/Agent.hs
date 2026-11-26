@@ -11,7 +11,8 @@
 -- reached (a network that blocks it) keeps its button, dimmed, with a
 -- note, and the panel offers to try again. A change the panel makes is
 -- split again: the options go to the host to keep, what was learnt to the
--- cache.
+-- cache. A write of the options the server refused comes back with the
+-- input ('AgentInput''s @refused@), and the panel says why.
 --
 -- Its buttons are the providers' ('buttonsOf'), which the editor draws as
 -- round bubbles at the top right of the text: a provider gets one once the
@@ -111,7 +112,10 @@ component =
         { optionsLink = st.input.can.optionsLink
         , models = st.input.can.assistant.models
         , settings = shownSettings m
-        , problem = m.problem
+        , -- A write of the options the server refused, said where the
+          -- panel said a failed save before the options moved to the
+          -- server; else a failed write of the cache.
+          problem = (Settings.notKept <$> st.input.refused) <|> m.problem
         , checking = m.checking
         , document = editing.document
         , title = editing.title

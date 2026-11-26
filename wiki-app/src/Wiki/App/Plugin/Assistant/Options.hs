@@ -71,6 +71,12 @@
 -- access to the settings, says that the settings are being read, and the
 -- program adopts that page unchanged.
 --
+-- The settings other than the keys are the plugin's options, which the
+-- host writes ('SaveOptions'). A write the server refuses is told with the
+-- input ('OptionsInput''s @refused@), with the server's options, which the
+-- view then shows again; the view says why below the page's cap, where a
+-- failed save was said before the options moved to the server.
+--
 -- The keys are first read from the copy of the vault this browser holds
 -- ("Wiki.App.Plugin.Host.Secrets"), which can be older than the vault:
 -- another device may have kept a key since. So the view also asks the
@@ -306,6 +312,9 @@ component =
             {{ providerView st s p }}
           {% end %}
           {{ capView st s }}
+          {% for why in maybeToList st.input.refused %}
+            <p class="error assistant-options-refused" role="alert">{{ Settings.notKept why }}</p>
+          {% end %}
           {% for why in maybeToList (Machine.current st.machine).problem %}
             <p class="error" role="alert">{{ why }}</p>
           {% end %}

@@ -181,7 +181,7 @@ import Wiki.App.Live (Feed (..), Live (..))
 import Wiki.App.Offline (browserOnline, install, installAvailable, installChanges, offlineCopy)
 import Wiki.App.Plugin (Manifest (..), Options (..), OptionsInput (..), OptionsOutput (..), Plugin (..))
 import Wiki.App.Plugin.Host (capabilities)
-import Wiki.App.Plugin.Registry (assistantId, optionsFor, plugins, pluginsOn)
+import Wiki.App.Plugin.Registry (assistantId, optionsFor, plugins, pluginsOn, refusalFor)
 import Wiki.App.Recent (rememberVisit)
 import Wiki.App.Route (AdminSection, Route (..), SettingsSection (..), adminSections, locationRoute, sectionName, sectionTitle, settingsName, settingsSections, settingsTitle, settledRoute)
 import Wiki.App.Route qualified as R
@@ -1102,7 +1102,7 @@ component =
               {% for why in maybeToList st.assistantMove.problem %}
                 <p class="error settings-migration-problem" role="alert">{{ "Your writing assistant's settings from before could not all be moved: " <> why }}</p>
               {% end %}
-              {{ HH.slot "pluginOptions" (assistantId, who) options OptionsInput {user = who, options = optionsFor assistantId (context st).plugins, adopted = not st.preloadEnded, can = capabilities (context st) manifest} (FromPluginOptions assistantId) }}
+              {{ HH.slot "pluginOptions" (assistantId, who) options OptionsInput {user = who, options = optionsFor assistantId (context st).plugins, refused = refusalFor assistantId (context st).optionsRefused, adopted = not st.preloadEnded, can = capabilities (context st) manifest} (FromPluginOptions assistantId) }}
             </div>
           |]
         Nothing -> HH.text ""
@@ -2460,7 +2460,7 @@ sameUser :: Session -> Session -> Bool
 sameUser a b = ((\u -> u.id) <$> a.user) == ((\u -> u.id) <$> b.user)
 
 context :: State m -> Context
-context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth, plugins = PluginsMachine.held (Machine.current st.pluginState), pluginsRead = PluginsMachine.readIn st.sessionNumber (Machine.current st.pluginState)}
+context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth, plugins = PluginsMachine.held (Machine.current st.pluginState), optionsRefused = (Machine.current st.pluginState).optionsRefused, pluginsRead = PluginsMachine.readIn st.sessionNumber (Machine.current st.pluginState)}
   where
     available =
       st.spaces <> case st.here of

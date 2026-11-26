@@ -54,6 +54,7 @@ module Wiki.App.Plugin.Assistant.Settings
   , settings
   , lockedKeys
   , listedAnswer
+  , notKept
   )
 where
 
@@ -180,6 +181,12 @@ settings :: Model -> Maybe Settings
 settings m = case (m.keys, m.learnt) of
   (Just keys, Just learnt) -> Just (fromParts m.options (fromRight mempty keys) learnt)
   _ -> Nothing
+
+-- | What a surface says when the server refused to keep a change of the
+-- options ('Wiki.App.Plugin.OptionsInput''s @refused@): the server's
+-- sentence, after the surface's own words.
+notKept :: Text -> Text
+notKept why = "Your change was not kept: " <> why
 
 -- | The answer of a provider asked for its list of models, with the
 -- time of the answer, as an event: what the work threw is a failure.

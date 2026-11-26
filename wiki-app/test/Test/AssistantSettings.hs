@@ -346,10 +346,12 @@ adopting = describe "the plugins' state adopting the options a move found" $ do
         ticket = fromMaybe (panic "no write") (head [a | P.WriteOptionsIfNone a _ _ <- e1])
     [o | P.WriteOptions _ _ o <- e1] `shouldBe` []
     let (m2, e2) = P.step (P.AdoptWritten ticket assistant (Left (Conflict "options there"))) m1
-    m2.refused `shouldBe` mempty
+    (m2.refused, m2.optionsRefused) `shouldBe` (mempty, mempty)
     [() | P.Load _ <- e2] `shouldBe` [()]
-    -- Shown able to fail: another refusal is one.
-    Map.member assistant (fst (P.step (P.AdoptWritten ticket assistant (Left (Invalid "no"))) m1)).refused `shouldBe` True
+    -- Shown able to fail: another refusal is one, of a write of options,
+    -- told to the plugin's surfaces and not on its row.
+    let m3 = fst (P.step (P.AdoptWritten ticket assistant (Left (Invalid "no"))) m1)
+    (Map.member assistant m3.optionsRefused, Map.member assistant m3.refused) `shouldBe` (True, False)
 
   it "drops options found in an earlier session" $
     writes (snd (P.step (P.OptionsAdopted 0 assistant found) (P.initialWith (Just none) 1))) `shouldBe` []

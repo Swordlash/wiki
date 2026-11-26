@@ -14,7 +14,11 @@
 -- is older than the vault, ask the vault once as they open, for all their
 -- fields, unless they are on the address the page started at. A key the
 -- provider accepts and the vault then refuses to keep leaves the field
--- saying why, and the settings' other controls on again.
+-- saying why, and the settings' other controls on again. A change of the
+-- assistant's options the server refuses is said where the change was
+-- made, the settings or the editor's panel, which show the server's
+-- options again: the input is built from the plugins' state
+-- ("Wiki.App.View.Plugins.Machine") as the shell and the editor build it.
 module Test.SecretFieldDom (spec) where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -33,17 +37,20 @@ import Test.Harness.MemDom
 import Test.Hspec
 import Test.SecretsPlugin (endpointName, secretive, secretiveManifest, tokenName)
 import Test.VaultServer
+import Wiki.Api.Plugins (Plugins (..))
 import Wiki.App.Assistant (MonadAssistant (..))
 import Wiki.App.Assistant.Sync (MonadVault)
 import Wiki.App.Backend (anonymousIn)
 import Wiki.App.Backend qualified as B
-import Wiki.App.Plugin (Capabilities (..), Manifest (..), Options (..), OptionsInput (..), OptionsOutput, Plugin (..), SecretName (..), Secrets (..))
+import Wiki.App.Plugin (AgentInput (..), AgentQuery (..), Capabilities (..), Editing (..), Manifest (..), Options (..), OptionsInput (..), OptionsOutput (..), Plugin (..), SecretName (..), Secrets (..))
+import Wiki.App.Plugin.Assistant.Agent qualified as AssistantAgent
 import Wiki.App.Plugin.Assistant.Options qualified as AssistantOptions
 import Wiki.App.Plugin.Host (capabilities)
 import Wiki.App.Plugin.Host.Secrets (putSecret, refreshSecrets, removeSecret)
-import Wiki.App.Plugin.Registry (assistantId, manifests)
+import Wiki.App.Plugin.Registry (assistantId, manifests, optionsFor, refusalFor)
 import Wiki.App.Route (Route (..), route)
 import Wiki.App.Vault (vaultSlot)
+import Wiki.App.View.Plugins.Machine qualified as PluginsMachine
 import Wiki.Core.Access (Access (..))
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.User (Login (..), User (..))
@@ -138,7 +145,7 @@ spec = describe "Wiki.App.View.SecretField" $ do
         can = capabilities (viewContextAs router session [] 0) manifest
         anthropic selector = "[data-provider=anthropic] " <> selector
         controls = map anthropic [".assistant-service", ".assistant-model", ".assistant-default-effort", ".assistant-test"]
-    withView (onDevice d . served server . browsing) AssistantOptions.component OptionsInput {user = Just alice, options = Nothing, adopted = True, can} $ \view -> do
+    withView (onDevice d . served server . browsing) AssistantOptions.component OptionsInput {user = Just alice, options = Nothing, refused = Nothing, adopted = True, can} $ \view -> do
       settle view
       -- Another device stores the vault before each of the keep's tries:
       -- every try is refused.
@@ -151,12 +158,92 @@ spec = describe "Wiki.App.View.SecretField" $ do
       disabled <- for controls $ \c -> (c,) . isJust . join <$> (find view c >>= traverse (attribute "disabled"))
       disabled `shouldBe` map (,False) controls
       isJust <$> find view (anthropic ".assistant-check") `shouldReturn` False
+
+  -- Codex's sixth round on #382: the plugins' state kept the refusal of
+  -- an options write for the row under Settings, Plugins only, and the
+  -- settings where the provider was changed went back without a word.
+  it "says why a change of the assistant's options was not kept, and shows the server's options again" $
+    withAssistant $ \run can -> do
+      let given options refused = OptionsInput {user = Just alice, options, refused, adopted = True, can}
+      withView run AssistantOptions.component (given Nothing Nothing) $ \view -> do
+        settle view
+        -- The provider's radio buttons, Anthropic's and OpenAI's, and which
+        -- of them are checked.
+        let radios = findAll view ".assistant-provider input"
+            checkedNow = radios >>= traverse (fmap (\case Just (ScalarBool b) -> b; _ -> False) . property "checked")
+        checkedNow `shouldReturn` [True, False]
+        radios >>= \case
+          [_, openai] -> clickNode openai
+          other -> panic ("two providers, not " <> show (length other))
+        settle view
+        chosen <-
+          outputs view <&> \case
+            [SaveOptions o] -> o
+            other -> panic ("one save of the options, not " <> show other)
+        -- The shell's plugins' state takes the choice and writes it, and
+        -- gives the settings the options chosen while the write is out.
+        let (out, effects) = PluginsMachine.step (PluginsMachine.OptionsChosen assistantId chosen) (PluginsMachine.initialWith (Just Plugins {offForWiki = mempty, mine = mempty}) 0)
+            inputOf m = given (optionsFor assistantId (PluginsMachine.held m)) (refusalFor assistantId m.optionsRefused)
+        asked <- case effects of
+          [PluginsMachine.WriteOptions a p o] | p == assistantId && o == chosen -> pure a
+          other -> panic ("one write of the options, not " <> show other)
+        setInput view (inputOf out)
+        settle view
+        checkedNow `shouldReturn` [False, True]
+        -- The server refuses it.
+        let (refused, _) = PluginsMachine.step (PluginsMachine.OptionsWritten asked assistantId (Left (B.Invalid refusal))) out
+        setInput view (inputOf refused)
+        settle view
+        textOf view ".assistant-options-refused" >>= (`shouldSatisfy` T.isInfixOf refusal)
+        checkedNow `shouldReturn` [True, False]
+        -- Chosen again: the refusal is no longer said, whatever the write
+        -- of the choice answers.
+        let (again, _) = PluginsMachine.step (PluginsMachine.OptionsChosen assistantId chosen) refused
+        setInput view (inputOf again)
+        settle view
+        isJust <$> find view ".assistant-options-refused" `shouldReturn` False
+
+  it "says in the editor's panel why a change of the assistant's options was not kept" $
+    withAssistant $ \run can -> do
+      let given refused = AgentInput {user = Just alice, options = Nothing, refused, editing = Just editing, can}
+          editing = Editing {title = "A page", body = "Some text.", selection = Nothing, pending = 0, decisions = mempty, encrypted = False, document = Nothing}
+      withView run AssistantAgent.component (given Nothing) $ \view -> do
+        settle view
+        tell view (Press "assistant" True)
+        settle view
+        void (element view ".assistant-setup")
+        setInput view (given (Just refusal))
+        settle view
+        textOf view ".assistant-setup" >>= (`shouldSatisfy` T.isInfixOf refusal)
+        setInput view (given Nothing)
+        settle view
+        textOf view ".assistant-setup" >>= (`shouldSatisfy` (not . T.isInfixOf refusal))
   where
     token selector = "[data-secret=token] " <> selector
     endpoint selector = "[data-secret=endpoint] " <> selector
 
 alice :: UserId
 alice = UserId "user-alice"
+
+-- | The sentence the server refuses the assistant's options with, in the
+-- examples.
+refusal :: Text
+refusal = "A plugin's options are at most 64 KiB."
+
+-- | A test on the writing assistant, for Alice, on a browser that holds
+-- the key to her vault: how to run on it, and the capabilities the host
+-- makes for the assistant.
+withAssistant :: ((forall a. Browsing (Served (Fake MemDOM)) a -> MemDOM a) -> Capabilities (Browsing (Served (Fake MemDOM))) -> IO ()) -> IO ()
+withAssistant test = do
+  counter <- newIORef 0
+  k <- atomicModifyIORef' counter (\n -> (n + 1, n + 1))
+  server <- newServer (Just (userVault k))
+  d <- newDevice counter True
+  withVaultKey d alice k
+  manifest <- maybe (panic "the assistant is in the registry") pure (head [m | m <- manifests, m.id == assistantId])
+  router <- runMemDOM (onDevice d (served server (Router.newRouter "/" Unknown route)))
+  let session = (anonymousIn Open) {B.user = Just User {id = alice, login = Login "alice", displayName = "Alice", avatar = Nothing}}
+  test (onDevice d . served server . browsing) (capabilities (viewContextAs router session [] 0) manifest)
 
 -- | 'Mounted' is the plugin's settings mounted for Alice, with a vault on
 -- the server that this browser has not unlocked: the view; how to run on
@@ -189,7 +276,7 @@ withSecretive test = do
   let session = (anonymousIn Open) {B.user = Just User {id = alice, login = Login "alice", displayName = "Alice", avatar = Nothing}}
       can = capabilities (viewContextAs router session [] 0) secretiveManifest
   surface <- maybe (panic "the plugin has settings") (\(Options o) -> pure o) (secretive @(Served (Fake MemDOM))).options
-  withView run surface OptionsInput {user = Just alice, options = Nothing, adopted = True, can} $ \view -> do
+  withView run surface OptionsInput {user = Just alice, options = Nothing, refused = Nothing, adopted = True, can} $ \view -> do
     settle view
     test Mounted {view, run, can, kept}
 
@@ -222,7 +309,7 @@ assistantSettingsOnB adopted = do
   let session = (anonymousIn Open) {B.user = Just User {id = alice, login = Login "alice", displayName = "Alice", avatar = Nothing}}
       can = capabilities (viewContextAs router session [] 0) manifest
   atStart <- fetches
-  withView (onDevice b . served server . browsing) AssistantOptions.component OptionsInput {user = Just alice, options = Nothing, adopted, can} $ \view -> do
+  withView (onDevice b . served server . browsing) AssistantOptions.component OptionsInput {user = Just alice, options = Nothing, refused = Nothing, adopted, can} $ \view -> do
     settle view
     states <- traverse (\p -> textOf view ("[data-secret=" <> p <> "] .secret-field-state")) ["anthropic", "openai"]
     atEnd <- fetches

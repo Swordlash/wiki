@@ -208,13 +208,19 @@ data AgentOutput
   | SetOptions (Maybe Value)
 
 -- | 'AgentInput' is what the host gives an agent each time the editor
--- renders: who is signed in, the plugin's options, the page being edited
--- once it is loaded, and the capabilities.
+-- renders: who is signed in, the plugin's options and why their last
+-- write was refused, the page being edited once it is loaded, and the
+-- capabilities.
 data AgentInput m = AgentInput
   { user :: Maybe UserId
   , options :: Maybe Value
   -- ^ The plugin's options for the user: as the server keeps them, or as
   -- last set while their write is out. 'Nothing' when there are none.
+  , refused :: Maybe Text
+  -- ^ Why the server refused the last write of the plugin's options for
+  -- the user, in the server's words; 'options' are then the server's. It
+  -- stays until a later write of the options succeeds, or options are set
+  -- again ('SetOptions'). 'Nothing' when the last write was not refused.
   , editing :: Maybe Editing
   , can :: Capabilities m
   }
@@ -267,11 +273,13 @@ data Face = Logo Text (Maybe Text) | ChatGlyph | Letter Text
 newtype Options m = Options {surface :: H.Component (Const Void) (OptionsInput m) OptionsOutput m}
 
 -- | 'OptionsInput' is what the settings page gives a plugin's options: who
--- is signed in, the plugin's options ('AgentInput''s @options@), whether
--- the page was adopted, and the capabilities.
+-- is signed in, the plugin's options and why their last write was refused
+-- ('AgentInput''s @options@ and @refused@), whether the page was adopted,
+-- and the capabilities.
 data OptionsInput m = OptionsInput
   { user :: Maybe UserId
   , options :: Maybe Value
+  , refused :: Maybe Text
   , adopted :: Bool
   -- ^ Whether the settings are shown at the address the page started at,
   -- from what the page carries: a page the server rendered asks the server

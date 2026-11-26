@@ -253,6 +253,7 @@ module Wiki.App.View.Editor
   , Query (..)
   , component
   , previewDelay
+  , elsewhereDelay
   , draftDelay
   , savedNoticeTime
   )

@@ -1605,7 +1605,7 @@ mathSource commands wanted = case wanted.typed.trigger of
     -- alike, and the property of "Test.Markdown.CompleteMath" checks every
     -- name offered on its own.
     environments place readsBack
-      | null matching || not (environmentFits place at readsBack.baseline) || not (readsBack.readsWith together) = []
+      | null matching || not (environmentFits readsBack.baseline) || not (readsBack.readsWith together) = []
       | otherwise = [(e.opening, environmentCandidate e) | e <- matching]
       where
         matching = [e | e <- environmentsInOrder, place == InDisplay || not e.displayOnly, typedName `T.isPrefixOf` e.opening]
@@ -1677,54 +1677,35 @@ environmentWritten prefix e rest =
 
 -- | Whether an environment written at the cursor, its begin and its end
 -- together, is what the reader may mean, given the math's TeX with
--- 'mathWord' in place of the command ('MathReadBack''s 'baseline'). An
--- environment takes no argument, so what follows the cursor does not
--- matter, but for two cases where it may be the environment's own text:
+-- 'mathWord' in place of the command ('MathReadBack''s 'baseline'). Only
+-- the rest of that TeX, after the word, is read: the rest of the math the
+-- parser found, as the probe that read it holds it (within the
+-- completion's read limit; for math not closed in the page, up to where
+-- the probe closed it; the marks of quotations and lists taken off by the
+-- parser). Nothing outside the math and nothing before the cursor is
+-- read.
 --
--- * a @{@ after the cursor, past spaces and tabs: the environment's name
---   may be there already (@\\be‸{pmatrix}@);
--- * an @\\end@ after the cursor, in the math, that ends an environment
---   not begun before the cursor (@\\be‸ a & b \\end{pmatrix}@): the
---   reader is typing the begin of an environment written already.
+-- An environment takes no argument, so what follows does not matter, but
+-- for two cases where it may be the environment's own text, and then
+-- none is offered:
 --
--- An @\\end@ that ends an environment begun before the cursor
--- (@\\begin{aligned} x &= \\be‸ \\end{aligned}@) is no reason. With no
--- reading of the math, no environment is offered.
+-- * the rest starts with @{@, past white space and line ends: the
+--   environment's name may be there already (@\\be‸{pmatrix}@, or the
+--   name on the next line, which KaTeX reads too);
+-- * the rest holds @\\end@ anywhere: the reader may be typing the begin
+--   of an environment written already (@\\be‸ a & b \\end{pmatrix}@).
 --
--- In display math whose TeX ends on the cursor's line (display math being
--- typed, which the parser read closed after that line, or closed on the
--- line below), the lines below count too, up to a blank line or a line
--- that starts with @$$@ or a fence's backticks or tildes: once the math
--- is closed, they may be in it (@$$@, @\\be‸@, @a & b@,
--- @\\end{pmatrix}@).
-environmentFits :: MathPlace -> At -> Maybe (MathPlace, Text) -> Bool
-environmentFits place at baseline =
-  not ("{" `T.isPrefixOf` T.dropWhile isBlank at.after) && maybe False (not . endsUnbegun . snd) baseline
+-- The second is not told apart from an @\\end@ of an environment begun
+-- before the cursor (@\\begin{aligned} x &= \\be‸ \\end{aligned}@), nor
+-- from one in a comment: telling them apart would read TeX by hand. There
+-- no entry is offered, which leaves an entry out and never writes a
+-- second end. With no reading of the math, no environment is offered.
+environmentFits :: Maybe (MathPlace, Text) -> Bool
+environmentFits = maybe False (fits . snd)
   where
-    endsUnbegun tex =
-      let (upTo, atWord) = T.breakOn ("\\" <> mathWord) tex
-          opened = foldl' (\depth step -> max 0 (depth + step)) 0 (environmentSteps upTo)
-          afterWord = T.drop (T.length mathWord + 1) atWord
-          below
-            | place == InDisplay && not ("\n" `T.isInfixOf` T.strip afterWord) = T.concat ["\n" <> l | l <- takeWhile inMathBelow at.below]
-            | otherwise = ""
-       in any (< 0) (scanl (+) opened (environmentSteps (afterWord <> below)))
-    inMathBelow l = let t = T.dropWhile isBlank l in not (T.null t) && not (any (`T.isPrefixOf` t) ["$$", "```", "~~~"])
-
--- | The steps of depth of environments a text of TeX takes, in order: 1 for
--- each @\\begin@, -1 for each @\\end@. A backslash starts a control word
--- (letters) or a control symbol (one character, @\\\\@ too), so that the
--- @begin@ of @\\\\begin@ is not counted.
-environmentSteps :: Text -> [Int]
-environmentSteps t = case T.uncons (snd (T.breakOn "\\" t)) of
-  Nothing -> []
-  Just (_, more) -> case T.uncons more of
-    Just (c, _)
-      | isAsciiLower c || isAsciiUpper c ->
-          let (word, after) = T.span (\x -> isAsciiLower x || isAsciiUpper x) more
-           in [1 | word == "begin"] <> [-1 | word == "end"] <> environmentSteps after
-    Just (_, after) -> environmentSteps after
-    Nothing -> []
+    fits tex =
+      let rest = T.drop (T.length mathWord + 1) (snd (T.breakOn ("\\" <> mathWord) tex))
+       in not ("{" `T.isPrefixOf` T.stripStart rest) && not ("\\end" `T.isInfixOf` rest)
 
 -- | What a command with arguments writes in place of the cursor's line: the
 -- line's text before the backslash, the command's name, an empty pair of

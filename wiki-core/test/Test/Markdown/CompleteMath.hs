@@ -87,27 +87,50 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
       fst <$> walkAt [] "> $$\n> \\be‸" "\\begin{CD}" `shouldBe` Just ["> \\begin{CD}‸\\end{CD}", "> \\begin{CD}\\end{CD}‸"]
     it "still writes \\begin alone, the cursor after it" $
       written "$$\n\\beg‸" "\\begin" `shouldBe` Just ("\\begin‸", AsText)
-    it "offers them whatever follows the cursor, an environment taking no argument, an \\end of an environment begun before the cursor too"
+    it "offers them whatever follows the cursor in the math but a brace or an \\end, an environment taking no argument; what is outside the math is not read"
       $ for_
         [ "$\\be‸ x$"
         , "$\\be‸12$"
         , "$\\be‸\\alpha$"
         , "$\\be‸ = 1$"
-        , "$\\begin{pmatrix} \\be‸ \\end{pmatrix}$"
-        , "$$\n\\begin{aligned}\nx &= \\be‸ \\\\\ny &= 2\n\\end{aligned}\n$$"
-        , "$$\n\\begin{aligned}\n\\be‸\n\\end{aligned}"
+        , "$\\begin{pmatrix} \\be‸$"
         , "$$\n\\be‸\n$$\n\n\\end{pmatrix}"
+        , -- Display math closed on the cursor's line, and a paragraph
+          -- after it that names an \end: not the math's.
+          "$$\\be‸$$\nSee \\end{pmatrix} in the text."
+        , "$$\\be‸$$\n\nSee \\end{pmatrix} in the text."
+        , "Text $$\\be‸$$ and \\end{pmatrix} after it."
+        , -- A quotation's closing line, its mark taken off by the parser.
+          "> $$\n> \\be‸\n> $$\n> And \\end{pmatrix} after it."
+        , -- A long paragraph after the math, an \end past the completion's
+          -- read limit.
+          "$$\\be‸$$\n" <> T.intercalate "\n" (replicate 200 "Some more words on a line.") <> "\n\\end{pmatrix}"
+        , -- Display math not closed in the page is read closed after the
+          -- cursor's line: only that line counts, the lines below being
+          -- outside the math the parser read.
+          "$$\n\\begin{aligned}\n\\be‸"
+        , "$$\n\\be‸\na & b\n\\end{pmatrix}"
         ]
       $ \marked -> (marked, elem (labelOf "pmatrix") <$> environmentsAt marked) `shouldBe` (marked, Just True)
-    it "offers none where what follows may be the environment's own: a brace, or an \\end of an environment not begun before the cursor, on the lines below display math being typed too"
+    it "offers none where the rest of the math, past white space and line ends, starts with a brace, or holds an \\end anywhere, matched by a \\begin before the cursor or not, or in a comment"
       $ for_
         [ "$\\be‸{pmatrix}$"
         , "$\\be‸ {pmatrix} a \\end{pmatrix}$"
         , "$\\be‸ a & b \\end{pmatrix}$"
         , "$$\n\\be‸\na & b \\\\\nc & d\n\\end{pmatrix}\n$$"
-        , "$$\n\\be‸\na & b\n\\end{pmatrix}"
         , "```math\n\\be‸\n\\end{cases}"
         , "$\\begin{matrix} a \\end{matrix} \\be‸ \\end{matrix}$"
+        , -- The name on the next line: KaTeX reads \begin and its name
+          -- over a line end.
+          "$$\n\\be‸\n{pmatrix}\n$$"
+        , -- A \begin in a comment before the cursor opens nothing.
+          "$$\n% \\begin{pmatrix}\n\\be‸ a & b \\end{pmatrix}\n$$"
+        , -- An \end that is not of the environment open before the cursor.
+          "$$\n\\begin{aligned}\n\\be‸ a & b \\end{pmatrix}\n$$"
+        , -- An \end that is: an entry is missing, never a wrong write.
+          "$\\begin{pmatrix} \\be‸ \\end{pmatrix}$"
+        , "$$\n\\begin{aligned}\nx &= \\be‸ \\\\\ny &= 2\n\\end{aligned}\n$$"
+        , "$$\n\\begin{aligned}\nx &= \\be‸ % \\end{aligned}\n$$"
         ]
       $ \marked -> (marked, environmentsAt marked) `shouldBe` (marked, Just [])
     it "offers none where the parser would read the math otherwise with environments written, a name of letters or one with a star" $ do

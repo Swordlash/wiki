@@ -41,12 +41,14 @@
 -- answers with the user's choice for the one plugin written, and a save
 -- with the plugins off for
 -- the wiki: each is put in by what it answers, and a read follows, since
--- neither answers with the whole value. A write refused is shown on its
--- plugin's row ('refused'), a save refused beside the boxes ('problem'),
--- until a later one succeeds; a read follows them too, since a write whose
--- answer was lost may have been done. A read made after a write is sent
--- after the write's answer came: the HTTP backend's cache, which a write
--- empties when it answers, never answers it with what the write changed.
+-- neither answers with the whole value. A write of a state refused is
+-- shown on its plugin's row ('refused'), a write of options refused on the
+-- plugin's own surfaces ('optionsRefused'), a save refused beside the boxes
+-- ('problem'), until a later one succeeds or another choice is made; a
+-- read follows them too, since a write whose answer was lost may have been
+-- done. A read made after a write is sent after the write's answer came:
+-- the HTTP backend's cache, which a write empties when it answers, never
+-- answers it with what the write changed.
 --
 -- = A plugin's options
 --
@@ -55,7 +57,12 @@
 -- switch shows the state last chosen ('writing', 'shownState'): a plugin
 -- that set its options sees them at once, and does not see the server's
 -- older ones come back with a read in between. Once the last write
--- answers, the plugin is given what the server keeps.
+-- answers, the plugin is given what the server keeps. A write refused is
+-- told to the plugin's surfaces with their options ('optionsRefused'): the
+-- surface where the reader made the change says why it was not kept, and
+-- shows the server's options again. The refusal is set in the step its
+-- answer arrives, and cleared by the next write of the plugin's options
+-- that succeeds, or the next options chosen, even the ones shown.
 --
 -- Options found by the move of a plugin's legacy settings
 -- ("Wiki.App.Assistant.Migrate") are adopted only when the server keeps
@@ -178,7 +185,12 @@ data Model = Model
   -- ^ The plugins off for the wiki last ticked, while their save is out or
   -- waits.
   , refused :: Map PluginId WikiError
-  -- ^ Why the last write for a plugin failed, of its state or its options.
+  -- ^ Why the last write of a plugin's state failed: what its row in the
+  -- settings shows.
+  , optionsRefused :: Map PluginId WikiError
+  -- ^ Why the last write of a plugin's options failed, chosen or adopted:
+  -- what the plugin's surfaces are told with their options
+  -- ('Wiki.App.View.Common.Context''s @optionsRefused@).
   , problem :: Maybe WikiError
   -- ^ Why the last save of the plugins off for the wiki failed.
   , session :: Int
@@ -399,6 +411,7 @@ initialRead read' readInstalled session =
     , writingOptions = mempty
     , wantedOff = Nothing
     , refused = mempty
+    , optionsRefused = mempty
     , problem = Nothing
     , session
     , sessionFrom = noAsks
@@ -442,13 +455,15 @@ step event m = case event of
     let waits = any (\(_, w) -> w `writes` p) m.queued
      in wrote asked p answer m {writing = if waits then m.writing else Map.delete p m.writing}
   OptionsChosen p wanted'
-    | shownOptions m p == wanted' -> (m, [])
-    | otherwise -> writingNow (OptionsWrite p wanted') m {writingOptions = Map.insert p wanted' m.writingOptions, refused = Map.delete p m.refused}
+    -- The options shown already: nothing to write, but the choice is the
+    -- plugin's last, and a refusal of earlier options is told no more.
+    | shownOptions m p == wanted' -> (m {optionsRefused = Map.delete p m.optionsRefused}, [])
+    | otherwise -> writingNow (OptionsWrite p wanted') m {writingOptions = Map.insert p wanted' m.writingOptions, optionsRefused = Map.delete p m.optionsRefused}
   OptionsWritten asked _ _
     | not (ofSession asked m) -> landed asked m
   OptionsWritten asked p answer ->
     let waits = any (\(_, w) -> w `writesOptions` p) m.queued
-     in wrote asked p answer m {writingOptions = if waits then m.writingOptions else Map.delete p m.writingOptions}
+     in wroteOptions asked p answer m {writingOptions = if waits then m.writingOptions else Map.delete p m.writingOptions}
   AdoptWritten asked _ _
     | not (ofSession asked m) -> landed asked m
   AdoptWritten asked p answer ->
@@ -458,7 +473,7 @@ step event m = case event of
           -- The server keeps options already: nothing to say, and the read
           -- that follows gives them.
           Left (Conflict _) -> landed asked m1 {wanted = True}
-          _ -> wrote asked p answer m1
+          _ -> wroteOptions asked p answer m1
   OptionsAdopted session p v
     | session /= m.session -> (m, [])
     | isNothing (knownNow m) -> (m {adopting = Map.insert p v m.adopting}, [])
@@ -597,7 +612,7 @@ shownPolicy m = m.wantedPolicy <|> ((\i -> i.policy) <$> installedNow m)
 adopt :: PluginId -> Value -> Model -> (Model, [Effect])
 adopt p v m
   | isJust (shownOptions m p) || Map.member p m.writingOptions = (m, [])
-  | otherwise = writingNow (AdoptWrite p v) m {writingOptions = Map.insert p (Just v) m.writingOptions, refused = Map.delete p m.refused}
+  | otherwise = writingNow (AdoptWrite p v) m {writingOptions = Map.insert p (Just v) m.writingOptions, optionsRefused = Map.delete p m.optionsRefused}
 
 -- | The options waiting for what is on to be read, adopted once it is.
 adoptWaiting :: Model -> (Model, [Effect])
@@ -605,16 +620,27 @@ adoptWaiting m
   | isNothing (knownNow m) || Map.null m.adopting = (m, [])
   | otherwise = Map.foldrWithKey (\p v (x, effects) -> second (effects <>) (adopt p v x)) (m {adopting = mempty}, []) m.adopting
 
--- | The answer to a write for a plugin, of its state or its options, of
--- this session, taken into the model.
+-- | The answer to a write of a plugin's state, of this session, taken
+-- into the model: a refusal is the plugin's row's ('refused').
 wrote :: Ask -> PluginId -> Either WikiError PluginChoice -> Model -> (Model, [Effect])
-wrote asked p answer m1 =
+wrote = answered (\m -> m.refused) (\r m -> m {refused = r})
+
+-- | The answer to a write of a plugin's options, chosen or adopted, of
+-- this session, taken into the model: a refusal is told to the plugin's
+-- surfaces ('optionsRefused').
+wroteOptions :: Ask -> PluginId -> Either WikiError PluginChoice -> Model -> (Model, [Effect])
+wroteOptions = answered (\m -> m.optionsRefused) (\r m -> m {optionsRefused = r})
+
+-- | The answer to a write for a plugin, with the refusals of its kind of
+-- write, read and set.
+answered :: (Model -> Map PluginId WikiError) -> (Map PluginId WikiError -> Model -> Model) -> Ask -> PluginId -> Either WikiError PluginChoice -> Model -> (Model, [Effect])
+answered refusals setRefusals asked p answer m1 =
   let m2 = case (answer, takes asked m1.asks) of
-        -- A success clears the plugin's refusal: the last answer about it
-        -- is not one.
-        (Right choice, Just after) -> m1 {asks = after, known = withChoice p choice <$> m1.known, refused = Map.delete p m1.refused}
+        -- A success clears the plugin's refusal of its kind: the last
+        -- answer about it is not one.
+        (Right choice, Just after) -> setRefusals (Map.delete p (refusals m1)) m1 {asks = after, known = withChoice p choice <$> m1.known}
         (Right _, Nothing) -> m1
-        (Left e, _) -> m1 {refused = Map.insert p e m1.refused}
+        (Left e, _) -> setRefusals (Map.insert p e (refusals m1)) m1
    in -- The answer is the one plugin's: a read follows, after what waits.
       landed asked m2 {wanted = True}
 

@@ -148,6 +148,10 @@ data Context = Context
   -- ("Wiki.Api.Plugins.External"), as the shell last read them or changed
   -- them ('Wiki.App.View.Plugins.Machine.heldInstalled'). None until the
   -- read answers, and when it fails.
+  , optionsRefused :: Map PluginId WikiError
+  -- ^ Why the reader's last write of each plugin's options was refused,
+  -- for the plugin's surfaces ('Wiki.App.Plugin.Registry.refusalFor');
+  -- "Wiki.App.View.Plugins.Machine"'s @optionsRefused@.
   , pluginsRead :: Bool
   -- ^ Whether 'plugins' and 'external' are what this session's read
   -- answered, and not the defaults held until it does, or when it failed

@@ -228,7 +228,7 @@ states = describe "moves each legacy state" $ do
     options <- newIORef Nothing
     moveAll w d options `shouldReturn` Right Moved
     pluginKeys w `shouldReturn` Map.union (keysOf synced) (keysOf typedHere)
-    pluginKeys w >>= (`shouldBe` Just "sk-open-vault") . Map.lookup (SecretName "openai")
+    pluginKeys w >>= (`shouldBe` Map.lookup (SecretName "openai") (keysOf synced)) . Map.lookup (SecretName "openai")
     readIORef options `shouldReturn` Just (optionsValue synced)
     hasLegacyItem w `shouldReturn` False
     (\l -> (l.record, l.assistantKey)) <$> leftOn d `shouldReturn` (False, False)
@@ -415,7 +415,7 @@ together = describe "with other browsers and tabs" $ do
     readIORef bDone >>= (`shouldSatisfy` maybe False isRight)
     _ <- moveAll w b options
     keys <- pluginKeys w
-    keys `shouldBe` Map.unions [keysOf synced, Map.singleton (SecretName "scripted") "b-scripted"]
+    keys `shouldBe` Map.unions [keysOf synced, keysOf (withKey Scripted (Just "b-scripted") defaultSettings)]
     hasLegacyItem w `shouldReturn` False
     (\l -> l.record) <$> leftOn a `shouldReturn` False
     (\l -> l.record) <$> leftOn b `shouldReturn` False
@@ -542,6 +542,6 @@ together = describe "with other browsers and tabs" $ do
     withLegacyItem w older
     moveAll w d options `shouldReturn` Right Moved
     keys <- pluginKeys w
-    Map.lookup (SecretName "anthropic") keys `shouldBe` Just "sk-ant-vault"
-    Map.lookup (SecretName "scripted") keys `shouldBe` Just "scripted-older-tab"
+    Map.lookup (SecretName "anthropic") keys `shouldBe` Map.lookup (SecretName "anthropic") (keysOf synced)
+    Map.lookup (SecretName "scripted") keys `shouldBe` Map.lookup (SecretName "scripted") (keysOf older)
     hasLegacyItem w `shouldReturn` False

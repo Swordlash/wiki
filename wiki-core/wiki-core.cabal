@@ -107,6 +107,7 @@ library
       Wiki.Core.Order
       Wiki.Core.Page
       Wiki.Core.PageKind
+      Wiki.Core.PageMatch
       Wiki.Core.Path
       Wiki.Core.Permission
       Wiki.Core.Search
@@ -205,6 +206,7 @@ test-suite wiki-core-test
       Test.Math
       Test.Notification
       Test.Order
+      Test.PageMatch
       Test.Path
       Test.Permission
       Test.Permission.Writes

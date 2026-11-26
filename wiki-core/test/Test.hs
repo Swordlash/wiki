@@ -41,6 +41,7 @@ import Test.Math qualified as Math
 import Test.Notification qualified as Notification
 import Test.Offered qualified as Offered
 import Test.Order qualified as Order
+import Test.PageMatch qualified as PageMatch
 import Test.Path qualified as Path
 import Test.Permission qualified as Permission
 import Test.Permission.Writes qualified as Writes
@@ -87,6 +88,7 @@ main = hspec . parallel . wasmCases $ do
   Permission.spec
   Writes.spec
   Attachment.spec
+  PageMatch.spec
   Search.spec
   Diff.spec
   Encrypted.spec

@@ -30,6 +30,7 @@ import Wiki.App.Backend.Contract.Comments qualified as Comments
 import Wiki.App.Backend.Contract.Notifications qualified as Notifications
 import Wiki.App.Backend.Contract.Plugins qualified as Plugins
 import Wiki.App.Backend.Contract.Stars qualified as Stars
+import Wiki.App.Backend.Contract.Titled qualified as Titled
 import Wiki.App.Backend.Http (HttpWiki, applyImport, newHttpEnv, previewImport, runHttpWiki)
 import Wiki.App.Demo (demoNow)
 import Wiki.Core.Export (Archive (..), writeArchive)
@@ -62,6 +63,7 @@ spec backing = describe "HttpWiki against the server's API" $ do
   Stars.spec (type (HttpWiki IO)) fixture
   Plugins.spec (type (HttpWiki IO)) fixture
   Backlinks.spec (type (HttpWiki IO)) fixture
+  Titled.spec (type (HttpWiki IO)) fixture
   importing backing
   where
     fixture example =

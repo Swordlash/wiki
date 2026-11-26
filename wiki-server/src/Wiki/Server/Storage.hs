@@ -310,6 +310,7 @@ import Wiki.Core.Offered qualified as Offered
 import Wiki.Core.Order (ChildOrder (..), Children (..), Shift, childrenInOrder, nextPosition, orderName, renumber, reposition)
 import Wiki.Core.Page (Page (..), PageSummary (..), pageTreeOrder, savedAs)
 import Wiki.Core.PageKind (PageKind (..), knownKinds, pageKindName)
+import Wiki.Core.PageMatch (TitleHit (..), TitleQuery (..), looksFor, rankTitles, titleRefusal)
 import Wiki.Core.Path (NodeId, TreeNode, ancestry, childrenOf, findChild, resolvePath, resolveUnderM)
 import Wiki.Core.Permission
   ( GlobalGrant (..)
@@ -332,7 +333,7 @@ import Wiki.Core.Permission
   , publicTo
   )
 import Wiki.Core.Permission qualified as Permission
-import Wiki.Core.Search (Candidate (..), SearchHit, SearchQuery (..), Searchable (..), foldText, folded, queryWords, searchPlain, searchRanked)
+import Wiki.Core.Search (Candidate (..), SearchHit, SearchQuery (..), Searchable (..), foldText, folded, queryWords, searchPlain, searchRanked, searchedChain)
 import Wiki.Core.Slug (Slug, freshSlug, mkSlug, slugText, slugify)
 import Wiki.Core.Space (BoxNumbering (..), Conversion (..), Entry (..), Icon (..), Space (..), SpaceProfile (..), checkAvatarUpload, checkIconUpload, checkProfile, containerName, containerSlug, hasHome, homeDeleteRefusal, homeMoveRefusal, homeTitle, isHomeBody, isPersonal, ownProfile, parentOrRoot, personalName, positionSpace, rootPage, spaceTreeOrder, strayRoots, withHome, withMathMacros, withName, withOwnerAvatar, withProfile)
 import Wiki.Core.Space qualified as Space
@@ -1644,6 +1645,7 @@ instance (MonadIO m) => MonadWiki (StoredWiki m) where
   newUrlOwner = pure (UrlOwner 0)
   releaseUrls _ = pass
   searchPages = answer [] . searchPagesTx
+  findPagesByTitle = run Reads . findPagesByTitleTx
   getDraft = run Reads . getDraftTx
   saveDraft pid base title = run Writes . saveDraftTx pid base title
   discardDraft = run Writes . discardDraftTx
@@ -2598,7 +2600,7 @@ searchPagesTx q = do
         Map.filter
           -- An encrypted space is not searched: its pages' titles and
           -- texts are empty here, and the browser searches them itself.
-          (\c -> wanted c && not (any (\s -> Home.isHomeSpace ctx.server.homePage s.id || isJust s.encryption) c) && canView ctx.principal ctx.grants c)
+          (\c -> wanted c && searchedChain ctx.server.homePage ctx.principal ctx.grants c)
           (Map.mapWithKey (\sid _ -> chainOf ctx sid) ctx.spaces)
       ws = queryWords q
   -- No words find nothing, and no space has nothing to find. SQLite would
@@ -2629,6 +2631,42 @@ searchPagesTx q = do
       pure $ case traverse (\(rank, c) -> (,c) <$> rank) candidates of
         Just ranked | not (null ranked) -> searchRanked q ranked
         _ -> searchPlain q (map snd candidates)
+
+-- | The lookup of pages by title ("Wiki.Core.PageMatch"): the pages of
+-- the spaces the search reads for the reader ('searchedChain', the rule
+-- 'searchPagesTx' picks its spaces by), but the space the query leaves
+-- out, ranked and cut by 'rankTitles'. A query longer than
+-- 'Wiki.Core.PageMatch.maxLetters' is refused before anything is read.
+--
+-- The spaces are chosen from the context, which holds every space and the
+-- reader's grants, before any page is read. Then one query reads the
+-- chosen spaces' pages, their places and titles only
+-- ('loadTitledNodes'), by the index on the space. So a space the reader may
+-- not view, an encrypted one and the space left out add no row to what
+-- is read, compared, ranked or counted. Every page of a chosen space is
+-- read, templates too, so that each page's path can be found among them;
+-- the templates are left out after. The titles are compared here, in
+-- Haskell, as every backend compares them, not by the database.
+findPagesByTitleTx :: TitleQuery -> Tx [TitleHit]
+findPagesByTitleTx q = do
+  ctx <- ask
+  for_ (titleRefusal q) (failWith . Invalid)
+  let chosen =
+        Map.filterWithKey
+          (\sid c -> Just sid /= q.except && searchedChain ctx.server.homePage ctx.principal ctx.grants c)
+          (Map.mapWithKey (\sid _ -> chainOf ctx sid) ctx.spaces)
+  if not (looksFor q) || Map.null chosen
+    then pure []
+    else do
+      nodes <- db (loadTitledNodes (Map.keys chosen))
+      let byId = Map.fromList [(n.id, n) | n <- nodes]
+      pure . rankTitles q $
+        [ TitleHit {page = n.id, space = n.space, spacePath = map (\s -> s.slug) c, pagePath, title = n.title}
+        | n <- nodes
+        , not n.template
+        , Just c <- [Map.lookup n.space chosen]
+        , Just pagePath <- [pathIn ctx.spaces n.space (`Map.lookup` byId) n.id]
+        ]
 
 -- | A page's path in its space ('Wiki.Core.Space.pagePath'), among the
 -- pages the lookup finds: from under the space's home page. 'Nothing' for

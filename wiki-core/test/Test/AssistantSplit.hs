@@ -8,6 +8,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Protolude
+import Test.Cases (coverage)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
@@ -33,18 +34,42 @@ spec = describe "Wiki.Core.Assistant.Split" $ do
             .&&. not ("unreachable" `T.isInfixOf` shown)
 
   -- The settings' field keeps the key its check made from the text typed
-  -- ('readyWith'), and a key stored by an earlier build, or moved from a
-  -- legacy record, is the text as typed: either way, the key read is the
-  -- key the check tried, so the requests send the credential that was
-  -- checked, or the check refused it. U+2003 around a key passes the
-  -- check, and in a request's Authorization header it throws.
+  -- ('readyWith'), with the service it was checked against; a key stored
+  -- by an earlier build is the text as typed, read as kept for the
+  -- provider's own service. Either way, the key read is the key the check
+  -- tried, so the requests send the credential that was checked, or the
+  -- check refused it. U+2003 around a key passes the check, and in a
+  -- request's Authorization header it throws.
   prop "reads a provider's key as the key its check tried, whatever text was stored" $
     forAll genSettings $ \s -> forAll (elements [minBound .. maxBound]) $ \p -> forAll genTyped $ \typed ->
       let checked = (\r -> r.key) <$> readyWith typed p s
-          readFrom stored = (settingsOf p (fromParts (Just (optionsValue s)) (Map.singleton (secretOf p) stored) Nothing)).key
+          readUnder options stored = (settingsOf p (fromParts (Just (optionsValue options)) (Map.singleton (secretOf p) stored) Nothing)).key
+          own = withBaseUrl p "" s
        in counterexample (show typed) $
-            (readFrom typed === checked)
-              .&&. (readFrom (maybe typed (\k -> k.text) checked) === checked)
+            (readUnder s (keptValue (serviceFor p s) (ApiKey typed)) === checked)
+              .&&. (readUnder s (maybe typed (keptValue (serviceFor p s)) checked) === checked)
+              .&&. (readUnder own typed === checked)
+              .&&. (readUnder own (maybe typed (\k -> k.text) checked) === checked)
+
+  -- The finding of round 7 of #382: the options and the keys come from
+  -- apart, and a key kept for one address reached another.
+  prop "uses a provider's key only at the service it was kept for, and says for which address it was kept otherwise" $
+    forAll genSettings $ \s -> forAll genSettings $ \keptUnder -> forAll (elements [minBound .. maxBound]) $ \p ->
+      let key = ApiKey "sk-kept"
+          kept = keptValue (serviceFor p keptUnder) key
+          read' = fromParts (Just (optionsValue s)) (Map.singleton (secretOf p) kept) Nothing
+          same = addressOf p (settingsOf p keptUnder) == addressOf p (settingsOf p s)
+       in coverage . cover 20 same "the same address" . cover 20 (not same) "another address" $
+            (settingsOf p read').key === (if same then Just key else Nothing)
+              .&&. keyElsewhere (Just (optionsValue s)) (Map.singleton (secretOf p) kept) p === (if same then Nothing else Just (addressOf p (settingsOf p keptUnder)))
+
+  it "reads a key in the plain form of earlier builds as kept for the provider's own service, never for a gateway" $ do
+    let atGateway = withBaseUrl Anthropic "https://gateway.example/a" defaultSettings
+        keys = Map.singleton (secretOf Anthropic) "sk-plain"
+    (settingsOf Anthropic (fromParts (Just (optionsValue defaultSettings)) keys Nothing)).key `shouldBe` Just (ApiKey "sk-plain")
+    (settingsOf Anthropic (fromParts (Just (optionsValue atGateway)) keys Nothing)).key `shouldBe` Nothing
+    keyElsewhere (Just (optionsValue atGateway)) keys Anthropic `shouldBe` Just (officialUrl Anthropic)
+    keptKey Anthropic (keptValue (serviceFor Anthropic atGateway) (ApiKey "sk-g")) `shouldBe` Just (Service Anthropic (Url "https://gateway.example/a"), ApiKey "sk-g")
 
   it "names each provider's key by the provider" $
     assistantSecrets `shouldBe` [SecretName "anthropic", SecretName "openai", SecretName "scripted"]

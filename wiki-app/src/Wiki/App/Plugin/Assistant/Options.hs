@@ -35,8 +35,12 @@
 -- model list with the typed key, then makes the smallest possible request
 -- with it (looking up the model, which is free); the field keeps the key
 -- only when the provider accepts both, and the model the check passed
--- with is kept with it. A refused key is not kept: the field shows why.
--- "Test the key" checks a kept key with that small request. Once kept, a
+-- with is kept with it. A key is kept with the service it was checked
+-- against (the provider and the address chosen), and is sent to no other:
+-- where the options name another address, the provider has no key, and
+-- its section says for which address the key was kept
+-- ("Wiki.Core.Assistant.Split"). A refused key is not kept: the field
+-- shows why. "Test the key" checks a kept key with that small request. Once kept, a
 -- key is never shown again; the field only shows that one is set.
 -- Managing the vault itself (its unlock, passkeys, "ask each time") is
 -- the settings' section "Security".
@@ -70,6 +74,12 @@
 -- ahead of the program (by the prerender or the server), which has no
 -- access to the settings, says that the settings are being read, and the
 -- program adopts that page unchanged.
+--
+-- The settings other than the keys are the plugin's options, which the
+-- host writes ('SaveOptions'). A write the server refuses is told with the
+-- input ('OptionsInput''s @refused@), with the server's options, which the
+-- view then shows again; the view says why below the page's cap, where a
+-- failed save was said before the options moved to the server.
 --
 -- The keys are first read from the copy of the vault this browser holds
 -- ("Wiki.App.Plugin.Host.Secrets"), which can be older than the vault:
@@ -110,8 +120,7 @@ import Wiki.App.Plugin.Capability.Assistant
   , Models (..)
   )
 import Wiki.Core.Assistant
-  ( ApiKey (..)
-  , AssistantError (..)
+  ( AssistantError (..)
   , ErrorKind (BadKey, Unreachable)
   , Listed
   , Model (..)
@@ -155,7 +164,7 @@ import Wiki.Core.Assistant
   , withReached
   )
 import Wiki.Core.Assistant.Reference (markdownReference)
-import Wiki.Core.Assistant.Split (secretOf)
+import Wiki.Core.Assistant.Split (keptValue, secretOf, serviceFor, serviceText)
 import Wiki.Core.Url (Url (..))
 
 -- | What the settings page gives the view ('Wiki.App.Plugin.OptionsInput').
@@ -167,6 +176,7 @@ type Slots = ("secret" .== H.Slot (Const Void) FieldOutput FieldSlot)
 -- key)", or the check of a key typed in a provider's field. 'Kept' is a
 -- typed key that worked and is now kept.
 data Check = Checking | Works | KeptNow | Fails Text
+  deriving stock (Eq)
 
 -- | 'Listing': the state of fetching a provider's model list.
 data Listing = Listing | Fetched Int | NotFetched Text
@@ -188,7 +198,11 @@ data State m = State
   -- ^ The page's cap as typed in its field, until it is kept: the estimate
   -- beside the field follows it.
   , testing :: Set Provider
-  -- ^ The providers whose field checks a typed key.
+  -- ^ The providers whose field keeps a typed key: from its check's start
+  -- until the field says the keep is over ('KeepOver'), whichever way it
+  -- ended.
+  , testingKept :: Set Provider
+  -- ^ The providers whose kept key "Test the key" is testing.
   , tested :: Map Provider ModelName
   -- ^ The model the last check of a typed key passed with, for each
   -- provider, to keep with the key once the field has kept it.
@@ -235,6 +249,7 @@ component =
               , otherModels = mempty
               , typedCap = Nothing
               , testing = mempty
+              , testingKept = mempty
               , tested = mempty
               , heard = Nothing
               , refreshed = Nothing
@@ -300,6 +315,9 @@ component =
             {{ providerView st s p }}
           {% end %}
           {{ capView st s }}
+          {% for why in maybeToList st.input.refused %}
+            <p class="error assistant-options-refused" role="alert">{{ Settings.notKept why }}</p>
+          {% end %}
           {% for why in maybeToList (Machine.current st.machine).problem %}
             <p class="error" role="alert">{{ why }}</p>
           {% end %}
@@ -367,6 +385,9 @@ component =
               {% end %}
             {% end %}
             {{ secretField "secret" st.input.can.secrets FieldInput {name = secretOf p, check = checkFor st p s, binding = serviceBinding p s} (FromField p) }}
+            {% for why in maybeToList (Settings.keyElsewhere (Machine.current st.machine) p) %}
+              <p class="warning assistant-key-elsewhere" role="alert">{{ why }}</p>
+            {% end %}
             {% if isJust ps.key %}
               <div class="actions">
                 <button type="button" class="assistant-test" disabled={{ checking }} onClick={{ const (Test p) }}>Test the key</button>
@@ -467,10 +488,7 @@ component =
         effortName e = if e == defaultEffort then e <> " (default)" else e
         -- The service and the model cannot change while a key is tested,
         -- so that the key kept is the one tested at that address.
-        checking =
-          Set.member p st.testing || case Map.lookup p st.checks of
-            Just Checking -> True
-            _ -> False
+        checking = Set.member p st.testing || Set.member p st.testingKept
         checkView = case Map.lookup p st.checks of
           Nothing -> Nothing
           Just Checking -> Just [hh|<p class="assistant-check" role="status">Asking {{ providerLabel p }}…</p>|]
@@ -505,7 +523,7 @@ component =
         modify (\st -> st {input})
         -- Another reader: nothing shown of the former reader's stays.
         when (readerOf input /= before) $
-          modify (\st -> st {typedModels = mempty, checks = mempty, listings = mempty, otherModels = mempty, testing = mempty, tested = mempty})
+          modify (\st -> st {typedModels = mempty, checks = mempty, listings = mempty, otherModels = mempty, testing = mempty, testingKept = mempty, tested = mempty})
         whenM (H.liftEffect input.can.here) $ do
           happen (Settings.Given (readerOf input) input.options)
           -- Another reader, or the address the page started at left.
@@ -525,9 +543,10 @@ component =
           happen (Settings.Changed (\s -> if baseUrlOf p (settingsOf p s) == asked.baseUrl then withModels p models at s else s))
           modify (\st -> st {listings = Map.insert p (Fetched (length models)) st.listings})
       CheckFailed p why reached -> do
-        modify (\st -> st {testing = Set.delete p st.testing, checks = Map.insert p (Fails why) st.checks})
+        modify (\st -> st {checks = Map.insert p (Fails why) st.checks})
         happen (Settings.Changed (withReached p reached))
-      CheckPassed p model -> modify (\st -> st {testing = Set.delete p st.testing, tested = Map.insert p model st.tested})
+      -- The controls stay off until the field says the keep is over.
+      CheckPassed p model -> modify (\st -> st {tested = Map.insert p model st.tested})
       -- The key is kept: the model its check passed with is kept with it.
       FromField p (Kept _) -> do
         model <- gets (\st -> Map.lookup p st.tested)
@@ -541,6 +560,16 @@ component =
         happen (Settings.Changed (withKey p Nothing))
         happen Settings.SecretsChanged
       FromField _ Unlocked -> happen Settings.SecretsChanged
+      -- The keep is over, kept or not: the controls are on again. A check
+      -- still said to be going on was not kept (the field says why), and
+      -- is no longer shown, unless "Test the key" is out.
+      FromField p (KeepOver _) ->
+        modify $ \st ->
+          st
+            { testing = Set.delete p st.testing
+            , tested = Map.delete p st.tested
+            , checks = if Map.lookup p st.checks == Just Checking && Set.notMember p st.testingKept then Map.delete p st.checks else st.checks
+            }
       Choose p -> happen (Settings.Changed (chooseProvider p))
       -- "Other…": show its field, with the model typed there last, if any.
       ChooseModel p "" -> do
@@ -560,9 +589,9 @@ component =
       Test p ->
         gets (\st -> Settings.settings (Machine.current st.machine)) >>= \case
           Just s | Right r <- readyFor p s -> do
-            modify (\st -> st {checks = Map.insert p Checking st.checks})
+            modify (\st -> st {checks = Map.insert p Checking st.checks, testingKept = Set.insert p st.testingKept})
             result <- askProvider (\ms -> ms.check r)
-            modify (\st -> st {checks = Map.insert p (maybe Works (Fails . errorText (serviceOf r) (Just r.key)) result) st.checks})
+            modify (\st -> st {checks = Map.insert p (maybe Works (Fails . errorText (serviceOf r) (Just r.key)) result) st.checks, testingKept = Set.delete p st.testingKept})
             -- Record whether the provider responded at all; and once the
             -- key is known to work, fetch its model list too.
             for_ result (\e -> happen (Settings.Changed (withReached p (e.kind /= Unreachable))))
@@ -642,7 +671,11 @@ component =
     -- has it, else with the list's first model. It tells the view what it
     -- found as it goes. The settings are those the field was last given.
     -- A key that passes is answered as it was tried ('readyWith' trims
-    -- it), and the field keeps that key, not the text typed.
+    -- it), with the service it was tried against ('keptValue'): the field
+    -- keeps that key for that service, not the text typed. The service is
+    -- made from the settings the field's binding is made from
+    -- ('serviceBinding'), so a key is kept for the binding its check was
+    -- asked under, which the field compares when the check answers.
     checkFor :: State m -> Provider -> Settings -> Text -> m (Either Text Text)
     checkFor st p s typed = case (st.heard, readyWith typed p s) of
       (Nothing, _) -> pure (Left "The settings are still being read.")
@@ -661,15 +694,16 @@ component =
             let model = either (const asked.model) (\l -> modelOf p (withModels p l at s)) listed
             models.check Ready {provider = asked.provider, model, key = asked.key, effort = asked.effort, baseUrl = asked.baseUrl} >>= \case
               Just e -> refused e
-              Nothing -> tell (CheckPassed p model) $> Right asked.key.text
+              Nothing -> tell (CheckPassed p model) $> Right (keptValue (serviceFor p s) asked.key)
 
 -- | The service a key's check tries it against, as a key's field binds
 -- the check to it ('Wiki.App.Plugin.FieldInput'): the provider, and the
--- address chosen, none for the provider's own. A key checked against one
+-- address chosen, the provider's own included
+-- ('Wiki.Core.Assistant.Split.serviceFor'). A key checked against one
 -- service is then never kept for another, if the options change while the
--- check is out.
+-- check is out; and the key is kept with that service ('checkFor').
 serviceBinding :: Provider -> Settings -> Text
-serviceBinding p s = providerKey p <> " " <> maybe "" (\u -> u.text) (baseUrlOf p (settingsOf p s))
+serviceBinding p s = serviceText (serviceFor p s)
 
 -- | The model a key is tested with: the one chosen, if the provider's
 -- list has it, else the list's first.

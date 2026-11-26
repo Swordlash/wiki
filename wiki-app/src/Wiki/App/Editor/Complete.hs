@@ -47,7 +47,8 @@ import Wiki.Core.Markdown.Starts (Earlier (..), earlierFrom, linesBelow, linesFr
 import Wiki.Core.Math (definedMacros)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind)
-import Wiki.Core.Slug (Slug, slugText, slugify)
+import Wiki.Core.PageMatch (Matchable (..), matchRank, matchable, typedLetters)
+import Wiki.Core.Slug (Slug)
 import Wiki.Core.Space (Space, pagePath)
 
 -- | 'Request' is CodeMirror's question: the cursor's line, from 1, in the
@@ -118,14 +119,14 @@ linkable editingPath i title path =
     , address
     , label
     , nearness
-    , lowerTitle
-    , titleWords = drop 1 (T.split (not . isAlphaNum) lowerTitle)
-    , segments = map slugText path
-    , joined = T.intercalate "/" (map slugText path)
+    , lowerTitle = matched.lowerTitle
+    , titleWords = matched.titleWords
+    , segments = matched.segments
+    , joined = matched.joined
     }
   where
     (address, label) = pageLinkText editingPath path title
-    lowerTitle = T.toLower title
+    matched = matchable title path
     parentOf p = take (length p - 1) p
     nearness
       | not (null path) && parentOf path == parentOf editingPath = 0
@@ -211,14 +212,10 @@ pageSource held wanted
     -- the list takes the first of each group in turn, and goes through
     -- the pages no further than it needs: each page is matched once.
     matched = [(r, p) | p <- held.pages, p.id /= held.editing, Just r <- [matchOf p]]
-    query = T.toLower (T.strip typed.letters)
-    querySlug = maybe query slugText (slugify query)
-    matchOf p
-      | T.null query || query `T.isPrefixOf` p.lowerTitle = Just (1 :: Int)
-      | any (query `T.isPrefixOf`) p.titleWords = Just 2
-      | any (querySlug `T.isPrefixOf`) p.segments = Just 2
-      | query `T.isInfixOf` p.lowerTitle || querySlug `T.isInfixOf` p.joined = Just 3
-      | otherwise = Nothing
+    query = typedLetters typed.letters
+    -- The rule shared with the lookup of pages by title
+    -- ("Wiki.Core.PageMatch").
+    matchOf p = matchRank query Matchable {lowerTitle = p.lowerTitle, titleWords = p.titleWords, segments = p.segments, joined = p.joined}
     candidate p =
       Candidate
         { label = p.title

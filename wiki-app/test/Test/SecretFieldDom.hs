@@ -12,14 +12,25 @@
 --
 -- The writing assistant's settings, on a browser whose copy of the vault
 -- is older than the vault, ask the vault once as they open, for all their
--- fields, unless they are on the address the page started at.
+-- fields, unless they are on the address the page started at. A key the
+-- provider accepts and the vault then refuses to keep leaves the field
+-- saying why, and the settings' other controls on again. A change of the
+-- assistant's options the server refuses is said where the change was
+-- made, the settings or the editor's panel, which show the server's
+-- options again: the input is built from the plugins' state
+-- ("Wiki.App.View.Plugins.Machine") as the shell and the editor build it.
+-- A key kept for one address is not sent to another that the options
+-- name: the settings and the editor's panel say for which address it was
+-- kept, and the providers, which record what they are asked, are asked
+-- nothing with it there.
 module Test.SecretFieldDom (spec) where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Control.Monad.UUID (MonadUUID (..))
-import Data.IORef (atomicModifyIORef', newIORef)
+import Data.Aeson (Value)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Halogen.Router qualified as Router
@@ -31,19 +42,25 @@ import Test.Harness.MemDom
 import Test.Hspec
 import Test.SecretsPlugin (endpointName, secretive, secretiveManifest, tokenName)
 import Test.VaultServer
-import Wiki.App.Assistant (MonadAssistant (..))
+import Wiki.Api.Plugins (Plugins (..))
+import Wiki.App.Assistant (MonadAssistant (..), Opening (..))
 import Wiki.App.Assistant.Sync (MonadVault)
 import Wiki.App.Backend (anonymousIn)
 import Wiki.App.Backend qualified as B
-import Wiki.App.Plugin (Capabilities (..), Manifest (..), Options (..), OptionsInput (..), OptionsOutput, Plugin (..), SecretName (..), Secrets (..))
+import Wiki.App.Plugin (AgentInput (..), AgentQuery (..), Capabilities (..), Editing (..), Manifest (..), Options (..), OptionsInput (..), OptionsOutput (..), Plugin (..), SecretName (..), Secrets (..))
+import Wiki.App.Plugin.Assistant.Agent qualified as AssistantAgent
 import Wiki.App.Plugin.Assistant.Options qualified as AssistantOptions
 import Wiki.App.Plugin.Host (capabilities)
 import Wiki.App.Plugin.Host.Secrets (putSecret, refreshSecrets, removeSecret)
-import Wiki.App.Plugin.Registry (assistantId, manifests)
+import Wiki.App.Plugin.Registry (assistantId, manifests, optionsFor, refusalFor)
 import Wiki.App.Route (Route (..), route)
 import Wiki.App.Vault (vaultSlot)
+import Wiki.App.View.Plugins.Machine qualified as PluginsMachine
 import Wiki.Core.Access (Access (..))
+import Wiki.Core.Assistant (ApiKey (..), Provider (..), Ready (..), defaultSettings, withBaseUrl)
+import Wiki.Core.Assistant.Split (keptValue, optionsValue, secretOf, serviceFor)
 import Wiki.Core.Id (UserId (..))
+import Wiki.Core.Url (Url (..))
 import Wiki.Core.User (Login (..), User (..))
 import Wiki.Core.Vault (Item (..), ItemName (..), itemOf)
 import Wiki.Core.Vault.Plugin (decodeSecrets, pluginSealingData)
@@ -123,12 +140,232 @@ spec = describe "Wiki.App.View.SecretField" $ do
     (adopted, fetchedAdopted) <- assistantSettingsOnB True
     adopted `shouldBe` ["Not set", "Not set"]
     fetchedAdopted `shouldBe` 0
+
+  it "turns the assistant's controls on again when the provider accepts a typed key and the vault refuses to keep it" $ do
+    counter <- newIORef 0
+    k <- atomicModifyIORef' counter (\n -> (n + 1, n + 1))
+    server <- newServer (Just (userVault k))
+    d <- newDevice counter True
+    withVaultKey d alice k
+    manifest <- maybe (panic "the assistant is in the registry") pure (head [m | m <- manifests, m.id == assistantId])
+    router <- runMemDOM (onDevice d (served server (Router.newRouter "/" Unknown route)))
+    let session = (anonymousIn Open) {B.user = Just User {id = alice, login = Login "alice", displayName = "Alice", avatar = Nothing}}
+        can = capabilities (viewContextAs router session [] 0) manifest
+        anthropic selector = "[data-provider=anthropic] " <> selector
+        controls = map anthropic [".assistant-service", ".assistant-model", ".assistant-default-effort", ".assistant-test"]
+    withView (onDevice d . served server . browsing) AssistantOptions.component OptionsInput {user = Just alice, options = Nothing, refused = Nothing, adopted = True, can} $ \view -> do
+      settle view
+      -- Another device stores the vault before each of the keep's tries:
+      -- every try is refused.
+      replicateM_ 3 (beforeNextStore server (serverState server >>= traverse_ (setVault server . snd) . (\st -> st.kept)))
+      typeInto view (anthropic ".secret-field-value") "sk-ant-typed"
+      click view (anthropic ".secret-field-keep")
+      settle view
+      textOf view (anthropic ".secret-field-problem") >>= (`shouldSatisfy` T.isInfixOf "could not be changed")
+      textOf view (anthropic ".secret-field-state") `shouldReturn` "Not set"
+      disabled <- for controls $ \c -> (c,) . isJust . join <$> (find view c >>= traverse (attribute "disabled"))
+      disabled `shouldBe` map (,False) controls
+      isJust <$> find view (anthropic ".assistant-check") `shouldReturn` False
+
+  -- Codex's sixth round on #382: the plugins' state kept the refusal of
+  -- an options write for the row under Settings, Plugins only, and the
+  -- settings where the provider was changed went back without a word.
+  it "says why a change of the assistant's options was not kept, and shows the server's options again" $
+    withAssistant $ \run can -> do
+      let given options refused = OptionsInput {user = Just alice, options, refused, adopted = True, can}
+      withView run AssistantOptions.component (given Nothing Nothing) $ \view -> do
+        settle view
+        -- The provider's radio buttons, Anthropic's and OpenAI's, and which
+        -- of them are checked.
+        let radios = findAll view ".assistant-provider input"
+            checkedNow = radios >>= traverse (fmap (\case Just (ScalarBool b) -> b; _ -> False) . property "checked")
+        checkedNow `shouldReturn` [True, False]
+        radios >>= \case
+          [_, openai] -> clickNode openai
+          other -> panic ("two providers, not " <> show (length other))
+        settle view
+        chosen <-
+          outputs view <&> \case
+            [SaveOptions o] -> o
+            other -> panic ("one save of the options, not " <> show other)
+        -- The shell's plugins' state takes the choice and writes it, and
+        -- gives the settings the options chosen while the write is out.
+        let (out, effects) = PluginsMachine.step (PluginsMachine.OptionsChosen assistantId chosen) (PluginsMachine.initialWith (Just Plugins {offForWiki = mempty, mine = mempty}) 0)
+            inputOf m = given (optionsFor assistantId (PluginsMachine.held m)) (refusalFor assistantId m.optionsRefused)
+        asked <- case effects of
+          [PluginsMachine.WriteOptions a p o] | p == assistantId && o == chosen -> pure a
+          other -> panic ("one write of the options, not " <> show other)
+        setInput view (inputOf out)
+        settle view
+        checkedNow `shouldReturn` [False, True]
+        -- The server refuses it.
+        let (refused, _) = PluginsMachine.step (PluginsMachine.OptionsWritten asked assistantId (Left (B.Invalid refusal))) out
+        setInput view (inputOf refused)
+        settle view
+        textOf view ".assistant-options-refused" >>= (`shouldSatisfy` T.isInfixOf refusal)
+        checkedNow `shouldReturn` [True, False]
+        -- Chosen again: the refusal is no longer said, whatever the write
+        -- of the choice answers.
+        let (again, _) = PluginsMachine.step (PluginsMachine.OptionsChosen assistantId chosen) refused
+        setInput view (inputOf again)
+        settle view
+        isJust <$> find view ".assistant-options-refused" `shouldReturn` False
+
+  it "says in the editor's panel why a change of the assistant's options was not kept" $
+    withAssistant $ \run can -> do
+      let given refused = AgentInput {user = Just alice, options = Nothing, refused, editing = Just editing, can}
+          editing = Editing {title = "A page", body = "Some text.", selection = Nothing, pending = 0, decisions = mempty, encrypted = False, document = Nothing}
+      withView run AssistantAgent.component (given Nothing) $ \view -> do
+        settle view
+        tell view (Press "assistant" True)
+        settle view
+        void (element view ".assistant-setup")
+        setInput view (given (Just refusal))
+        settle view
+        textOf view ".assistant-setup" >>= (`shouldSatisfy` T.isInfixOf refusal)
+        setInput view (given Nothing)
+        settle view
+        textOf view ".assistant-setup" >>= (`shouldSatisfy` (not . T.isInfixOf refusal))
+
+  -- Codex's seventh round on #382: a key kept for Anthropic's own service
+  -- reached a gateway that options from elsewhere named. The key here was
+  -- kept for Anthropic's own service, and the options name a gateway.
+  it "says in the assistant's settings that a key kept for another address is not used, and sends it to no other address" $
+    withKeptElsewhere $ \run can asked -> do
+      let given options = OptionsInput {user = Just alice, options = Just options, refused = Nothing, adopted = True, can}
+          anthropic selector = "[data-provider=anthropic] " <> selector
+      withView run AssistantOptions.component (given atGateway) $ \view -> do
+        settle view
+        textOf view (anthropic ".secret-field-state") `shouldReturn` "Set"
+        textOf view (anthropic ".assistant-key-elsewhere") >>= (`shouldSatisfy` T.isInfixOf "for another address: https://api.anthropic.com. Enter the key for https://gateway.example/anthropic")
+        -- The connection tested at the gateway, without the key.
+        click view (anthropic ".assistant-test")
+        settle view
+        gatewayAsks <- asked
+        gatewayAsks `shouldSatisfy` any (\r -> r.baseUrl == Just gateway)
+        filter (\r -> r.key == officialKey) gatewayAsks `shouldBe` []
+        -- Anthropic's own service chosen: the key is used there.
+        setInput view (given (optionsValue defaultSettings))
+        settle view
+        isJust <$> find view (anthropic ".assistant-key-elsewhere") `shouldReturn` False
+        click view (anthropic ".assistant-test")
+        settle view
+        filter (\r -> r.key == officialKey) <$> asked >>= (`shouldSatisfy` (\rs -> not (null rs) && all (\r -> isNothing r.baseUrl) rs))
+        -- The gateway chosen again, and a key typed for it: checked at the
+        -- gateway, kept for it, and used there.
+        setInput view (given atGateway)
+        settle view
+        void (element view (anthropic ".assistant-key-elsewhere"))
+        typeInto view (anthropic ".secret-field-value") "sk-ant-gateway"
+        click view (anthropic ".secret-field-keep")
+        settle view
+        isJust <$> find view (anthropic ".assistant-key-elsewhere") `shouldReturn` False
+        click view (anthropic ".assistant-test")
+        settle view
+        filter (\r -> r.key == ApiKey "sk-ant-gateway") <$> asked >>= (`shouldSatisfy` (\rs -> not (null rs) && all (\r -> r.baseUrl == Just gateway) rs))
+
+  it "says in the editor's panel that a key kept for another address is not used, and sends it to no other address" $
+    withKeptElsewhere $ \run can asked -> do
+      let editing = Editing {title = "A page", body = "Some text.", selection = Nothing, pending = 0, decisions = mempty, encrypted = False, document = Nothing}
+      withView run AssistantAgent.component AgentInput {user = Just alice, options = Just atGateway, refused = Nothing, editing = Just editing, can} $ \view -> do
+        settle view
+        tell view (Press "anthropic" True)
+        settle view
+        textOf view ".assistant-setup" >>= (`shouldSatisfy` T.isInfixOf "for another address: https://api.anthropic.com")
+        -- The gateway's list asked for, without the key.
+        gatewayAsks <- asked
+        gatewayAsks `shouldSatisfy` any (\r -> r.baseUrl == Just gateway)
+        filter (\r -> r.key == officialKey) gatewayAsks `shouldBe` []
   where
     token selector = "[data-secret=token] " <> selector
     endpoint selector = "[data-secret=endpoint] " <> selector
 
+-- | The gateway the options of 'withKeptElsewhere' name for Anthropic.
+gateway :: Url
+gateway = Url "https://gateway.example/anthropic"
+
+-- | Options that send Anthropic's requests to 'gateway'.
+atGateway :: Value
+atGateway = optionsValue (withBaseUrl Anthropic gateway.text defaultSettings)
+
+-- | The key 'withKeptElsewhere' keeps, for Anthropic's own service.
+officialKey :: ApiKey
+officialKey = ApiKey "sk-ant-official"
+
+-- | A test on the writing assistant, for Alice, whose Anthropic key is
+-- kept for Anthropic's own service: how to run on her browser, the
+-- capabilities the host makes for the assistant, and every request the
+-- providers were asked, in order.
+withKeptElsewhere :: ((forall a. Recording (Served (Fake MemDOM)) a -> MemDOM a) -> Capabilities (Recording (Served (Fake MemDOM))) -> IO [Ready] -> IO ()) -> IO ()
+withKeptElsewhere test = do
+  counter <- newIORef 0
+  k <- atomicModifyIORef' counter (\n -> (n + 1, n + 1))
+  server <- newServer (Just (userVault k))
+  d <- newDevice counter True
+  withVaultKey d alice k
+  manifest <- maybe (panic "the assistant is in the registry") pure (head [m | m <- manifests, m.id == assistantId])
+  requests <- newIORef []
+  let run :: Recording (Served (Fake MemDOM)) a -> MemDOM a
+      run (Recording r) = onDevice d (served server (runReaderT r requests))
+  runMemDOM (run (putSecret alice manifest (secretOf Anthropic) (keptValue (serviceFor Anthropic defaultSettings) officialKey))) `shouldReturn` Right ()
+  router <- runMemDOM (onDevice d (served server (Router.newRouter "/" Unknown route)))
+  let session = (anonymousIn Open) {B.user = Just User {id = alice, login = Login "alice", displayName = "Alice", avatar = Nothing}}
+  test run (capabilities (viewContextAs router session [] 0) manifest) (reverse <$> readIORef requests)
+
+-- | 'Recording' is a browser of the tests where the writing assistant
+-- runs, as 'Browsing' is, whose providers record every request they are
+-- asked: the key and the address each would have carried.
+newtype Recording m a = Recording (ReaderT (IORef [Ready]) m a)
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO, PrimMonad)
+
+instance MonadTrans Recording where
+  lift = Recording . lift
+
+deriving newtype instance (MonadDOM m) => MonadDOM (Recording m)
+
+deriving newtype instance (MonadAttributes m) => MonadAttributes (Recording m)
+
+deriving newtype instance (MonadBrowserDOM m) => MonadBrowserDOM (Recording m)
+
+instance (MonadIO m) => MonadUUID (Recording m) where
+  generateV4 = liftIO generateV4
+
+instance (MonadAssistant m, MonadIO m) => MonadAssistant (Recording m) where
+  assistantHere = pure True
+
+  -- Every provider lists no model, and accepts every key.
+  listModels r = recorded r $> Right []
+  checkKey r = recorded r $> Nothing
+  openTalk opening heard = recorded opening.ready >> lift (openTalk opening heard)
+
+instance (MonadVault m, MonadIO m) => MonadVault (Recording m)
+
+-- | Record a request the providers were asked.
+recorded :: (MonadIO m) => Ready -> Recording m ()
+recorded r = Recording (ask >>= \ref -> liftIO (modifyIORef' ref (r :)))
+
 alice :: UserId
 alice = UserId "user-alice"
+
+-- | The sentence the server refuses the assistant's options with, in the
+-- examples.
+refusal :: Text
+refusal = "A plugin's options are at most 64 KiB."
+
+-- | A test on the writing assistant, for Alice, on a browser that holds
+-- the key to her vault: how to run on it, and the capabilities the host
+-- makes for the assistant.
+withAssistant :: ((forall a. Browsing (Served (Fake MemDOM)) a -> MemDOM a) -> Capabilities (Browsing (Served (Fake MemDOM))) -> IO ()) -> IO ()
+withAssistant test = do
+  counter <- newIORef 0
+  k <- atomicModifyIORef' counter (\n -> (n + 1, n + 1))
+  server <- newServer (Just (userVault k))
+  d <- newDevice counter True
+  withVaultKey d alice k
+  manifest <- maybe (panic "the assistant is in the registry") pure (head [m | m <- manifests, m.id == assistantId])
+  router <- runMemDOM (onDevice d (served server (Router.newRouter "/" Unknown route)))
+  let session = (anonymousIn Open) {B.user = Just User {id = alice, login = Login "alice", displayName = "Alice", avatar = Nothing}}
+  test (onDevice d . served server . browsing) (capabilities (viewContextAs router session [] 0) manifest)
 
 -- | 'Mounted' is the plugin's settings mounted for Alice, with a vault on
 -- the server that this browser has not unlocked: the view; how to run on
@@ -161,7 +398,7 @@ withSecretive test = do
   let session = (anonymousIn Open) {B.user = Just User {id = alice, login = Login "alice", displayName = "Alice", avatar = Nothing}}
       can = capabilities (viewContextAs router session [] 0) secretiveManifest
   surface <- maybe (panic "the plugin has settings") (\(Options o) -> pure o) (secretive @(Served (Fake MemDOM))).options
-  withView run surface OptionsInput {user = Just alice, options = Nothing, adopted = True, can} $ \view -> do
+  withView run surface OptionsInput {user = Just alice, options = Nothing, refused = Nothing, adopted = True, can} $ \view -> do
     settle view
     test Mounted {view, run, can, kept}
 
@@ -194,7 +431,7 @@ assistantSettingsOnB adopted = do
   let session = (anonymousIn Open) {B.user = Just User {id = alice, login = Login "alice", displayName = "Alice", avatar = Nothing}}
       can = capabilities (viewContextAs router session [] 0) manifest
   atStart <- fetches
-  withView (onDevice b . served server . browsing) AssistantOptions.component OptionsInput {user = Just alice, options = Nothing, adopted, can} $ \view -> do
+  withView (onDevice b . served server . browsing) AssistantOptions.component OptionsInput {user = Just alice, options = Nothing, refused = Nothing, adopted, can} $ \view -> do
     settle view
     states <- traverse (\p -> textOf view ("[data-secret=" <> p <> "] .secret-field-state")) ["anthropic", "openai"]
     atEnd <- fetches
@@ -202,7 +439,7 @@ assistantSettingsOnB adopted = do
 
 -- | 'Browsing' is a browser of the tests where the writing assistant
 -- runs, as in a browser ('assistantHere'): its settings read what they
--- show.
+-- show. Its providers accept every key.
 newtype Browsing m a = Browsing (m a)
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO, PrimMonad)
 
@@ -223,6 +460,10 @@ instance (MonadIO m) => MonadUUID (Browsing m) where
 
 instance (MonadAssistant m) => MonadAssistant (Browsing m) where
   assistantHere = pure True
+
+  -- Every provider lists no model, and accepts every key.
+  listModels _ = pure (Right [])
+  checkKey _ = pure Nothing
 
 instance (MonadVault m) => MonadVault (Browsing m)
 

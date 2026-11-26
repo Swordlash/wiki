@@ -294,8 +294,10 @@ library contract
         Wiki.App.Backend.Contract.Notifications
         Wiki.App.Backend.Contract.Plugins
         Wiki.App.Backend.Contract.Stars
+        Wiki.App.Backend.Contract.Titled
     build-depends:
         HUnit,
+        QuickCheck,
         aeson,
         bytestring,
         containers,

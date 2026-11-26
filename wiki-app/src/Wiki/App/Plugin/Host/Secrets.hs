@@ -59,10 +59,20 @@
 -- of secrets and its key, waits on WebCrypto, and writes the record back
 -- whole, so a change made by another tab in between would be written over,
 -- and two tabs would each make the browser's first key. With the lock,
--- the second tab's change waits, and reads what the first wrote. A read
--- writes nothing and takes no such lock. Where the browser has no locks
--- of tabs (a page over plain HTTP), two tabs can still write over each
--- other's change.
+-- the second tab's change waits, and reads what the first wrote. Where
+-- the browser has no locks of tabs (a page over plain HTTP), two tabs can
+-- still write over each other's change.
+--
+-- A read of the vault holds the same lock of tabs, from before its fetch
+-- until after it writes this browser's copy of the plugin's item (below).
+-- Without it, a read that fetched the vault before another tab's change
+-- could write its older copy after that change's copy, and every surface
+-- would read the older one: a key forgotten would still be shown, and
+-- used. The order of the locks is the same everywhere: the page's lock
+-- first, then the lock of tabs. A page over plain HTTP keeps no copy at
+-- all (only a page that can seal keeps one), so there the lack of locks
+-- of tabs leaves no copy to write over. A read of the copy alone
+-- ('readSecretsHere') takes no lock.
 --
 -- = What this browser holds of the vault
 --
@@ -158,14 +168,16 @@ readSecrets u manifest = holdingDeviceRecords (readSecretsHeld u manifest)
 -- | 'readSecrets', for a caller that holds the lock of this device's
 -- records already: the move of the assistant's legacy settings
 -- ("Wiki.App.Assistant.Migrate"), which reads them between its steps.
-readSecretsHeld :: (MonadAssistant m, MonadVault m) => UserId -> Manifest -> m (Either Unavailable (Map SecretName Text))
+readSecretsHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> m (Either Unavailable (Map SecretName Text))
 readSecretsHeld u manifest = fmap (\c -> declared manifest c.secrets) <$> readContentsHeld u manifest
 
 -- | What the plugin's item holds for the user, the legacy places taken
 -- with the secrets, as 'readSecrets' reads it: for the move of the
--- assistant's legacy settings, with the lock held.
-readContentsHeld :: (MonadAssistant m, MonadVault m) => UserId -> Manifest -> m (Either Unavailable Contents)
-readContentsHeld u manifest = runExceptT $ do
+-- assistant's legacy settings, with the lock held. The lock of tabs is
+-- taken here, around the fetch and the write of the copy (the module's
+-- header says why).
+readContentsHeld :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Manifest -> m (Either Unavailable Contents)
+readContentsHeld u manifest = holdingAcrossTabs (secretsLock u) $ runExceptT $ do
   item <- withExceptT Failed (itemFor manifest)
   withExceptT Failed placeOf >>= \case
     InVault s -> do

@@ -30,9 +30,10 @@ import Test.Cases (coverage)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
-import Wiki.Core.Assistant (Mode (..), Settings, defaultSettings, withMode)
+import Wiki.Core.Assistant (ApiKey (..), Mode (..), Provider (..), ProviderSettings (..), Ready (..), Settings (..), addressOf, baseUrlOf, defaultSettings, officialUrl, readyFor, settingsOf, withBaseUrl, withKey, withMode)
 import Wiki.Core.Assistant.Migrate
-import Wiki.Core.Assistant.Split (blankOptions, keysOf, optionsValue)
+import Wiki.Core.Assistant.Split (blankOptions, fromParts, keptKey, keysOf, optionsValue, secretOf)
+import Wiki.Core.Url (Url (..))
 import Wiki.Core.Vault (Nonce (..), Sealed (..))
 import Wiki.Core.Vault.Plugin (Contents (..), SecretName, foldIn, noContents)
 
@@ -379,6 +380,56 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
     plan found' `shouldBe` [AdoptOptions (optionsValue s)]
     plan found' {options = Just (Just (optionsValue s))} `shouldBe` [DropRecord "r"]
 
+  it "never sends the vault's key for Anthropic's own service to the gateway this browser's own options chose" $ do
+    -- The vault's legacy item: Anthropic's key, Anthropic's own service,
+    -- default options. This browser's record (syncing off): another key,
+    -- for an administrator's gateway. The vault's key wins the name, and
+    -- the browser's options are adopted.
+    let official = withKey Anthropic (Just "sk-official") defaultSettings
+        gateway = withBaseUrl Anthropic "https://gateway.example/anthropic" (withKey Anthropic (Just "sk-gateway") defaultSettings)
+        record' = Rec {number = 11, own = Just gateway, follows = False, copy = Nothing, askEachTime = False, learnt = Nothing}
+        w = World {item = Just (1, official), plugin = Nothing, serverOptions = Nothing, devices = Map.singleton 1 (Dev (Just record') OwnKey True False False True Nothing), seals = 2, copiesMoved = mempty}
+        end = completed 1 w
+        sent = readyFor Anthropic (fromParts end.serverOptions (pluginSecrets end) Nothing)
+    end.serverOptions `shouldBe` Just (optionsValue gateway)
+    -- A request goes to the gateway, without the key kept for Anthropic's
+    -- own service.
+    ((\r -> r.baseUrl) <$> sent) `shouldBe` Right (Just (Url "https://gateway.example/anthropic"))
+    ((\r -> r.key.text) <$> sent) `shouldBe` Right ""
+
+  prop "never pairs a key with an address other than the one its own place kept it for, whichever options are adopted or chosen, and uses it at that address" $
+    forAll (tagged <$> genWorld 2) $ \w -> forAll genPlugin $ \plugin' -> forAll (listOf (elements [1, 2 :: Int])) $ \schedule -> forAll genSettings $ \chosen ->
+      let start = w {plugin = plugin'}
+          ends = [interleaved schedule start, completed 1 start, completed 2 start]
+          -- The secrets each browser uses: the vault's plugin item, or what
+          -- a page that cannot seal keeps itself.
+          secretsOf end = pluginSecrets end : [c.secrets | x <- Map.elems end.devices, Just c <- [x.kept]]
+          optionsOf end = [end.serverOptions, Just (optionsValue chosen)]
+          sent =
+            [ (p, ps)
+            | end <- ends
+            , keys <- secretsOf end
+            , options <- optionsOf end
+            , let s = fromParts options keys Nothing
+            , p <- [minBound .. maxBound]
+            , let ps = settingsOf p s
+            ]
+          -- Each key the secrets hold, chosen at the address it was made
+          -- for: used there.
+          usedThere =
+            [ counterexample ("used at its own address: " <> show p) (((\x -> x.text) <$> (settingsOf p (fromParts (Just (optionsValue (at p made defaultSettings))) keys Nothing)).key) === Just text)
+            | end <- ends
+            , keys <- secretsOf end
+            , p <- [minBound .. maxBound]
+            , Just stored <- [Map.lookup (secretOf p) keys]
+            , Just (_, k) <- [keptKey p stored]
+            , let text = k.text
+                  made = madeFor text
+            ]
+       in coverage . cover 8 (any (\(p, ps) -> isJust ps.key && isJust (baseUrlOf p ps)) sent) "a key sent to a gateway" $
+            conjoin [counterexample (show p) (madeFor k.text === (addressOf p ps).text) | (p, ps) <- sent, Just k <- [ps.key]]
+              .&&. conjoin usedThere
+
   it "takes a legacy place into the plugin's item before anything is emptied, even one with no key" $ do
     let found' = Found {vault = NoItem, record = Just OnDevice {bytes = "r", source = "record:r", own = Just defaultSettings, copy = Nothing, copied = Nothing, follows = False, unopenable = False, askEachTime = False, learnt = Nothing}, slot = OwnKey, vaultSlot = True, target = Just mempty, taken = mempty, options = Just Nothing, local = False, askHere = False}
     plan found' `shouldBe` [KeepKeys [("record:r", mempty)]]
@@ -459,6 +510,30 @@ spec = describe "Wiki.Core.Assistant.Migrate" $ do
               .&&. moved 1 end
               .&&. isNothing end.item
   where
+    -- Each key of a world's settings made for the address its own settings
+    -- send it to: the key's text ends with that address, after an "@". The
+    -- test's own account of where a key belongs, read apart from the
+    -- secret's record of it.
+    tagged w =
+      w
+        { item = second tagKeys <$> w.item
+        , devices = Map.map (\d -> d {held = (\r -> Rec {number = r.number, own = tagKeys <$> r.own, follows = r.follows, copy = second tagKeys <$> r.copy, askEachTime = r.askEachTime, learnt = r.learnt}) <$> d.held}) w.devices
+        }
+    tagKeys s = s {byProvider = Map.mapWithKey (\p ps@(ProviderSettings k m e b f u) -> ProviderSettings ((\x -> ApiKey (x.text <> "@" <> (addressOf p ps).text)) <$> k) m e b f u) s.byProvider}
+    madeFor = snd . T.breakOnEnd "@"
+    -- A plugin's item before the move: keys kept with their service, or in
+    -- the plain form of earlier builds, which is read as kept for the
+    -- provider's own service and so is made for it here.
+    genPlugin =
+      oneof
+        [ pure Nothing
+        , pure (Just noContents)
+        , (\s -> Just noContents {secrets = keysOf (tagKeys s)}) <$> genSettings
+        , (\s -> Just noContents {secrets = Map.fromList [(secretOf p, k.text) | (p, ps) <- Map.toList (tagKeys (officialOnly s)).byProvider, Just k <- [ps.key]]}) <$> genSettings
+        ]
+    officialOnly s = s {byProvider = Map.map (\(ProviderSettings k m e _ f u) -> ProviderSettings k m e Nothing f u) s.byProvider}
+    -- Options that choose this address for the provider.
+    at p made = if made == (officialUrl p).text then identity else withBaseUrl p made
     -- A browser's next step, or a key forgotten on a browser.
     genMove = oneof [Left <$> elements [1, 2 :: Int], (\d i -> Right (d, i)) <$> elements [1, 2 :: Int] <*> chooseInt (0, 5)]
     -- Two runs at once: each turn, the browser the schedule names takes

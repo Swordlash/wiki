@@ -175,7 +175,7 @@ assistantManifest :: (Monad m) => Step m Manifest
 assistantManifest = maybe (throwError "The writing assistant is not among the plugins.") pure (find (\m -> m.id == assistantId) manifests)
 
 -- | What a run reads before each step, given the server's options.
-found :: (MonadAssistant m, MonadVault m) => UserId -> Maybe (Maybe Value) -> Step m Found
+found :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe (Maybe Value) -> Step m Found
 found u options = do
   manifest <- assistantManifest
   syncing <- lift vaultSync

@@ -381,7 +381,7 @@ import Wiki.App.Plugin qualified as Plugin (AgentButton (..), AgentInput (..), A
 import Wiki.App.Plugin.External qualified as External
 import Wiki.App.Plugin.External.Frames qualified as Frames
 import Wiki.App.Plugin.Host (capabilities, documentOf)
-import Wiki.App.Plugin.Registry (Contributed (..), contributed, optionsFor, plugins, pluginsOn)
+import Wiki.App.Plugin.Registry (Contributed (..), contributed, optionsFor, plugins, pluginsOn, refusalFor)
 import Wiki.App.Route (Route (..), pageRoute)
 import Wiki.App.View.Body qualified as Body
 import Wiki.App.View.Common
@@ -1682,7 +1682,7 @@ component =
     -- is closed; until it opens, it draws nothing.
     agentSlot :: State -> Maybe Plugin.Editing -> Maybe (H.ComponentHTML Action Slots m)
     agentSlot st seen =
-      (\(manifest, agent) -> HH.slot "agent" () agent.surface Plugin.AgentInput {user = me st, options = optionsFor manifest.id st.input.context.plugins, editing = seen, can = capabilities st.input.context manifest} (FromAgent manifest.id))
+      (\(manifest, agent) -> HH.slot "agent" () agent.surface Plugin.AgentInput {user = me st, options = optionsFor manifest.id st.input.context.plugins, refused = refusalFor manifest.id st.input.context.optionsRefused, editing = seen, can = capabilities st.input.context manifest} (FromAgent manifest.id))
         <$> (contributed (pluginsOn st.input.context) plugins).agent
 
     -- The agent beside the text, in its frame once it has opened.

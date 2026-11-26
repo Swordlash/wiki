@@ -5,7 +5,10 @@
 -- field closes; a value kept only after the plugin's check passed for it,
 -- and as the check answered it, under the binding the field has when the
 -- check answers; the value typed cleared once kept; the plugin told of a
--- keep, a forget and an unlock only when they were done; and the secret
+-- keep, a forget and an unlock only when they were done; the plugin told
+-- once that each keep of a typed value is over, whichever way it ended,
+-- so that once no ask is out every keep begun has been told over; and the
+-- secret
 -- read again after an unlock, and after a change heard from elsewhere (the
 -- vault unlocked or locked, a secret kept or forgotten), at once or once
 -- the ask out answers. The real component on the in-memory DOM is
@@ -34,8 +37,10 @@ spec = describe "Wiki.App.View.SecretField.Machine" $ do
             $ cover 10 ("Unlock" `elem` map jobName s.done) "unlocked"
             $ cover 3 s.reboundRefused "a check refused for its binding"
             $ cover 20 (any heardChange moves) "heard a change"
+            $ cover 10 (s.keepsBegun > 0 && null s.out) "a keep begun, and no ask out"
             $ conjoin (reverse checks)
               .&&. counterexample "the ask out at the close is let go" ([n | Release n <- closing] === outAtClose)
+              .&&. counterexample "every keep begun told over once no ask is out" (not (null s.out) || s.keepsEnded == s.keepsBegun)
 
   it "reads the secret when it opens, and again after an unlock" $ do
     let (m1, e1) = step Opened initial
@@ -59,7 +64,7 @@ spec = describe "Wiki.App.View.SecretField.Machine" $ do
     let (m4, e4) = step (Answered 1 (Checked (Right "sk-1"))) m3
     e4 `shouldBe` [Release 1, Ask 2 (Put " sk-1\n" "sk-1")]
     let (m5, e5) = step (Answered 2 (Done (Right ()))) m4
-    e5 `shouldBe` [Release 2, Tell KeptIt]
+    e5 `shouldBe` [Release 2, Tell KeptIt, Tell KeepEnded]
     (m5.shown, m5.typed) `shouldBe` (Here True, "")
 
   it "keeps nothing when what the check was for changed while it was out" $ do
@@ -68,14 +73,14 @@ spec = describe "Wiki.App.View.SecretField.Machine" $ do
     e2 `shouldBe` [Ask 1 (Check "sk-1" "anthropic https://gateway.example")]
     let (m3, _) = step (Rebound "anthropic ") m2
         (m4, e4) = step (Answered 1 (Checked (Right "sk-1"))) m3
-    e4 `shouldBe` [Release 1]
+    e4 `shouldBe` [Release 1, Tell KeepEnded]
     (m4.problem, m4.typed, m4.shown) `shouldBe` (Just reboundProblem, "sk-1", Here False)
 
   it "keeps nothing when the check fails, and says why" $ do
     let (m1, _) = step (Answered 0 (ReadAs (Here False))) (fst (step Opened initial))
         (m2, _) = step KeepPressed (fst (step (Typed "bad") m1))
         (m3, e3) = step (Answered 1 (Checked (Left "refused"))) m2
-    e3 `shouldBe` [Release 1]
+    e3 `shouldBe` [Release 1, Tell KeepEnded]
     (m3.problem, m3.typed, m3.shown) `shouldBe` (Just "refused", "bad", Here False)
 
 -- | 'Move' is the reader's act, or the answer to the ask out.
@@ -113,10 +118,14 @@ data Sim = Sim
   -- ^ The jobs that answered done.
   , reboundRefused :: Bool
   -- ^ Whether a check passed for a binding the field no longer had.
+  , keepsBegun :: Int
+  -- ^ How many keeps of a typed value were begun: their checks asked.
+  , keepsEnded :: Int
+  -- ^ How many times the plugin was told a keep is over.
   }
 
 start :: Sim
-start = Sim {model = initial, out = [], released = mempty, passed = [], typedSince = False, done = [], reboundRefused = False}
+start = Sim {model = initial, out = [], released = mempty, passed = [], typedSince = False, done = [], reboundRefused = False, keepsBegun = 0, keepsEnded = 0}
 
 -- | Play one move: the step, and what it must keep.
 play :: ([Property], Sim) -> Move -> ([Property], Sim)
@@ -170,8 +179,16 @@ record :: ([Property], Sim) -> Maybe (Int, Job, Answer, Model) -> [Effect] -> ([
 record (checks, s) answered effects =
   let asks = [(n, j) | Ask n j <- effects]
       releases = [n | Release n <- effects]
-      s' = s {out = s.out <> asks, released = s.released <> Set.fromList releases, typedSince = if any (isCheck . snd) asks then False else s.typedSince}
-      told = [t | Tell t <- effects]
+      told = [t | Tell t <- effects, t /= KeepEnded]
+      endsTold = length [() | Tell KeepEnded <- effects]
+      s' =
+        s
+          { out = s.out <> asks
+          , released = s.released <> Set.fromList releases
+          , typedSince = if any (isCheck . snd) asks then False else s.typedSince
+          , keepsBegun = s.keepsBegun + length (filter (isCheck . snd) asks)
+          , keepsEnded = s.keepsEnded + endsTold
+          }
       rules =
         [ counterexample "at most one ask out" (length s'.out <= 1)
         , counterexample "each owner let go once" (all (`Set.notMember` s.released) releases)
@@ -184,6 +201,9 @@ record (checks, s) answered effects =
         , counterexample "the plugin told only of what was done" $ case answered of
             Just (_, job, Done (Right ()), _) -> told == expectedTold job
             _ -> null told
+        , counterexample "a keep told over once, as the last answer of it lands" $ case answered of
+            Just (_, job, _, _) | isKeeping job -> endsTold == (if any (isPut . snd) asks then 0 else 1)
+            _ -> endsTold == 0
         , counterexample "the value kept is cleared, unless typed again" $ case answered of
             Just (_, Put _ _, Done (Right ()), _) | not s.typedSince -> s'.model.typed == ""
             _ -> True
@@ -196,6 +216,10 @@ record (checks, s) answered effects =
     isCheck = \case
       Check _ _ -> True
       _ -> False
+    isPut = \case
+      Put _ _ -> True
+      _ -> False
+    isKeeping job = isCheck job || isPut job
     isUnlock = \case
       UnlockByPasskey -> True
       UnlockByPassword _ -> True

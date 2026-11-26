@@ -15,7 +15,7 @@ import Control.Monad.UUID (MonadUUID)
 import Data.IORef (IORef, modifyIORef', readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Halogen.Activity.Control (TestClock, advance, withTestClock)
+import Halogen.Activity.Control (Sleeping (..), TestClock, advance, sleeping, withTestClock)
 import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
@@ -1107,8 +1107,10 @@ spec m = readsOnce Idle $ around withTestClock $ do
     completing ui `shouldReturn` "pending"
     press "Escape"
     length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
-    -- The pause ends and the lookup answers, after the Escape: no list.
+    -- The question is given up: the lookup's pause is no longer asleep on
+    -- the clock, so no lookup goes out after it.
     waitQuiet
+    lookupPauses clock `shouldReturn` 0
     perform (advance clock elsewhereDelay)
     waitQuiet
     completing ui `shouldReturn` ""
@@ -1174,7 +1176,9 @@ spec m = readsOnce Idle $ around withTestClock $ do
     length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
     press "Escape"
     completing ui `shouldReturn` ""
-    -- The pause ends and the lookup answers, after the Escape: no list.
+    -- The question is given up: no lookup's pause is asleep any more.
+    waitQuiet
+    lookupPauses clock `shouldReturn` 0
     perform (advance clock elsewhereDelay)
     waitQuiet
     completing ui `shouldReturn` ""
@@ -1191,6 +1195,9 @@ spec m = readsOnce Idle $ around withTestClock $ do
       waitQuiet
       perform (advance clock elsewhereDelay)
       waitQuiet
+    -- How many pauses of the lookup of other spaces' pages are asleep on
+    -- the clock: a lookup goes out when one ends.
+    lookupPauses clock = length . filter (\s -> s.counted && s.seconds == elsewhereDelay) <$> unsafeIOToPageM (sleeping clock)
     -- The labels of the completion's list shown, in its order.
     listLabels ui = findAll ui ".cm-tooltip-autocomplete .cm-completionLabel" >>= traverse textContent
     -- A page with this title at the top of the demo's space of this slug.

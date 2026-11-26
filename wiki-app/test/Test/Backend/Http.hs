@@ -266,6 +266,23 @@ requests = describe "its requests" $ do
     sent <- readIORef asked
     [(methodOf r, requestUrl r) | r <- sent, methodOf r /= "GET" || any (`T.isPrefixOf` requestUrl r) ["api/v1/search", "api/v1/pages/titled"]] `shouldBe` []
 
+  -- #301: the editor's lookup by letters typed in a page goes out only
+  -- when the page's space is known plain now. A list of spaces that no
+  -- longer holds it (the reader's access taken away, the space perhaps
+  -- encrypted meanwhile) sends nothing.
+  it "sends no lookup of letters typed in a page whose space the list fetched now does not hold" $ do
+    let blog = fromMaybe (panic "no blog") (Map.lookup hello.space demo.spaces)
+    (transport, asked) <- scripted $ \r ->
+      if
+        | requestUrl r == "api/v1/spaces" -> ok ([] :: [Space])
+        | requestUrl r == endpointUrl (\e -> e.spaces.pageAt hello.space (slugs "hello-world")) -> ok hello
+        | otherwise -> ok ([] :: [Space])
+    env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
+    runHttpWiki env (getPage hello.space (slugs "hello-world")) `shouldReturn` Right hello
+    runHttpWiki env (findPagesByTitle (titleQuery "Edi") {except = Just hello.space, typedIn = Just hello.id}) >>= (`shouldSatisfy` isLeft)
+    sent <- readIORef asked
+    [requestUrl r | r <- sent, "api/v1/pages/titled" `T.isPrefixOf` requestUrl r] `shouldBe` []
+
   -- #255's tenth review: a space that asks each time it is opened, in the
   -- middle of turning its encryption off, after a write emptied the cache.
   -- The list the page started with says it is gated, and that knowledge

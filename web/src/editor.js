@@ -942,9 +942,10 @@ const asker = (host, eventName, keep = true) => {
   const answers = new Map();
   const asking = new Map();
   const waiting = new Map();
-  // The number of the question out for each key, for abandon.
+  // The question out for each key, its number and the view that asked
+  // it, for abandonFrom.
   const numbers = new Map();
-  const ask = (letters, detail = { letters }) => {
+  const ask = (letters, detail = { letters }, view = null) => {
     if (answers.has(letters)) return Promise.resolve(answers.get(letters));
     let question = asking.get(letters);
     if (question === undefined) {
@@ -958,13 +959,13 @@ const asker = (host, eventName, keep = true) => {
           clearTimeout(timer);
           waiting.delete(id);
           if (asking.get(letters) === question) asking.delete(letters);
-          if (numbers.get(letters) === id) numbers.delete(letters);
+          if (numbers.get(letters)?.id === id) numbers.delete(letters);
           if (found !== null && keep) answers.set(letters, found);
           resolve(found);
         });
       });
       asking.set(letters, question);
-      numbers.set(letters, id);
+      numbers.set(letters, { id, view });
       host.dispatchEvent(new CustomEvent(eventName, { detail: { id, ...detail } }));
     }
     return question;
@@ -973,14 +974,17 @@ const asker = (host, eventName, keep = true) => {
   const stop = () => {
     for (const answer of [...waiting.values()]) answer(null);
   };
-  // The question out for a key is given up: the component is told
-  // ("<eventName>-abandoned", {id}), and answers it with nothing.
-  const abandon = (letters) => {
-    const id = numbers.get(letters);
-    if (id === undefined || !waiting.has(id)) return;
-    host.dispatchEvent(new CustomEvent(`${eventName}-abandoned`, { detail: { id } }));
+  // Every question a view asked that is still out is given up: the
+  // component is told of each ("<eventName>-abandoned", {id}), and answers
+  // it with nothing.
+  const abandonFrom = (view) => {
+    for (const [letters, { id, view: asking }] of [...numbers]) {
+      if (asking !== view) continue;
+      numbers.delete(letters);
+      if (waiting.has(id)) host.dispatchEvent(new CustomEvent(`${eventName}-abandoned`, { detail: { id } }));
+    }
   };
-  return { ask, answer: (id, found) => waiting.get(id)?.(found), abandon, stop };
+  return { ask, answer: (id, found) => waiting.get(id)?.(found), abandonFrom, stop };
 };
 
 // The answer to a source's question, or null once the library has given up
@@ -1502,28 +1506,19 @@ const listOf = (host, context, place, found, section) => {
 // It asks through `elsewhere`, an asker of its own that keeps no answer:
 // an answer kept would outlive a change of the reader. A question is
 // given up when the text changes (abort on a change of the document), so
-// that the component hears the newer question at once and looks up only
-// the last letters typed; a late answer then writes nothing and opens
-// nothing. A line that cannot ask returns null at once, so that no other
-// list waits for this source.
+// that a late answer writes nothing and opens nothing; and the component
+// is told whenever one is given up, in one place (elsewhereGiveUp), so
+// that it never looks up letters CodeMirror no longer asks about. A line
+// that cannot ask returns null at once, so that no other list waits for
+// this source.
 const elsewhereSection = { name: "In other spaces", rank: 1 };
 const elsewhereSource = (host, elsewhere, whole) => (context) => {
   const place = placeOf(context, whole);
   const typed = elsewhereGate.exec(place.before);
   if (typed === null || typed[1].trim().length < elsewhereShortest || [...typed[1]].length > elsewhereLongest) return null;
-  const key = JSON.stringify(place.detail);
   const asked = new Promise((resolve) => {
-    elsewhere.ask(key, place.detail).then(resolve);
-    // Given up: the component is told, by the question's number, so that
-    // a lookup not sent yet for it is never sent.
-    context.addEventListener(
-      "abort",
-      () => {
-        resolve(null);
-        elsewhere.abandon(key);
-      },
-      { onDocChange: true },
-    );
+    elsewhere.ask(JSON.stringify(place.detail), place.detail, context.view).then(resolve);
+    context.addEventListener("abort", () => resolve(null), { onDocChange: true });
   });
   return asked.then((found) => (context.aborted ? null : listOf(host, context, place, found, elsewhereSection)));
 };
@@ -1611,6 +1606,27 @@ const completions = (host) => {
   // key (its activateOnTypingDelay), on a timer the program does not know
   // of, so a test cannot wait for the answer by waiting for the program.
   const answering = new WeakMap();
+  // Where every question about the pages of other spaces that ends with
+  // no answer passes: a view's questions still out are given up
+  // (abandonFrom) when its text changes (more typed, the line deleted: the
+  // library asks anew, if at all), when its completion is no longer asked
+  // for (Escape with or without a list, a click elsewhere, the component's
+  // own close, an entry chosen), and when the view goes (a row closed, the
+  // editor gone). An answer that came is not out any more, so the update
+  // that shows it gives nothing up.
+  const elsewhereGiveUp = ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.view = view;
+      }
+      update(update) {
+        if (update.docChanged || completionStatus(update.state) !== "pending") elsewhere.abandonFrom(update.view);
+      }
+      destroy() {
+        elsewhere.abandonFrom(this.view);
+      }
+    },
+  );
   const forgetMoves = EditorView.updateListener.of((update) => {
     const status = completionStatus(update.state);
     const active = shown(update.state) !== null;
@@ -1709,6 +1725,7 @@ const completions = (host) => {
       }),
       dismissedSlashes,
       forgetMoves,
+      elsewhereGiveUp,
       ownKeys,
       snippetKeys,
       fields,

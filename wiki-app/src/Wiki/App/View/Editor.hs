@@ -432,12 +432,12 @@ import Wiki.Core.Page (Page, PageSummary, titleLine, withTitleLine)
 import Wiki.Core.Page qualified as P
 import Wiki.Core.PageKind qualified as Kind
 import Wiki.Core.PageMatch (TitleQuery (typedIn))
-import Wiki.Core.Permission (GlobalPermission (Administer), Grants (access), hasGlobalPermission)
+import Wiki.Core.Permission (GlobalPermission (Administer), Grants (access), hasGlobalPermission, spaceChain)
 import Wiki.Core.SlideRows (RowKey (..), Rows)
 import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.Slides qualified as Slides
 import Wiki.Core.Slug (Slug)
-import Wiki.Core.Space (Space (conversion, encryption, id, mathMacros, name))
+import Wiki.Core.Space (Space (conversion, encryption, id, mathMacros, name, slug))
 import Wiki.Core.User (Login (..), User (displayName, id, login))
 import Wiki.Core.Version (Author (..), Version (author))
 
@@ -2704,8 +2704,9 @@ component =
       Elsewhere.Reply i request hits -> Machine.Now $ do
         found <- state $ \st -> case (st.loaded, hits) of
           (Ready w, Just pages) ->
-            let names = Map.fromList [(s.id, s.name) | s <- st.input.context.spaces]
-                (elsewhereList, readings) = Complete.answer [Complete.elsewhereSource names pages] st.earlier st.readings w.body request
+            let spaces = st.input.context.spaces
+                held = Map.fromList [(s.id, (s.name, map (\c -> c.slug) (spaceChain spaces s.id))) | s <- spaces]
+                (elsewhereList, readings) = Complete.answer [Complete.elsewhereSource held pages] st.earlier st.readings w.body request
              in (elsewhereList, st {readings})
           _ -> (Nothing, st)
         gets (\st -> st.hostElement) >>= traverse_ (\h -> Sync.sync (answerElsewhere h i found))

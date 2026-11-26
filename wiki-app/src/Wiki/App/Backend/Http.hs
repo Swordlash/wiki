@@ -901,7 +901,7 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
   -- space, or one being encrypted or decrypted, nothing is sent, as for a
   -- plain write of its text ('plainPageWrite', which asks for the list of
   -- spaces now rather than trust the one cached).
-  findPagesByTitle q = maybe identity plainPageWrite q.typedIn (send (endpoints.pagesTitled (Just q.letters) q.except (Just q.limit)))
+  findPagesByTitle q = maybe identity plainSourceLookup q.typedIn (send (endpoints.pagesTitled (Just q.letters) q.except (Just q.limit)))
 
   -- A page of an encrypted space has no draft: the server would read it,
   -- and the editor does not keep one anywhere else.
@@ -2277,6 +2277,35 @@ plainPageWrite pid plain =
         Right spaces
           | isJust (encryptionIn sid spaces) -> pure (Left (Conflict "This page's space has been encrypted since the page was opened: nothing was sent. Open the page again."))
           | otherwise -> plain
+
+-- | A lookup of letters typed in a page ('Wiki.Core.PageMatch.TitleQuery''s
+-- @typedIn@, the editor's lookup of other spaces' pages): sent only when
+-- the page's space is known plain now. That is the wiki's home's space,
+-- which is never encrypted; or a space the list of spaces fetched now
+-- holds, with no key and no conversion under way. Nothing is sent for a
+-- page read here encrypted, or read so and plain since, for a page never
+-- read here, or for a space the list does not hold (one whose reader lost
+-- access to it, which may have been encrypted meanwhile). Stricter than
+-- 'plainPageWrite', which sends for a space the list does not hold.
+plainSourceLookup :: (MonadIO m) => PageId -> HttpWiki m (Either WikiError a) -> HttpWiki m (Either WikiError a)
+plainSourceLookup pid plain =
+  readHeld >>= \h -> case (Map.lookup pid h.heldPages, Map.lookup pid h.heldSpaces) of
+    (Nothing, Just sid)
+      | not (Set.member pid h.heldWasSealed) ->
+          if Just sid == h.heldHome
+            then plain
+            else
+              freshSpaces >>= \case
+                Left e -> pure (Left e)
+                Right spaces
+                  | Just s <- find (\s -> s.id == sid) spaces
+                  , isNothing s.encryption
+                  , isNothing s.conversion ->
+                      plain
+                  | otherwise -> pure (Left (Conflict notKnownPlain))
+    _ -> pure (Left (Conflict notKnownPlain))
+  where
+    notKnownPlain = "The space of the page being edited is not known to be plain now: the letters typed were not sent."
 
 -- | Why a plain write of a page of an encrypted space is not sent.
 inEncryptedSpace :: Text

@@ -258,29 +258,34 @@ linkWritten typed address label
 -- and where it is: the space's path and the page's path, or the space's
 -- path for its home page.
 --
+-- A hit is offered only when its space, by its id, is one the editor
+-- holds (the spaces given, each with its name and its path) at the same
+-- path: the preview resolves the link written against the spaces the
+-- editor holds, and a space created or moved since the editor heard of
+-- the spaces is offered once it has.
+--
 -- Choosing one writes a link to the page's own address with its title as
 -- the label ('ownPageLinkText'): @[[\/s\/eng\/p\/onboarding\/|Onboarding]]@.
 -- A space's home page is the space's address, @[[\/s\/eng\/|Engineering]]@,
 -- labelled with the space's name. The label is written as 'linkWritten'
 -- writes it: escaped in a table's cell, and the reader's own label kept.
-elsewhereSource :: Map.Map SpaceId Text -> [TitleHit] -> Source
-elsewhereSource names hits wanted
+elsewhereSource :: Map.Map SpaceId (Text, [Slug]) -> [TitleHit] -> Source
+elsewhereSource held hits wanted
   | wanted.typed.trigger /= LinkToPage = []
-  | otherwise = map candidate hits
+  | otherwise = [candidate hit name | hit <- hits, Just (name, path) <- [Map.lookup hit.space held], path == hit.spacePath]
   where
-    candidate hit =
+    candidate hit spaceName =
       Candidate
         { label = hit.title
         , skeleton = [Literal (linkWritten wanted.typed address (Just label)), Field 0 ""]
         , writing = AsText
         , action = Nothing
-        , note = Just (T.intercalate " · " (maybeToList spaceName <> [place]))
+        , note = Just (spaceName <> " · " <> place)
         , origin = Nothing
         }
       where
-        spaceName = Map.lookup hit.space names
         home = null hit.pagePath
-        (address, label) = ownPageLinkText hit.spacePath hit.pagePath (if home then fromMaybe hit.title spaceName else hit.title)
+        (address, label) = ownPageLinkText hit.spacePath hit.pagePath (if home then spaceName else hit.title)
         spacePlace = T.intercalate "/" (map slugText hit.spacePath)
         place
           | home = spacePlace <> ", the home page"

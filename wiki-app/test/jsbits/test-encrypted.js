@@ -195,6 +195,11 @@ function wikiTestEncServer(request) {
       // answer by the plain routes: listed, with their history and
       // comments.
       const p = wikiTestEncrypted.pages.get(id);
+      // Whether its text is taken plain now (plainNow): no, with the code
+      // a draft of it is refused with, as the server answers.
+      if (request.method === "GET" && path === `pages/${plain[1]}/plain` && s.space.conversion) {
+        return wikiTestEncJson(409, { error: "Stale", state: "converting", message: "This space's pages are being converted." });
+      }
       if (s.space.conversion && request.method === "GET") {
         if (path === `spaces/${plain[1]}/pages`) {
           const made = [...wikiTestEncrypted.pages.values()].filter((x) => x.space === s.space.id && x.plain);

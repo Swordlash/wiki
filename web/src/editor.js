@@ -2977,7 +2977,10 @@ function following(host) {
   const send = () => {
     clearTimeout(timer);
     timer = null;
-    if (view !== null && !stopped) channel?.postMessage({ key, text: view.state.doc.toString(), title: host.dataset.liveTitle ?? "", line });
+    // With the id of the page whose text it is (the host's data-live-page),
+    // which the window asks about before it looks up the people the text
+    // mentions: another page may be at the same address by then.
+    if (view !== null && !stopped) channel?.postMessage({ key, page: host.dataset.livePage || null, text: view.state.doc.toString(), title: host.dataset.liveTitle ?? "", line });
   };
   const sendSoon = () => {
     if (stopped) return;

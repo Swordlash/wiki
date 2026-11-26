@@ -105,7 +105,7 @@ import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxKind, boxChoices)
 import Wiki.Core.Markdown.Edit (Command, Places (..), Selection (..), applyWithPlaces, cursor)
 import Wiki.Core.Markdown.Problems (everyBlock)
-import Wiki.Core.Math.KatexCommands (katexArguments, katexCommands)
+import Wiki.Core.Math.KatexCommands (katexArguments, katexCommands, katexEnvironments)
 import Wiki.Core.PageKind (PageKind (..))
 
 ----------------------------------------------------------------------
@@ -1562,44 +1562,157 @@ katexInOrder = sortOn shownOrder [MathCommand {name, origin = "KaTeX", arguments
 -- undo. Only where nothing after the cursor can be an argument of the
 -- command ('noArgumentAfter': @\\fr‸{a}{b}@, @\\fr‸12@ keep what they
 -- have), and where the parser reads the math with the braces written as
--- it read it before, the braces in it ('bracesRead'). Anywhere else, and
+-- it read it before, the braces in it ('mathReadBack'). Anywhere else, and
 -- for every other command, the name is written as it is, the cursor after
 -- it ('AsText'), and what follows is the reader's to type.
+--
+-- The list also holds KaTeX's environments that take no argument
+-- ('environmentsInOrder'), labelled @\\begin{pmatrix}@ and matched by the
+-- start of the label as a command is by its name, in the same order (so
+-- @\\b@ to @\\begi@ find them; @\\begin@ is a command typed whole, and
+-- after @\\begin{@ no list opens). Those KaTeX reads only in display math
+-- are offered only there. Choosing one writes
+-- @\\begin{pmatrix}\\end{pmatrix}@ in place of the cursor's line, the
+-- cursor between them and Tab to after the end. An environment takes no
+-- argument, so what follows the cursor is not taken into it; but none is
+-- offered where what follows may be the environment's own text
+-- ('environmentFits'), nor where the parser would read the math otherwise
+-- with it written ('mathReadBack').
 mathSource :: [MathCommand] -> Source
 mathSource commands wanted = case wanted.typed.trigger of
   InMath place
     | not (any ((== typedName) . (.name)) commands) ->
-        let checks = readBack place
-         in take shownCommands [command place checks c | c <- commands, typedName `T.isPrefixOf` c.name]
+        let readsBack = mathReadBack wanted place
+            checks = [(n, readsBack.readsWith (alone <> T.replicate n ("{" <> mathWord <> "}"))) | n <- [1 .. 9 :: Int]]
+         in take shownCommands (inShownOrder [(c.name, command place checks c) | c <- commands, typedName `T.isPrefixOf` c.name] (environments place readsBack))
   _ -> []
   where
     typedName = "\\" <> wanted.typed.letters
     at = wanted.at
+    prefix = T.take wanted.typed.from at.before
+    alone = "\\" <> mathWord
     named c = Candidate {label = c.name, skeleton = [Literal c.name, Field 0 ""], writing = AsText, action = Nothing, note = Just c.origin, origin = Nothing}
     command place checks c
       | c.arguments > 0
       , noArgumentAfter place at
       , fromMaybe False (lookup c.arguments checks) =
-          (lineCandidate at wanted.typed (bracesWritten (T.take wanted.typed.from at.before) c.name c.arguments at.after)) {label = c.name, note = Just c.origin}
+          (lineCandidate at wanted.typed (bracesWritten prefix c.name c.arguments at.after)) {label = c.name, note = Just c.origin}
       | otherwise = named c
-    -- The parser's reading of each number of braces, asked once for the
-    -- list (the list is made once, and each reading when a command offered
-    -- takes that many).
-    readBack place = [(n, bracesRead wanted place n) | n <- [1 .. 9 :: Int]]
+    -- The environments offered, each with its label. The parser is asked
+    -- once for them all, with two written one after the other: the first
+    -- offered whose name is letters alone and the first with a star. The
+    -- names differ in their letters only, which the parser reads in math
+    -- alike, and the property of "Test.Markdown.CompleteMath" checks every
+    -- name offered on its own.
+    environments place readsBack
+      | null matching || not (environmentFits at readsBack.baseline) || not (readsBack.readsWith together) = []
+      | otherwise = [(e.opening, environmentCandidate e) | e <- matching]
+      where
+        matching = [e | e <- environmentsInOrder, place == InDisplay || not e.displayOnly, typedName `T.isPrefixOf` e.opening]
+        starred e = "*" `T.isSuffixOf` e.environment
+        together = T.concat [e.opening <> mathWord <> environmentEnd e | Just e <- [find (not . starred) matching, find starred matching]]
+    environmentCandidate e = (lineCandidate at wanted.typed (environmentWritten prefix e at.after)) {label = e.opening, note = Just "KaTeX"}
+    -- The commands and the environments merged, each list in the order
+    -- the list shows them ('shownOrder', by label).
+    inShownOrder xs [] = map snd xs
+    inShownOrder [] ys = map snd ys
+    inShownOrder (x : xs) (y : ys)
+      | shownKey x <= shownKey y = snd x : inShownOrder xs (y : ys)
+      | otherwise = snd y : inShownOrder (x : xs) ys
+    shownKey (label, _) = (T.length label, label)
 
--- | Whether the parser reads the math at the cursor, with a command of so
--- many arguments written in place of the backslash and the letters, as it
--- read it with no argument: the same math ('MathPlace'), and the same TeX
--- but for the command with its braces, each holding a word ('mathWord').
--- So the braces do not end the math, or join it to text that was not in
--- it, wherever they are.
-bracesRead :: Wanted -> MathPlace -> Int -> Bool
-bracesRead wanted place n = case (mathFormula (wanted.writes [Literal alone]).blocksRead, mathFormula (wanted.writes [Literal filled]).blocksRead) of
-  (Just (before, tex), Just (after, tex')) -> before == place && after == place && tex' == T.replace alone filled tex
-  _ -> False
+-- | 'MathReadBack' is the parser's reading of the math at the cursor with
+-- 'mathWord' in place of the backslash and the letters ('baseline': the
+-- math, and its TeX), read once for a list; and whether the parser reads
+-- the math as it read it there with a text written in place of the
+-- backslash and the letters ('readsWith').
+data MathReadBack = MathReadBack {baseline :: Maybe (MathPlace, Text), readsWith :: Text -> Bool}
+
+-- | The parser's reading of the math at the cursor ('MathReadBack'). A text
+-- written is read as the math was when the parser reads the same math
+-- ('MathPlace') with it, and the same TeX but for the text written in
+-- place of the backslash and 'mathWord' (the text holds the word, in each
+-- pair of braces or in an environment's body, for the math to be found).
+-- So what is written does not end the math, or join it to text that was
+-- not in it, wherever it is.
+mathReadBack :: Wanted -> MathPlace -> MathReadBack
+mathReadBack wanted place = MathReadBack {baseline, readsWith}
   where
     alone = "\\" <> mathWord
-    filled = alone <> T.replicate n ("{" <> mathWord <> "}")
+    baseline = mathFormula (wanted.writes [Literal alone]).blocksRead
+    readsWith written = case (baseline, mathFormula (wanted.writes [Literal written]).blocksRead) of
+      (Just (before, tex), Just (after, tex')) -> before == place && after == place && tex' == T.replace alone written tex
+      _ -> False
+
+-- | 'MathEnvironment' is an environment of KaTeX's that the list after a
+-- backslash in math offers (#301): its name (@pmatrix@), the text that
+-- begins it, which the list shows as its label (@\\begin{pmatrix}@), and
+-- whether KaTeX reads it only in display math
+-- ("Wiki.Core.Math.KatexCommands"' 'katexEnvironments').
+data MathEnvironment = MathEnvironment {environment :: Text, opening :: Text, displayOnly :: Bool}
+
+-- | KaTeX's environments that take no argument, in the order the list shows
+-- them (by their labels, as 'shownOrder' orders commands), put in it once
+-- for the program.
+environmentsInOrder :: [MathEnvironment]
+environmentsInOrder = sortOn (\e -> (T.length e.opening, e.opening)) [MathEnvironment {environment, opening = "\\begin{" <> environment <> "}", displayOnly} | (environment, displayOnly) <- katexEnvironments]
+
+-- | The text that ends an environment: @\\end{pmatrix}@.
+environmentEnd :: MathEnvironment -> Text
+environmentEnd e = "\\end{" <> e.environment <> "}"
+
+-- | What an environment writes in place of the cursor's line: the line's
+-- text before the backslash, the environment's begin and its end, and the
+-- line's text after the cursor; the place to fill between the begin and
+-- the end, and the writing going on after the end.
+environmentWritten :: Text -> MathEnvironment -> Text -> Written
+environmentWritten prefix e rest =
+  Written
+    { text = prefix <> e.opening <> environmentEnd e <> rest
+    , fill = [(start, start)]
+    , after = Just (start + T.length (environmentEnd e))
+    }
+  where
+    start = T.length prefix + T.length e.opening
+
+-- | Whether an environment written at the cursor, its begin and its end
+-- together, is what the reader may mean, given the math's TeX with
+-- 'mathWord' in place of the command ('MathReadBack''s 'baseline'). An
+-- environment takes no argument, so what follows the cursor does not
+-- matter, but for two cases where it may be the environment's own text:
+--
+-- * a @{@ after the cursor, past spaces and tabs: the environment's name
+--   may be there already (@\\be‸{pmatrix}@);
+-- * an @\\end@ after the cursor, in the math, that ends an environment
+--   not begun before the cursor (@\\be‸ a & b \\end{pmatrix}@): the
+--   reader is typing the begin of an environment written already.
+--
+-- An @\\end@ that ends an environment begun before the cursor
+-- (@\\begin{aligned} x &= \\be‸ \\end{aligned}@) is no reason. With no
+-- reading of the math, no environment is offered.
+environmentFits :: At -> Maybe (MathPlace, Text) -> Bool
+environmentFits at baseline =
+  not ("{" `T.isPrefixOf` T.dropWhile isBlank at.after) && maybe False (not . endsUnbegun . snd) baseline
+  where
+    endsUnbegun tex =
+      let (upTo, atWord) = T.breakOn ("\\" <> mathWord) tex
+          opened = foldl' (\depth step -> max 0 (depth + step)) 0 (environmentSteps upTo)
+       in any (< 0) (scanl (+) opened (environmentSteps (T.drop (T.length mathWord + 1) atWord)))
+
+-- | The steps of depth of environments a text of TeX takes, in order: 1 for
+-- each @\\begin@, -1 for each @\\end@. A backslash starts a control word
+-- (letters) or a control symbol (one character, @\\\\@ too), so that the
+-- @begin@ of @\\\\begin@ is not counted.
+environmentSteps :: Text -> [Int]
+environmentSteps t = case T.uncons (snd (T.breakOn "\\" t)) of
+  Nothing -> []
+  Just (_, more) -> case T.uncons more of
+    Just (c, _)
+      | isAsciiLower c || isAsciiUpper c ->
+          let (word, after) = T.span (\x -> isAsciiLower x || isAsciiUpper x) more
+           in [1 | word == "begin"] <> [-1 | word == "end"] <> environmentSteps after
+    Just (_, after) -> environmentSteps after
+    Nothing -> []
 
 -- | What a command with arguments writes in place of the cursor's line: the
 -- line's text before the backslash, the command's name, an empty pair of

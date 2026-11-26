@@ -308,6 +308,10 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       -- One pair is a walk too: Tab goes on to after it.
       option "$\\sq" "\\sqrt"
         `shouldBe` Just (object ["label" .= ("\\sqrt" :: Text), "insert" .= ("$\\sqrt{}$" :: Text), "select" .= [7 :: Int, 7], "line" .= ("$\\sq$" :: Text), "query" .= [1 :: Int, 4], "places" .= [[7 :: Int, 7]], "after" .= (8 :: Int), "detail" .= ("KaTeX" :: Text)])
+      -- An environment: its begin and its end, the cursor between them, and
+      -- Tab to after the end.
+      option "$\\be" "\\begin{pmatrix}"
+        `shouldBe` Just (object ["label" .= ("\\begin{pmatrix}" :: Text), "insert" .= ("$\\begin{pmatrix}\\end{pmatrix}$" :: Text), "select" .= [16 :: Int, 16], "line" .= ("$\\be$" :: Text), "query" .= [1 :: Int, 4], "places" .= [[16 :: Int, 16]], "after" .= (29 :: Int), "detail" .= ("KaTeX" :: Text)])
       -- The nearer macro's arguments: Team's \vect takes one.
       option "$\\ve" "\\vect"
         `shouldBe` Just (object ["label" .= ("\\vect" :: Text), "insert" .= ("$\\vect{}$" :: Text), "select" .= [7 :: Int, 7], "line" .= ("$\\ve$" :: Text), "query" .= [1 :: Int, 4], "places" .= [[7 :: Int, 7]], "after" .= (8 :: Int), "detail" .= ("Team" :: Text)])
@@ -342,7 +346,10 @@ spec = describe "Wiki.App.Editor.Complete" $ do
         (typed, with' < without + 2_000_000) `shouldBe` (typed, True)
     it "answers a backslash's first letter within a bound of allocation: KaTeX's thousand commands are ordered once, not at each answer" $ do
       _ <- evaluate (length katexOrdered)
-      for_ ["$\\f", "$\\fr", "$\\x", "$\\al"] $ \typed -> do
+      -- KaTeX's environments are ordered once too, by the first answer
+      -- that lists one (#301).
+      _ <- evaluate (let a = mathAnswer "$\\be" "$" in a == a)
+      for_ ["$\\f", "$\\fr", "$\\x", "$\\al", "$\\be", "$\\begi"] $ \typed -> do
         typed' <- evaluate (T.copy typed)
         cost <- allocated (let a = mathAnswer typed' "$" in a == a)
         (typed, cost < mathBound) `shouldBe` (typed, True)
@@ -695,7 +702,12 @@ linkBound = 20_000_000
 -- parsed again once for each number of arguments, about 0.12 MB each
 -- (#301). Sorting KaTeX's commands again at each answer allocates 4.3 to
 -- 4.4 MB (measured on #301's build, 2026-11-26; 1.14 to 1.18 MB before,
--- as measured for #299), over the bound either way.
+-- as measured for #299), over the bound either way. Where environments
+-- are listed (@\\be@, @\\begi@), 1.12 to 1.16 MB: about 0.15 MB for the
+-- entries and 0.19 MB for the check that the math reads the same with
+-- them written (#301, measured 2026-11-26; 0.78 to 0.83 MB before). After
+-- @\\b@ alone, 68 commands and 19 environments, 1.58 MB, which this bound
+-- does not take in (1.24 MB before the environments).
 mathBound :: Int64
 mathBound = 1_500_000
 

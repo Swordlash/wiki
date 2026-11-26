@@ -12,7 +12,10 @@
 // arguments KaTeX gives each macro of web/src/katex-macros.tex, the wiki's
 // built-in macros, read as the pages read them (src/macros.mjs), so that
 // a test of wiki-app can compare the wiki's own reader of definitions
-// (Wiki.Core.Math's definedMacroArities) with KaTeX.
+// (Wiki.Core.Math's definedMacroArities) with KaTeX. And it writes the
+// environments KaTeX reads that take no argument, each with whether KaTeX
+// reads it only in display math (#301): choosing one writes \begin{name}
+// and its \end{name}, the cursor between them.
 //
 //   node web/katex-commands.mjs          writes the Haskell module
 //   node web/katex-commands.mjs --check  fails when the module is not what
@@ -35,8 +38,9 @@ import functions from "katex/src/functions.ts";
 import { _macros } from "katex/src/defineMacro.ts";
 import "katex/src/macros.ts";
 import symbols from "katex/src/symbols.ts";
+import environments from "katex/src/environments.ts";
 import katex from "katex";
-export const tables = { functions, macros: _macros, symbols, katex, version: katex.version };
+export const tables = { functions, macros: _macros, symbols, environments, katex, version: katex.version };
 `;
 const dir = mkdtempSync(join(tmpdir(), "katex-commands-"));
 let tables;
@@ -73,19 +77,21 @@ commands.add("\\pu");
 
 const sorted = [...commands].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
-// Whether KaTeX reads a text as math, in a formula of a line and in display
-// math, as the pages render it: no error thrown (a warning of KaTeX's
-// strict mode is no error there either).
-const parses = (tex) =>
-  [false, true].every((displayMode) => {
-    try {
-      tables.katex.renderToString(tex, { displayMode, throwOnError: true, strict: "ignore" });
-      return true;
-    } catch (error) {
-      if (error instanceof tables.katex.ParseError) return false;
-      throw error;
-    }
-  });
+// Whether KaTeX reads a text as math, in a formula of a line (displayMode
+// false) or in display math (true), as the pages render it: no error
+// thrown (a warning of KaTeX's strict mode is no error there either).
+const parsesIn = (displayMode, tex) => {
+  try {
+    tables.katex.renderToString(tex, { displayMode, throwOnError: true, strict: "ignore" });
+    return true;
+  } catch (error) {
+    if (error instanceof tables.katex.ParseError) return false;
+    throw error;
+  }
+};
+// Whether KaTeX reads a text as math both in a formula of a line and in
+// display math.
+const parses = (tex) => [false, true].every((displayMode) => parsesIn(displayMode, tex));
 
 // How many arguments in braces a command takes, for certain, or 0. A macro
 // is what KaTeX expands first, so a name that is a macro takes what the
@@ -125,6 +131,22 @@ const builtin = readMacros({}, builtinTex);
 if (builtin.error) throw builtin.error;
 const shipped = newcommandNames(builtinTex).map((name) => [name, builtin.macros[name].numArgs]);
 
+// The environments KaTeX reads that take no argument (numArgs 0 in its
+// table; array, alignat and the others that take one are left out), by
+// name: letters, with a star at the end or none. Each kept only if KaTeX
+// reads it in display math empty and with a letter inside, as choosing it
+// writes it (\begin{name}\end{name}); and marked as read only in display
+// math where KaTeX refuses it in a formula of a line (align, equation, CD).
+const environmentsRead = Object.entries(tables.environments)
+  .filter(([name, spec]) => /^[A-Za-z]+\*?$/.test(name) && spec.numArgs === 0)
+  .map(([name]) => name)
+  .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  .flatMap((name) => {
+    const written = (inside) => `\\begin{${name}}${inside}\\end{${name}}`;
+    const readsIn = (displayMode) => parsesIn(displayMode, written("")) && parsesIn(displayMode, written("a"));
+    return readsIn(true) ? [[name, !readsIn(false)]] : [];
+  });
+
 const hs = (s) => JSON.stringify(s);
 const pairs = (list) => (list.length === 0 ? "[]" : `[ ${list.map(([name, count]) => `(${hs(name)}, ${count})`).join("\n  , ")}\n  ]`);
 const module = `-- | The commands KaTeX ${tables.version} reads in math, by name: what the
@@ -139,6 +161,7 @@ module Wiki.Core.Math.KatexCommands
   , katexCommands
   , katexArguments
   , builtinMacroArguments
+  , katexEnvironments
   )
 where
 
@@ -171,6 +194,17 @@ katexArguments =
 builtinMacroArguments :: [(Text, Int)]
 builtinMacroArguments =
   ${pairs(shipped)}
+
+-- | The environments KaTeX reads that take no argument, by name, in order,
+-- each with whether KaTeX reads it only in display math ('True' for
+-- @align@, @equation@ and others, which KaTeX refuses in a formula of a
+-- line). Only those KaTeX reads empty and with a letter inside, as
+-- choosing one writes it: @\\\\begin{pmatrix}@ and @\\\\end{pmatrix}@, the
+-- cursor between them. Environments that take an argument (@array@,
+-- @alignat@) are not here.
+katexEnvironments :: [(Text, Bool)]
+katexEnvironments =
+  ${environmentsRead.length === 0 ? "[]" : `[ ${environmentsRead.map(([name, only]) => `(${hs(name)}, ${only ? "True" : "False"})`).join("\n  , ")}\n  ]`}
 `;
 
 if (process.argv.includes("--check")) {

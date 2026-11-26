@@ -10,6 +10,7 @@ module Wiki.Core.Math.KatexCommands
   , katexCommands
   , katexArguments
   , builtinMacroArguments
+  , katexEnvironments
   )
 where
 
@@ -1240,4 +1241,42 @@ builtinMacroArguments =
   , ("\\eps", 0)
   , ("\\bigO", 0)
   , ("\\defeq", 0)
+  ]
+
+-- | The environments KaTeX reads that take no argument, by name, in order,
+-- each with whether KaTeX reads it only in display math ('True' for
+-- @align@, @equation@ and others, which KaTeX refuses in a formula of a
+-- line). Only those KaTeX reads empty and with a letter inside, as
+-- choosing one writes it: @\\begin{pmatrix}@ and @\\end{pmatrix}@, the
+-- cursor between them. Environments that take an argument (@array@,
+-- @alignat@) are not here.
+katexEnvironments :: [(Text, Bool)]
+katexEnvironments =
+  [ ("Bmatrix", False)
+  , ("Bmatrix*", False)
+  , ("CD", True)
+  , ("Vmatrix", False)
+  , ("Vmatrix*", False)
+  , ("align", True)
+  , ("align*", True)
+  , ("aligned", False)
+  , ("bmatrix", False)
+  , ("bmatrix*", False)
+  , ("cases", False)
+  , ("dcases", False)
+  , ("drcases", False)
+  , ("equation", True)
+  , ("equation*", True)
+  , ("gather", True)
+  , ("gather*", True)
+  , ("gathered", False)
+  , ("matrix", False)
+  , ("matrix*", False)
+  , ("pmatrix", False)
+  , ("pmatrix*", False)
+  , ("rcases", False)
+  , ("smallmatrix", False)
+  , ("split", True)
+  , ("vmatrix", False)
+  , ("vmatrix*", False)
   ]

@@ -17,7 +17,7 @@ import Test.Markdown.CompleteStarts (alikeEverywhere, caseAt)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, classify, conjoin, counterexample, elements, forAll, property, (.&&.), (===))
 import Wiki.Core.Markdown.Ast (Block (..), Inline (..), ListItem (..), parseMarkdown)
 import Wiki.Core.Markdown.Complete
-import Wiki.Core.Math.KatexCommands (katexArguments, katexCommands)
+import Wiki.Core.Math.KatexCommands (katexArguments, katexCommands, katexEnvironments)
 
 spec :: Spec
 spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
@@ -55,9 +55,68 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
       (map (.label) <$> listAt [cmd "\\fraction" "this page"] "$\\fract‸$") `shouldBe` Just ["\\fraction"]
     it "opens no list where the letters name a command already, so that Enter after it is a new line" $
       listAt [] "$$\n\\alpha‸" `shouldBe` Nothing
-    it "offers \\begin and \\end as commands like any other, and no environment" $ do
-      (map (.label) <$> listAt [] "$$\n\\beg‸") `shouldBe` Just ["\\begin"]
+    it "offers \\begin and \\end as commands like any other, \\begin before the environments, and no \\end of an environment" $ do
+      (take 1 . map (.label) <$> listAt [] "$$\n\\beg‸") `shouldBe` Just ["\\begin"]
       (map (.label) <$> listAt [] "$$\n\\en‸") `shouldSatisfy` maybe False (elem "\\end")
+      (filter ("{" `T.isInfixOf`) . map (.label) <$> listAt [] "$$\n\\en‸") `shouldBe` Just []
+
+  describe "environments (#301)" $ do
+    let environmentsAt marked = filter ("\\begin{" `T.isPrefixOf`) . map (.label) <$> listAt [] marked
+        labelOf name = "\\begin{" <> name <> "}"
+        displayOnly = ["CD", "align", "align*", "equation", "equation*", "gather", "gather*", "split"]
+    it "offers KaTeX's environments that take no argument, in the list's order, those KaTeX reads only in display math only there" $ do
+      sort <$> environmentsAt "$$\n\\be‸" `shouldBe` Just (sort (map (labelOf . fst) katexEnvironments))
+      sort <$> environmentsAt "$\\be‸$" `shouldBe` Just (sort [labelOf name | (name, False) <- katexEnvironments])
+      sort [name | (name, True) <- katexEnvironments] `shouldBe` displayOnly
+      for_ ["$\\be‸$", "Text $a = \\be‸", "> $\\be‸$"] $ \marked ->
+        (marked, any (`elem` map labelOf displayOnly) <$> environmentsAt marked) `shouldBe` (marked, Just False)
+      for_ ["$$\n\\be‸\n$$", "```math\n\\be‸", "> $$\n> \\be‸"] $ \marked ->
+        (marked, elem (labelOf "align*") <$> environmentsAt marked) `shouldBe` (marked, Just True)
+      -- Shorter labels first, then by label, among the commands.
+      (map (.label) <$> listAt [] "$\\begi‸$")
+        `shouldBe` Just ["\\begin", "\\begin{cases}", "\\begin{dcases}", "\\begin{matrix}", "\\begin{rcases}", "\\begin{Bmatrix}", "\\begin{Vmatrix}", "\\begin{aligned}", "\\begin{bmatrix}", "\\begin{drcases}", "\\begin{matrix*}", "\\begin{pmatrix}", "\\begin{vmatrix}", "\\begin{Bmatrix*}", "\\begin{Vmatrix*}", "\\begin{bmatrix*}", "\\begin{gathered}", "\\begin{pmatrix*}", "\\begin{vmatrix*}", "\\begin{smallmatrix}"]
+    it "finds them from \\b to \\begi, not after \\begin typed whole nor after its brace, where no list opens" $ do
+      for_ ["$\\b‸$", "$\\be‸$", "$\\beg‸$", "$\\begi‸$"] $ \marked ->
+        (marked, elem (labelOf "pmatrix") <$> environmentsAt marked) `shouldBe` (marked, Just True)
+      listAt [] "$\\begin‸$" `shouldBe` Nothing
+      listAt [] "$\\begin{pm‸$" `shouldBe` Nothing
+    it "writes the environment's begin and end in place of the cursor's line, the cursor between them, Tab to after the end, in a formula and in display math" $ do
+      walkAt [] "$\\be‸$" "\\begin{pmatrix}" `shouldBe` Just (["$\\begin{pmatrix}‸\\end{pmatrix}$", "$\\begin{pmatrix}\\end{pmatrix}‸$"], LineAsText "$\\be$" (1, 4))
+      fst <$> walkAt [] "Text $x = \\beg‸ + 1$ b" "\\begin{cases}" `shouldBe` Just ["Text $x = \\begin{cases}‸\\end{cases} + 1$ b", "Text $x = \\begin{cases}\\end{cases}‸ + 1$ b"]
+      fst <$> walkAt [] "$$\n\\b‸\n$$" "\\begin{align*}" `shouldBe` Just ["\\begin{align*}‸\\end{align*}", "\\begin{align*}\\end{align*}‸"]
+      fst <$> walkAt [] "> $$\n> \\be‸" "\\begin{CD}" `shouldBe` Just ["> \\begin{CD}‸\\end{CD}", "> \\begin{CD}\\end{CD}‸"]
+    it "still writes \\begin alone, the cursor after it" $
+      written "$$\n\\beg‸" "\\begin" `shouldBe` Just ("\\begin‸", AsText)
+    it "offers them whatever follows the cursor, an environment taking no argument, an \\end of an environment begun before the cursor too"
+      $ for_
+        [ "$\\be‸ x$"
+        , "$\\be‸12$"
+        , "$\\be‸\\alpha$"
+        , "$\\be‸ = 1$"
+        , "$\\begin{pmatrix} \\be‸ \\end{pmatrix}$"
+        , "$$\n\\begin{aligned}\nx &= \\be‸ \\\\\ny &= 2\n\\end{aligned}\n$$"
+        ]
+      $ \marked -> (marked, elem (labelOf "pmatrix") <$> environmentsAt marked) `shouldBe` (marked, Just True)
+    it "offers none where what follows may be the environment's own: a brace, or an \\end of an environment not begun before the cursor"
+      $ for_
+        [ "$\\be‸{pmatrix}$"
+        , "$\\be‸ {pmatrix} a \\end{pmatrix}$"
+        , "$\\be‸ a & b \\end{pmatrix}$"
+        , "$$\n\\be‸\na & b \\\\\nc & d\n\\end{pmatrix}\n$$"
+        , "$\\begin{matrix} a \\end{matrix} \\be‸ \\end{matrix}$"
+        ]
+      $ \marked -> (marked, environmentsAt marked) `shouldBe` (marked, Just [])
+    it "offers none where the parser would read the math otherwise with environments written, a name of letters or one with a star" $ do
+      let at = placeAt "$$\n\\be‸\n$$"
+          -- Parsers that read no math in a probe that holds a text, where
+          -- the parser itself reads the same math.
+          without text probe = readLine at.above (if any (text `T.isInfixOf`) probe.written then Probe {from = probe.from, written = ["No math here."]} else probe)
+          offered readOf = filter ("\\begin{" `T.isPrefixOf`) . map (.label) . (.candidates) <$> complete [mathSource (mathCommands [])] readOf at
+      offered (without "\\begin{") `shouldBe` Just []
+      offered (without "*}") `shouldBe` Just []
+      -- The first name of letters alone offered there.
+      offered (without "{CD}Zqxjvmath") `shouldBe` Just []
+      length <$> offered (readLine at.above) `shouldBe` Just (length katexEnvironments)
 
   describe "what choosing writes" $ do
     it "writes a command that takes no argument by its name alone, the cursor after it, as text" $ do
@@ -186,19 +245,31 @@ pairsOf c = case c.writing of
 -- the same math. Asked where the text read that word in math (a formula
 -- closed, display math): a formula still being typed is not math yet, and
 -- its check is the probe's ('Wiki.Core.Markdown.Complete.complete').
+--
+-- An environment's entry (#301) the same: its begin and its end written,
+-- the word between them, every name offered checked on its own, those
+-- with a star too ('Wiki.Core.Markdown.Complete.mathSource' asks the
+-- parser once for them all, with one name of letters and one with a
+-- star written).
 bracesReadBack :: (Text, Text) -> Property
 bracesReadBack (upTo, rest) =
   counterexample (toS (upTo <> "‸" <> rest))
     $ classify inMath "in math as the text is"
+    $ classify (any (isJust . environmentOf) offered) "an environment offered"
     $ conjoin
       [ counterexample (toS c.label) $
-          fst (skeletonText c.skeleton) === lineBefore <> c.label <> T.concat (replicate n "{}") <> T.takeWhile (/= '\n') rest
-            .&&. (if inMath then shownReading (upToCommand <> filled c.label n <> rest) (filled c.label n) === shownReading baseline "" else property True)
-      | c <- fromMaybe [] (listAt [] (upTo <> "‸" <> rest))
+          fst (skeletonText c.skeleton) === lineBefore <> written' <> T.takeWhile (/= '\n') rest
+            .&&. (if inMath then shownReading (upToCommand <> withFill <> rest) withFill === shownReading baseline "" else property True)
+      | c <- offered
       , let n = pairsOf c
       , n > 0
+      , let (written', withFill) = case environmentOf c of
+              Just name -> (c.label <> "\\end{" <> name <> "}", c.label <> fill <> "\\end{" <> name <> "}")
+              Nothing -> (c.label <> T.concat (replicate n "{}"), filled c.label n)
       ]
   where
+    offered = fromMaybe [] (listAt [] (upTo <> "‸" <> rest))
+    environmentOf c = T.stripPrefix "\\begin{" c.label >>= T.stripSuffix "}"
     upToCommand = T.dropWhileEnd (\c -> isAsciiLower c || isAsciiUpper c) upTo & T.dropEnd 1
     lineBefore = T.takeWhileEnd (/= '\n') upToCommand
     word = "Zqxjvword"

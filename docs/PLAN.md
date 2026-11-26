@@ -2809,8 +2809,30 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   so a change in another tab or by an administrator does not reach
   an editor already open; `wiki-plugin.js` is not served for
   download; one oversized message is deserialized once by the
-  browser before it is refused. **D3 (the assistant moves, the
-  migration) is open as #382, in review.** **The first cut of #301
+  browser before it is refused. **D3 merged (#382, eight Codex rounds, four builders):** the
+  assistant's API keys are the plugin's named secrets and its
+  provider, model, effort, service's address, mode and page cap the
+  plugin's options on the server, in the clear; the migration is a
+  pure plan and a runner, each legacy place taken once (the plugin's
+  item records the places taken and is never deleted), run under an
+  owner of keys the sign-out closes. What the rounds found, as rules
+  for later packages: **a key is kept with the service it belongs to
+  and used only for it** (`{key, provider, address}`; twice a key
+  could reach another address); a check's answer carries what it was
+  checked against; adopting "only if the server has none" needs the
+  server (`If-None-Match: *` on the options' `PUT`); a copy kept in
+  the browser (`held:<item>:<user>`, so that an adopted page asks
+  nothing) needs a refresh path and the lock across tabs around every
+  fetch-then-write; a plugin's surfaces are told when a write of its
+  options is refused (`optionsRefused`, beside `refused` for the
+  switch); the field tells its parent when a keep has ended, however
+  it ends. Left: a vault that only a lost passkey still unlocks has
+  no way out (a password reset keeps it); a direct reload of the
+  assistant's settings shows the kept copy until a navigation; after
+  a reset of the vault a legacy copy another browser can still open
+  is moved into the new vault; Settings, Security asks the server as
+  it is adopted; `Test/Browser/Vault.hs`'s five holds under the 30 s
+  limit. **The first cut of #301
   merged (#383):** Enter in the middle of an item's first line
   splits the item, and later items of a consecutively numbered list
   are renumbered in the same transaction; every split is read back

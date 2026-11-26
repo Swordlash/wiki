@@ -1712,7 +1712,7 @@ component =
           Just
             [hh|
               <div class="editor-preview" aria-label="Preview">
-                {{ HH.slot "preview" () Preview.component Preview.Input {place = placeOf st.input work, title = work.shownTitle, body = work.shownBody, titled = True, slides = previewSlides st work} FromPreview }}
+                {{ HH.slot "preview" () Preview.component Preview.Input {place = placeOf st.input work, page = Just work.page.id, title = work.shownTitle, body = work.shownBody, titled = True, slides = previewSlides st work} FromPreview }}
               </div>
             |]
       | otherwise = Nothing
@@ -2429,15 +2429,23 @@ component =
       -- letters are typed: the backend's answer, or none when the backend
       -- could not answer, which CodeMirror then asks for again.
       -- In an encrypted space, from its readers, asked for by the space
-      -- alone: the letters typed are its text, and stay here.
+      -- alone: the letters typed are its text, and stay here. In a space
+      -- this editor was given as plain, the letters are sent only once the
+      -- server has said the page's text is taken plain now ('plainNow'):
+      -- another tab may have started encrypting the space since. An answer
+      -- found for the reader before a change of session is no answer
+      -- ('sessionNumber'): CodeMirror keeps none, and asks again.
       MentionAsked i letters -> do
-        space <- gets (\st -> st.input.space)
-        found <-
-          if isJust space.encryption
-            then fmap (take maxPeopleFound . filter (startsWith letters)) <$> spaceReaders space.id
-            else mentionCandidates letters
+        st0 <- get
+        let space = st0.input.space
+            asked = st0.input.context.sessionNumber
+        found <- case st0.loaded of
+          _ | isJust space.encryption -> fmap (take maxPeopleFound . filter (startsWith letters)) <$> spaceReaders space.id
+          Ready w -> plainNow w.page.id >>= either (pure . Left) (const (mentionCandidates letters))
+          _ -> pure (Left NotFound)
+        now <- gets (\st -> st.input.context.sessionNumber)
         host <- gets (\st -> st.hostElement)
-        for_ host $ \h -> H.liftEffect (answerMention h i (rightToMaybe found))
+        for_ host $ \h -> H.liftEffect (answerMention h i (guard (now == asked) *> rightToMaybe found))
       -- CodeMirror asks which emoji a name may be, as a colon and letters
       -- are typed: those whose names match, from the parser's own list.
       EmojiAsked i letters -> do

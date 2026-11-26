@@ -82,6 +82,7 @@ module Wiki.Api
 
     -- * Versions
   , Versioned
+  , Unkept
   , IfMatch
   , versioned
   , versionedSealed
@@ -636,6 +637,16 @@ data PagesApi form mode = PagesApi
   -- for the page's permanent address (@\/l\/\<page id>\/@). A page the
   -- caller may not view is 'Wiki.Api.Error.NotFound', with the same body
   -- as an id no page has.
+  , plain :: mode :- Capture "page" PageId :> "plain" :> Verb 'GET 204 '[JSON] (Unkept NoContent)
+  -- ^ @plainNow@: whether the server takes the page's text as plain text
+  -- now, asked by the browser before it sends any (a save, a draft, an
+  -- attachment, a comment, letters typed for a lookup). 204 when the
+  -- caller may view the page and no space of its chain, where the page is
+  -- now, is encrypted or being converted. 409 'Wiki.Api.Error.Stale'
+  -- otherwise, with the draft's codes (@converting@, @space-encrypted@).
+  -- A page the caller may not view is 'Wiki.Api.Error.NotFound', as for
+  -- @location@. The answer is @no-store@, so that the service worker never
+  -- answers it from what it kept.
   , backlinks :: mode :- Capture "page" PageId :> "backlinks" :> Get '[JSON] [Backlink]
   -- ^ @pageBacklinks@: the pages that link to the page, each with its id,
   -- its title and where it is now (@[{"page": "…", "title": "On-call",
@@ -1092,6 +1103,11 @@ requestMarker = ("X-Wiki-Request", "1")
 
 -- | 'Versioned': a response that carries a page's version as its @ETag@.
 type Versioned a = Headers '[Header "ETag" PageVersion] a
+
+-- | 'Unkept': an answer with @Cache-Control: private, no-store@, which no
+-- cache keeps, the browser's and the service worker's included
+-- (@web\/src\/sw.js@ keeps only a 200 that does not say @no-store@).
+type Unkept a = Headers '[Header "Cache-Control" Text] a
 
 -- | 'IfMatch': the version a save was made against, which a save must send.
 type IfMatch = Header' '[Required, Strict] "If-Match" PageVersion

@@ -51,6 +51,7 @@ module Wiki.App.Backend.Mem.State
   , postDetailsIn
   , getPageIn
   , pageLocationIn
+  , plainNowIn
   , backlinksIn
   , searchPagesIn
   , findPagesByTitleIn
@@ -223,7 +224,7 @@ import Wiki.Api.ServerSettings qualified as SS
 import Wiki.Api.Stars (StarredPage (StarredPage), maxStars)
 import Wiki.Api.Stars qualified as Star
 import Wiki.Api.WhatsNew (WhatsNew, newestEntry)
-import Wiki.App.Backend (Session (Session), WikiError (..), anonymousIn, maxAttachmentSize)
+import Wiki.App.Backend (Session (Session), Staleness (..), WikiError (..), anonymousIn, maxAttachmentSize)
 import Wiki.App.Backend qualified as B
 import Wiki.App.Backlinks qualified as Links
 import Wiki.Core.Access (Access (..))
@@ -241,6 +242,7 @@ import Wiki.Core.Id
 import Wiki.Core.Markdown.Ast (mentionsWhole)
 import Wiki.Core.Notification (Happened (..), MailMode, Mark, Notification (Notification), Occasion (..), PageLocation (..), Watch, WatchTarget (..), Watcher (..), effectiveMailMode, excerptOf, keptNotifications, maxListed, mentionedIn, newlyMentioned, pageWatch, recipients, spaceWatch, withLocation)
 import Wiki.Core.Notification qualified as Notice
+import Wiki.Core.Offered qualified as Offered
 import Wiki.Core.Order (ChildOrder (..), Children (..), Shift, childrenInOrder, nextPosition, orderName, renumber, reposition)
 import Wiki.Core.Page (Page (..), PageSummary, childPages, pageTreeOrder, positionPage, summaryOf)
 import Wiki.Core.PageKind (PageKind (..), knownKinds, pageKindName)
@@ -1042,6 +1044,19 @@ pageLocationIn pid st = do
   if Home.isHomeSpace st.server.homePage s.id
     then pure PageLocation {space = [], page = []}
     else maybe (Left NotFound) (\path -> pure PageLocation {space = map (\x -> x.slug) c, page = path}) (Space.pagePath s (`Map.lookup` st.pages) p.id)
+
+-- | Whether a page's text is taken as plain text now
+-- ('Wiki.App.Backend.plainNow'): the page checked as 'pageLocationIn'
+-- checks it, then refused as the server refuses a draft of it
+-- ('Offered.refusalOf' 'Offered.KeepDraft'), with the server's code: a
+-- conversion under way, or else the space encrypted.
+plainNowIn :: PageId -> MemState -> Either WikiError ()
+plainNowIn pid st = do
+  p <- findPage st pid
+  (_, c) <- findSpace st p.space
+  requireView st c
+  for_ (Offered.refusalOf Offered.KeepDraft c) $ \why ->
+    Left (Stale (if any (\x -> isJust x.conversion) c then ConversionRuns else SpaceIsEncrypted) why)
 
 -- | The pages that link to a page ('Wiki.App.Backend.pageBacklinks'),
 -- found by resolving every page's links now ("Wiki.App.Backlinks"): the

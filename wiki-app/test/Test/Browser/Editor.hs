@@ -19,7 +19,7 @@ import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, i
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
-import Test.Browser.Mount (clickButton, slugs, startChanged, startWith)
+import Test.Browser.Mount (clickButton, slugs, startChanged, startChangedWith, startWith)
 import Test.Browser.Text (clearBody, completing, editorSelection, editorText, markdown, mathIn, problemsMarked, selectText, setMarkdown, utf16Length)
 import Test.Hspec (around)
 import Test.Hspec.Halogen
@@ -39,8 +39,9 @@ import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Markdown.Ast (Block (..), Inline (..), parseMarkdown)
 import Wiki.Core.Markdown.Box (BoxKind (..))
 import Wiki.Core.Page (Page (attachments, body, id, title, updatedAt))
-import Wiki.Core.Space (Space (id, mathMacros))
+import Wiki.Core.Space (Conversion (..), Space (conversion, encryption, id, mathMacros, slug))
 import Wiki.Core.User (Login (..), User (..))
+import Wiki.Core.Vault (KeyId (..))
 
 -- The page has no file dialog the harness can answer, so a test hands the
 -- editor a file the way the browser would: test/jsbits/test-files.js.
@@ -999,6 +1000,27 @@ spec m = readsOnce Idle $ around withTestClock $ do
     -- a link's title is not math.
     setMarkdown ui "# Cases\n\nCompute $2x + y here\n\nThen $2 + x\n\nSee [this](other \"Amount: $USD\") and $3.50 or $5 each."
     eventually $ underlined `shouldReturn` "$2x + y here$2 + x"
+
+  -- #389's rounds: the editor was given its space plain, and another tab
+  -- starts encrypting it. The letters typed after an @ are the page's
+  -- text: they go to the server only once it says the page's text is
+  -- plain now ('plainNow'), and no answer kept from before is offered.
+  it "offers no people once the page's space is being encrypted elsewhere, not even those found before for the same letters" $ \_ -> runPage $ do
+    (ui, wiki) <- startChangedWith m withMentionable (Just "user-editor") helloEditor
+    text <- editorText ui
+    clearBody ui
+    typeText text "Ask @an"
+    shown <- listShown ui
+    (findAllIn shown ".cm-completionLabel" >>= traverse textContent) `shouldReturn` ["Anna Nowak", "Annabel Smith"]
+    press "Escape"
+    eventually $ length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    unsafeIOToPageM . modifyIORef' wiki $ \st ->
+      st {spaces = fmap (\s -> if [s.slug] == slugs ["blog"] then s {encryption = Just (KeyId "a-key"), conversion = Just Encrypting} else s) st.spaces}
+    -- The same letters again: had the answer from before been kept, or
+    -- the letters sent, the list would show Anna and Annabel.
+    typeText text " or @an"
+    noCompletion ui
+    markdown ui `shouldReturn` "# Hello, world\n\nAsk @an or @an"
 
   it "completes a mention with the users whose names start with what is typed, but not in code, a link or math" $ \_ -> runPage $ do
     ui <- startChanged m withMentionable (Just "user-editor") helloEditor

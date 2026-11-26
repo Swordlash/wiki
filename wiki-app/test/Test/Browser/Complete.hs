@@ -11,11 +11,15 @@
 -- item added), and that the list's and the snippet's keys stop on their
 -- way to the form; and that a command of the @/@ menu with several places
 -- to fill goes through them with Tab and Shift+Tab, in the raw Markdown
--- and in a presentation's row, until the walk ends (#301).
+-- and in a presentation's row, until the walk ends (#301); and that after
+-- @[[@ and two letters the pages of other spaces follow the space's own in
+-- a group of their own, whose entry writes a link the preview leads to the
+-- page (#301).
 module Test.Browser.Complete (spec) where
 
 import Control.Monad.UUID (MonadUUID)
 import Data.Aeson (decodeStrict)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser)
 import Halogen.JSBits.Promise (Promise (..), wait)
@@ -27,7 +31,8 @@ import Test.Browser.Text (completing, completionAnswered, editorSelection, edito
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (boxes))
 import Wiki.App.Assistant (MonadAssistant)
-import Wiki.App.Backend.Mem.State (MemState (..))
+import Wiki.App.Backend.Mem.State (MemState (..), insertPage)
+import Wiki.App.Demo (demoNow)
 import Wiki.App.Help (guidePageSlug)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..), pageLinkText)
@@ -35,6 +40,8 @@ import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..))
 import Wiki.Core.Markdown.Edit qualified as Edit
 import Wiki.Core.Page (Page (body, slug))
+import Wiki.Core.Slug (slugText)
+import Wiki.Core.Space (Space (id, slug))
 
 -- The last key that reached the window: test/jsbits/test-keys.js. A row
 -- of a presentation's slide mode: test/jsbits/test-slides.js.
@@ -124,6 +131,33 @@ spec m = readsOnce Idle $ do
     untilListTakesKeys ui
     press "Enter"
     withSelection ui `shouldReturn` "And [[Notes on Haskell]]‸ too."
+
+  -- #301: the pages of other spaces after [[. Which pages the lookup
+  -- finds, the rules of its asks and replies, and what an entry writes are
+  -- tested natively ("Test.Complete", "Test.Elsewhere", "Test.EditorDom");
+  -- here, that the group is shown in CodeMirror below the space's own
+  -- pages, that the keys reach it, and that the link written leads there.
+  it "lists other spaces' pages after the space's own, in a group of their own, and links the one chosen as the preview leads it" $ runPage $ do
+    ui <- startChanged m (withPage "blog" "Onboarding notes" . withPage "docs" "Onboarding") (Just "user-editor") helloEditor <* waitQuiet
+    text <- editorText ui
+    find ui ".editor-side-by-side" >>= click
+    setMarkdown ui titleLines
+    selectText ui (T.length titleLines) (T.length titleLines)
+    typeText text "See [[onb"
+    -- The answer is in when both groups are: the space's own at once, the
+    -- other spaces' once the lookup after the pause has answered.
+    _ <- completionAnswered ui
+    labels ui `shouldReturn` ["Onboarding notes", "Onboarding"]
+    (findAll ui ".cm-tooltip-autocomplete completion-section" >>= traverse textContent) `shouldReturn` ["In other spaces"]
+    (findAll ui ".cm-tooltip-autocomplete .cm-completionDetail" >>= traverse textContent) `shouldReturn` ["onboarding-notes", "Docs · docs/onboarding"]
+    untilListTakesKeys ui
+    press "ArrowDown"
+    press "Enter"
+    withSelection ui `shouldReturn` "See [[/s/docs/p/onboarding/|Onboarding]]‸"
+    -- The preview leads it to the page, after its pause.
+    waitQuiet
+    length <$> findAll ui ".editor-preview .page-body a.wikilink[href$='/s/docs/p/onboarding/']" `shouldReturn` 1
+    length <$> findAll ui ".editor-preview .page-body .link-unresolved" `shouldReturn` 0
 
   it "links a page typed in the middle of the long Markdown guide, the rest of the guide as it was" $ runPage $ do
     ui <- editingAs "user-admin" guidePage
@@ -487,6 +521,11 @@ spec m = readsOnce Idle $ do
     editingAs :: Text -> Route -> PageM s (Mounted s Shell.Query Void m)
     editingAs who page = fst <$> startWith m (Just who) page <* waitQuiet
     exercise = BoxKind {name = "exercise", label = "Exercise", colour = Teal, icon = Pencil}
+    -- A page with this title at the top of the demo's space of this slug.
+    withPage :: Text -> Text -> MemState -> MemState
+    withPage spaceSlug title st = case filter (\s -> slugText s.slug == spaceSlug) (Map.elems st.spaces) of
+      s : _ -> fst (insertPage s.id Nothing title ("# " <> title <> "\n") demoNow st)
+      [] -> panic ("no space " <> spaceSlug)
     -- A key pressed, and the key that reached the window after it, if
     -- any: "" for one the editor stopped on its way.
     reached key = do

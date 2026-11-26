@@ -24,9 +24,8 @@ import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Editor.Complete
 import Wiki.App.Editor.Tools (Control (..), controlName, htmlTags, notOffered, slashEntries, toolbarGroups)
 import Wiki.App.Route (PageLink (..), pageLinkText, pageRoute, resolvePageLink)
-import Wiki.Core.Id (SpaceId)
 import Wiki.Core.Assistant.Reference (markdownReference)
-import Wiki.Core.Id (PageId (..))
+import Wiki.Core.Id (PageId (..), SpaceId)
 import Wiki.Core.Markdown (Destination (..), classifyDestination)
 import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), Footnote (..), Inline (..), ListItem (..), allInlines, parseMarkdown, plainText)
 import Wiki.Core.Markdown.Ast qualified as Ast
@@ -36,8 +35,8 @@ import Wiki.Core.Markdown.Edit (htmlTagLabel)
 import Wiki.Core.Markdown.Problems qualified as Problems
 import Wiki.Core.Markdown.Starts (linesFromStart)
 import Wiki.Core.Page (PageSummary (..))
-import Wiki.Core.PageMatch (TitleHit (..))
 import Wiki.Core.PageKind (PageKind (..))
+import Wiki.Core.PageMatch (TitleHit (..))
 import Wiki.Core.Slug (Slug, mkSlug, slugText, slugify)
 import Wiki.Core.Space (Space (homePage, id, name, slug))
 import Wiki.Core.Space qualified as S

@@ -59,11 +59,10 @@ spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $ do
       let run :: MemWiki MemDOM a -> MemDOM a
           run = runMemWiki wiki
       (router, input) <- editorInput run
-      let
-        -- The program run until nothing runs or is queued, its pauses
-        -- (the preview's, the check's, the draft's) left asleep on the
-        -- clock: an advance smaller than any of them.
-        idle = advance clock 0.001
+      -- The program run until nothing runs or is queued, its pauses (the
+      -- preview's, the check's, the draft's) left asleep on the clock: an
+      -- advance smaller than any of them.
+      let idle = advance clock 0.001
       withView run Editor.component input $ \view -> do
         -- The page loaded, nothing typed yet: no pause armed.
         settle view

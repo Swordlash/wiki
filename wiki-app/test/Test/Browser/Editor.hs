@@ -1050,11 +1050,13 @@ spec m = readsOnce Idle $ around withTestClock $ do
     typeAfter 5 ["@", "a", "n"]
     markdown ui `shouldReturn` "# Hello, world\n\n[see @an](https://example.org)"
     noCompletion ui
-    -- Nor in a link to a page of the wiki, [[page]].
+    -- Nor in a link to a page of the wiki, [[page|label]]. (In its label:
+    -- letters typed in its address are looked up among the pages of other
+    -- spaces after a pause, which sleeps on this group's clock.)
     clearBody ui
-    typeText text "[[Plans ]]"
-    typeAfter 8 ["@", "a", "n"]
-    markdown ui `shouldReturn` "# Hello, world\n\n[[Plans @an]]"
+    typeText text "[[plans|Plans ]]"
+    typeAfter 14 ["@", "a", "n"]
+    markdown ui `shouldReturn` "# Hello, world\n\n[[plans|Plans @an]]"
     noCompletion ui
     -- Nor in math, between dollars or TeX's own delimiters.
     clearBody ui

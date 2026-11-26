@@ -14,12 +14,12 @@ import Test.BellDom qualified as BellDom
 import Test.Blog qualified as Blog
 import Test.CommentsDom qualified as CommentsDom
 import Test.Complete qualified as Complete
-import Test.Elsewhere qualified as Elsewhere
 import Test.Deck qualified as Deck
 import Test.DeckDom qualified as DeckDom
 import Test.DecryptedExport qualified as DecryptedExport
 import Test.Demo qualified as Demo
 import Test.EditorDom qualified as EditorDom
+import Test.Elsewhere qualified as Elsewhere
 import Test.Entries qualified as Entries
 import Test.Export qualified as Export
 import Test.Favicon qualified as Favicon

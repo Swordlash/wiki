@@ -939,7 +939,10 @@ requests = describe "its requests, through fetch" $ do
     hello <- unsafeIOToPageM helloWorld
     answerWith "PUT" ("api/v1/pages/" <> hello.id.text) 200 hello
     overHttp env (savePage hello.id hello.updatedAt "Title" "Body") `shouldReturn` Right hello
-    [r] <- asked
+    -- After the question whether the page's text is plain now, which the
+    -- server says yes to.
+    [question, r] <- asked
+    (question.method, question.url) `shouldBe` ("GET", "api/v1/pages/" <> hello.id.text <> "/plain")
     (r.method, r.url) `shouldBe` ("PUT", "api/v1/pages/" <> hello.id.text)
     r.headers
       `shouldBe` Map.fromList
@@ -957,7 +960,7 @@ requests = describe "its requests, through fetch" $ do
     let made = Attachment {id = AttachmentId "a1", name = FileName "notes.txt", mediaType = MimeType "text/plain", size = 5, source = SourceUrl (Url "https://example.org/notes.txt")}
     answerWith "POST" "api/v1/pages/page%201/attachments" 201 made
     overHttp env (uploadAttachment page "notes.txt" "text/plain" "hello") `shouldReturn` Right made
-    [r] <- asked
+    [r] <- filter (\x -> x.method /= "GET") <$> asked
     (r.method, r.url) `shouldBe` ("POST", "api/v1/pages/page%201/attachments")
     fromMaybe "" (Map.lookup "Content-Type" r.headers) `shouldSatisfy` T.isPrefixOf "multipart/form-data;boundary="
     r.body `shouldSatisfy` T.isInfixOf "Content-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n"

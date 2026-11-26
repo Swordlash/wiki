@@ -685,7 +685,9 @@ class (Monad m) => MonadWiki m where
   -- 'Stale' with the draft's codes ('Wiki.Api.Error.ConversionRuns',
   -- 'Wiki.Api.Error.SpaceIsEncrypted') for one whose space is encrypted or
   -- being converted. Only the right to view the page counts: someone who
-  -- may only comment is answered as an editor is.
+  -- may only comment is answered as an editor is. The HTTP backend also
+  -- refuses, with a 'Conflict' and without asking, a page it read
+  -- encrypted: what was written from it is never sent plain.
   --
   -- The answer comes from the server at the time of the question: another
   -- tab may move the page, encrypt its space, or take the user's access

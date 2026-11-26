@@ -2275,22 +2275,29 @@ encryptedFetched sid plain sealed =
 -- | A plain write about a page that may carry its text or text about it: a
 -- save, a draft, an attachment, a comment. It is sent only once the server
 -- has said, just before, that it takes the page's text plain now
--- ('plainNow'); otherwise it is refused here, and nothing of it is sent.
+-- ('plainHere'); otherwise it is refused here, nothing of it is sent, and
+-- the refusal says so to the reader.
 plainPageWrite :: (MonadIO m) => PageId -> HttpWiki m (Either WikiError a) -> HttpWiki m (Either WikiError a)
-plainPageWrite pid plain = plainHere pid >>= either (pure . Left) (const plain)
+plainPageWrite pid plain =
+  plainHere pid >>= \case
+    Right () -> plain
+    Left (Stale ConversionRuns _) -> pure (Left (Conflict "This page's space is being encrypted or decrypted now: nothing was sent. Open the page again once that is done."))
+    Left (Stale _ _) -> pure (Left (Conflict "This page's space has been encrypted since the page was opened: nothing was sent. Open the page again."))
+    Left NotFound -> pure (Left (Conflict "This page is no longer there, or no longer open to you: nothing was sent. Open the page again."))
+    Left e -> pure (Left e)
 
--- | 'plainNow': whether the page's text may be sent plain now, with the
--- reason for the reader when it may not. Refused here, without a request,
--- for a page read here encrypted ('heldPages'), and for one read so whose
--- space is plain since ('heldWasSealed'): what was written from it is not
--- sent plain unasked. Any other page is asked about by its id
--- (@pages\/\<page>\/plain@), wherever this tab last read it: the server
--- answers for the page where it is now, and a list of spaces could not
--- (one read before the page moved, or before the reader lost access to
--- the space, or a copy the service worker kept). The service worker never
--- answers that request from a copy (@web\/src\/sw.js@), so offline the
--- question fails, and the write is not sent. There is no shortcut for the
--- front page's space: the page may have moved out of it.
+-- | 'plainNow': whether the page's text may be sent plain now. Refused
+-- here, without a request, for a page read here encrypted ('heldPages'),
+-- and for one read so whose space is plain since ('heldWasSealed'): what
+-- was written from it is not sent plain unasked. Any other page is asked
+-- about by its id (@pages\/\<page>\/plain@), wherever this tab last read
+-- it: the server answers for the page where it is now, and a list of
+-- spaces could not (one read before the page moved, or before the reader
+-- lost access to the space, or a copy the service worker kept). The
+-- service worker never answers that request from a copy
+-- (@web\/src\/sw.js@), so offline the question fails ('Unreachable'). There
+-- is no shortcut for the front page's space: the page may have moved out
+-- of it.
 --
 -- A refusal for the space's state ('Stale') makes the tab read the list
 -- of spaces again ('send'), as any such refusal does.
@@ -2300,13 +2307,7 @@ plainHere pid =
     if
       | Map.member pid h.heldPages -> pure (Left (Conflict inEncryptedSpace))
       | Set.member pid h.heldWasSealed -> pure (Left (Conflict "This page's space is no longer encrypted: what was written here, from the page as it was read encrypted, was not sent. Reload the page as it is now, plain."))
-      | otherwise ->
-          send (getResponse <$> endpoints.pages.plain pid) <&> \case
-            Right _ -> Right ()
-            Left (Stale ConversionRuns _) -> Left (Conflict "This page's space is being encrypted or decrypted now: nothing was sent. Open the page again once that is done.")
-            Left (Stale _ _) -> Left (Conflict "This page's space has been encrypted since the page was opened: nothing was sent. Open the page again.")
-            Left NotFound -> Left (Conflict "This page is no longer there, or no longer open to you: nothing was sent. Open the page again.")
-            Left e -> Left e
+      | otherwise -> void <$> send (getResponse <$> endpoints.pages.plain pid)
 
 -- | Why a plain write of a page of an encrypted space is not sent.
 inEncryptedSpace :: Text

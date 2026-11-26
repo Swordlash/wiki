@@ -1593,8 +1593,9 @@ Live older than 2021 refuses unicode-math's table under the limits, then
 loops). An engine that runs out of time is killed with every process it
 started. `status` is `working` (it made a
 PDF), `failing` (it was found and did not), `not-found`, or `off` (WP5.61):
-the server was started with `--no-pdf`, which the deploy sets when it finds
-no `xelatex` that works and installs none, and neither looks for the engine
+the server was started with `--no-pdf`, which the deploy sets when it is
+given `--no-pdf` itself and when it finds no `xelatex` that works and
+installs none, and neither looks for the engine
 nor offers the PDFs. `off` has `path` and `output` `null`, `checkedAt` the
 time the server started, and is logged as `tex-engine` with `status=off`; a
 `check` then tries nothing and answers the same `off` with 200, not an

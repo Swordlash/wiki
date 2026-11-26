@@ -196,6 +196,7 @@ front root o0 = do
   prevTexliveDir <- prev "texlive_dir"
   prevTexliveMirror <- prev "texlive_mirror"
   prevPerlDir <- prev "perl_dir"
+  prevPdfExports <- prev "pdf_exports"
   prevWhatsNew <- prev "whats_new"
   prevGitCommit <- prev "git_commit"
   gitCommit <- (\(ok, out) -> if ok then takeWhile (/= '\n') out else "unknown") <$> outputOf "git" ["-C", root, "rev-parse", "HEAD"]
@@ -304,8 +305,17 @@ front root o0 = do
       unless (null o.optDb && null o.optDbPort && not o.fresh) (die "--postgres, --sqlite, --db-port and --fresh are for the wiki's server: add --server")
       unless (null o.optTexlive && null o.optTexliveMirror) (die "--texlive, --no-texlive and --texlive-mirror are for the wiki's server, which makes the PDFs: add --server")
       unless (null o.optTexliveInstaller && null o.optPerlSource) (die "--texlive-installer and --perl-source are for the wiki's server, which makes the PDFs: add --server")
+      unless (null o.optPdf) (die "--pdf and --no-pdf are for the wiki's server, which makes the PDFs: add --server")
       unless (null o.optWhatsNew) (die "--whats-new and --no-whats-new are for the wiki's server, which shows the page: add --server")
   let whatsNew = if firstOf [o.optWhatsNew, prevWhatsNew] == "no" then "no" else ""
+      -- Whether the PDF exports are off by --no-pdf: no after it, given now
+      -- or remembered, until --pdf; empty (a state file from before the
+      -- option has no line) lets the TeX step check the TeX as usual.
+      pdfExports = if firstOf [o.optPdf, prevPdfExports] == "no" then "no" else ""
+  -- --texlive installs TeX Live for the PDF exports, which a remembered
+  -- --no-pdf keeps off: only --pdf turns them on again.
+  when (o.optTexlive == "yes" && pdfExports == "no") $
+    die "--texlive installs TeX Live for the PDF exports, which this deployment has off (--no-pdf, remembered): add --pdf to turn them on again"
 
   -- The wiki's database: PostgreSQL in Docker unless --sqlite said
   -- otherwise; the demo keeps what a server before it chose.
@@ -646,6 +656,7 @@ front root o0 = do
           , ("texlive_dir", prevTexliveDir)
           , ("texlive_mirror", firstOf [o.optTexliveMirror, prevTexliveMirror])
           , ("perl_dir", prevPerlDir)
+          , ("pdf_exports", pdfExports)
           , ("texlive_installer", o.optTexliveInstaller)
           , ("perl_source", o.optPerlSource)
           ]

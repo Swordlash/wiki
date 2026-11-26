@@ -4093,6 +4093,92 @@ assert_contains "$out" 'an http:// or https:// URL'
 undeploy >/dev/null 2>&1
 pass 'without a TeX the service finds: said, PDFs off by --no-pdf in the unit, nothing asked or installed; --no-texlive remembered'
 
+# --no-pdf: the TeX step checks no TeX, installs none and asks nothing, and
+# says so in one line; the unit runs wiki-server with --no-pdf. The fixture's
+# toolchain/check-tex.sh is a fake that writes a line into EVENTS at each
+# call (the step runs it with an emptied environment, so the path is written
+# into it), and a first run without the option shows that it is called. The
+# state remembers the option as pdf_exports=no: a later run without options
+# keeps it, the undeploy keeps it, and --status says so and checks nothing.
+# --texlive is refused with it (in either order) and after it without
+# --pdf, as --pdf with it is, and it is for the server only; with
+# --no-texlive it is taken. --pdf takes it back: the next TeX step checks
+# the TeX again, as it did before.
+fixture no-pdf
+p=$(free_port 127.0.0.1)
+a=$(other_port "$p")
+cat >"$case_dir/repo/toolchain/check-tex.sh" <<EOF
+#!/bin/sh
+printf 'check-tex.sh ran\n' >>"$EVENTS"
+printf 'not-found\n'
+exit 2
+EOF
+out=$case_dir/first
+deploy --server --sqlite --port "$p" --admin-port "$a" >"$out" 2>&1 || fail 'the deploy before --no-pdf failed'
+assert_contains "$EVENTS" 'check-tex.sh ran'
+assert_contains "$out" "PDF exports: no xelatex on the service's PATH"
+[ -z "$(state pdf_exports)" ] || fail "a deploy without --no-pdf remembered pdf_exports=$(state pdf_exports)"
+: >"$EVENTS"
+out=$case_dir/off
+deploy --no-pdf --no-build >"$out" 2>&1 || fail 'the deploy with --no-pdf failed'
+assert_lacks "$EVENTS" 'check-tex.sh ran'
+[ "$(grep -c 'PDF exports' "$out")" = 1 ] || fail "--no-pdf said more than one line of the PDF exports: $(grep 'PDF exports' "$out")"
+assert_contains "$out" 'deploy-local: PDF exports: off by --no-pdf, so no TeX is checked or installed and the server runs with --no-pdf (remembered; --pdf turns them on again)'
+assert_lacks "$out" '--texlive installs TeX Live'
+grep -x 'ExecStart=.* --no-pdf' "$HOME/$unit" >/dev/null || fail 'the unit does not run wiki-server with --no-pdf'
+assert_lacks "$HOME/$unit" 'Environment="PATH='
+[ "$(state pdf_exports)" = no ] || fail "--no-pdf was remembered as '$(state pdf_exports)'"
+[ -z "$(state texlive)" ] || fail "--no-pdf remembered an answer about TeX Live: $(state texlive)"
+out=$case_dir/kept
+deploy --no-build >"$out" 2>&1 || fail 'the redeploy after --no-pdf failed'
+assert_lacks "$EVENTS" 'check-tex.sh ran'
+assert_contains "$out" 'PDF exports: off by --no-pdf'
+[ "$(state pdf_exports)" = no ] || fail 'the redeploy forgot --no-pdf'
+grep -x 'ExecStart=.* --no-pdf' "$HOME/$unit" >/dev/null || fail 'the redeploy dropped --no-pdf from the unit'
+deploy --status >"$out" 2>&1 || fail '--status failed'
+assert_contains "$out" 'PDF exports: off by --no-pdf (remembered): the deploy checks no TeX and installs none, and the unit runs wiki-server with --no-pdf; --pdf turns them on again'
+assert_lacks "$out" 'off in the unit'
+assert_lacks "$out" 'found no xelatex'
+assert_lacks "$EVENTS" 'check-tex.sh ran'
+if deploy --no-build --texlive >"$out" 2>&1; then fail '--texlive was taken after --no-pdf without --pdf'; fi
+assert_contains "$out" '--texlive installs TeX Live for the PDF exports, which this deployment has off (--no-pdf, remembered): add --pdf to turn them on again'
+for args in '--texlive --no-pdf' '--no-pdf --texlive'; do
+  # shellcheck disable=SC2086 # two options, split on purpose
+  if deploy --no-build $args >"$out" 2>&1; then fail "$args was taken"; fi
+  assert_contains "$out" '--texlive and --no-pdf exclude each other: give one'
+done
+for args in '--pdf --no-pdf' '--no-pdf --pdf'; do
+  # shellcheck disable=SC2086 # two options, split on purpose
+  if deploy --no-build $args >"$out" 2>&1; then fail "$args was taken"; fi
+  assert_contains "$out" '--pdf and --no-pdf exclude each other: give one'
+done
+for option in --no-pdf --pdf; do
+  if deploy --static "$option" >"$out" 2>&1; then fail "$option was taken for the demo"; fi
+  assert_contains "$out" '--pdf and --no-pdf are for the wiki'"'"'s server, which makes the PDFs: add --server'
+done
+assert_lacks "$EVENTS" 'check-tex.sh ran'
+[ "$(state pdf_exports)" = no ] || fail 'a refused run changed pdf_exports'
+undeploy >"$out" 2>&1 || fail 'the undeploy failed'
+[ "$(state pdf_exports)" = no ] || fail 'the undeploy forgot --no-pdf'
+out=$case_dir/declined
+deploy --no-build --no-pdf --no-texlive >"$out" 2>&1 || fail '--no-pdf with --no-texlive failed'
+assert_lacks "$EVENTS" 'check-tex.sh ran'
+[ "$(state texlive)" = no ] || fail "--no-texlive with --no-pdf was remembered as '$(state texlive)'"
+[ "$(state pdf_exports)" = no ] || fail "--no-pdf with --no-texlive was remembered as '$(state pdf_exports)'"
+deploy --status >"$out" 2>&1 || fail '--status failed'
+assert_contains "$out" 'TeX Live under the toolchain was declined (--no-texlive); --pdf --texlive installs it'
+out=$case_dir/back
+deploy --no-build --pdf >"$out" 2>&1 || fail 'the deploy with --pdf failed'
+assert_contains "$EVENTS" 'check-tex.sh ran'
+assert_lacks "$out" 'off by --no-pdf'
+assert_contains "$out" "PDF exports: no xelatex on the service's PATH"
+[ -z "$(state pdf_exports)" ] || fail "--pdf was remembered as '$(state pdf_exports)'"
+deploy --status >"$out" 2>&1 || fail '--status failed'
+assert_contains "$out" 'PDF exports: off in the unit (--no-pdf): the deploy found no xelatex that works and installed none'
+assert_contains "$out" 'TeX Live under the toolchain was declined (--no-texlive); --texlive installs it'
+undeploy >/dev/null 2>&1
+pass '--no-pdf: no TeX checked or installed, said in one line, --no-pdf in the unit, remembered until --pdf, said by --status; --texlive refused with it and after it'
+
 # The page "What's new?": --no-whats-new reaches the unit as wiki-server's
 # --no-whats-new, is remembered, and --status says so; --whats-new drops
 # it; neither is for the demo, and the two exclude each other. The build
@@ -4265,6 +4351,28 @@ deploy --no-build --texlive >"$out" 2>&1 || fail 'the redeploy with --texlive ag
 assert_lacks "$EVENTS" 'install-tl'
 assert_contains "$HOME/$unit" "Environment=\"PATH=$texlive_root/2026/bin/x86_64-linux:"
 assert_lacks "$HOME/$unit" '--no-pdf'
+# --no-pdf leaves the toolchain's TeX Live where it is, on disk and in the
+# state, and takes its PATH out of the unit; --pdf uses it again.
+: >"$EVENTS"
+out=$case_dir/no-pdf
+deploy --no-build --no-pdf >"$out" 2>&1 || fail 'the redeploy with --no-pdf failed'
+assert_contains "$out" "PDF exports: off by --no-pdf, so no TeX is checked or installed and the server runs with --no-pdf; the toolchain's TeX Live stays in $texlive_root/2026 (remembered; --pdf turns them on again)"
+assert_lacks "$EVENTS" 'install-tl'
+assert_lacks "$HOME/$unit" 'Environment="PATH='
+assert_contains "$HOME/$unit" ' --no-pdf'
+[ -x "$texlive_root/2026/bin/x86_64-linux/xelatex" ] || fail '--no-pdf deleted the TeX Live'
+[ "$(state texlive_dir)" = "$texlive_root/2026" ] || fail '--no-pdf forgot the installation'
+[ "$(state texlive)" = yes ] || fail '--no-pdf forgot --texlive'
+deploy --status >"$out" 2>&1 || fail '--status failed'
+assert_contains "$out" 'PDF exports: off by --no-pdf (remembered)'
+assert_contains "$out" "the toolchain's TeX Live: $texlive_root/2026"
+out=$case_dir/pdf-again
+deploy --no-build --pdf >"$out" 2>&1 || fail 'the redeploy with --pdf failed'
+assert_lacks "$EVENTS" 'install-tl'
+assert_contains "$out" "PDF exports: $texlive_root/2026/bin/x86_64-linux/xelatex works, the toolchain's TeX Live"
+assert_contains "$HOME/$unit" "Environment=\"PATH=$texlive_root/2026/bin/x86_64-linux:"
+assert_lacks "$HOME/$unit" '--no-pdf'
+out=$case_dir/undeploy
 undeploy >"$out" 2>&1 || fail 'the undeploy failed'
 assert_contains "$out" "the TeX Live the deploy installed stays in $texlive_root/2026, with the toolchain"
 [ "$(state texlive_dir)" = "$texlive_root/2026" ] || fail 'the undeploy forgot the installation'

@@ -105,11 +105,12 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
         , -- A long paragraph after the math, an \end past the completion's
           -- read limit.
           "$$\\be‸$$\n" <> T.intercalate "\n" (replicate 200 "Some more words on a line.") <> "\n\\end{pmatrix}"
-        , -- Display math not closed in the page is read closed after the
-          -- cursor's line: only that line counts, the lines below being
-          -- outside the math the parser read.
+        , -- Display math the page does not close yet, with nothing on the
+          -- line after the cursor's, or no line at all.
           "$$\n\\begin{aligned}\n\\be‸"
-        , "$$\n\\be‸\na & b\n\\end{pmatrix}"
+        , "$$\n\\be‸"
+        , "$$\n\\be‸\n\nMore text."
+        , "> $$\n> \\be‸"
         ]
       $ \marked -> (marked, elem (labelOf "pmatrix") <$> environmentsAt marked) `shouldBe` (marked, Just True)
     it "offers none where the rest of the math, past white space and line ends, starts with a brace, or holds an \\end anywhere, matched by a \\begin before the cursor or not, or in a comment"
@@ -133,6 +134,23 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
         , "$$\n\\begin{aligned}\nx &= \\be‸ % \\end{aligned}\n$$"
         ]
       $ \marked -> (marked, environmentsAt marked) `shouldBe` (marked, Just [])
+    it "offers none in display math the page does not close yet where the line after the cursor's holds anything, a quotation's mark too: the lines below are not in the math read"
+      $ for_
+        [ "$$\n\\be‸\na & b\n\\end{pmatrix}"
+        , "$$\n\\be‸\n "
+        , "> $$\n> \\be‸\n> a & b\n> \\end{pmatrix}"
+        , "> $$\n> \\be‸\n>"
+        ]
+      $ \marked -> (marked, environmentsAt marked) `shouldBe` (marked, Just [])
+    it "tells display math the page does not close yet from math the page closes" $ do
+      let closedBy marked =
+            let at = placeAt marked
+                probed wanted = [Candidate {label = show wanted.closedByProbe, skeleton = [], writing = AsText, action = Nothing, note = Nothing, origin = Nothing}]
+             in map (.label) . (.candidates) <$> complete [probed] (readLine at.above) at
+      for_ ["$$\n\\be‸", "$$\n\\be‸\na & b", "> $$\n> \\be‸\n> a", "$$\n\\begin{aligned}\n\\be‸"] $ \marked ->
+        (marked, closedBy marked) `shouldBe` (marked, Just ["True"])
+      for_ ["$$\n\\be‸\n$$", "$$\\be‸$$", "$\\be‸$", "$\\be‸", "Text $a + \\be‸", "```math\n\\be‸", "```math\n\\be‸\n```", "> $$\n> \\be‸\n> $$"] $ \marked ->
+        (marked, closedBy marked) `shouldBe` (marked, Just ["False"])
     it "offers none where the parser would read the math otherwise with environments written, a name of letters or one with a star" $ do
       let at = placeAt "$$\n\\be‸\n$$"
           -- Parsers that read no math in a probe that holds a text, where

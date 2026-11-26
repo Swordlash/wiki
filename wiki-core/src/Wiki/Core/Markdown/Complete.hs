@@ -248,7 +248,7 @@ data LabelForm = PlainLabel | EscapedLabel | NoLabel
 -- of a line. An end marker's list is asked for after @[[/@ anywhere; its
 -- candidates are the blocks an end marker there ends ('complete').
 triggerAt :: LineReader -> At -> Maybe Typed
-triggerAt readAt at = (fst <$> mathAt readAt at) <|> otherTriggerAt readAt at
+triggerAt readAt at = ((\(typed, _, _) -> typed) <$> mathAt readAt at) <|> otherTriggerAt readAt at
 
 -- | What opens a list at a place other than a command in math.
 otherTriggerAt :: LineReader -> At -> Maybe Typed
@@ -822,12 +822,17 @@ data Writes = AsSnippet | AsText | LineAsText Text (Int, Int)
 -- would end, for the parser (the innermost block open there, if one is:
 -- an end marker of another name ends nothing); and what the parser reads
 -- of a skeleton written at the cursor, so that a source offers what is
--- read as it says.
+-- read as it says; and, in math, whether the parser read the math closed
+-- only by the line of @$$@ the probe put after the cursor's line
+-- ('closedByProbe': display math still being typed, which the page does
+-- not close yet), so that what the page holds below is not in the math
+-- read.
 data Wanted = Wanted
   { at :: At
   , typed :: Typed
   , closable :: [MarkerName]
   , writes :: Skeleton -> LineReading
+  , closedByProbe :: Bool
   }
 
 -- | 'Source' gives the candidates for what is wanted, in its order, or
@@ -987,7 +992,7 @@ complete sources readAt at = do
   -- A command in math, read once: its probe is read again with what an
   -- entry writes ('writes').
   let math = mathAt readAt at
-  typed <- (fst <$> math) <|> otherTriggerAt readAt at
+  typed <- ((\(t, _, _) -> t) <$> math) <|> otherTriggerAt readAt at
   let closable = case typed.trigger of
         EndMarker ->
           let prefix = T.take typed.from at.before
@@ -997,11 +1002,12 @@ complete sources readAt at = do
         -- In math: the probe that read the command in math, with the
         -- skeleton's text in place of the backslash and the letters.
         (InMath _, _) -> case math of
-          Just (_, rest) -> readAt (mathProbe (T.take typed.from at.before) (fst (skeletonText skeleton)) rest)
+          Just (_, rest, _) -> readAt (mathProbe (T.take typed.from at.before) (fst (skeletonText skeleton)) rest)
           Nothing -> noReading 1
         (_, Just shape) -> readAt (writtenProbe at shape (readAt (Probe 1 [shape.prefix <> probeOf shape.trigger])).enclosing skeleton)
         (_, Nothing) -> noReading 1
-      wanted = Wanted {at, typed, closable, writes}
+      closedByProbe = maybe False (\(_, _, closed) -> closed) math
+      wanted = Wanted {at, typed, closable, writes, closedByProbe}
       found = concatMap ($ wanted) sources
   guard (not (null found))
   Just Completion {from = typed.from, through = typed.through, candidates = map (asWrittenAt at typed) found, enter = if waitsForLetter typed.trigger then EnterChoosesAfter 2 else EnterChooses, escape = if typed.trigger == SlashMenu then EscapeDismisses else EscapeCloses}
@@ -1410,8 +1416,10 @@ openBraces = go 0 . T.unpack
 --
 -- With the command, the text after the cursor of the probe that read it in
 -- math ('mathRests'), which a check of what an entry writes reads again
--- ('complete''s 'writes').
-mathAt :: LineReader -> At -> Maybe (Typed, Text)
+-- ('complete''s 'writes'); and whether that probe is the one closed by a
+-- line of @$$@ after the cursor's line, the math not closed by the page
+-- ('Wanted''s 'closedByProbe').
+mathAt :: LineReader -> At -> Maybe (Typed, Text, Bool)
 mathAt readAt at = do
   guard (at.place /= InLinkText)
   (prefix, letters) <- mathShape at
@@ -1428,13 +1436,13 @@ mathAt readAt at = do
   -- of it.
   guard (holding holdsMath whole.blocksRead)
   guard (not (snd (stretchOf at)) || followed holdsMath whole.blocksRead)
-  (place, rest) <- case zip readings rests of
+  (place, rest, closedBelow') <- case zip readings rests of
     (asIs, asIsRest) : (closedHere, hereRest) : (closedBelow, belowRest) : _ ->
-      ((,asIsRest) <$> mathPlace asIs.blocksRead)
-        <|> (guard (not (null (afterDelimiters "$" prefix)) && null (afterDelimiters "$" at.after)) *> (mathPlace closedHere.blocksRead >>= \p -> (p, hereRest) <$ guard (p == InFormula)))
-        <|> (mathPlace closedBelow.blocksRead >>= \p -> (p, belowRest) <$ guard (p == InDisplay))
+      ((,asIsRest,False) <$> mathPlace asIs.blocksRead)
+        <|> (guard (not (null (afterDelimiters "$" prefix)) && null (afterDelimiters "$" at.after)) *> (mathPlace closedHere.blocksRead >>= \p -> (p, hereRest, False) <$ guard (p == InFormula)))
+        <|> (mathPlace closedBelow.blocksRead >>= \p -> (p, belowRest, True) <$ guard (p == InDisplay))
     _ -> Nothing
-  Just . (,rest) $
+  Just . (,rest,closedBelow') $
     Typed
       { trigger = InMath place
       , letters
@@ -1604,11 +1612,20 @@ mathSource commands wanted = case wanted.typed.trigger of
     -- names differ in their letters only, which the parser reads in math
     -- alike, and the property of "Test.Markdown.CompleteMath" checks every
     -- name offered on its own.
+    --
+    -- Display math the page does not close yet ('closedByProbe') is read
+    -- closed after the cursor's line, so the lines below are not in the
+    -- math read, and an @\\end@ there would not be seen
+    -- ('environmentFits'). There an environment is offered only where the
+    -- line after the cursor's is absent or empty, not a character on it
+    -- (a quotation's @>@ too): that line is read and nothing in it is
+    -- interpreted.
     environments place readsBack
-      | null matching || not (environmentFits readsBack.baseline) || not (readsBack.readsWith together) = []
+      | null matching || not nextLineFree || not (environmentFits readsBack.baseline) || not (readsBack.readsWith together) = []
       | otherwise = [(e.opening, environmentCandidate e) | e <- matching]
       where
         matching = [e | e <- environmentsInOrder, place == InDisplay || not e.displayOnly, typedName `T.isPrefixOf` e.opening]
+        nextLineFree = not wanted.closedByProbe || maybe True T.null (head at.below)
         starred e = "*" `T.isSuffixOf` e.environment
         together = T.concat [e.opening <> mathWord <> environmentEnd e | Just e <- [find (not . starred) matching, find starred matching]]
     environmentCandidate e = (lineCandidate at wanted.typed (environmentWritten prefix e at.after)) {label = e.opening, note = Just "KaTeX"}
@@ -1681,7 +1698,8 @@ environmentWritten prefix e rest =
 -- the rest of that TeX, after the word, is read: the rest of the math the
 -- parser found, as the probe that read it holds it (within the
 -- completion's read limit; for math not closed in the page, up to where
--- the probe closed it; the marks of quotations and lists taken off by the
+-- the probe closed it, and 'mathSource' asks then that the line after the
+-- cursor's be empty; the marks of quotations and lists taken off by the
 -- parser). Nothing outside the math and nothing before the cursor is
 -- read.
 --

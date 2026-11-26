@@ -271,8 +271,10 @@ import Halogen.HTML qualified as HH
 import Halogen.HTML.Events qualified as HE
 import Halogen.HTML.Properties qualified as HP
 import Halogen.JSBits (inBrowser)
+import Halogen.Machine qualified as Machine
 import Halogen.Router (Follow)
 import Halogen.Router qualified as Router
+import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (State)
@@ -303,6 +305,7 @@ import Wiki.App.Editor.Browser
   , Stepped (..)
   , announceUpload
   , answerCompletion
+  , answerElsewhere
   , answerEmoji
   , answerMention
   , applyCommand
@@ -321,6 +324,7 @@ import Wiki.App.Editor.Browser
   , droppedFiles
   , editorAvailable
   , editorKey
+  , elsewhereAsked
   , emojiAsked
   , focusElement
   , focusHeader
@@ -370,6 +374,7 @@ import Wiki.App.Editor.Browser
   , whileAttaching
   )
 import Wiki.App.Editor.Complete qualified as Complete
+import Wiki.App.Editor.Elsewhere.Machine qualified as Elsewhere
 import Wiki.App.Editor.Problems (problemRanges)
 import Wiki.App.Editor.Tools
 import Wiki.App.Islands (MonadIslands)
@@ -401,7 +406,7 @@ import Wiki.Core.Assistant.Prompt (Span (..))
 import Wiki.Core.Attachment (Attachment (..), FileName (..), MimeType (..))
 import Wiki.Core.Diff (Diff (..), diffText)
 import Wiki.Core.Draft qualified as D
-import Wiki.Core.Id (PageId, UserId)
+import Wiki.Core.Id (PageId, SpaceId, UserId)
 import Wiki.Core.Markdown (attachmentReference)
 import Wiki.Core.Markdown.Box (BoxKind (name), boxChoices)
 import Wiki.Core.Markdown.Edit
@@ -428,7 +433,7 @@ import Wiki.Core.SlideRows (RowKey (..), Rows)
 import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.Slides qualified as Slides
 import Wiki.Core.Slug (Slug)
-import Wiki.Core.Space (Space (encryption, id, mathMacros, name))
+import Wiki.Core.Space (Space (conversion, encryption, id, mathMacros, name))
 import Wiki.Core.User (Login (..), User (displayName, id, login))
 import Wiki.Core.Version (Author (..), Version (author))
 
@@ -623,6 +628,10 @@ data State = State
   , linkables :: [Complete.Linkable]
   -- ^ The pages a link may name, with their paths and links, worked out
   -- when the input's pages or the page's path change ('linkablesOf').
+  , elsewhere :: Machine.Machine Pausing Elsewhere.Event Elsewhere.Model
+  -- ^ The lookup of other spaces' pages after @[[@
+  -- ("Wiki.App.Editor.Elsewhere.Machine"), run by "Halogen.Machine": one
+  -- lookup out at a time, after a pause, for the last question asked.
   , shippedMacros :: Text
   -- ^ The built-in macros the wiki ships with, read once the editor
   -- starts ('builtinMacros'): the wiki's macros the completion in math
@@ -821,6 +830,7 @@ data Action
   | MentionAsked Int Text
   | EmojiAsked Int Text
   | CompleteAsked Int Complete.Request
+  | ElsewhereAsked Int Complete.Request
   | SearchEmoji Text
   | PickEmoji Text
   | EmojiFocus Int
@@ -1196,6 +1206,7 @@ component =
               , emojiQuery = ""
               , readings = Complete.noReadings
               , linkables = linkablesOf input
+              , elsewhere = Machine.new (elsewhereInputs input Elsewhere.initial)
               , shippedMacros = ""
               , outerMacros = outerMacrosOf "" input
               , pageMacroNames = []
@@ -1962,6 +1973,7 @@ component =
                 {{ HE.handler' (EventType "wiki-mention") (\ev -> uncurry MentionAsked <$> mentionAsked ev) }}
                 {{ HE.handler' (EventType "wiki-emoji") (\ev -> uncurry EmojiAsked <$> emojiAsked ev) }}
                 {{ HE.handler' (EventType "wiki-complete") (\ev -> uncurry CompleteAsked <$> completeAsked ev) }}
+                {{ HE.handler' (EventType "wiki-complete-elsewhere") (\ev -> uncurry ElsewhereAsked <$> elsewhereAsked ev) }}
                 {{ HE.handler' (EventType "wiki-complete-action") (completeAction >=> dialogOf) }}
                 {{ HE.handler' (EventType "wiki-cursor-line") (fmap CursorAt . cursorLineOf) }}
                 {{ HE.handler' (EventType "wiki-ready") (\ev -> Just $! EditorReady (readyFocused ev)) }}
@@ -2155,6 +2167,7 @@ component =
       -- The waits are killed with the component. The browser's warning and
       -- CodeMirror are not, so they are removed here.
       Finalize -> do
+        Machine.finish elsewhereSpec Elsewhere.Finished
         Body.releaseOwned (\st -> st.owners) (\owners st -> st {owners})
         H.liftEffect (guardUnload False)
         gets (\st -> st.host) >>= H.getRef >>= traverse_ (H.liftEffect . detachEditor)
@@ -2166,6 +2179,10 @@ component =
       -- The work belongs to the editor: a reload of the wiki around it
       -- (after a change elsewhere, or someone signing in) leaves it alone.
       Receive input -> do
+        -- The reader, the space and whether the page is sealed go to the
+        -- lookup of other spaces' pages first, before anything waits: a
+        -- question asked under the input before is dropped in this step.
+        elsewhereStep (elsewhereInputs input Elsewhere.Inputs)
         before <- gets (\st -> pluginsOn st.input.context)
         modify $ \st ->
           -- The pages' paths and links change only with the pages, the
@@ -2453,6 +2470,15 @@ component =
               _ -> (Nothing, st.readings)
         modify (\s -> s {readings})
         for_ st.hostElement $ \h -> H.liftEffect (answerCompletion h i found)
+      -- CodeMirror asks for the pages of other spaces after @[[@: the
+      -- letters typed there, read from the text held now, go to the
+      -- lookup's machine, which replies once the typing pauses
+      -- ('elsewhereSpec').
+      ElsewhereAsked i request -> do
+        letters <- state $ \st -> case st.loaded of
+          Ready w -> let (found, readings) = Complete.linkLetters st.earlier st.readings w.body request in (found, st {readings})
+          _ -> (Nothing, st)
+        elsewhereStep (Elsewhere.Asked i request letters)
       SearchEmoji emojiQuery -> modify (\st -> st {emojiQuery})
       -- The emoji chosen in the menu, as its shortcode, at the cursor; the
       -- text has the focus again.
@@ -2641,6 +2667,34 @@ component =
     -- announce that this tab is as soon as that is known: at once if the
     -- channel has received it already (another view in this tab watches
     -- the page too), otherwise when it arrives.
+    elsewhereStep :: Elsewhere.Event -> H.HalogenM State Action Slots ViewOutput m ()
+    elsewhereStep = Machine.happen elsewhereSpec
+
+    -- The lookup of other spaces' pages after @[[@, run by
+    -- "Halogen.Machine": its step, then its effects, with no other event
+    -- of the lookup in between. The pause and the lookup are asks, whose
+    -- answers are later steps; the reply is written in place, against the
+    -- text the editor holds then ('Complete.answer', which answers nothing
+    -- once the cursor's line has changed), so a late reply writes no list
+    -- for a line typed over since. A lookup that fails, or throws, replies
+    -- nothing: the space's own pages stay as they are, with no second group.
+    elsewhereSpec :: Machine.Spec Pausing State Action Slots ViewOutput m Elsewhere.Event Elsewhere.Effect Elsewhere.Model
+    elsewhereSpec = Machine.Spec {Machine.step = Elsewhere.step, Machine.carry = carryElsewhere, Machine.get = \st -> st.elsewhere, Machine.set = \elsewhere st -> st {elsewhere}}
+
+    carryElsewhere :: Elsewhere.Effect -> Machine.Carry Pausing State Action Slots ViewOutput m Elsewhere.Event
+    carryElsewhere = \case
+      Elsewhere.Pause -> Machine.AskUnder Pausing (Machine.delayCounted elsewhereDelay) (const Elsewhere.Paused)
+      Elsewhere.StopPause -> Machine.Cancel Pausing
+      Elsewhere.Lookup ticket query -> Machine.Ask (Machine.run (findPagesByTitle query)) (Elsewhere.Found ticket . either (const Nothing) rightToMaybe)
+      Elsewhere.Reply i request hits -> Machine.Now $ do
+        found <- state $ \st -> case (st.loaded, hits) of
+          (Ready w, Just pages) ->
+            let names = Map.fromList [(s.id, s.name) | s <- st.input.context.spaces]
+                (elsewhereList, readings) = Complete.answer [Complete.elsewhereSource names pages] st.earlier st.readings w.body request
+             in (elsewhereList, st {readings})
+          _ -> (Nothing, st)
+        gets (\st -> st.hostElement) >>= traverse_ (\h -> Sync.sync (answerElsewhere h i found))
+
     watchPage :: H.HalogenM State Action Slots ViewOutput m ()
     watchPage = do
       st <- get
@@ -3662,6 +3716,24 @@ dialogOf = \case
   "link-page" -> Just LinkPage
   "attach" -> Just AttachOrImage
   _ -> Nothing
+
+-- | 'Pausing' names the pause of the lookup of other spaces' pages, which
+-- a question asked again stops ('Elsewhere.StopPause').
+data Pausing = Pausing
+  deriving stock (Eq, Ord)
+
+-- | How long the lookup of other spaces' pages waits after the last
+-- question before it asks the server: a name typed quickly is looked up
+-- once.
+elsewhereDelay :: NominalDiffTime
+elsewhereDelay = 0.15
+
+-- | What the lookup of other spaces' pages is told of the input: the
+-- reader's session, the space, and whether the page is sealed, its text
+-- encrypted or being encrypted or decrypted (no lookup asks the server
+-- for letters of such a text).
+elsewhereInputs :: Input -> (Int -> SpaceId -> Bool -> a) -> a
+elsewhereInputs input f = f input.context.sessionNumber input.space.id (isJust input.space.encryption || isJust input.space.conversion)
 
 -- | The pages of the input's space a link from the page edited may name,
 -- with their paths and links ('Complete.linkables'), worked out in full

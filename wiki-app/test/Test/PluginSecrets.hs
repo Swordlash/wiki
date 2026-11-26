@@ -7,7 +7,8 @@
 -- read; an item moved to another plugin's name is not opened, nor written
 -- over; two devices that change the vault at once both keep their change;
 -- two tabs of one browser that change what it keeps at once both keep
--- their change, one after the other.
+-- their change, one after the other; and a read of the vault in one tab
+-- never keeps a copy of the plugin's item older than another tab's change.
 module Test.PluginSecrets (spec, storageSpec) where
 
 import Control.Concurrent.STM (isEmptyTMVar, newEmptyTMVarIO, putTMVar, takeTMVar)
@@ -38,6 +39,7 @@ spec = describe "Wiki.App.Plugin.Host.Secrets" $ do
   isolation
   twoDevices
   twoTabs
+  twoTabsVault
   inThisBrowser
   registry
 
@@ -227,6 +229,25 @@ inTheVault = describe "in the user's vault" $ do
     on w other' (refreshSecrets alice notes)
     on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-2")])
 
+  it "keeps no copy older than a change another tab made while a read of the vault waited to keep its copy" $ do
+    (w, d) <- unlocked
+    -- Another browser keeps the key: this one holds no copy yet.
+    e <- newDevice w.counter True
+    withVaultKey e alice w.vaultKey
+    on w e (putSecret alice notes token "sk-1") `shouldReturn` Right ()
+    answerOfB <- newEmptyTMVarIO
+    let tabB = on w d (removeSecretHeld alice notes token) >>= atomically . putTMVar answerOfB
+    -- Tab A's read has fetched the vault, which holds the key, and is
+    -- about to keep its copy; tab B forgets the key meanwhile. A writes
+    -- once B waits for the lock of tabs, or once B is done.
+    beforeNextWrite d $ do
+      void (forkIO tabB)
+      waitingForLock d (not <$> isEmptyTMVar answerOfB)
+    on w d (refreshSecrets alice notes)
+    atomically (takeTMVar answerOfB) `shouldReturn` Right ()
+    itemSecrets w notes `shouldReturn` Just mempty
+    on w d (readSecretsHere alice notes) `shouldReturn` Right mempty
+
   it "makes a change again when another device stored the vault first, at most three times in all" $ do
     (w, d) <- unlocked
     let elsewhere = vaultNow w >>= setVault w.server
@@ -377,6 +398,66 @@ twoTabs = describe "two tabs of one browser, where the user has no vault" $
       let expected m = foldl (flip applied) mempty [op | op <- seeds <> [fromA, fromB], (pluginOf op).id == m.id]
       readBack <- for [notes, mail, calendar] $ \m -> (\r -> counterexample (toS m.id.text) (r === Right (expected m))) <$> on w d (readSecrets alice m)
       pure (answerOfA === Right () .&&. answerB === Right () .&&. conjoin readBack)
+
+-- | 'TabOp' is what a tab does with a plugin's secrets in the vault: a
+-- change, or a read of the vault, which keeps this browser's copy of the
+-- plugin's item.
+data TabOp = Change Op | Refresh Manifest
+
+instance Show TabOp where
+  showsPrec d = \case
+    Change op -> showsPrec d op
+    Refresh m -> (("Refresh " <> toS m.id.text) <>)
+
+genTabOp :: Gen TabOp
+genTabOp = frequency [(1, Change <$> declaredOp), (1, Refresh <$> elements [notes, mail, calendar])]
+
+-- | The plugin a tab's op is of.
+tabPlugin :: TabOp -> Manifest
+tabPlugin = \case
+  Change op -> pluginOf op
+  Refresh m -> m
+
+-- | Two tabs of one browser where the user has a vault: tab B's op starts
+-- while tab A is between its fetch of the vault and its write of the
+-- copy. A copy written from a fetch made before the other tab's change
+-- would hide that change from every surface that reads the copy. Seeds
+-- are changes made on this browser or another, so that a read here has
+-- something to keep.
+twoTabsVault :: Spec
+twoTabsVault = describe "two tabs of one browser, where the user has a vault" $
+  modifyMaxSuccess (const 100) . prop "keep a copy of each item they read or change equal to the server's last item" $
+    forAll (listOf ((,) <$> arbitrary <*> declaredOp)) $ \seeds -> forAll genTabOp $ \fromA -> forAll genTabOp $ \fromB -> ioProperty $ do
+      (w, d) <- unlocked
+      e <- newDevice w.counter True
+      withVaultKey e alice w.vaultKey
+      for_ seeds (\(here, op) -> on w (if here then d else e) (runOp alice op) >>= either (panic . ("a change failed: " <>)) pure)
+      answerOfB <- newEmptyTMVarIO
+      let tabB =
+            atomically
+              . putTMVar answerOfB
+              =<< on
+                w
+                d
+                ( case fromB of
+                    Change op -> heldOp alice op
+                    Refresh m -> Right () <$ readSecretsHeld alice m
+                )
+      beforeNextWrite d $ do
+        void (forkIO tabB)
+        waitingForLock d (not <$> isEmptyTMVar answerOfB)
+      answerOfA <- case fromA of
+        Change op -> on w d (runOp alice op)
+        Refresh m -> Right () <$ on w d (refreshSecrets alice m)
+      unstarted <- atomicModifyIORef' d.writeHooks (\h -> ([], not (null h)))
+      when unstarted tabB
+      answerB <- atomically (takeTMVar answerOfB)
+      copies <- for (ordNubOn (\m -> m.id) [tabPlugin fromA, tabPlugin fromB]) $ \m -> do
+        server' <- fromMaybe mempty <$> itemSecrets w m
+        (\r -> counterexample (toS m.id.text) (r === Right server')) <$> on w d (readSecretsHere alice m)
+      pure (answerOfA === Right () .&&. answerB === Right () .&&. conjoin copies)
+  where
+    ordNubOn f = Map.elems . Map.fromList . map (\x -> (f x, x))
 
 inThisBrowser :: Spec
 inThisBrowser = describe "in this browser, where the user has no vault" $ do

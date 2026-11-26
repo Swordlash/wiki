@@ -22,6 +22,7 @@ import Wiki.App.Backend.Contract.Comments qualified as Comments
 import Wiki.App.Backend.Contract.Notifications qualified as Notifications
 import Wiki.App.Backend.Contract.Plugins qualified as Plugins
 import Wiki.App.Backend.Contract.Stars qualified as Stars
+import Wiki.App.Backend.Contract.Titled qualified as Titled
 import Wiki.App.Backend.Mem
 import Wiki.App.Backend.Mem.Archive (toArchive)
 import Wiki.App.Backend.Mem.Persist (records)
@@ -58,6 +59,7 @@ spec = do
     Stars.spec (type (MemWiki IO)) (memFixture >>=)
     Plugins.spec (type (MemWiki IO)) (memFixture >>=)
     Backlinks.spec (type (MemWiki IO)) (memFixture >>=)
+    Titled.spec (type (MemWiki IO)) (memFixture >>=)
 
     it "offers the demo's users to switch between" $ do
       ref <- newMemWiki (demoState demoNow)

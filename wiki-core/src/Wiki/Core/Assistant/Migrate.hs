@@ -76,6 +76,15 @@
 -- are taken only when the server has none: options already there were
 -- moved by another browser, or chosen since.
 --
+-- So the keys and the options may come from different places. Each key
+-- moves with the service its own place sent it to
+-- ("Wiki.Core.Assistant.Split"'s 'Wiki.Core.Assistant.Split.keysOf': the
+-- address that place held for the provider, the provider's own where it
+-- held none). A key whose service is not the one the options name is not
+-- used ('Wiki.Core.Assistant.Split.fromParts'), until the user chooses its
+-- address or enters a key for the address chosen: a key never reaches a
+-- service it was not kept for, whichever options are adopted.
+--
 -- While the vault's item is locked on a browser that can be unlocked
 -- ('ItemLocked'), the browser's own options wait for the unlock: the
 -- item's options would win over them, and options adopted first would win
@@ -353,7 +362,9 @@ legacyKeys f = Map.unions (map snd (sources f))
 -- Settings whose options are the defaults say nothing to adopt, and do not
 -- hide a browser's own: otherwise a browser's own options would be adopted
 -- or not depending on whether another browser had emptied the vault's item
--- first.
+-- first, and a service the user chose on this browser would be lost to
+-- options nobody chose. This is about which options win only: a key goes
+-- with its own place's service whichever options win ("What wins").
 --
 -- An L1 copy counts for the options even when the vault holds the
 -- plugin's item: that item is what this run's own keys made of it as

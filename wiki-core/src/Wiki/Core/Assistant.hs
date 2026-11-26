@@ -71,6 +71,8 @@ module Wiki.Core.Assistant
   , withReached
   , chooseProvider
   , baseUrlOf
+  , officialUrl
+  , addressOf
   , insecureUrl
   , usable
   , serviceName
@@ -593,6 +595,25 @@ chooseProvider p s = Settings {provider = p, byProvider = s.byProvider, chatMode
 -- WP5.57). The scripted provider sends nothing anywhere, so it has none.
 baseUrlOf :: Provider -> ProviderSettings -> Maybe Url
 baseUrlOf p ps = if p == Scripted then Nothing else ps.baseUrl
+
+-- | 'officialUrl' is the address of a provider's own service, where its
+-- SDK sends requests when no other base URL is set. It names the service
+-- an API key is kept for ("Wiki.Core.Assistant.Split"'s
+-- 'Wiki.Core.Assistant.Split.Service'), as any other address does. The
+-- scripted provider sends nothing anywhere, and has a name of its own.
+officialUrl :: Provider -> Url
+officialUrl = \case
+  Anthropic -> Url "https://api.anthropic.com"
+  OpenAI -> Url "https://api.openai.com/v1"
+  Scripted -> Url "scripted:"
+
+-- | 'addressOf' is the address a provider's requests go to under these
+-- settings: the base URL of another service ('baseUrlOf'), or the
+-- provider's own ('officialUrl'). It is written as 'withBaseUrl' writes a
+-- base URL, without spaces around it or a slash at its end, so that one
+-- address is one value however it was stored.
+addressOf :: Provider -> ProviderSettings -> Url
+addressOf p ps = maybe (officialUrl p) (\u -> Url (T.dropWhileEnd (== '/') (T.strip u.text))) (baseUrlOf p ps)
 
 -- | Whether a URL is plain HTTP to a machine other than this one, which
 -- anyone on the network path can read: a key sent there is no longer

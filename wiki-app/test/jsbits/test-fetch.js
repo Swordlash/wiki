@@ -193,7 +193,9 @@ function wikiTestServed(request, answer) {
 // (converting while it is being converted); a yes otherwise. A page it
 // knows nothing of, or whose space the list does not hold (the front
 // page's, which no list holds), is a yes: this server does not know who
-// may view it.
+// may view it. The encrypted spaces' server (test-encrypted.js) answers
+// for its own pages before this, from its readers, so a reader it removed
+// gets its 404 there.
 async function wikiTestPlain(request) {
   const m = request.method === "GET" ? request.url.match(/^api\/v1\/pages\/([^/]+)\/plain$/) : null;
   if (!m) return null;

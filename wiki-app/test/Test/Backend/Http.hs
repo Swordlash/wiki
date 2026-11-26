@@ -1230,10 +1230,10 @@ plainText = describe "the question whether a page's text is plain now" $ do
     for_ (writesOf hello) $ \(name, write') -> runHttpWiki env write' >>= \r -> (name, refused ApiError.ConversionRuns "being encrypted or decrypted" r) `shouldBe` (name, True)
     writesOut <$> readIORef asked `shouldReturn` []
 
-  -- #394's third round: deleting a comment or a thread and resolving a
-  -- thread send no text, so no question goes before them, for a page whose
+  -- #394's rounds: deleting a comment or a thread sends no text and is
+  -- answered with none, so no question goes before it, for a page whose
   -- space is encrypted too; a comment's text still waits for the answer.
-  it "asks nothing before a change of comments that carries no text, and asks before one that does" $ do
+  it "asks nothing before a change of comments whose request and answer carry no text, and asks before one that does" $ do
     (transport, asked) <- scripted $ \r ->
       if
         | requestUrl r == plainAt hello.id -> stale ApiError.SpaceIsEncrypted
@@ -1242,7 +1242,6 @@ plainText = describe "the question whether a page's text is plain now" $ do
     let changes =
           [ void <$> deleteComment hello.id (CommentThreadId "t1") (CommentId "c1")
           , void <$> deleteThread hello.id (CommentThreadId "t1")
-          , void <$> setResolved hello.id (CommentThreadId "t1") True
           ]
     for_ changes $ \change -> do
       earlier <- length <$> readIORef asked
@@ -1257,6 +1256,26 @@ plainText = describe "the question whether a page's text is plain now" $ do
     runHttpWiki env (openThread hello.id Nothing "A comment") >>= (`shouldSatisfy` isLeft)
     rs <- readIORef asked
     [(methodOf r, requestUrl r) | r <- take (length rs - earlier) rs, requestUrl r /= "api/v1/spaces"] `shouldBe` [("GET", plainAt hello.id)]
+
+  -- A resolve sends no text, but the server answers it with the thread: for
+  -- a page whose space was encrypted elsewhere, a thread with no quote and
+  -- blank comments, which this tab would show as the thread. So the
+  -- question goes first, as before a comment's text.
+  it "asks before a resolve, whose answer is the thread, and sends nothing once the page's space is encrypted" $ do
+    (transport, asked) <- scripted $ \r ->
+      if
+        | requestUrl r == "api/v1/spaces" -> ok [blog]
+        | requestUrl r == endpointUrl (\e -> e.spaces.pageAt hello.space (slugs "hello-world")) -> ok hello
+        | requestUrl r == plainAt hello.id -> stale ApiError.SpaceIsEncrypted
+        | otherwise -> status 500 ""
+    env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
+    -- The page held here as plain: read in the blog, which the list names
+    -- plain.
+    runHttpWiki env (getPage hello.space (slugs "hello-world")) `shouldReturn` Right hello
+    for_ [True, False] $ \resolved ->
+      runHttpWiki env (setResolved hello.id (CommentThreadId "t1") resolved)
+        >>= (`shouldSatisfy` refused ApiError.SpaceIsEncrypted "encrypted since the page was opened")
+    writesOut <$> readIORef asked `shouldReturn` []
 
   it "sends nothing when the question gets no answer, as offline" $ do
     (transport, asked) <- scripted $ \r ->

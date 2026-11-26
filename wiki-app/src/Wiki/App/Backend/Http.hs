@@ -2261,7 +2261,8 @@ freshKey sid given = maybe given fst . Map.lookup sid . (\h -> h.heldKeys) <$> r
 -- space the list does not name is 'NotFound', as the server would answer,
 -- and nothing is sent: the reader's access to it may have been taken away
 -- after it was encrypted, and the list then says nothing of its
--- encryption. (A list the service
+-- encryption. The front page's space is the one no list names: a request
+-- more, for the front page, when this tab has not read it. (A list the service
 -- worker answered from its copy, offline, is taken as the server's: see
 -- "Known gaps" in docs/PLAN.md.)
 encryptedFetched :: (MonadIO m) => SpaceId -> HttpWiki m (Either WikiError a) -> (KeyId -> HttpWiki m (Either WikiError a)) -> HttpWiki m (Either WikiError a)
@@ -2270,7 +2271,17 @@ encryptedFetched sid plain sealed =
     Right spaces
       | Just k <- encryptionIn sid spaces -> sealed k
       | any (\s -> s.id == sid) spaces -> plain
-      | otherwise -> pure (Left NotFound)
+      | otherwise ->
+          -- The front page's space, which no list names, is plain and at
+          -- the top for good ('homeSpaceOf'): known here once the front
+          -- page was read, and read now otherwise.
+          (\h -> h.heldHome) <$> readHeld >>= \case
+            Just home -> if home == sid then plain else pure (Left NotFound)
+            Nothing ->
+              getHomeDocument >>= \case
+                Right (home, _) | homeSpaceOf home == Just sid -> plain
+                Right _ -> pure (Left NotFound)
+                Left e -> pure (Left e)
     Left e -> pure (Left e)
 
 -- | A plain write about a page that may carry its text or text about it: a

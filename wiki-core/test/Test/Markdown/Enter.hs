@@ -340,9 +340,12 @@ spec = describe "Wiki.Core.Markdown.Enter" $ do
     -- into the new item. The page refuses the split; a text cut at the
     -- cursor's item, which took the attributes, would not see why.
     kept "an item's later line, under an item holding a line of attributes" "+ {#a .b}\n+ a\n  b‸c\n  ```\n  code\n  ```" NewLine
-    it "counts no start at a block or an item that took attributes" $ do
+    -- A top-level line of attributes wraps the list in a div, which the
+    -- split leaves as it is: the list stays a start.
+    kept "an item's later line, in a list under a line of attributes" "{#a .b}\n\n- a\n  b‸c\n  ```\n  code\n  ```" (SplitWith 0 "- ")
+    it "counts no start at an item that took attributes" $ do
       let text = "+ {#a .b}\n+ a\n+ b\n\n{#c}\n\nPara.\n\nEnd."
-      fmap (blockStarts text) (parseShapes text) `shouldBe` Right [1, 3, 5, 9]
+      fmap (blockStarts text) (parseShapes text) `shouldBe` Right [1, 3, 5, 7, 9]
     -- Codex's round 6 on #292: the check read "- a\n\nx\n\n  b", and the
     -- paragraph between was deleted since. Its start and the item's below
     -- map onto one place, which counted twice cut "  b" off.

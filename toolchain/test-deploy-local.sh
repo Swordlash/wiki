@@ -192,7 +192,7 @@ fixture() {
   unset XDG_CONFIG_HOME XDG_CACHE_HOME FAKE_NO_TINFO FAKE_NO_SQLITE FAKE_SQLITE_VERSION FAKE_SQLITE_NUMBER FAKE_SHELL_ONLY FAKE_NO_ZLIB FAKE_BOOTSTRAP_ZLIB FAKE_CABAL_NO_LIBRARY FAKE_CABAL_SEMOPEN FAKE_SEMAPHORE PKG_CONFIG_PATH LIBRARY_PATH C_INCLUDE_PATH CPATH LD_LIBRARY_PATH FAKE_GITHUB FAKE_SUDO_PASSWORD FAKE_TS_DOWN FAKE_BUILD_FAIL FAKE_NO_SYSTEMD FAKE_LINGER FAKE_BACKUP_FAIL FAKE_MIGRATE_FAIL FAKE_CHECK_FAIL FAKE_RESTORE_FAIL FAKE_NO_DOCKER \
     FAKE_MANAGER_ENV FAKE_TS_NO_OPERATOR FAKE_TS_NO_MAGICDNS FAKE_TS_NO_CERTS FAKE_TS_VERSION FAKE_TS_FUNNEL FAKE_HTTPS_DOWN FAKE_PUBLIC_URL \
     FAKE_GIT_REPOS FAKE_TLMGR_FAIL FAKE_INSTALL_TL_NO_BIN FAKE_XELATEX_BROKEN WIKI_TEX_TIMEOUT FAKE_PERL_MAKE_FAIL FAKE_TEX_MIRROR_DOWN \
-    FAKE_COPY_EXIT FAKE_MOVE_COMPARE_EXIT FAKE_SERVE_PG_FAIL FAKE_PG_UP_FAIL FAKE_REHEARSE_EXIT FAKE_REHEARSE_OLD FAKE_RELOAD_FAIL FAKE_RESTART_PG_FAIL FAKE_RESTART_PG_LOCK FAKE_RESTART_PG_TAMPER FAKE_STOP_PG_FAIL FAKE_SERVE_PG_SILENT \
+    FAKE_COPY_EXIT FAKE_MOVE_COMPARE_EXIT FAKE_SERVE_PG_FAIL FAKE_PG_UP_FAIL FAKE_REHEARSE_EXIT FAKE_REHEARSE_OLD FAKE_SERVE_OLD FAKE_RELOAD_FAIL FAKE_RESTART_PG_FAIL FAKE_RESTART_PG_LOCK FAKE_RESTART_PG_TAMPER FAKE_STOP_PG_FAIL FAKE_SERVE_PG_SILENT \
     WIKI_TEST_MOVE_FAILPOINT WIKI_TEST_MOVE_OPERATIONS
   printf 'ENABLED=yes\n' >"$WIKI_DEPLOY_UFW_CONF"
   : >"$EVENTS"
@@ -223,6 +223,14 @@ EOF
 #!/bin/sh
 printf 'wiki-server %s\n' "\$*" >>"$EVENTS"
 arguments=" \$* "
+# serve --help lists the options, --no-pdf among them, and runs nothing,
+# as the real one's does; with FAKE_SERVE_OLD, a wiki-server built before
+# --no-pdf, it lists no --no-pdf.
+if [ "\$arguments" = ' serve --help ' ]; then
+  printf 'Usage: wiki-server serve --data DIR [--no-guide]\n'
+  [ -n "\${FAKE_SERVE_OLD:-}" ] || printf '  --no-pdf                 Make no PDFs\n'
+  exit 0
+fi
 command=\$1
 shift
 target=\${1:-}
@@ -283,6 +291,8 @@ case \$command in
           printf 'Usage: wiki-server rehearse --old PROGRAM --scratch DIR\n'
         else
           printf 'Usage: wiki-server rehearse --old PROGRAM --scratch DIR [--no-pdf] [--old-no-pdf]\n'
+          printf '  --no-pdf                 Serve the migrated copy with this program'"'"'s --no-pdf\n'
+          printf '  --old-no-pdf             Serve the copy with the old program'"'"'s --no-pdf too\n'
         fi
         exit 0 ;;
     esac
@@ -4153,16 +4163,17 @@ pass 'without a TeX the service finds: said, PDFs off by --no-pdf in the unit, n
 # call (the step runs it with an emptied environment, so the path is written
 # into it), and a first run without the option shows that it is called. The
 # state remembers the option as pdf_exports=no: a later run without options
-# keeps it, the undeploy keeps it, and --status says so and checks nothing.
+# keeps it, --stop keeps it, and --status says so and checks nothing.
 # --texlive is refused with it (in either order) and after it without
 # --pdf, as --pdf with it is, and it is for the server only; with
 # --no-texlive it is taken. --pdf takes it back: the next TeX step checks
 # the TeX again, as it did before. The upgrade's rehearsal is given
 # --no-pdf, for the new program's server, whenever the PDFs are off, and
-# --old-no-pdf, for the old program's, only when the installed unit runs
-# wiki-server with --no-pdf already (not on the first run with it, nor
-# after the undeploy); --pdf gives neither. So are --pdf and --no-pdf
-# refused with --rollback, --stop and --status, before anything is done.
+# --old-no-pdf, for the old program's, when the old program's own serve
+# --help lists --no-pdf (on the first run with it and after --stop too),
+# not when it lists none (FAKE_SERVE_OLD); --pdf gives neither. --pdf and
+# --no-pdf are refused with --rollback, --stop and --status, before
+# anything is done.
 fixture no-pdf
 p=$(free_port 127.0.0.1)
 a=$(other_port "$p")
@@ -4183,8 +4194,8 @@ assert_lacks "$HOME/$unit" '--no-pdf'
 out=$case_dir/off
 deploy --no-pdf --no-build >"$out" 2>&1 || fail 'the deploy with --no-pdf failed'
 assert_lacks "$EVENTS" 'check-tex.sh ran'
-assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $HOME/wiki-demo/data --sqlite $HOME/wiki-demo/data/wiki.sqlite --scratch $HOME/.config/wiki-demo/wiki-demo.rehearsal --no-pdf"
-assert_lacks "$EVENTS" '--old-no-pdf'
+# The unit has no --no-pdf yet, and the old program takes it all the same.
+assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $HOME/wiki-demo/data --sqlite $HOME/wiki-demo/data/wiki.sqlite --scratch $HOME/.config/wiki-demo/wiki-demo.rehearsal --no-pdf --old-no-pdf"
 [ "$(grep -c 'PDF exports' "$out")" = 1 ] || fail "--no-pdf said more than one line of the PDF exports: $(grep 'PDF exports' "$out")"
 assert_contains "$out" 'deploy-local: PDF exports: off by --no-pdf, so no TeX is checked or installed and the server runs with --no-pdf (remembered; --pdf turns them on again)'
 assert_lacks "$out" '--texlive installs TeX Live'
@@ -4212,6 +4223,15 @@ assert_contains "$out" 'the rehearsal passed'
 assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $HOME/wiki-demo/data --sqlite $HOME/wiki-demo/data/wiki.sqlite --scratch $HOME/.config/wiki-demo/wiki-demo.rehearsal"
 [ "$(grep 'wiki-server rehearse --old' "$EVENTS" | grep -c -e '--no-pdf')" = 0 ] || fail "a rehearse that takes no --no-pdf was given it: $(grep 'wiki-server rehearse' "$EVENTS")"
 grep -x 'ExecStart=.* --no-pdf' "$HOME/$unit" >/dev/null || fail 'the deploy with the older rehearse dropped --no-pdf from the unit'
+# An old program whose serve takes no --no-pdf (its serve --help lists
+# none) is not given it: only the new program's server is, and the deploy
+# says why in one line.
+: >"$EVENTS"
+out=$case_dir/old-serve
+FAKE_SERVE_OLD=1 deploy --no-build >"$out" 2>&1 || fail "the deploy with an old program whose serve takes no --no-pdf failed: $(cat "$out")"
+assert_contains "$out" "takes no --no-pdf, so its server in the rehearsal tries its TeX engine this once"
+assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $HOME/wiki-demo/data --sqlite $HOME/wiki-demo/data/wiki.sqlite --scratch $HOME/.config/wiki-demo/wiki-demo.rehearsal --no-pdf"
+assert_lacks "$EVENTS" '--old-no-pdf'
 out=$case_dir/kept
 deploy --status >"$out" 2>&1 || fail '--status failed'
 assert_contains "$out" 'PDF exports: off by --no-pdf (remembered): the TeX step checks no TeX and installs none, and the unit runs wiki-server with --no-pdf; --pdf turns them on again'
@@ -4253,11 +4273,11 @@ if deploy --rollback --yes --pdf >"$out" 2>&1; then fail '--rollback took --pdf'
 assert_contains "$out" '--pdf and --no-pdf are for a deploy: --rollback puts the kept deployment back as it was, its unit included; give the option to the deploy after it'
 cmp -s "$HOME/wiki-demo/previous/unit" "$case_dir/kept-unit" || fail 'a refused --rollback changed the kept deployment'
 grep -x 'ExecStart=.* --no-pdf' "$HOME/$unit" >/dev/null || fail 'a refused --rollback or --stop changed the unit'
-undeploy >"$out" 2>&1 || fail 'the undeploy failed'
-[ "$(state pdf_exports)" = no ] || fail 'the undeploy forgot --no-pdf'
+deploy --stop >"$out" 2>&1 || fail '--stop failed'
+[ "$(state pdf_exports)" = no ] || fail '--stop forgot --no-pdf'
 # With the unit gone, --status says what the state keeps, checks no TeX,
 # and does not claim a unit that runs wiki-server with --no-pdf.
-deploy --status >"$out" 2>&1 || fail '--status after the undeploy failed'
+deploy --status >"$out" 2>&1 || fail '--status after --stop failed'
 assert_contains "$out" 'PDF exports: off by --no-pdf (remembered): the TeX step checks no TeX and installs none; --pdf turns them on again'
 assert_lacks "$out" 'the unit runs wiki-server with --no-pdf'
 assert_contains "$out" 'wiki-demo.service is not installed'
@@ -4266,10 +4286,9 @@ assert_lacks "$EVENTS" 'check-tex.sh ran'
 out=$case_dir/declined
 deploy --no-build --no-pdf --no-texlive >"$out" 2>&1 || fail '--no-pdf with --no-texlive failed'
 assert_lacks "$EVENTS" 'check-tex.sh ran'
-# The unit was taken down: nothing proves that the old program takes
-# --no-pdf, so only the new one is given it.
-assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $HOME/wiki-demo/data --sqlite $HOME/wiki-demo/data/wiki.sqlite --scratch $HOME/.config/wiki-demo/wiki-demo.rehearsal --no-pdf"
-assert_lacks "$EVENTS" '--old-no-pdf'
+# The unit was taken down with --stop, and the old program takes --no-pdf
+# all the same.
+assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $HOME/wiki-demo/data --sqlite $HOME/wiki-demo/data/wiki.sqlite --scratch $HOME/.config/wiki-demo/wiki-demo.rehearsal --no-pdf --old-no-pdf"
 [ "$(state texlive)" = no ] || fail "--no-texlive with --no-pdf was remembered as '$(state texlive)'"
 [ "$(state pdf_exports)" = no ] || fail "--no-pdf with --no-texlive was remembered as '$(state pdf_exports)'"
 deploy --status >"$out" 2>&1 || fail '--status failed'

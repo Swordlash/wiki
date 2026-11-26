@@ -426,8 +426,8 @@
 #                    and asks nothing, and wiki-server runs with --no-pdf; a TeX Live
 #                    under the toolchain is left there. Remembered for the next run;
 #                    --texlive is refused with it and after it. The upgrade's rehearsal
-#                    starts the new program with --no-pdf, and the old one too when its
-#                    unit has the option. Not for --rollback, --stop or --status
+#                    starts the new program with --no-pdf, and the old one too when it
+#                    takes the option. Not for --rollback, --stop or --status
 #   --pdf            --server: PDF exports again, after a run with --no-pdf: the TeX
 #                    step checks the TeX as it does without either (the first run's
 #                    default)

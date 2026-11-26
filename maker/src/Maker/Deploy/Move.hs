@@ -116,7 +116,7 @@ import Maker.Deploy.Operations (Operations, operations)
 import Maker.Deploy.Operations qualified as Op
 import Maker.Deploy.Plan
 import Maker.Deploy.Prepare (dockerReady, pgFiles, serverBuildNative, serverCabalOutput)
-import Maker.Deploy.Rehearse (pdfSwitchesFor, rehearsalDatabase)
+import Maker.Deploy.Rehearse (rehearsalDatabase)
 import Maker.Deploy.State (stateGet, stateReplace)
 import Maker.Deploy.Unit (consoleWrapper, databaseWords, dbUrl)
 import Maker.Deploy.Upgrade (Kept (..), asideName, previousDir, readKept, renderKept, sqliteFiles)
@@ -565,12 +565,12 @@ moveToPostgres m = do
     unless ready $
       beforeSwitch ("the comparison's scratch database " <> rehearsalDatabase <> " could not be made (see above)")
     -- With the PDF exports off by --no-pdf, neither server of the
-    -- comparison tries its TeX engine. Both are this checkout's
-    -- wiki-server, which takes the option.
-    -- The move builds that wiki-server, so it takes them; the check of its
-    -- rehearse --help is the upgrade's, all the same.
+    -- comparison tries its TeX engine. Both are the wiki-server the move
+    -- built from this checkout in its second step (the move takes no
+    -- --no-build), whose rehearse and serve take the options, so no
+    -- program is asked.
     pdfExports <- stateGet "pdf_exports" m.stateFile
-    pdfArgs <- if pdfExports == "no" then pdfSwitchesFor newBin ["--no-pdf"] ["--old-no-pdf"] else pure []
+    let pdfArgs = if pdfExports == "no" then ["--no-pdf", "--old-no-pdf"] else []
     compared <-
       Op.run ops newBin (["rehearse", "--old", newBin, "--data", dataDir, "--sqlite", sqlite, "--scratch", scratch, "--move-to-database", scratchUrl, "--move-to-database-password-file", pgDir </> "db-password"] <> pdfArgs)
         `finally` cleanUp

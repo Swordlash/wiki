@@ -1877,12 +1877,13 @@ shown as it comes and kept in `<toolchain>/.wiki-toolchain/texlive/install.log`.
   else of the deploy tries TeX either: the checks of the native build are given
   `--without-tex`, and the upgrade's rehearsal (`wiki-server rehearse`) starts the new
   program's server with `--no-pdf` (`rehearse --no-pdf`) and the old program's too
-  (`--old-no-pdf`) when the installed unit runs it with `--no-pdf` already, the proof
-  that it takes the option. On the first run with `--no-pdf`, and after `--stop`, the old
-  program's server still tries its TeX once before it serves. So do both, with a line
-  that says why, when the wiki-server that runs `rehearse` was built before it took
-  the two switches (its `rehearse --help` lists neither): an older build, which
-  `--no-build` reuses; a deploy without `--no-build` builds it again. `--pdf` and `--no-pdf` are
+  (`--old-no-pdf`) when that program takes the option: its own `serve --help`, which
+  runs nothing, lists `--no-pdf`. An old program built before the option is not given
+  it, and its server tries its TeX once before it serves, which the deploy says in one
+  line. So do both servers, with a line that says why, when the wiki-server that runs
+  `rehearse` was built before it took the two switches (its `rehearse --help` lists
+  neither): an older build, which `--no-build` reuses; a deploy without `--no-build`
+  builds it again. The move to PostgreSQL builds its wiki-server, and gives both. `--pdf` and `--no-pdf` are
   refused with `--rollback`, which puts the kept deployment back as it was, its unit
   included, and with `--stop` and `--status`.
 - Whenever the TeX step ends without an `xelatex` that works (the one the service finds

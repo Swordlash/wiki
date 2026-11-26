@@ -19,13 +19,11 @@
 module Maker.Deploy.Rehearse
   ( rehearse
   , rehearsalDatabase
-  , pdfSwitchesFor
   )
 where
 
 import Control.Exception (IOException, finally, try)
 import Control.Monad (unless, when)
-import Data.List (isInfixOf, isPrefixOf)
 import Maker.Deploy.Plan
 import Maker.Deploy.Prepare (pgCompose, pgWrapperFor)
 import Maker.Deploy.Unit (dbUrl)
@@ -87,11 +85,26 @@ rehearse p = do
       writeFile scratchRestore (pgWrapperFor name pgDir dbPort "pg_restore" rehearsalDatabase)
       setFileMode scratchRestore 0o700
     -- With the PDF exports off by --no-pdf, the rehearsal's servers try no
-    -- TeX engine either: the new program is given --no-pdf, and the old
-    -- one only when its unit runs it with --no-pdf already, the proof that
-    -- it takes the option (an older wiki-server would refuse to start).
-    oldTakesNoPdf <- unitHasNoPdf (v "unit_file")
-    pdfArgs <- if v "pdf_exports" == "no" then pdfSwitchesFor newBin ["--no-pdf"] (["--old-no-pdf" | oldTakesNoPdf]) else pure []
+    -- TeX engine either, as far as each program takes the option. Each is
+    -- asked with its own --help, which lists every option and runs nothing.
+    -- A new program built before rehearse took the switches (an older -O2
+    -- build, which --no-build reuses) would refuse them and end the
+    -- rehearsal: it is given neither. An old program built before --no-pdf
+    -- would refuse to start: it is not given it.
+    pdfArgs <-
+      if v "pdf_exports" /= "no"
+        then pure []
+        else do
+          newTakes <- helpLists newBin "rehearse" "--old-no-pdf"
+          if not newTakes
+            then do
+              say ("the wiki-server at " <> newBin <> " was built before its rehearse took --no-pdf, so the rehearsal's servers try their TeX engine this once; a deploy without --no-build builds it again")
+              pure []
+            else do
+              oldTakes <- helpLists oldBin "serve" "--no-pdf"
+              unless oldTakes $
+                say ("the wiki-server the wiki runs now, at " <> oldBin <> ", takes no --no-pdf, so its server in the rehearsal tries its TeX engine this once")
+              pure ("--no-pdf" : ["--old-no-pdf" | oldTakes])
     code <-
       runInherit newBin (["rehearse", "--old", oldBin, "--data", dir </> "data"] <> liveArgs <> ["--scratch", scratch] <> scratchArgs <> pdfArgs)
         `finally` (removePathForcibly scratch >> when postgres (removePathForcibly scratchRestore >> dropScratch))
@@ -103,30 +116,15 @@ rehearse p = do
           "the rehearsal could not drive the program the wiki runs now (see above), so the upgrade was not rehearsed. The running wiki is as it was. To deploy without the rehearsal this once, run the deploy again with --no-rehearsal"
       ExitFailure _ -> die "the rehearsal of the upgrade could not be done (see above). The running wiki is as it was; nothing was changed. To deploy without the rehearsal this once, run the deploy again with --no-rehearsal"
   where
-    -- Whether the installed unit's ExecStart runs wiki-server with
-    -- --no-pdf, as --status reads it. No unit (taken down with --stop)
-    -- proves nothing.
-    unitHasNoPdf file = do
-      text <- either (\(_ :: IOException) -> "") id <$> try (readFile file)
-      pure (length text `seq` any (\l -> "ExecStart=" `isPrefixOf` l && " --no-pdf" `isInfixOf` l) (lines text))
     scratchUrl port = "postgres://wiki@127.0.0.1:" <> (if null port then "5433" else port) <> "/" <> rehearsalDatabase
 
--- | The switches of @rehearse@ that keep its servers from trying their TeX
--- engine (@--no-pdf@ for the new program's, @--old-no-pdf@ for the old
--- program's), when the wiki-server that runs @rehearse@ takes them; none
--- otherwise, said in one line. That program's own @rehearse --help@, which
--- lists every option and runs nothing, says whether it does. One built
--- before the switches (an older -O2 build, which @--no-build@ reuses)
--- refuses them as unknown options, which would end the rehearsal: without
--- them it runs as it did before them, and its servers try their TeX engine.
-pdfSwitchesFor :: FilePath -> [String] -> [String] -> IO [String]
-pdfSwitchesFor program new old = do
-  result <- try (readProcessInterleaved (setStdin nullStream (proc program ["rehearse", "--help"])))
-  let listed = case result of
-        Right (_, out) -> "--old-no-pdf" `isInfixOf` decodeFs out
-        Left (_ :: IOException) -> False
-  if listed
-    then pure (new <> old)
-    else do
-      say ("the wiki-server at " <> program <> " was built before its rehearse took --no-pdf, so the rehearsal's servers try their TeX engine this once; a deploy without --no-build builds it again")
-      pure []
+-- | Whether a wiki-server's command takes an option: its @COMMAND --help@,
+-- which lists every option of the command and runs nothing, has a line
+-- that starts with the option. A program that cannot be run, or does not
+-- know the command, takes nothing.
+helpLists :: FilePath -> String -> String -> IO Bool
+helpLists program command option = do
+  result <- try (readProcessInterleaved (setStdin nullStream (proc program [command, "--help"])))
+  pure $ case result of
+    Right (_, out) -> any (\l -> take 1 (words l) == [option]) (lines (decodeFs out))
+    Left (_ :: IOException) -> False

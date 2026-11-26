@@ -18,8 +18,8 @@ technical: true
   ```
 
   The upgrade's rehearsal starts its servers with `--no-pdf` too: the
-  new program always, and the program the wiki runs now when its service
-  already runs with `--no-pdf`. So does the move to PostgreSQL, and the
+  new program always, and the program the wiki runs now when that
+  program takes the option. So does the move to PostgreSQL, and the
   wizard tries no TeX before it opens.
 
   Later deploys remember it, and `--status` says so. `--pdf` turns the

@@ -1031,15 +1031,16 @@ completeAsked event = do
 -- | The question a @wiki-complete-elsewhere@ event asks, in the shape of
 -- 'completeAsked''s: the group "In other spaces" of the list after @[[@
 -- at the cursor (#301). CodeMirror asks it beside the question of the
--- list of the space's pages, once two letters follow the @[[@, and waits
--- for 'answerElsewhere'. Pure, since the event does not change.
+-- list of the space's pages, whenever the line before the cursor has a
+-- @[[@, and waits for 'answerElsewhere'; the editor decides whether
+-- anything is looked up. Pure, since the event does not change.
 elsewhereAsked :: Event -> Maybe (Int, Complete.Request)
 elsewhereAsked = completeAsked
 
 -- | The number of the question about the pages of other spaces that a
 -- @wiki-complete-elsewhere-abandoned@ event says CodeMirror gave up: the
--- text changed, or the list was closed, before its answer. Pure, since the
--- event does not change.
+-- text changed, the list was closed, or the text lost the focus, before
+-- its answer. Pure, since the event does not change.
 elsewhereAbandoned :: Event -> Maybe Int
 elsewhereAbandoned event = do
   detail <- CompletionDetail <$> detailOf event

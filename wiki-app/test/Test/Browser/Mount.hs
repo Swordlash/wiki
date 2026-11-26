@@ -16,6 +16,7 @@ module Test.Browser.Mount
   , startKept
   , startKeptWith
   , startOpened
+  , makePresentation
   , clickButton
   , openSettings
   , showSection
@@ -37,6 +38,7 @@ import Test.Hspec.Halogen
 import Web.Storage.IndexedDB (Database, MonadIndexedDB)
 import Wiki.App (component, input)
 import Wiki.App.Assistant (MonadAssistant)
+import Wiki.App.Backend (MonadWiki (..))
 import Wiki.App.Backend.Mem (Opened (..), newMemWiki, openMemWiki, runMemWiki, runMemWikiWith, switchUser)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
@@ -50,7 +52,10 @@ import Wiki.App.Route (route)
 #endif
 import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Id (UserId (..))
+import Wiki.Core.Page (Page (id, updatedAt))
+import Wiki.Core.PageKind qualified as Kind
 import Wiki.Core.Slug (Slug, mkSlug)
+import Wiki.Core.Space (Space (id))
 
 -- What a click at an element's centre and corners reaches
 -- (test/jsbits/test-layout.js): empty when it is the element itself.
@@ -58,6 +63,15 @@ $( browserJS
      ["jsbits/test-layout.js"]
      [("js_on_top", "wiki_test_on_top", Safe, [t|JSText -> IO JSText|])]
  )
+
+-- | Make the demo's "Hello, world" in this wiki a presentation titled
+-- "Deck" with this text, behind the application's back.
+makePresentation :: IORef MemState -> Text -> PageM s ()
+makePresentation wiki text = unsafeIOToPageM . runMemWiki wiki $ do
+  blog <- either (panic . show) identity <$> getSpace (slugs ["blog"])
+  hello <- either (panic . show) identity <$> getPage blog.id (slugs ["hello-world"])
+  made <- either (panic . show) identity <$> setPageKind hello.id Kind.Presentation
+  void (either (panic . show) identity <$> savePage made.id made.updatedAt "Deck" text)
 
 -- | The shell, mounted over a fresh demo as someone (by user id, or nobody),
 -- at a route, with nothing in the browser's local storage.

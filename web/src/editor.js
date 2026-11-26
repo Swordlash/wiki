@@ -1168,14 +1168,13 @@ const emojiSource = (names, whole) => {
 const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$|(^|[ \t])\/[A-Za-z]*$|\\[A-Za-z]+$/;
 
 // elsewhereGate is what may open the group "In other spaces" of the list
-// after [[ (elsewhereSource), as loosely: [[ not followed by "!" or "/",
-// then the letters typed, two of them at least once their spaces at either
-// end are left out (shortest below), and no more than the server takes
-// (longest, Wiki.Core.PageMatch's maxLetters, which Haskell checks again).
-// Haskell reads the letters again, with the parser.
-const elsewhereGate = /\[\[(?![!/])([^\]|]*)$/;
-const elsewhereShortest = 2;
-const elsewhereLongest = 200;
+// after [[ (elsewhereSource): a [[ on the line before the cursor. Haskell
+// decides the rest with the parser: the letters after the last [[, if a
+// link to a page opens a list there (Wiki.App.Editor.Complete's
+// linkLetters), and whether they are few or many enough to look up
+// (Wiki.App.Editor.Elsewhere.Machine). Where nothing is looked up, the
+// component replies with nothing at once, with no pause.
+const elsewhereGate = /\[\[/;
 
 // The "/" whose menu Escape closed, by position in each state, kept
 // where the text around them moves: the letters typed after such a "/"
@@ -1509,13 +1508,12 @@ const listOf = (host, context, place, found, section) => {
 // that a late answer writes nothing and opens nothing; and the component
 // is told whenever one is given up, in one place (elsewhereGiveUp), so
 // that it never looks up letters CodeMirror no longer asks about. A line
-// that cannot ask returns null at once, so that no other list waits for
-// this source.
+// with no [[ before the cursor returns null at once, so that no other
+// list waits for this source.
 const elsewhereSection = { name: "In other spaces", rank: 1 };
 const elsewhereSource = (host, elsewhere, whole) => (context) => {
   const place = placeOf(context, whole);
-  const typed = elsewhereGate.exec(place.before);
-  if (typed === null || typed[1].trim().length < elsewhereShortest || [...typed[1]].length > elsewhereLongest) return null;
+  if (!elsewhereGate.test(place.before)) return null;
   const asked = new Promise((resolve) => {
     elsewhere.ask(JSON.stringify(place.detail), place.detail, context.view).then(resolve);
     context.addEventListener("abort", () => resolve(null), { onDocChange: true });
@@ -1610,10 +1608,18 @@ const completions = (host) => {
   // no answer passes: a view's questions still out are given up
   // (abandonFrom) when its text changes (more typed, the line deleted: the
   // library asks anew, if at all), when its completion is no longer asked
-  // for (Escape with or without a list, a click elsewhere, the component's
-  // own close, an entry chosen), and when the view goes (a row closed, the
-  // editor gone). An answer that came is not out any more, so the update
-  // that shows it gives nothing up.
+  // for (Escape with or without a list, the component's own close, an
+  // entry chosen), when the text loses the focus (a click on another
+  // control), and when the view goes (a row closed, the editor gone). An
+  // answer that came is not out any more, so the update that shows it
+  // gives nothing up.
+  //
+  // On the loss of the focus the completion is closed too: the library
+  // closes a list shown then, but not a completion still asked for with
+  // no list, whose late answer would open one in a text without the
+  // focus. The focus moved into the list itself closes nothing, as the
+  // library's own rule. This is done in the blur event, outside an update
+  // of the view, where a transaction may be dispatched.
   const elsewhereGiveUp = ViewPlugin.fromClass(
     class {
       constructor(view) {
@@ -1625,6 +1631,15 @@ const completions = (host) => {
       destroy() {
         elsewhere.abandonFrom(this.view);
       }
+    },
+    {
+      eventHandlers: {
+        blur(event) {
+          if (event.relatedTarget?.closest?.(".cm-tooltip-autocomplete")) return;
+          elsewhere.abandonFrom(this.view);
+          if (completionStatus(this.view.state) !== null) closeCompletion(this.view);
+        },
+      },
     },
   );
   const forgetMoves = EditorView.updateListener.of((update) => {

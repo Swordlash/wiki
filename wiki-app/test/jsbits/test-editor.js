@@ -149,8 +149,8 @@ function wiki_test_editor_watch() {
 }
 
 // Watch for the open editor's question about the pages of other spaces
-// after [[ asked with the cursor's line up to the cursor reading `before`
-// (a "wiki-complete-elsewhere" event, web/src/editor.js's
+// after [[ asked with the cursor's line up to the cursor ending with
+// `before` (a "wiki-complete-elsewhere" event, web/src/editor.js's
 // elsewhereSource), from now on: CodeMirror asks on a timer of its own
 // after the last key, which the program does not know of.
 function wiki_test_editor_watch_elsewhere(before) {
@@ -158,7 +158,7 @@ function wiki_test_editor_watch_elsewhere(before) {
   if (!host) return;
   host.wikiTestElsewhere = new Promise((resolve) => {
     const heard = (event) => {
-      if (event.detail?.before !== before) return;
+      if (!event.detail?.before?.endsWith(before)) return;
       host.removeEventListener("wiki-complete-elsewhere", heard);
       resolve("asked");
     };

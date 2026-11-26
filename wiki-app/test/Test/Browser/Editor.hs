@@ -20,7 +20,7 @@ import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, i
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
-import Test.Browser.Mount (clickButton, slugs, startChanged, startWith)
+import Test.Browser.Mount (clickButton, makePresentation, slugs, startChanged, startChangedWith, startOn, startWith)
 import Test.Browser.Text (clearBody, clickKeepingFocus, completing, completionAnswered, editorSelection, editorText, elsewhereAsked, listReady, markdown, mathIn, problemsMarked, selectText, setMarkdown, untilListTakesKeys, utf16Length, watchElsewhere)
 import Test.Hspec (around)
 import Test.Hspec.Halogen
@@ -1184,6 +1184,89 @@ spec m = readsOnce Idle $ around withTestClock $ do
     completing ui `shouldReturn` ""
     length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
     markdown ui `shouldReturn` "# Hello, world\n\nSee [[zeb"
+
+  -- Round 4 of #389's review: CodeMirror's gate counted the letters from
+  -- the first [[ of the line that no ]] closes, and refused more than the
+  -- server takes; the letters are those after the last [[ that opens a
+  -- link, which Haskell reads. A long [[ in code before them, which opens
+  -- no link, still lets the group open.
+  it "looks up the letters after the last [[ of the line, however long the text before it" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "docs" "Zebra handbook") (Just "user-editor") helloEditor
+    text <- editorText ui
+    clearBody ui
+    let before = "`[[" <> T.replicate 200 "a" <> "` See [[zeb"
+    watchElsewhere ui before
+    typeText text before
+    elsewhereAfterPause clock ui
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Zebra handbook"]
+
+  -- Round 4 of #389's review: every way a question about the pages of
+  -- other spaces ends before its lookup goes out. Each way starts with the
+  -- question asked and its pause asleep on the clock; once it has ended,
+  -- no pause is asleep and, the clock advanced past the pause, no list is
+  -- shown. What differs from that is collected for every way, so that one
+  -- run tells each way that fails.
+  it "gives up a question about other spaces' pages however it ends, and opens no list after it" $ \clock -> runPage $ do
+    (ui, wiki) <- startChangedWith m (withPage "blog" "Onboarding notes" . withPage "docs" "Zebra handbook") (Just "user-editor") helloEditor
+    text <- editorText ui
+    let opened = "# Hello, world\n\nSee "
+        -- The question watched for ('watchElsewhere') asked, and taken by
+        -- the program: the pauses of the lookup asleep then.
+        asked shell = elsewhereAsked shell >> waitQuiet >> lookupPauses clock
+        -- A question after "See [[" and these letters, typed on a line of
+        -- its own.
+        asking typed = do
+          clearBody ui
+          watchElsewhere ui ("[[" <> typed)
+          typeText text ("See [[" <> typed)
+          asked ui
+        -- What is left of the question once it has ended this way: the
+        -- pauses asleep before (one) and after (none), and the lists shown
+        -- once the clock is past the pause (none).
+        ended shell way before = do
+          waitQuiet
+          after <- lookupPauses clock
+          perform (advance clock elsewhereDelay)
+          waitQuiet
+          lists <- length <$> findAll shell ".cm-tooltip-autocomplete"
+          pure [(way :: Text, before, after, lists) | (before, after, lists) /= (1, 0, 0)]
+    -- Typing on: the link ended.
+    typingOn <- asking "zeb" >>= \a -> typeText text "]]" >> ended ui "typing on" a
+    -- The [[ deleted with the letters, in one edit.
+    deleted <- asking "zeb" >>= \a -> selectText ui (T.length opened) (T.length opened + 5) >> press "Backspace" >> ended ui "the [[ deleted" a
+    -- Escape with the space's own list shown.
+    escapedList <- asking "onb" >>= \a -> listReady ui >> press "Escape" >> ended ui "Escape with a list" a
+    -- Escape with no list shown: only the other spaces' pages asked for.
+    escapedNone <- asking "zeb" >>= \a -> press "Escape" >> ended ui "Escape with none" a
+    -- An entry of the space's own list chosen.
+    chosen <- asking "onb" >>= \a -> listReady ui >> press "Enter" >> ended ui "an entry chosen" a
+    -- The text loses the focus to another control, with only the other
+    -- spaces' pages asked for.
+    blurred <- asking "zeb" >>= \a -> (find ui ".editor-side-by-side" >>= focus) >> ended ui "the focus lost" a
+    -- The machine's Close: another reader, chosen with the focus left in
+    -- the text.
+    closed <-
+      asking "zeb" >>= \a -> do
+        clickKeepingFocus ".user-switcher-toggle"
+        clickKeepingFocus ".user-option[data-login='admin']"
+        ended ui "the reader changed" a
+    -- A slide's row closed, with the focus left in its text: the page made
+    -- a presentation, the row of its first slide opened and typed in.
+    unmount ui
+    makePresentation wiki (T.intercalate "\n" ["# Deck", "", "By me.", "", "## One", "", "First."])
+    deck <- startOn m wiki helloEditor
+    waitQuiet
+    let rowToggle = ".editor-slides > li:nth-child(2) .slide-row-toggle"
+    find deck rowToggle >>= click
+    waitQuiet
+    row <- find deck ".editor-slides > li:nth-child(2) .cm-content"
+    focus row
+    press "Control+End"
+    watchElsewhere deck "[[zeb"
+    typeText row " [[zeb"
+    rowClosed <- asked deck >>= \a -> clickKeepingFocus rowToggle >> ended deck "a slide's row closed" a
+    concat [typingOn, deleted, escapedList, escapedNone, chosen, blurred, closed, rowClosed] `shouldBe` []
   where
     helloEditor = EditPage (slugs ["blog"]) (slugs ["hello-world"])
     -- The editor's question about the pages of other spaces, watched for

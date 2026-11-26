@@ -250,9 +250,9 @@ watchEditor ui = do
   unsafeIOToPageM js_watch
 
 -- | Watch for the editor's question about the pages of other spaces after
--- @[[@ (#301) asked at the cursor's line reading this up to the cursor,
--- from now on, for 'elsewhereAsked'. Call it before the keys that make
--- the line so.
+-- @[[@ (#301) asked at a cursor whose line up to the cursor ends with
+-- this, from now on, for 'elsewhereAsked'. Call it before the keys that
+-- make the line so.
 watchElsewhere :: Mounted s q o m -> Text -> PageM s ()
 watchElsewhere ui before = do
   _ <- editorText ui

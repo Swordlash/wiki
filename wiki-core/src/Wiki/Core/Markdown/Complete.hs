@@ -1565,6 +1565,17 @@ katexInOrder = sortOn shownOrder [MathCommand {name, origin = "KaTeX", arguments
   where
     taking = Map.fromList katexArguments
 
+-- | KaTeX's @\\begin@ and @\\end@ as 'katexInOrder' holds them: a command
+-- of those names that is not one of these is a macro that defines them
+-- ('mathSource' then offers no environment).
+katexBeginEnd :: [MathCommand]
+katexBeginEnd = [c | c <- katexInOrder, c.name `elem` beginAndEnd]
+
+-- | The names @\\begin@ and @\\end@, made once: 'mathSource' compares every
+-- command's name with them at each answer.
+beginAndEnd :: [Text]
+beginAndEnd = ["\\begin", "\\end"]
+
 -- | The list after a backslash in math: the commands whose name starts
 -- with the letters typed (as written: TeX tells @\\Gamma@ from
 -- @\\gamma@), in their order ('mathCommands': the shorter first, then by
@@ -1640,7 +1651,7 @@ mathSource commands wanted = case wanted.typed.trigger of
       | otherwise = [(e.opening, environmentCandidate e) | e <- matching]
       where
         matching = [e | e <- environmentsInOrder, place == InDisplay || not e.displayOnly, typedName `T.isPrefixOf` e.opening]
-        redefined = any (\c -> c.name `elem` ["\\begin", "\\end"] && c `notElem` katexInOrder) commands
+        redefined = any (\c -> c.name `elem` beginAndEnd && c `notElem` katexBeginEnd) commands
         fits = case wanted.pageMath of
           Just tex -> environmentFits tex
           Nothing -> maybe True T.null (head at.below) && maybe False (environmentFits . snd) readsBack.baseline

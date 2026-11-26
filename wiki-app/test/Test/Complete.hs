@@ -702,11 +702,12 @@ linkBound = 20_000_000
 -- * 1.08 to 1.10 MB where some listed take arguments (@\\f@, @\\fr@,
 --   @\\x@): the braces of each are written, and the formula with them is
 --   parsed again once for each number of arguments;
--- * 1.12 to 1.16 MB where environments are listed (@\\be@, @\\begi@):
---   about 0.15 MB for the entries, and 0.19 MB for the one check, per
---   answer, that the math reads the same with them written (0.78 to 0.83
---   MB before the environments);
--- * 1.59 MB after @\\b@ alone, the most: 68 commands, some with braces,
+-- * 1.28 to 1.32 MB where environments are listed (@\\be@, @\\begi@):
+--   about 0.15 MB for the entries, 0.19 MB for the one check, per answer,
+--   that the math reads the same with them written, and 0.16 MB for
+--   looking through every command for a macro that defines @\\begin@ or
+--   @\\end@ (0.78 to 0.83 MB before the environments);
+-- * 1.74 MB after @\\b@ alone, the most: 68 commands, some with braces,
 --   and 19 environments (1.24 MB before the environments).
 --
 -- The regression the bound guards, KaTeX's commands built and sorted again

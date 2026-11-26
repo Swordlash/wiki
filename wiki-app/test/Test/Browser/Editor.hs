@@ -21,7 +21,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (clickButton, makePresentation, slugs, startChanged, startChangedWith, startOn, startWith)
-import Test.Browser.Text (clearBody, clickKeepingFocus, completing, completionAnswered, editorSelection, editorText, elsewhereAsked, listReady, markdown, mathIn, problemsMarked, selectText, setMarkdown, untilListTakesKeys, utf16Length, watchElsewhere)
+import Test.Browser.Text (clearBody, clickKeepingFocus, completing, completionAnswered, countElsewhere, editorSelection, editorText, elsewhereAsked, elsewhereAsks, listReady, markdown, mathIn, problemsMarked, selectText, setMarkdown, untilListTakesKeys, utf16Length, watchElsewhere)
 import Test.Hspec (around)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (..))
@@ -1197,6 +1197,69 @@ spec m = readsOnce Idle $ around withTestClock $ do
     let before = "`[[" <> T.replicate 200 "a" <> "` See [[zeb"
     watchElsewhere ui before
     typeText text before
+    elsewhereAfterPause clock ui
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Zebra handbook"]
+
+  -- Round 5 of #389's review: prose typed after a link closed on the line
+  -- asked the component at every pause, which read the line with the
+  -- parser to answer nothing. Only an unfinished [[ asks. A mention after
+  -- the link makes CodeMirror ask its sources, and its answer is waited
+  -- for, so that a question about other spaces asked with it would be
+  -- recorded. (Shown failing with the gate any [[ on the line.)
+  it "asks nothing about other spaces' pages for prose after a link closed on the line, and asks at a new [[ on it" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "docs" "Zebra handbook") (Just "user-editor") helloEditor
+    text <- editorText ui
+    let linked = "# Hello, world\n\nSee [[zebra-handbook]]"
+    setMarkdown ui linked
+    selectText ui (T.length linked) (T.length linked)
+    countElsewhere ui
+    typeText text " and @ad"
+    _ <- completionAnswered ui
+    elsewhereAsks ui `shouldReturn` []
+    press "Escape"
+    watchElsewhere ui "[[ze"
+    typeText text " [[ze"
+    elsewhereAfterPause clock ui
+    elsewhereAsks ui >>= (`shouldSatisfy` any (T.isSuffixOf "[[ze"))
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Zebra handbook"]
+
+  -- Round 5 of #389's review: CodeMirror put in place again on the same
+  -- host (back to the page as saved, from a restored draft) ended the old
+  -- editor's question without telling the component, whose lookup of it
+  -- then went out after its pause. The question is given up, and the new
+  -- CodeMirror's question is asked and answered. (Shown failing with the
+  -- asker's stop ending its questions untold.)
+  it "gives up a question about other spaces' pages when CodeMirror is put in place again, and answers the new one's" $ \clock -> runPage $ do
+    (ui, wiki) <- startChangedWith m (withPage "docs" "Zebra handbook") (Just "user-editor") (Page (slugs ["blog"]) (slugs ["hello-world"]))
+    _ <- unsafeIOToPageM . runMemWiki wiki $ do
+      blog <- either (panic . show) identity <$> getSpace (slugs ["blog"])
+      hello <- either (panic . show) identity <$> getPage blog.id (slugs ["hello-world"])
+      saveDraft hello.id hello.updatedAt hello.title "# Hello, world\n\nMy words."
+    find ui ".page-view .actions a[href$='/edit/']" >>= click
+    waitQuiet
+    find ui ".editor-draft-found" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Restored your unsaved draft")
+    text <- editorText ui
+    clearBody ui
+    watchElsewhere ui "[[zeb"
+    typeText text "See [[zeb"
+    elsewhereAsked ui
+    waitQuiet
+    lookupPauses clock `shouldReturn` 1
+    -- Back to the page as saved, the focus left in the text: the page read
+    -- again, and CodeMirror put in place again.
+    clickKeepingFocus ".editor-draft-discard"
+    waitQuiet
+    length <$> findAll ui ".editor-draft-found" `shouldReturn` 0
+    lookupPauses clock `shouldReturn` 0
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    -- The new CodeMirror's question.
+    again <- editorText ui
+    clearBody ui
+    watchElsewhere ui "[[zeb"
+    typeText again "See [[zeb"
     elsewhereAfterPause clock ui
     completionAnswered ui `shouldReturn` "active"
     listLabels ui `shouldReturn` ["Zebra handbook"]

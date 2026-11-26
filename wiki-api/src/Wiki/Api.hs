@@ -244,14 +244,15 @@ data WikiApi form mode = WikiApi
           :> QueryParam "q" Text
           :> QueryParam "except" SpaceId
           :> QueryParam "limit" Int
-          :> Get '[JSON] [TitleHit]
+          :> Get '[JSON] (Unkept [TitleHit])
   -- ^ @findPagesByTitle@ ("Wiki.Core.PageMatch"): the pages whose title or
   -- path match the letters @q@, of the spaces the search reads for the
   -- requester, but the space @except@, the best first. @limit@ missing is
   -- 'Wiki.Core.PageMatch.defaultTitleHits', and at most
   -- 'Wiki.Core.PageMatch.maxTitleHits' are given whatever it asks. @q@
   -- missing is no letters, which find nothing. Before 'pages', so that
-  -- @titled@ is never read as a page's id.
+  -- @titled@ is never read as a page's id. Kept by no cache ('Unkept'):
+  -- the letters are typed in a page, and its address holds them.
   , pages :: mode :- "pages" :> NamedRoutes (PagesApi form)
   , attachments :: mode :- "attachments" :> NamedRoutes AttachmentsApi
   , search

@@ -52,7 +52,7 @@ import Wiki.Core.Math (definedMacros)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind)
 import Wiki.Core.PageMatch (Matchable (..), TitleHit (..), matchRank, matchable, typedLetters)
-import Wiki.Core.Permission (spaceChain)
+import Wiki.Core.Path (ancestry)
 import Wiki.Core.Slug (Slug, slugText)
 import Wiki.Core.Space (Space (conversion, encryption, id, name, slug), pagePath)
 
@@ -267,13 +267,21 @@ data HeldSpace = HeldSpace
   deriving stock (Eq, Show)
 
 -- | The spaces given, as the editor holds them, by id: each space's path
--- is the slugs of its chain of spaces from the top level.
+-- is the slugs of its chain of spaces from the top level, as
+-- 'Wiki.Core.Permission.spaceChain' reads it. The chain is followed in a
+-- map of the spaces by id, made once, rather than by a scan of the list
+-- for each space of each chain: the editor works this out at every change
+-- of its input.
 heldSpaces :: [Space] -> Map.Map SpaceId HeldSpace
-heldSpaces spaces =
-  Map.fromList
-    [ (s.id, HeldSpace {name = s.name, path = map (\c -> c.slug) (spaceChain spaces s.id), plain = isNothing s.encryption && isNothing s.conversion})
-    | s <- spaces
-    ]
+heldSpaces spaces = Map.map held byId
+  where
+    byId = Map.fromList [(s.id, s) | s <- spaces]
+    held s =
+      HeldSpace
+        { name = s.name
+        , path = map (\c -> c.slug) (fromMaybe [] (ancestry (`Map.lookup` byId) s.id))
+        , plain = isNothing s.encryption && isNothing s.conversion
+        }
 
 -- | The pages of other spaces after @[[@ (#301): the pages the lookup of
 -- pages by title found ("Wiki.Core.PageMatch"'s 'TitleHit'), in the order

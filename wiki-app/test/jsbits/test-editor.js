@@ -175,6 +175,24 @@ function wiki_test_editor_elsewhere_asked(ms) {
   return Promise.race([asked, new Promise((resolve) => setTimeout(() => resolve("pending"), ms))]);
 }
 
+// Record the open editor's questions about the pages of other spaces from
+// now on (a "wiki-complete-elsewhere" event each), by the cursor's line up
+// to the cursor, for wiki_test_editor_elsewhere_asks.
+function wiki_test_editor_count_elsewhere() {
+  const host = wiki_test_editor_host();
+  if (!host) return;
+  host.wikiTestElsewhereAsks = [];
+  if (host.wikiTestElsewhereCounting) return;
+  host.wikiTestElsewhereCounting = true;
+  host.addEventListener("wiki-complete-elsewhere", (event) => host.wikiTestElsewhereAsks?.push(event.detail?.before ?? ""));
+}
+
+// The questions recorded since wiki_test_editor_count_elsewhere, as a JSON
+// list of the lines up to the cursor.
+function wiki_test_editor_elsewhere_asks() {
+  return JSON.stringify(wiki_test_editor_host()?.wikiTestElsewhereAsks ?? []);
+}
+
 // Click the first element a selector finds as a program would
 // (HTMLElement.click), moving no focus: the editor's text keeps it, and
 // with it the completion's list, which a press elsewhere closes.

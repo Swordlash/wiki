@@ -945,6 +945,19 @@ const asker = (host, eventName, keep = true) => {
   // The question out for each key, its number and the view that asked
   // it, for abandonFrom.
   const numbers = new Map();
+  // giveUp ends the question with this number, if it is still out, without
+  // the component's answer: the component is told
+  // ("<eventName>-abandoned", {id}), so that it does nothing more for the
+  // question (the lookup of other spaces' pages sends no letters of it),
+  // and the wait for its answer ends with nothing. A question ends either
+  // with the component's answer or here, so none ends without the
+  // component knowing.
+  const giveUp = (id) => {
+    const answer = waiting.get(id);
+    if (answer === undefined) return;
+    host.dispatchEvent(new CustomEvent(`${eventName}-abandoned`, { detail: { id } }));
+    answer(null);
+  };
   const ask = (letters, detail = { letters }, view = null) => {
     if (answers.has(letters)) return Promise.resolve(answers.get(letters));
     let question = asking.get(letters);
@@ -970,19 +983,14 @@ const asker = (host, eventName, keep = true) => {
     }
     return question;
   };
-  // The editor goes: every question still out is given up, its wait ended.
+  // The editor goes (closed, or replaced by another CodeMirror on the same
+  // host): every question still out is given up.
   const stop = () => {
-    for (const answer of [...waiting.values()]) answer(null);
+    for (const id of [...waiting.keys()]) giveUp(id);
   };
-  // Every question a view asked that is still out is given up: the
-  // component is told of each ("<eventName>-abandoned", {id}), and answers
-  // it with nothing.
+  // Every question a view asked that is still out is given up.
   const abandonFrom = (view) => {
-    for (const [letters, { id, view: asking }] of [...numbers]) {
-      if (asking !== view) continue;
-      numbers.delete(letters);
-      if (waiting.has(id)) host.dispatchEvent(new CustomEvent(`${eventName}-abandoned`, { detail: { id } }));
-    }
+    for (const { id, view: asking } of [...numbers.values()]) if (asking === view) giveUp(id);
   };
   return { ask, answer: (id, found) => waiting.get(id)?.(found), abandonFrom, stop };
 };
@@ -1168,13 +1176,15 @@ const emojiSource = (names, whole) => {
 const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$|(^|[ \t])\/[A-Za-z]*$|\\[A-Za-z]+$/;
 
 // elsewhereGate is what may open the group "In other spaces" of the list
-// after [[ (elsewhereSource): a [[ on the line before the cursor. Haskell
-// decides the rest with the parser: the letters after the last [[, if a
-// link to a page opens a list there (Wiki.App.Editor.Complete's
-// linkLetters), and whether they are few or many enough to look up
-// (Wiki.App.Editor.Elsewhere.Machine). Where nothing is looked up, the
-// component replies with nothing at once, with no pause.
-const elsewhereGate = /\[\[/;
+// after [[ (elsewhereSource): a [[ on the line before the cursor with no
+// ]] after it, so that prose typed after a link closed on the line asks
+// nothing. Haskell decides the rest with the parser: the letters after
+// the last [[, if a link to a page opens a list there
+// (Wiki.App.Editor.Complete's linkLetters), and whether they are few or
+// many enough to look up (Wiki.App.Editor.Elsewhere.Machine). Where
+// nothing is looked up, the component replies with nothing at once, with
+// no pause.
+const elsewhereGate = /\[\[(?:(?!\]\]).)*$/;
 
 // The "/" whose menu Escape closed, by position in each state, kept
 // where the text around them moves: the letters typed after such a "/"
@@ -1505,11 +1515,12 @@ const listOf = (host, context, place, found, section) => {
 // It asks through `elsewhere`, an asker of its own that keeps no answer:
 // an answer kept would outlive a change of the reader. A question is
 // given up when the text changes (abort on a change of the document), so
-// that a late answer writes nothing and opens nothing; and the component
-// is told whenever one is given up, in one place (elsewhereGiveUp), so
-// that it never looks up letters CodeMirror no longer asks about. A line
-// with no [[ before the cursor returns null at once, so that no other
-// list waits for this source.
+// that a late answer writes nothing and opens nothing. When a question is
+// given up is decided in one place (elsewhereGiveUp, and the asker's stop
+// when the editor goes), and the asker's giveUp tells the component of
+// each, so that it never looks up letters CodeMirror no longer asks
+// about. A line with no unfinished [[ before the cursor returns null at
+// once, so that no other list waits for this source.
 const elsewhereSection = { name: "In other spaces", rank: 1 };
 const elsewhereSource = (host, elsewhere, whole) => (context) => {
   const place = placeOf(context, whole);

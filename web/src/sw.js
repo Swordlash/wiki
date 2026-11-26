@@ -33,7 +33,9 @@
 //   (api/v1/account/..., api/v1/notifications...), drafts, the question
 //   whether a page's text may be sent plain now (api/v1/pages/<page>/plain,
 //   asked before every plain write: a kept answer would speak for a space
-//   as it was), exports and the wiki's archive, invitations, password
+//   as it was), the lookup of pages by the letters typed after [[
+//   (api/v1/pages/titled?q=..., whose address holds the page's text),
+//   exports and the wiki's archive, invitations, password
 //   resets, mail links, the live channel (api/v1/events) and signing in
 //   with a provider (auth/...).
 //
@@ -78,6 +80,7 @@ const unkept = [
   /^unsubscribe(\/|$)/,
   /^pages\/[^/]+\/draft$/,
   /^pages\/[^/]+\/plain$/,
+  /^pages\/titled$/,
   /^(pages|spaces)\/[^/]+\/export(\/|$)/,
 ];
 // An attachment's bytes and a space's icon: kept only if a small image.

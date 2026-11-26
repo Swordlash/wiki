@@ -272,7 +272,8 @@ stubs =
                   else responseLBS (toEnum 404) [(hContentType, "application/json")] (encode NotFound)
           }
     , pagesTitled = \q except limit ->
-        pure [TitleHit {page = PageId (maybe "(none)" show limit), space = fromMaybe (SpaceId "") except, spacePath = [], pagePath = [], title = fromMaybe "(none)" q}]
+        pure . addHeader "private, no-store" $
+          [TitleHit {page = PageId (maybe "(none)" show limit), space = fromMaybe (SpaceId "") except, spacePath = [], pagePath = [], title = fromMaybe "(none)" q}]
     , search = \q space only limit templates ->
         let query = searchQueryOf q space only limit templates
          in pure
@@ -880,9 +881,9 @@ spec = describe "a server of the API's type" $ do
         `shouldBe` Just [Snippet [Piece (show (True, (searchQuery "x").limit, False)) False]]
 
   describe "pages by title" $ do
-    it "reads back the letters, the space left out and the limit its address was made from" $ do
+    it "reads back the letters, the space left out and the limit its address was made from, in an answer no cache keeps" $ do
       r <- getAt (links.pagesTitled (Just "on c") (Just s) (Just 5))
-      status r `shouldBe` 200
+      (status r, header "Cache-Control" r) `shouldBe` (200, Just "private, no-store")
       map (\(h :: TitleHit) -> (h.title, h.space, h.page)) <$> jsonBody r `shouldBe` Just [("on c", s, PageId "5")]
 
     it "is not read as a page's id" $ do

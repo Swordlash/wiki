@@ -907,7 +907,7 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
   -- it would be written into a page the server can read. Letters typed
   -- in a page are its text: the editor asks 'plainNow' of the page
   -- first.
-  findPagesByTitle q = send (endpoints.pagesTitled (Just q.letters) q.except (Just q.limit))
+  findPagesByTitle q = send (getResponse <$> endpoints.pagesTitled (Just q.letters) q.except (Just q.limit))
 
   -- A page of an encrypted space has no draft: the server would read it,
   -- and the editor does not keep one anywhere else.

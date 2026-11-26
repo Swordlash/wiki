@@ -37,6 +37,7 @@ import Wiki.Core.Id (AttachmentId (..), BlobId (..), GroupId (..), PageId (..), 
 import Wiki.Core.Order (ChildOrder (..), Children (..))
 import Wiki.Core.Page (Page (..), PageSummary (..))
 import Wiki.Core.PageKind qualified as Kind
+import Wiki.Core.PageMatch (TitleHit (..))
 import Wiki.Core.Path (parsePath)
 import Wiki.Core.Permission (GlobalGrant (..), GlobalPermission (..), Grants (..), SpaceAccess (..), SpaceGrant (..), SpacePermission (..), Subject (..))
 import Wiki.Core.Search (SearchHit (..), SearchQuery (..), searchQuery)
@@ -250,6 +251,15 @@ draftsAndSearch backing = describe "drafts and search" $ do
     (_, page) <- withSpace r False
     map (\(h :: SearchHit) -> h.page) <$> ok200 (getUrl r (onAdmin r "api/v1/search?q=first&limit=100000")) `shouldReturn` [page.id]
     ok200 (getUrl r (onAdmin r "api/v1/search?q=first&limit=-3")) `shouldReturn` ([] :: [SearchHit])
+
+  -- #389's fifth review: the address of the lookup of pages by title
+  -- holds letters typed in a page; no cache keeps its answer, the
+  -- service worker's included (web/src/sw.js).
+  it "answers the lookup of pages by title in an answer no cache keeps" $ withRunning backing $ \r -> do
+    (_, page) <- withSpace r False
+    reply <- getUrl r (onAdmin r (links.pagesTitled (Just "wel") Nothing Nothing))
+    map (\(h :: TitleHit) -> h.page) <$> jsonAs 200 reply `shouldReturn` [page.id]
+    header "Cache-Control" reply `shouldBe` Just "private, no-store"
 
 -- | The request headers an answer says it depends on, from all its @Vary@
 -- headers (the API adds @Cookie@ to every answer).

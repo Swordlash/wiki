@@ -403,6 +403,14 @@ spec = describe "Wiki.App.Editor.Complete" $ do
     -- Round 4 of #389's review: a reply made before a space's encryption
     -- began is no list of that space's pages once the editor holds the
     -- space as encrypted, or being encrypted.
+    -- Round 5 of #389's review: the spaces held are worked out from a map
+    -- of the spaces by id; each path is still the space's whole chain.
+    it "holds each space at the path of its chain from the top level, a subspace's under its parent's" $ do
+      let spaces = Map.elems (demoState demoNow).spaces
+          pathOf slugName = [h.path | s <- spaces, slugText s.slug == slugName, Just h <- [Map.lookup s.id (heldSpaces spaces)]]
+      pathOf "projects" `shouldBe` [slugs ["team", "projects"]]
+      pathOf "team" `shouldBe` [slugs ["team"]]
+      Map.keysSet (heldSpaces spaces) `shouldBe` Map.keysSet (Map.fromList [(s.id, ()) | s <- spaces])
     it "offers no page of a space the editor holds as encrypted, or being encrypted or decrypted" $ do
       let plans = hitIn "team" ["plans"] "Plans"
           sealedTeam = Map.adjust (\h -> h {plain = False}) plans.space spaceNames

@@ -138,6 +138,7 @@ module Wiki.App.Editor.Browser
   , answerCompletion
   , elsewhereAsked
   , answerElsewhere
+  , closeCompletions
   , completeAction
 
     -- * Leaving the page
@@ -224,6 +225,7 @@ $( browserJS
      , ("js_emojied", "wiki_editor_emojied", Safe, [t|Element -> Int -> JSText -> IO ()|])
      , ("js_completed", "wiki_editor_completed", Safe, [t|Element -> Int -> JSText -> IO ()|])
      , ("js_completed_elsewhere", "wiki_editor_completed_elsewhere", Safe, [t|Element -> Int -> JSText -> IO ()|])
+     , ("js_close_completions", "wiki_editor_close_completions", Safe, [t|Element -> IO ()|])
      , ("js_title_line", "wiki_editor_title_line", Safe, [t|Element -> IO ()|])
      , ("js_problems", "wiki_editor_problems", Safe, [t|Element -> JSText -> JSText -> IO Bool|])
      , ("js_next_problem", "wiki_editor_next_problem", Safe, [t|Element -> IO ()|])
@@ -1054,6 +1056,13 @@ answerCompletion host i found =
 answerElsewhere :: (MonadIO m) => Element -> Int -> Maybe Completion -> m ()
 answerElsewhere host i found =
   liftIO . js_completed_elsewhere host i $ maybe (toJSText "") (jsonText . Complete.completionJson) found
+
+-- | Close the completion's list of the editor in the host, and of the rows
+-- that share it, with every entry of it, and give up the questions still
+-- asked for it: a key pressed after chooses nothing of it. Nothing before
+-- CodeMirror is in place, nor natively.
+closeCompletions :: (MonadIO m) => Element -> m ()
+closeCompletions = liftIO . js_close_completions
 
 ----------------------------------------------------------------------
 -- A presentation's rows

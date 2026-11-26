@@ -314,6 +314,7 @@ import Wiki.App.Editor.Browser
   , changesLeft
   , chosenFiles
   , clickElement
+  , closeCompletions
   , completeAction
   , completeAsked
   , currentText
@@ -2695,6 +2696,7 @@ component =
              in (elsewhereList, st {readings})
           _ -> (Nothing, st)
         gets (\st -> st.hostElement) >>= traverse_ (\h -> Sync.sync (answerElsewhere h i found))
+      Elsewhere.Close -> Machine.Now (gets (\st -> st.hostElement) >>= traverse_ (Sync.sync . closeCompletions))
 
     watchPage :: H.HalogenM State Action Slots ViewOutput m ()
     watchPage = do

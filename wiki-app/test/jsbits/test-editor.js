@@ -175,6 +175,13 @@ function wiki_test_editor_elsewhere_asked(ms) {
   return Promise.race([asked, new Promise((resolve) => setTimeout(() => resolve("pending"), ms))]);
 }
 
+// Click the first element a selector finds as a program would
+// (HTMLElement.click), moving no focus: the editor's text keeps it, and
+// with it the completion's list, which a press elsewhere closes.
+function wiki_test_click_keeping_focus(selector) {
+  document.querySelector(selector)?.click();
+}
+
 // How many "wiki-input" events the open editor made since it was watched.
 function wiki_test_editor_inputs() {
   return wiki_test_editor_host()?.wikiTestInputs ?? 0;

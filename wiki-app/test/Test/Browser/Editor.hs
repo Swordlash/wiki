@@ -21,7 +21,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (clickButton, slugs, startChanged, startWith)
-import Test.Browser.Text (clearBody, completing, completionAnswered, editorSelection, editorText, elsewhereAsked, listReady, markdown, mathIn, problemsMarked, selectText, setMarkdown, untilListTakesKeys, utf16Length, watchElsewhere)
+import Test.Browser.Text (clearBody, clickKeepingFocus, completing, completionAnswered, editorSelection, editorText, elsewhereAsked, listReady, markdown, mathIn, problemsMarked, selectText, setMarkdown, untilListTakesKeys, utf16Length, watchElsewhere)
 import Test.Hspec (around)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (..))
@@ -1122,6 +1122,29 @@ spec m = readsOnce Idle $ around withTestClock $ do
     waitQuiet
     completionAnswered ui `shouldReturn` "active"
     listLabels ui `shouldReturn` ["Onboarding notes", "Onboarding"]
+
+  -- #301: the reader changes (the demo's switcher, clicked with the focus
+  -- left in the text, as another tab's change would come) while the list
+  -- shows pages of other spaces found for the reader before. The list is
+  -- closed, entries and all: Enter then writes none of them.
+  it "closes the list of other spaces' pages when the reader changes, and Enter then chooses none of them" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "docs" "Onboarding") (Just "user-editor") helloEditor
+    text <- editorText ui
+    clearBody ui
+    watchElsewhere ui "See [[onb"
+    typeText text "See [[onb"
+    elsewhereAfterPause clock ui
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Onboarding"]
+    -- Another reader: the administrator.
+    clickKeepingFocus ".user-switcher-toggle"
+    clickKeepingFocus ".user-option[data-login='admin']"
+    waitQuiet
+    find ui ".user-switcher-toggle" >>= (`shouldHaveText` "Ada Admin")
+    completing ui `shouldReturn` ""
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    press "Enter"
+    markdown ui >>= (`shouldSatisfy` (not . T.isInfixOf "/s/docs"))
 
   -- #301, as above, with letters that match no page of the space and a
   -- page of another: the group alone is shown, and Enter writes its link;

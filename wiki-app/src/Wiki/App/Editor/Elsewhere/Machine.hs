@@ -33,8 +33,9 @@
 --   same letters typed again, or asked by another reader) is dropped.
 -- * A change of the reader's session, of the space, or of whether the page
 --   is sealed changes the model in the step that takes it ('Inputs'): the
---   question waiting is replied to with nothing, and the answer of a
---   lookup still out then matches no question.
+--   question waiting is replied to with nothing, the answer of a lookup
+--   still out then matches no question, and the list shown is closed
+--   ('Close'), since its pages were found for the reader before.
 module Wiki.App.Editor.Elsewhere.Machine
   ( -- * The model
     Model (..)
@@ -126,6 +127,15 @@ data Effect
   | -- | Reply to the question with this number, asked at this place: the
     -- pages found, or 'Nothing' for none to show.
     Reply Int Request (Maybe [TitleHit])
+  | -- | Close the list the editor shows, in the editor and in the rows that
+    -- share its list, with every entry of it: no key chooses one of them
+    -- after. Told on every change of the input, whatever is shown: a list
+    -- shown then was made for the input before (the pages of other spaces
+    -- for the reader before, or the space's own pages from the input
+    -- before), and a change of the reader, the space or the sealing while
+    -- a list is open is rare enough that closing a list that could have
+    -- stayed costs nothing worth a rule of its own.
+    Close
   deriving stock (Eq, Show)
 
 step :: Event -> Model -> (Model, [Effect])
@@ -149,7 +159,7 @@ step event model = case event of
           _ -> send freed
   Inputs session space sealed
     | (session, space, sealed) == (model.session, model.space, model.sealed) -> (model, [])
-    | otherwise -> (model {session, space, sealed, waiting = Nothing}, dropWaiting model <> [StopPause])
+    | otherwise -> (model {session, space, sealed, waiting = Nothing}, dropWaiting model <> [StopPause, Close])
   Finished -> (model {waiting = Nothing}, [StopPause])
 
 -- | The reply to the question waiting, if one is, which another replaces:

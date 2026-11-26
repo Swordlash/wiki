@@ -28,6 +28,7 @@ module Test.Browser.Text
   , inputsSeen
   , watchElsewhere
   , elsewhereAsked
+  , clickKeepingFocus
   , proposeText
   )
 where
@@ -62,6 +63,7 @@ $( browserJS
      , ("js_inputs", "wiki_test_editor_inputs", Safe, [t|IO Int|])
      , ("js_propose", "wiki_test_editor_propose", Safe, [t|Int -> Int -> JSText -> IO ()|])
      , ("js_watch_elsewhere", "wiki_test_editor_watch_elsewhere", Safe, [t|JSText -> IO ()|])
+     , ("js_click_keeping_focus", "wiki_test_click_keeping_focus", Safe, [t|JSText -> IO ()|])
      , ("js_elsewhere_askedPromise", "wiki_test_editor_elsewhere_asked", Safe, [t|Int -> IO (Promise JSText)|])
      ]
  )
@@ -255,6 +257,12 @@ watchElsewhere :: Mounted s q o m -> Text -> PageM s ()
 watchElsewhere ui before = do
   _ <- editorText ui
   unsafeIOToPageM (js_watch_elsewhere (toJSText before))
+
+-- | Click the first element this selector finds as a program would, the
+-- focus left where it is (in the editor's text, whose completion's list a
+-- press elsewhere would close), and wait for the program's work after it.
+clickKeepingFocus :: Text -> PageM s ()
+clickKeepingFocus selector = perform (js_click_keeping_focus (toJSText selector))
 
 -- | Wait until the question 'watchElsewhere' watched for has been asked.
 -- CodeMirror asks on a timer of its own a moment after the last key, which

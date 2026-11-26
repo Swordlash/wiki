@@ -54,10 +54,17 @@ spec = describe "Wiki.App.Editor.Elsewhere.Machine" $ do
   it "drops the question waiting when the reader changes, and the answer of its lookup with it" $ do
     let (m1, _) = step Paused (fst (step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial 0 spaceA False)))
         (m2, e2) = step (Inputs 1 spaceA False) m1
-    e2 `shouldBe` [Reply 1 (requestFor 1 "onb") Nothing, StopPause]
+    e2 `shouldBe` [Reply 1 (requestFor 1 "onb") Nothing, StopPause, Close]
     snd (step (Found (Ticket 0) (Just [])) m2) `shouldBe` []
     -- The same input again changes nothing.
     step (Inputs 1 spaceA False) m2 `shouldBe` (m2, [])
+
+  it "closes the list shown when the reader changes after the pages were replied" $ do
+    let asked = fst (step Paused (fst (step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial 0 spaceA False))))
+        (replied, _) = step (Found (Ticket 0) (Just (serverHits 0 (TitleQuery {letters = "onb", except = Just spaceA, limit = elsewhereShown})))) asked
+    snd (step (Inputs 1 spaceA False) replied) `shouldBe` [StopPause, Close]
+    snd (step (Inputs 0 spaceB False) replied) `shouldBe` [StopPause, Close]
+    snd (step (Inputs 0 spaceA True) replied) `shouldBe` [StopPause, Close]
 
 -- | 'Move' is what happens to the machine next: a question with letters
 -- (or none, where no list of pages opens), the end of the pause if one
@@ -96,6 +103,11 @@ data Sim = Sim
   , repliedUnder :: Map Int (Int, SpaceId, Bool)
   , sentFor :: Map Ticket Int
   , failed :: [Int]
+  , displayed :: Maybe (Int, SpaceId, Bool)
+  -- ^ The pages of other spaces CodeMirror shows: the input of the
+  -- question they were replied to, until a newer question is asked (the
+  -- library asks again, and shows none of them meanwhile) or the list is
+  -- closed.
   , inputs :: (Int, SpaceId, Bool)
   , stale :: Int
   , queued :: Int
@@ -114,6 +126,7 @@ start =
       , repliedUnder = mempty
       , sentFor = mempty
       , failed = []
+      , displayed = Nothing
       , inputs = (0, spaceA, False)
       , stale = 0
       , queued = 0
@@ -128,7 +141,7 @@ play :: (Sim, [Property]) -> Move -> (Sim, [Property])
 play (sim, checks) = \case
   Ask letters ->
     let n = Map.size sim.asked + 1
-        sim' = sim {asked = Map.insert n (letters, sim.inputs) sim.asked}
+        sim' = sim {asked = Map.insert n (letters, sim.inputs) sim.asked, displayed = Nothing}
      in stepped sim' checks (Asked n (requestFor n (fromMaybe "" letters)) letters)
   PauseEnds
     | sim.pausing -> stepped sim {pausing = False} checks Paused
@@ -172,6 +185,8 @@ stepped sim checks event =
         , counterexample ("each question replied to once, after " <> show event) (all (<= 1) sim'.replyCounts)
         , counterexample ("every question before the last replied to, after " <> show event) $
             and [Map.lookup n sim'.replyCounts == Just 1 | n <- [1 .. latest - 1]]
+        , counterexample ("no pages shown that were found under another input, after " <> show event) $
+            maybe True (== sim'.inputs) sim'.displayed
         , counterexample ("a reply with pages only to its own lookup, under its own reader, after " <> show event) $
             conjoin
               [ case Map.lookup n sim.asked of
@@ -190,7 +205,16 @@ carry sim = \case
   Pause -> sim {pausing = True}
   StopPause -> sim {pausing = False}
   Lookup ticket query -> let (session, _, _) = sim.inputs in sim {sent = sim.sent <> [(ticket, query, session)], sentFor = Map.insert ticket (Map.size sim.asked) sim.sentFor}
-  Reply n _ hits -> sim {replies = Map.insert n hits sim.replies, replyCounts = Map.insertWith (+) n 1 sim.replyCounts, repliedUnder = Map.insert n sim.inputs sim.repliedUnder}
+  Reply n _ hits ->
+    sim
+      { replies = Map.insert n hits sim.replies
+      , replyCounts = Map.insertWith (+) n 1 sim.replyCounts
+      , repliedUnder = Map.insert n sim.inputs sim.repliedUnder
+      , displayed = case hits of
+          Just (_ : _) -> snd <$> Map.lookup n sim.asked
+          _ -> sim.displayed
+      }
+  Close -> sim {displayed = Nothing}
 
 -- | When the events stop: the pause ends, and every lookup answers, until
 -- nothing is left to happen.

@@ -1615,6 +1615,7 @@ instance (MonadIO m) => MonadWiki (StoredWiki m) where
   postDetails = run Reads . postDetailsTx
   getPage sid = run Reads . (withWriters <=< getPageTx sid)
   pageLocation = run Reads . pageLocationTx
+  plainNow = run Reads . plainNowTx
   pageBacklinks = run Reads . backlinksTx
   createPage sid parent title = run Writes . (withWriters <=< createPageTx Document sid parent Nothing title)
   createPageOf kind sid parent title = run Writes . (withWriters <=< createPageTx kind sid parent Nothing title)
@@ -2529,6 +2530,20 @@ pageLocationTx pid = do
       nodes <- lineageOf p.id
       spaces <- asks (\x -> x.spaces)
       maybe (failWith NotFound) (\path -> pure PageLocation {space = map (\x -> x.slug) c, page = path}) (pathIn spaces p.space (`Map.lookup` nodes) p.id)
+
+-- | Whether the page's text is taken as plain text now
+-- ('Wiki.App.Backend.plainNow'): the page checked as 'pageLocationTx'
+-- checks it, so that a page the caller may not view is 'NotFound', then
+-- refused as a draft of it is ('draftable'), with the same code, while a
+-- space of its chain is encrypted or being converted. Only the right to
+-- view counts, not to edit: a comment is a plain write too.
+plainNowTx :: PageId -> Tx ()
+plainNowTx pid = do
+  p <- findNode pid
+  (_, c) <- findSpace p.space
+  when (null c) (failWith NotFound)
+  requireView c
+  requireOffered Offered.KeepDraft c
 
 -- | The pages that link to a page ('Wiki.App.Backend.pageBacklinks'), as
 -- @page_links@ holds them ("Wiki.Server.Storage.Rows", "Links"). The

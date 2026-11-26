@@ -3320,13 +3320,19 @@ component =
     -- Handle a save refused because of someone else's save: fetch their
     -- version and show it beside the author's text, which is saved as a
     -- draft at once. If their version cannot be fetched, the refusal is
-    -- shown as it is, with the text still there.
+    -- shown as it is, with the text still there. So it is when the page
+    -- at the editor's address now is another page (the page edited was
+    -- moved, and another took its address): its version is not the edited
+    -- page's, and nothing is merged with it, saved over it or taken from
+    -- it. The pages are told apart by their ids.
     conflicted :: Text -> After -> H.HalogenM State Action Slots ViewOutput m ()
     conflicted why after = do
       input <- gets (\st -> st.input)
+      edited <- gets (\st -> case st.loaded of Ready w -> Just w.page.id; _ -> Nothing)
       owner <- Body.ensureOwned (\st -> st.owners) (\owners st -> st {owners})
       fetchPage owner input >>= \case
         Left _ -> modify (\st -> st {problem = Just (Conflict why)})
+        Right (theirs, _) | Just theirs.id /= edited -> modify (\st -> st {problem = Just (Conflict why)})
         Right (theirs, theirAddresses) -> do
           by <- either (const Nothing) (\v -> v.author) <$> getVersion theirs.id theirs.updatedAt
           gets (\st -> st.loaded) >>= \case

@@ -14,6 +14,7 @@ import Wiki.App.Backend.Contract.Admin qualified as Admin
 import Wiki.App.Backend.Contract.Backlinks qualified as Backlinks
 import Wiki.App.Backend.Contract.Comments qualified as Comments
 import Wiki.App.Backend.Contract.Notifications qualified as Notifications
+import Wiki.App.Backend.Contract.Plain qualified as Plain
 import Wiki.App.Backend.Contract.Stars qualified as Stars
 import Wiki.App.Backend.Contract.Titled qualified as Titled
 import Wiki.Server.Storage (StoredWiki, runStoredWiki)
@@ -28,6 +29,7 @@ spec backing =
     Stars.spec (type (StoredWiki IO)) fixture
     Backlinks.spec (type (StoredWiki IO)) fixture
     Titled.spec (type (StoredWiki IO)) fixture
+    Plain.spec (type (StoredWiki IO)) fixture
   where
     fixture example =
       withDemo backing $ \st ->

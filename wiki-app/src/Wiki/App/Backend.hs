@@ -676,6 +676,30 @@ class (Monad m) => MonadWiki m where
   default pageLocation :: (MonadTrans t, m ~ t n, MonadWiki n) => PageId -> m (Either WikiError PageLocation)
   pageLocation = lift . pageLocation
 
+  -- | Whether the server takes the text of a page as plain text now: what
+  -- the browser asks before it sends any of it (a save, a draft, an
+  -- attachment, a comment; a lookup of letters typed may use it later).
+  -- 'Right' when the current user may view the page and no space of its
+  -- chain, where the page is now, is encrypted or being converted.
+  -- Otherwise the refusal:
+  -- 'NotFound' for a page the user may not view, as 'pageLocation' gives;
+  -- 'Stale' with the draft's codes ('Wiki.Api.Error.ConversionRuns',
+  -- 'Wiki.Api.Error.SpaceIsEncrypted') for one whose space is encrypted or
+  -- being converted. Only the right to view the page counts: someone who
+  -- may only comment is answered as an editor is. The HTTP backend also
+  -- refuses, with a 'Conflict' and without asking, a page it read
+  -- encrypted: what was written from it is never sent plain.
+  --
+  -- The answer comes from the server at the time of the question: another
+  -- tab may move the page, encrypt its space, or take the user's access
+  -- away, and a list of spaces read before, or answered from a copy the
+  -- service worker kept, would not say so. A conversion may still start
+  -- between the answer and the write sent after it; the server refuses
+  -- that write, but its text has reached the server by then.
+  plainNow :: PageId -> m (Either WikiError ())
+  default plainNow :: (MonadTrans t, m ~ t n, MonadWiki n) => PageId -> m (Either WikiError ())
+  plainNow = lift . plainNow
+
   -- | The pages that link to a page, its backlinks (issue #189): each page
   -- whose text has a link that leads to it, as "Wiki.App.Backlinks" counts
   -- a link, listed once, in 'Wiki.Core.Backlink.backlinkOrder'. A page's
@@ -966,6 +990,7 @@ instance (MonadWiki m) => MonadWiki (HalogenM st act slots output m) where
   postDetails = H.async . postDetails
   getPage s = H.async . getPage s
   pageLocation = H.async . pageLocation
+  plainNow = H.async . plainNow
   pageBacklinks = H.async . pageBacklinks
   createPage s p t = H.async . createPage s p t
   createPageOf k s p t = H.async . createPageOf k s p t

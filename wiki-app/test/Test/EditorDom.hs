@@ -14,28 +14,37 @@
 -- loaded with, so no render writes the field while it is typed in.
 module Test.EditorDom (spec) where
 
-import Data.Aeson (object, (.=))
-import Data.IORef (atomicModifyIORef')
+import Data.Aeson (ToJSON, encode, object, (.=))
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Halogen.Router qualified as Router
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Halogen.VDom.DOM.Monad.Native qualified as N
 import Protolude hiding (find)
+import Servant.Client.Core (Response)
 import Test.Harness.MemDom
 import Test.Hspec
+import Test.Scripted (jsonResponse, methodOf)
+import Wiki.Api (PagesApi (..), SpacesApi (..), WikiApi (..))
+import Wiki.Api.Error qualified as ApiError
 import Wiki.App.Backend (MonadWiki (..))
+import Wiki.App.Backend.Http (HttpWiki, Transport (..), newHttpEnvWith, requestUrl, runHttpWiki)
+import Wiki.App.Backend.Http.Cache (emptyCache, withSession, withSpaces)
+import Wiki.App.Backend.Http.Client (endpointUrl)
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Route (Route (..), route)
 import Wiki.App.View.Editor qualified as Editor
+import Wiki.Core.Draft (Draft)
 import Wiki.Core.Id (UserId (..))
+import Wiki.Core.Page (Page (..))
 import Wiki.Core.Slug (Slug, mkSlug)
 import Wiki.Core.Space (Space (id))
 
 spec :: Spec
-spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $
+spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $ do
   it "keeps a key whose input is handled after the preview's turn re-rendered the editor" $
     withTestClock $ \clock -> do
       wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-editor")})
@@ -76,6 +85,95 @@ spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $
         advance clock Editor.previewDelay
         valueOf field `shouldReturn` original <> "QZ"
         textOf view ".editor-preview" >>= (`shouldSatisfy` T.isInfixOf "QZ")
+      Router.stop router
+
+  -- #394's second round: a save refused as a conflict fetches the page at
+  -- the editor's address to show beside the text. The page edited was
+  -- moved meanwhile, and another page took its address: nothing of that
+  -- other page is offered to merge, keep over or take, and the refusal is
+  -- shown as it is, the text still in the editor. (Shown failing with the
+  -- conflict view offered for whichever page is at the address.)
+  it "offers no merge with another page that took the edited page's address, and shows the refusal" $
+    withTestClock $ \clock -> do
+      wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-editor")})
+      let run :: MemWiki MemDOM a -> MemDOM a
+          run = runMemWiki wiki
+          orPanic = either (panic . show) identity
+      router <- runMemDOM (run (Router.newRouter "/" Unknown route))
+      (me, spaces, blog, ps, hello) <- runMemDOM . run $ do
+        me <- session
+        spaces <- listSpaces
+        blog <- orPanic <$> getSpace (slugs ["blog"])
+        ps <- orPanic <$> listPages blog.id
+        hello <- orPanic <$> getPage blog.id (slugs ["hello-world"])
+        pure (me, spaces, blog, ps, hello)
+      let input = Editor.Input {context = viewContextAs router me spaces 0, space = blog, pages = ps, path = slugs ["hello-world"], feed = Nothing, home = False}
+          idle = advance clock 0.001
+      withView run Editor.component input $ \view -> do
+        settle view
+        field <- find view ".editor-text" >>= maybe (panic "the editor has no textarea") pure
+        typeIntoNode field "# Hello, world\n\nMy words."
+        idle
+        -- Another tab saves the post, moves it under another page, and
+        -- makes a new page at its old address.
+        other <- runMemDOM . run $ do
+          saved <- orPanic <$> savePage hello.id hello.updatedAt hello.title "# Hello, world\n\nSomeone else's words."
+          folder <- orPanic <$> createPage blog.id Nothing "Folder" "Under it."
+          void (orPanic <$> movePage saved.id blog.id (Just folder.id))
+          orPanic <$> createPage blog.id Nothing "Hello, world" "Another page's words."
+        orPanic <$> runMemDOM (run (getPage blog.id (slugs ["hello-world"]))) >>= \p -> p.id `shouldBe` other.id
+        click view ".editor-save"
+        settle view
+        length <$> findAll view ".editor-conflict" `shouldReturn` 0
+        isJust <$> find view ".error-conflict" `shouldReturn` True
+        valueOf field `shouldReturn` "# Hello, world\n\nMy words."
+        -- Nothing was written under the other page.
+        (\p -> p.body) . orPanic <$> runMemDOM (run (getPage blog.id (slugs ["hello-world"]))) `shouldReturn` "Another page's words."
+      Router.stop router
+
+  -- #394's third round: the guard of a plain write says no (the page's
+  -- space was encrypted since the editor opened it), over the HTTP
+  -- backend. That is no conflict of versions: the editor says why nothing
+  -- was sent, and offers no merge with the page as it is cached. (Shown
+  -- failing with the guard's refusal given as a 'Conflict'.)
+  it "shows why nothing was sent when the guard refuses a save, and offers no merge" $
+    withTestClock $ \clock -> do
+      wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-editor")})
+      let orPanic = either (panic . show) identity
+      router <- runMemDOM (runMemWiki wiki (Router.newRouter "/" Unknown route))
+      (me, spaces, blog, ps, hello) <- runMemDOM . runMemWiki wiki $ do
+        me <- session
+        spaces <- listSpaces
+        blog <- orPanic <$> getSpace (slugs ["blog"])
+        ps <- orPanic <$> listPages blog.id
+        hello <- orPanic <$> getPage blog.id (slugs ["hello-world"])
+        pure (me, spaces, blog, ps, hello)
+      sent <- newIORef []
+      let json :: (ToJSON a) => Int -> a -> Either Text Response
+          json n a = Right (jsonResponse n (encode a))
+          serve r
+            | methodOf r /= "GET" = Right (jsonResponse 500 "")
+            | requestUrl r == endpointUrl (\e -> e.spaces.pageAt blog.id (slugs ["hello-world"])) = json 200 hello
+            | requestUrl r == endpointUrl (\e -> e.pages.plain hello.id) = json 409 (ApiError.Stale ApiError.SpaceIsEncrypted "A draft kept on the server is not possible in an encrypted space.")
+            | requestUrl r == endpointUrl (\e -> e.pages.draft hello.id) = json 200 (Nothing :: Maybe Draft)
+            | requestUrl r == "api/v1/spaces" = json 200 [blog]
+            | otherwise = json 404 ApiError.NotFound
+      env <- newHttpEnvWith (Transport (\r -> atomicModifyIORef' sent (\rs -> (r : rs, ())) $> serve r)) (withSpaces spaces (withSession me emptyCache))
+      let run :: HttpWiki MemDOM a -> MemDOM a
+          run = runHttpWiki env
+          input = Editor.Input {context = viewContextAs router me spaces 0, space = blog, pages = ps, path = slugs ["hello-world"], feed = Nothing, home = False}
+      withView run Editor.component input $ \view -> do
+        settle view
+        field <- find view ".editor-text" >>= maybe (panic "the editor has no textarea") pure
+        typeIntoNode field "# Hello, world\n\nMy words."
+        advance clock 0.001
+        click view ".editor-save"
+        settle view
+        length <$> findAll view ".editor-conflict" `shouldReturn` 0
+        textOf view ".error-conflict" >>= (`shouldSatisfy` T.isInfixOf "nothing was sent")
+        valueOf field `shouldReturn` "# Hello, world\n\nMy words."
+        -- Nothing was written: no save of the page.
+        readIORef sent >>= \rs -> [requestUrl r | r <- rs, methodOf r == "PUT"] `shouldBe` []
       Router.stop router
   where
     slugs :: [Text] -> [Slug]

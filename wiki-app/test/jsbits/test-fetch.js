@@ -3,7 +3,9 @@
 // through haskell-halogen-net's fetch call (Halogen.Net.Fetch) as they would
 // to wiki-server, and are answered here from a table the test fills, by
 // method and address. An address the table has no answer for is a 404 with
-// the API's NotFound.
+// the API's NotFound, but the question whether a page's text is plain now,
+// which is answered from the pages and spaces this server gave
+// (wikiTestPlain).
 //
 // The test can take the network away (a request then fails as fetch fails
 // offline, with a TypeError) and hold the answers back until it lets them
@@ -86,7 +88,7 @@ function wiki_test_server_start() {
   if (wikiTestServer.WebSocket === null) wikiTestServer.WebSocket = globalThis.WebSocket;
   for (const socket of wikiTestServer.sockets) socket.hangUp(1001);
   globalThis.wikiTestHandlers = [];
-  Object.assign(wikiTestServer, { answers: new Map(), asked: [], offline: false, holdAll: false, heldAt: new Set(), heldNext: new Set(), held: null, release: null, sockets: [], said: [], presence: new Map(), pending: new Set(), holding: new Set() });
+  Object.assign(wikiTestServer, { answers: new Map(), asked: [], offline: false, holdAll: false, heldAt: new Set(), heldNext: new Set(), held: null, release: null, sockets: [], said: [], presence: new Map(), pending: new Set(), holding: new Set(), pageSpaces: new Map() });
   globalThis.WebSocket = WikiTestSocket;
   globalThis.fetch = wikiTestServerCounted(async (url, init = {}) => {
     const method = init.method ?? "GET";
@@ -129,6 +131,7 @@ function wiki_test_server_start() {
     if (signal?.aborted) throw abortError();
     if (wikiTestServer.offline) throw new TypeError("Failed to fetch");
     const answer = early ?? (await wikiTestAnswer(request));
+    wikiTestServed(request, answer);
     const empty = answer.status === 204 || answer.status === 304;
     return new Response(empty ? null : answer.body, { status: answer.status, headers: { "Content-Type": "application/json", ...(answer.headers ?? {}) } });
   });
@@ -162,7 +165,54 @@ async function wikiTestAnswer(request) {
     answer = await handle(request);
     if (answer) break;
   }
-  return answer ?? wikiTestServer.answers.get(`${request.method} ${request.url}`) ?? { status: 404, body: '{"error":"NotFound"}' };
+  return answer ?? wikiTestServer.answers.get(`${request.method} ${request.url}`) ?? (await wikiTestPlain(request)) ?? { status: 404, body: '{"error":"NotFound"}' };
+}
+
+// The space of each page this server has answered with ('pageSpaces'), by
+// the page's id: from every answer to a GET that is a page or a list of
+// pages (anything with an id, a space and a slug). The question below
+// reads it, so that a page read here is answered for the space it is in.
+function wikiTestServed(request, answer) {
+  if (request.method !== "GET" || answer.status !== 200) return;
+  let value = null;
+  try {
+    value = JSON.parse(answer.body);
+  } catch {
+    return;
+  }
+  for (const item of Array.isArray(value) ? value : [value]) {
+    if (item && typeof item.id === "string" && typeof item.space === "string" && typeof item.slug === "string") wikiTestServer.pageSpaces.set(item.id, item.space);
+  }
+}
+
+// The question the application asks before it sends a page's text plain
+// (GET api/v1/pages/<page>/plain, Wiki.App.Backend's plainNow), unless the
+// table or a handler answers it: as wiki-server answers it, for a page
+// this server has answered with ('wikiTestServed') whose space the list
+// of spaces it would give now holds. 409 Stale while that space has a key
+// (converting while it is being converted); a yes otherwise. A page it
+// knows nothing of, or whose space the list does not hold (the front
+// page's, which no list holds), is a yes: this server does not know who
+// may view it. The encrypted spaces' server (test-encrypted.js) answers
+// for its own pages before this, from its readers, so a reader it removed
+// gets its 404 there.
+async function wikiTestPlain(request) {
+  const m = request.method === "GET" ? request.url.match(/^api\/v1\/pages\/([^/]+)\/plain$/) : null;
+  if (!m) return null;
+  const yes = { status: 204, body: "", headers: { "Cache-Control": "private, no-store" } };
+  const space = wikiTestServer.pageSpaces.get(decodeURIComponent(m[1]));
+  if (space === undefined) return yes;
+  const listed = await wikiTestAnswer({ method: "GET", url: "api/v1/spaces", headers: {}, body: "", bytes: "", aborted: false });
+  let spaces = [];
+  try {
+    spaces = listed.status === 200 ? JSON.parse(listed.body) : [];
+  } catch {
+    spaces = [];
+  }
+  const s = Array.isArray(spaces) ? spaces.find((x) => x?.id === space) : undefined;
+  if (s?.conversion) return { status: 409, body: JSON.stringify({ error: "Stale", state: "converting", message: "This space's pages are being converted." }) };
+  if (s?.encryption) return { status: 409, body: JSON.stringify({ error: "Stale", state: "space-encrypted", message: "A draft kept on the server is not possible in an encrypted space." }) };
+  return yes;
 }
 
 // Waits for a held request's release, keeping the request in 'holding'

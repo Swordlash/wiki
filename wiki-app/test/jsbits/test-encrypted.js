@@ -174,6 +174,22 @@ function wikiTestEncServer(request) {
     const p = wikiTestEncrypted.pages.get(decodeURIComponent(located[1]));
     if (p) return wikiTestEncJson(200, { space: [wikiTestEncrypted.spaces.get(p.space).space.slug], page: [p.slug] });
   }
+  // Whether a page's text is taken plain now (plainNow), for a page this
+  // server keeps, as wiki-server's plainNowTx answers it now: 404 when the
+  // user is not one of its space's readers; 409 with the code a draft is
+  // refused with while the space is converted or has a key; 204 otherwise.
+  // A page this server does not keep is left to test-fetch.js.
+  const plainNow = path.match(/^pages\/([^/]+)\/plain$/);
+  if (plainNow && request.method === "GET") {
+    const p = wikiTestEncrypted.pages.get(decodeURIComponent(plainNow[1]));
+    const s = p && wikiTestEncrypted.spaces.get(p.space);
+    if (s) {
+      if (!s.readers.includes(me)) return wikiTestEncJson(404, { error: "NotFound" });
+      if (s.space.conversion) return wikiTestEncJson(409, { error: "Stale", state: "converting", message: "This space's pages are being converted." });
+      if (s.space.encryption) return wikiTestEncJson(409, { error: "Stale", state: "space-encrypted", message: "A draft kept on the server is not possible in an encrypted space." });
+      return { status: 204, body: "", headers: { "Cache-Control": "private, no-store" } };
+    }
+  }
   // The plain routes of an encrypted space's pages refuse, as the server's
   // do, so that the backend reads them through the encrypted routes.
   // A page another tab made plain during a conversion: read plain.

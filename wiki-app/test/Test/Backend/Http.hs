@@ -1239,15 +1239,21 @@ plainText = describe "the question whether a page's text is plain now" $ do
     writesOut <$> readIORef asked `shouldReturn` []
 
   it "makes no page in a space the list of spaces fetched now no longer names, and makes one in a space it names" $ do
-    let server listed r =
+    -- The front page's space, which no list names: another one.
+    let front = fromMaybe (panic "no docs") (head [x | x <- Map.elems demo.spaces, x.id /= blog.id, isNothing x.parent, isNothing x.encryption, not x.personalContainer])
+        server listed r =
           if
             | requestUrl r == "api/v1/spaces" -> ok listed
+            | requestUrl r == "api/v1/home" -> ok (front, hello)
             | otherwise -> status 500 ""
         posts rs = [requestUrl r | r <- rs, methodOf r == "POST"]
     (gone, goneAsked) <- scripted (server ([] :: [Space]))
     goneEnv <- newHttpEnvWith gone (withSpaces [blog] emptyCache)
     runHttpWiki goneEnv (createPage blog.id Nothing "New" "Text") `shouldReturn` Left NotFound
     posts <$> readIORef goneAsked `shouldReturn` []
+    -- The front page's space is not refused for it: the server answers.
+    _ <- runHttpWiki goneEnv (createPage front.id Nothing "New" "Text")
+    posts <$> readIORef goneAsked `shouldReturn` ["api/v1/spaces/" <> front.id.text <> "/pages"]
     (there, thereAsked) <- scripted (server [blog])
     thereEnv <- newHttpEnvWith there (withSpaces [blog] emptyCache)
     _ <- runHttpWiki thereEnv (createPage blog.id Nothing "New" "Text")

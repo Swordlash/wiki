@@ -1,5 +1,5 @@
 -- | What Enter writes in the editor's text (WP5.124 (a) of docs/PLAN.md,
--- issue #187, and the first cut of #301): the next item of a list, the
+-- issue #187, and the first cuts of #301): the next item of a list, the
 -- next line of a quotation or a box, an item split in two, or, on an
 -- empty item or an empty quoted line, the way up one level. CodeMirror's
 -- keymap calls 'edit' as the key is pressed, with the text of the
@@ -17,7 +17,7 @@
 -- bullet or number where the parser says the item starts.
 --
 -- The contract. Enter writes more than a line break only with the cursor
--- at the end of its line, or in the text of an item's first line (a
+-- at the end of its line, or in the text of an item's first paragraph (a
 -- selection is the editor's business: it sends one to the plain line
 -- break). It changes only the cursor's line and the new line it makes,
 -- and the numbers of the items after a new numbered item.
@@ -30,24 +30,32 @@
 --   The containers around the list go on before it: a quotation's marks
 --   as the cursor's line writes them (@>  > @), an outer item's
 --   indentation.
--- * In the text of an item's first line, with text after the cursor on
---   the line: the item split in two ('SplitWith'). The text before the
---   cursor stays in the item, as it is, blanks at its end included (as at
---   the end of a line, where Enter leaves them). A new item of the same
---   list starts on the next line, written as at the end of the line, and
---   takes the rest of the line, without the blanks right after the
---   cursor (they would widen the gap after its mark, and five make code),
---   and every later line of the item: its continuation lines, its nested
---   lists, its further paragraphs. The cursor goes to the start of the
---   new item's text. With the cursor at the start of the item's text,
---   among its marks, or before blanks alone, Enter is a plain line break,
---   as it was before. The parser reads the answer back ('splitIn'): the
+-- * In the text of an item's first paragraph, with text after the cursor
+--   on the line: the item split in two ('SplitWith'). The line may be the
+--   item's first or a later line of that paragraph, indented or lazy. The
+--   text before the cursor stays in the item, as it is, blanks at its end
+--   included (as at the end of a line, where Enter leaves them). A new
+--   item of the same list starts on the next line, written as at the end
+--   of the line, and takes the rest of the line, without the blanks right
+--   after the cursor (they would widen the gap after its mark, and five
+--   make code), and every later line of the item: the rest of its
+--   paragraph, its nested lists, its further paragraphs. That is the
+--   rest of the text, as it is: a reader splitting a paragraph expects
+--   what follows the cut to go with the second half, and nothing below
+--   the cursor's line is moved or rewritten. The cursor goes to the start
+--   of the new item's text. With the cursor at the start of the line's
+--   text, among its marks or its indentation, or before blanks alone,
+--   Enter is a plain line break, as it was before; so it is on a later
+--   line with a tab after its indentation. The parser reads the answer
+--   back ('splitIn'): the
 --   two items' first paragraphs, put together with the blanks taken out,
 --   must be the old one's, inline for inline, so a cut inside code, math,
 --   a link, emphasis or anything else written over several characters is
---   a plain line break; so is a cut after a bracket left open (a link's
---   reference, whose definition the text given may not hold), and one
---   between @]@ and @[@.
+--   a plain line break; so is a cut after a bracket left open in the
+--   paragraph (a link's reference, whose definition the text given may
+--   not hold), and one between @]@ and @[@. A cut that makes the first
+--   half a heading (a later line of @-@ or @=@ under it) leaves no
+--   paragraph to join, and is a plain line break too.
 -- * After a new item of a numbered list (at the end of a line, or split
 --   off), the items after it in that list are renumbered ('Renumbered'),
 --   each the number before it plus one, in the same change, so that one
@@ -76,8 +84,8 @@
 -- plain line break:
 --
 -- * a cursor before the end of its line, outside the text of an item's
---   first line: in a paragraph, a quotation, a box, a heading, an item's
---   later line;
+--   first paragraph: in a paragraph, a quotation, a box, a heading, an
+--   item's second paragraph;
 -- * code, fenced or indented, alone or in a container; HTML; a fence the
 --   wiki renders; a table, a rule, the wiki's marker lines, a footnote's
 --   definition;
@@ -492,8 +500,9 @@ data Expected
     -- mark (and box).
     NewItem [(Bool, Int)] Int Bool
   | -- | As 'NewItem', with text after its mark (and box): the item split
-    -- off.
-    SplitItem [(Bool, Int)] Int Bool
+    -- off. The last number is the line the item split starts on, whose
+    -- lines below the cursor's the new item takes.
+    SplitItem [(Bool, Int)] Int Bool Int
   | -- | In these containers, the last a quotation whose marks the line
     -- has, and nothing after them.
     QuotedLine [(Bool, Int)]
@@ -590,8 +599,9 @@ signature = map $ \case
 ----------------------------------------------------------------------
 -- An item split in two
 
--- | Enter in the text of an item's first line, with text after the
--- cursor on the line: the item split in two ('SplitWith'), or nothing.
+-- | Enter in the text of an item's first paragraph, on its first line or
+-- a later one, with text after the cursor on the line: the item split in
+-- two ('SplitWith'), or nothing.
 split :: Text -> Text -> Maybe Answered
 split before after = do
   let lineBefore = T.takeWhileEnd (/= '\n') before
@@ -612,22 +622,37 @@ split before after = do
   (taken, rest) <- walkLine n line (zip place.containers layout)
   let held = zip3 place.containers taken layout
   (Item item, _, _) <- lastMay held
-  guard (item.firstLine == n)
-  -- Where the item's text starts on the line: after its mark, and after
-  -- a task's box and the blanks after it.
-  let afterBox = if item.task then T.dropWhile (\c -> c == ' ' || c == '\t') (T.drop 1 (T.dropWhile (/= ']') rest)) else rest
+  -- The cursor's line is in the item's first paragraph: its first line,
+  -- or a later line of that paragraph, indented or lazy. The paragraph is
+  -- the item's first block, and the lines it covers are the parser's.
+  paragraph <- firstParagraph shapes item
+  let (paragraphStart, paragraphEnd) = extent paragraph
+  guard (paragraphStart <= n && n <= paragraphEnd)
+  -- Where the item's text starts on the line. On its first line: after
+  -- its mark, and after a task's box and the blanks after it. On a later
+  -- line: after the containers' marks and the blanks after them, of which
+  -- none is a tab (a tab's width depends on its column).
+  let afterBox
+        | item.firstLine /= n = T.dropWhile (== ' ') rest
+        | item.task = T.dropWhile (\c -> c == ' ' || c == '\t') (T.drop 1 (T.dropWhile (/= ']') rest))
+        | otherwise = rest
       textStart = T.length line - T.length afterBox
       left = T.drop textStart lineBefore
+  guard (item.firstLine == n || not ("\t" `T.isPrefixOf` afterBox))
   guard (T.length lineBefore > textStart)
   -- What the text given may not show: the definition of a link's
   -- reference above it. Inside brackets left open the cursor may be in
-  -- such a link's text (@[la‸bel]@); between @]@ and @[@, a cut would
-  -- part a link's text from its label.
-  guard (not (opensBracket left))
+  -- such a link's text (@[la‸bel]@), and the brackets may have been
+  -- opened on an earlier line of the paragraph, so the paragraph's lines
+  -- before the cursor are read whole (the marks before the text on them
+  -- hold no bracket left open: a task's box is closed). Between @]@ and
+  -- @[@, a cut would part a link's text from its label.
+  let earlier = T.concat [l <> "\n" | l <- take (n - paragraphStart) (drop (paragraphStart - 1) textLines)]
+  guard (not (opensBracket (earlier <> left)))
   guard (not ("]" `T.isSuffixOf` left && "[" `T.isPrefixOf` lineAfter))
   (start, expected) <- nextItemOf held (length held - 1)
   splitExpected <- case expected of
-    NewItem outer listLine task -> Just (SplitItem outer listLine task)
+    NewItem outer listLine task -> Just (SplitItem outer listLine task item.firstLine)
     _ -> Nothing
   let answer = SplitWith blanks start
   spans' <- readsAsMeant before after shapes answer splitExpected
@@ -644,6 +669,20 @@ split before after = do
   (_, new) <- find (covers n) (take 1 (drop i spans'))
   guard (splitIn cut old new)
   pure Answered {answer, shapes, blocks = spans'}
+
+-- | The first block of an item, where it is a paragraph (or a heading,
+-- which 'splitIn' then refuses): the item is found among the shapes by
+-- where its mark is, line and column.
+firstParagraph :: [Shape] -> ItemAt -> Maybe Shape
+firstParagraph shapes item = do
+  found <- find (\s -> isItem s && markOf s == Just (item.firstLine, item.markColumn)) (everyShape shapes)
+  paragraph <- head found.inner
+  guard (paragraph.kind == TextShape && null paragraph.inner)
+  pure paragraph
+  where
+    isItem s = case s.kind of
+      ItemShape _ _ -> True
+      _ -> False
 
 -- | Whether a text leaves a bracket open: a @[@ with no @]@ after it, a
 -- character after a backslash not counted, nor a bracket in code between
@@ -853,13 +892,16 @@ readsAsMeant before after oldShapes answer expected = do
   -- text before the answer (0 for the new line's own), and as the same
   -- kind of block (text, code). A blank line belongs to no item. After a
   -- split, the item the new line starts takes the place of the item split
-  -- for the lines below: they were the old item's, and are the new one's.
+  -- for the lines below, by the line that item starts on (above the
+  -- cursor's when the cut is on a later line): they were the old item's,
+  -- and are the new one's.
   let cursor = T.count "\n" before + 1
       oldLines = T.splitOn "\n" (before <> after)
       below = [m | (m, l) <- zip [cursor + 1 ..] (drop cursor oldLines), not (T.null (T.strip l))]
-      (moved, renumber) = case answer of
-        NewLineWith _ -> (1, \l -> if l == n then 0 else if l > n then l - 1 else l)
-        SplitWith _ _ -> (1, \l -> if l >= n then l - 1 else l)
+      (moved, renumber) = case (answer, expected) of
+        (NewLineWith _, _) -> (1, \l -> if l == n then 0 else if l > n then l - 1 else l)
+        (SplitWith _ _, SplitItem _ _ _ split') -> (1, \l -> if l == n then split' else if l > n then l - 1 else l)
+        (SplitWith _ _, _) -> (1, \l -> if l >= n then l - 1 else l)
         _ -> (0, identity)
       old = readings oldShapes
       new = readings shapes
@@ -884,7 +926,7 @@ readsAsMeant before after oldShapes answer expected = do
       pure $ case lastMay kept of
         Just (Item item) -> signature (initSafe kept) == outer && item.firstLine == n && item.listLine == listLine && item.task == task && emptyItem item rest
         _ -> False
-    SplitItem outer listLine task -> do
+    SplitItem outer listLine task _ -> do
       (kept, _, rest) <- marks
       pure $ case lastMay kept of
         Just (Item item) -> signature (initSafe kept) == outer && item.firstLine == n && item.listLine == listLine && item.task == task && not (emptyItem item rest)

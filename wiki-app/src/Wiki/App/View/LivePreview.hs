@@ -159,9 +159,6 @@ data State = State
   , refreshes :: Int
   -- ^ How many times the attachments were fetched again: only the answer
   -- to the last is kept, whichever arrives first.
-  , heardPage :: Maybe PageId
-  -- ^ The id of the page whose text the editor sent last ('Heard'), which
-  -- the text shown from the editor is of ('textPage').
   , fetched :: Bool
   -- ^ Whether the saved page has been fetched: at once in the initial
   -- state when the backend can, so that the first render matches the
@@ -171,10 +168,7 @@ data State = State
 -- | A message of the editor: the text and the line written, that a file
 -- was uploaded to the page, or that the editor has gone.
 data Heard = Heard
-  { page :: Maybe PageId
-  -- ^ The id of the page whose text it is, which the editor sends with
-  -- the text (web/src/editor.js); 'Nothing' from an editor that sends none.
-  , text :: Maybe Text
+  { text :: Maybe Text
   , title :: Maybe Text
   , line :: Maybe Int
   , uploaded :: Bool
@@ -183,7 +177,7 @@ data Heard = Heard
 
 instance FromJSON Heard where
   parseJSON = withObject "message" $ \o ->
-    Heard <$> o .:? "page" <*> o .:? "text" <*> o .:? "title" <*> o .:? "line" <*> o .:? "attachments" .!= False <*> o .:? "closed" .!= False
+    Heard <$> o .:? "text" <*> o .:? "title" <*> o .:? "line" <*> o .:? "attachments" .!= False <*> o .:? "closed" .!= False
 
 -- | The page as saved: what the window shows until the editor speaks, its
 -- facts, and the attachments its links resolve to, with their addresses.
@@ -214,20 +208,6 @@ type Slots = ("preview" .== H.Slot (Const Void) Preview.Output ())
 liveKey :: SpaceId -> [Slug] -> Text
 liveKey (SpaceId sid) path = sid <> "/" <> T.intercalate "/" (map slugText path)
 
--- | 'textPage' is the id of the page whose text the window shows, which
--- the preview asks about before it sends the logins the text mentions
--- (the preview's 'Wiki.App.View.Preview.page'). The page as saved is the
--- page the window read ('Facts'). A text from the editor is the page the
--- editor named with it ('heardPage'), never the page read at the same
--- address: the edited page may have moved since, and another page taken
--- its address. A text the editor sent without an id is of no page, and
--- nobody it mentions is looked up in a plain space.
-textPage :: Shown -> Maybe Facts -> Maybe PageId -> Maybe PageId
-textPage shown facts heard = case shown of
-  Shows Saved _ _ _ -> (\f -> f.page) <$> facts
-  Shows _ _ _ _ -> heard
-  _ -> Nothing
-
 component :: forall query m. (MonadLoad m, MonadNotifications m, MonadIslands m, MonadUUID m, MonadIO m) => H.Component query Input ViewOutput m
 component =
   H.mkComponent
@@ -236,8 +216,8 @@ component =
           article <- H.newRefLabel "live-preview"
           found <- atOnce (fetchSaved noUrlOwner input)
           pure $ case found of
-            Just (Fetched shown facts attachments addresses) -> State {input, shown, facts, feed = Nothing, article, attachments, addresses, owners = Body.ownersOf noUrlOwner, page = 0, refreshes = 0, heardPage = Nothing, fetched = True}
-            Nothing -> State {input, shown = Loading, facts = Nothing, feed = Nothing, article, attachments = [], addresses = Body.noAddresses, owners = Body.ownersOf noUrlOwner, page = 0, refreshes = 0, heardPage = Nothing, fetched = False}
+            Just (Fetched shown facts attachments addresses) -> State {input, shown, facts, feed = Nothing, article, attachments, addresses, owners = Body.ownersOf noUrlOwner, page = 0, refreshes = 0, fetched = True}
+            Nothing -> State {input, shown = Loading, facts = Nothing, feed = Nothing, article, attachments = [], addresses = Body.noAddresses, owners = Body.ownersOf noUrlOwner, page = 0, refreshes = 0, fetched = False}
       , render
       , eval = H.mkEval H.defaultEval {H.handleAction = handleAction, H.receive = Just . Receive, H.initialize = Just Initialize, H.finalize = Just Finalize}
       }
@@ -283,7 +263,7 @@ component =
     -- The text in the editor's preview, without its title: the title's
     -- row is above the column of the text, as on the page.
     previewOf :: State -> Text -> Text -> H.ComponentHTML Action Slots m
-    previewOf st title text = HH.slot_ "preview" () Preview.component Preview.Input {place = place st, page = textPage st.shown st.facts st.heardPage, title, body = text, titled = False, slides = Nothing}
+    previewOf st title text = HH.slot_ "preview" () Preview.component Preview.Input {place = place st, title, body = text, titled = False, slides = Nothing}
 
     stateText :: Shown -> Text
     stateText = \case
@@ -337,7 +317,7 @@ component =
           stopListening
           -- The new page's fetch registers its own owner.
           Body.releaseOwned (\st -> st.owners) (\owners st -> st {owners})
-          modify (\st -> st {shown = Loading, facts = Nothing, attachments = [], addresses = Body.noAddresses, page = st.page + 1, heardPage = Nothing, fetched = False})
+          modify (\st -> st {shown = Loading, facts = Nothing, attachments = [], addresses = Body.noAddresses, page = st.page + 1, fetched = False})
           handleAction Initialize
       Listened raw -> case eitherDecodeStrict @Heard (encodeUtf8 raw) of
         Left _ -> pass
@@ -367,8 +347,7 @@ component =
                       _ -> ""
                     title = fromMaybe kept (mfilter (not . T.null) heard.title)
                  in st
-                      { heardPage = heard.page
-                      , shown = case st.shown of
+                      { shown = case st.shown of
                           -- The same text under another title: its entries
                           -- as they were.
                           Shows _ _ same contents | same == body -> Shows Editor title body contents

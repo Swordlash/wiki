@@ -147,7 +147,7 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.Aeson (FromJSON (..), ToJSON (..), decodeStrict, eitherDecodeStrict, encode, object, withObject, (.:), (.=))
 import Data.ByteString.Lazy qualified as BSL
 import Data.Coerce (coerce)
-import Data.Foreign (foreignToInt, foreignToString, readProp)
+import Data.Foreign (foreignToInt)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (lookup)
 import Data.Text qualified as T
@@ -334,16 +334,6 @@ $( jsFields
 newtype QuestionDetail = QuestionDetail JSVal
   deriving newtype (Inert)
 
--- | A number of a question's detail made from JSON, as a native test
--- dispatches the event ('readProp'): 0 when it has none. A browser reads
--- the field of the object itself.
-nativeQuestionInt :: Text -> QuestionDetail -> Int
-nativeQuestionInt name (QuestionDetail value) = fromMaybe 0 (readProp name (Just . foreignToInt) value)
-
--- | A text of a question's detail made from JSON, as 'nativeQuestionInt'.
-nativeQuestionText :: Text -> QuestionDetail -> Text
-nativeQuestionText name (QuestionDetail value) = fromMaybe "" (readProp name (Just . foreignToString) value)
-
 $( jsFields
      ''SelectionDetail
      [ Fixed "from" ''Int
@@ -360,21 +350,16 @@ $( jsFields
 
 $( jsFields
      ''QuestionDetail
-     [ Natively [|nativeQuestionInt "id"|] (Fixed "id" ''Int)
-     , Natively [|nativeQuestionText "letters"|] (Fixed "letters" ''Text)
+     [ Fixed "id" ''Int
+     , Fixed "letters" ''Text
      ]
  )
 
 -- | The detail of one of CodeMirror's events on the host, if the event
 -- carries one: a value of the event's own shape, read purely, since the
 -- event does not change.
---
--- Natively there is no CustomEvent: a test dispatches an event made from
--- JSON, and its @detail@ is read from that ('readProp').
 detailOf :: Event -> Maybe JSVal
-detailOf event@(Event value)
-  | inBrowser = let detail = (CustomEvent event).detail in if isNull detail then Nothing else Just detail
-  | otherwise = readProp "detail" Just value
+detailOf event = let detail = (CustomEvent event).detail in if isNull detail then Nothing else Just detail
 
 -- | The CodeMirror in the host, if the page's islands have put one there.
 codeMirror :: Element -> IO (Maybe CodeMirror)

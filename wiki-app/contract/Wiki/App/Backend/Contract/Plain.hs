@@ -1,7 +1,6 @@
 -- | The contract tests of the question whether a page's text is taken as
 -- plain text now ('plainNow'), which the browser asks before it sends any
--- of it: a save, a draft, an attachment, a comment, the letters typed for
--- a mention.
+-- of it: a save, a draft, an attachment, a comment.
 --
 -- Like the backend's contract ("Wiki.App.Backend.Contract", whose
 -- 'Fixture' it takes), it runs against the in-memory backend, the server's

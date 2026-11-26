@@ -678,9 +678,10 @@ class (Monad m) => MonadWiki m where
 
   -- | Whether the server takes the text of a page as plain text now: what
   -- the browser asks before it sends any of it (a save, a draft, an
-  -- attachment, a comment, letters typed for a lookup). 'Right' when the
-  -- current user may view the page and no space of its chain, where the
-  -- page is now, is encrypted or being converted. Otherwise the refusal:
+  -- attachment, a comment; a lookup of letters typed may use it later).
+  -- 'Right' when the current user may view the page and no space of its
+  -- chain, where the page is now, is encrypted or being converted.
+  -- Otherwise the refusal:
   -- 'NotFound' for a page the user may not view, as 'pageLocation' gives;
   -- 'Stale' with the draft's codes ('Wiki.Api.Error.ConversionRuns',
   -- 'Wiki.Api.Error.SpaceIsEncrypted') for one whose space is encrypted or

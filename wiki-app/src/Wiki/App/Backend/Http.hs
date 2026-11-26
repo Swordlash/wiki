@@ -1113,12 +1113,13 @@ instance (MonadIO m) => MonadNotifications (HttpWiki m) where
           -- this page can tell, no login belongs to anyone.
           Left _ -> storeAnswer PlainRead before (withPeople logins mempty) $> mempty
 
-  -- Not cached, here or in the editor's completion (@web/src/editor.js@):
-  -- an answer is for the reader signed in when it was asked. The editor
-  -- asks 'plainNow' of the page first. Too few letters ask nothing. A 404
-  -- (a server from before this endpoint) is no users. Any other error (a
-  -- server that cannot be reached, a session that has ended) is an error,
-  -- and the editor asks again later, when it may be answered.
+  -- Not cached here: the editor's completion keeps the answers it has
+  -- had for as long as the editor is open (@web/src/editor.js@). Too few
+  -- letters ask nothing. A 404 (a server from before this endpoint) is no
+  -- users, which the editor keeps, so that it does not ask again at every
+  -- key. Any other error (a server that cannot be reached, a session that
+  -- has ended) is an error, which the editor does not keep and asks again
+  -- later, when it may be answered.
   mentionCandidates letters
     | not (searchable letters) = pure (Right [])
     | otherwise =
@@ -2299,8 +2300,9 @@ plainPageWrite pid plain =
     -- every other refusal are the server's, as the write would have had.
     Left e -> pure (Left e)
 
--- | 'plainNow': whether the page's text may be sent plain now. Refused
--- here, without a request, for a page read here encrypted ('heldPages'),
+-- | 'plainNow': whether the page's text may be sent plain now, asked
+-- before a save, a draft, an attachment or a comment ('plainPageWrite').
+-- Refused here, without a request, for a page read here encrypted ('heldPages'),
 -- and for one read so whose space is plain since ('heldWasSealed'): what
 -- was written from it is not sent plain unasked. Any other page is asked
 -- about by its id (@pages\/\<page>\/plain@), wherever this tab last read

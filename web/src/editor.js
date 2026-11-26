@@ -933,8 +933,7 @@ let questions = 0;
 // The list of the wiki's own Markdown asks with a detail of its own, the
 // cursor's place ({id, line, before, nodes}), by a key made of it; its
 // answers are not kept (`keep` false), since the same line may be answered
-// otherwise once the text above it has changed. Nor are the people a
-// mention may name: they were found for the reader of the time.
+// otherwise once the text above it has changed.
 const asker = (host, eventName, keep = true) => {
   const answers = new Map();
   const asking = new Map();
@@ -1483,11 +1482,7 @@ const interactionDelay = 75;
 
 const completions = (host) => {
   const whole = (context) => wholeAt(host, context);
-  // The people a mention may name are not kept: an answer was found for
-  // the reader signed in when it was asked, and the server is asked each
-  // time whether the page's text is still plain (Wiki.App.View.Editor's
-  // MentionAsked).
-  const people = asker(host, "wiki-mention", false);
+  const people = asker(host, "wiki-mention");
   const names = asker(host, "wiki-emoji");
   const markup = asker(host, "wiki-complete", false);
   // What Enter and Escape do in the list shown is what its options say
@@ -2977,10 +2972,7 @@ function following(host) {
   const send = () => {
     clearTimeout(timer);
     timer = null;
-    // With the id of the page whose text it is (the host's data-live-page),
-    // which the window asks about before it looks up the people the text
-    // mentions: another page may be at the same address by then.
-    if (view !== null && !stopped) channel?.postMessage({ key, page: host.dataset.livePage || null, text: view.state.doc.toString(), title: host.dataset.liveTitle ?? "", line });
+    if (view !== null && !stopped) channel?.postMessage({ key, text: view.state.doc.toString(), title: host.dataset.liveTitle ?? "", line });
   };
   const sendSoon = () => {
     if (stopped) return;

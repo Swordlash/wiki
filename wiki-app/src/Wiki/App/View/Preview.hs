@@ -60,7 +60,6 @@ import Wiki.Core.Markdown.Ast (mentions)
 import Wiki.Core.Markdown.Render (IslandKey)
 import Wiki.Core.Slides (Deck (..), Fit (..), Slide (..), deckOf, fitOf, showingStep)
 import Wiki.Core.Space (Space (..))
-import Wiki.Core.Version (Author)
 
 -- | The preview's input: the draft's title and Markdown, the place it is
 -- read in, and, for a presentation, which of its slides are shown.
@@ -69,7 +68,7 @@ data Input = Input
   , page :: Maybe PageId
   -- ^ The page the draft is of, once it is known: the people a plain
   -- page's draft mentions are looked up only after the server says the
-  -- page's text is taken plain now ('peopleOfDraft'), and not at all
+  -- page's text is taken plain now ('resolvePeople'), and not at all
   -- without a page.
   , title :: Text
   , body :: Text
@@ -249,29 +248,36 @@ component =
                 modify (\s -> s {watch})
             )
 
+    -- The people the draft mentions, looked up for the logins not looked
+    -- up yet ('Body.askPeople'). The logins are text typed in the page, so
+    -- in a space given as plain they go to the server only once it has
+    -- said the page's text is taken plain now ('plainNow'): another tab may
+    -- have started encrypting the space since. Without a page, nobody is
+    -- looked up. In an encrypted space they are looked for among its
+    -- readers, and nothing typed is sent. The server's yes is for the
+    -- reader signed in when it was asked: under another one (a sign-in in
+    -- another tab meanwhile, 'sessionNumber'), the logins are not sent, and
+    -- an answer found for the reader before is not kept. Logins not looked
+    -- up are asked again with the next text.
     resolvePeople :: H.HalogenM State Action IslandSlots Output m ()
     resolvePeople = do
       st <- get
       let logins = Set.toList (st.parsed.mentioned `Set.difference` st.known.asked)
-      unless (null logins) . void . H.fork $
-        H.async (attempt (peopleOfDraft st.input.place st.input.page logins)) >>= \case
-          Right (Just found) -> modify (\s -> s {known = Body.answered logins found s.known})
-          _ -> pass
-
--- | The people these logins name, mentioned in a draft of the page
--- ('Body.askPeople'). The logins are text typed in the page, so for a
--- space given as plain they go to the server only once it has said the
--- page's text is taken plain now ('plainNow'): another tab may have
--- started encrypting the space since. In an encrypted space they are
--- looked for among its readers, and nothing typed is sent. 'Nothing'
--- when nothing may be asked: the logins stay not looked up, and are
--- asked again with the next text.
-peopleOfDraft :: (MonadWiki n, MonadNotifications n) => Place -> Maybe PageId -> [Text] -> n (Maybe (Map Text Author))
-peopleOfDraft place page logins
-  | isJust place.space.encryption = Just <$> Body.askPeople place.space logins
-  | otherwise = case page of
-      Nothing -> pure Nothing
-      Just pid -> plainNow pid >>= either (const (pure Nothing)) (const (Just <$> Body.askPeople place.space logins))
+          place = st.input.place
+          asked = place.context.sessionNumber
+          sameReader = (== asked) <$> gets (\s -> s.input.place.context.sessionNumber)
+      unless (null logins) . void . H.fork $ do
+        allowed <-
+          if isJust place.space.encryption
+            then pure True
+            else case st.input.page of
+              Nothing -> pure False
+              Just pid -> isRight <$> plainNow pid
+        still <- sameReader
+        when (allowed && still) $
+          H.async (attempt (Body.askPeople place.space logins)) >>= \case
+            Right found -> whenM sameReader (modify (\s -> s {known = Body.answered logins found s.known}))
+            Left _ -> pass
 
 -- | Whether two inputs show the same thing: the same draft, and the same
 -- slides of it.
@@ -289,6 +295,7 @@ sameDraft a b =
     && a.titled == b.titled
     && a.place.context.revision == b.place.context.revision
     && a.place.context.session == b.place.context.session
+    && a.place.context.sessionNumber == b.place.context.sessionNumber
     && a.place.context.spaces == b.place.context.spaces
     && a.place.space == b.place.space
     && a.place.pages == b.place.pages

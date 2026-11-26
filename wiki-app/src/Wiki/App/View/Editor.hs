@@ -401,7 +401,7 @@ import Wiki.Core.Assistant.Prompt (Span (..))
 import Wiki.Core.Attachment (Attachment (..), FileName (..), MimeType (..))
 import Wiki.Core.Diff (Diff (..), diffText)
 import Wiki.Core.Draft qualified as D
-import Wiki.Core.Id (PageId, UserId)
+import Wiki.Core.Id (PageId (..), UserId)
 import Wiki.Core.Markdown (attachmentReference)
 import Wiki.Core.Markdown.Box (BoxKind (name), boxChoices)
 import Wiki.Core.Markdown.Edit
@@ -1957,6 +1957,7 @@ component =
                 data-live-key={{ liveKey st.input.space.id st.input.path }}
                 data-title-line={{ if templateWork st then "false" else "true" :: Text }}
                 data-live-title={{ liveTitle st }}
+                data-live-page={{ livePage st }}
                 {{ HE.handler' (EventType "wiki-input") typed }}
                 {{ HE.handler' (EventType "wiki-selection") (\ev -> Just $! Selected (selectedSpan ev)) }}
                 {{ HE.handler' (EventType "wiki-changes") (\ev -> Just $! ChangesLeft (changesLeft ev)) }}
@@ -2070,6 +2071,15 @@ component =
     liveTitle :: State -> Text
     liveTitle st = case st.loaded of
       Ready w -> w.title
+      _ -> ""
+
+    -- The id of the page whose text is edited, which CodeMirror sends with
+    -- the text to the preview in a window of its own: the window asks
+    -- about that page, not about whichever page is at the address now
+    -- ("Wiki.App.View.LivePreview"). Empty until the page is loaded.
+    livePage :: State -> Text
+    livePage st = case st.loaded of
+      Ready w -> w.page.id.text
       _ -> ""
 
     -- CodeMirror's text after a change, taken in the event's listener.
@@ -2441,7 +2451,16 @@ component =
             asked = st0.input.context.sessionNumber
         found <- case st0.loaded of
           _ | isJust space.encryption -> fmap (take maxPeopleFound . filter (startsWith letters)) <$> spaceReaders space.id
-          Ready w -> plainNow w.page.id >>= either (pure . Left) (const (mentionCandidates letters))
+          Ready w ->
+            plainNow w.page.id >>= \case
+              Left e -> pure (Left e)
+              -- The server's yes was for the reader signed in when the
+              -- question was asked: under another one (a sign-in in
+              -- another tab while the question was out), the letters are
+              -- not sent, and there is no answer.
+              Right () -> do
+                still <- gets (\st -> st.input.context.sessionNumber)
+                if still == asked then mentionCandidates letters else pure (Left NotFound)
           _ -> pure (Left NotFound)
         now <- gets (\st -> st.input.context.sessionNumber)
         host <- gets (\st -> st.hostElement)

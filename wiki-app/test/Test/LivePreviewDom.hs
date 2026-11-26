@@ -13,23 +13,30 @@
 -- encrypted space goes.
 module Test.LivePreviewDom (spec) where
 
+import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Control.Monad.Primitive (PrimMonad)
+import Control.Monad.Trans.Class (MonadTrans (..))
+import Control.Monad.UUID (MonadUUID (..))
 import Data.Aeson (Value, encode, object, (.=))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Text qualified as T
 import Halogen.Router qualified as Router
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
+import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
 import Halogen.VDom.DOM.Monad.Native qualified as N
 import Protolude hiding (find)
 import Test.Harness.MemDom
 import Test.Hspec
-import Wiki.App.Backend (MonadWiki (..))
+import Wiki.App.Backend (MonadLoad (..), MonadWiki (..))
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
+import Wiki.App.Backend.Notifications (MonadNotifications)
 import Wiki.App.Demo (demoNow, demoState)
+import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..), route)
 import Wiki.App.View.Common (Context (..), PageWidth (..), ViewOutput (..))
 import Wiki.App.View.LivePreview qualified as LivePreview
-import Wiki.Core.Id (UserId (..))
+import Wiki.Core.Id (PageId (..), UserId (..))
 import Wiki.Core.Page (Page (..))
 import Wiki.Core.Slug (Slug, mkSlug)
 import Wiki.Core.Space (Space (..))
@@ -69,7 +76,40 @@ data Rig = Rig
   -- ^ What the window told the shell, the oldest first.
   , widthIs :: PageWidth -> IO ()
   -- ^ The window given the width the shell keeps.
+  , askedAbout :: IO [PageId]
+  -- ^ The pages asked about, whether their text is plain now
+  -- ('plainNow'), the latest first.
+  , post :: PageId
+  -- ^ The post at the window's address, as saved.
   }
+
+-- | The in-memory backend, with the pages asked about whether their text
+-- is plain now kept, the latest first.
+newtype Recorded m a = Recorded (ReaderT (IORef [PageId]) m a)
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO, PrimMonad)
+
+instance MonadTrans Recorded where
+  lift = Recorded . lift
+
+deriving newtype instance (MonadDOM m) => MonadDOM (Recorded m)
+
+deriving newtype instance (MonadAttributes m) => MonadAttributes (Recorded m)
+
+deriving newtype instance (MonadBrowserDOM m) => MonadBrowserDOM (Recorded m)
+
+instance (MonadUUID m) => MonadUUID (Recorded m) where
+  generateV4 = lift generateV4
+
+instance (MonadWiki m, MonadIO m) => MonadWiki (Recorded m) where
+  plainNow p = Recorded (ask >>= \asked -> liftIO (atomicModifyIORef' asked (\ps -> (p : ps, ())))) >> lift (plainNow p)
+
+instance (MonadWiki m, MonadIO m) => MonadLoad (Recorded m) where
+  atOnce = fmap Just
+  attempt = fmap Right
+
+instance (MonadNotifications m) => MonadNotifications (Recorded m)
+
+instance (MonadIslands m) => MonadIslands (Recorded m)
 
 -- | The window at the blog's post "Hello, world", for the demo's
 -- administrator, at the compact width; the space marked encrypted when
@@ -78,25 +118,25 @@ data Rig = Rig
 withWindow :: Bool -> Maybe [Text] -> (Rig -> IO a) -> IO a
 withWindow encrypted saved body = do
   wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-admin")})
-  let run :: MemWiki MemDOM a -> MemDOM a
-      run = runMemWiki wiki
+  asked <- newIORef []
+  let run :: Recorded (MemWiki MemDOM) a -> MemDOM a
+      run (Recorded m) = runMemWiki wiki (runReaderT m asked)
       orPanic = either (panic . show) identity
   router <- runMemDOM (run (Router.newRouter "/" Unknown route))
-  (me, spaces, blog, ps) <- runMemDOM . run $ do
+  (me, spaces, blog, ps, post) <- runMemDOM . run $ do
     me <- session
     spaces <- listSpaces
     blog <- orPanic <$> getSpace (slugs ["blog"])
     ps <- orPanic <$> listPages blog.id
-    for_ saved $ \ls -> do
-      post <- orPanic <$> getPage blog.id (slugs ["hello-world"])
-      void (orPanic <$> savePage post.id post.updatedAt post.title (T.unlines ls))
-    pure (me, spaces, blog, ps)
+    hello <- orPanic <$> getPage blog.id (slugs ["hello-world"])
+    for_ saved $ \ls -> void (orPanic <$> savePage hello.id hello.updatedAt hello.title (T.unlines ls))
+    pure (me, spaces, blog, ps, hello.id)
   editor <- Editor <$> newIORef Nothing
   let space = if encrypted then blog {encryption = Just (KeyId "key-1")} else blog
       inputAt width = LivePreview.Input {context = (viewContextAs router me spaces 0) {pageWidth = width}, space, pages = ps, path = slugs ["hello-world"], listener = listenerOf editor}
   outcome <- withView run LivePreview.component (inputAt Compact) $ \view -> do
     settle view
-    body Rig {view, editor, heard = outputs view, widthIs = \w -> setInput view (inputAt w) >> settle view}
+    body Rig {view, editor, heard = outputs view, widthIs = \w -> setInput view (inputAt w) >> settle view, askedAbout = readIORef asked, post}
   Router.stop router
   pure outcome
 
@@ -140,6 +180,24 @@ spec = describe "Wiki.App.View.LivePreview, mounted on the in-memory DOM" $ do
       settle rig.view
       textOf rig.view ".page-view > .page-title-row > .page-title" `shouldReturn` "Hello, world"
       length <$> findAll rig.view ".page-title" `shouldReturn` 1
+
+  -- #394's first round: the editor's page moved to another space, and
+  -- another page took its address. The text the editor sends is still of
+  -- its own page, which it names: the people the text mentions are looked
+  -- up only once the server says that page's text is plain now, never on
+  -- the word of the page at the address. A text sent without a page's id
+  -- is of no page: nobody is looked up. (Shown failing with the window
+  -- asking about the page it read at the address.)
+  it "asks about the page the editor names with its text, and about none for a text without one" $
+    withWindow False (Just ["# Hello, world", "", "Saved, and mentioning @ada."]) $ \rig -> do
+      -- The page as saved is the page read here.
+      rig.askedAbout `shouldReturn` [rig.post]
+      speak rig.editor (object ["page" .= ("page-moved" :: Text), "text" .= ("Typed, mentioning @bob." :: Text), "title" .= ("Hello, world" :: Text)])
+      settle rig.view
+      rig.askedAbout `shouldReturn` [PageId "page-moved", rig.post]
+      speak rig.editor (object ["text" .= ("Typed, mentioning @cyd." :: Text), "title" .= ("Hello, world" :: Text)])
+      settle rig.view
+      rig.askedAbout `shouldReturn` [PageId "page-moved", rig.post]
 
   it "shows the Contents panel for the text the editor sends, unless it has too few headings or places its own" $
     withWindow False Nothing $ \rig -> do

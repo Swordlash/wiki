@@ -1524,16 +1524,29 @@ const listOf = (host, context, place, found, section) => {
 // when the editor goes), and the asker's giveUp tells the component of
 // each, so that it never looks up letters CodeMirror no longer asks
 // about. A line with no unfinished [[ before the cursor returns null at
-// once, so that no other list waits for this source.
+// once, so that no other list waits for this source. The gate reads the
+// view's own line, which a row shares with the master, before anything
+// else: the place in the whole text (placeOf) parses a row's master to
+// its end, which is not needed for a line that asks nothing.
+//
+// An answer with no page is an empty result from just after the [[, not
+// null: the library takes null for "nothing here" and asks such a source
+// again only for a letter typed, while a result, even empty, is asked
+// again when a letter of it is deleted. So "onbx", which finds nothing,
+// asks again for "onb" once the x is deleted. Escape still closes it, as
+// it closes every source.
 const elsewhereSection = { name: "In other spaces", rank: 1 };
 const elsewhereSource = (host, elsewhere, whole) => (context) => {
+  const line = context.state.doc.lineAt(context.pos);
+  const before = context.state.sliceDoc(line.from, context.pos);
+  if (!elsewhereGate(before)) return null;
   const place = placeOf(context, whole);
-  if (!elsewhereGate(place.before)) return null;
   const asked = new Promise((resolve) => {
     elsewhere.ask(JSON.stringify(place.detail), place.detail, context.view).then(resolve);
     context.addEventListener("abort", () => resolve(null), { onDocChange: true });
   });
-  return asked.then((found) => (context.aborted ? null : listOf(host, context, place, found, elsewhereSection)));
+  const none = { from: line.from + before.lastIndexOf("[[") + 2, options: [] };
+  return asked.then((found) => (context.aborted ? null : (listOf(host, context, place, found, elsewhereSection) ?? none)));
 };
 
 // An entry of the emoji's list shows its emoji before its name; a

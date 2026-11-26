@@ -1225,6 +1225,50 @@ spec m = readsOnce Idle $ around withTestClock $ do
     completionAnswered ui `shouldReturn` "active"
     listLabels ui `shouldReturn` ["Zebra handbook"]
 
+  -- Round 7 of #389's review: a letter typed that finds no page of
+  -- another space while the space's own list still has one, then
+  -- deleted. The library asked the group again only for a letter typed,
+  -- not for one deleted, so the pages found before did not come back.
+  -- They do, and once Escape has closed the list a letter deleted opens
+  -- nothing. (Shown failing with the group's "nothing" given to the
+  -- library as null.)
+  it "asks again about other spaces' pages when a letter that found none is deleted, but not once Escape closed the list" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "blog" "Onbx local" . withPage "docs" "Onboarding") (Just "user-editor") helloEditor
+    text <- editorText ui
+    clearBody ui
+    watchElsewhere ui "See [[onb"
+    typeText text "See [[onb"
+    elsewhereAsked ui
+    waitQuiet
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Onbx local", "Onboarding"]
+    watchElsewhere ui "See [[onbx"
+    typeText text "x"
+    elsewhereAsked ui
+    waitQuiet
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Onbx local"]
+    -- The x deleted: the letters are asked about again.
+    watchElsewhere ui "See [[onb"
+    press "Backspace"
+    elsewhereAsked ui
+    waitQuiet
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Onbx local", "Onboarding"]
+    -- Closed with Escape: a letter deleted then asks nothing, at once.
+    press "Escape"
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    press "Backspace"
+    completing ui `shouldReturn` ""
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    markdown ui `shouldReturn` "# Hello, world\n\nSee [[on"
+
   -- Round 5 of #389's review: CodeMirror put in place again on the same
   -- host (back to the page as saved, from a restored draft) ended the old
   -- editor's question without telling the component, whose lookup of it

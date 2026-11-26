@@ -795,13 +795,16 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
     writeOnce $
       encryptedFetched sid (write (getResponse <$> endpoints.spaces.createPage sid NewPage {parent, title, body, kind})) (\current -> renewingThen sid (freshKey sid current >>= sealedCreatePage kind sid parent title body))
         >>= keepingSpaces (\p -> [(p.id, p.space)])
+
+  -- Never sent again when the server refuses it for the space's state
+  -- ('writeOnce'); refused before it is sent when the guard of a plain
+  -- write says no ('plainPageWrite'), with that answer.
   savePage pid base title body =
-    writeOnce $
-      sealedPage pid >>= \case
-        Nothing -> plainPageWrite pid (write (getResponse <$> endpoints.pages.save pid (PageVersion base) PageEdit {title, body}))
-        -- The page's key as held when the save is sent: a renewal of the
-        -- space's key gives the page a new one.
-        Just (sid, _) -> renewingThen sid (sealedPage pid >>= maybe (pure (Left (Conflict inEncryptedSpace))) (\(_, k) -> sealedSavePage sid pid k base title body))
+    sealedPage pid >>= \case
+      Nothing -> plainPageWrite pid (writeOnce (write (getResponse <$> endpoints.pages.save pid (PageVersion base) PageEdit {title, body})))
+      -- The page's key as held when the save is sent: a renewal of the
+      -- space's key gives the page a new one.
+      Just (sid, _) -> writeOnce (renewingThen sid (sealedPage pid >>= maybe (pure (Left (Conflict inEncryptedSpace))) (\(_, k) -> sealedSavePage sid pid k base title body)))
   movePage pid space parent = write (endpoints.pages.move pid PageMove {space, parent})
   setPageTemplate pid template = write (endpoints.pages.template pid PageTemplate {template})
   setPageKind pid kind = write (endpoints.pages.kind pid PageKindChange {kind})
@@ -811,10 +814,9 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
   -- bytes and its name and media type, and sent as ciphertext
   -- ('sealedUpload'); never as plain bytes, even to be refused.
   uploadAttachment pid name mediaType bytes =
-    writeOnce $
-      sealedPage pid >>= \case
-        Nothing -> plainPageWrite pid (write (withBoundary (endpoints.pages.upload pid) AttachmentUpload {name, mediaType, payload = toS bytes}))
-        Just (sid, _) -> renewingThen sid (sealedPage pid >>= maybe (pure (Left (Conflict inEncryptedSpace))) (\(_, k) -> sealedUpload sid pid k name mediaType bytes))
+    sealedPage pid >>= \case
+      Nothing -> plainPageWrite pid (writeOnce (write (withBoundary (endpoints.pages.upload pid) AttachmentUpload {name, mediaType, payload = toS bytes})))
+      Just (sid, _) -> writeOnce (renewingThen sid (sealedPage pid >>= maybe (pure (Left (Conflict inEncryptedSpace))) (\(_, k) -> sealedUpload sid pid k name mediaType bytes)))
   deleteAttachment aid = write_ (endpoints.attachments.delete aid) <* forgetAttachments (\i _ -> i == aid)
 
   -- The server serves an attachment's bytes at an API address, which the
@@ -1041,29 +1043,26 @@ instance (MonadIO m) => MonadComments (HttpWiki m) where
   -- are read and written through the encrypted routes, their anchors and
   -- comments encrypted here, and never sent as plain text, even to be
   -- refused. Deleting and resolving carry no text, and go by the plain
-  -- routes.
+  -- routes, with no question asked before them ('commentChange').
   listThreads pid =
     afterStale (Just pid) $
       sealedPage pid >>= \case
         Just (sid, _) -> sealedListThreads sid pid
         Nothing -> plainPageRead pid (cached (\c -> Map.lookup pid c.threads) (endpoints.comments pid).list (withThreads pid))
   openThread pid anchor body =
-    writeOnce $
-      sealedPage pid >>= \case
-        Just (sid, _) -> renewingThen sid (sealedOpenThread sid pid anchor body)
-        Nothing -> commentWrite pid ((endpoints.comments pid).open NewThread {anchor, body})
+    sealedPage pid >>= \case
+      Just (sid, _) -> writeOnce (renewingThen sid (sealedOpenThread sid pid anchor body))
+      Nothing -> commentWrite pid ((endpoints.comments pid).open NewThread {anchor, body})
   reply pid tid body =
-    writeOnce $
-      sealedPage pid >>= \case
-        Just (sid, _) -> renewingThen sid (sealedComment sid pid tid Nothing body)
-        Nothing -> commentWrite pid ((endpoints.comments pid).reply tid CommentText {body})
+    sealedPage pid >>= \case
+      Just (sid, _) -> writeOnce (renewingThen sid (sealedComment sid pid tid Nothing body))
+      Nothing -> commentWrite pid ((endpoints.comments pid).reply tid CommentText {body})
   editComment pid tid cid body =
-    writeOnce $
-      sealedPage pid >>= \case
-        Just (sid, _) -> renewingThen sid (sealedComment sid pid tid (Just cid) body)
-        Nothing -> commentWrite pid ((endpoints.comments pid).edit tid cid CommentText {body})
-  deleteComment pid tid cid = commentWrite_ pid ((endpoints.comments pid).deleteComment tid cid)
-  deleteThread pid tid = commentWrite_ pid ((endpoints.comments pid).delete tid)
+    sealedPage pid >>= \case
+      Just (sid, _) -> writeOnce (renewingThen sid (sealedComment sid pid tid (Just cid) body))
+      Nothing -> commentWrite pid ((endpoints.comments pid).edit tid cid CommentText {body})
+  deleteComment pid tid cid = commentChange pid (void ((endpoints.comments pid).deleteComment tid cid))
+  deleteThread pid tid = commentChange pid (void ((endpoints.comments pid).delete tid))
   setResolved pid tid resolved =
     sealedPage pid >>= \case
       Just (sid, _) ->
@@ -1071,23 +1070,25 @@ instance (MonadIO m) => MonadComments (HttpWiki m) where
           Left e -> pure (Left e)
           -- The thread as the server answers it has no text: read again.
           Right _ -> sealedListThreads sid pid <&> (>>= maybe (Left NotFound) Right . find (\t -> t.id == tid))
-      Nothing -> commentWrite pid ((endpoints.comments pid).resolve tid ThreadResolution {resolved})
+      Nothing -> commentChange pid ((endpoints.comments pid).resolve tid ThreadResolution {resolved})
 
--- | A write to a page's comments, after which the page's cached threads are
--- removed ('afterComment'). Refused here for a page of an encrypted space
--- ('plainPageWrite').
+-- | A plain write of a comment's text (a thread opened, a reply, a comment
+-- edited), after which the page's cached threads are removed
+-- ('afterComment'). Sent only once the guard of a plain write says yes
+-- ('plainPageWrite'), and never sent again ('writeOnce').
 commentWrite :: (MonadIO m) => PageId -> HttpWiki IO a -> HttpWiki m (Either WikiError a)
 commentWrite pid endpoint = do
-  result <- plainPageWrite pid (send endpoint)
+  result <- plainPageWrite pid (writeOnce (send endpoint))
   modifyCache (afterComment pid)
   pure result
 
--- | The same, for a write whose response has no body.
-commentWrite_ :: (MonadIO m) => PageId -> HttpWiki IO NoContent -> HttpWiki m (Either WikiError ())
-commentWrite_ pid endpoint = do
-  -- A deletion carries no text: sent for a page of an encrypted space too.
-  encrypted <- isJust <$> sealedPage pid
-  result <- if encrypted then send_ endpoint else plainPageWrite pid (send_ endpoint)
+-- | A change of a page's comments that carries no text (a comment or a
+-- thread deleted, a thread resolved): sent as it is, for a page of an
+-- encrypted space too, with no question asked first, and the page's cached
+-- threads removed after it ('afterComment').
+commentChange :: (MonadIO m) => PageId -> HttpWiki IO a -> HttpWiki m (Either WikiError a)
+commentChange pid endpoint = do
+  result <- send endpoint
   modifyCache (afterComment pid)
   pure result
 
@@ -2288,14 +2289,19 @@ encryptedFetched sid plain sealed =
 -- | A plain write about a page that may carry its text or text about it: a
 -- save, a draft, an attachment, a comment. It is sent only once the server
 -- has said, just before, that it takes the page's text plain now
--- ('plainHere'); otherwise it is refused here, nothing of it is sent, and
--- the refusal says so to the reader.
+-- ('plainHere'); otherwise it is refused here, and nothing of it is sent.
+-- A refusal for the space's state is 'Stale' with the server's code, as
+-- the server's own refusal of the write would be, never a 'Conflict': the
+-- editor takes a conflict for someone else's save, and offers to merge.
+-- Its words say that nothing was sent.
 plainPageWrite :: (MonadIO m) => PageId -> HttpWiki m (Either WikiError a) -> HttpWiki m (Either WikiError a)
 plainPageWrite pid plain =
   plainHere pid >>= \case
     Right () -> plain
-    Left (Stale ConversionRuns _) -> pure (Left (Conflict "This page's space is being encrypted or decrypted now: nothing was sent. Open the page again once that is done."))
-    Left (Stale _ _) -> pure (Left (Conflict "This page's space has been encrypted since the page was opened: nothing was sent. Open the page again."))
+    -- Not a conflict of versions: the space's state, with its code, as the
+    -- server refuses such a write, in the reader's words.
+    Left (Stale ConversionRuns _) -> pure (Left (Stale ConversionRuns "This page's space is being encrypted or decrypted now: nothing was sent. Open the page again once that is done."))
+    Left (Stale st _) -> pure (Left (Stale st "This page's space has been encrypted since the page was opened: nothing was sent. Open the page again."))
     -- 'NotFound' (a page deleted, or no longer open to the reader) and
     -- every other refusal are the server's, as the write would have had.
     Left e -> pure (Left e)

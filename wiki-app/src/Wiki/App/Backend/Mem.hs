@@ -271,6 +271,7 @@ instance (MonadIO m) => MonadWiki (MemWiki m) where
     for_ result (liftIO . traverse_ (URL.revokeObjectURL))
     pure (void result)
   searchPages = query . searchPagesIn
+  findPagesByTitle = query . findPagesByTitleIn
   getDraft = query . getDraftIn
   saveDraft pid base title body = writeAt (saveDraftIn pid base title body)
   discardDraft = write . discardDraftIn

@@ -53,6 +53,7 @@ module Wiki.App.Backend.Mem.State
   , pageLocationIn
   , backlinksIn
   , searchPagesIn
+  , findPagesByTitleIn
   , getDraftIn
   , listVersionsIn
   , getVersionIn
@@ -239,6 +240,7 @@ import Wiki.Core.Notification qualified as Notice
 import Wiki.Core.Order (ChildOrder (..), Children (..), Shift, childrenInOrder, nextPosition, orderName, renumber, reposition)
 import Wiki.Core.Page (Page (..), PageSummary, childPages, pageTreeOrder, positionPage, summaryOf)
 import Wiki.Core.PageKind (PageKind (..), knownKinds, pageKindName)
+import Wiki.Core.PageMatch (TitleHit (..), TitleQuery (..), looksFor, rankTitles, titleRefusal)
 import Wiki.Core.Path (ancestry, childrenOf, findChild, resolvePath)
 import Wiki.Core.Permission
   ( GlobalGrant (GlobalGrant)
@@ -263,7 +265,7 @@ import Wiki.Core.Permission
 -- Qualified, since the state has fields with the same names (grants,
 -- spaces, groups) and a record update could not tell them apart.
 import Wiki.Core.Permission qualified as P
-import Wiki.Core.Search (Candidate (..), SearchHit, SearchQuery (..), Searchable, candidate, searchPlain, searchable)
+import Wiki.Core.Search (Candidate (..), SearchHit, SearchQuery (..), Searchable, candidate, searchPlain, searchable, searchedChain)
 import Wiki.Core.Slug (Slug, freshSlug, mkSlug, slugify)
 import Wiki.Core.Space (BoxNumbering (..), Entry (..), Icon (..), Space (..), SpaceProfile (..), checkAvatarUpload, checkIconUpload, checkProfile, containerName, containerSlug, defaultHomePage, hasHome, homeDeleteRefusal, homeMoveRefusal, isPersonal, ownProfile, personalName, positionSpace, spaceTreeOrder, withHome, withMathMacros, withName, withOwnerAvatar, withProfile)
 import Wiki.Core.Space qualified as Space
@@ -1110,6 +1112,27 @@ searchPagesIn q st =
       Just sid
         | q.includeSubspaces -> within sid c
         | otherwise -> fmap (\s -> s.id) (lastMay c) == Just sid
+
+-- | The lookup of pages by title ('Wiki.App.Backend.findPagesByTitle'):
+-- the pages of the spaces the server's search reads for the current user
+-- ('searchedChain'), but the space the query leaves out, templates left
+-- out, ranked and cut by 'rankTitles', as the server does.
+findPagesByTitleIn :: TitleQuery -> MemState -> Either WikiError [TitleHit]
+findPagesByTitleIn q st = case titleRefusal q of
+  Just reason -> Left (Invalid reason)
+  Nothing
+    | not (looksFor q) -> Right []
+    | otherwise ->
+        Right . rankTitles q $
+          [ TitleHit {page = p.id, space = sid, spacePath = map (\x -> x.slug) c, pagePath, title = p.title}
+          | (sid, c) <- Map.toList (Map.mapWithKey (\sid _ -> chainOf st sid) st.spaces)
+          , Just sid /= q.except
+          , searchedChain st.server.homePage (currentPrincipal st) st.grants c
+          , Just s <- [Map.lookup sid st.spaces]
+          , p <- pagesOf sid st
+          , not p.template
+          , Just pagePath <- [Space.pagePath s (`Map.lookup` st.pages) p.id]
+          ]
 
 --------------------------------------------------------------------------------
 -- Writes

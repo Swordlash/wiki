@@ -93,6 +93,7 @@ spec = describe "golden JSON" $ do
     golden "versions" [Sample.versionInfo, Sample.versionInfo {updatedAt = Sample.later, title = "A tour", author = Nothing}]
     golden "version" Sample.version
     golden "search-hits" [Sample.hit]
+    golden "title-hits" [Sample.titleHit]
     golden "import-plan" Sample.importPlan
     golden "import-summary" Sample.importSummary
     golden "server-status" Sample.serverStatus

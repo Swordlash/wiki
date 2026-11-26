@@ -62,6 +62,7 @@ import Wiki.Core.Order (ChildOrder (..), Children (..), Shift (..))
 import Wiki.Core.Page (Page, summaryOf)
 import Wiki.Core.Page qualified as Page (Page (..))
 import Wiki.Core.PageKind qualified as Kind
+import Wiki.Core.PageMatch (TitleHit (..))
 import Wiki.Core.Permission (SpacePermission (..), Subject (..))
 import Wiki.Core.Search (Piece (..), SearchHit (..), SearchQuery (..), Snippet (..), searchQuery)
 import Wiki.Core.Space qualified as Space
@@ -261,6 +262,8 @@ stubs =
                   then responseLBS (toEnum 200) [(hContentType, "image/png")] "PNG bytes"
                   else responseLBS (toEnum 404) [(hContentType, "application/json")] (encode NotFound)
           }
+    , pagesTitled = \q except limit ->
+        pure [TitleHit {page = PageId (maybe "(none)" show limit), space = fromMaybe (SpaceId "") except, spacePath = [], pagePath = [], title = fromMaybe "(none)" q}]
     , search = \q space only limit templates ->
         let query = searchQueryOf q space only limit templates
          in pure
@@ -856,6 +859,17 @@ spec = describe "a server of the API's type" $ do
       r <- getAt "api/v1/search?q=x"
       map (\(h :: SearchHit) -> h.snippet) <$> jsonBody r
         `shouldBe` Just [Snippet [Piece (show (True, (searchQuery "x").limit, False)) False]]
+
+  describe "pages by title" $ do
+    it "reads back the letters, the space left out and the limit its address was made from" $ do
+      r <- getAt (links.pagesTitled (Just "on c") (Just s) (Just 5))
+      status r `shouldBe` 200
+      map (\(h :: TitleHit) -> (h.title, h.space, h.page)) <$> jsonBody r `shouldBe` Just [("on c", s, PageId "5")]
+
+    it "is not read as a page's id" $ do
+      r <- getAt "api/v1/pages/titled?q=on"
+      status r `shouldBe` 200
+      map (\(h :: TitleHit) -> (h.title, h.space, h.page)) <$> jsonBody r `shouldBe` Just [("on", SpaceId "", PageId "(none)")]
 
   describe "archives" $ do
     it "exports a zip file, to be saved as one" $ do

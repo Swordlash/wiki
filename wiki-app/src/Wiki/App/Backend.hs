@@ -218,6 +218,7 @@ import Wiki.Core.Notification (PageLocation)
 import Wiki.Core.Order (ChildOrder, Children, Shift)
 import Wiki.Core.Page (Page, PageSummary)
 import Wiki.Core.PageKind (PageKind)
+import Wiki.Core.PageMatch (TitleHit, TitleQuery)
 import Wiki.Core.Permission (Grants (..), Principal (..), SpaceAccess, SpacePermission, Subject)
 import Wiki.Core.Search (SearchHit, SearchQuery)
 import Wiki.Core.Slug (Slug)
@@ -853,6 +854,22 @@ class (Monad m) => MonadWiki m where
   default searchPages :: (MonadTrans t, m ~ t n, MonadWiki n) => SearchQuery -> m [SearchHit]
   searchPages = lift . searchPages
 
+  -- | The pages whose title or path match the letters typed
+  -- ("Wiki.Core.PageMatch"), among the pages of the spaces 'searchPages'
+  -- reads for the current user (those they may view along the whole
+  -- chain, neither encrypted nor the front page's;
+  -- 'Wiki.Core.Search.searchedChain'), but the query's 'except' space,
+  -- templates left out. The best first, as 'Wiki.Core.PageMatch.rankTitles'
+  -- ranks them, at most 'Wiki.Core.PageMatch.titleLimit'. What the
+  -- editor's list after @[[@ will offer of other spaces (issue #301).
+  --
+  -- Fewer than 'Wiki.Core.PageMatch.minLetters' letters, and a space left
+  -- out that is not there, find nothing, as a search does. Letters longer
+  -- than 'Wiki.Core.PageMatch.maxLetters' are 'Invalid'.
+  findPagesByTitle :: TitleQuery -> m (Either WikiError [TitleHit])
+  default findPagesByTitle :: (MonadTrans t, m ~ t n, MonadWiki n) => TitleQuery -> m (Either WikiError [TitleHit])
+  findPagesByTitle = lift . findPagesByTitle
+
   -- * Drafts
 
   -- | The signed-in user's draft of a page ("Wiki.Core.Draft"), if they
@@ -981,6 +998,7 @@ instance (MonadWiki m) => MonadWiki (HalogenM st act slots output m) where
   attachmentFrameUrl = H.async . attachmentFrameUrl
   fetchExport t = H.async . fetchExport t
   searchPages = H.async . searchPages
+  findPagesByTitle = H.async . findPagesByTitle
   getDraft = H.async . getDraft
   saveDraft p v t = H.async . saveDraft p v t
   discardDraft = H.async . discardDraft

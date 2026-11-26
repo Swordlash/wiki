@@ -12,6 +12,7 @@ module Test.Sample
   , versionInfo
   , version
   , hit
+  , titleHit
   , sessionInfo
   , whatsNew
   , user
@@ -106,6 +107,7 @@ import Wiki.Core.Notification (Kind (..), MailMode (..), Notification (..), Page
 import Wiki.Core.Order (ChildOrder (..))
 import Wiki.Core.Page (Page (..))
 import Wiki.Core.PageKind qualified as Kind
+import Wiki.Core.PageMatch (TitleHit (..))
 import Wiki.Core.Permission (GlobalGrant (..), GlobalPermission (..), Grants (..), SpaceAccess (..), SpaceGrant (..), SpacePermission (..), Subject (..))
 import Wiki.Core.Search (Piece (..), SearchHit (..), Snippet (..))
 import Wiki.Core.Slug (Slug, mkSlug)
@@ -252,6 +254,17 @@ hit =
     , spacePath = [slug "docs"]
     , pagePath = [slug "tour"]
     , snippet = Snippet [Piece "… a " False, Piece "tour" True, Piece " of the wiki …" False]
+    }
+
+-- | A page the lookup by title found.
+titleHit :: TitleHit
+titleHit =
+  TitleHit
+    { page = PageId "p1"
+    , space = SpaceId "s1"
+    , spacePath = [slug "docs"]
+    , pagePath = [slug "guides", slug "tour"]
+    , title = "Tour"
     }
 
 -- | The signed-in user, without an avatar.

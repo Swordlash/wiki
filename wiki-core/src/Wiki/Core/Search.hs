@@ -37,6 +37,9 @@ module Wiki.Core.Search
   , searchQuery
   , queryWords
 
+    -- * The spaces searched
+  , searchedChain
+
     -- * Hits
   , SearchHit (..)
   , Snippet (..)
@@ -71,11 +74,14 @@ import Data.IntMap.Strict qualified as IntMap
 import Data.Text qualified as T
 import Data.Text.Unsafe qualified as U
 import Protolude
+import Wiki.Core.HomePage (HomePage, isHomeSpace)
 import Wiki.Core.Id (PageId, SpaceId)
 import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), Footnote (..), ListItem (..), SpoilerHead (..), parseMarkdown, plainText)
 import Wiki.Core.Markdown.Html (htmlText, parseFrameHtml, parseHtml)
 import Wiki.Core.Page (Page (..))
+import Wiki.Core.Permission (Grants, Principal, canView)
 import Wiki.Core.Slug (Slug, foldLetter)
+import Wiki.Core.Space (Space (..))
 
 -- | What to search for, and where.
 data SearchQuery = SearchQuery
@@ -102,6 +108,19 @@ data SearchQuery = SearchQuery
 -- page shows, without the templates.
 searchQuery :: Text -> SearchQuery
 searchQuery text = SearchQuery {text, space = Nothing, includeSubspaces = True, limit = 50, templates = False}
+
+-- | Whether the search reads the pages of the last space of a chain (the
+-- space and every space above it, from the top level), for someone with
+-- these grants: when they may view it along the whole chain, and no space
+-- of the chain is the front page's ('isHomeSpace') or encrypted. An
+-- encrypted space's pages have empty titles and texts on the server, and
+-- the browser searches them itself; a space being converted has its key
+-- set throughout, so it counts as encrypted too. Every backend's search,
+-- and its lookup of pages by title ("Wiki.Core.PageMatch"), picks its
+-- spaces by this one rule.
+searchedChain :: HomePage -> Maybe Principal -> Grants -> [Space] -> Bool
+searchedChain home who grants chain =
+  not (any (\s -> isHomeSpace home s.id || isJust s.encryption) chain) && canView who grants chain
 
 -- | The words of a query, folded like the text they are searched in.
 queryWords :: SearchQuery -> [Text]

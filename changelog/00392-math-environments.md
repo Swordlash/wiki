@@ -27,9 +27,9 @@ technical: false
   `CD`) are offered only there, between `$$` or in a `math` fence. The
   list shows them while you type the start of `\begin`; once `\begin` is
   typed whole, no list opens, as for any command typed whole.
-- The editor offers no environment where a brace follows the cursor in
-  the formula (the name may be there already), or where an `\end` comes
-  anywhere after the cursor in the same formula, as when you type
-  `\begin` in front of a matrix you have written. That includes the
+- The editor offers no environment where a brace or a comment follows the
+  cursor in the formula (the name may be there already), or where an
+  `\end` comes anywhere after the cursor in the same formula, as when you
+  type `\begin` in front of a matrix you have written. That includes the
   `\end` of an environment you are typing inside, such as `aligned`:
   there you type the environment's name yourself.

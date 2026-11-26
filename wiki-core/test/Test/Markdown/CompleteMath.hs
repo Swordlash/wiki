@@ -134,23 +134,52 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
         , "$$\n\\begin{aligned}\nx &= \\be‸ % \\end{aligned}\n$$"
         ]
       $ \marked -> (marked, environmentsAt marked) `shouldBe` (marked, Just [])
-    it "offers none in display math the page does not close yet where the line after the cursor's holds anything, a quotation's mark too: the lines below are not in the math read"
+    it "offers none in math the page does not close yet, display math or a formula, where the line after the cursor's holds anything, a quotation's mark too: the lines below are not in the math read"
       $ for_
         [ "$$\n\\be‸\na & b\n\\end{pmatrix}"
         , "$$\n\\be‸\n "
         , "> $$\n> \\be‸\n> a & b\n> \\end{pmatrix}"
         , "> $$\n> \\be‸\n>"
+        , "Text $a + \\be‸\nmore text"
+        , "$\\be‸\n\\end{pmatrix} $"
         ]
       $ \marked -> (marked, environmentsAt marked) `shouldBe` (marked, Just [])
-    it "tells display math the page does not close yet from math the page closes" $ do
-      let closedBy marked =
+    it "reads a formula that runs over lines whole, as the page does, the list opening on its first line: an \\end on a later line refuses" $ do
+      for_
+        [ "$\\be‸\n\\end{pmatrix}$"
+        , "$\\be‸\na & b\n\\end{pmatrix}$"
+        , "> $\\be‸\n> \\end{pmatrix}$"
+        , "- $\\be‸\n  \\end{pmatrix}$"
+        ]
+        $ \marked -> (marked, environmentsAt marked) `shouldBe` (marked, Just [])
+      for_ ["$\\be‸\na & b$", "Text $a + \\be‸", "$\\be‸\n\nNext paragraph."] $ \marked ->
+        (marked, elem (labelOf "pmatrix") <$> environmentsAt marked) `shouldBe` (marked, Just True)
+    it "offers none where a macro in force defines \\begin or \\end" $ do
+      let environmentsWith macros marked = filter ("\\begin{" `T.isPrefixOf`) . map (.label) <$> listAt macros marked
+      environmentsWith [cmd "\\begin" "Team"] "$$\n\\be‸\n$$" `shouldBe` Just []
+      environmentsWith [cmd "\\end" "this page"] "$$\n\\be‸\n$$" `shouldBe` Just []
+      length <$> environmentsWith [cmd "\\R" "the wiki"] "$$\n\\be‸\n$$" `shouldBe` Just (length katexEnvironments)
+    it "offers none where a comment follows the cursor: KaTeX passes over it, and the name may come after" $
+      for_ ["```math\n\\be‸ % a comment\n{pmatrix}\n```", "$$\n\\be‸% a comment\n$$"] $ \marked ->
+        (marked, environmentsAt marked) `shouldBe` (marked, Just [])
+    it "tells math the page does not close yet from math the page reads, a formula over lines too, with the page's TeX after the cursor" $ do
+      let pageMathAt marked =
             let at = placeAt marked
-                probed wanted = [Candidate {label = show wanted.closedByProbe, skeleton = [], writing = AsText, action = Nothing, note = Nothing, origin = Nothing}]
+                probed wanted = [Candidate {label = maybe "none" (T.strip . T.replace "\\Zqxjvmath" "‸") wanted.pageMath, skeleton = [], writing = AsText, action = Nothing, note = Nothing, origin = Nothing}]
              in map (.label) . (.candidates) <$> complete [probed] (readLine at.above) at
-      for_ ["$$\n\\be‸", "$$\n\\be‸\na & b", "> $$\n> \\be‸\n> a", "$$\n\\begin{aligned}\n\\be‸"] $ \marked ->
-        (marked, closedBy marked) `shouldBe` (marked, Just ["True"])
-      for_ ["$$\n\\be‸\n$$", "$$\\be‸$$", "$\\be‸$", "$\\be‸", "Text $a + \\be‸", "```math\n\\be‸", "```math\n\\be‸\n```", "> $$\n> \\be‸\n> $$"] $ \marked ->
-        (marked, closedBy marked) `shouldBe` (marked, Just ["False"])
+      for_ ["$$\n\\be‸", "$$\n\\be‸\na & b", "> $$\n> \\be‸\n> a", "$$\n\\begin{aligned}\n\\be‸", "$\\be‸", "Text $a + \\be‸", "Text $a + \\be‸\nmore text"] $ \marked ->
+        (marked, pageMathAt marked) `shouldBe` (marked, Just ["none"])
+      for_
+        [ ("$$\n\\be‸\n$$", "‸")
+        , ("$$\\be‸$$", "‸")
+        , ("$\\be‸$", "‸")
+        , ("```math\n\\be‸", "‸")
+        , ("```math\n\\be‸\n```", "‸")
+        , ("> $$\n> \\be‸\n> $$", "‸")
+        , ("$\\be‸\n\\end{pmatrix}$", "‸\n\\end{pmatrix}")
+        , ("> $\\be‸\n> \\end{pmatrix}$", "‸\n\\end{pmatrix}")
+        ]
+        $ \(marked, tex) -> (marked, pageMathAt marked) `shouldBe` (marked, Just [tex])
     it "offers none where the parser would read the math otherwise with environments written, a name of letters or one with a star" $ do
       let at = placeAt "$$\n\\be‸\n$$"
           -- Parsers that read no math in a probe that holds a text, where
@@ -204,9 +233,16 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
         , "$\\fr‸+1$"
         , "$\\fr‸ = 1$"
         , "$$\n\\fr‸\n{a}{b}\n$$"
-        , "> $$\n> \\fr‸\n> $$"
+        , -- A formula over lines, read whole: the arguments on the next
+          -- line (#392's review).
+          "$\\fr‸\n{a}{b}$"
+        , "> $\\fr‸\n> {a}{b}$"
+        , "$$\n\\fr‸ % a comment\n{a}{b}\n$$"
         ]
         $ \marked -> (marked, walkAt [] marked "\\frac") `shouldBe` (marked, Just (["\\frac‸"], AsText))
+      -- The rest of the math, a quotation's marks taken off by the parser:
+      -- its end follows, and the braces are written.
+      (snd <$> walkAt [] "> $$\n> \\fr‸\n> $$" "\\frac") `shouldSatisfy` lineAsText
       (snd <$> walkAt [] "$\\sq‸[3]{x}$" "\\sqrt") `shouldBe` Just AsText
     it "writes the name alone for a command whose arguments KaTeX's tables do not give for certain: a colour, a delimiter's size, a macro of KaTeX's that is a function" $
       for_ [("$\\colo‸$", "\\color"), ("$\\textcolo‸$", "\\textcolor"), ("$\\bi‸$", "\\big"), ("$\\lef‸$", "\\left"), ("$\\operatorn‸$", "\\operatorname"), ("$\\p‸$", "\\pu")] $ \(marked, label) ->

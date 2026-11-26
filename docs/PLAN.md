@@ -2880,7 +2880,18 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   one lookup out; no ask from an encrypted page. The rest of #301 is
   built and in review: the editor's group (#389), splitting an item
   on its later lines (#390), a math command's braces from KaTeX's
-  own arities (#391, on #389), and `\begin…\end` after it. **Held requests (#385, after #377):** the
+  own arities (#391, on #389), and `\begin…\end` after it (#392).
+  **Found by #389's rounds in the code before it, and left for a
+  pull request of their own:** `plainPageWrite` refuses only a space
+  the fresh list marks encrypted, so a draft, a save, an upload or
+  a comment goes out plain when the list no longer holds the space
+  (encrypted, and the reader's access taken away, with the editor's
+  tab left open); the mentions' lookup of people trusts the editor's
+  snapshot of the space, so typed letters go to `people/search`
+  after another tab starts encrypting it; the mentions' asker keeps
+  its answers by letters for the editor's life, across a change of
+  reader. #389's own lookup has none of the three
+  (`plainSourceLookup`, `Inputs`, no kept answers). **Held requests (#385, after #377):** the
   browser examples that hold a request start over a backend with no
   time limit, through one helper (`holdingEnv`, `startHolding` in
   `Test.Browser.Http`); left: five holds in `Test/Browser/Vault.hs`

@@ -417,6 +417,7 @@ test-suite wiki-app-test
         Test.Preview
         Test.Problems
         Test.Complete
+        Test.Elsewhere
         Test.Readme
         Test.Rect
         Test.Route

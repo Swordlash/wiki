@@ -63,7 +63,11 @@
 //   opens it, what it offers and what an entry writes (a snippet, with
 //   places to fill) are Haskell's (Wiki.Core.Markdown.Complete): a
 //   "wiki-complete" event asks ({id, line, before, after, nodes}), and the
-//   component answers through wikiEditor.completed(id, found).
+//   component answers through wikiEditor.completed(id, found). After [[
+//   and two letters, the list has a second group, "In other spaces": the
+//   pages of the other spaces the reader may view, which the component
+//   looks up on the server ("wiki-complete-elsewhere", answered through
+//   wikiEditor.completedElsewhere).
 // - the page's problems (WP5.65 of docs/PLAN.md: a formula, a diagram or a
 //   picture that cannot be drawn, a broken spoiler or box marker) are
 //   diagnostics of @codemirror/lint, set by the component
@@ -1148,6 +1152,14 @@ const emojiSource = (names, whole) => {
 // asks the parser whether it is in math.
 const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$|(^|[ \t])\/[A-Za-z]*$|\\[A-Za-z]+$/;
 
+// elsewhereGate is what may open the group "In other spaces" of the list
+// after [[ (elsewhereSource), as loosely: [[ not followed by "!" or "/",
+// then the letters typed, two of them at least once their spaces at either
+// end are left out (shortest below). Haskell reads the letters again, with
+// the parser.
+const elsewhereGate = /\[\[(?![!/])([^\]|]*)$/;
+const elsewhereShortest = 2;
+
 // The "/" whose menu Escape closed, by position in each state, kept
 // where the text around them moves: the letters typed after such a "/"
 // do not open its menu again (as the emoji's Escape escapes its colon),
@@ -1409,15 +1421,30 @@ const writeOption = (host, option, asked) => (view, completion, from, to) => {
 // place of the cursor's whole line, with the places to go through with
 // Tab (places, after), and what the editor does then (writeOption).
 const markupSource = (host, markup, whole) => async (context) => {
+  const place = placeOf(context, whole);
+  if (!markupGate.test(place.before)) return null;
+  const found = await unlessAborted(context, markup.ask(JSON.stringify(place.detail), place.detail));
+  return listOf(host, context, place, found);
+};
+
+// Where a source of the wiki's own Markdown is asked: the cursor's line in
+// the whole text (wholeAt), the line before the cursor and after it, and
+// the question's detail, {line, before, after, nodes}.
+const placeOf = (context, whole) => {
   const { state, pos, tree } = whole(context);
   const line = state.doc.lineAt(pos);
   const before = state.sliceDoc(line.from, pos);
-  if (!markupGate.test(before)) return null;
   const after = state.sliceDoc(pos, line.to);
   const nodes = [];
   for (let node = tree.resolveInner(pos, -1); node; node = node.parent) nodes.push(node.name);
-  const detail = { line: line.number, before, after, nodes: nodes.join(" ") };
-  const found = await unlessAborted(context, markup.ask(JSON.stringify(detail), detail));
+  return { state, pos, before, detail: { line: line.number, before, after, nodes: nodes.join(" ") } };
+};
+
+// The list of an answer, for the library, or null for none; its options
+// in a section of the list when one is given (elsewhereSource), after
+// every option that has none.
+const listOf = (host, context, place, found, section) => {
+  const { state, pos, before } = place;
   if (found === null || found.options.length === 0) return null;
   // The line's text before the cursor is the same in a row and in the
   // master, so the replaced text's length in units is read from it.
@@ -1438,6 +1465,7 @@ const markupSource = (host, markup, whole) => async (context) => {
     options: found.options.map((option) => ({
       label: option.label,
       detail: option.detail,
+      section,
       apply: writeOption(host, option, asked),
       enter: found.enter,
       typed: (s, head) => ({ from, letters: s.sliceDoc(from, head) }),
@@ -1447,6 +1475,34 @@ const markupSource = (host, markup, whole) => async (context) => {
       dismiss: found.escape === "dismisses" ? dismissAt : undefined,
     })),
   };
+};
+
+// The pages of other spaces after [[ (#301): a group of the list of its
+// own, "In other spaces", below the space's own pages (markupSource),
+// which come first and stay as they are. The component looks them up on
+// the server once the typing pauses, so the answer comes later than the
+// space's own: the library shows the list it has meanwhile, and adds the
+// group when the answer comes. Its options say what Enter and Escape do
+// as the space's own do, so that the keys act the same when the space's
+// own list is empty and only this group is shown.
+//
+// It asks through `elsewhere`, an asker of its own that keeps no answer:
+// an answer kept would outlive a change of the reader. A question is
+// given up when the text changes (abort on a change of the document), so
+// that the component hears the newer question at once and looks up only
+// the last letters typed; a late answer then writes nothing and opens
+// nothing. A line that cannot ask returns null at once, so that no other
+// list waits for this source.
+const elsewhereSection = { name: "In other spaces", rank: 1 };
+const elsewhereSource = (host, elsewhere, whole) => (context) => {
+  const place = placeOf(context, whole);
+  const typed = elsewhereGate.exec(place.before);
+  if (typed === null || typed[1].trim().length < elsewhereShortest) return null;
+  const asked = new Promise((resolve) => {
+    elsewhere.ask(JSON.stringify(place.detail), place.detail).then(resolve);
+    context.addEventListener("abort", () => resolve(null), { onDocChange: true });
+  });
+  return asked.then((found) => (context.aborted ? null : listOf(host, context, place, found, elsewhereSection)));
 };
 
 // An entry of the emoji's list shows its emoji before its name; a
@@ -1485,6 +1541,7 @@ const completions = (host) => {
   const people = asker(host, "wiki-mention");
   const names = asker(host, "wiki-emoji");
   const markup = asker(host, "wiki-complete", false);
+  const elsewhere = asker(host, "wiki-complete-elsewhere", false);
   // What Enter and Escape do in the list shown is what its options say
   // (its first, since every option of a list says the same): `enter` is
   // "chooses" (or nothing), to choose at once, or {after: n}, to choose
@@ -1496,7 +1553,12 @@ const completions = (host) => {
   // (dismissedSlashes). A mention's list chooses at once and closes; the
   // emoji's chooses after two letters and escapes its colon; the wiki's
   // own Markdown says in its answer, its "/" menu dismissing its "/".
-  const shown = (state) => (completionStatus(state) === "active" ? (currentCompletions(state)[0] ?? null) : null);
+  // A list is shown while a source is still asked for, too: the space's
+  // pages after [[ are shown while the pages of other spaces are looked up
+  // (elsewhereSource), and its keys are the list's. A list the library
+  // shows greyed out while it asks again after a key is no list here
+  // (currentCompletions gives none).
+  const shown = (state) => currentCompletions(state)[0] ?? null;
   // Whether the reader moved in a list that waits for letters with the keys (an arrow,
   // Page Up or Page Down) since it was shown for the letters typed: what
   // was typed then ({from, letters}), by view. A move counts whichever
@@ -1528,7 +1590,7 @@ const completions = (host) => {
   const answering = new WeakMap();
   const forgetMoves = EditorView.updateListener.of((update) => {
     const status = completionStatus(update.state);
-    const active = status === "active";
+    const active = shown(update.state) !== null;
     if (moved.has(update.view) && !active) moved.delete(update.view);
     if (!active) shownAt.delete(update.view);
     else if (!shownAt.has(update.view)) shownAt.set(update.view, Date.now());
@@ -1585,7 +1647,11 @@ const completions = (host) => {
     { key: "Escape", run: escape },
     { key: "Tab", run: acceptCompletion },
   ];
-  const config = { icons: false, defaultKeymap: false, addToOptions: [emojiOfOption], interactionDelay };
+  // updateSyncTime 0: the list a source has answered is shown at once,
+  // while a slower source is still asked for (the pages of other spaces
+  // after [[), rather than a tenth of a second later as the library's
+  // default would (sources that answer at once are all in by then).
+  const config = { icons: false, defaultKeymap: false, addToOptions: [emojiOfOption], interactionDelay, updateSyncTime: 0 };
   const ownKeys = Prec.highest(keymap.of(keys.map((binding) => ({ ...binding, stopPropagation: true }))));
   // The keys of a snippet being filled in (an entry of the wiki's own
   // Markdown chosen, or a command of the "/" menu with several places):
@@ -1607,7 +1673,10 @@ const completions = (host) => {
   const fields = snippetParts === null ? [] : [snippetParts.extension, walkRange, walkEnds];
   return {
     extension: [
-      autocompletion({ ...config, override: [mentionSource(people, whole), emojiSource(names, whole), markupSource(host, markup, whole)] }),
+      autocompletion({
+        ...config,
+        override: [mentionSource(people, whole), emojiSource(names, whole), markupSource(host, markup, whole), elsewhereSource(host, elsewhere, whole)],
+      }),
       dismissedSlashes,
       forgetMoves,
       ownKeys,
@@ -1621,6 +1690,7 @@ const completions = (host) => {
     mentioned: people.answer,
     emojied: names.answer,
     completed: markup.answer,
+    completedElsewhere: elsewhere.answer,
     status: (state) => completionStatus(state) ?? "",
     // Whether a view's list is shown and takes its keys now.
     ready: (view) => shownAt.has(view) && Date.now() - shownAt.get(view) >= interactionDelay,
@@ -1648,6 +1718,7 @@ const completions = (host) => {
       people.stop();
       names.stop();
       markup.stop();
+      elsewhere.stop();
     },
   };
 };
@@ -3443,6 +3514,9 @@ export function attach(textarea, host, original, codeTokens) {
     // The component's answer to the question `id` about the list of the
     // wiki's own Markdown at the cursor (markupSource), or null for none.
     completed: (id, found) => completion.completed(id, found),
+    // The component's answer to the question `id` about the pages of other
+    // spaces after [[ (elsewhereSource), or null for none.
+    completedElsewhere: (id, found) => completion.completedElsewhere(id, found),
     // Whether the list of a view (this one, or a row's) is shown and takes
     // its keys, for the browser tests.
     completionReady: (of = view) => completion.ready(of),

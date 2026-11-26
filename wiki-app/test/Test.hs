@@ -14,6 +14,7 @@ import Test.BellDom qualified as BellDom
 import Test.Blog qualified as Blog
 import Test.CommentsDom qualified as CommentsDom
 import Test.Complete qualified as Complete
+import Test.Elsewhere qualified as Elsewhere
 import Test.Deck qualified as Deck
 import Test.DeckDom qualified as DeckDom
 import Test.DecryptedExport qualified as DecryptedExport
@@ -119,6 +120,7 @@ main = do
       SecretField.spec
       SecretFieldDom.spec
       Complete.spec
+      Elsewhere.spec
       Licence.spec
       Readme.spec
     around_ (holding maxBound) $ do

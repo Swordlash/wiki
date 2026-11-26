@@ -349,7 +349,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       -- KaTeX's environments are ordered once too, by the first answer
       -- that lists one (#301).
       _ <- evaluate (let a = mathAnswer "$\\be" "$" in a == a)
-      for_ ["$\\f", "$\\fr", "$\\x", "$\\al", "$\\be", "$\\begi"] $ \typed -> do
+      for_ ["$\\f", "$\\fr", "$\\x", "$\\al", "$\\b", "$\\be", "$\\begi"] $ \typed -> do
         typed' <- evaluate (T.copy typed)
         cost <- allocated (let a = mathAnswer typed' "$" in a == a)
         (typed, cost < mathBound) `shouldBe` (typed, True)
@@ -695,21 +695,25 @@ allocated value = do
 linkBound :: Int64
 linkBound = 20_000_000
 
--- | The allocation an answer after a backslash in math stays within:
--- 0.82 MB natively for letters whose commands take no argument (@\\al@),
--- 1.07 to 1.20 MB where some listed take arguments (@\\f@, @\\fr@,
--- @\\x@): the braces of each are written, and the formula with them is
--- parsed again once for each number of arguments, about 0.12 MB each
--- (#301). Sorting KaTeX's commands again at each answer allocates 4.3 to
--- 4.4 MB (measured on #301's build, 2026-11-26; 1.14 to 1.18 MB before,
--- as measured for #299), over the bound either way. Where environments
--- are listed (@\\be@, @\\begi@), 1.12 to 1.16 MB: about 0.15 MB for the
--- entries and 0.19 MB for the check that the math reads the same with
--- them written (#301, measured 2026-11-26; 0.78 to 0.83 MB before). After
--- @\\b@ alone, 68 commands and 19 environments, 1.58 MB, which this bound
--- does not take in (1.24 MB before the environments).
+-- | The allocation an answer after a backslash in math stays within,
+-- measured natively on 2026-11-26 (#301):
+--
+-- * 0.83 MB for letters whose commands take no argument (@\\al@);
+-- * 1.08 to 1.10 MB where some listed take arguments (@\\f@, @\\fr@,
+--   @\\x@): the braces of each are written, and the formula with them is
+--   parsed again once for each number of arguments;
+-- * 1.12 to 1.16 MB where environments are listed (@\\be@, @\\begi@):
+--   about 0.15 MB for the entries, and 0.19 MB for the one check, per
+--   answer, that the math reads the same with them written (0.78 to 0.83
+--   MB before the environments);
+-- * 1.59 MB after @\\b@ alone, the most: 68 commands, some with braces,
+--   and 19 environments (1.24 MB before the environments).
+--
+-- The regression the bound guards, KaTeX's commands built and sorted again
+-- at each answer, allocates 4.2 to 4.9 MB for the same letters, well over
+-- it.
 mathBound :: Int64
-mathBound = 1_500_000
+mathBound = 2_000_000
 
 -- | KaTeX's commands in the list's order, forced before an answer is
 -- counted: the program orders them once.

@@ -30,7 +30,7 @@ import Wiki.Server.Console (listing, runUsers, usersParser)
 import Wiki.Server.CopyDatabase (CopyOptions (..), CopyOutcome (..), runCopy)
 import Wiki.Server.Options (DatabaseChoice (..))
 import Wiki.Server.Password (hashWith, parameters)
-import Wiki.Server.Rehearsal (Check (..), PageAt (..), PageRead (..), PagesRead (..), RehearsalOutcome (..), Seeding (..), Server (..), SpaceRead (..), checks, compareHomes, comparePages, compareWaysIn, consoleEnvironment, copyHasStep, isolateCopy, listenAnywhere, listenedAt, pathAsBuilt, readPages, readSpaces, readUsersList, runConsoleIn, withServer)
+import Wiki.Server.Rehearsal (Check (..), PageAt (..), PageRead (..), PagesRead (..), RehearsalOptions, RehearsalOutcome (..), Seeding (..), Server (..), SpaceRead (..), checks, compareHomes, comparePages, compareWaysIn, consoleEnvironment, copyHasStep, isolateCopy, listenAnywhere, listenedAt, pathAsBuilt, readPages, readSpaces, readUsersList, rehearsalParser, runConsoleIn, serveCommands, withServer)
 import Wiki.Server.Storage (Place (..), migrateDatabase, withStorageAside)
 import Wiki.Server.Storage.Backend (Backend (..))
 import Wiki.Server.Storage.Rows (settingsLike, storeSetting)
@@ -38,10 +38,32 @@ import Wiki.Server.Storage.Schema (Users (..), WikiDb (..), wikiDb)
 
 unitSpec :: Spec
 unitSpec = do
+  launchesUnitSpec
   pagesUnitSpec
   homesUnitSpec
   pathsUnitSpec
   waysInUnitSpec
+
+-- | The command lines the rehearsal starts its two servers with, from
+-- @rehearse@'s options as the deploy gives them: @--no-pdf@ reaches this
+-- program's @serve@, and @--old-no-pdf@ the old program's, each only when
+-- given.
+launchesUnitSpec :: Spec
+launchesUnitSpec = describe "the upgrade's rehearsal, its servers' command lines" $ do
+  let base = ["--old", "/old/wiki-server", "--data", "/srv/wiki/data", "--scratch", "/srv/wiki/state/rehearsal"]
+      parsed :: [[Char]] -> Maybe RehearsalOptions
+      parsed args = case execParserPure defaultPrefs (info rehearsalParser mempty) args of
+        Success o -> Just o
+        _ -> Nothing
+      commands args = (\o -> serveCommands o ["--data", "/scratch"] ["--data", "/scratch", "--sqlite", "/scratch/wiki.sqlite"]) <$> parsed args
+      old = ["serve", "--data", "/scratch"] <> listenAnywhere
+      new = ["serve", "--data", "/scratch", "--sqlite", "/scratch/wiki.sqlite"] <> listenAnywhere <> ["--no-guide"]
+  it "starts both programs without --no-pdf when not told otherwise" $
+    commands base `shouldBe` Just (old, new)
+  it "gives --no-pdf to this program alone with --no-pdf" $
+    commands (base <> ["--no-pdf"]) `shouldBe` Just (old, new <> ["--no-pdf"])
+  it "gives --no-pdf to the old program too with --old-no-pdf" $
+    commands (base <> ["--no-pdf", "--old-no-pdf"]) `shouldBe` Just (old <> ["--no-pdf"], new <> ["--no-pdf"])
 
 -- | @wiki-server users list@'s table as the ways in check reads it, and its
 -- comparison of the table before the upgrade with the table after. The

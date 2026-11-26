@@ -109,6 +109,11 @@ front root o0 = do
     die "--move-to-postgres takes only --name, --prefix, --db-port and --semaphore or --no-semaphore: the deployment's other settings stay as its last deploy left them"
   -- The ways to serve exclude each other: one may be given, and a later
   -- run moves to another by naming it.
+  -- --pdf and --no-pdf are a deploy's: --rollback puts the kept deployment
+  -- back as it was, its unit included, so the option could not take
+  -- effect. Refused before anything is restored, in the shell's words.
+  when (o0.action == Rollback && not (null o0.optPdf)) $
+    die "--pdf and --no-pdf are for a deploy: --rollback puts the kept deployment back as it was, its unit included; give the option to the deploy after it"
   let given = ways o0
   when (length given > 1) $
     die (intercalate " and " given <> " are ways to serve that exclude each other: give one (--https through tailscale serve, --tls-cert FILE --tls-key FILE with a certificate of your own, --behind-proxy behind a reverse proxy, or --http for plain HTTP)")

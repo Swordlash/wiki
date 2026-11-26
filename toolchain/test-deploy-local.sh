@@ -2180,14 +2180,21 @@ pass 'a PostgreSQL that is there already, on another port or holding a wiki, run
 
 # Moved again, into that container on its own port; then a plain deploy
 # finds the deployment on PostgreSQL (no --fresh, no SQLite file in its
-# way) and rehearses its upgrade there.
+# way) and rehearses its upgrade there. The PDF exports are off by
+# --no-pdf first: the move's comparison starts both its servers (this
+# checkout's wiki-server, both) with --no-pdf, and so does the rehearsal
+# of the deploy after it, whose unit has the option.
+deploy --no-build --no-pdf >"$case_dir/no-pdf-before-move" 2>&1 || fail "the deploy with --no-pdf before the second move failed: $(cat "$case_dir/no-pdf-before-move")"
+: >"$EVENTS"
 deploy --move-to-postgres >"$case_dir/moved-again" 2>&1 || fail 'the second move failed'
 assert_contains "$HOME/$unit" '--database postgres://wiki@127.0.0.1:5433/wiki'
+assert_contains "$EVENTS" "--move-to-database-password-file $pgd/db-password --no-pdf --old-no-pdf"
 : >"$EVENTS"
 out=$case_dir/after-move
 deploy --no-build >"$out" 2>&1 || fail 'a deploy after the move failed'
 assert_lacks "$out" 'the state is incompatible'
 assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $data --database postgres://wiki@127.0.0.1:5433/wiki"
+[ "$(grep 'wiki-server rehearse' "$EVENTS" | grep -c -e ' --no-pdf --old-no-pdf$')" = 1 ] || fail "the rehearsal after the move was not given --no-pdf --old-no-pdf: $(grep 'wiki-server rehearse' "$EVENTS")"
 assert_contains "$EVENTS" 'cabal list-bin --project-file=cabal-native-opt.project --builddir=dist-newstyle/native-opt wiki-server:exe:wiki-server --constraint=wiki-server +postgres'
 [ "$(http_get "http://127.0.0.1:$p/api/v1/info")" = '200 application/json' ] || fail 'the server does not answer after a deploy that followed the move'
 undeploy --purge-data >/dev/null 2>&1
@@ -4134,25 +4141,34 @@ pass 'without a TeX the service finds: said, PDFs off by --no-pdf in the unit, n
 # --texlive is refused with it (in either order) and after it without
 # --pdf, as --pdf with it is, and it is for the server only; with
 # --no-texlive it is taken. --pdf takes it back: the next TeX step checks
-# the TeX again, as it did before.
+# the TeX again, as it did before. The upgrade's rehearsal is given
+# --no-pdf, for the new program's server, whenever the PDFs are off, and
+# --old-no-pdf, for the old program's, only when the installed unit runs
+# wiki-server with --no-pdf already (not on the first run with it, nor
+# after the undeploy); --pdf gives neither. So are --pdf and --no-pdf
+# refused with --rollback, --stop and --status, before anything is done.
 fixture no-pdf
 p=$(free_port 127.0.0.1)
 a=$(other_port "$p")
+# The fake answers that an xelatex works, so that the first deploy's unit
+# has no --no-pdf, as the unit of a deployment with PDFs on.
 cat >"$case_dir/repo/toolchain/check-tex.sh" <<EOF
 #!/bin/sh
 printf 'check-tex.sh ran\n' >>"$EVENTS"
-printf 'not-found\n'
-exit 2
+printf 'working /usr/bin/xelatex\n'
 EOF
 out=$case_dir/first
 deploy --server --sqlite --port "$p" --admin-port "$a" >"$out" 2>&1 || fail 'the deploy before --no-pdf failed'
 assert_contains "$EVENTS" 'check-tex.sh ran'
-assert_contains "$out" "PDF exports: no xelatex on the service's PATH"
+assert_contains "$out" "PDF exports: /usr/bin/xelatex works, the TeX on this machine"
+assert_lacks "$HOME/$unit" '--no-pdf'
 [ -z "$(state pdf_exports)" ] || fail "a deploy without --no-pdf remembered pdf_exports=$(state pdf_exports)"
 : >"$EVENTS"
 out=$case_dir/off
 deploy --no-pdf --no-build >"$out" 2>&1 || fail 'the deploy with --no-pdf failed'
 assert_lacks "$EVENTS" 'check-tex.sh ran'
+assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $HOME/wiki-demo/data --sqlite $HOME/wiki-demo/data/wiki.sqlite --scratch $HOME/.config/wiki-demo/wiki-demo.rehearsal --no-pdf"
+assert_lacks "$EVENTS" '--old-no-pdf'
 [ "$(grep -c 'PDF exports' "$out")" = 1 ] || fail "--no-pdf said more than one line of the PDF exports: $(grep 'PDF exports' "$out")"
 assert_contains "$out" 'deploy-local: PDF exports: off by --no-pdf, so no TeX is checked or installed and the server runs with --no-pdf (remembered; --pdf turns them on again)'
 assert_lacks "$out" '--texlive installs TeX Live'
@@ -4160,9 +4176,11 @@ grep -x 'ExecStart=.* --no-pdf' "$HOME/$unit" >/dev/null || fail 'the unit does 
 assert_lacks "$HOME/$unit" 'Environment="PATH='
 [ "$(state pdf_exports)" = no ] || fail "--no-pdf was remembered as '$(state pdf_exports)'"
 [ -z "$(state texlive)" ] || fail "--no-pdf remembered an answer about TeX Live: $(state texlive)"
+: >"$EVENTS"
 out=$case_dir/kept
 deploy --no-build >"$out" 2>&1 || fail 'the redeploy after --no-pdf failed'
 assert_lacks "$EVENTS" 'check-tex.sh ran'
+assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $HOME/wiki-demo/data --sqlite $HOME/wiki-demo/data/wiki.sqlite --scratch $HOME/.config/wiki-demo/wiki-demo.rehearsal --no-pdf --old-no-pdf"
 assert_contains "$out" 'PDF exports: off by --no-pdf'
 [ "$(state pdf_exports)" = no ] || fail 'the redeploy forgot --no-pdf'
 grep -x 'ExecStart=.* --no-pdf' "$HOME/$unit" >/dev/null || fail 'the redeploy dropped --no-pdf from the unit'
@@ -4189,6 +4207,23 @@ for option in --no-pdf --pdf; do
 done
 assert_lacks "$EVENTS" 'check-tex.sh ran'
 [ "$(state pdf_exports)" = no ] || fail 'a refused run changed pdf_exports'
+# --rollback, --stop and --status take neither option: refused before
+# anything is done, the kept deployment and the state as they were.
+[ -f "$HOME/wiki-demo/previous/unit" ] || fail 'no deployment was kept for a rollback'
+cp "$HOME/wiki-demo/previous/unit" "$case_dir/kept-unit"
+for action in --rollback --stop --status; do
+  for option in --pdf --no-pdf; do
+    : >"$EVENTS"
+    if deploy "$action" --yes "$option" >"$out" 2>&1; then fail "$action took $option"; fi
+    assert_contains "$out" '--pdf and --no-pdf are for a deploy: '
+    assert_lacks "$EVENTS" 'systemctl'
+  done
+done
+assert_contains "$out" '--status changes no setting; give the option to the next deploy'
+if deploy --rollback --yes --pdf >"$out" 2>&1; then fail '--rollback took --pdf'; fi
+assert_contains "$out" '--pdf and --no-pdf are for a deploy: --rollback puts the kept deployment back as it was, its unit included; give the option to the deploy after it'
+cmp -s "$HOME/wiki-demo/previous/unit" "$case_dir/kept-unit" || fail 'a refused --rollback changed the kept deployment'
+grep -x 'ExecStart=.* --no-pdf' "$HOME/$unit" >/dev/null || fail 'a refused --rollback or --stop changed the unit'
 undeploy >"$out" 2>&1 || fail 'the undeploy failed'
 [ "$(state pdf_exports)" = no ] || fail 'the undeploy forgot --no-pdf'
 # With the unit gone, --status says what the state keeps, checks no TeX,
@@ -4198,24 +4233,33 @@ assert_contains "$out" 'PDF exports: off by --no-pdf (remembered): the TeX step 
 assert_lacks "$out" 'the unit runs wiki-server with --no-pdf'
 assert_contains "$out" 'wiki-demo.service is not installed'
 assert_lacks "$EVENTS" 'check-tex.sh ran'
+: >"$EVENTS"
 out=$case_dir/declined
 deploy --no-build --no-pdf --no-texlive >"$out" 2>&1 || fail '--no-pdf with --no-texlive failed'
 assert_lacks "$EVENTS" 'check-tex.sh ran'
+# The unit was taken down: nothing proves that the old program takes
+# --no-pdf, so only the new one is given it.
+assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $HOME/wiki-demo/data --sqlite $HOME/wiki-demo/data/wiki.sqlite --scratch $HOME/.config/wiki-demo/wiki-demo.rehearsal --no-pdf"
+assert_lacks "$EVENTS" '--old-no-pdf'
 [ "$(state texlive)" = no ] || fail "--no-texlive with --no-pdf was remembered as '$(state texlive)'"
 [ "$(state pdf_exports)" = no ] || fail "--no-pdf with --no-texlive was remembered as '$(state pdf_exports)'"
 deploy --status >"$out" 2>&1 || fail '--status failed'
 assert_contains "$out" 'TeX Live under the toolchain was declined (--no-texlive); --pdf --texlive installs it'
+: >"$EVENTS"
 out=$case_dir/back
 deploy --no-build --pdf >"$out" 2>&1 || fail 'the deploy with --pdf failed'
 assert_contains "$EVENTS" 'check-tex.sh ran'
+assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $HOME/wiki-demo/data --sqlite $HOME/wiki-demo/data/wiki.sqlite --scratch $HOME/.config/wiki-demo/wiki-demo.rehearsal"
+[ "$(grep 'wiki-server rehearse' "$EVENTS" | grep -c -e '--no-pdf')" = 0 ] || fail "--pdf still gave the rehearsal --no-pdf: $(grep 'wiki-server rehearse' "$EVENTS")"
 assert_lacks "$out" 'off by --no-pdf'
-assert_contains "$out" "PDF exports: no xelatex on the service's PATH"
+assert_contains "$out" "PDF exports: /usr/bin/xelatex works, the TeX on this machine"
+assert_lacks "$HOME/$unit" '--no-pdf'
 [ -z "$(state pdf_exports)" ] || fail "--pdf was remembered as '$(state pdf_exports)'"
 deploy --status >"$out" 2>&1 || fail '--status failed'
-assert_contains "$out" 'PDF exports: off in the unit (--no-pdf): the deploy found no xelatex that works and installed none'
+assert_contains "$out" "PDF exports: /usr/bin/xelatex works (the TeX on this machine, on the service's PATH)"
 assert_contains "$out" 'TeX Live under the toolchain was declined (--no-texlive); --texlive installs it'
 undeploy >/dev/null 2>&1
-pass '--no-pdf: no TeX checked or installed, said in one line, --no-pdf in the unit, remembered until --pdf, said by --status; --texlive refused with it and after it'
+pass '--no-pdf: no TeX checked or installed, said in one line, --no-pdf in the unit and the rehearsal, remembered until --pdf, said by --status; --texlive refused with it and after it, --pdf and --no-pdf with --rollback, --stop and --status'
 
 # The page "What's new?": --no-whats-new reaches the unit as wiki-server's
 # --no-whats-new, is remembered, and --status says so; --whats-new drops

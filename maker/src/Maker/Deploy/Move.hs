@@ -564,8 +564,12 @@ moveToPostgres m = do
     ready <- (&&) <$> dropScratch <*> psqlIn "wiki" ("CREATE DATABASE " <> rehearsalDatabase)
     unless ready $
       beforeSwitch ("the comparison's scratch database " <> rehearsalDatabase <> " could not be made (see above)")
+    -- With the PDF exports off by --no-pdf, neither server of the
+    -- comparison tries its TeX engine. Both are this checkout's
+    -- wiki-server, which takes the option.
+    pdfExports <- stateGet "pdf_exports" m.stateFile
     compared <-
-      Op.run ops newBin ["rehearse", "--old", newBin, "--data", dataDir, "--sqlite", sqlite, "--scratch", scratch, "--move-to-database", scratchUrl, "--move-to-database-password-file", pgDir </> "db-password"]
+      Op.run ops newBin (["rehearse", "--old", newBin, "--data", dataDir, "--sqlite", sqlite, "--scratch", scratch, "--move-to-database", scratchUrl, "--move-to-database-password-file", pgDir </> "db-password"] <> (if pdfExports == "no" then ["--no-pdf", "--old-no-pdf"] else []))
         `finally` cleanUp
     case compared of
       ExitSuccess -> say "the comparison passed: the wiki reads the same in PostgreSQL as in SQLite"

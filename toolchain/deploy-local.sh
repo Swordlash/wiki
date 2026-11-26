@@ -425,7 +425,9 @@
 #   --no-pdf         --server: no PDF exports. The TeX step checks no TeX, installs none
 #                    and asks nothing, and wiki-server runs with --no-pdf; a TeX Live
 #                    under the toolchain is left there. Remembered for the next run;
-#                    --texlive is refused with it and after it
+#                    --texlive is refused with it and after it. The upgrade's rehearsal
+#                    starts the new program with --no-pdf, and the old one too when its
+#                    unit has the option. Not for --rollback, --stop or --status
 #   --pdf            --server: PDF exports again, after a run with --no-pdf: the TeX
 #                    step checks the TeX as it does without either (the first run's
 #                    default)
@@ -655,6 +657,14 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+# --pdf and --no-pdf are a deploy's: --rollback puts the kept deployment
+# back as it was, its unit included, and --stop and --status change no
+# setting, so the option could not take effect. Refused before anything
+# is done. (The move to PostgreSQL refuses them with its other options.)
+case $action:$opt_pdf in
+  rollback:?*) die "--pdf and --no-pdf are for a deploy: --rollback puts the kept deployment back as it was, its unit included; give the option to the deploy after it" ;;
+  stop:?* | status:?*) die "--pdf and --no-pdf are for a deploy: --$action changes no setting; give the option to the next deploy" ;;
+esac
 # The ways to serve exclude each other: one may be given, and a later run
 # moves to another by naming it.
 ways=

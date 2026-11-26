@@ -22,8 +22,9 @@ module Maker.Deploy.Rehearse
   )
 where
 
-import Control.Exception (finally)
+import Control.Exception (IOException, finally, try)
 import Control.Monad (unless, when)
+import Data.List (isInfixOf, isPrefixOf)
 import Maker.Deploy.Plan
 import Maker.Deploy.Prepare (pgCompose, pgWrapperFor)
 import Maker.Deploy.Unit (dbUrl)
@@ -83,8 +84,15 @@ rehearse p = do
       psql ("CREATE DATABASE " <> rehearsalDatabase)
       writeFile scratchRestore (pgWrapperFor name pgDir dbPort "pg_restore" rehearsalDatabase)
       setFileMode scratchRestore 0o700
+    -- With the PDF exports off by --no-pdf, the rehearsal's servers try no
+    -- TeX engine either: the new program is given --no-pdf, and the old
+    -- one only when its unit runs it with --no-pdf already, the proof that
+    -- it takes the option (an older wiki-server would refuse to start).
+    oldTakesNoPdf <- unitHasNoPdf (v "unit_file")
+    let pdfArgs = ["--no-pdf" | noPdf] <> ["--old-no-pdf" | noPdf && oldTakesNoPdf]
+        noPdf = v "pdf_exports" == "no"
     code <-
-      runInherit newBin (["rehearse", "--old", oldBin, "--data", dir </> "data"] <> liveArgs <> ["--scratch", scratch] <> scratchArgs)
+      runInherit newBin (["rehearse", "--old", oldBin, "--data", dir </> "data"] <> liveArgs <> ["--scratch", scratch] <> scratchArgs <> pdfArgs)
         `finally` (removePathForcibly scratch >> when postgres (removePathForcibly scratchRestore >> dropScratch))
     case code of
       ExitSuccess -> say "the rehearsal passed: the new program reads the wiki as the old one did"
@@ -94,4 +102,10 @@ rehearse p = do
           "the rehearsal could not drive the program the wiki runs now (see above), so the upgrade was not rehearsed. The running wiki is as it was. To deploy without the rehearsal this once, run the deploy again with --no-rehearsal"
       ExitFailure _ -> die "the rehearsal of the upgrade could not be done (see above). The running wiki is as it was; nothing was changed. To deploy without the rehearsal this once, run the deploy again with --no-rehearsal"
   where
+    -- Whether the installed unit's ExecStart runs wiki-server with
+    -- --no-pdf, as --status reads it. No unit (taken down with --stop)
+    -- proves nothing.
+    unitHasNoPdf file = do
+      text <- either (\(_ :: IOException) -> "") id <$> try (readFile file)
+      pure (length text `seq` any (\l -> "ExecStart=" `isPrefixOf` l && " --no-pdf" `isInfixOf` l) (lines text))
     scratchUrl port = "postgres://wiki@127.0.0.1:" <> (if null port then "5433" else port) <> "/" <> rehearsalDatabase

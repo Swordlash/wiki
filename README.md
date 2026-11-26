@@ -1873,7 +1873,15 @@ shown as it comes and kept in `<toolchain>/.wiki-toolchain/texlive/install.log`.
   again. `--no-pdf` goes with `--no-texlive`; with `--texlive` it is refused, as `--pdf`
   with `--no-pdf` is, and `--texlive` alone on a deployment whose PDFs are off by
   `--no-pdf` is refused until `--pdf` is given with it. The wizard's PDF question offers
-  it as its fourth answer (`texlive=off` in an answer file).
+  it as its fourth answer (`texlive=off` in an answer file). With the PDFs off, nothing
+  else of the deploy tries TeX either: the checks of the native build are given
+  `--without-tex`, and the upgrade's rehearsal (`wiki-server rehearse`) starts the new
+  program's server with `--no-pdf` (`rehearse --no-pdf`) and the old program's too
+  (`--old-no-pdf`) when the installed unit runs it with `--no-pdf` already, the proof
+  that it takes the option. On the first run with `--no-pdf`, and after `--stop`, the old
+  program's server still tries its TeX once before it serves. `--pdf` and `--no-pdf` are
+  refused with `--rollback`, which puts the kept deployment back as it was, its unit
+  included, and with `--stop` and `--status`.
 - Whenever the TeX step ends without an `xelatex` that works (the one the service finds
   fails or there is none, and nothing was installed; the install or its check failed;
   `--no-texlive`, or the answer no), the unit runs `wiki-server serve` with `--no-pdf`:

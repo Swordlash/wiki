@@ -17,6 +17,11 @@ technical: true
   deploy-local: PDF exports: off by --no-pdf, so no TeX is checked or installed and the server runs with --no-pdf (remembered; --pdf turns them on again)
   ```
 
+  The upgrade's rehearsal starts its servers with `--no-pdf` too: the
+  new program always, and the program the wiki runs now when its service
+  already runs with `--no-pdf`. So does the move to PostgreSQL, and the
+  wizard tries no TeX before it opens.
+
   Later deploys remember it, and `--status` says so. `--pdf` turns the
   PDF exports on again: the next deploy checks the TeX as before. A TeX
   Live already installed under the toolchain stays where it is. The

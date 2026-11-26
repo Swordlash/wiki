@@ -19,6 +19,10 @@
 -- made, the settings or the editor's panel, which show the server's
 -- options again: the input is built from the plugins' state
 -- ("Wiki.App.View.Plugins.Machine") as the shell and the editor build it.
+-- A key kept for one address is not sent to another that the options
+-- name: the settings and the editor's panel say for which address it was
+-- kept, and the providers, which record what they are asked, are asked
+-- nothing with it there.
 module Test.SecretFieldDom (spec) where
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)

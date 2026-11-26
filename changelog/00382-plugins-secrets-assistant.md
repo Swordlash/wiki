@@ -30,7 +30,12 @@ title: The writing assistant's keys follow you in your vault
 
   Where your vault is locked in this browser, the field offers to unlock it
   with a passkey or your password, and the assistant in the editor says to
-  unlock it first. With "Ask for a passkey or your password each time the
+  unlock it first.
+
+- A key is kept for the service it was entered for, and is sent to no
+  other. After you choose another address under Service, enter the key
+  for that address: until you do, the settings and the editor say which
+  address the kept key is for. With "Ask for a passkey or your password each time the
   wiki opens" (Settings, Security, Keys), that is once a visit, now for
   the assistant's keys too.
 

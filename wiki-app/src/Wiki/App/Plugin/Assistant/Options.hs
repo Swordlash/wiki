@@ -35,8 +35,12 @@
 -- model list with the typed key, then makes the smallest possible request
 -- with it (looking up the model, which is free); the field keeps the key
 -- only when the provider accepts both, and the model the check passed
--- with is kept with it. A refused key is not kept: the field shows why.
--- "Test the key" checks a kept key with that small request. Once kept, a
+-- with is kept with it. A key is kept with the service it was checked
+-- against (the provider and the address chosen), and is sent to no other:
+-- where the options name another address, the provider has no key, and
+-- its section says for which address the key was kept
+-- ("Wiki.Core.Assistant.Split"). A refused key is not kept: the field
+-- shows why. "Test the key" checks a kept key with that small request. Once kept, a
 -- key is never shown again; the field only shows that one is set.
 -- Managing the vault itself (its unlock, passkeys, "ask each time") is
 -- the settings' section "Security".

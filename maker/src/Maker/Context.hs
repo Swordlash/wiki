@@ -62,6 +62,11 @@ data Context = Context
   , wizard :: Bool
   -- ^ Whether the configuration wizard is built too, which links terminfo
   -- (@native --with-wizard@).
+  , tex :: Bool
+  -- ^ Whether the check of the native build tries xelatex
+  -- (toolchain/check-tex.sh, up to its timeout). @native --without-tex@
+  -- turns it off: a deploy with @--no-pdf@ makes no PDFs, and the
+  -- configuration wizard needs no TeX.
   , systemTools :: Bool
   -- ^ Whether GHC and cabal are the machine's own, as PATH finds them
   -- (@native --system-tools@): the summary then names the versions found.

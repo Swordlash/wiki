@@ -3220,6 +3220,37 @@ cmp "$pre/toolchain/.wiki-toolchain/pages/app-server-$head1.zip" "$FAKE_GITHUB/d
 assert_contains "$pre/toolchain/.wiki-toolchain/pages/app-server-$head1.zip.meta" "id=$(printf '%s %s' "app-server-$head1.zip" 2026-10-31T10:00:00Z | cksum | cut -d' ' -f1) updated_at=2026-10-31T10:00:00Z size="
 pass '--backend-only downloads the checkout'"'"'s page from its GitHub release, builds wiki-server alone after bootstrap native, without npm or Node, and serves it with gzip copies'
 
+# With the PDF exports off by --no-pdf, a deploy of the page CI built tells
+# the bootstrap --without-tex, so that its check of the native build tries
+# no xelatex either, given now or remembered; --pdf drops it. The fixture's
+# bootstrap is a fake that logs how it was called (that the real one gives
+# the option to its check is toolchain/test-bootstrap.sh's), and its
+# toolchain/check-tex.sh here a fake that writes a line into EVENTS at each
+# call: the deploy's own check of the machine and its TeX step call none.
+cp "$case_dir/repo/toolchain/check-tex.sh" "$case_dir/check-tex.sh.real"
+cat >"$case_dir/repo/toolchain/check-tex.sh" <<EOF
+#!/bin/sh
+printf 'check-tex.sh ran\n' >>"$EVENTS"
+printf 'not-found\n'
+exit 2
+EOF
+: >"$EVENTS"
+out=$case_dir/no-pdf
+company --backend-only --no-pdf >"$out" 2>&1 || fail "the deploy of the page CI built with --no-pdf failed: $(cat "$out")"
+assert_contains "$EVENTS" "bootstrap native --without-postgres --without-tex WIKI_TOOLCHAIN_HOME=$pre/toolchain"
+assert_lacks "$EVENTS" 'check-tex.sh ran'
+: >"$EVENTS"
+company >"$out" 2>&1 || fail "the redeploy after --no-pdf failed: $(cat "$out")"
+assert_contains "$EVENTS" "bootstrap native --without-postgres --without-tex WIKI_TOOLCHAIN_HOME=$pre/toolchain"
+assert_lacks "$EVENTS" 'check-tex.sh ran'
+: >"$EVENTS"
+company --pdf >"$out" 2>&1 || fail "the deploy with --pdf failed: $(cat "$out")"
+assert_contains "$EVENTS" "bootstrap native --without-postgres WIKI_TOOLCHAIN_HOME=$pre/toolchain"
+assert_lacks "$EVENTS" 'bootstrap native --without-postgres --without-tex'
+assert_contains "$EVENTS" 'check-tex.sh ran'
+cp "$case_dir/check-tex.sh.real" "$case_dir/repo/toolchain/check-tex.sh"
+pass '--no-pdf with the page CI built: the bootstrap is told --without-tex, given now or remembered, and no check-tex.sh runs; --pdf drops it'
+
 # A wiki in SQLite needs no libpq, in the bootstrap's check either (Codex's
 # first round on #141). On a machine with neither pg_config nor dpkg-query,
 # --sqlite --backend-only passes the deploy's check and the bootstrap's,
@@ -4136,7 +4167,7 @@ assert_contains "$out" 'PDF exports: off by --no-pdf'
 [ "$(state pdf_exports)" = no ] || fail 'the redeploy forgot --no-pdf'
 grep -x 'ExecStart=.* --no-pdf' "$HOME/$unit" >/dev/null || fail 'the redeploy dropped --no-pdf from the unit'
 deploy --status >"$out" 2>&1 || fail '--status failed'
-assert_contains "$out" 'PDF exports: off by --no-pdf (remembered): the deploy checks no TeX and installs none, and the unit runs wiki-server with --no-pdf; --pdf turns them on again'
+assert_contains "$out" 'PDF exports: off by --no-pdf (remembered): the TeX step checks no TeX and installs none, and the unit runs wiki-server with --no-pdf; --pdf turns them on again'
 assert_lacks "$out" 'off in the unit'
 assert_lacks "$out" 'found no xelatex'
 assert_lacks "$EVENTS" 'check-tex.sh ran'
@@ -4160,6 +4191,13 @@ assert_lacks "$EVENTS" 'check-tex.sh ran'
 [ "$(state pdf_exports)" = no ] || fail 'a refused run changed pdf_exports'
 undeploy >"$out" 2>&1 || fail 'the undeploy failed'
 [ "$(state pdf_exports)" = no ] || fail 'the undeploy forgot --no-pdf'
+# With the unit gone, --status says what the state keeps, checks no TeX,
+# and does not claim a unit that runs wiki-server with --no-pdf.
+deploy --status >"$out" 2>&1 || fail '--status after the undeploy failed'
+assert_contains "$out" 'PDF exports: off by --no-pdf (remembered): the TeX step checks no TeX and installs none; --pdf turns them on again'
+assert_lacks "$out" 'the unit runs wiki-server with --no-pdf'
+assert_contains "$out" 'wiki-demo.service is not installed'
+assert_lacks "$EVENTS" 'check-tex.sh ran'
 out=$case_dir/declined
 deploy --no-build --no-pdf --no-texlive >"$out" 2>&1 || fail '--no-pdf with --no-texlive failed'
 assert_lacks "$EVENTS" 'check-tex.sh ran'
@@ -5057,10 +5095,22 @@ pass 'the wizard offers every option of the deploy'"'"'s header but --force, and
 # built yet when the wrapper looks).
 fixture configure
 mkdir -p "$case_dir/repo/maker"
+# Compiling the wizard needs no TeX: the wrapper's check of the machine
+# tries no xelatex, and the bootstrap is told --without-tex for its own
+# check. The fixture's toolchain/check-tex.sh is a fake that writes a line
+# into EVENTS at each call.
+cp "$case_dir/repo/toolchain/check-tex.sh" "$case_dir/check-tex.sh.real"
+printf '#!/bin/sh\nprintf "check-tex.sh ran\\n" >>"%s"\nprintf "not-found\\n"\nexit 2\n' "$EVENTS" >"$case_dir/repo/toolchain/check-tex.sh"
+# The fake is called by the check the wrapper runs when not told otherwise.
+sh "$case_dir/repo/toolchain/check-native.sh" >/dev/null 2>&1 || true
+assert_contains "$EVENTS" 'check-tex.sh ran'
+: >"$EVENTS"
 out=$case_dir/out
 (cd "$case_dir" && sh "$case_dir/repo/toolchain/configure.sh" --args-from answers) >"$out" 2>&1 ||
   fail "the wrapper failed: $(cat "$out")"
-assert_contains "$EVENTS" 'bootstrap native --without-postgres --with-wizard WIKI_TOOLCHAIN_HOME='
+assert_lacks "$EVENTS" 'check-tex.sh ran'
+cp "$case_dir/check-tex.sh.real" "$case_dir/repo/toolchain/check-tex.sh"
+assert_contains "$EVENTS" 'bootstrap native --without-postgres --with-wizard --without-tex WIKI_TOOLCHAIN_HOME='
 assert_contains "$EVENTS" 'cabal build -v0 exe:maker-tui'
 assert_contains "$EVENTS" "wiki-server --root $case_dir/repo deploy --args-from answers"
 [ "$(line_of "$EVENTS" 'bootstrap native')" -lt "$(line_of "$EVENTS" 'cabal build')" ] || fail 'the wizard ran before the bootstrap'
@@ -5099,7 +5149,7 @@ pass 'toolchain/configure.sh checks the machine with terminfo and without libpq,
 (cd "$case_dir" && sh "$case_dir/repo/toolchain/configure.sh" --system-tools --hackage-mirror https://hackage.example.org/ \
   --npm-registry=https://npm.example.org/ --libsodium-source /srv/incoming/libsodium-1.0.22.tar.gz --args-from answers) >"$out" 2>&1 ||
   fail "the wrapper with the options of a locked-down machine failed: $(cat "$out")"
-assert_contains "$EVENTS" 'bootstrap native --without-postgres --with-wizard --system-tools --hackage-mirror=https://hackage.example.org/ --libsodium-source=/srv/incoming/libsodium-1.0.22.tar.gz WIKI_TOOLCHAIN_HOME='
+assert_contains "$EVENTS" 'bootstrap native --without-postgres --with-wizard --without-tex --system-tools --hackage-mirror=https://hackage.example.org/ --libsodium-source=/srv/incoming/libsodium-1.0.22.tar.gz WIKI_TOOLCHAIN_HOME='
 assert_contains "$EVENTS" "wiki-server --root $case_dir/repo deploy --system-tools --hackage-mirror https://hackage.example.org/ --npm-registry=https://npm.example.org/ --libsodium-source /srv/incoming/libsodium-1.0.22.tar.gz --args-from answers"
 status=0
 sh "$case_dir/repo/toolchain/configure.sh" --hackage-mirror >"$out" 2>&1 || status=$?

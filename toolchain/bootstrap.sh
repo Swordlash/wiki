@@ -124,7 +124,11 @@
 # wiki in SQLite. `native --with-wizard` is for the configuration wizard
 # (toolchain/configure.sh, which runs it): it also asks Debian for
 # libncurses-dev, whose libtinfo the wizard's terminal library links, and
-# passes the option to the check, which then checks terminfo.
+# passes the option to the check, which then checks terminfo. `native
+# --without-tex` passes the option to the check, which then does not try
+# xelatex (toolchain/check-tex.sh, which can take its whole timeout): the
+# deploy gives it when the PDF exports are off by --no-pdf, and the wizard's
+# wrapper always, since compiling the wizard needs no TeX.
 #
 # `node` installs Node alone: Node $NODE_VERSION into ~/.wiki-toolchain/node,
 # unless a Node 24 or later with npm is on PATH already, and the env file.
@@ -212,7 +216,7 @@ mode=${1:-all}
 case $mode in
   all | toolchain | build | native | static | maker | node | warm | env | path | check | ready | system-tools) ;;
   *)
-    printf 'usage: %s [all|toolchain|build [--without-postgres] [--hackage-mirror=URL] [--libsodium-source=FILE]|native [--without-postgres] [--with-wizard] [--system-tools] [--hackage-mirror=URL] [--libsodium-source=FILE]|static [--system-tools] [--hackage-mirror=URL]|maker [--system-tools] [--hackage-mirror=URL]|node [--system-tools]|warm|env [--system-tools]|path|check|ready [build-native|test-native|build-wasm|build-wasm-opt|test-wasm|test|dev-test|serve-wasm]|system-tools [native] [node]]\n' "$0" >&2
+    printf 'usage: %s [all|toolchain|build [--without-postgres] [--hackage-mirror=URL] [--libsodium-source=FILE]|native [--without-postgres] [--with-wizard] [--without-tex] [--system-tools] [--hackage-mirror=URL] [--libsodium-source=FILE]|static [--system-tools] [--hackage-mirror=URL]|maker [--system-tools] [--hackage-mirror=URL]|node [--system-tools]|warm|env [--system-tools]|path|check|ready [build-native|test-native|build-wasm|build-wasm-opt|test-wasm|test|dev-test|serve-wasm]|system-tools [native] [node]]\n' "$0" >&2
     exit 2
     ;;
 esac
@@ -225,7 +229,8 @@ esac
 # everyday install for working on the wiki, always ask for libpq-dev.
 # `native` also takes --with-wizard, for the configuration wizard
 # (toolchain/configure.sh): libncurses-dev joins the Debian packages, and
-# the check checks terminfo. The deploy never gives it.
+# the check checks terminfo. The deploy never gives it. `native` takes
+# --without-tex too: the check then does not try xelatex.
 # native, static and node also take --system-tools, and native, static and
 # build --hackage-mirror=URL (see above); env takes --system-tools, for the
 # lines of an environment without the bootstrap's own tools. native and
@@ -233,11 +238,12 @@ esac
 # --libsodium-source=FILE (see above).
 check_postgres=
 check_wizard=
+check_tex=
 system_tools=
 hackage_mirror=
 libsodium_source=
 case $mode in
-  native) usage_options='[--without-postgres] [--with-wizard] [--system-tools] [--hackage-mirror=URL] [--libsodium-source=FILE]' ;;
+  native) usage_options='[--without-postgres] [--with-wizard] [--without-tex] [--system-tools] [--hackage-mirror=URL] [--libsodium-source=FILE]' ;;
   build) usage_options='[--without-postgres] [--hackage-mirror=URL] [--libsodium-source=FILE]' ;;
   static | maker) usage_options='[--system-tools] [--hackage-mirror=URL]' ;;
   *) usage_options='[--system-tools]' ;;
@@ -248,6 +254,7 @@ if [ "$mode" = native ] || [ "$mode" = build ] || [ "$mode" = static ] || [ "$mo
     case $mode:$option in
       native:--without-postgres | build:--without-postgres) check_postgres=--without-postgres ;;
       native:--with-wizard) check_wizard=--with-wizard ;;
+      native:--without-tex) check_tex=--without-tex ;;
       native:--system-tools | static:--system-tools | maker:--system-tools | node:--system-tools | env:--system-tools) system_tools=1 ;;
       build:--system-tools)
         printf 'bootstrap: build takes no --system-tools: the page'"'"'s build needs the wasm toolchain, which the bootstrap installs (--system-tools is for native and node)\n' >&2
@@ -1101,7 +1108,7 @@ hand_over() {
   build_maker
   exec "$maker" bootstrap "$mode" --root "$ROOT" --base "$BASE" ${NAMED_BASE:+--named-base} \
     --ghcup-bin "$GHCUP_BIN" --log-size "$quiet_before" --started "$started" --lock-fd 9 \
-    ${check_postgres:+--without-postgres} ${check_wizard:+--with-wizard} ${system_tools:+--system-tools} \
+    ${check_postgres:+--without-postgres} ${check_wizard:+--with-wizard} ${check_tex:+--without-tex} ${system_tools:+--system-tools} \
     ${libsodium_source:+"--libsodium-source=$libsodium_source"}
 }
 

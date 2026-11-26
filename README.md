@@ -1258,7 +1258,8 @@ a Haskell program with [brick](https://hackage.haskell.org/package/brick), compi
 your machine with the maker's own cabal project. So the wrapper first checks the C
 compiler and libraries (`toolchain/check-native.sh --with-wizard`, which adds terminfo,
 below), installs GHC and cabal (`toolchain/bootstrap.sh native --with-wizard`), and then
-runs it, through `sh toolchain/maker.sh tui deploy`. The first run compiles brick and
+runs it, through `sh toolchain/maker.sh tui deploy`. Neither check tries `xelatex`
+(`--without-tex`): compiling the wizard needs no TeX. The first run compiles brick and
 vty, which takes a few minutes; cabal keeps them, and later runs start at once.
 Everything the wizard does can be done with the options below, which it only writes
 out.
@@ -3975,7 +3976,9 @@ builds it.
 `sh toolchain/maker.sh check native [--without-postgres] [--with-wizard]
 [--without-tex]` is the check of what the native build of `wiki-server` needs, the
 same as `toolchain/check-native.sh`; `bootstrap.sh native` runs it after the
-packages. The script stays for the deploy, which runs it before there is a GHC.
+packages, without trying `xelatex` when given `--without-tex` (the deploy gives it when
+the PDF exports are off by `--no-pdf`, and the wizard's wrapper always). The script
+stays for the deploy, which runs it before there is a GHC.
 
 The builds and the tests are the maker's too. `npm run build-native`, `test-native`,
 `build-wasm`, `build-wasm-opt`, `serve`, `test-wasm` and `test` check that the

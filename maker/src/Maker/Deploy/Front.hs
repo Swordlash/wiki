@@ -267,7 +267,9 @@ front root o0 = do
               die "--system-tools: this machine's own toolchain will not do (see above), so nothing was changed; without --system-tools (--no-system-tools, at a deploy) toolchain/bootstrap.sh installs it"
           recheck <- checkNative root ["--without-tex"]
           say ("installing or checking the toolchain wiki-server's build with PostgreSQL needs (toolchain/bootstrap.sh native)" <> (if null toolchainHome then "" else ", under " <> toolchainHome))
-          code <- runInherit "sh" ([root </> "toolchain" </> "bootstrap.sh", "native"] <> ["--system-tools" | systemTools] <> ["--hackage-mirror=" <> prevHackageMirror | not (null prevHackageMirror)])
+          -- A deployment whose PDF exports are off by --no-pdf tries no TeX
+          -- anywhere, the bootstrap's check of the native build included.
+          code <- runInherit "sh" ([root </> "toolchain" </> "bootstrap.sh", "native"] <> ["--system-tools" | systemTools] <> ["--without-tex" | prevPdfExports == "no"] <> ["--hackage-mirror=" <> prevHackageMirror | not (null prevHackageMirror)])
           unless (code == ExitSuccess) (exitWith code)
           when recheck $ do
             say "checking again what the native build of wiki-server needs, after the bootstrap"
@@ -566,7 +568,9 @@ front root o0 = do
         if not (null prebuilt)
           then do
             say ("installing or checking the toolchain wiki-server's build needs (toolchain/bootstrap.sh native)" <> under)
-            bootstrap "native" (["--without-postgres" | server && db == "sqlite"] <> systemToolsFlag <> hackageFlag <> sodiumFlag)
+            -- With the PDF exports off by --no-pdf, the bootstrap's check of
+            -- the native build tries no xelatex either.
+            bootstrap "native" (["--without-postgres" | server && db == "sqlite"] <> ["--without-tex" | server && pdfExports == "no"] <> systemToolsFlag <> hackageFlag <> sodiumFlag)
             unless (null bundleLocally) $ do
               say ("installing or checking Node, which builds the page's bundles (toolchain/bootstrap.sh node)" <> under)
               bootstrap "node" systemToolsFlag

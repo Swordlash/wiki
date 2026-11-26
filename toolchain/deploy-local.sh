@@ -1133,7 +1133,13 @@ locked_down_status() {
 tex_status_report() {
   texlive_hint=--texlive
   if [ "$prev_pdf_exports" = no ]; then
-    say "PDF exports: off by --no-pdf (remembered): the deploy checks no TeX and installs none, and the unit runs wiki-server with --no-pdf; --pdf turns them on again"
+    # The state says what the next deploy does; the unit's flag is named
+    # only when the installed unit has it (after --stop there is no unit).
+    if grep '^ExecStart=.* --no-pdf' "$unit_file" >/dev/null 2>&1; then
+      say "PDF exports: off by --no-pdf (remembered): the TeX step checks no TeX and installs none, and the unit runs wiki-server with --no-pdf; --pdf turns them on again"
+    else
+      say "PDF exports: off by --no-pdf (remembered): the TeX step checks no TeX and installs none; --pdf turns them on again"
+    fi
     texlive_hint='--pdf --texlive'
   elif grep '^ExecStart=.* --no-pdf' "$unit_file" >/dev/null 2>&1; then
     say "PDF exports: off in the unit (--no-pdf): the deploy found no xelatex that works and installed none; the next deploy checks again, and --texlive installs TeX Live under the toolchain"

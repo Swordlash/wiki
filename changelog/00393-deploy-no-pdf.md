@@ -7,8 +7,8 @@ technical: true
 ## New features
 
 - `sh toolchain/deploy-local.sh --server --no-pdf` deploys the wiki's
-  server with no PDF exports. The deploy checks no TeX, installs none and
-  asks nothing. It says so in one line, and the server runs with
+  server with no PDF exports. The deploy's TeX step checks no TeX, installs
+  none and asks nothing. It says so in one line, and the server runs with
   `--no-pdf`. Before, `--no-texlive` only declined TeX Live under the
   toolchain, and the deploy still checked the machine's own TeX at every
   run.

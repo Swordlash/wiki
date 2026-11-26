@@ -334,7 +334,7 @@ fieldsFor s a = case s of
                  NoTex ->
                    "No TeX Live is installed. The server makes PDFs only with a TeX of this machine's that works, which the deploy still checks; otherwise it offers no PDFs, and its administration's Server section says why."
                  NoPdf ->
-                   "No PDF exports: the deploy checks no TeX, installs none and asks nothing, and the server runs with --no-pdf. A TeX Live under the toolchain stays where it is. Remembered until another answer here."
+                   "No PDF exports: the deploy's TeX step checks no TeX, installs none and asks nothing, and the server runs with --no-pdf. A TeX Live under the toolchain stays where it is. Remembered until another answer here."
              )
              texL
              [ (MachineTex, TexChoiceName MachineTex, "the TeX on this machine, checked at the deploy")

@@ -52,7 +52,7 @@ Each work package has two reviews on a Fable session (the owner, 2026-11-10): th
 session's own review of the subagent's branch, before the pull request is opened, and
 then Codex's. Before a pull request merges, the session reviews it with Codex on the
 pushed head. By default that is the Codex CLI (the owner, 2026-11-10):
-`codex exec review --base <merge-base> -m gpt-6.1-sol -c model_reasoning_effort=high`,
+`codex exec review --base <merge-base> -m gpt-6.2-sol -c model_reasoning_effort=high`,
 in a detached checkout of the head; a model or effort below that is not a review. On the
 owner's machine the CLI is signed in with the owner's account, so no key is given on
 standard input and no credential is removed afterwards, and the session never runs

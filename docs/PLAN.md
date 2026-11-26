@@ -1838,7 +1838,7 @@ confirmed 2026-11-10; before that the session implemented everything itself): a
 session on Fable plans, briefs and reviews, and one Opus subagent in a worktree of
 its own implements each package; a session on another model implements itself.
 Before a pull request merges, it is reviewed by Codex, as `AGENTS.md` says: the
-session runs the Codex CLI on the pushed head, `gpt-6.1-sol` at high reasoning
+session runs the Codex CLI on the pushed head, `gpt-6.2-sol` at high reasoning
 effort, and when its quota has run out asks the GitHub Codex bot instead, with a
 comment of `@codex review` on the pull request (the owner, 2026-11-10: the CLI is
 the default; on the owner's machine it is signed in with the owner's account, so

@@ -1044,8 +1044,10 @@ instance (MonadIO m) => MonadComments (HttpWiki m) where
   -- A page of an encrypted space has its comments encrypted: its threads
   -- are read and written through the encrypted routes, their anchors and
   -- comments encrypted here, and never sent as plain text, even to be
-  -- refused. Deleting and resolving carry no text, and go by the plain
-  -- routes, with no question asked before them ('commentChange').
+  -- refused. Deleting carries no text and is answered with none: it goes
+  -- by the plain routes with no question asked before it ('commentChange').
+  -- Resolving goes by the plain routes too, but its answer is the thread,
+  -- so for a page held here as plain it asks first ('commentWrite').
   listThreads pid =
     afterStale (Just pid) $
       sealedPage pid >>= \case
@@ -1072,22 +1074,28 @@ instance (MonadIO m) => MonadComments (HttpWiki m) where
           Left e -> pure (Left e)
           -- The thread as the server answers it has no text: read again.
           Right _ -> sealedListThreads sid pid <&> (>>= maybe (Left NotFound) Right . find (\t -> t.id == tid))
-      Nothing -> commentChange pid ((endpoints.comments pid).resolve tid ThreadResolution {resolved})
+      Nothing -> commentWrite pid ((endpoints.comments pid).resolve tid ThreadResolution {resolved})
 
--- | A plain write of a comment's text (a thread opened, a reply, a comment
--- edited), after which the page's cached threads are removed
--- ('afterComment'). Sent only once the guard of a plain write says yes
--- ('plainPageWrite'), and never sent again ('writeOnce').
+-- | A plain change of a page's comments whose request or answer carries
+-- text of the page: a thread opened, a reply, a comment edited, and a
+-- thread resolved, whose answer is the thread with its quote and comments.
+-- Sent only once the guard of a plain write says yes ('plainPageWrite'),
+-- and never sent again ('writeOnce'). For a page whose space was encrypted
+-- elsewhere, the server would answer a resolve with a thread with no quote
+-- and blank comments. The page's cached threads are removed after it
+-- ('afterComment').
 commentWrite :: (MonadIO m) => PageId -> HttpWiki IO a -> HttpWiki m (Either WikiError a)
 commentWrite pid endpoint = do
   result <- plainPageWrite pid (writeOnce (send endpoint))
   modifyCache (afterComment pid)
   pure result
 
--- | A change of a page's comments that carries no text (a comment or a
--- thread deleted, a thread resolved): sent as it is, for a page of an
--- encrypted space too, with no question asked first, and the page's cached
--- threads removed after it ('afterComment').
+-- | A change of a page's comments whose request and answer both carry no
+-- text of the page: a comment or a thread deleted, answered with no body.
+-- Sent as it is, for a page of an encrypted space too, with no question
+-- asked first. A change whose answer carries text, such as a resolve,
+-- answered with the thread, asks first ('commentWrite'). The page's cached
+-- threads are removed after it ('afterComment').
 commentChange :: (MonadIO m) => PageId -> HttpWiki IO a -> HttpWiki m (Either WikiError a)
 commentChange pid endpoint = do
   result <- send endpoint
@@ -2288,14 +2296,22 @@ encryptedFetched sid plain sealed =
                 Left e -> pure (Left e)
     Left e -> pure (Left e)
 
--- | A plain write about a page that may carry its text or text about it: a
--- save, a draft, an attachment, a comment. It is sent only once the server
--- has said, just before, that it takes the page's text plain now
--- ('plainHere'); otherwise it is refused here, and nothing of it is sent.
--- A refusal for the space's state is 'Stale' with the server's code, as
--- the server's own refusal of the write would be, never a 'Conflict': the
--- editor takes a conflict for someone else's save, and offers to merge.
--- Its words say that nothing was sent.
+-- | A plain write about a page whose request or answer may carry its text
+-- or text about it: a save, a draft, an attachment, a comment, a resolve.
+-- It is sent only once the server has said, just before, that it takes the
+-- page's text plain now ('plainHere'); otherwise it is refused here, and
+-- nothing of it is sent. A refusal for the space's state is 'Stale' with
+-- the server's code, as the server's own refusal of the write would be,
+-- never a 'Conflict': the editor takes a conflict for someone else's save,
+-- and offers to merge. Its words say that nothing was sent.
+--
+-- The server's yes may be old by the time the write is sent: a conversion
+-- of the space may have started since, or a later question about the same
+-- page may already have been refused while this answer was on its way. A
+-- write of text then reaches the server, which refuses it and keeps
+-- nothing. A resolve is refused during a conversion, but taken in a space
+-- encrypted since, and answered with the thread as the server holds it
+-- there: no quote, and blank comments.
 plainPageWrite :: (MonadIO m) => PageId -> HttpWiki m (Either WikiError a) -> HttpWiki m (Either WikiError a)
 plainPageWrite pid plain =
   plainHere pid >>= \case
@@ -2309,7 +2325,8 @@ plainPageWrite pid plain =
     Left e -> pure (Left e)
 
 -- | 'plainNow': whether the page's text may be sent plain now, asked
--- before a save, a draft, an attachment or a comment ('plainPageWrite').
+-- before a save, a draft, an attachment, a comment or a resolve
+-- ('plainPageWrite').
 -- Refused here, without a request, for a page read here encrypted ('heldPages'),
 -- and for one read so whose space is plain since ('heldWasSealed'): what
 -- was written from it is not sent plain unasked. Any other page is asked

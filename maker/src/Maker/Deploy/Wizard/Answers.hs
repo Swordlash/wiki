@@ -11,7 +11,7 @@
 -- >   action=deploy|status|stop|rollback|move-to-postgres   name=NAME   prefix=DIR
 -- >   mode=server|static            backend_only=|head|REF
 -- >   db=postgres|sqlite            db_port=N
--- >   texlive=machine|toolchain|none  texlive_mirror=URL
+-- >   texlive=machine|toolchain|none|off  texlive_mirror=URL
 -- >   texlive_installer=URL|DIR  perl_source=URL|DIR
 -- >   way=tailscale|cert|proxy|http tls_cert=FILE  tls_key=FILE  tls_ca=FILE
 -- >   hsts=yes|no
@@ -25,7 +25,8 @@
 -- checkout's commit, or a REF (main, a tag, a commit hash), as the state
 -- file keeps it. texlive is the TeX of the PDF exports: the TeX on this
 -- machine (no option), TeX Live under the toolchain (--texlive, with
--- --texlive-mirror when a mirror is given) or none (--no-texlive).
+-- --texlive-mirror when a mirror is given), none (--no-texlive), or no PDF
+-- exports at all, with no TeX checked (off, --no-pdf).
 -- app_page is the zip of a page CI built, taken from a file (--app-page,
 -- which a backend_only answer replaces); bundle_locally builds its
 -- bundles here. system_tools, npm_registry, hackage_mirror and
@@ -90,9 +91,12 @@ data Database = Postgres | Sqlite
 
 -- | The TeX that makes the server's PDF exports: the TeX on this machine,
 -- checked at the deploy (no option); TeX Live installed under the
--- toolchain directory (--texlive); or none (--no-texlive). The state file
--- keeps the choice as texlive=yes or texlive=no, and nothing for the first.
-data TexChoice = MachineTex | ToolchainTex | NoTex
+-- toolchain directory (--texlive); none (--no-texlive), where the deploy
+-- still checks the TeX on this machine; or no PDF exports, with nothing
+-- checked (--no-pdf). The state file keeps TeX Live as texlive=yes, none
+-- as texlive=no, and the TeX on this machine as neither. No PDF exports is
+-- pdf_exports=no, which wins over texlive.
+data TexChoice = MachineTex | ToolchainTex | NoTex | NoPdf
   deriving (Eq, Ord, Show)
 
 -- | Whether the server's build uses cabal's build semaphore: as
@@ -151,6 +155,7 @@ data Answers = Answers
   , rememberedDownload :: Bool
   , rememberedCa :: Bool
   , rememberedTexLive :: Bool
+  , rememberedNoPdf :: Bool
   , rememberedBundle :: Bool
   , rememberedSystemTools :: Bool
   , rememberedNpmRegistry :: Bool
@@ -202,6 +207,7 @@ defaultAnswers =
     , rememberedDownload = False
     , rememberedCa = False
     , rememberedTexLive = False
+    , rememberedNoPdf = False
     , rememberedBundle = False
     , rememberedSystemTools = False
     , rememberedNpmRegistry = False
@@ -230,10 +236,13 @@ fromState kv a =
     , hackageMirror = value "hackage_mirror"
     , database = if value "db" == "sqlite" then Sqlite else Postgres
     , dbPort = orKeep (a.dbPort) (value "db_port")
-    , tex = case value "texlive" of
-        "yes" -> ToolchainTex
-        "no" -> NoTex
-        _ -> MachineTex
+    , tex =
+        if value "pdf_exports" == "no"
+          then NoPdf
+          else case value "texlive" of
+            "yes" -> ToolchainTex
+            "no" -> NoTex
+            _ -> MachineTex
     , texMirror = value "texlive_mirror"
     , way = remembered
     , tlsCert = if remembered == Certificate then value "tls_cert" else ""
@@ -249,6 +258,7 @@ fromState kv a =
     , rememberedDownload = not (T.null backendOnly) || not (T.null appPageFile)
     , rememberedCa = remembered == Certificate && not (T.null (value "tls_ca"))
     , rememberedTexLive = value "texlive" == "yes"
+    , rememberedNoPdf = value "pdf_exports" == "no"
     , rememberedBundle = value "bundle_locally" == "yes"
     , rememberedSystemTools = value "system_tools" == "yes"
     , rememberedNpmRegistry = not (T.null (value "npm_registry"))
@@ -294,7 +304,7 @@ applyAnswer a (key, v) = case key of
   "libsodium_source" -> Right a {libsodiumSource = v}
   "db" -> pick (\x -> a {database = x}) [("postgres", Postgres), ("sqlite", Sqlite)]
   "db_port" -> Right a {dbPort = v}
-  "texlive" -> pick (\x -> a {tex = x}) [("machine", MachineTex), ("toolchain", ToolchainTex), ("none", NoTex)]
+  "texlive" -> pick (\x -> a {tex = x}) [("machine", MachineTex), ("toolchain", ToolchainTex), ("none", NoTex), ("off", NoPdf)]
   "texlive_mirror" -> Right a {texMirror = v}
   "texlive_installer" -> Right a {texInstaller = v}
   "perl_source" -> Right a {perlSource = v}

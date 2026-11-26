@@ -104,7 +104,10 @@ if [ -n "$npm_registry" ]; then
   export NPM_CONFIG_REGISTRY
 fi
 
-if ! check_output=$(sh "$ROOT/toolchain/check-native.sh" --without-postgres --with-wizard 2>&1); then
+# Compiling the wizard needs no TeX, so neither check tries xelatex
+# (--without-tex): a broken one would otherwise take its whole timeout
+# before the wizard opens, where "no PDF exports" can be chosen.
+if ! check_output=$(sh "$ROOT/toolchain/check-native.sh" --without-postgres --with-wizard --without-tex 2>&1); then
   printf '%s\n' "$check_output" >&2
   if command -v dpkg-query >/dev/null 2>&1; then
     warn "the bootstrap installs the Debian packages missing above next (as root, or through a sudo that needs no password)"
@@ -113,7 +116,7 @@ if ! check_output=$(sh "$ROOT/toolchain/check-native.sh" --without-postgres --wi
   fi
 fi
 
-sh "$ROOT/toolchain/bootstrap.sh" native --without-postgres --with-wizard ${system_tools:+"$system_tools"} ${hackage_mirror:+"--hackage-mirror=$hackage_mirror"} \
+sh "$ROOT/toolchain/bootstrap.sh" native --without-postgres --with-wizard --without-tex ${system_tools:+"$system_tools"} ${hackage_mirror:+"--hackage-mirror=$hackage_mirror"} \
   ${libsodium_source:+"--libsodium-source=$libsodium_source"} ||
   die "the bootstrap could not install GHC and cabal (see above), or did not take the options given, which the wizard is compiled with"
 

@@ -41,9 +41,10 @@
 --
 -- A server started with @--no-pdf@ ("Wiki.Server.Options"' @pdf@) neither
 -- looks for the engine nor offers the PDFs ('EngineOff'). The deploy sets
--- that option when it finds no @xelatex@ that works and installs none, so
--- that the server does not offer PDFs nobody can make, or spend the
--- probe's time at every start on an engine known to fail.
+-- that option when it is given @--no-pdf@ itself, and when it finds no
+-- @xelatex@ that works and installs none, so that the server does not
+-- offer PDFs nobody can make, or spend the probe's time at every start on
+-- an engine known to fail.
 --
 -- TeX is a programming language with access to files and a shell, and a
 -- PDF gives it what authors wrote: a TikZ picture is LaTeX by design, and

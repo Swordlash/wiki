@@ -277,7 +277,7 @@ component =
               , checkAgain (Just found.checkedAt)
               ]
             TexOff ->
-              [ [hh|<p class="server-export-tex server-export-off">PDF exports are off: the server runs with <code>--no-pdf</code>. The deploy sets it when it finds no xelatex that works and installs none; <code>sh toolchain/deploy-local.sh --server --texlive</code> installs TeX Live under the toolchain and turns them on.</p>|]
+              [ [hh|<p class="server-export-tex server-export-off">PDF exports are off: the server runs with <code>--no-pdf</code>. The deploy sets it when it is given <code>--no-pdf</code>, or when it finds no xelatex that works and installs none; <code>sh toolchain/deploy-local.sh --server --pdf --texlive</code> installs TeX Live under the toolchain and turns them on.</p>|]
               ]
             TexFailing ->
               [ [hh|<p class="server-export-tex server-export-failing">xelatex was found at <code>{{ pathOf found }}</code> but fails, so nothing exports as PDF.</p>|]

@@ -332,12 +332,15 @@ fieldsFor s a = case s of
                  ToolchainTex ->
                    "TeX Live installed under the toolchain directory (.wiki-toolchain/texlive) from a CTAN mirror, about 250 MB and a few minutes, when the TeX the service finds does not work; one installed there already is checked and used. Its installer is cloned with git from its GitHub mirror, and needs curl and tar, and Perl with its standard modules: where the machine has none, the deploy clones Perl's source from its GitHub mirror and builds it under the toolchain (.wiki-toolchain/perl, a few minutes with cc), for the installer only. The unit puts TeX Live's bin directory first on the service's PATH."
                  NoTex ->
-                   "No TeX Live is installed. The server makes PDFs only with a TeX of this machine's that works; otherwise it offers no PDFs, and its administration's Server section says why."
+                   "No TeX Live is installed. The server makes PDFs only with a TeX of this machine's that works, which the deploy still checks; otherwise it offers no PDFs, and its administration's Server section says why."
+                 NoPdf ->
+                   "No PDF exports: the deploy's TeX step checks no TeX, installs none and asks nothing, and the server runs with --no-pdf. A TeX Live under the toolchain stays where it is. Remembered until another answer here."
              )
              texL
              [ (MachineTex, TexChoiceName MachineTex, "the TeX on this machine, checked at the deploy")
              , (ToolchainTex, TexChoiceName ToolchainTex, "--texlive  TeX Live under the toolchain, from a CTAN mirror")
              , (NoTex, TexChoiceName NoTex, "--no-texlive  none")
+             , (NoPdf, TexChoiceName NoPdf, "--no-pdf  no PDF exports, nothing checked")
              ]
          ]
       ++ [ text

@@ -629,7 +629,14 @@ confirms it against reality and the plan is amended if it does not hold.
     ends with a working engine, and the unit's `ExecStart` carries `--no-pdf` exactly
     otherwise (the found engine failing or absent and nothing installed, the install
     or its check failing, `--no-texlive` or the question declined); a later run that
-    ends with a working engine drops it; `--status` reads the unit and says so. When
+    ends with a working engine drops it; `--status` reads the unit and says so. The
+    deploy's own `--no-pdf` (the owner, 2026-11-26, #393) turns the PDF exports off
+    whatever TeX the machine has: the TeX step checks nothing, installs nothing and
+    asks nothing; `pdf_exports=no` is remembered until `--pdf`; the native bootstrap
+    gets `--without-tex`; the wizard offers it as a fourth answer; and the servers of
+    the upgrade's rehearsal and of the move to PostgreSQL start with `--no-pdf`, each
+    where its program takes the option (the upgrade asks the program's `--help`). It
+    is refused with `--rollback`, `--stop` and `--status`. When
     the install needs Perl and the machine has none, or one without its standard
     modules, the deploy builds Perl (one pinned version, a shallow `git clone` of
     `https://github.com/Perl/perl5` at its tag, with no checksum: the owner,
@@ -3720,7 +3727,12 @@ needs. Each was true when its package merged; check before relying on one.
   (a second or two with a working engine, up to 20 s with one that hangs) is skipped
   with `--without-tex`, which a server deploy passes since its TeX step probes on the
   service's PATH anyway (#157); `bootstrap.sh native` still runs the check without
-  it, so a `--backend-only` deploy probes once more; a server with `--no-pdf` keeps
+  it, so a `--backend-only` deploy probes once more; with the deploy's `--no-pdf`
+  (#393) no step probes, except a server of the upgrade's rehearsal whose program
+  was built before the option (the old program's, or both under `--no-build` with a
+  wiki-server built before #393); `--texlive-installer`, `--perl-source` and
+  `--texlive-mirror` are not refused with `--no-pdf`, and the deploy's other options
+  are accepted and ignored with `--rollback`; a server with `--no-pdf` keeps
   the PDFs off until the next deploy, even if a working TeX appears meanwhile;
   `check-tex.sh`'s default 20 s has no test of its own. Every `install-tl` and
   `tlmgr` call runs from `<toolchain>/texlive` with `TEXLIVE_INSTALL_NO_RESUME=1` and

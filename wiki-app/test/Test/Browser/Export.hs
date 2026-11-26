@@ -223,7 +223,7 @@ spec m = do
     exporting [Docx, Html, Epub, Pptx, BeamerTex]
     engineIs working {status = TexOff, path = Nothing}
     ui <- startServer m (Admin R.Server)
-    find ui ".server-export .server-export-off" >>= (`shouldHaveText` "PDF exports are off: the server runs with --no-pdf. The deploy sets it when it finds no xelatex that works and installs none; sh toolchain/deploy-local.sh --server --texlive installs TeX Live under the toolchain and turns them on.")
+    find ui ".server-export .server-export-off" >>= (`shouldHaveText` "PDF exports are off: the server runs with --no-pdf. The deploy sets it when it is given --no-pdf, or when it finds no xelatex that works and installs none; sh toolchain/deploy-local.sh --server --pdf --texlive installs TeX Live under the toolchain and turns them on.")
     length <$> findAll ui ".server-export-check-again" `shouldReturn` 0
     length <$> findAll ui ".server-export-output" `shouldReturn` 0
 

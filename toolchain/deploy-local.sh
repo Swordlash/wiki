@@ -20,7 +20,8 @@
 #                                [--system-tools | --no-system-tools] [--npm-registry URL]
 #                                [--hackage-mirror URL] [--libsodium-source FILE]
 #                                [--no-build] [--semaphore | --no-semaphore]
-#                                [--texlive | --no-texlive] [--texlive-mirror URL]
+#                                [--texlive | --no-texlive] [--pdf | --no-pdf]
+#                                [--texlive-mirror URL]
 #                                [--texlive-installer URL|DIR] [--perl-source URL|DIR]
 #                                [--whats-new | --no-whats-new]
 #                                [--no-firewall] [--no-rehearsal] [--enable-linger]
@@ -91,7 +92,9 @@
 #      --no-texlive or the answer no), the unit runs wiki-server with
 #      --no-pdf, so that it neither tries its TeX nor offers PDFs; a later
 #      run whose step ends with one that works drops the option. Nothing
-#      about TeX stops the deploy: PDFs are optional.
+#      about TeX stops the deploy: PDFs are optional. With --no-pdf the TeX
+#      step checks nothing, installs nothing and asks nothing, and the unit
+#      runs wiki-server with --no-pdf, until a run with --pdf.
 #      With --backend-only the page is not built here: it is downloaded from
 #      the GitHub release where CI keeps it (see --backend-only below), after
 #      toolchain/bootstrap.sh native (GHC and cabal alone: no wasm toolchain,
@@ -417,7 +420,17 @@
 #                    run, as is the answer to the question
 #   --no-texlive     --server: do not install TeX Live, and do not use one the toolchain
 #                    directory holds (it is left there); the server makes PDFs only
-#                    with a TeX of this machine's that works. Remembered for the next run
+#                    with a TeX of this machine's that works, which the deploy still
+#                    checks (--no-pdf checks none). Remembered for the next run
+#   --no-pdf         --server: no PDF exports. The TeX step checks no TeX, installs none
+#                    and asks nothing, and wiki-server runs with --no-pdf; a TeX Live
+#                    under the toolchain is left there. Remembered for the next run;
+#                    --texlive is refused with it and after it. The upgrade's rehearsal
+#                    starts the new program with --no-pdf, and the old one too when it
+#                    takes the option. Not for --rollback, --stop or --status
+#   --pdf            --server: PDF exports again, after a run with --no-pdf: the TeX
+#                    step checks the TeX as it does without either (the first run's
+#                    default)
 #   --texlive-mirror URL
 #                    --server: the CTAN mirror TeX Live is installed from (default
 #                    https://mirror.ctan.org, which redirects to one near you); remembered
@@ -536,7 +549,7 @@ opt_app_page='' opt_app_page_given='' opt_bundle_locally='' opt_system_tools=''
 opt_npm_registry='' opt_npm_registry_given='' opt_hackage_mirror='' opt_hackage_mirror_given=''
 opt_libsodium_source=''
 opt_tls_cert='' opt_tls_key='' opt_tls_ca='' opt_tls_ca_given='' opt_proxy='' opt_hsts=''
-opt_texlive='' opt_texlive_mirror='' opt_texlive_installer='' opt_perl_source=''
+opt_texlive='' opt_texlive_mirror='' opt_texlive_installer='' opt_perl_source='' opt_pdf=''
 opt_whats_new=''
 action=deploy yes=
 build=1 no_firewall='' enable_linger='' force='' opt_semaphore='' no_rehearsal=''
@@ -600,10 +613,18 @@ while [ $# -gt 0 ]; do
     --no-semaphore) opt_semaphore=off ;;
     --texlive)
       [ "$opt_texlive" != no ] || die "--texlive and --no-texlive exclude each other: give one"
+      [ "$opt_pdf" != no ] || die "--texlive and --no-pdf exclude each other: give one"
       opt_texlive=yes ;;
     --no-texlive)
       [ "$opt_texlive" != yes ] || die "--texlive and --no-texlive exclude each other: give one"
       opt_texlive=no ;;
+    --pdf)
+      [ "$opt_pdf" != no ] || die "--pdf and --no-pdf exclude each other: give one"
+      opt_pdf=yes ;;
+    --no-pdf)
+      [ "$opt_pdf" != yes ] || die "--pdf and --no-pdf exclude each other: give one"
+      [ "$opt_texlive" != yes ] || die "--texlive and --no-pdf exclude each other: give one"
+      opt_pdf=no ;;
     --whats-new)
       [ "$opt_whats_new" != no ] || die "--whats-new and --no-whats-new exclude each other: give one"
       opt_whats_new=yes ;;
@@ -636,6 +657,14 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+# --pdf and --no-pdf are a deploy's: --rollback puts the kept deployment
+# back as it was, its unit included, and --stop and --status change no
+# setting, so the option could not take effect. Refused before anything
+# is done. (The move to PostgreSQL refuses them with its other options.)
+case $action:$opt_pdf in
+  rollback:?*) die "--pdf and --no-pdf are for a deploy: --rollback puts the kept deployment back as it was, its unit included; give the option to the deploy after it" ;;
+  stop:?* | status:?*) die "--pdf and --no-pdf are for a deploy: --$action changes no setting; give the option to the next deploy" ;;
+esac
 # The ways to serve exclude each other: one may be given, and a later run
 # moves to another by naming it.
 ways=
@@ -801,6 +830,10 @@ prev_texlive_mirror=$(state_get texlive_mirror)
 # The Perl the deploy built for TeX Live's installer (perl_dir, empty when
 # the machine's own perl did), reused while it works.
 prev_perl_dir=$(state_get perl_dir)
+# Whether the PDF exports are off by --no-pdf: no after it, until --pdf;
+# empty otherwise, and in a state file from before the option, whose TeX
+# step checks the TeX as usual.
+prev_pdf_exports=$(state_get pdf_exports)
 # Whether the server shows the page "What's new?": no after --no-whats-new,
 # and empty (the default, on) otherwise.
 prev_whats_new=$(state_get whats_new)
@@ -825,7 +858,7 @@ env_file=$STATE_DIR/$name.env
 # rest (Docker, the commit, the unit's words) itself
 # (maker/src/Maker/Deploy/Move.hs).
 if [ "$action" = move ]; then
-  [ -z "$opt_port$opt_bind$opt_toolchain$opt_mode$opt_admin_port$opt_https$opt_db$fresh$opt_backend_only$refresh_page$opt_app_page_given$opt_bundle_locally$opt_system_tools$opt_npm_registry_given$opt_hackage_mirror_given$opt_libsodium_source$opt_tls_cert$opt_tls_key$opt_tls_ca_given$opt_hsts$opt_proxy$opt_texlive$opt_texlive_mirror$opt_texlive_installer$opt_perl_source$opt_whats_new$no_firewall$no_rehearsal$enable_linger$force$yes" ] && [ -n "$build" ] ||
+  [ -z "$opt_port$opt_bind$opt_toolchain$opt_mode$opt_admin_port$opt_https$opt_db$fresh$opt_backend_only$refresh_page$opt_app_page_given$opt_bundle_locally$opt_system_tools$opt_npm_registry_given$opt_hackage_mirror_given$opt_libsodium_source$opt_tls_cert$opt_tls_key$opt_tls_ca_given$opt_hsts$opt_proxy$opt_texlive$opt_pdf$opt_texlive_mirror$opt_texlive_installer$opt_perl_source$opt_whats_new$no_firewall$no_rehearsal$enable_linger$force$yes" ] && [ -n "$build" ] ||
     die "--move-to-postgres takes only --name, --prefix, --db-port and --semaphore or --no-semaphore: the deployment's other settings stay as its last deploy left them"
   where=$name${prefix:+ under $prefix}
   { [ -f "$state_file" ] && [ "$prev_mode" = server ] && [ -n "$prev_dir" ]; } ||
@@ -1100,20 +1133,32 @@ locked_down_status() {
     say "cabal's Hackage mirror: $prev_hackage_mirror (--hackage-mirror), in the toolchain's own $toolchain_base/.cabal/config"
 }
 
-# The state of the PDF exports for --status. A unit whose wiki-server runs
-# with --no-pdf makes no PDFs whatever TeX there is: that is said, and
-# nothing is checked. Otherwise the check runs with the PATH the installed
-# unit gives the service (its own PATH line when it has one, else the
-# systemd manager's).
+# The state of the PDF exports for --status. PDFs off by the deploy's
+# --no-pdf (pdf_exports=no in the state) are said as such, and nothing is
+# checked. Otherwise a unit whose wiki-server runs with --no-pdf is one
+# whose deploy found no TeX that works: it makes no PDFs whatever TeX there
+# is now, which is said, and nothing is checked either. Otherwise the check
+# runs with the PATH the installed unit gives the service (its own PATH
+# line when it has one, else the systemd manager's).
 tex_status_report() {
-  if grep '^ExecStart=.* --no-pdf' "$unit_file" >/dev/null 2>&1; then
+  texlive_hint=--texlive
+  if [ "$prev_pdf_exports" = no ]; then
+    # The state says what the next deploy does; the unit's flag is named
+    # only when the installed unit has it (after --stop there is no unit).
+    if grep '^ExecStart=.* --no-pdf' "$unit_file" >/dev/null 2>&1; then
+      say "PDF exports: off by --no-pdf (remembered): the TeX step checks no TeX and installs none, and the unit runs wiki-server with --no-pdf; --pdf turns them on again"
+    else
+      say "PDF exports: off by --no-pdf (remembered): the TeX step checks no TeX and installs none; --pdf turns them on again"
+    fi
+    texlive_hint='--pdf --texlive'
+  elif grep '^ExecStart=.* --no-pdf' "$unit_file" >/dev/null 2>&1; then
     say "PDF exports: off in the unit (--no-pdf): the deploy found no xelatex that works and installed none; the next deploy checks again, and --texlive installs TeX Live under the toolchain"
   else
     tex_engine_report
   fi
   case $prev_texlive in
     yes) [ -z "$prev_texlive_dir" ] || say "the toolchain's TeX Live: $prev_texlive_dir" ;;
-    no) say "TeX Live under the toolchain was declined (--no-texlive); --texlive installs it" ;;
+    no) say "TeX Live under the toolchain was declined (--no-texlive); $texlive_hint installs it" ;;
   esac
 }
 tex_engine_report() {

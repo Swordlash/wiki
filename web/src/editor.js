@@ -1622,9 +1622,16 @@ const completions = (host) => {
   // completion still being asked for too, which would keep Escape from the
   // form while nothing is shown. It closes the list, and writes what the
   // list says, as one step of the undo.
+  // A completion still asked for with no list shown (the pages of other
+  // spaces after [[, looked up while the space's own list is empty) is
+  // given up, and the key goes on: its answer, coming after Escape, opens
+  // no list.
   const escape = (view) => {
     const option = shown(view.state);
-    if (option === null) return false;
+    if (option === null) {
+      if (completionStatus(view.state) === "pending") closeCompletion(view);
+      return false;
+    }
     const written = option.escape?.(view.state, view.state.selection.main.head, view) ?? null;
     closeCompletion(view);
     if (written !== null) {

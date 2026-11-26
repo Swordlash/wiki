@@ -13,6 +13,7 @@ module Test.Browser.Editor (spec) where
 
 import Control.Monad.UUID (MonadUUID)
 import Data.IORef (IORef, modifyIORef', readIORef)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Halogen.Activity.Control (TestClock, advance, withTestClock)
 import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
@@ -20,7 +21,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (clickButton, slugs, startChanged, startWith)
-import Test.Browser.Text (clearBody, completing, editorSelection, editorText, markdown, mathIn, problemsMarked, selectText, setMarkdown, utf16Length)
+import Test.Browser.Text (clearBody, completing, completionAnswered, editorSelection, editorText, listReady, markdown, mathIn, problemsMarked, selectText, setMarkdown, utf16Length)
 import Test.Hspec (around)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (..))
@@ -28,10 +29,11 @@ import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend (MonadWiki (..))
 import Wiki.App.Backend.Admin (MonadAdmin (..))
 import Wiki.App.Backend.Mem (runMemWiki)
-import Wiki.App.Backend.Mem.State (MemState (..), insertUser)
+import Wiki.App.Backend.Mem.State (MemState (..), insertPage, insertUser)
+import Wiki.App.Demo (demoNow)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
-import Wiki.App.View.Editor (draftDelay, previewDelay, savedNoticeTime)
+import Wiki.App.View.Editor (draftDelay, elsewhereDelay, previewDelay, savedNoticeTime)
 import Wiki.App.View.PagePicker qualified as PagePicker
 import Wiki.Core.Attachment (Attachment (name), FileName (..))
 import Wiki.Core.Draft (Draft (..))
@@ -39,7 +41,8 @@ import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Markdown.Ast (Block (..), Inline (..), parseMarkdown)
 import Wiki.Core.Markdown.Box (BoxKind (..))
 import Wiki.Core.Page (Page (attachments, body, id, title, updatedAt))
-import Wiki.Core.Space (Space (id, mathMacros))
+import Wiki.Core.Slug (slugText)
+import Wiki.Core.Space (Space (id, mathMacros, slug))
 import Wiki.Core.User (Login (..), User (..))
 
 -- The page has no file dialog the harness can answer, so a test hands the
@@ -1074,8 +1077,50 @@ spec m = readsOnce Idle $ around withTestClock $ do
     traverse_ press [" ", "@", "a", "n"]
     _ <- listShown ui
     pass
+
+  -- #301: after [[ and two letters, the pages of other spaces are looked
+  -- up once a pause has ended, which sleeps on this group's clock until
+  -- the example advances it: the lookup is out for as long as the example
+  -- chooses. The space's own pages are shown meanwhile and take the keys;
+  -- Escape closes the list then, and the answer that comes after it opens
+  -- nothing. The group itself, and Enter on one of its pages, are
+  -- "Test.Browser.Complete"'s.
+  it "shows the space's own pages after [[ while other spaces' are looked up, and Escape then closes the list for good" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "blog" "Onboarding notes" . withPage "docs" "Onboarding") (Just "user-editor") helloEditor
+    text <- editorText ui
+    clearBody ui
+    typeText text "See [[onb"
+    -- The space's own list, ready for its keys, with the other spaces'
+    -- pages still asked for: their pause sleeps on the clock.
+    listReady ui
+    listLabels ui `shouldReturn` ["Onboarding notes"]
+    completing ui `shouldReturn` "pending"
+    press "Escape"
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    -- The pause ends and the lookup answers, after the Escape: no list.
+    waitQuiet
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completing ui `shouldReturn` ""
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    markdown ui `shouldReturn` "# Hello, world\n\nSee [[onb"
+    -- Typed on, the list shows both groups once the lookup answers.
+    typeText text "o"
+    listReady ui
+    waitQuiet
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Onboarding notes", "Onboarding"]
   where
     helloEditor = EditPage (slugs ["blog"]) (slugs ["hello-world"])
+    -- The labels of the completion's list shown, in its order.
+    listLabels ui = findAll ui ".cm-tooltip-autocomplete .cm-completionLabel" >>= traverse textContent
+    -- A page with this title at the top of the demo's space of this slug.
+    withPage :: Text -> Text -> MemState -> MemState
+    withPage spaceSlug title st = case filter (\s -> slugText s.slug == spaceSlug) (Map.elems st.spaces) of
+      s : _ -> fst (insertPage s.id Nothing title ("# " <> title <> "\n") demoNow st)
+      [] -> panic ("no space " <> spaceSlug)
     -- The TeX of each formula the wiki's parser finds, in the order of the
     -- text: in a paragraph, or a block of its own for display math alone
     -- in one.

@@ -263,7 +263,7 @@ component =
     -- The text in the editor's preview, without its title: the title's
     -- row is above the column of the text, as on the page.
     previewOf :: State -> Text -> Text -> H.ComponentHTML Action Slots m
-    previewOf st title text = HH.slot_ "preview" () Preview.component Preview.Input {place = place st, title, body = text, titled = False, slides = Nothing}
+    previewOf st title text = HH.slot_ "preview" () Preview.component Preview.Input {place = place st, page = (\f -> f.page) <$> st.facts, title, body = text, titled = False, slides = Nothing}
 
     stateText :: Shown -> Text
     stateText = \case

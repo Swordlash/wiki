@@ -1,3 +1,5 @@
+{-# LANGUAGE MultiWayIf #-}
+
 -- | The HTTP backend: the implementation of 'Wiki.App.Backend.MonadWiki'
 -- that talks to @wiki-server@ over its HTTP API (@wiki-api@,
 -- docs/api.md). The application uses it when the page it is served in
@@ -781,6 +783,9 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
   -- same read for any space: an encrypted space's paths are plain.
   pageLocation pid = pageContent (\c -> Map.lookup pid c.pageLocations) (endpoints.pages.location pid) (withPageLocation pid)
 
+  -- Asked of the server each time, never cached ('plainHere').
+  plainNow = plainHere
+
   -- Page content: another page's save changes the list. The server
   -- answers it for a page of an encrypted space too, empty, since it
   -- cannot read the text of the pages there.
@@ -1108,13 +1113,12 @@ instance (MonadIO m) => MonadNotifications (HttpWiki m) where
           -- this page can tell, no login belongs to anyone.
           Left _ -> storeAnswer PlainRead before (withPeople logins mempty) $> mempty
 
-  -- Not cached here: the editor's completion keeps the answers it has
-  -- had for as long as the editor is open (@web/src/editor.js@). Too few
-  -- letters ask nothing. A 404 (a server from before this endpoint) is no
-  -- users, which the editor keeps, so that it does not ask again at every
-  -- key. Any other error (a server that cannot be reached, a session that
-  -- has ended) is an error, which the editor does not keep and asks again
-  -- later, when it may be answered.
+  -- Not cached, here or in the editor's completion (@web/src/editor.js@):
+  -- an answer is for the reader signed in when it was asked. The editor
+  -- asks 'plainNow' of the page first. Too few letters ask nothing. A 404
+  -- (a server from before this endpoint) is no users. Any other error (a
+  -- server that cannot be reached, a session that has ended) is an error,
+  -- and the editor asks again later, when it may be answered.
   mentionCandidates letters
     | not (searchable letters) = pure (Right [])
     | otherwise =
@@ -1750,10 +1754,11 @@ data Held = Held
   -- ^ The pages of encrypted spaces read here, with their keys as stored
   -- (wrapped): what tells a save of one of them from a plain save.
   , heldSpaces :: Map PageId SpaceId
-  -- ^ The space of every page read or made here, plain ones too: what a
-  -- plain write of a page checks against the current list of spaces
-  -- ('plainPageWrite'), since a page's own record may predate its space's
-  -- encryption.
+  -- ^ The space of every page read or made here, plain ones too, as last
+  -- read: what a plain read of a page by its id checks against a gate
+  -- ('plainPageRead'), so that no request more is made for it. A page
+  -- moved since is still under its old space here; a plain write does not
+  -- go by it, but asks the server where the page is now ('plainHere').
   , heldFound :: Map SpaceId [(PageSummary, Text)]
   -- ^ Each space's pages decrypted for the search, with their texts:
   -- fetched at the first search that needs them, and forgotten at every
@@ -2252,38 +2257,56 @@ freshKey sid given = maybe given fst . Map.lookup sid . (\h -> h.heldKeys) <$> r
 
 -- | 'encryptedOr' for a write, which sends a title and a text, with the
 -- list of spaces fetched first ('freshSpaces'), so that no plain text is
--- ever sent to the server for an encrypted space, even to be refused.
--- Also the question whether a space's key is held here.
+-- ever sent to the server for an encrypted space, even to be refused. A
+-- space the list does not name is refused, and nothing is sent: the
+-- reader's access to it may have been taken away after it was encrypted,
+-- and the list then says nothing of its encryption. (A list the service
+-- worker answered from its copy, offline, is taken as the server's: see
+-- "Known gaps" in docs/PLAN.md.)
 encryptedFetched :: (MonadIO m) => SpaceId -> HttpWiki m (Either WikiError a) -> (KeyId -> HttpWiki m (Either WikiError a)) -> HttpWiki m (Either WikiError a)
 encryptedFetched sid plain sealed =
   freshSpaces >>= \case
-    Right spaces | Just k <- encryptionIn sid spaces -> sealed k
-    Right _ -> plain
+    Right spaces
+      | Just k <- encryptionIn sid spaces -> sealed k
+      | any (\s -> s.id == sid) spaces -> plain
+      | otherwise -> pure (Left (Conflict "This space is no longer open to you: nothing was sent. Open the space again."))
     Left e -> pure (Left e)
 
 -- | A plain write about a page that may carry its text or text about it: a
--- save, a draft, an attachment, a comment. It is refused here, and nothing
--- is sent, for a page of an encrypted space: one read here from an
--- encrypted space ('heldPages'), or one whose space is encrypted in the
--- list of spaces fetched now. The list is fetched for a page whose space
--- is known ('heldSpaces'): the page may have been read before its space
--- was encrypted. A page never read here has no known space and is written
--- as it is: the editor and the page view always read a page before they
--- write it.
+-- save, a draft, an attachment, a comment. It is sent only once the server
+-- has said, just before, that it takes the page's text plain now
+-- ('plainNow'); otherwise it is refused here, and nothing of it is sent.
 plainPageWrite :: (MonadIO m) => PageId -> HttpWiki m (Either WikiError a) -> HttpWiki m (Either WikiError a)
-plainPageWrite pid plain =
-  readHeld >>= \h -> case (Map.lookup pid h.heldPages, Map.lookup pid h.heldSpaces) of
-    (Just _, _) -> pure (Left (Conflict inEncryptedSpace))
-    -- Read encrypted here, its space plain since: what was written from
-    -- it is not sent plain unasked.
-    _ | Set.member pid h.heldWasSealed -> pure (Left (Conflict "This page's space is no longer encrypted: what was written here, from the page as it was read encrypted, was not sent. Reload the page as it is now, plain."))
-    (Nothing, Nothing) -> plain
-    (Nothing, Just sid) ->
-      freshSpaces >>= \case
-        Left e -> pure (Left e)
-        Right spaces
-          | isJust (encryptionIn sid spaces) -> pure (Left (Conflict "This page's space has been encrypted since the page was opened: nothing was sent. Open the page again."))
-          | otherwise -> plain
+plainPageWrite pid plain = plainHere pid >>= either (pure . Left) (const plain)
+
+-- | 'plainNow': whether the page's text may be sent plain now, with the
+-- reason for the reader when it may not. Refused here, without a request,
+-- for a page read here encrypted ('heldPages'), and for one read so whose
+-- space is plain since ('heldWasSealed'): what was written from it is not
+-- sent plain unasked. Any other page is asked about by its id
+-- (@pages\/\<page>\/plain@), wherever this tab last read it: the server
+-- answers for the page where it is now, and a list of spaces could not
+-- (one read before the page moved, or before the reader lost access to
+-- the space, or a copy the service worker kept). The service worker never
+-- answers that request from a copy (@web\/src\/sw.js@), so offline the
+-- question fails, and the write is not sent. There is no shortcut for the
+-- front page's space: the page may have moved out of it.
+--
+-- A refusal for the space's state ('Stale') makes the tab read the list
+-- of spaces again ('send'), as any such refusal does.
+plainHere :: (MonadIO m) => PageId -> HttpWiki m (Either WikiError ())
+plainHere pid =
+  readHeld >>= \h ->
+    if
+      | Map.member pid h.heldPages -> pure (Left (Conflict inEncryptedSpace))
+      | Set.member pid h.heldWasSealed -> pure (Left (Conflict "This page's space is no longer encrypted: what was written here, from the page as it was read encrypted, was not sent. Reload the page as it is now, plain."))
+      | otherwise ->
+          send (getResponse <$> endpoints.pages.plain pid) <&> \case
+            Right _ -> Right ()
+            Left (Stale ConversionRuns _) -> Left (Conflict "This page's space is being encrypted or decrypted now: nothing was sent. Open the page again once that is done.")
+            Left (Stale _ _) -> Left (Conflict "This page's space has been encrypted since the page was opened: nothing was sent. Open the page again.")
+            Left NotFound -> Left (Conflict "This page is no longer there, or no longer open to you: nothing was sent. Open the page again.")
+            Left e -> Left e
 
 -- | Why a plain write of a page of an encrypted space is not sent.
 inEncryptedSpace :: Text
@@ -3825,12 +3848,18 @@ startConversionOf sid way = case way of
 
 -- | Encrypted spaces over the API's @encrypted\/@ routes.
 instance (MonadIO m) => MonadEncryption (HttpWiki m) where
+  -- From the list of spaces fetched now: a space it does not name is not
+  -- encrypted, as far as this tab can tell.
   keyState sid =
-    encryptedFetched sid (pure (Right NotEncrypted)) $ \current -> do
-      immediate <- HttpWiki (asks (\env -> env.immediate))
-      if immediate
-        then pure (Left (Invalid inServer))
-        else fmap (either identity (const KeyReady)) <$> openKey NoRefresh sid current
+    freshSpaces >>= \case
+      Left e -> pure (Left e)
+      Right spaces -> case encryptionIn sid spaces of
+        Nothing -> pure (Right NotEncrypted)
+        Just current -> do
+          immediate <- HttpWiki (asks (\env -> env.immediate))
+          if immediate
+            then pure (Left (Invalid inServer))
+            else fmap (either identity (const KeyReady)) <$> openKey NoRefresh sid current
 
   -- The key is made here, sealed to the user's own public key, and sent
   -- with the request that turns the space encrypted; the page keeps it.

@@ -21,12 +21,13 @@ module Wiki.Server.Storage.Rows
   , pageNodes
   , pageNode
   , pageNodesWithIds
-  , pageNodesIn
   , childPage
   , childPages
   , subtreeIds
   , SitemapNode (..)
   , loadSitemapNodes
+  , TitledNode (..)
+  , loadTitledNodes
 
     -- * Reads
   , loadSpaces
@@ -425,13 +426,6 @@ pageNode pid = head <$> nodesWhere (\p -> p.id ==. val_ pid.text)
 pageNodesWithIds :: (Backend be) => [PageId] -> Db be [PageNode]
 pageNodesWithIds pids = inChunks (ordNub pids) $ \ids -> nodesWhere (\p -> p.id `in_` map (\x -> val_ x.text) ids)
 
--- | The pages of these spaces, as nodes, in no particular order: what the
--- lookup of pages by title reads ('Wiki.Server.Storage.findPagesByTitle').
--- The condition is on the space alone, which the index
--- @pages_space_template@ serves, so a space not named costs no row.
-pageNodesIn :: (Backend be) => [SpaceId] -> Db be [PageNode]
-pageNodesIn sids = inChunks (ordNub sids) $ \ids -> nodesWhere (\p -> p.space_id `in_` map (\x -> val_ x.text) ids)
-
 -- | The condition that a page is under a parent: one page, or the top
 -- level of its space for 'Nothing'. Written as @parent = ?@ or @parent IS
 -- NULL@, which the index @pages_place@ serves.
@@ -490,6 +484,36 @@ loadSitemapNodes spaces = inChunks spaces $ \chunk -> do
     p <- filter_ (\p -> p.space_id `in_` map (\s -> val_ s.text) chunk) (all_ wikiDb.pages)
     pure (p.id, p.space_id, p.parent, p.slug, p.updated_at)
   pure [SitemapNode {id = PageId i, space = SpaceId s, parent = PageId <$> parent, slug = slugOf slug, updatedAt} | (i, s, parent, slug, updatedAt) <- rows]
+
+-- | 'TitledNode' is a page as the lookup of pages by title reads it
+-- ('Wiki.Server.Storage.findPagesByTitle'): its place in its space's
+-- tree, its title, and whether it is a template. It has no text and no
+-- times, so the lookup reads and decodes little of each page's row.
+data TitledNode = TitledNode
+  { id :: PageId
+  , space :: SpaceId
+  , parent :: Maybe PageId
+  , slug :: Slug
+  , title :: Text
+  , template :: Bool
+  }
+
+instance TreeNode TitledNode where
+  type NodeId TitledNode = PageId
+  nodeId p = p.id
+  nodeParent p = p.parent
+  nodeSlug p = p.slug
+
+-- | The pages of these spaces, as the lookup of pages by title reads
+-- them, in no particular order. The condition is on the space alone,
+-- which the index @pages_space_template@ serves, so a space not named
+-- costs no row.
+loadTitledNodes :: (Backend be) => [SpaceId] -> Db be [TitledNode]
+loadTitledNodes spaces = inChunks (ordNub spaces) $ \chunk -> do
+  rows <- runSelectReturningList . select $ do
+    p <- filter_ (\p -> p.space_id `in_` map (\s -> val_ s.text) chunk) (all_ wikiDb.pages)
+    pure (p.id, p.space_id, p.parent, p.slug, p.title, p.template)
+  pure [TitledNode {id = PageId i, space = SpaceId s, parent = PageId <$> parent, slug = slugOf slug, title, template} | (i, s, parent, slug, title, template) <- rows]
 
 --------------------------------------------------------------------------------
 -- Reads

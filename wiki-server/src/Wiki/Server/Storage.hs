@@ -2647,8 +2647,8 @@ searchPagesTx q = do
 --
 -- The spaces are chosen from the context, which holds every space and the
 -- reader's grants, before any page is read. Then one query reads the
--- nodes of the chosen spaces' pages, without their texts
--- ('pageNodesIn'), by the index on the space. So a space the reader may
+-- chosen spaces' pages, their places and titles only
+-- ('loadTitledNodes'), by the index on the space. So a space the reader may
 -- not view, an encrypted one and the space left out add no row to what
 -- is read, compared, ranked or counted. Every page of a chosen space is
 -- read, templates too, so that each page's path can be found among them;
@@ -2665,7 +2665,7 @@ findPagesByTitleTx q = do
   if not (looksFor q) || Map.null chosen
     then pure []
     else do
-      nodes <- db (pageNodesIn (Map.keys chosen))
+      nodes <- db (loadTitledNodes (Map.keys chosen))
       let byId = Map.fromList [(n.id, n) | n <- nodes]
       pure . rankTitles q $
         [ TitleHit {page = n.id, space = n.space, spacePath = map (\s -> s.slug) c, pagePath, title = n.title}

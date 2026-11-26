@@ -19,6 +19,7 @@
 module Maker.Deploy.Rehearse
   ( rehearse
   , rehearsalDatabase
+  , pdfSwitchesFor
   )
 where
 
@@ -32,6 +33,7 @@ import System.Directory (doesFileExist, removePathForcibly)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Posix.Files (setFileMode)
+import System.Process.Typed (nullStream, proc, readProcessInterleaved, setStdin)
 
 -- | The PostgreSQL database the copy is restored into, beside the
 -- deployment's own @wiki@ in its container.
@@ -89,8 +91,7 @@ rehearse p = do
     -- one only when its unit runs it with --no-pdf already, the proof that
     -- it takes the option (an older wiki-server would refuse to start).
     oldTakesNoPdf <- unitHasNoPdf (v "unit_file")
-    let pdfArgs = ["--no-pdf" | noPdf] <> ["--old-no-pdf" | noPdf && oldTakesNoPdf]
-        noPdf = v "pdf_exports" == "no"
+    pdfArgs <- if v "pdf_exports" == "no" then pdfSwitchesFor newBin ["--no-pdf"] (["--old-no-pdf" | oldTakesNoPdf]) else pure []
     code <-
       runInherit newBin (["rehearse", "--old", oldBin, "--data", dir </> "data"] <> liveArgs <> ["--scratch", scratch] <> scratchArgs <> pdfArgs)
         `finally` (removePathForcibly scratch >> when postgres (removePathForcibly scratchRestore >> dropScratch))
@@ -109,3 +110,23 @@ rehearse p = do
       text <- either (\(_ :: IOException) -> "") id <$> try (readFile file)
       pure (length text `seq` any (\l -> "ExecStart=" `isPrefixOf` l && " --no-pdf" `isInfixOf` l) (lines text))
     scratchUrl port = "postgres://wiki@127.0.0.1:" <> (if null port then "5433" else port) <> "/" <> rehearsalDatabase
+
+-- | The switches of @rehearse@ that keep its servers from trying their TeX
+-- engine (@--no-pdf@ for the new program's, @--old-no-pdf@ for the old
+-- program's), when the wiki-server that runs @rehearse@ takes them; none
+-- otherwise, said in one line. That program's own @rehearse --help@, which
+-- lists every option and runs nothing, says whether it does. One built
+-- before the switches (an older -O2 build, which @--no-build@ reuses)
+-- refuses them as unknown options, which would end the rehearsal: without
+-- them it runs as it did before them, and its servers try their TeX engine.
+pdfSwitchesFor :: FilePath -> [String] -> [String] -> IO [String]
+pdfSwitchesFor program new old = do
+  result <- try (readProcessInterleaved (setStdin nullStream (proc program ["rehearse", "--help"])))
+  let listed = case result of
+        Right (_, out) -> "--old-no-pdf" `isInfixOf` decodeFs out
+        Left (_ :: IOException) -> False
+  if listed
+    then pure (new <> old)
+    else do
+      say ("the wiki-server at " <> program <> " was built before its rehearse took --no-pdf, so the rehearsal's servers try their TeX engine this once; a deploy without --no-build builds it again")
+      pure []

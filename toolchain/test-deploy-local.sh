@@ -192,7 +192,7 @@ fixture() {
   unset XDG_CONFIG_HOME XDG_CACHE_HOME FAKE_NO_TINFO FAKE_NO_SQLITE FAKE_SQLITE_VERSION FAKE_SQLITE_NUMBER FAKE_SHELL_ONLY FAKE_NO_ZLIB FAKE_BOOTSTRAP_ZLIB FAKE_CABAL_NO_LIBRARY FAKE_CABAL_SEMOPEN FAKE_SEMAPHORE PKG_CONFIG_PATH LIBRARY_PATH C_INCLUDE_PATH CPATH LD_LIBRARY_PATH FAKE_GITHUB FAKE_SUDO_PASSWORD FAKE_TS_DOWN FAKE_BUILD_FAIL FAKE_NO_SYSTEMD FAKE_LINGER FAKE_BACKUP_FAIL FAKE_MIGRATE_FAIL FAKE_CHECK_FAIL FAKE_RESTORE_FAIL FAKE_NO_DOCKER \
     FAKE_MANAGER_ENV FAKE_TS_NO_OPERATOR FAKE_TS_NO_MAGICDNS FAKE_TS_NO_CERTS FAKE_TS_VERSION FAKE_TS_FUNNEL FAKE_HTTPS_DOWN FAKE_PUBLIC_URL \
     FAKE_GIT_REPOS FAKE_TLMGR_FAIL FAKE_INSTALL_TL_NO_BIN FAKE_XELATEX_BROKEN WIKI_TEX_TIMEOUT FAKE_PERL_MAKE_FAIL FAKE_TEX_MIRROR_DOWN \
-    FAKE_COPY_EXIT FAKE_MOVE_COMPARE_EXIT FAKE_SERVE_PG_FAIL FAKE_PG_UP_FAIL FAKE_REHEARSE_EXIT FAKE_RELOAD_FAIL FAKE_RESTART_PG_FAIL FAKE_RESTART_PG_LOCK FAKE_RESTART_PG_TAMPER FAKE_STOP_PG_FAIL FAKE_SERVE_PG_SILENT \
+    FAKE_COPY_EXIT FAKE_MOVE_COMPARE_EXIT FAKE_SERVE_PG_FAIL FAKE_PG_UP_FAIL FAKE_REHEARSE_EXIT FAKE_REHEARSE_OLD FAKE_RELOAD_FAIL FAKE_RESTART_PG_FAIL FAKE_RESTART_PG_LOCK FAKE_RESTART_PG_TAMPER FAKE_STOP_PG_FAIL FAKE_SERVE_PG_SILENT \
     WIKI_TEST_MOVE_FAILPOINT WIKI_TEST_MOVE_OPERATIONS
   printf 'ENABLED=yes\n' >"$WIKI_DEPLOY_UFW_CONF"
   : >"$EVENTS"
@@ -273,7 +273,23 @@ case \$command in
     # ends it as wiki-server rehearse does, 6 for a failed check and 7 for
     # an old program it cannot drive. The comparison of a move to
     # PostgreSQL (--move-to-database, Maker.Deploy.Move) ends with
-    # FAKE_MOVE_COMPARE_EXIT instead.
+    # FAKE_MOVE_COMPARE_EXIT instead. --help lists the options, as the
+    # real one's does; with FAKE_REHEARSE_OLD, a wiki-server built before
+    # rehearse took --no-pdf and --old-no-pdf, it lists neither and refuses
+    # them, as optparse refuses an unknown option.
+    case \$arguments in
+      *' --help '*)
+        if [ -n "\${FAKE_REHEARSE_OLD:-}" ]; then
+          printf 'Usage: wiki-server rehearse --old PROGRAM --scratch DIR\n'
+        else
+          printf 'Usage: wiki-server rehearse --old PROGRAM --scratch DIR [--no-pdf] [--old-no-pdf]\n'
+        fi
+        exit 0 ;;
+    esac
+    case \$arguments in
+      *' --no-pdf '* | *' --old-no-pdf '*)
+        [ -z "\${FAKE_REHEARSE_OLD:-}" ] || { printf 'Invalid option --no-pdf\n' >&2; exit 1; } ;;
+    esac
     case \$arguments in
       *' --move-to-database '*)
         [ -z "\${FAKE_MOVE_COMPARE_EXIT:-}" ] || { printf 'fake comparison failure: page p1 has another source\n' >&2; exit "\$FAKE_MOVE_COMPARE_EXIT"; } ;;
@@ -4184,6 +4200,19 @@ assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-s
 assert_contains "$out" 'PDF exports: off by --no-pdf'
 [ "$(state pdf_exports)" = no ] || fail 'the redeploy forgot --no-pdf'
 grep -x 'ExecStart=.* --no-pdf' "$HOME/$unit" >/dev/null || fail 'the redeploy dropped --no-pdf from the unit'
+# A wiki-server built before rehearse took the two switches (an older -O2
+# build, which --no-build reuses) is given neither: the rehearsal runs as
+# it did before them, its servers trying their TeX engine, the deploy says
+# why in one line, and goes on.
+: >"$EVENTS"
+out=$case_dir/old-rehearse
+FAKE_REHEARSE_OLD=1 deploy --no-build >"$out" 2>&1 || fail "the deploy with a wiki-server whose rehearse takes no --no-pdf failed: $(cat "$out")"
+assert_contains "$out" "was built before its rehearse took --no-pdf, so the rehearsal's servers try their TeX engine this once; a deploy without --no-build builds it again"
+assert_contains "$out" 'the rehearsal passed'
+assert_contains "$EVENTS" "wiki-server rehearse --old $HOME/wiki-demo/bin/wiki-server --data $HOME/wiki-demo/data --sqlite $HOME/wiki-demo/data/wiki.sqlite --scratch $HOME/.config/wiki-demo/wiki-demo.rehearsal"
+[ "$(grep 'wiki-server rehearse --old' "$EVENTS" | grep -c -e '--no-pdf')" = 0 ] || fail "a rehearse that takes no --no-pdf was given it: $(grep 'wiki-server rehearse' "$EVENTS")"
+grep -x 'ExecStart=.* --no-pdf' "$HOME/$unit" >/dev/null || fail 'the deploy with the older rehearse dropped --no-pdf from the unit'
+out=$case_dir/kept
 deploy --status >"$out" 2>&1 || fail '--status failed'
 assert_contains "$out" 'PDF exports: off by --no-pdf (remembered): the TeX step checks no TeX and installs none, and the unit runs wiki-server with --no-pdf; --pdf turns them on again'
 assert_lacks "$out" 'off in the unit'

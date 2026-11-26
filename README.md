@@ -1879,7 +1879,10 @@ shown as it comes and kept in `<toolchain>/.wiki-toolchain/texlive/install.log`.
   program's server with `--no-pdf` (`rehearse --no-pdf`) and the old program's too
   (`--old-no-pdf`) when the installed unit runs it with `--no-pdf` already, the proof
   that it takes the option. On the first run with `--no-pdf`, and after `--stop`, the old
-  program's server still tries its TeX once before it serves. `--pdf` and `--no-pdf` are
+  program's server still tries its TeX once before it serves. So do both, with a line
+  that says why, when the wiki-server that runs `rehearse` was built before it took
+  the two switches (its `rehearse --help` lists neither): an older build, which
+  `--no-build` reuses; a deploy without `--no-build` builds it again. `--pdf` and `--no-pdf` are
   refused with `--rollback`, which puts the kept deployment back as it was, its unit
   included, and with `--stop` and `--status`.
 - Whenever the TeX step ends without an `xelatex` that works (the one the service finds

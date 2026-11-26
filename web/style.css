@@ -6606,6 +6606,19 @@ div.server-secret > span:first-child {
   margin: 0;
 }
 
+/* A plugin's switch and why its last change was refused
+   (Wiki.App.View.Plugins' switchView): the two lie in the row's column
+   as the row's other lines do. */
+.plugin-choice {
+  display: contents;
+}
+
+.plugin-unlisted {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
 .plugin-head {
   display: flex;
   flex-wrap: wrap;
@@ -6646,6 +6659,132 @@ div.server-secret > span:first-child {
 .admin-plugin-note {
   color: var(--muted);
   font-size: 0.8rem;
+}
+
+/* External plugins (Wiki.App.View.Plugins, Wiki.App.View.WikiPlugins,
+   Wiki.App.View.PluginUpload): a row a plugin, as a built-in one's, with
+   whose it is, its permissions and its hosts under its name, and the
+   warning before an upload in a box of its own. Every text a manifest
+   gives may break anywhere, so that a host of 253 characters or a
+   description of one long word stays inside its row. */
+.plugins-external,
+.admin-external {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.plugins-external h3,
+.admin-external h3 {
+  margin: 0.4rem 0 0;
+  font-size: 1rem;
+}
+
+.admin-external-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-external-plugin {
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.admin-external-plugin p {
+  margin: 0.1rem 0 0;
+}
+
+.plugin-head .plugin-name {
+  min-width: 0;
+}
+
+.plugin-name,
+.admin-plugin-name,
+.plugin-about,
+.plugin-description,
+.plugin-permissions,
+.plugin-hosts,
+.plugin-warning-title,
+.plugin-warning-text,
+.plugin-pick-error,
+.plugin-refused {
+  overflow-wrap: anywhere;
+}
+
+.plugin-permissions {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 0.85rem;
+}
+
+.plugin-about,
+.plugin-hosts,
+.plugin-hidden,
+.plugin-changing,
+.plugin-reading {
+  font-size: 0.85rem;
+}
+
+.plugin-own-actions,
+.plugin-warning-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.plugin-add {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+/* Add, Install and Replace are labels around a hidden file input, looking
+   like the buttons beside them, as the import's: the input stays in the
+   focus order and opens the browser's picker on Enter and Space, and the
+   label shows its focus. */
+.plugin-add-files,
+.plugin-replace {
+  position: relative;
+}
+
+.plugin-add-files:focus-within,
+.plugin-replace:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.plugin-add-files input[type="file"],
+.plugin-replace input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.plugin-warning,
+.plugin-pick-refused {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.plugin-warning p,
+.plugin-pick-refused p {
+  margin: 0;
 }
 
 /* The pages of a password reset's link and of an address's verification,

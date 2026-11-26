@@ -1838,7 +1838,7 @@ confirmed 2026-11-10; before that the session implemented everything itself): a
 session on Fable plans, briefs and reviews, and one Opus subagent in a worktree of
 its own implements each package; a session on another model implements itself.
 Before a pull request merges, it is reviewed by Codex, as `AGENTS.md` says: the
-session runs the Codex CLI on the pushed head, `gpt-6.1-sol` at high reasoning
+session runs the Codex CLI on the pushed head, `gpt-6.2-sol` at high reasoning
 effort, and when its quota has run out asks the GitHub Codex bot instead, with a
 comment of `@codex review` on the pull request (the owner, 2026-11-10: the CLI is
 the default; on the owner's machine it is signed in with the owner's account, so
@@ -2809,7 +2809,22 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   so a change in another tab or by an administrator does not reach
   an editor already open; `wiki-plugin.js` is not served for
   download; one oversized message is deserialized once by the
-  browser before it is refused. **D3 merged (#382, eight Codex rounds, four builders):** the
+  browser before it is refused. **E3 merged (#386, three Codex
+  rounds):** Settings, Plugins lists the external plugins with the
+  built-in ones' switch; under the policy `users` a user adds,
+  replaces and removes their own, and the administration sets the
+  policy and the wiki's plugins; every upload is confirmed against
+  the files just picked (what the plugin reads, its hosts, for
+  whom), checked with the server's own `parseManifest` and
+  `checkBundle` first; the read of the installed plugins and every
+  write are the plugins' one machine's, in its one flight, and the
+  editor takes them from the context (`external`);
+  `wiki-plugin.js` is served for download. Left: a tab left open
+  learns of another tab's or an administrator's change at its own
+  next write, session or page load; a refusal for a plugin whose
+  row is gone is not drawn; the icon's upload on the home page and
+  in a space's settings is `display: none`, and "Attach files" in
+  the editor shows no focus ring. **D3 merged (#382, eight Codex rounds, four builders):** the
   assistant's API keys are the plugin's named secrets and its
   provider, model, effort, service's address, mode and page cap the
   plugin's options on the server, in the clear; the migration is a
@@ -2862,9 +2877,21 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   encrypted spaces in the browser), then a second group "In other
   spaces" in the editor, at most 10 after 2 letters and a pause,
   written as `[[/s/<space>/p/<page>/|<title>]]`, by a machine with
-  one lookup out; no ask from an encrypted page. Left of #301 after
-  it: braces and `\begin…\end` for commands in math, splitting an
-  item on its later lines. **Held requests (#385, after #377):** the
+  one lookup out; no ask from an encrypted page. The rest of #301 is
+  built and in review: the editor's group (#389), splitting an item
+  on its later lines (#390), a math command's braces from KaTeX's
+  own arities (#391, on #389), and `\begin…\end` after it (#392).
+  **Found by #389's rounds in the code before it, and left for a
+  pull request of their own:** `plainPageWrite` refuses only a space
+  the fresh list marks encrypted, so a draft, a save, an upload or
+  a comment goes out plain when the list no longer holds the space
+  (encrypted, and the reader's access taken away, with the editor's
+  tab left open); the mentions' lookup of people trusts the editor's
+  snapshot of the space, so typed letters go to `people/search`
+  after another tab starts encrypting it; the mentions' asker keeps
+  its answers by letters for the editor's life, across a change of
+  reader. #389's own lookup has none of the three
+  (`plainSourceLookup`, `Inputs`, no kept answers). **Held requests (#385, after #377):** the
   browser examples that hold a request start over a backend with no
   time limit, through one helper (`holdingEnv`, `startHolding` in
   `Test.Browser.Http`); left: five holds in `Test/Browser/Vault.hs`

@@ -53,20 +53,30 @@ import Wiki.Core.Markdown.Enter (textLimit)
 -- a blank line, and the first line of each item after the first of a list
 -- of the page's own (not nested, not in a quotation, a footnote or a
 -- block of the wiki's own). Cut at such an item, the rest reads as a list
--- of the same kind beginning with it, which is all Enter needs: the mark
--- and its number are on the item's line, and whether the list is loose
--- does not change what Enter writes. So in a list of any length Enter
--- reads only the items around the cursor's. A block of HTML that reads on, a fence left open, one of
--- the wiki's own blocks not closed is one block to its end, with no start
--- inside it; so is a footnote's definition. A block right after another
--- is read as it is because of the one before: an item may start a list
--- after a paragraph's line only if it has text, and is no task then.
+-- of the same kind beginning with it: the mark and its number are on the
+-- item's line, whether the list is loose does not change what Enter
+-- writes, and the item's own blocks read as in the whole page. So in a
+-- list of any length Enter reads only the items around the cursor's. A
+-- block of HTML that reads on, a fence left open, one of the wiki's own
+-- blocks not closed is one block to its end, with no start inside it; so
+-- is a footnote's definition. A block right after another is read as it
+-- is because of the one before: an item may start a list after a
+-- paragraph's line only if it has text, and is no task then.
+--
+-- An item that took attributes is no start. A line of attributes alone at
+-- the end of an item (@+ {#a}@) gives them to the next item, and the
+-- parser puts them on a block inside that item (a fence). A cut at that
+-- item leaves the line of attributes out, so its blocks read otherwise,
+-- and Enter would split it where the page refuses the split. The start
+-- before it is taken instead. A top-level block that took attributes
+-- stays a start: the parser wraps it in a div that holds the attributes,
+-- and a split inside it leaves the div as it is.
 blockStarts :: Text -> [Shape] -> [Int]
 blockStarts source shapes =
   ordNub (1 : sort ([a | s <- shapes, s.kind /= NoteShape, let { a = fst (shapeLines s) }, a > 1, afterBlank a, not (inNote a)] <> items))
   where
     -- The items after the first of a list at the page's own level.
-    items = [fst (shapeLines i) | s <- shapes, s.kind == ListShape, i <- drop 1 s.inner, not (inNote (fst (shapeLines i)))]
+    items = [fst (shapeLines i) | s <- shapes, s.kind == ListShape, i <- drop 1 s.inner, null i.attributes, not (inNote (fst (shapeLines i)))]
     -- The footnotes' definitions, each by its first line, with its last:
     -- they do not overlap, so the one that may hold a line is the last
     -- that starts at or before it.

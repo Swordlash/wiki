@@ -28,6 +28,7 @@ import Wiki.App.Backend.Contract.Admin qualified as Admin
 import Wiki.App.Backend.Contract.Backlinks qualified as Backlinks
 import Wiki.App.Backend.Contract.Comments qualified as Comments
 import Wiki.App.Backend.Contract.Notifications qualified as Notifications
+import Wiki.App.Backend.Contract.Plain qualified as Plain
 import Wiki.App.Backend.Contract.Plugins qualified as Plugins
 import Wiki.App.Backend.Contract.Stars qualified as Stars
 import Wiki.App.Backend.Contract.Titled qualified as Titled
@@ -64,6 +65,7 @@ spec backing = describe "HttpWiki against the server's API" $ do
   Plugins.spec (type (HttpWiki IO)) fixture
   Backlinks.spec (type (HttpWiki IO)) fixture
   Titled.spec (type (HttpWiki IO)) fixture
+  Plain.spec (type (HttpWiki IO)) fixture
   importing backing
   where
     fixture example =

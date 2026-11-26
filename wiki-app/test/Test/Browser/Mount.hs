@@ -22,6 +22,8 @@ module Test.Browser.Mount
   , showSection
   , signOut
   , slugs
+  , testRouter
+  , forgetStorage
   )
 where
 

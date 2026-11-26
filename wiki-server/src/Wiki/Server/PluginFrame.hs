@@ -45,6 +45,8 @@ module Wiki.Server.PluginFrame
   , runtimeScript
   , scriptHash
   , codeScript
+  , wikiPluginModule
+  , wikiPluginApplication
   )
 where
 
@@ -71,6 +73,30 @@ import Wiki.Server.Storage.Blobs (blobOf)
 -- server is compiled.
 runtimeScript :: Text
 runtimeScript = $(makeRelativeToProject "../web/plugin/runtime.js" >>= embedStringFile)
+
+-- | The module a plugin built with a bundler imports,
+-- @web\/plugin\/wiki-plugin.js@ as it is when the server is compiled
+-- ("Wiki.App.Guide"'s page "Writing a plugin" says where it is).
+wikiPluginModule :: Text
+wikiPluginModule = $(makeRelativeToProject "../web/plugin/wiki-plugin.js" >>= embedStringFile)
+
+-- | @\/plugin\/wiki-plugin.js@: 'wikiPluginModule', to download, for anyone.
+-- It is the wiki's own code, the same on every server of this version.
+wikiPluginApplication :: Application
+wikiPluginApplication request respond
+  | requestMethod request `notElem` [methodGet, methodHead] =
+      respond (responseLBS status405 [(hContentType, "text/plain; charset=utf-8"), ("Allow", "GET, HEAD")] "The module is fetched with GET or HEAD.\n")
+  | otherwise =
+      respond
+        ( responseLBS
+            status200
+            [ (hContentType, "text/javascript; charset=utf-8")
+            , ("Content-Disposition", "attachment; filename=\"wiki-plugin.js\"")
+            , ("X-Content-Type-Options", "nosniff")
+            , (hCacheControl, "no-cache")
+            ]
+            (BSL.fromStrict (encodeUtf8 wikiPluginModule))
+        )
 
 -- | The script that holds a plugin's code: the code as a JSON string, in
 -- @self.wikiPluginSource@, for the runtime to start, and whether the code

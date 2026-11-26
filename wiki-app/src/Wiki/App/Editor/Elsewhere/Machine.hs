@@ -11,10 +11,10 @@
 -- typed after @[[@ from its text ("Wiki.App.Editor.Complete"'s
 -- 'Wiki.App.Editor.Complete.linkLetters') and tells the machine
 -- ('Asked'). The machine waits a pause ('Pause'), so that a lookup goes
--- out once the typing stops. Then it asks the backend whether the page's
--- space is plain now ('Check', the backend's @plainSource@), and only on
--- a yes ('Checked') asks the server for the pages of the other spaces
--- whose title matches the letters ('Lookup', the backend's
+-- out once the typing stops. Then it asks the backend whether the server
+-- takes the page's text as plain now ('Check', the backend's @plainNow@),
+-- and only on a yes ('Checked') asks the server for the pages of the
+-- other spaces whose title matches the letters ('Lookup', the backend's
 -- @findPagesByTitle@). It replies to the question with the pages found
 -- ('Reply'). The editor writes the reply as a list, against the text it
 -- holds then.
@@ -132,8 +132,9 @@ data Event
     Abandoned Int
   | -- | The pause after the last question has ended.
     Paused
-  | -- | The answer of the check with this ticket: whether the page's space
-    -- is plain now. A check that failed answers no.
+  | -- | The answer of the check with this ticket: whether the server takes
+    -- the page's text as plain now. A refusal, or a check that failed,
+    -- answers no.
     Checked Ticket Bool
   | -- | The answer of the lookup with this ticket: the pages found, or
     -- 'Nothing' when the lookup failed.
@@ -150,8 +151,8 @@ data Effect
     Pause
   | -- | Stop the pause, if one runs: its 'Paused' never comes.
     StopPause
-  | -- | Ask the backend whether the page's space is plain now, under this
-    -- ticket. Nothing of the letters goes with it.
+  | -- | Ask whether the server takes the page's text as plain now, under
+    -- this ticket. Nothing of the letters goes with it.
     Check Ticket
   | -- | Ask the server for the pages, under this ticket. This request
     -- carries the letters.

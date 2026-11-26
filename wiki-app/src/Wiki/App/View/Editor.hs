@@ -1014,13 +1014,15 @@ problemsOf st taken = sort (st.checked.problems <> diagnosed <> fitProblems st <
     diagnosed = concatMap (\d -> d.diagnose drawn) ((contributed (pluginsOn st.input.context) (plugins @IO)).diagnostics <> External.diagnosticsOf st.externalHeard)
 
 -- | What the external plugins are given ("Wiki.App.Plugin.External.Frames"):
--- the session, which plugins are on, the text as last checked once the
--- page is loaded, and whether the space is encrypted, where none runs.
+-- the session, which plugins are on and which are installed, as the
+-- context holds them, the text as last checked once the page is loaded,
+-- and whether the space is encrypted, where none runs.
 externalInput :: State -> Frames.Input
 externalInput st =
   Frames.Input
     { session = st.input.context.sessionNumber
     , known = st.input.context.plugins
+    , installed = st.input.context.external
     , choicesRead = st.input.context.pluginsRead
     , text = case st.loaded of
         Ready _ -> Just st.checkedText
@@ -2691,13 +2693,14 @@ component =
     carryElsewhere = \case
       Elsewhere.Pause -> Machine.AskUnder Pausing (Machine.delayCounted elsewhereDelay) (const Elsewhere.Paused)
       Elsewhere.StopPause -> Machine.Cancel Pausing
-      -- Whether the space of the page loaded is plain now, as the backend
-      -- knows it ('plainSource'). With no page loaded there are no letters
-      -- to look up: no.
+      -- Whether the server takes the text of the page loaded as plain
+      -- now ('plainNow'): a yes only for 'Right'. A refusal, a server out
+      -- of reach, or anything thrown is a no. With no page loaded there
+      -- are no letters to look up: no.
       Elsewhere.Check ticket ->
         Machine.AskWith
           (gets (\st -> case st.loaded of Ready w -> Just w.page.id; _ -> Nothing))
-          (\page -> Machine.run (maybe (pure False) plainSource page))
+          (\page -> Machine.run (maybe (pure False) (fmap isRight . plainNow) page))
           (Elsewhere.Checked ticket . fromRight False)
       Elsewhere.Lookup ticket query -> Machine.Ask (Machine.run (findPagesByTitle query)) (Elsewhere.Found ticket . either (const Nothing) rightToMaybe)
       Elsewhere.Reply i request hits -> Machine.Now $ do
@@ -3391,13 +3394,19 @@ component =
     -- Handle a save refused because of someone else's save: fetch their
     -- version and show it beside the author's text, which is saved as a
     -- draft at once. If their version cannot be fetched, the refusal is
-    -- shown as it is, with the text still there.
+    -- shown as it is, with the text still there. So it is when the page
+    -- at the editor's address now is another page (the page edited was
+    -- moved, and another took its address): its version is not the edited
+    -- page's, and nothing is merged with it, saved over it or taken from
+    -- it. The pages are told apart by their ids.
     conflicted :: Text -> After -> H.HalogenM State Action Slots ViewOutput m ()
     conflicted why after = do
       input <- gets (\st -> st.input)
+      edited <- gets (\st -> case st.loaded of Ready w -> Just w.page.id; _ -> Nothing)
       owner <- Body.ensureOwned (\st -> st.owners) (\owners st -> st {owners})
       fetchPage owner input >>= \case
         Left _ -> modify (\st -> st {problem = Just (Conflict why)})
+        Right (theirs, _) | Just theirs.id /= edited -> modify (\st -> st {problem = Just (Conflict why)})
         Right (theirs, theirAddresses) -> do
           by <- either (const Nothing) (\v -> v.author) <$> getVersion theirs.id theirs.updatedAt
           gets (\st -> st.loaded) >>= \case

@@ -30,9 +30,12 @@
 //   IMAGE_LIMIT bytes. Never kept, and left to the network as without a
 //   worker: who is asking (api/v1/session), the administration
 //   (api/v1/admin/...), one's account and notifications
-//   (api/v1/account/..., api/v1/notifications...), drafts, exports and the
-//   wiki's archive, invitations, password resets, mail links, the live
-//   channel (api/v1/events) and signing in with a provider (auth/...).
+//   (api/v1/account/..., api/v1/notifications...), drafts, the question
+//   whether a page's text may be sent plain now (api/v1/pages/<page>/plain,
+//   asked before every plain write: a kept answer would speak for a space
+//   as it was), exports and the wiki's archive, invitations, password
+//   resets, mail links, the live channel (api/v1/events) and signing in
+//   with a provider (auth/...).
 //
 // Writes (anything but GET and HEAD) are never touched: offline they fail
 // as they would without a worker, and the editor says so.
@@ -74,6 +77,7 @@ const unkept = [
   /^email-verification(\/|$)/,
   /^unsubscribe(\/|$)/,
   /^pages\/[^/]+\/draft$/,
+  /^pages\/[^/]+\/plain$/,
   /^(pages|spaces)\/[^/]+\/export(\/|$)/,
 ];
 // An attachment's bytes and a space's icon: kept only if a small image.

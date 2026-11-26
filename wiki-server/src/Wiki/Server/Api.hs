@@ -879,6 +879,9 @@ handlers env caller =
           { save = \p version edit -> versioned <$> wiki (savePage p version.time edit.title edit.body)
           , move = \p body -> wiki (movePage p body.space body.parent)
           , location = wiki . pageLocation
+          , -- Kept by no cache: a copy kept would answer for a space as it
+            -- was ('Wiki.Api.Unkept').
+            plain = \p -> addHeader "private, no-store" NoContent <$ wiki (plainNow p)
           , backlinks = wiki . pageBacklinks
           , shift = \p body -> wiki (shiftPage p body.shift)
           , template = \p body -> wiki (setPageTemplate p body.template)

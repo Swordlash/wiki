@@ -31,9 +31,11 @@ import Test.Backend.Opaque (opaqueServer)
 import Test.Bell (noticeOf)
 import Test.Browser.Opaque (fakeChallenge, fakeRegistration)
 import Test.Hspec
+import Test.Hspec.QuickCheck (prop)
 import Test.Opaque (fakeChallengeMade, fakeRegistrationMade)
+import Test.QuickCheck (Gen, Property, chooseInt, conjoin, counterexample, forAllShrink, ioProperty, listOf1, once, oneof, shrinkList, (===))
 import Test.Scripted (bodyOf, formOf, headersOf, jsonResponse, methodOf, responseWith)
-import Wiki.Api (EncryptedApi, NotificationsApi (..), PagesApi, SpacesApi (..), WikiApi (..))
+import Wiki.Api (EncryptedApi, NotificationsApi (..), PagesApi (..), SpacesApi (..), WikiApi (..))
 import Wiki.Api.Account (PasswordChange (..), SignInMethods (..))
 import Wiki.Api.ApiKeys (ApiKeyId (..), ApiKeyInfo (..), KeyRight (..), MadeApiKey (..), NewApiKey (..))
 import Wiki.Api.Comments (CommentsApi)
@@ -69,9 +71,10 @@ import Wiki.Core.Assistant.Vault (Sealed (..), Vault (..), VaultTag (..), vaultF
 import Wiki.Core.Attachment (Attachment (..), FileName (..), MimeType (..), Source (..))
 import Wiki.Core.Backlink (Backlink (..))
 import Wiki.Core.Draft (Draft (..))
-import Wiki.Core.Id (AttachmentId (..), BlobId (..), NotificationId (..), PageId (..), SpaceId (..), UserId (..))
+import Wiki.Core.Id (AttachmentId (..), BlobId (..), CommentId (..), CommentThreadId (..), NotificationId (..), PageId (..), SpaceId (..), UserId (..))
 import Wiki.Core.Notification (Notification (..), PageLocation (..))
 import Wiki.Core.Page (Page (..), summaryOf)
+import Wiki.Core.Page qualified as P (Page (..))
 import Wiki.Core.Path (parsePath, pathOf)
 import Wiki.Core.Search (SearchHit, SearchQuery (..), searchQuery)
 import Wiki.Core.Slug (Slug)
@@ -93,6 +96,16 @@ backend :: (HttpRequest -> Either Text Response) -> IO (HttpEnv, IORef [HttpRequ
 backend respond = do
   (transport, asked) <- scripted respond
   (,asked) <$> newHttpEnv transport
+
+-- | 'backend', whose server says yes to every question whether a page's
+-- text is plain now ('plainNow'), and the requests it made but those
+-- questions: for a test of what a plain write sends.
+plainBackend :: (HttpRequest -> Either Text Response) -> IO (HttpEnv, IO [HttpRequest])
+plainBackend respond = do
+  (env, asked) <- backend (\r -> if asksPlain r then Right (responseWith 204 [] "") else respond r)
+  pure (env, filter (not . asksPlain) <$> readIORef asked)
+  where
+    asksPlain r = methodOf r == "GET" && "/plain" `T.isSuffixOf` requestUrl r
 
 ok :: (ToJSON a) => a -> Either Text Response
 ok a = Right (jsonResponse 200 (encode a))
@@ -127,6 +140,7 @@ demoVault = withSealed Sealed {nonce = "nonce", ciphertext = "ciphertext"} Vault
 spec :: Spec
 spec = describe "Wiki.App.Backend.Http" $ do
   pageReads
+  plainText
   requests
   answers
   browserFetch
@@ -185,11 +199,13 @@ browserFetch = describe "the browser's transport" $ do
 
   it "gives an upload longer than any other request" $ do
     let hello = demoPage "blog" "hello-world"
-    (env, asked) <- backend (const (status 500 ""))
+    -- Each write after the question whether the page's text is plain now
+    -- ('plainNow'), which waits as long as any request.
+    (env, asked) <- backend (\r -> if "/plain" `T.isSuffixOf` requestUrl r then Right (responseWith 204 [] "") else status 500 "")
     _ <- runHttpWiki env (uploadAttachment hello.id "f" "text/plain" "bytes")
     _ <- runHttpWiki env (savePage hello.id hello.updatedAt "t" "b")
     _ <- runHttpWiki env (getSpace (slugs "docs"))
-    map timeLimit <$> readIORef asked `shouldReturn` [requestTimeout, requestTimeout, uploadTimeout]
+    map timeLimit <$> readIORef asked `shouldReturn` [requestTimeout, requestTimeout, requestTimeout, uploadTimeout, requestTimeout]
 
   it "has no network natively, which the backend takes for the wiki out of reach" $ do
     env <- newHttpEnv browserTransport
@@ -225,9 +241,9 @@ requests = describe "its requests" $ do
     map requestUrl <$> readIORef asked `shouldReturn` [people]
 
   it "saves against the version it started from, in If-Match, with the edit as JSON" $ do
-    (env, asked) <- backend (const (ok hello))
+    (env, asked) <- plainBackend (const (ok hello))
     _ <- runHttpWiki env (savePage hello.id hello.updatedAt "New title" "New body")
-    [r] <- readIORef asked
+    [r] <- asked
     methodOf r `shouldBe` "PUT"
     requestUrl r `shouldBe` "api/v1/pages/" <> hello.id.text
     headersOf r
@@ -245,11 +261,13 @@ requests = describe "its requests" $ do
       if
         | requestUrl r == "api/v1/spaces" -> ok [nowEncrypted]
         | requestUrl r == endpointUrl (\e -> e.spaces.pageAt hello.space (slugs "hello-world")) -> ok hello
+        | requestUrl r == endpointUrl (\e -> e.pages.plain hello.id) -> status 409 (encode (ApiError.Stale ApiError.SpaceIsEncrypted "Encrypted."))
         | otherwise -> status 500 ""
     env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
     -- Read while the cached list says the space is plain.
     runHttpWiki env (getPage hello.space (slugs "hello-world")) `shouldReturn` Right hello
-    -- Every write that would carry the page's text asks for the list first,
+    -- Every write that would carry the page's text asks the server about
+    -- the page first ('plainNow'), or for the list of spaces (a page made),
     -- and sends nothing once it says the space is encrypted. (Natively the
     -- encrypted way then stops: there is no WebCrypto.)
     runHttpWiki env (savePage hello.id hello.updatedAt "Hello" "Edited") >>= (`shouldSatisfy` isLeft)
@@ -259,35 +277,8 @@ requests = describe "its requests" $ do
     runHttpWiki env (createPage hello.space Nothing "New" "Text") >>= (`shouldSatisfy` isLeft)
     -- A search limited to the space is not sent.
     runHttpWiki env (searchPages (searchQuery "words") {space = Just hello.space, includeSubspaces = True}) `shouldReturn` []
-    -- Nor is the space plain to the editor's lookup of other spaces'
-    -- pages by letters typed in the page (#301), which sends them only
-    -- after a yes: they are its text.
-    runHttpWiki env (plainSource hello.id) `shouldReturn` False
     sent <- readIORef asked
     [(methodOf r, requestUrl r) | r <- sent, methodOf r /= "GET" || "api/v1/search" `T.isPrefixOf` requestUrl r] `shouldBe` []
-
-  -- #301: the editor looks up letters typed in a page only once the
-  -- backend says the page's space is plain now ('plainSource'). A list of
-  -- spaces fetched now that no longer holds the space (the reader's
-  -- access taken away, the space perhaps encrypted meanwhile) says no; a
-  -- list that holds it plain says yes. Only the list is asked for.
-  it "says a page's space is plain only when the list of spaces fetched now holds it plain" $ do
-    let blog = fromMaybe (panic "no blog") (Map.lookup hello.space demo.spaces)
-        pageUrl = endpointUrl (\e -> e.spaces.pageAt hello.space (slugs "hello-world"))
-        plainWith listed = do
-          (transport, asked) <- scripted $ \r ->
-            if
-              | requestUrl r == "api/v1/spaces" -> ok listed
-              | requestUrl r == pageUrl -> ok hello
-              | otherwise -> status 500 ""
-          env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
-          runHttpWiki env (getPage hello.space (slugs "hello-world")) `shouldReturn` Right hello
-          plain <- runHttpWiki env (plainSource hello.id)
-          sent <- readIORef asked
-          pure (plain, [requestUrl r | r <- sent, requestUrl r /= pageUrl])
-    plainWith ([] :: [Space]) `shouldReturn` (False, ["api/v1/spaces"])
-    plainWith [blog] `shouldReturn` (True, ["api/v1/spaces"])
-    plainWith [blog {encryption = Just (KeyId "a-key")}] `shouldReturn` (False, ["api/v1/spaces"])
 
   -- #255's tenth review: a space that asks each time it is opened, in the
   -- middle of turning its encryption off, after a write emptied the cache.
@@ -358,9 +349,9 @@ requests = describe "its requests" $ do
     length <$> readIORef plainAsked `shouldReturn` 2
 
   it "keeps a draft with the version it started from in the body" $ do
-    (env, asked) <- backend (const (ok Draft {page = hello.id, author = UserId "admin", title = "t", body = "b", base = hello.updatedAt, savedAt = hello.updatedAt}))
+    (env, asked) <- plainBackend (const (ok Draft {page = hello.id, author = UserId "admin", title = "t", body = "b", base = hello.updatedAt, savedAt = hello.updatedAt}))
     _ <- runHttpWiki env (saveDraft hello.id hello.updatedAt "t" "b")
-    [r] <- readIORef asked
+    [r] <- asked
     (methodOf r, requestUrl r) `shouldBe` ("PUT", "api/v1/pages/" <> hello.id.text <> "/draft")
     snd <$> bodyOf r `shouldBe` Just "{\"base\":\"2026-09-01T12:00:00Z\",\"body\":\"b\",\"title\":\"t\"}"
 
@@ -370,9 +361,9 @@ requests = describe "its requests" $ do
     map (\r -> (methodOf r, requestUrl r)) <$> readIORef asked `shouldReturn` [("DELETE", "api/v1/attachments/a%201")]
 
   it "uploads a file as a multipart form, its name quoted" $ do
-    (env, asked) <- backend (const (status 500 ""))
+    (env, asked) <- plainBackend (const (status 500 ""))
     _ <- runHttpWiki env (uploadAttachment hello.id "say \"hi\" ü.txt" "text/plain" "the bytes")
-    [r] <- readIORef asked
+    [r] <- asked
     (methodOf r, requestUrl r) `shouldBe` ("POST", "api/v1/pages/" <> hello.id.text <> "/attachments")
     fst <$> bodyOf r `shouldSatisfy` maybe False ("multipart/form-data;boundary=" `T.isPrefixOf`)
     case formOf r of
@@ -387,10 +378,10 @@ requests = describe "its requests" $ do
       Nothing -> expectationFailure "no form"
 
   it "writes each form with a boundary of its own, too long for a file to hold by chance" $ do
-    (env, asked) <- backend (const (status 500 ""))
+    (env, asked) <- plainBackend (const (status 500 ""))
     _ <- runHttpWiki env (uploadAttachment hello.id "a.txt" "text/plain" "a")
     _ <- runHttpWiki env (uploadAttachment hello.id "b.txt" "text/plain" "b")
-    boundaries <- mapMaybe (fmap fst . formOf) <$> readIORef asked
+    boundaries <- mapMaybe (fmap fst . formOf) <$> asked
     length boundaries `shouldBe` 2
     ordNub boundaries `shouldBe` boundaries
     map BS.length boundaries `shouldBe` [55, 55]
@@ -595,7 +586,7 @@ caching = describe "what it keeps" $ do
     (\c -> Map.null c.pages) <$> cacheOf env `shouldReturn` True
 
   it "routes a search by the list of spaces a refresh read, though a star changed the cache while it was out" $ do
-    -- The list is read plain; a save asks for it again, and that read
+    -- The list is read plain; a page made asks for it again, and that read
     -- answers, once a star has changed the cache, that the blog is
     -- encrypted now.
     gate <- newEmptyMVar
@@ -618,17 +609,17 @@ caching = describe "what it keeps" $ do
     env <- newHttpEnv (Transport (\r -> atomicModifyIORef' asked (\rs -> (r : rs, ())) >> respond r))
     runHttpWiki env listSpaces `shouldReturn` older
     runHttpWiki env (getPage blogId (slugs "hello-world")) `shouldReturn` Right hello
-    saving <- async (runHttpWiki env (savePage hello.id hello.updatedAt hello.title "Secret."))
+    saving <- async (runHttpWiki env (createPage blogId Nothing "Plans" "Secret."))
     refresh
     _ <- runHttpWiki env (setStarred (PageId "page-x") True)
     putMVar gate ()
-    -- The save is refused, and the search limited to the blog sends its
-    -- words nowhere: both from the list read last.
+    -- The page is not made plain, and the search limited to the blog sends
+    -- its words nowhere: both from the list read last.
     wait saving >>= (`shouldSatisfy` isLeft)
     _ <- runHttpWiki env (searchPages SearchQuery {text = "secret", space = Just blogId, includeSubspaces = True, limit = 50, templates = False})
     sent <- readIORef asked
     [requestUrl r | r <- sent, "api/v1/search" `T.isPrefixOf` requestUrl r] `shouldBe` []
-    [requestUrl r | r <- sent, methodOf r == "PUT", requestUrl r == "api/v1/pages/" <> hello.id.text] `shouldBe` []
+    [requestUrl r | r <- sent, methodOf r == "POST", requestUrl r == "api/v1/spaces/" <> blogId.text <> "/pages"] `shouldBe` []
 
   it "keeps the list of spaces asked for last when one asked for before answers after it" $ do
     -- Two reads of the list cross: the first, from before the blog was
@@ -1076,7 +1067,11 @@ pageReads = describe "the reads of a page by its id" $
         -- backlinks, and no draft, which the server answers so); its
         -- export: a plain one, which an encrypted space does not offer.
         samePlain = ["location", "backlinks", "draft", "export"]
-    sort (fieldNames (Proxy @(Rep (PagesApi Mem AsApi)))) `shouldBe` sort (covered "PagesApi" <> writes <> samePlain)
+        -- Whether the page's text is taken plain now: asked before a plain
+        -- write, by the same route whatever the page's state; its refusal
+        -- is the answer ('plainNow').
+        question = ["plain"]
+    sort (fieldNames (Proxy @(Rep (PagesApi Mem AsApi)))) `shouldBe` sort (covered "PagesApi" <> writes <> samePlain <> question)
     -- A thread's writes, and its resolving and deleting, which carry no
     -- text: by the routes the page's state names, never sent again.
     sort (fieldNames (Proxy @(Rep (CommentsApi AsApi)))) `shouldBe` sort (covered "CommentsApi" <> ["open", "reply", "edit", "deleteComment", "delete", "resolve"])
@@ -1158,3 +1153,313 @@ apiKeys = describe "the user's API keys" $ do
     (env, asked) <- backend (opaqueServer False signedIn (const (status 500 "")))
     runHttpWiki env (makeApiKey (newWith (Just (Password "battery staple")))) `shouldReturn` Left WrongCredentials
     readIORef asked >>= (`shouldSatisfy` all (not . keysAt))
+
+-- | The question the backend asks before it sends any plain text of a page
+-- ('plainNow', @pages\/\<page>\/plain@): the server's answer for the page
+-- where it is now (#389's rounds). A list of spaces read before cannot
+-- say that the page moved to a space encrypted since, nor anything of a
+-- space the reader may no longer see.
+plainText :: Spec
+plainText = describe "the question whether a page's text is plain now" $ do
+  let hello = demoPage "blog" "hello-world"
+      blog = fromMaybe (panic "no blog") (Map.lookup hello.space demo.spaces)
+      plainAt p = endpointUrl (\e -> e.pages.plain p)
+      stale code = status 409 (encode (ApiError.Stale code "Not as the browser believed."))
+      writesOut rs = [(methodOf r, requestUrl r) | r <- rs, methodOf r /= "GET"]
+      -- A refusal of the question, as the reader is told it: the space's
+      -- state with the server's code, never a conflict of versions.
+      refused code why = \case
+        Left (Stale c t) -> c == code && why `T.isInfixOf` t && "nothing was sent" `T.isInfixOf` t
+        _ -> False
+
+  it "asks the server about the page before each plain write, and sends the write when it says yes" $ do
+    (transport, asked) <- scripted $ \r ->
+      if
+        | requestUrl r == plainAt hello.id -> Right (responseWith 204 [("Cache-Control", "private, no-store")] "")
+        | otherwise -> status 500 ""
+    env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
+    for_ (writesOf hello) $ \(name, write') -> do
+      earlier <- length <$> readIORef asked
+      _ <- runHttpWiki env write'
+      rs <- readIORef asked
+      -- The question, then the write, and nothing else.
+      (name, length rs - earlier, [(methodOf r == "GET", requestUrl r == plainAt hello.id) | r <- reverse (take 2 rs)])
+        `shouldBe` (name, 2, [(True, True), (False, False)])
+    -- Every write was sent, and no list of spaces was read for them: what
+    -- the service worker could answer from a copy is not asked.
+    length . writesOut <$> readIORef asked `shouldReturn` length (writesOf hello)
+    filter (== "api/v1/spaces") . map requestUrl <$> readIORef asked `shouldReturn` []
+
+  it "sends nothing once the server says the page's space is encrypted, though the list says the space it was read in is plain" $ do
+    -- Read in the blog; moved since, in another tab, to a space then
+    -- encrypted. The list still names the blog plain.
+    (transport, asked) <- scripted $ \r ->
+      if
+        | requestUrl r == "api/v1/spaces" -> ok [blog]
+        | requestUrl r == endpointUrl (\e -> e.spaces.pageAt hello.space (slugs "hello-world")) -> ok hello
+        | requestUrl r == plainAt hello.id -> stale ApiError.SpaceIsEncrypted
+        | otherwise -> status 500 ""
+    env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
+    runHttpWiki env (getPage hello.space (slugs "hello-world")) `shouldReturn` Right hello
+    for_ (writesOf hello) $ \(name, write') -> runHttpWiki env write' >>= \r -> (name, refused ApiError.SpaceIsEncrypted "encrypted since the page was opened" r) `shouldBe` (name, True)
+    writesOut <$> readIORef asked `shouldReturn` []
+    -- The refusal says the space is not as this tab believed: the list is
+    -- read again, as after any such refusal.
+    filter (== "api/v1/spaces") . map requestUrl <$> readIORef asked >>= (`shouldSatisfy` (not . null))
+
+  it "sends nothing for a page the server no longer shows the reader, whose space the list no longer names" $ do
+    (transport, asked) <- scripted $ \r ->
+      if
+        | requestUrl r == "api/v1/spaces" -> ok ([] :: [Space])
+        | requestUrl r == endpointUrl (\e -> e.spaces.pageAt hello.space (slugs "hello-world")) -> ok hello
+        | requestUrl r == plainAt hello.id -> status 404 "{\"error\":\"NotFound\"}"
+        | otherwise -> status 500 ""
+    env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
+    runHttpWiki env (getPage hello.space (slugs "hello-world")) `shouldReturn` Right hello
+    -- Refused as the write itself would have been.
+    for_ (writesOf hello) $ \(name, write') -> runHttpWiki env write' >>= \r -> (name, r) `shouldBe` (name, Left NotFound)
+    writesOut <$> readIORef asked `shouldReturn` []
+
+  it "sends nothing while the page's space is being converted" $ do
+    (transport, asked) <- scripted $ \r ->
+      if
+        | requestUrl r == plainAt hello.id -> stale ApiError.ConversionRuns
+        | requestUrl r == "api/v1/spaces" -> ok [blog]
+        | otherwise -> status 500 ""
+    env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
+    for_ (writesOf hello) $ \(name, write') -> runHttpWiki env write' >>= \r -> (name, refused ApiError.ConversionRuns "being encrypted or decrypted" r) `shouldBe` (name, True)
+    writesOut <$> readIORef asked `shouldReturn` []
+
+  -- #394's third round: deleting a comment or a thread and resolving a
+  -- thread send no text, so no question goes before them, for a page whose
+  -- space is encrypted too; a comment's text still waits for the answer.
+  it "asks nothing before a change of comments that carries no text, and asks before one that does" $ do
+    (transport, asked) <- scripted $ \r ->
+      if
+        | requestUrl r == plainAt hello.id -> stale ApiError.SpaceIsEncrypted
+        | otherwise -> status 500 ""
+    env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
+    let changes =
+          [ void <$> deleteComment hello.id (CommentThreadId "t1") (CommentId "c1")
+          , void <$> deleteThread hello.id (CommentThreadId "t1")
+          , void <$> setResolved hello.id (CommentThreadId "t1") True
+          ]
+    for_ changes $ \change -> do
+      earlier <- length <$> readIORef asked
+      _ <- runHttpWiki env change
+      rs <- readIORef asked
+      -- The change itself, and no question.
+      [(methodOf r /= "GET", requestUrl r == plainAt hello.id) | r <- take (length rs - earlier) rs] `shouldBe` [(True, False)]
+    -- A comment's text: the question, and no write on its no (the list of
+    -- spaces read again after it, as after any refusal for the space's
+    -- state).
+    earlier <- length <$> readIORef asked
+    runHttpWiki env (openThread hello.id Nothing "A comment") >>= (`shouldSatisfy` isLeft)
+    rs <- readIORef asked
+    [(methodOf r, requestUrl r) | r <- take (length rs - earlier) rs, requestUrl r /= "api/v1/spaces"] `shouldBe` [("GET", plainAt hello.id)]
+
+  it "sends nothing when the question gets no answer, as offline" $ do
+    (transport, asked) <- scripted $ \r ->
+      if
+        | requestUrl r == plainAt hello.id -> Left "the network or the server is down"
+        | otherwise -> status 500 ""
+    env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
+    for_ (writesOf hello) $ \(name, write') -> runHttpWiki env write' >>= \r -> (name, r) `shouldBe` (name, Left (Unreachable "the network or the server is down"))
+    writesOut <$> readIORef asked `shouldReturn` []
+
+  it "makes no page in a space the list of spaces fetched now no longer names, and makes one in a space it names" $ do
+    -- The front page's space, which no list names: another one.
+    let front = fromMaybe (panic "no docs") (head [x | x <- Map.elems demo.spaces, x.id /= blog.id, isNothing x.parent, isNothing x.encryption, not x.personalContainer])
+        server listed r =
+          if
+            | requestUrl r == "api/v1/spaces" -> ok listed
+            | requestUrl r == "api/v1/home" -> ok (front, hello)
+            | otherwise -> status 500 ""
+        posts rs = [requestUrl r | r <- rs, methodOf r == "POST"]
+    (gone, goneAsked) <- scripted (server ([] :: [Space]))
+    goneEnv <- newHttpEnvWith gone (withSpaces [blog] emptyCache)
+    runHttpWiki goneEnv (createPage blog.id Nothing "New" "Text") `shouldReturn` Left NotFound
+    posts <$> readIORef goneAsked `shouldReturn` []
+    -- The front page's space is not refused for it: the server answers.
+    _ <- runHttpWiki goneEnv (createPage front.id Nothing "New" "Text")
+    posts <$> readIORef goneAsked `shouldReturn` ["api/v1/spaces/" <> front.id.text <> "/pages"]
+    (there, thereAsked) <- scripted (server [blog])
+    thereEnv <- newHttpEnvWith there (withSpaces [blog] emptyCache)
+    _ <- runHttpWiki thereEnv (createPage blog.id Nothing "New" "Text")
+    posts <$> readIORef thereAsked `shouldReturn` ["api/v1/spaces/" <> blog.id.text <> "/pages"]
+
+  -- The guard against a model of the server: pages that move between
+  -- spaces, spaces encrypted, converted, decrypted, opened to the reader
+  -- and closed to them, in any order, with reads and writes of the pages
+  -- in between. A plain write reaches the server only for a page whose
+  -- space is plain and open to the reader at that moment, and every write
+  -- of such a page is sent. A guard that went by the list of spaces and
+  -- the space a page was read in (as before #389's rounds) fails it: a
+  -- page read, moved to another space, and that space encrypted.
+  prop "sends a plain write exactly when the server's page is plain and open to the reader at that moment" $
+    forAllShrink (listOf1 (eventFor 2 3)) (shrinkList (const [])) (ioProperty . history)
+
+  -- The history the old guard let through: the page read in the blog,
+  -- moved by another tab to the docs, and the docs then encrypted.
+  it "sends no plain write of a page read, moved to another space, and that space encrypted" . once . ioProperty $
+    history [Read 0, Move 0 1, Encrypt 1, Write 0 0, Write 0 1, Write 0 3]
+
+-- | The guard over a history of events against the model of the server
+-- ('Model'): every plain write that reached the server was of a page plain
+-- and open to the reader then, and every write of such a page was sent.
+history :: [Event] -> IO Property
+history events = do
+  model <- newIORef (Model {at = Map.fromList (zip [0 ..] [0, 1]), encrypted = mempty, converting = mempty, closed = mempty})
+  sent <- newIORef []
+  let transport = modelTransport model sent
+  env <- newHttpEnvWith transport (withSpaces modelSpaces emptyCache)
+  outcomes <- for events $ \event -> case event of
+    Write p k -> do
+      sentBefore <- length <$> readIORef sent
+      wanted <- (`plainFor` p) <$> readIORef model
+      _ <- try @SomeException (runHttpWiki env (snd (fromMaybe (panic "no write") (atMay (writesOf (modelPage p 0)) k))))
+      sentAfter <- length <$> readIORef sent
+      pure [counterexample ("write of page " <> show p <> (if wanted then " not sent" else " sent")) ((sentAfter > sentBefore) === wanted)]
+    _ -> [] <$ happen env model event
+  writes <- readIORef sent
+  pure (counterexample (show events) (conjoin (counterexample ("plain writes sent: " <> show (map fst writes)) (all snd writes) : concat outcomes)))
+
+-- | The plain writes of a page that carry its text or text about it, each
+-- named: a save, a draft, an attachment, a thread opened, a reply and a
+-- comment edited.
+writesOf :: Page -> [(Text, HttpWiki IO (Either WikiError ()))]
+writesOf p =
+  [ ("save", void <$> savePage p.id p.updatedAt "Hello" "Edited")
+  , ("draft", void <$> saveDraft p.id p.updatedAt "Hello" "Edited")
+  , ("upload", void <$> uploadAttachment p.id "a.txt" "text/plain" "bytes")
+  , ("open", void <$> openThread p.id Nothing "A comment")
+  , ("reply", void <$> reply p.id (CommentThreadId "t1") "A reply")
+  , ("edit", void <$> editComment p.id (CommentThreadId "t1") (CommentId "c1") "Edited")
+  ]
+
+-- | The server as the property models it: which space (by its number in
+-- 'modelSpaces') each page (by its number) is in, and which spaces are
+-- encrypted, being encrypted, or closed to the reader.
+data Model = Model
+  { at :: Map Int Int
+  , encrypted :: Set Int
+  , converting :: Set Int
+  , closed :: Set Int
+  }
+
+-- | What happens next: the tab reads a page where it is now; another tab
+-- moves a page, encrypts a space, starts encrypting it, turns its
+-- encryption off, or an administrator closes it to the reader or opens it
+-- again; or the tab writes a page (one of 'writesOf').
+data Event
+  = Read Int
+  | Move Int Int
+  | Encrypt Int
+  | Convert Int
+  | Decrypt Int
+  | Close Int
+  | Open Int
+  | Write Int Int
+  deriving stock (Show)
+
+-- | An event over so many pages and spaces.
+eventFor :: Int -> Int -> Gen Event
+eventFor pages spaces =
+  oneof
+    [ Read <$> page
+    , Move <$> page <*> space
+    , Encrypt <$> space
+    , Convert <$> space
+    , Decrypt <$> space
+    , Close <$> space
+    , Open <$> space
+    , Write <$> page <*> chooseInt (0, 5)
+    , Write <$> page <*> chooseInt (0, 5)
+    ]
+  where
+    page = chooseInt (0, pages - 1)
+    space = chooseInt (0, spaces - 1)
+
+-- | The demo's top-level spaces the model moves its pages between.
+modelSpaces :: [Space]
+modelSpaces = take 3 (sortOn (\s -> s.slug) [s | s <- Map.elems demo.spaces, isNothing s.parent, not s.personalContainer])
+
+-- | A page of the model, in the space of that number: the demo's first
+-- post, or a second page beside it.
+modelPage :: Int -> Int -> Page
+modelPage p sid =
+  let hello = demoPage "blog" "hello-world"
+      at' = fromMaybe hello.space ((\s -> s.id) <$> atMay modelSpaces sid)
+   in if p == 0
+        then hello {P.space = at'}
+        else hello {P.id = PageId "second", P.slug = fromMaybe hello.slug (head (slugs "second")), P.title = "Second", P.space = at'}
+
+-- | Whether the server takes the page's text plain now: its space open to
+-- the reader, neither encrypted nor being converted.
+plainFor :: Model -> Int -> Bool
+plainFor m p = case Map.lookup p m.at of
+  Just s -> s `Set.notMember` (m.encrypted <> m.converting <> m.closed)
+  Nothing -> False
+
+-- | The model's server: the list of spaces open to the reader, as they
+-- are now; a page read where it is; the question 'plainNow' asks; and
+-- every other request refused. Each write is kept with whether the page
+-- was plain when it came.
+modelTransport :: IORef Model -> IORef [(Text, Bool)] -> Transport
+modelTransport model sent = Transport $ \r -> do
+  m <- readIORef model
+  let url = requestUrl r
+      listed = [shown i s | (i, s) <- zip [0 ..] modelSpaces, i `Set.notMember` m.closed]
+      shown i s
+        | i `Set.member` m.converting = s {encryption = Just (KeyId "k"), conversion = Just S.Encrypting}
+        | i `Set.member` m.encrypted = s {encryption = Just (KeyId "k")}
+        | otherwise = s
+      pageNamed = head [p | p <- [0, 1], (modelPage p 0).id.text `T.isInfixOf` url]
+      stale code = status 409 (encode (ApiError.Stale code "Not as the browser believed."))
+      notFound = status 404 "{\"error\":\"NotFound\"}"
+      pageReads' =
+        [ (endpointUrl (\e -> e.spaces.pageAt (modelPage p s).space [(modelPage p s).slug]), (p, s))
+        | p <- [0, 1]
+        , s <- [0 .. length modelSpaces - 1]
+        ]
+  if
+    | methodOf r /= "GET" -> do
+        for_ pageNamed $ \p -> atomicModifyIORef' sent (\ws -> ((url, plainFor m p) : ws, ()))
+        pure (status 500 "")
+    | url == "api/v1/spaces" -> pure (ok listed)
+    | Just p <- pageNamed
+    , url == endpointUrl (\e -> e.pages.plain (modelPage p 0).id) ->
+        pure $ case Map.lookup p m.at of
+          Just s
+            | s `Set.member` m.closed -> notFound
+            | s `Set.member` m.converting -> stale ApiError.ConversionRuns
+            | s `Set.member` m.encrypted -> stale ApiError.SpaceIsEncrypted
+          _ -> Right (responseWith 204 [] "")
+    | Just (p, s) <- lookup url pageReads' ->
+        pure $
+          if
+            | Map.lookup p m.at /= Just s || s `Set.member` m.closed -> notFound
+            | s `Set.member` m.encrypted -> stale ApiError.SpaceIsEncrypted
+            -- A page not converted yet reads plain while its space is
+            -- being encrypted.
+            | otherwise -> ok (modelPage p s)
+    | otherwise -> pure notFound
+
+-- | An event other than a write: the tab's read, or a change on the
+-- server. A read the backend refuses, or cannot make natively (an
+-- encrypted one: there is no WebCrypto), changes nothing of the model.
+happen :: HttpEnv -> IORef Model -> Event -> IO ()
+happen env model = \case
+  Read p -> do
+    m <- readIORef model
+    for_ (Map.lookup p m.at) $ \s ->
+      void (try @SomeException (runHttpWiki env (getPage (modelPage p s).space [(modelPage p s).slug])))
+  Move p s -> change (\m -> m {at = Map.insert p s m.at})
+  Encrypt s -> change (\m -> m {encrypted = Set.insert s m.encrypted, converting = Set.delete s m.converting})
+  Convert s -> change (\m -> m {converting = Set.insert s m.converting})
+  Decrypt s -> change (\m -> m {encrypted = Set.delete s m.encrypted, converting = Set.delete s m.converting})
+  Close s -> change (\m -> m {closed = Set.insert s m.closed})
+  Open s -> change (\m -> m {closed = Set.delete s m.closed})
+  Write _ _ -> pass
+  where
+    change f = atomicModifyIORef' model (\m -> (f m, ()))

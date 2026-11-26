@@ -39,6 +39,17 @@ async function wiki_test_paste(selector, text, name, type, base64) {
   return !target.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
 }
 
+// Two files chosen together in a file input, as a reader picks a plugin's
+// manifest and its code.
+async function wiki_test_choose_two_files(selector, name1, type1, base641, name2, type2, base642) {
+  await new Promise((ready) => setTimeout(ready, 0));
+  const input = document.querySelector(selector);
+  const transfer = new DataTransfer();
+  for (const one of [wikiTestFile(name1, type1, base641), wikiTestFile(name2, type2, base642)]) transfer.items.add(one.files[0]);
+  input.files = transfer.files;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 async function wiki_test_choose_file(selector, name, type, base64) {
   await new Promise((ready) => setTimeout(ready, 0));
   const input = document.querySelector(selector);

@@ -157,6 +157,7 @@ import Web.Storage.Storage (StorageKind (..))
 import Web.Storage.Storage qualified as Storage
 import Wiki.Api.Links (archiveExportUrl)
 import Wiki.Api.Plugins (PluginId, Plugins (..), WikiPlugins (..))
+import Wiki.Api.Plugins.External (ExternalPlugins)
 import Wiki.Api.ServerSettings (HomePage (showAnonymous, title))
 import Wiki.App.Account (Accounts (..), SignInError (..))
 import Wiki.App.Assistant (MonadAssistant (..), announceSignIn, closeKeyOwner, closeKeyOwnersOf, keysDroppedElsewhere, listenToOtherTabs, openKeyOwner)
@@ -626,7 +627,7 @@ component =
                 | PermanentLink pid _ <- route -> lookingFor pid <$> pageLocation pid
                 | otherwise -> maybe (pure NoSpace) fetchHere (spaceOfRoute route)
             pure (world, here)
-          let (Around signedIn users spaces home icons avatars kept readPlugins, here) = fromMaybe (Around anonymous [] [] Nothing mempty mempty False Nothing, NoSpace) loaded
+          let (Around signedIn users spaces home icons avatars kept readPlugins readInstalled, here) = fromMaybe (Around anonymous [] [] Nothing mempty mempty False Nothing Nothing, NoSpace) loaded
           switcherHolder <- H.newRefLabel "space-switcher"
           menuHolder <- H.newRefLabel "user-switcher"
           let begun =
@@ -675,7 +676,7 @@ component =
                   , seen = Nothing
                   , stale = Nothing
                   , droppedUnsaved = False
-                  , pluginState = Machine.new (PluginsMachine.initialWith readPlugins 0)
+                  , pluginState = Machine.new (PluginsMachine.initialRead readPlugins readInstalled 0)
                   , assistantMove = MigrationMachine.initial
                   , optionsLearnt = Nothing
                   , worldAsks = noAsks
@@ -968,7 +969,7 @@ component =
           <div class="admin-permissions-and-plugins">
             {{ HH.slot "view" AccessSlot AccessView.component AccessView.Input {context = ctx} FromView }}
             {% if st.settingsShown %}
-              {{ HH.slot "wikiPlugins" ((\u -> u.id) <$> st.session.user) WikiPluginsView.component (Machine.current st.pluginState) FromPlugins }}
+              {{ HH.slot "wikiPlugins" ((\u -> u.id) <$> st.session.user) WikiPluginsView.component WikiPluginsView.Input {model = Machine.current st.pluginState, demo = isJust st.demo} FromPlugins }}
             {% end %}
           </div>
         |]
@@ -1084,7 +1085,7 @@ component =
       PluginsSection ->
         [hh|
           <div class="settings-sections">
-            {{ HH.slot "plugins" who PluginsView.component PluginsView.Input {model = Machine.current st.pluginState, router = st.router} FromPlugins }}
+            {{ HH.slot "plugins" who PluginsView.component PluginsView.Input {model = Machine.current st.pluginState, router = st.router, demo = isJust st.demo} FromPlugins }}
           </div>
         |]
       NotificationsSection ->
@@ -2186,10 +2187,14 @@ component =
     carryPlugins :: PluginsMachine.Effect -> Machine.Carry () (State m) Action Slots output m PluginsMachine.Event
     carryPlugins = \case
       PluginsMachine.Load asked -> Machine.Ask (Machine.run pluginsNow) (PluginsMachine.Loaded asked . answerOf)
+      PluginsMachine.LoadInstalled asked -> Machine.Ask (Machine.run externalPluginsNow) (PluginsMachine.LoadedInstalled asked . answerOf)
       PluginsMachine.WriteState asked p s -> Machine.Ask (Machine.run (setPluginState p s)) (PluginsMachine.Written asked p . answerOf)
       PluginsMachine.WriteOptions asked p o -> Machine.Ask (Machine.run (maybe (clearPluginOptions p) (setPluginOptions p) o)) (PluginsMachine.OptionsWritten asked p . answerOf)
       PluginsMachine.WriteOptionsIfNone asked p v -> Machine.Ask (Machine.run (setPluginOptionsIfNone p v)) (PluginsMachine.AdoptWritten asked p . answerOf)
       PluginsMachine.SaveOff asked off -> Machine.Ask (Machine.run (setWikiPluginsOff WikiPlugins {off})) (PluginsMachine.Saved asked . answerOf)
+      PluginsMachine.SetPolicy asked policy -> Machine.Ask (Machine.run (setExternalPolicy policy)) (PluginsMachine.PolicySaved asked . answerOf)
+      PluginsMachine.Install asked u -> Machine.Ask (Machine.run (installExternal u.owner u.manifestText u.bundle u.replaces)) (PluginsMachine.Uploaded asked u.owner u.id . answerOf)
+      PluginsMachine.Remove asked owner p -> Machine.Ask (Machine.run (removeExternal owner p)) (PluginsMachine.Removed asked owner p . answerOf)
 
     -- Whose changes not saved the content shown holds, if any: an
     -- editor's, or a page view's ticks. Asked before a route away
@@ -2322,6 +2327,9 @@ data Around = Around
   , pluginsRead :: Maybe Plugins
   -- ^ Which plugins are on for whoever asks, read with the first load
   -- only, or 'Nothing' when it was not read or could not be.
+  , installedRead :: Maybe ExternalPlugins
+  -- ^ The external plugins installed, read with the first load only, as
+  -- the second request of the same read, or 'Nothing'.
   }
 
 -- | Load 'Around'.
@@ -2339,13 +2347,16 @@ fetchWorld firstLoad demo = do
   icons <- Map.fromList <$> sequence [(x.id,) <$> spaceIconUrl x | x <- spaces <> toList home, Just (IconImage _ _) <- [x.icon]]
   avatars <- avatarUrls [(u.id, u.avatar) | u <- toList asking.user <> users]
   kept <- maybe (pure False) (\d -> d.demoKept) demo
-  -- What is on, with the first load only, which the page the server
-  -- prerendered carries; every later load reads it as an ask of the
+  -- What is on and the external plugins installed, with the first load
+  -- only, which the page the server prerendered carries, so that a page
+  -- adopted asks for neither; every later load reads them as an ask of the
   -- plugins' state, in its turn ('Wiki.App.View.Plugins.Machine'). A
   -- closed wiki refuses the plugins to someone not signed in, who is shown
   -- nothing they would change.
-  pluginsRead <- if not firstLoad || shutOut asking then pure Nothing else rightToMaybe <$> pluginsNow
-  pure Around {asking, users, spaces, home, icons, avatars, kept, pluginsRead}
+  let readsNow = firstLoad && not (shutOut asking)
+  pluginsRead <- if readsNow then rightToMaybe <$> pluginsNow else pure Nothing
+  installedRead <- if readsNow then rightToMaybe <$> externalPluginsNow else pure Nothing
+  pure Around {asking, users, spaces, home, icons, avatars, kept, pluginsRead, installedRead}
 
 -- | The space at a path, with its pages, or why it cannot be shown.
 fetchHere :: (MonadWiki n) => [Slug] -> n Here
@@ -2460,7 +2471,7 @@ sameUser :: Session -> Session -> Bool
 sameUser a b = ((\u -> u.id) <$> a.user) == ((\u -> u.id) <$> b.user)
 
 context :: State m -> Context
-context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth, plugins = PluginsMachine.held (Machine.current st.pluginState), optionsRefused = (Machine.current st.pluginState).optionsRefused, pluginsRead = PluginsMachine.readIn st.sessionNumber (Machine.current st.pluginState)}
+context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth, plugins = PluginsMachine.held (Machine.current st.pluginState), external = PluginsMachine.heldInstalled (Machine.current st.pluginState), optionsRefused = (Machine.current st.pluginState).optionsRefused, pluginsRead = PluginsMachine.readIn st.sessionNumber (Machine.current st.pluginState)}
   where
     available =
       st.spaces <> case st.here of

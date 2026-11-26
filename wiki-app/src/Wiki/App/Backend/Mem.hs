@@ -257,6 +257,7 @@ instance (MonadIO m) => MonadWiki (MemWiki m) where
       Right p -> needWriters p >> query (getPageIn sid path)
       refused -> pure refused
   pageLocation = query . pageLocationIn
+  plainNow = query . plainNowIn
   pageBacklinks = query . backlinksIn
   createPage = createPageOf Document
   createPageOf kind sid parent title body = writeAt (createPageOfIn kind sid parent title body) >>= withWritersRead
@@ -272,16 +273,12 @@ instance (MonadIO m) => MonadWiki (MemWiki m) where
     pure (void result)
   searchPages = query . searchPagesIn
   findPagesByTitle = query . findPagesByTitleIn
-
-  -- The demo's pages are in the browser: the letters go nowhere.
-  plainSource _ = pure True
   getDraft = query . getDraftIn
   saveDraft pid base title body = writeAt (saveDraftIn pid base title body)
   discardDraft = write . discardDraftIn
   listVersions pid q = needVersions (unreadHistory pid) >> query (listVersionsIn pid q)
   getVersion pid at = needVersions (unreadHistory pid) >> query (getVersionIn pid at)
   restoreVersion pid at base = needVersions (unreadHistory pid) >> writeAt (restoreVersionIn pid at base) >>= withWritersRead
-  externalPluginsNow = query externalPluginsIn
 
   -- The demo's object URLs are its own attachments' bytes, which it keeps
   -- for as long as it holds the attachment: no view owns them.

@@ -271,7 +271,7 @@ import Wiki.Api.Links (interactiveForm)
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), NotificationSettingsChange (..), Notifications (..), ReadMark, feedAddressOf, maxPeopleFound, searchable)
 import Wiki.Api.Opaque (NewAccountRecord (..), PasswordRecord (..), Stretch)
 import Wiki.Api.Plugins (PluginId (..), WikiPlugins (..), maxPluginsOff)
-import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), externalPolicyName, maxOwnPlugins, maxWikiPlugins)
+import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Owner (..), externalPolicyName, maxOwnPlugins, maxWikiPlugins)
 import Wiki.Api.Security (ResetToken (..), resetLifetime)
 import Wiki.Api.ServerSettings (HomePage, MailSettingsOf (..), ProviderSettingsOf (..), ServerSettingsChange, ServerSettingsOf (..), applyChange, checkHomePage, checkServerSettings, defaultHomePage, kindName, secretState, securityName)
 import Wiki.Api.ServerSettings qualified as SS
@@ -1615,6 +1615,7 @@ instance (MonadIO m) => MonadWiki (StoredWiki m) where
   postDetails = run Reads . postDetailsTx
   getPage sid = run Reads . (withWriters <=< getPageTx sid)
   pageLocation = run Reads . pageLocationTx
+  plainNow = run Reads . plainNowTx
   pageBacklinks = run Reads . backlinksTx
   createPage sid parent title = run Writes . (withWriters <=< createPageTx Document sid parent Nothing title)
   createPageOf kind sid parent title = run Writes . (withWriters <=< createPageTx kind sid parent Nothing title)
@@ -1646,16 +1647,12 @@ instance (MonadIO m) => MonadWiki (StoredWiki m) where
   releaseUrls _ = pass
   searchPages = answer [] . searchPagesTx
   findPagesByTitle = run Reads . findPagesByTitleTx
-
-  -- The server holds the pages: the letters go nowhere from here.
-  plainSource _ = pure True
   getDraft = run Reads . getDraftTx
   saveDraft pid base title = run Writes . saveDraftTx pid base title
   discardDraft = run Writes . discardDraftTx
   listVersions pid = run Reads . listVersionsTx pid
   getVersion pid = run Reads . getVersionTx pid
   restoreVersion pid at = saving . (withWriters <=< restoreVersionTx pid at)
-  externalPluginsNow = externalPlugins
 
   -- A document is made by the server's API, which runs pandoc and the TeX
   -- engine ("Wiki.Server.Export") and reads the page through this backend.
@@ -1788,12 +1785,6 @@ wikiPluginsOff = run Reads (requireAdministrator >> WikiPlugins <$> db loadPlugi
 -- user left it. The change is written to the audit log.
 setWikiPluginsOff :: (MonadIO m) => WikiPlugins -> StoredWiki m (Either WikiError WikiPlugins)
 setWikiPluginsOff = run Writes . setWikiPluginsOffTx
-
--- | 'Owner' is whose an external plugin is ("Wiki.Api.Plugins.External"):
--- the wiki's, installed by the administrator for everyone, or the asking
--- user's own.
-data Owner = TheWiki | Mine
-  deriving stock (Eq, Show)
 
 -- | The external plugins the asker may run, and who may add them
 -- ('Wiki.Api.Plugins.External.ExternalPlugins'): the wiki's to a signed-in
@@ -2539,6 +2530,20 @@ pageLocationTx pid = do
       nodes <- lineageOf p.id
       spaces <- asks (\x -> x.spaces)
       maybe (failWith NotFound) (\path -> pure PageLocation {space = map (\x -> x.slug) c, page = path}) (pathIn spaces p.space (`Map.lookup` nodes) p.id)
+
+-- | Whether the page's text is taken as plain text now
+-- ('Wiki.App.Backend.plainNow'): the page checked as 'pageLocationTx'
+-- checks it, so that a page the caller may not view is 'NotFound', then
+-- refused as a draft of it is ('draftable'), with the same code, while a
+-- space of its chain is encrypted or being converted. Only the right to
+-- view counts, not to edit: a comment is a plain write too.
+plainNowTx :: PageId -> Tx ()
+plainNowTx pid = do
+  p <- findNode pid
+  (_, c) <- findSpace p.space
+  when (null c) (failWith NotFound)
+  requireView c
+  requireOffered Offered.KeepDraft c
 
 -- | The pages that link to a page ('Wiki.App.Backend.pageBacklinks'), as
 -- @page_links@ holds them ("Wiki.Server.Storage.Rows", "Links"). The

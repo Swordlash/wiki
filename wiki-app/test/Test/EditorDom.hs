@@ -26,8 +26,8 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Control.Monad.UUID (MonadUUID (..))
-import Data.Aeson (object, (.=))
-import Data.IORef (atomicModifyIORef')
+import Data.Aeson (ToJSON, encode, object, (.=))
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Halogen.Router qualified as Router
@@ -35,12 +35,19 @@ import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
 import Halogen.VDom.DOM.Monad.Native qualified as N
 import Protolude hiding (find)
+import Servant.Client.Core (Response)
 import Test.Harness.MemDom
 import Test.Hspec
+import Test.Scripted (jsonResponse, methodOf)
+import Wiki.Api (PagesApi (..), SpacesApi (..), WikiApi (..))
+import Wiki.Api.Error qualified as ApiError
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Assistant.Sync (MonadVault)
 import Wiki.App.Backend (MonadLoad (..), MonadWiki (..), WikiError)
 import Wiki.App.Backend.Admin (MonadAdmin)
+import Wiki.App.Backend.Http (HttpWiki, Transport (..), newHttpEnvWith, requestUrl, runHttpWiki)
+import Wiki.App.Backend.Http.Cache (emptyCache, withSession, withSpaces)
+import Wiki.App.Backend.Http.Client (endpointUrl)
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Backend.Notifications (MonadNotifications)
@@ -48,7 +55,9 @@ import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..), route)
 import Wiki.App.View.Editor qualified as Editor
+import Wiki.Core.Draft (Draft)
 import Wiki.Core.Id (PageId, UserId (..))
+import Wiki.Core.Page (Page (..))
 import Wiki.Core.PageMatch (TitleHit, TitleQuery (..))
 import Wiki.Core.Slug (Slug, mkSlug)
 import Wiki.Core.Space (Space (id))
@@ -99,14 +108,14 @@ spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $ do
       withView run Editor.component input $ \view -> do
         ask' <- questions view clock
         let both = holds gates.checks <> holds gates.lookups
-            -- The check of the page's space, which the backend answers
-            -- yes.
-            plainNow = waitHeld gates.checks ((== 1) . length) >>= traverse_ (\h -> answer gates.checks h True)
+            -- The check that the page's text is plain now, which the
+            -- backend answers yes.
+            plainNow' = waitHeld gates.checks ((== 1) . length) >>= traverse_ (\h -> answer gates.checks h (Right ()))
         -- The first question: its check goes out once the pause ends, and
         -- on its yes the lookup.
         ask' (1 :: Int) "on"
         advance clock Editor.elsewhereDelay
-        plainNow
+        plainNow'
         first' <- waitHeld gates.lookups ((== ["on"]) . lettersHeld)
         -- A second question, while the first lookup is out: its pause
         -- ends, and nothing more goes out, neither its check nor its
@@ -121,7 +130,7 @@ spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $ do
         -- The first lookup answers: its answer is no reply to the second
         -- question, which is checked and looked up now.
         traverse_ (\h -> answer gates.lookups h (Right [])) first'
-        plainNow
+        plainNow'
         later <- waitHeld gates.lookups ((== ["onb"]) . lettersHeld)
         map (\h -> h.asked.except) later `shouldBe` [Just input.space.id]
         traverse_ (\h -> answer gates.lookups h (Right [])) later
@@ -148,9 +157,140 @@ spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $ do
         checking <- waitHeld gates.checks ((== 1) . length)
         N.dispatch "wiki-complete-elsewhere-abandoned" (object ["detail" .= object ["id" .= (1 :: Int)]]) host
         advance clock 0.001
-        traverse_ (\h -> answer gates.checks h True) checking
+        traverse_ (\h -> answer gates.checks h (Right ())) checking
         settleHolding view (holds gates.checks <> holds gates.lookups)
         lettersHeld <$> held gates.lookups `shouldReturn` []
+      Router.stop router
+
+  -- #389 over the HTTP backend: the server says no to the page's text
+  -- being plain now ('plainNow', a 409 for an encrypted space). The
+  -- letters typed are not sent: no lookup of pages by title is asked.
+  -- (Shown failing with the check skipped, its answer taken as yes.)
+  it "sends no letters typed when the server says the page's text is not plain now" $
+    withTestClock $ \clock -> do
+      wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-editor")})
+      let orPanic = either (panic . show) identity
+      router <- runMemDOM (runMemWiki wiki (Router.newRouter "/" Unknown route))
+      (me, spaces, blog, ps, hello) <- runMemDOM . runMemWiki wiki $ do
+        me <- session
+        spaces <- listSpaces
+        blog <- orPanic <$> getSpace (slugs ["blog"])
+        ps <- orPanic <$> listPages blog.id
+        hello <- orPanic <$> getPage blog.id (slugs ["hello-world"])
+        pure (me, spaces, blog, ps, hello)
+      sent <- newIORef []
+      let json :: (ToJSON a) => Int -> a -> Either Text Response
+          json n a = Right (jsonResponse n (encode a))
+          serve r
+            | methodOf r /= "GET" = Right (jsonResponse 500 "")
+            | requestUrl r == endpointUrl (\e -> e.spaces.pageAt blog.id (slugs ["hello-world"])) = json 200 hello
+            | requestUrl r == endpointUrl (\e -> e.pages.plain hello.id) = json 409 (ApiError.Stale ApiError.SpaceIsEncrypted "A draft kept on the server is not possible in an encrypted space.")
+            | requestUrl r == endpointUrl (\e -> e.pages.draft hello.id) = json 200 (Nothing :: Maybe Draft)
+            | requestUrl r == "api/v1/spaces" = json 200 [blog]
+            | "api/v1/pages/titled" `T.isPrefixOf` requestUrl r = json 200 ([] :: [TitleHit])
+            | otherwise = json 404 ApiError.NotFound
+      env <- newHttpEnvWith (Transport (\r -> atomicModifyIORef' sent (\rs -> (r : rs, ())) $> serve r)) (withSpaces spaces (withSession me emptyCache))
+      let run :: HttpWiki MemDOM a -> MemDOM a
+          run = runHttpWiki env
+          input = Editor.Input {context = viewContextAs router me spaces 0, space = blog, pages = ps, path = slugs ["hello-world"], feed = Nothing, home = False}
+          asked prefix = (\rs -> [requestUrl r | r <- rs, prefix `T.isPrefixOf` requestUrl r]) <$> readIORef sent
+      withView run Editor.component input $ \view -> do
+        ask' <- questions view clock
+        ask' (1 :: Int) "onb"
+        advance clock Editor.elsewhereDelay
+        settle view
+        asked "api/v1/pages/titled" `shouldReturn` []
+        -- The no came from the server.
+        asked (endpointUrl (\e -> e.pages.plain hello.id)) >>= (`shouldSatisfy` (not . null))
+      Router.stop router
+
+  -- #394's second round: a save refused as a conflict fetches the page at
+  -- the editor's address to show beside the text. The page edited was
+  -- moved meanwhile, and another page took its address: nothing of that
+  -- other page is offered to merge, keep over or take, and the refusal is
+  -- shown as it is, the text still in the editor. (Shown failing with the
+  -- conflict view offered for whichever page is at the address.)
+  it "offers no merge with another page that took the edited page's address, and shows the refusal" $
+    withTestClock $ \clock -> do
+      wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-editor")})
+      let run :: MemWiki MemDOM a -> MemDOM a
+          run = runMemWiki wiki
+          orPanic = either (panic . show) identity
+      router <- runMemDOM (run (Router.newRouter "/" Unknown route))
+      (me, spaces, blog, ps, hello) <- runMemDOM . run $ do
+        me <- session
+        spaces <- listSpaces
+        blog <- orPanic <$> getSpace (slugs ["blog"])
+        ps <- orPanic <$> listPages blog.id
+        hello <- orPanic <$> getPage blog.id (slugs ["hello-world"])
+        pure (me, spaces, blog, ps, hello)
+      let input = Editor.Input {context = viewContextAs router me spaces 0, space = blog, pages = ps, path = slugs ["hello-world"], feed = Nothing, home = False}
+          idle = advance clock 0.001
+      withView run Editor.component input $ \view -> do
+        settle view
+        field <- find view ".editor-text" >>= maybe (panic "the editor has no textarea") pure
+        typeIntoNode field "# Hello, world\n\nMy words."
+        idle
+        -- Another tab saves the post, moves it under another page, and
+        -- makes a new page at its old address.
+        other <- runMemDOM . run $ do
+          saved <- orPanic <$> savePage hello.id hello.updatedAt hello.title "# Hello, world\n\nSomeone else's words."
+          folder <- orPanic <$> createPage blog.id Nothing "Folder" "Under it."
+          void (orPanic <$> movePage saved.id blog.id (Just folder.id))
+          orPanic <$> createPage blog.id Nothing "Hello, world" "Another page's words."
+        orPanic <$> runMemDOM (run (getPage blog.id (slugs ["hello-world"]))) >>= \p -> p.id `shouldBe` other.id
+        click view ".editor-save"
+        settle view
+        length <$> findAll view ".editor-conflict" `shouldReturn` 0
+        isJust <$> find view ".error-conflict" `shouldReturn` True
+        valueOf field `shouldReturn` "# Hello, world\n\nMy words."
+        -- Nothing was written under the other page.
+        (\p -> p.body) . orPanic <$> runMemDOM (run (getPage blog.id (slugs ["hello-world"]))) `shouldReturn` "Another page's words."
+      Router.stop router
+
+  -- #394's third round: the guard of a plain write says no (the page's
+  -- space was encrypted since the editor opened it), over the HTTP
+  -- backend. That is no conflict of versions: the editor says why nothing
+  -- was sent, and offers no merge with the page as it is cached. (Shown
+  -- failing with the guard's refusal given as a 'Conflict'.)
+  it "shows why nothing was sent when the guard refuses a save, and offers no merge" $
+    withTestClock $ \clock -> do
+      wiki <- newMemWiki ((demoState demoNow) {current = Just (UserId "user-editor")})
+      let orPanic = either (panic . show) identity
+      router <- runMemDOM (runMemWiki wiki (Router.newRouter "/" Unknown route))
+      (me, spaces, blog, ps, hello) <- runMemDOM . runMemWiki wiki $ do
+        me <- session
+        spaces <- listSpaces
+        blog <- orPanic <$> getSpace (slugs ["blog"])
+        ps <- orPanic <$> listPages blog.id
+        hello <- orPanic <$> getPage blog.id (slugs ["hello-world"])
+        pure (me, spaces, blog, ps, hello)
+      sent <- newIORef []
+      let json :: (ToJSON a) => Int -> a -> Either Text Response
+          json n a = Right (jsonResponse n (encode a))
+          serve r
+            | methodOf r /= "GET" = Right (jsonResponse 500 "")
+            | requestUrl r == endpointUrl (\e -> e.spaces.pageAt blog.id (slugs ["hello-world"])) = json 200 hello
+            | requestUrl r == endpointUrl (\e -> e.pages.plain hello.id) = json 409 (ApiError.Stale ApiError.SpaceIsEncrypted "A draft kept on the server is not possible in an encrypted space.")
+            | requestUrl r == endpointUrl (\e -> e.pages.draft hello.id) = json 200 (Nothing :: Maybe Draft)
+            | requestUrl r == "api/v1/spaces" = json 200 [blog]
+            | otherwise = json 404 ApiError.NotFound
+      env <- newHttpEnvWith (Transport (\r -> atomicModifyIORef' sent (\rs -> (r : rs, ())) $> serve r)) (withSpaces spaces (withSession me emptyCache))
+      let run :: HttpWiki MemDOM a -> MemDOM a
+          run = runHttpWiki env
+          input = Editor.Input {context = viewContextAs router me spaces 0, space = blog, pages = ps, path = slugs ["hello-world"], feed = Nothing, home = False}
+      withView run Editor.component input $ \view -> do
+        settle view
+        field <- find view ".editor-text" >>= maybe (panic "the editor has no textarea") pure
+        typeIntoNode field "# Hello, world\n\nMy words."
+        advance clock 0.001
+        click view ".editor-save"
+        settle view
+        length <$> findAll view ".editor-conflict" `shouldReturn` 0
+        textOf view ".error-conflict" >>= (`shouldSatisfy` T.isInfixOf "nothing was sent")
+        valueOf field `shouldReturn` "# Hello, world\n\nMy words."
+        -- Nothing was written: no save of the page.
+        readIORef sent >>= \rs -> [requestUrl r | r <- rs, methodOf r == "PUT"] `shouldBe` []
       Router.stop router
   where
     slugs :: [Text] -> [Slug]
@@ -189,10 +329,10 @@ spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $ do
         pure (me, spaces, blog, ps)
       pure (router, Editor.Input {context = viewContextAs router me spaces 0, space = blog, pages = ps, path = slugs ["hello-world"], feed = Nothing, home = False})
 
--- | The gates of 'Looked': the checks of a page's space ('plainSource')
--- and the lookups of pages by title.
+-- | The gates of 'Looked': the checks that a page's text is plain now
+-- ('plainNow') and the lookups of pages by title.
 data Gates = Gates
-  { checks :: Gate PageId Bool
+  { checks :: Gate PageId (Either WikiError ())
   , lookups :: Gate TitleQuery (Either WikiError [TitleHit])
   }
 
@@ -218,7 +358,7 @@ instance (MonadUUID m) => MonadUUID (Looked m) where
 
 instance (MonadWiki m, MonadIO m) => MonadWiki (Looked m) where
   findPagesByTitle q = Looked (ask >>= \gates -> liftIO (hold gates.lookups q))
-  plainSource p = Looked (ask >>= \gates -> liftIO (hold gates.checks p))
+  plainNow p = Looked (ask >>= \gates -> liftIO (hold gates.checks p))
 
 instance (MonadWiki m, MonadIO m) => MonadLoad (Looked m) where
   atOnce = fmap Just

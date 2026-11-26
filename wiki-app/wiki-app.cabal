@@ -141,6 +141,7 @@ library
       Wiki.App.View.Access
       Wiki.App.View.ApiKeys
       Wiki.App.View.ApiKeys.Machine
+      Wiki.App.View.PluginUpload
       Wiki.App.View.Plugins
       Wiki.App.View.Migration.Machine
       Wiki.App.View.Plugins.Machine
@@ -292,6 +293,7 @@ library contract
         Wiki.App.Backend.Contract.Backlinks
         Wiki.App.Backend.Contract.Comments
         Wiki.App.Backend.Contract.Notifications
+        Wiki.App.Backend.Contract.Plain
         Wiki.App.Backend.Contract.Plugins
         Wiki.App.Backend.Contract.Stars
         Wiki.App.Backend.Contract.Titled

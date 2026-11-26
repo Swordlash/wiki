@@ -35,7 +35,7 @@ import Wiki.Core.Markdown.Complete
 import Wiki.Core.Markdown.Edit (htmlTagLabel)
 import Wiki.Core.Markdown.Problems qualified as Problems
 import Wiki.Core.Markdown.Starts (linesFromStart)
-import Wiki.Core.Math (definedMacroArities)
+import Wiki.Core.Math (definedMacroArities, redefinesEnvironments)
 import Wiki.Core.Math.KatexCommands (builtinMacroArguments)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind (..))
@@ -97,7 +97,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
           , linkable "inside" "The user guide" ["projects", "the-user-guide"]
           , linkable "other" "Projects" ["projects"]
           ]
-        onHandbook = Held {kind = Document, boxes = [], editing = PageId "editing", pages = linkablesFrom handbookEditing pages, entries = [], mathMacros = []}
+        onHandbook = Held {kind = Document, boxes = [], editing = PageId "editing", pages = linkablesFrom handbookEditing pages, entries = [], mathMacros = [], pageRedefinesEnvironments = False}
         offered typed = map (\c -> (c.label, c.note)) . (.candidates) <$> answered (sources onHandbook) typed (lineRequest typed "")
     it "offers every page but the one edited, the nearer first: siblings, then its branch, then the others" $
       (map fst <$> offered "[[")
@@ -319,6 +319,14 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       let page = T.intercalate "\n" ["# Title", "", "```math", "\\newcommand{\\R}{\\mathbb{R}}", "\\DeclareMathOperator{\\Tr}{Tr}", "```", "", "Text $\\def\\later{x}$.", "", "```tex", "\\newcommand{\\listed}{x}", "```"]
       map (.name) (pageMacroCommands page) `shouldBe` ["\\R", "\\Tr"]
       map (\c -> (c.name, c.origin, c.arguments)) (macroCommands "Team" "\\newcommand{\\vect}[1]{\\vec{#1}}\n\\let\\eps=\\varepsilon") `shouldBe` [("\\vect", "Team", 1), ("\\eps", "Team", 0)]
+    it "offers no environment where the definitions in force define \\begin or \\end: a formula earlier on the page, a space's macro of no argument, a space named like KaTeX (#392's review)" $ do
+      let environments h = filter ("\\begin{" `T.isPrefixOf`) . map (.label) . (.candidates) <$> answered (sources h) "$\\be$" (lineRequest "$\\be" "$")
+          page = T.intercalate "\n" ["# Title", "", "Text $\\def\\end{q}$ here.", "", "$\\be$"]
+      length <$> environments mathHeld `shouldBe` Just 19
+      environments mathHeld {pageRedefinesEnvironments = redefinesEnvironments page} `shouldBe` Just []
+      environments mathHeld {mathMacros = macroCommands "Team" "\\newcommand{\\end}{q}"} `shouldBe` Just []
+      environments mathHeld {mathMacros = macroCommands "KaTeX" "\\def\\end{q}"} `shouldBe` Just []
+      environments mathHeld {mathMacros = macroCommands "the wiki" "\\renewcommand{\\begin}[1]{\\mathrm{#1}}"} `shouldBe` Just []
     it "reads the wiki's built-in macros with the arguments KaTeX gives them, as KaTeX read web/src/katex-macros.tex when Wiki.Core.Math.KatexCommands was generated" $ do
       tex <- decodeUtf8 <$> BS.readFile "../web/src/katex-macros.tex"
       definedMacroArities tex `shouldBe` [(name, Just n) | (name, n) <- builtinMacroArguments]
@@ -363,7 +371,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       -- page's path (each page above it searched for in the list) and its
       -- link, as the editor did before #294's review, allocated 11 GB.
       let kept = linkables space largeSpace (slugs ["section-0", "page-77"])
-          h = Held {kind = Document, boxes = [], editing = PageId "p77", pages = kept, entries = [], mathMacros = []}
+          h = Held {kind = Document, boxes = [], editing = PageId "p77", pages = kept, entries = [], mathMacros = [], pageRedefinesEnvironments = False}
       _ <- evaluate (kept == kept)
       let asked typed = answered (sources h) typed (lineRequest typed "")
       for_ ["[[", "[[pag", "[[zz"] $ \typed -> do
@@ -378,7 +386,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       -- link that ends further away is offered nothing. Asking the parser
       -- again for each character of what followed the cursor, as before
       -- #294's second review, allocated 1.6 GB for 1,000 characters.
-      let h = Held {kind = Document, boxes = [], editing = PageId "none", pages = linkablesFrom [] [linkable "guide" "Guide" ["guide"]], entries = [], mathMacros = []}
+      let h = Held {kind = Document, boxes = [], editing = PageId "none", pages = linkablesFrom [] [linkable "guide" "Guide" ["guide"]], entries = [], mathMacros = [], pageRedefinesEnvironments = False}
       for_ [1_000, 10_000] $ \n -> do
         let lineAfter = T.replicate n "x" <> "|label]] end"
             page = "Some text\n\nSee [[Gu" <> lineAfter
@@ -702,12 +710,13 @@ linkBound = 20_000_000
 -- * 1.08 to 1.10 MB where some listed take arguments (@\\f@, @\\fr@,
 --   @\\x@): the braces of each are written, and the formula with them is
 --   parsed again once for each number of arguments;
--- * 1.28 to 1.32 MB where environments are listed (@\\be@, @\\begi@):
---   about 0.15 MB for the entries, 0.19 MB for the one check, per answer,
---   that the math reads the same with them written, and 0.16 MB for
---   looking through every command for a macro that defines @\\begin@ or
---   @\\end@ (0.78 to 0.83 MB before the environments);
--- * 1.74 MB after @\\b@ alone, the most: 68 commands, some with braces,
+-- * 1.12 to 1.16 MB where environments are listed (@\\be@, @\\begi@):
+--   about 0.15 MB for the entries, and 0.19 MB for the one check, per
+--   answer, that the math reads the same with them written (0.78 to 0.83
+--   MB before the environments; whether a macro defines @\\begin@ or
+--   @\\end@ is the editor's to know from the definitions, not looked up
+--   in the commands at each answer);
+-- * 1.58 MB after @\\b@ alone, the most: 68 commands, some with braces,
 --   and 19 environments (1.24 MB before the environments).
 --
 -- The regression the bound guards, KaTeX's commands built and sorted again
@@ -740,7 +749,7 @@ largeSpace =
 
 -- | What the editor holds of a page of a kind, with no page to link to.
 held :: PageKind -> [BoxKind] -> Held
-held kind boxes = Held {kind, boxes, editing = PageId "none", pages = [], entries = [], mathMacros = []}
+held kind boxes = Held {kind, boxes, editing = PageId "none", pages = [], entries = [], mathMacros = [], pageRedefinesEnvironments = False}
 
 -- | The path of the page edited in the tests of the pages offered.
 handbookEditing :: [Slug]

@@ -72,7 +72,10 @@ data Request = Request
 -- the entries of the @/@ menu, what the toolbar writes
 -- ("Wiki.App.Editor.Tools"' 'Wiki.App.Editor.Tools.slashEntries'); and
 -- the macros math may use, the nearest first (the page's, each space's up
--- its chain, the wiki's), each with where it comes from.
+-- its chain, the wiki's), each with where it comes from; and whether the
+-- page defines @\\begin@ or @\\end@ anywhere, in a formula too
+-- ("Wiki.Core.Math"' 'Wiki.Core.Math.redefinesEnvironments', worked out
+-- when the page is checked, as the page's macros are).
 data Held = Held
   { kind :: PageKind
   , boxes :: [BoxKind]
@@ -80,6 +83,7 @@ data Held = Held
   , pages :: [Linkable]
   , entries :: [SlashEntry]
   , mathMacros :: [MathCommand]
+  , pageRedefinesEnvironments :: Bool
   }
 
 -- | 'Linkable' is a page of the space a link may name, with what the list
@@ -167,7 +171,23 @@ baseOrder p = (p.nearness, T.length p.address + maybe 0 (\l -> 1 + T.length l) p
 -- the toolbar writes, and the commands of math. A plugin's source (#186)
 -- goes after them.
 sources :: Held -> [Source]
-sources held = [wikiSource held.kind held.boxes, pageSource held, slashSource held.entries, mathSource (mathCommands held.mathMacros)]
+sources held = [wikiSource held.kind held.boxes, pageSource held, slashSource held.entries, mathSource (environmentsOf held) (mathCommands held.mathMacros)]
+
+-- | Whether the list after a backslash in math offers KaTeX's environments
+-- ("Wiki.Core.Markdown.Complete"' 'Environments'): not where a macro the
+-- editor holds (the page's block of macros, a space's, the wiki's) is
+-- named @\\begin@ or @\\end@, nor where the page defines one anywhere,
+-- a formula's definition holding for the formulas after it
+-- ('pageRedefinesEnvironments'). Decided from the definitions, by name,
+-- not from the list's entries.
+environmentsOf :: Held -> Environments
+environmentsOf held
+  | held.pageRedefinesEnvironments || any ((`elem` beginAndEnd) . (.name)) held.mathMacros = NoEnvironments
+  | otherwise = OfferEnvironments
+
+-- | The names @\\begin@ and @\\end@, made once for 'environmentsOf'.
+beginAndEnd :: [Text]
+beginAndEnd = ["\\begin", "\\end"]
 
 -- | The macros a block of TeX defines ("Wiki.Core.Math"'
 -- 'definedMacroArities'), as commands math offers, each with where it

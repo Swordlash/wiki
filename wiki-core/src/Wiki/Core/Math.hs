@@ -39,6 +39,7 @@ module Wiki.Core.Math
     -- * Which macros a text defines and uses
   , definedMacros
   , definedMacroArities
+  , redefinesEnvironments
   , removedMacros
   , usesMacro
   , onlyDefinitions
@@ -147,6 +148,16 @@ definers =
 -- @\\def@ and its relatives, and of @\\let@. A comment defines nothing.
 definedMacros :: Text -> [Text]
 definedMacros = ordNub . map fst . fst . definitionsAndRest . withoutComments
+
+-- | Whether a text defines @\\begin@ or @\\end@ as a macro ('definedMacros'),
+-- by any of the commands that define one. The editor's completion offers
+-- no environment of KaTeX's where the page, a space or the wiki does
+-- (#301): a written @\\begin{pmatrix}@ and its @\\end@ would expand to
+-- something else. The text may be a whole page: a definition in a formula
+-- holds for the formulas after it, and one anywhere on the page is
+-- counted, which refuses more than needed and never less.
+redefinesEnvironments :: Text -> Bool
+redefinesEnvironments = any (`elem` ["\\begin", "\\end"]) . definedMacros
 
 -- | The macros a block of TeX defines, as 'definedMacros' gives them, each
 -- with the number of arguments in braces it takes where that is known for

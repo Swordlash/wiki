@@ -73,6 +73,7 @@ module Wiki.Core.Markdown.Complete
     -- * Commands in math
   , MathCommand (..)
   , mathCommands
+  , Environments (..)
   , mathSource
 
     -- * The / menu
@@ -1362,7 +1363,7 @@ mathRests at prefix =
     afterOpener delimiter before = fromMaybe before (lastMay (afterDelimiters delimiter before))
     -- The lines above the cursor's in its paragraph, where display math
     -- opened on an earlier line is (a blank line ends it).
-    paragraphAbove = reverse (takeWhile (not . T.null . T.strip) (reverse at.above))
+    paragraphAbove = reverse (takeWhile (not . T.all isBlank) (reverse at.above))
     -- The line after the cursor, as far as the first probe reads: where
     -- it goes on further, 'mathAt' declines before these are read.
     lineAfter = T.take afterBound at.after
@@ -1565,16 +1566,15 @@ katexInOrder = sortOn shownOrder [MathCommand {name, origin = "KaTeX", arguments
   where
     taking = Map.fromList katexArguments
 
--- | KaTeX's @\\begin@ and @\\end@ as 'katexInOrder' holds them: a command
--- of those names that is not one of these is a macro that defines them
--- ('mathSource' then offers no environment).
-katexBeginEnd :: [MathCommand]
-katexBeginEnd = [c | c <- katexInOrder, c.name `elem` beginAndEnd]
-
--- | The names @\\begin@ and @\\end@, made once: 'mathSource' compares every
--- command's name with them at each answer.
-beginAndEnd :: [Text]
-beginAndEnd = ["\\begin", "\\end"]
+-- | 'Environments' is whether the list after a backslash in math offers
+-- KaTeX's environments ('mathSource'). It offers none where a macro in
+-- force (the page's, in its block of macros or in any formula; a
+-- space's; the wiki's) defines @\\begin@ or @\\end@
+-- ("Wiki.Core.Math"' 'Wiki.Core.Math.redefinesEnvironments'): a written
+-- @\\begin{pmatrix}@ and its @\\end@ would expand to something else. The
+-- editor decides it from the definitions, not from the list's entries.
+data Environments = OfferEnvironments | NoEnvironments
+  deriving stock (Eq, Show)
 
 -- | The list after a backslash in math: the commands whose name starts
 -- with the letters typed (as written: TeX tells @\\Gamma@ from
@@ -1606,9 +1606,9 @@ beginAndEnd = ["\\begin", "\\end"]
 -- argument, so what follows the cursor is not taken into it; but none is
 -- offered where what follows may be the environment's own text
 -- ('environmentFits'), nor where the parser would read the math otherwise
--- with it written ('mathReadBack').
-mathSource :: [MathCommand] -> Source
-mathSource commands wanted = case wanted.typed.trigger of
+-- with it written ('mathReadBack'), nor where 'NoEnvironments' is given.
+mathSource :: Environments -> [MathCommand] -> Source
+mathSource offered commands wanted = case wanted.typed.trigger of
   InMath place
     | not (any ((== typedName) . (.name)) commands) ->
         let readsBack = mathReadBack wanted place
@@ -1643,15 +1643,14 @@ mathSource commands wanted = case wanted.typed.trigger of
     -- absent or empty, not a character on it (a quotation's @>@ too): that
     -- line is read and nothing in it is interpreted.
     --
-    -- None is offered where a macro in force (the page's, a space's, the
-    -- wiki's) defines @\\begin@ or @\\end@: KaTeX's environments are then
-    -- not what those commands do.
+    -- None is offered where the editor says 'NoEnvironments': a macro in
+    -- force defines @\\begin@ or @\\end@.
     environments place readsBack
       | null matching || redefined || not fits || not (readsBack.readsWith together) = []
       | otherwise = [(e.opening, environmentCandidate e) | e <- matching]
       where
         matching = [e | e <- environmentsInOrder, place == InDisplay || not e.displayOnly, typedName `T.isPrefixOf` e.opening]
-        redefined = any (\c -> c.name `elem` beginAndEnd && c `notElem` katexBeginEnd) commands
+        redefined = offered == NoEnvironments
         fits = case wanted.pageMath of
           Just tex -> environmentFits tex
           Nothing -> maybe True T.null (head at.below) && maybe False (environmentFits . snd) readsBack.baseline
@@ -1726,6 +1725,20 @@ environmentWritten prefix e rest =
 afterWordIn :: Text -> Text
 afterWordIn tex = T.drop (T.length mathWord + 1) (snd (T.breakOn ("\\" <> mathWord) tex))
 
+-- | Whether a character is one KaTeX's lexer passes over between tokens in
+-- math: a space, a tab, a carriage return or a line feed (its
+-- @spaceRegexString@ in @katex/src/Lexer.ts@). Other white space, such as
+-- a no-break space, is a character KaTeX reads, and an argument of the
+-- command before it.
+katexSpace :: Char -> Bool
+katexSpace c = c == ' ' || c == '\t' || c == '\r' || c == '\n'
+
+-- | Whether a text of TeX holds the control word @\\end@: the backslash
+-- and the letters, not followed by another letter (@\\endgroup@ is
+-- another command).
+holdsEnd :: Text -> Bool
+holdsEnd t = or [maybe True (\(c, _) -> not (isAsciiLower c || isAsciiUpper c)) (T.uncons (T.drop 4 found)) | (_, found) <- T.breakOnAll "\\end" t]
+
 -- | Whether an environment written at the cursor, its begin and its end
 -- together, is what the reader may mean, given the TeX of the math at the
 -- cursor with 'mathWord' in place of the command: the page's
@@ -1740,13 +1753,14 @@ afterWordIn tex = T.drop (T.length mathWord + 1) (snd (T.breakOn ("\\" <> mathWo
 -- for three cases where it may be the environment's own text, and then
 -- none is offered:
 --
--- * the rest starts with @{@, past white space and line ends: the
+-- * the rest starts with @{@, past KaTeX's white space ('katexSpace'): the
 --   environment's name may be there already (@\\be‸{pmatrix}@, or the
 --   name on the next line, which KaTeX reads too);
 -- * the rest starts with @%@ there: KaTeX passes over a comment, and the
 --   name may follow it on the next line;
--- * the rest holds @\\end@ anywhere: the reader may be typing the begin
---   of an environment written already (@\\be‸ a & b \\end{pmatrix}@).
+-- * the rest holds the control word @\\end@ anywhere ('holdsEnd'): the
+--   reader may be typing the begin of an environment written already
+--   (@\\be‸ a & b \\end{pmatrix}@).
 --
 -- The last is not told apart from an @\\end@ of an environment begun
 -- before the cursor (@\\begin{aligned} x &= \\be‸ \\end{aligned}@), nor
@@ -1755,7 +1769,7 @@ afterWordIn tex = T.drop (T.length mathWord + 1) (snd (T.breakOn ("\\" <> mathWo
 -- second end.
 environmentFits :: Text -> Bool
 environmentFits tex =
-  not (any (`T.isPrefixOf` T.stripStart rest) ["{", "%"]) && not ("\\end" `T.isInfixOf` rest)
+  not (any (`T.isPrefixOf` T.dropWhile katexSpace rest) ["{", "%"]) && not (holdsEnd rest)
   where
     rest = afterWordIn tex
 
@@ -1795,14 +1809,16 @@ bracesWritten prefix name n rest =
 --
 -- Where the page reads math at the cursor as it is ('Wanted''s
 -- 'pageMath'), what follows is the rest of that math's TeX instead, past
--- white space and line ends: nothing (the end of the math), or one of
+-- KaTeX's white space ('katexSpace': a no-break space is an argument to
+-- KaTeX, and the name is written alone before it): nothing (the end of
+-- the math), or one of
 -- the above. So a formula that runs over lines is read whole
 -- (@$\\fr‸@ above @{a}{b}$@ keeps its arguments), and a quotation's marks
 -- are the parser's to take off. The lines of the page are read as above
 -- only for math the page does not close yet.
 noArgumentAfter :: MathPlace -> At -> Maybe Text -> Bool
 noArgumentAfter place at = \case
-  Just tex -> endsArgument (T.stripStart (afterWordIn tex))
+  Just tex -> endsArgument (T.dropWhile katexSpace (afterWordIn tex))
   Nothing -> inLines
   where
     inLines

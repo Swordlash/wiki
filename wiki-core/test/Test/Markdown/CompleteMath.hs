@@ -17,6 +17,7 @@ import Test.Markdown.CompleteStarts (alikeEverywhere, caseAt)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, classify, conjoin, counterexample, elements, forAll, once, property, (.&&.), (===))
 import Wiki.Core.Markdown.Ast (Block (..), Inline (..), ListItem (..), parseMarkdown)
 import Wiki.Core.Markdown.Complete
+import Wiki.Core.Math (redefinesEnvironments)
 import Wiki.Core.Math.KatexCommands (katexArguments, katexCommands, katexEnvironments)
 
 spec :: Spec
@@ -29,7 +30,7 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
       map opens ["\\fr‸", "Text \\fr‸", "`$\\fr‸`", "```\n\\fr‸", "# $\\fr‸$", "| a |\n| - |\n| $\\fr‸$ |", "[$\\fr‸$](https://example.com)", "![$\\fr‸$](a.png)", "[*$\\fr‸$*](https://example.com)", "$a\n\\fr‸$", "$a \\\\fr‸", "Costs $5$ and \\fr‸", "$\\fr‸$\r", "Costs $5 and \\fr‸\nTitle\n===", "$\\fr‸ac{1}{2}$"]
         `shouldBe` replicate 15 False
     it "opens nothing in math in a link's or an image's text, the syntax tree's reading, which a reference defined past what is read makes one" $ do
-      let inLink nodes marked = let at = placeAt marked in isJust (complete [mathSource (mathCommands [])] (readLine at.above) at {place = placeOf nodes})
+      let inLink nodes marked = let at = placeAt marked in isJust (complete [mathSource OfferEnvironments (mathCommands [])] (readLine at.above) at {place = placeOf nodes})
       inLink ["TeXMath", "Link", "Paragraph", "Document"] "[$\\fr‸$][far]\n\nMore." `shouldBe` False
       inLink ["TeXMath", "Image", "Paragraph", "Document"] "![$\\fr‸$][far]\n\nMore." `shouldBe` False
       inLink ["TeXMath", "Paragraph", "Document"] "Text $\\fr‸$" `shouldBe` True
@@ -41,7 +42,7 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
     -- text's.
     modifyMaxSuccess (`div` 2) . prop "opens the list the whole text opens, read from a start of a block" $
       forAll ((,) <$> genPlace <*> arbitrary) $ \((upTo, rest), change) ->
-        alikeEverywhere [mathSource (mathCommands [])] (caseAt (upTo <> "‸" <> rest) (T.takeWhileEnd (/= '\\') upTo) change)
+        alikeEverywhere [mathSource OfferEnvironments (mathCommands [])] (caseAt (upTo <> "‸" <> rest) (T.takeWhileEnd (/= '\\') upTo) change)
 
   describe "what it offers" $ do
     it "puts the nearer macro before the farther and before KaTeX's command of its name, which it shadows" $ do
@@ -94,6 +95,11 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
         , "$\\be‸\\alpha$"
         , "$\\be‸ = 1$"
         , "$\\begin{pmatrix} \\be‸$"
+        , -- Another command that starts with the letters of \end.
+          "$\\begingroup \\be‸ + 1 \\endgroup$"
+        , -- A no-break space is no white space to KaTeX: the brace after it
+          -- is no environment's name.
+          "$\\be‸\xa0{pmatrix}$"
         , "$$\n\\be‸\n$$\n\n\\end{pmatrix}"
         , -- Display math closed on the cursor's line, and a paragraph
           -- after it that names an \end: not the math's.
@@ -118,6 +124,8 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
         [ "$\\be‸{pmatrix}$"
         , "$\\be‸ {pmatrix} a \\end{pmatrix}$"
         , "$\\be‸ a & b \\end{pmatrix}$"
+        , "$\\begingroup \\be‸ + 1 \\endgroup \\end{x}$"
+        , "$\\be‸ \\end$"
         , "$$\n\\be‸\na & b \\\\\nc & d\n\\end{pmatrix}\n$$"
         , "```math\n\\be‸\n\\end{cases}"
         , "$\\begin{matrix} a \\end{matrix} \\be‸ \\end{matrix}$"
@@ -154,11 +162,19 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
         $ \marked -> (marked, environmentsAt marked) `shouldBe` (marked, Just [])
       for_ ["$\\be‸\na & b$", "Text $a + \\be‸", "$\\be‸\n\nNext paragraph."] $ \marked ->
         (marked, elem (labelOf "pmatrix") <$> environmentsAt marked) `shouldBe` (marked, Just True)
-    it "offers none where a macro in force defines \\begin or \\end" $ do
-      let environmentsWith macros marked = filter ("\\begin{" `T.isPrefixOf`) . map (.label) <$> listAt macros marked
-      environmentsWith [cmd "\\begin" "Team"] "$$\n\\be‸\n$$" `shouldBe` Just []
-      environmentsWith [cmd "\\end" "this page"] "$$\n\\be‸\n$$" `shouldBe` Just []
-      length <$> environmentsWith [cmd "\\R" "the wiki"] "$$\n\\be‸\n$$" `shouldBe` Just (length katexEnvironments)
+    it "offers none where the editor says a macro in force defines \\begin or \\end, which it decides from the definitions (Test.Complete)" $ do
+      let environmentsWith offered marked =
+            let at = placeAt marked
+             in filter ("\\begin{" `T.isPrefixOf`) . map (.label) . (.candidates) <$> complete [mathSource offered (mathCommands [])] (readLine at.above) at
+      environmentsWith NoEnvironments "$$\n\\be‸\n$$" `shouldBe` Just []
+      length <$> environmentsWith OfferEnvironments "$$\n\\be‸\n$$" `shouldBe` Just (length katexEnvironments)
+      -- Bare \begin is still offered, by its name.
+      (map (.label) <$> (let at = placeAt "$$\n\\beg‸\n$$" in (.candidates) <$> complete [mathSource NoEnvironments (mathCommands [])] (readLine at.above) at)) `shouldBe` Just ["\\begin"]
+    it "finds \\begin and \\end defined in a block of TeX or a page, by any defining command, a formula's too; not \\endgroup's or a mention" $ do
+      for_ ["$\\def\\end{q}$ and later $\\be$.", "\\newcommand{\\end}{q}", "\\renewcommand{\\begin}[1]{\\mathrm{#1}}", "\\let\\end\\relax", "\\providecommand{\\begin}{x}", "\\gdef\\begin#1{#1}"] $ \tex ->
+        (tex, redefinesEnvironments tex) `shouldBe` (tex, True)
+      for_ ["\\newcommand{\\endgroupx}{q}", "\\def\\beginning{q}", "$\\begin{pmatrix} a \\end{pmatrix}$", "% \\def\\end{q}"] $ \tex ->
+        (tex, redefinesEnvironments tex) `shouldBe` (tex, False)
     it "offers none where a comment follows the cursor: KaTeX passes over it, and the name may come after" $
       for_ ["```math\n\\be‸ % a comment\n{pmatrix}\n```", "$$\n\\be‸% a comment\n$$"] $ \marked ->
         (marked, environmentsAt marked) `shouldBe` (marked, Just [])
@@ -185,7 +201,7 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
           -- Parsers that read no math in a probe that holds a text, where
           -- the parser itself reads the same math.
           without text probe = readLine at.above (if any (text `T.isInfixOf`) probe.written then Probe {from = probe.from, written = ["No math here."]} else probe)
-          offered readOf = filter ("\\begin{" `T.isPrefixOf`) . map (.label) . (.candidates) <$> complete [mathSource (mathCommands [])] readOf at
+          offered readOf = filter ("\\begin{" `T.isPrefixOf`) . map (.label) . (.candidates) <$> complete [mathSource OfferEnvironments (mathCommands [])] readOf at
       offered (without "\\begin{") `shouldBe` Just []
       offered (without "*}") `shouldBe` Just []
       -- The first name of letters alone offered there.
@@ -236,6 +252,9 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
         , -- A formula over lines, read whole: the arguments on the next
           -- line (#392's review).
           "$\\fr‸\n{a}{b}$"
+        , -- A no-break space is no white space to KaTeX, which takes it as
+          -- the argument (#392's review).
+          "$\\fr‸\xa0$"
         , "> $\\fr‸\n> {a}{b}$"
         , "$$\n\\fr‸ % a comment\n{a}{b}\n$$"
         ]
@@ -256,7 +275,7 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
           -- A parser that reads no math in a probe that holds a brace,
           -- where the parser itself reads the same math.
           braceless probe = readLine at.above (if any ("{" `T.isInfixOf`) probe.written then Probe {from = probe.from, written = ["No math here."]} else probe)
-          writing readOf = (.writing) <$> (find ((== "\\frac") . (.label)) . (.candidates) =<< complete [mathSource (mathCommands [])] readOf at)
+          writing readOf = (.writing) <$> (find ((== "\\frac") . (.label)) . (.candidates) =<< complete [mathSource OfferEnvironments (mathCommands [])] readOf at)
       writing braceless `shouldBe` Just AsText
       writing (readLine at.above) `shouldBe` Just (LineAsText "$\\fr$" (1, 4))
     modifyMaxSuccess (`div` 2) . longTexts . prop "writes braces only where the whole text, written and its places filled, reads as it did with the command alone, the braces in the math, over long texts" $
@@ -295,7 +314,7 @@ placeAt marked =
 
 -- | The list at a marked text, with these macros.
 completeAt :: [MathCommand] -> Text -> Maybe Completion
-completeAt macros marked = let at = placeAt marked in complete [mathSource (mathCommands macros)] (readLine at.above) at
+completeAt macros marked = let at = placeAt marked in complete [mathSource OfferEnvironments (mathCommands macros)] (readLine at.above) at
 
 listAt :: [MathCommand] -> Text -> Maybe [Candidate]
 listAt macros marked = (.candidates) <$> completeAt macros marked

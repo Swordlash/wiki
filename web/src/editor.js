@@ -3581,8 +3581,9 @@ export function attach(textarea, host, original, codeTokens) {
     completedElsewhere: (id, found) => completion.completedElsewhere(id, found),
     // Close the completion's list of this editor and of its rows, with
     // every entry of it, and give up what it still asks: the component
-    // does so when the reader, the space or the page's sealing changes,
-    // since a list shown then was made for what was before.
+    // does so when the reader, the space, the page's sealing or the
+    // spaces it holds change, since a list shown then was made for what
+    // was before.
     closeCompletions: () => {
       for (const shown of [view, ...(host.wikiRows?.values() ?? [])]) closeCompletion(shown);
     },

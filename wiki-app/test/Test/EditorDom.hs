@@ -109,9 +109,10 @@ spec = describe "Wiki.App.View.Editor, mounted on the in-memory DOM" $ do
         plainNow
         first' <- waitHeld gates.lookups ((== ["on"]) . lettersHeld)
         -- A second question, while the first lookup is out: its pause
-        -- ends, and nothing more goes out. (The check of the number held
-        -- fails when a lookup goes out for each question: shown so with
-        -- the machine's rule taken away.)
+        -- ends, and nothing more goes out, neither its check nor its
+        -- lookup. (The count of checks held fails when the second
+        -- question's check goes out while the first lookup is out: shown
+        -- so with the machine's rule of one ask out taken away.)
         ask' 2 "onb"
         advance clock Editor.elsewhereDelay
         settleHolding view both

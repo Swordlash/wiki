@@ -137,6 +137,7 @@ module Wiki.App.Editor.Browser
   , completeAsked
   , answerCompletion
   , elsewhereAsked
+  , elsewhereAbandoned
   , answerElsewhere
   , closeCompletions
   , completeAction
@@ -1034,6 +1035,16 @@ completeAsked event = do
 -- for 'answerElsewhere'. Pure, since the event does not change.
 elsewhereAsked :: Event -> Maybe (Int, Complete.Request)
 elsewhereAsked = completeAsked
+
+-- | The number of the question about the pages of other spaces that a
+-- @wiki-complete-elsewhere-abandoned@ event says CodeMirror gave up: the
+-- text changed, or the list was closed, before its answer. Pure, since the
+-- event does not change.
+elsewhereAbandoned :: Event -> Maybe Int
+elsewhereAbandoned event = do
+  detail <- CompletionDetail <$> detailOf event
+  guard (detail.id > 0)
+  Just detail.id
 
 -- | What a @wiki-complete-action@ event asks the editor to do, once an
 -- entry of the list is written: @link-page@ (open the dialog of a link to

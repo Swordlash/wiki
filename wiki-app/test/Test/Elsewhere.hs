@@ -21,7 +21,7 @@ import Test.QuickCheck
 import Wiki.App.Editor.Complete (Request (..))
 import Wiki.App.Editor.Elsewhere.Machine
 import Wiki.Core.Id (PageId (..), SpaceId (..))
-import Wiki.Core.PageMatch (TitleHit (..), TitleQuery (..), rankTitles)
+import Wiki.Core.PageMatch (TitleHit (..), TitleQuery (..), maxLetters, rankTitles)
 import Wiki.Core.Slug (mkSlug, slugify)
 
 spec :: Spec
@@ -32,8 +32,9 @@ spec = describe "Wiki.App.Editor.Elsewhere.Machine" $ do
           (sim, checks) = drain played
        in checkCoverage
             . cover 20 (sim.stale > 0) "an answer dropped as another question's"
-            . cover 20 (sim.queued > 0) "a question asked once the lookup out answered"
+            . cover 10 (sim.queued > 0) "a question asked once the lookup out answered"
             . cover 10 (sim.changedWithOut > 0) "the input changed while a lookup was out"
+            . cover 10 (not (null sim.abandoned)) "a question given up"
             . cover 30 (any isJust (Map.elems sim.replies)) "a question replied to with pages"
             $ conjoin (reverse checks) .&&. lastAnswered sim
 
@@ -41,8 +42,8 @@ spec = describe "Wiki.App.Editor.Elsewhere.Machine" $ do
     let (m1, e1) = step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial 0 spaceA False)
     e1 `shouldBe` [StopPause, Pause]
     let (m2, e2) = step Paused m1
-    e2 `shouldBe` [Lookup (Ticket 0) TitleQuery {letters = "onb", except = Just spaceA, limit = elsewhereShown}]
-    let found = serverHits 0 (TitleQuery {letters = "onb", except = Just spaceA, limit = elsewhereShown})
+    e2 `shouldBe` [Lookup (Ticket 0) TitleQuery {letters = "onb", except = Just spaceA, limit = elsewhereShown, typedIn = Nothing}]
+    let found = serverHits 0 (TitleQuery {letters = "onb", except = Just spaceA, limit = elsewhereShown, typedIn = Nothing})
         (m3, e3) = step (Found (Ticket 0) (Just found)) m2
     e3 `shouldBe` [Reply 1 (requestFor 1 "onb") (Just found)]
     (m3.waiting, m3.out) `shouldBe` (Nothing, Nothing)
@@ -59,9 +60,18 @@ spec = describe "Wiki.App.Editor.Elsewhere.Machine" $ do
     -- The same input again changes nothing.
     step (Inputs 1 spaceA False) m2 `shouldBe` (m2, [])
 
+  it "sends no lookup for a question given up before its pause ended, and replies to it with nothing" $ do
+    let (m1, _) = step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial 0 spaceA False)
+        (m2, e2) = step (Abandoned 1) m1
+    e2 `shouldBe` [StopPause, Reply 1 (requestFor 1 "onb") Nothing]
+    step Paused m2 `shouldBe` (m2, [])
+
+  it "asks nothing for more letters than the server takes" $
+    snd (step (Asked 1 (requestFor 1 "long") (Just (T.replicate (maxLetters + 1) "o"))) (initial 0 spaceA False)) `shouldBe` [StopPause, Reply 1 (requestFor 1 "long") Nothing]
+
   it "closes the list shown when the reader changes after the pages were replied" $ do
     let asked = fst (step Paused (fst (step (Asked 1 (requestFor 1 "onb") (Just "onb")) (initial 0 spaceA False))))
-        (replied, _) = step (Found (Ticket 0) (Just (serverHits 0 (TitleQuery {letters = "onb", except = Just spaceA, limit = elsewhereShown})))) asked
+        (replied, _) = step (Found (Ticket 0) (Just (serverHits 0 (TitleQuery {letters = "onb", except = Just spaceA, limit = elsewhereShown, typedIn = Nothing})))) asked
     snd (step (Inputs 1 spaceA False) replied) `shouldBe` [StopPause, Close]
     snd (step (Inputs 0 spaceB False) replied) `shouldBe` [StopPause, Close]
     snd (step (Inputs 0 spaceA True) replied) `shouldBe` [StopPause, Close]
@@ -72,6 +82,7 @@ spec = describe "Wiki.App.Editor.Elsewhere.Machine" $ do
 -- is now.
 data Move
   = Ask (Maybe Text)
+  | Abandon
   | PauseEnds
   | Answer Bool
   | Input Int SpaceId Bool
@@ -80,7 +91,8 @@ data Move
 genMove :: Gen Move
 genMove =
   frequency
-    [ (4, Ask <$> elements [Just "on", Just "onb", Just "no", Just "o", Just "op", Just "zz", Nothing])
+    [ (4, Ask <$> elements [Just "on", Just "onb", Just "no", Just "o", Just "op", Just "zz", Just (T.replicate (maxLetters + 1) "o"), Nothing])
+    , (1, pure Abandon)
     , (4, pure PauseEnds)
     , (4, Answer <$> frequency [(5, pure True), (1, pure False)])
     , (2, Input <$> elements [0, 0, 1] <*> elements [spaceA, spaceA, spaceB] <*> frequency [(5, pure False), (1, pure True)])
@@ -103,6 +115,8 @@ data Sim = Sim
   , repliedUnder :: Map Int (Int, SpaceId, Bool)
   , sentFor :: Map Ticket Int
   , failed :: [Int]
+  , abandoned :: [Int]
+  -- ^ The questions CodeMirror gave up.
   , displayed :: Maybe (Int, SpaceId, Bool)
   -- ^ The pages of other spaces CodeMirror shows: the input of the
   -- question they were replied to, until a newer question is asked (the
@@ -127,6 +141,7 @@ start =
       , sentFor = mempty
       , failed = []
       , displayed = Nothing
+      , abandoned = []
       , inputs = (0, spaceA, False)
       , stale = 0
       , queued = 0
@@ -143,6 +158,14 @@ play (sim, checks) = \case
     let n = Map.size sim.asked + 1
         sim' = sim {asked = Map.insert n (letters, sim.inputs) sim.asked, displayed = Nothing}
      in stepped sim' checks (Asked n (requestFor n (fromMaybe "" letters)) letters)
+  -- CodeMirror gives up the last question asked, while it has no reply
+  -- (its asker tells of none it has had a reply to).
+  Abandon
+    | n <- Map.size sim.asked
+    , n > 0
+    , Map.notMember n sim.replyCounts ->
+        stepped sim {abandoned = n : sim.abandoned, displayed = Nothing} checks (Abandoned n)
+    | otherwise -> (sim, checks)
   PauseEnds
     | sim.pausing -> stepped sim {pausing = False} checks Paused
     | otherwise -> (sim, checks)
@@ -185,13 +208,15 @@ stepped sim checks event =
         , counterexample ("each question replied to once, after " <> show event) (all (<= 1) sim'.replyCounts)
         , counterexample ("every question before the last replied to, after " <> show event) $
             and [Map.lookup n sim'.replyCounts == Just 1 | n <- [1 .. latest - 1]]
+        , counterexample ("no lookup for a question given up, nor for more letters than the server takes, after " <> show event) $
+            null lookups || (latest `notElem` sim.abandoned && all (\q -> T.length q.letters <= maxLetters) lookups)
         , counterexample ("no pages shown that were found under another input, after " <> show event) $
             maybe True (== sim'.inputs) sim'.displayed
         , counterexample ("a reply with pages only to its own lookup, under its own reader, after " <> show event) $
             conjoin
               [ case Map.lookup n sim.asked of
                   Just (Just letters, (askedSession, askedSpace, _)) ->
-                    (askedSession, hits) === (session, serverHits session (TitleQuery {letters, except = Just askedSpace, limit = elsewhereShown}))
+                    (askedSession, hits) === (session, serverHits session (TitleQuery {letters, except = Just askedSpace, limit = elsewhereShown, typedIn = Nothing}))
                   other -> counterexample (show other) (property False)
               | Reply n _ (Just hits) <- effects
               ]
@@ -239,9 +264,11 @@ lastAnswered sim = case Map.lookupMax sim.asked of
                 Just l
                   | Map.lookup n sim.repliedUnder == Just askedUnder
                   , n `notElem` sim.failed
+                  , n `notElem` sim.abandoned
+                  , T.length l <= maxLetters
                   , not sealed
                   , T.length (T.strip l) >= 2 ->
-                      Just (serverHits session (TitleQuery {letters = l, except = Just space, limit = elsewhereShown}))
+                      Just (serverHits session (TitleQuery {letters = l, except = Just space, limit = elsewhereShown, typedIn = Nothing}))
                 _ -> Nothing
             )
 

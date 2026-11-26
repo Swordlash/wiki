@@ -24,8 +24,13 @@
 --   with nothing.
 -- * No lookup from a page whose text is encrypted, or being encrypted or
 --   decrypted ('sealed'): the letters are the page's text, which the
---   server must not read. Nor for fewer than
---   'Wiki.Core.PageMatch.minLetters' letters.
+--   server must not read. (The editor's input may be older than another
+--   tab's change of the space: the backend checks the space again when it
+--   sends, by the page the letters come from, 'TitleQuery''s @typedIn@.)
+--   Nor for fewer than 'Wiki.Core.PageMatch.minLetters' letters, nor for
+--   more than the server takes ('Wiki.Core.PageMatch.titleRefusal').
+-- * A question CodeMirror gave up before its lookup was sent is not looked
+--   up ('Abandoned').
 -- * One lookup out at a time. A question whose pause ends while one is out
 --   waits for it, and is asked when it answers.
 -- * A lookup's answer is matched to the question it was sent for by its
@@ -54,7 +59,7 @@ where
 import Protolude
 import Wiki.App.Editor.Complete (Request)
 import Wiki.Core.Id (SpaceId)
-import Wiki.Core.PageMatch (TitleHit, TitleQuery (..), defaultTitleHits, looksFor)
+import Wiki.Core.PageMatch (TitleHit, TitleQuery (..), defaultTitleHits, looksFor, titleRefusal)
 
 -- | 'Ticket' is the number of one lookup sent: its answer comes back with
 -- it, and is the reply to the question whose ticket it is. No two lookups
@@ -104,6 +109,9 @@ data Event
     -- letters typed after @[[@ where a link to a page opens a list there
     -- ('Nothing' where none opens).
     Asked Int Request (Maybe Text)
+  | -- | CodeMirror gave up the question with this number: the text changed,
+    -- or the list was closed.
+    Abandoned Int
   | -- | The pause after the last question has ended.
     Paused
   | -- | The answer of the lookup with this ticket: the pages found, or
@@ -143,11 +151,20 @@ step event model = case event of
   Asked qid request found -> case found of
     Just letters
       | not model.sealed
-      , looksFor (queryFor model letters) ->
+      , let query = queryFor model letters
+      , looksFor query
+      , isNothing (titleRefusal query) ->
           ( model {waiting = Just Question {qid, request, letters, ticket = Nothing, paused = False}}
           , dropWaiting model <> [StopPause, Pause]
           )
     _ -> (model {waiting = Nothing}, dropWaiting model <> [StopPause, Reply qid request Nothing])
+  -- Replied to with nothing, so that CodeMirror's asker forgets the
+  -- question: the same letters asked again are a new question. A lookup
+  -- already out stays out, and its answer, for no question then, is
+  -- dropped.
+  Abandoned qid -> case model.waiting of
+    Just q | q.qid == qid -> (model {waiting = Nothing}, [StopPause | isNothing q.ticket] <> [Reply q.qid q.request Nothing])
+    _ -> (model, [])
   Paused -> case model.waiting of
     Just q | isNothing q.ticket -> send model {waiting = Just q {paused = True}}
     _ -> (model, [])
@@ -182,6 +199,7 @@ send model = case model.waiting of
   _ -> (model, [])
 
 -- | The lookup of these letters: the pages of every space the reader may
--- view but this one, at most 'elsewhereShown'.
+-- view but this one, at most 'elsewhereShown'. The page they were typed
+-- in is the editor's to name when it sends the lookup.
 queryFor :: Model -> Text -> TitleQuery
-queryFor model letters = TitleQuery {letters, except = Just model.space, limit = elsewhereShown}
+queryFor model letters = TitleQuery {letters, except = Just model.space, limit = elsewhereShown, typedIn = Nothing}

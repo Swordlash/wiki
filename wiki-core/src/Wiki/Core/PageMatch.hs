@@ -124,6 +124,12 @@ data TitleQuery = TitleQuery
   , limit :: Int
   -- ^ At most this many pages, the best first, and never more than
   -- 'maxTitleHits' ('titleLimit').
+  , typedIn :: Maybe PageId
+  -- ^ The page whose text the letters were typed in, if they were: the
+  -- editor's page. A backend that sends the letters to a server sends
+  -- nothing when that page's space is encrypted, or being encrypted or
+  -- decrypted, as it sends none of the page's text then. Not part of the
+  -- API's address: the server never sees it.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)
@@ -131,13 +137,13 @@ data TitleQuery = TitleQuery
 -- | A query for these letters in every space, with 'defaultTitleHits'
 -- pages at most.
 titleQuery :: Text -> TitleQuery
-titleQuery typed = TitleQuery {letters = typed, except = Nothing, limit = defaultTitleHits}
+titleQuery typed = TitleQuery {letters = typed, except = Nothing, limit = defaultTitleHits, typedIn = Nothing}
 
 -- | The query the parameters of the API's address ask for (@q@, @except@,
 -- @limit@): no letters when @q@ is missing, and 'defaultTitleHits' pages
 -- when @limit@ is.
 titleQueryOf :: Maybe Text -> Maybe SpaceId -> Maybe Int -> TitleQuery
-titleQueryOf q except limit = TitleQuery {letters = fromMaybe "" q, except, limit = fromMaybe defaultTitleHits limit}
+titleQueryOf q except limit = TitleQuery {letters = fromMaybe "" q, except, limit = fromMaybe defaultTitleHits limit, typedIn = Nothing}
 
 -- | 'TitleHit' is a page the lookup found: its id, its space, the path of
 -- its space from the top level, its path under its space's home page (the

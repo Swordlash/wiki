@@ -942,6 +942,8 @@ const asker = (host, eventName, keep = true) => {
   const answers = new Map();
   const asking = new Map();
   const waiting = new Map();
+  // The number of the question out for each key, for abandon.
+  const numbers = new Map();
   const ask = (letters, detail = { letters }) => {
     if (answers.has(letters)) return Promise.resolve(answers.get(letters));
     let question = asking.get(letters);
@@ -956,11 +958,13 @@ const asker = (host, eventName, keep = true) => {
           clearTimeout(timer);
           waiting.delete(id);
           if (asking.get(letters) === question) asking.delete(letters);
+          if (numbers.get(letters) === id) numbers.delete(letters);
           if (found !== null && keep) answers.set(letters, found);
           resolve(found);
         });
       });
       asking.set(letters, question);
+      numbers.set(letters, id);
       host.dispatchEvent(new CustomEvent(eventName, { detail: { id, ...detail } }));
     }
     return question;
@@ -969,7 +973,14 @@ const asker = (host, eventName, keep = true) => {
   const stop = () => {
     for (const answer of [...waiting.values()]) answer(null);
   };
-  return { ask, answer: (id, found) => waiting.get(id)?.(found), stop };
+  // The question out for a key is given up: the component is told
+  // ("<eventName>-abandoned", {id}), and answers it with nothing.
+  const abandon = (letters) => {
+    const id = numbers.get(letters);
+    if (id === undefined || !waiting.has(id)) return;
+    host.dispatchEvent(new CustomEvent(`${eventName}-abandoned`, { detail: { id } }));
+  };
+  return { ask, answer: (id, found) => waiting.get(id)?.(found), abandon, stop };
 };
 
 // The answer to a source's question, or null once the library has given up
@@ -1155,10 +1166,12 @@ const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$|(^|[ \t])\/[A-Za-z]*$
 // elsewhereGate is what may open the group "In other spaces" of the list
 // after [[ (elsewhereSource), as loosely: [[ not followed by "!" or "/",
 // then the letters typed, two of them at least once their spaces at either
-// end are left out (shortest below). Haskell reads the letters again, with
-// the parser.
+// end are left out (shortest below), and no more than the server takes
+// (longest, Wiki.Core.PageMatch's maxLetters, which Haskell checks again).
+// Haskell reads the letters again, with the parser.
 const elsewhereGate = /\[\[(?![!/])([^\]|]*)$/;
 const elsewhereShortest = 2;
+const elsewhereLongest = 200;
 
 // The "/" whose menu Escape closed, by position in each state, kept
 // where the text around them moves: the letters typed after such a "/"
@@ -1497,10 +1510,20 @@ const elsewhereSection = { name: "In other spaces", rank: 1 };
 const elsewhereSource = (host, elsewhere, whole) => (context) => {
   const place = placeOf(context, whole);
   const typed = elsewhereGate.exec(place.before);
-  if (typed === null || typed[1].trim().length < elsewhereShortest) return null;
+  if (typed === null || typed[1].trim().length < elsewhereShortest || [...typed[1]].length > elsewhereLongest) return null;
+  const key = JSON.stringify(place.detail);
   const asked = new Promise((resolve) => {
-    elsewhere.ask(JSON.stringify(place.detail), place.detail).then(resolve);
-    context.addEventListener("abort", () => resolve(null), { onDocChange: true });
+    elsewhere.ask(key, place.detail).then(resolve);
+    // Given up: the component is told, by the question's number, so that
+    // a lookup not sent yet for it is never sent.
+    context.addEventListener(
+      "abort",
+      () => {
+        resolve(null);
+        elsewhere.abandon(key);
+      },
+      { onDocChange: true },
+    );
   });
   return asked.then((found) => (context.aborted ? null : listOf(host, context, place, found, elsewhereSection)));
 };

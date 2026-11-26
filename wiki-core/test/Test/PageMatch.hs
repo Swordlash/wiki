@@ -43,7 +43,7 @@ genQuery :: Gen TitleQuery
 genQuery = do
   letters <- elements ["on", "ON", "onb", "ön", "on c", "call", "de", "dé", "not", "es", "ze", "z", " no ", "o", "", "guides/on", "rota"]
   limit <- chooseInt (-2, 30)
-  pure TitleQuery {letters, except = Nothing, limit}
+  pure TitleQuery {letters, except = Nothing, limit, typedIn = Nothing}
 
 spec :: Spec
 spec = describe "Wiki.Core.PageMatch" $ do

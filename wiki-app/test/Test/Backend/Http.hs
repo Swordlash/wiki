@@ -72,6 +72,7 @@ import Wiki.Core.Draft (Draft (..))
 import Wiki.Core.Id (AttachmentId (..), BlobId (..), NotificationId (..), PageId (..), SpaceId (..), UserId (..))
 import Wiki.Core.Notification (Notification (..), PageLocation (..))
 import Wiki.Core.Page (Page (..), summaryOf)
+import Wiki.Core.PageMatch (TitleQuery (..), titleQuery)
 import Wiki.Core.Path (parsePath, pathOf)
 import Wiki.Core.Search (SearchHit, SearchQuery (..), searchQuery)
 import Wiki.Core.Slug (Slug)
@@ -259,8 +260,11 @@ requests = describe "its requests" $ do
     runHttpWiki env (createPage hello.space Nothing "New" "Text") >>= (`shouldSatisfy` isLeft)
     -- A search limited to the space is not sent.
     runHttpWiki env (searchPages (searchQuery "words") {space = Just hello.space, includeSubspaces = True}) `shouldReturn` []
+    -- Nor the editor's lookup of other spaces' pages by letters typed in
+    -- the page (#301): they are its text.
+    runHttpWiki env (findPagesByTitle (titleQuery "Edi") {except = Just hello.space, typedIn = Just hello.id}) >>= (`shouldSatisfy` isLeft)
     sent <- readIORef asked
-    [(methodOf r, requestUrl r) | r <- sent, methodOf r /= "GET" || "api/v1/search" `T.isPrefixOf` requestUrl r] `shouldBe` []
+    [(methodOf r, requestUrl r) | r <- sent, methodOf r /= "GET" || any (`T.isPrefixOf` requestUrl r) ["api/v1/search", "api/v1/pages/titled"]] `shouldBe` []
 
   -- #255's tenth review: a space that asks each time it is opened, in the
   -- middle of turning its encryption off, after a write emptied the cache.

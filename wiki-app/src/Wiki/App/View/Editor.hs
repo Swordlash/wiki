@@ -326,6 +326,7 @@ import Wiki.App.Editor.Browser
   , droppedFiles
   , editorAvailable
   , editorKey
+  , elsewhereAbandoned
   , elsewhereAsked
   , emojiAsked
   , focusElement
@@ -430,6 +431,7 @@ import Wiki.Core.Page (Page, PageSummary, titleLine, withTitleLine)
 -- the work's fields of the same names.
 import Wiki.Core.Page qualified as P
 import Wiki.Core.PageKind qualified as Kind
+import Wiki.Core.PageMatch (TitleQuery (typedIn))
 import Wiki.Core.Permission (GlobalPermission (Administer), Grants (access), hasGlobalPermission)
 import Wiki.Core.SlideRows (RowKey (..), Rows)
 import Wiki.Core.SlideRows qualified as SlideRows
@@ -833,6 +835,7 @@ data Action
   | EmojiAsked Int Text
   | CompleteAsked Int Complete.Request
   | ElsewhereAsked Int Complete.Request
+  | ElsewhereAbandoned Int
   | SearchEmoji Text
   | PickEmoji Text
   | EmojiFocus Int
@@ -1976,6 +1979,7 @@ component =
                 {{ HE.handler' (EventType "wiki-emoji") (\ev -> uncurry EmojiAsked <$> emojiAsked ev) }}
                 {{ HE.handler' (EventType "wiki-complete") (\ev -> uncurry CompleteAsked <$> completeAsked ev) }}
                 {{ HE.handler' (EventType "wiki-complete-elsewhere") (\ev -> uncurry ElsewhereAsked <$> elsewhereAsked ev) }}
+                {{ HE.handler' (EventType "wiki-complete-elsewhere-abandoned") (fmap ElsewhereAbandoned . elsewhereAbandoned) }}
                 {{ HE.handler' (EventType "wiki-complete-action") (completeAction >=> dialogOf) }}
                 {{ HE.handler' (EventType "wiki-cursor-line") (fmap CursorAt . cursorLineOf) }}
                 {{ HE.handler' (EventType "wiki-ready") (\ev -> Just $! EditorReady (readyFocused ev)) }}
@@ -2481,6 +2485,8 @@ component =
           Ready w -> let (found, readings) = Complete.linkLetters st.earlier st.readings w.body request in (found, st {readings})
           _ -> (Nothing, st)
         elsewhereStep (Elsewhere.Asked i request letters)
+      -- CodeMirror gave that question up: what it looks up is not sent.
+      ElsewhereAbandoned i -> elsewhereStep (Elsewhere.Abandoned i)
       SearchEmoji emojiQuery -> modify (\st -> st {emojiQuery})
       -- The emoji chosen in the menu, as its shortcode, at the cursor; the
       -- text has the focus again.
@@ -2687,7 +2693,14 @@ component =
     carryElsewhere = \case
       Elsewhere.Pause -> Machine.AskUnder Pausing (Machine.delayCounted elsewhereDelay) (const Elsewhere.Paused)
       Elsewhere.StopPause -> Machine.Cancel Pausing
-      Elsewhere.Lookup ticket query -> Machine.Ask (Machine.run (findPagesByTitle query)) (Elsewhere.Found ticket . either (const Nothing) rightToMaybe)
+      -- Sent with the page the letters were typed in, whose space the
+      -- backend checks again as it sends ('TitleQuery''s @typedIn@). With
+      -- no page loaded there are no letters to look up: nothing is sent.
+      Elsewhere.Lookup ticket query ->
+        Machine.AskWith
+          (gets (\st -> case st.loaded of Ready w -> Just w.page.id; _ -> Nothing))
+          (\page -> Machine.run (maybe (pure (Right [])) (\p -> findPagesByTitle query {typedIn = Just p}) page))
+          (Elsewhere.Found ticket . either (const Nothing) rightToMaybe)
       Elsewhere.Reply i request hits -> Machine.Now $ do
         found <- state $ \st -> case (st.loaded, hits) of
           (Ready w, Just pages) ->

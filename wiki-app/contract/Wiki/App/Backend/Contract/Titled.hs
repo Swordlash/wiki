@@ -310,7 +310,7 @@ generated = describe "generated wikis" $
       forAll genWiki $ \w -> forAll genQueries $ \qs -> ioProperty $ do
         readerId <- run reader currentUser >>= maybe (assertFailure "nobody is signed in as the reader") (pure . (\u -> u.id))
         spaces <- build run readerId w
-        let queries = [TitleQuery {letters, except = except >>= \k -> (\x -> x.id) <$> spaces `atMay` k, limit} | (letters, except, limit) <- qs]
+        let queries = [TitleQuery {letters, except = except >>= \k -> (\x -> x.id) <$> spaces `atMay` k, limit, typedIn = Nothing} | (letters, except, limit) <- qs]
         checks <- for [(who, query) | who <- [admin, editor, reader, Anonymous], query <- queries] $ \(who, query) -> do
           got <- run who (findPagesByTitle query) >>= ok
           want <- expected run who query

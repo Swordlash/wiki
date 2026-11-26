@@ -27,7 +27,10 @@ module Test.Browser.Text
   , watchEditor
   , inputsSeen
   , watchElsewhere
+  , countElsewhere
+  , elsewhereAsks
   , elsewhereAsked
+  , clickKeepingFocus
   , proposeText
   )
 where
@@ -62,6 +65,9 @@ $( browserJS
      , ("js_inputs", "wiki_test_editor_inputs", Safe, [t|IO Int|])
      , ("js_propose", "wiki_test_editor_propose", Safe, [t|Int -> Int -> JSText -> IO ()|])
      , ("js_watch_elsewhere", "wiki_test_editor_watch_elsewhere", Safe, [t|JSText -> IO ()|])
+     , ("js_count_elsewhere", "wiki_test_editor_count_elsewhere", Safe, [t|IO ()|])
+     , ("js_elsewhere_asks", "wiki_test_editor_elsewhere_asks", Safe, [t|IO JSText|])
+     , ("js_click_keeping_focus", "wiki_test_click_keeping_focus", Safe, [t|JSText -> IO ()|])
      , ("js_elsewhere_askedPromise", "wiki_test_editor_elsewhere_asked", Safe, [t|Int -> IO (Promise JSText)|])
      ]
  )
@@ -248,13 +254,33 @@ watchEditor ui = do
   unsafeIOToPageM js_watch
 
 -- | Watch for the editor's question about the pages of other spaces after
--- @[[@ (#301) asked at the cursor's line reading this up to the cursor,
--- from now on, for 'elsewhereAsked'. Call it before the keys that make
--- the line so.
+-- @[[@ (#301) asked at a cursor whose line up to the cursor ends with
+-- this, from now on, for 'elsewhereAsked'. Call it before the keys that
+-- make the line so.
 watchElsewhere :: Mounted s q o m -> Text -> PageM s ()
 watchElsewhere ui before = do
   _ <- editorText ui
   unsafeIOToPageM (js_watch_elsewhere (toJSText before))
+
+-- | Record the editor's questions about the pages of other spaces after
+-- @[[@ (#301) from now on, for 'elsewhereAsks'.
+countElsewhere :: Mounted s q o m -> PageM s ()
+countElsewhere ui = do
+  _ <- editorText ui
+  unsafeIOToPageM js_count_elsewhere
+
+-- | The questions recorded since 'countElsewhere', in the order asked:
+-- each the cursor's line up to the cursor.
+elsewhereAsks :: Mounted s q o m -> PageM s [Text]
+elsewhereAsks ui = do
+  _ <- editorText ui
+  fromMaybe [] . decodeStrict . encodeUtf8 . fromJSText <$> unsafeIOToPageM js_elsewhere_asks
+
+-- | Click the first element this selector finds as a program would, the
+-- focus left where it is (in the editor's text, whose completion's list a
+-- press elsewhere would close), and wait for the program's work after it.
+clickKeepingFocus :: Text -> PageM s ()
+clickKeepingFocus selector = perform (js_click_keeping_focus (toJSText selector))
 
 -- | Wait until the question 'watchElsewhere' watched for has been asked.
 -- CodeMirror asks on a timer of its own a moment after the last key, which

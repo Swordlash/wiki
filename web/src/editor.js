@@ -942,7 +942,23 @@ const asker = (host, eventName, keep = true) => {
   const answers = new Map();
   const asking = new Map();
   const waiting = new Map();
-  const ask = (letters, detail = { letters }) => {
+  // The question out for each key, its number and the view that asked
+  // it, for abandonFrom.
+  const numbers = new Map();
+  // giveUp ends the question with this number, if it is still out, without
+  // the component's answer: the component is told
+  // ("<eventName>-abandoned", {id}), so that it does nothing more for the
+  // question (the lookup of other spaces' pages sends no letters of it),
+  // and the wait for its answer ends with nothing. A question ends either
+  // with the component's answer or here, so none ends without the
+  // component knowing.
+  const giveUp = (id) => {
+    const answer = waiting.get(id);
+    if (answer === undefined) return;
+    host.dispatchEvent(new CustomEvent(`${eventName}-abandoned`, { detail: { id } }));
+    answer(null);
+  };
+  const ask = (letters, detail = { letters }, view = null) => {
     if (answers.has(letters)) return Promise.resolve(answers.get(letters));
     let question = asking.get(letters);
     if (question === undefined) {
@@ -956,20 +972,27 @@ const asker = (host, eventName, keep = true) => {
           clearTimeout(timer);
           waiting.delete(id);
           if (asking.get(letters) === question) asking.delete(letters);
+          if (numbers.get(letters)?.id === id) numbers.delete(letters);
           if (found !== null && keep) answers.set(letters, found);
           resolve(found);
         });
       });
       asking.set(letters, question);
+      numbers.set(letters, { id, view });
       host.dispatchEvent(new CustomEvent(eventName, { detail: { id, ...detail } }));
     }
     return question;
   };
-  // The editor goes: every question still out is given up, its wait ended.
+  // The editor goes (closed, or replaced by another CodeMirror on the same
+  // host): every question still out is given up.
   const stop = () => {
-    for (const answer of [...waiting.values()]) answer(null);
+    for (const id of [...waiting.keys()]) giveUp(id);
   };
-  return { ask, answer: (id, found) => waiting.get(id)?.(found), stop };
+  // Every question a view asked that is still out is given up.
+  const abandonFrom = (view) => {
+    for (const { id, view: asking } of [...numbers.values()]) if (asking === view) giveUp(id);
+  };
+  return { ask, answer: (id, found) => waiting.get(id)?.(found), abandonFrom, stop };
 };
 
 // The answer to a source's question, or null once the library has given up
@@ -1152,13 +1175,20 @@ const emojiSource = (names, whole) => {
 // asks the parser whether it is in math.
 const markupGate = /(\[\[[!/]|\[!)[A-Za-z-]*$|\[\[[^\]|]*$|(^|[ \t])\/[A-Za-z]*$|\\[A-Za-z]+$/;
 
-// elsewhereGate is what may open the group "In other spaces" of the list
-// after [[ (elsewhereSource), as loosely: [[ not followed by "!" or "/",
-// then the letters typed, two of them at least once their spaces at either
-// end are left out (shortest below). Haskell reads the letters again, with
-// the parser.
-const elsewhereGate = /\[\[(?![!/])([^\]|]*)$/;
-const elsewhereShortest = 2;
+// elsewhereGate is whether the line before the cursor may open the group
+// "In other spaces" of the list after [[ (elsewhereSource): its last [[
+// comes after its last ]], or it has a [[ and no ]], so that prose typed
+// after a link closed on the line asks nothing. It compares the places
+// of the two, each found once from the end, so it is linear in the line:
+// a regular expression that looks for a ]] after each [[ is quadratic,
+// and runs at every pause of the typing. A ]] cannot start inside a [[,
+// so overlaps need no care: [[[ asks, and [[a]]] does not. Haskell
+// decides the rest with the parser: the letters after the last [[, if a
+// link to a page opens a list there (Wiki.App.Editor.Complete's
+// linkLetters), and whether they are few or many enough to look up
+// (Wiki.App.Editor.Elsewhere.Machine). Where nothing is looked up, the
+// component replies with nothing at once, with no pause.
+const elsewhereGate = (before) => before.lastIndexOf("[[") > before.lastIndexOf("]]");
 
 // The "/" whose menu Escape closed, by position in each state, kept
 // where the text around them moves: the letters typed after such a "/"
@@ -1493,20 +1523,34 @@ const listOf = (host, context, place, found, section) => {
 // It asks through `elsewhere`, an asker of its own that keeps no answer:
 // an answer kept would outlive a change of the reader. A question is
 // given up when the text changes (abort on a change of the document), so
-// that the component hears the newer question at once and looks up only
-// the last letters typed; a late answer then writes nothing and opens
-// nothing. A line that cannot ask returns null at once, so that no other
-// list waits for this source.
+// that a late answer writes nothing and opens nothing. When a question is
+// given up is decided in one place (elsewhereGiveUp, and the asker's stop
+// when the editor goes), and the asker's giveUp tells the component of
+// each, so that it never looks up letters CodeMirror no longer asks
+// about. A line with no unfinished [[ before the cursor returns null at
+// once, so that no other list waits for this source. The gate reads the
+// view's own line, which a row shares with the master, before anything
+// else: the place in the whole text (placeOf) parses a row's master to
+// its end, which is not needed for a line that asks nothing.
+//
+// An answer with no page is an empty result from just after the [[, not
+// null: the library takes null for "nothing here" and asks such a source
+// again only for a letter typed, while a result, even empty, is asked
+// again when a letter of it is deleted. So "onbx", which finds nothing,
+// asks again for "onb" once the x is deleted. Escape still closes it, as
+// it closes every source.
 const elsewhereSection = { name: "In other spaces", rank: 1 };
 const elsewhereSource = (host, elsewhere, whole) => (context) => {
+  const line = context.state.doc.lineAt(context.pos);
+  const before = context.state.sliceDoc(line.from, context.pos);
+  if (!elsewhereGate(before)) return null;
   const place = placeOf(context, whole);
-  const typed = elsewhereGate.exec(place.before);
-  if (typed === null || typed[1].trim().length < elsewhereShortest) return null;
   const asked = new Promise((resolve) => {
-    elsewhere.ask(JSON.stringify(place.detail), place.detail).then(resolve);
+    elsewhere.ask(JSON.stringify(place.detail), place.detail, context.view).then(resolve);
     context.addEventListener("abort", () => resolve(null), { onDocChange: true });
   });
-  return asked.then((found) => (context.aborted ? null : listOf(host, context, place, found, elsewhereSection)));
+  const none = { from: line.from + before.lastIndexOf("[[") + 2, options: [] };
+  return asked.then((found) => (context.aborted ? null : (listOf(host, context, place, found, elsewhereSection) ?? none)));
 };
 
 // An entry of the emoji's list shows its emoji before its name; a
@@ -1592,6 +1636,44 @@ const completions = (host) => {
   // key (its activateOnTypingDelay), on a timer the program does not know
   // of, so a test cannot wait for the answer by waiting for the program.
   const answering = new WeakMap();
+  // Where every question about the pages of other spaces that ends with
+  // no answer passes: a view's questions still out are given up
+  // (abandonFrom) when its text changes (more typed, the line deleted: the
+  // library asks anew, if at all), when its completion is no longer asked
+  // for (Escape with or without a list, the component's own close, an
+  // entry chosen), when the text loses the focus (a click on another
+  // control), and when the view goes (a row closed, the editor gone). An
+  // answer that came is not out any more, so the update that shows it
+  // gives nothing up.
+  //
+  // On the loss of the focus the completion is closed too: the library
+  // closes a list shown then, but not a completion still asked for with
+  // no list, whose late answer would open one in a text without the
+  // focus. The focus moved into the list itself closes nothing, as the
+  // library's own rule. This is done in the blur event, outside an update
+  // of the view, where a transaction may be dispatched.
+  const elsewhereGiveUp = ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.view = view;
+      }
+      update(update) {
+        if (update.docChanged || completionStatus(update.state) !== "pending") elsewhere.abandonFrom(update.view);
+      }
+      destroy() {
+        elsewhere.abandonFrom(this.view);
+      }
+    },
+    {
+      eventHandlers: {
+        blur(event) {
+          if (event.relatedTarget?.closest?.(".cm-tooltip-autocomplete")) return;
+          elsewhere.abandonFrom(this.view);
+          if (completionStatus(this.view.state) !== null) closeCompletion(this.view);
+        },
+      },
+    },
+  );
   const forgetMoves = EditorView.updateListener.of((update) => {
     const status = completionStatus(update.state);
     const active = shown(update.state) !== null;
@@ -1691,6 +1773,7 @@ const completions = (host) => {
       }),
       dismissedSlashes,
       forgetMoves,
+      elsewhereGiveUp,
       ownKeys,
       snippetKeys,
       fields,
@@ -3529,6 +3612,14 @@ export function attach(textarea, host, original, codeTokens) {
     // The component's answer to the question `id` about the pages of other
     // spaces after [[ (elsewhereSource), or null for none.
     completedElsewhere: (id, found) => completion.completedElsewhere(id, found),
+    // Close the completion's list of this editor and of its rows, with
+    // every entry of it, and give up what it still asks: the component
+    // does so when the reader, the space, the page's sealing or the
+    // spaces it holds change, since a list shown then was made for what
+    // was before.
+    closeCompletions: () => {
+      for (const shown of [view, ...(host.wikiRows?.values() ?? [])]) closeCompletion(shown);
+    },
     // Whether the list of a view (this one, or a row's) is shown and takes
     // its keys, for the browser tests.
     completionReady: (of = view) => completion.ready(of),

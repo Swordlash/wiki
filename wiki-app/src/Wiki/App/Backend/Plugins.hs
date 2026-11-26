@@ -22,14 +22,16 @@ where
 
 import Control.Monad.Trans.Class (MonadTrans)
 import Data.Aeson (Value)
+import Data.Time (getCurrentTime)
 import Data.Type.Equality (type (~))
 import Halogen.Query.HalogenM (HalogenM)
 import Halogen.Query.HalogenM qualified as H
 import Protolude
 import Wiki.Api.Plugins (PluginChoice, PluginId, PluginState, Plugins, WikiPlugins)
+import Wiki.Api.Plugins.External (ExternalPlugin, ExternalPlugins, ExternalPolicy, Owner)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Backend.Mem (MemWiki, memQuery, memWrite)
-import Wiki.App.Backend.Mem.State (pluginsIn, setPluginOptionsIfNoneIn, setPluginOptionsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
+import Wiki.App.Backend.Mem.State (externalPluginsIn, installExternalIn, pluginsIn, removeExternalIn, setExternalPolicyIn, setPluginOptionsIfNoneIn, setPluginOptionsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
 
 -- | 'MonadPlugins' is the backend interface for which plugins are on.
 --
@@ -90,6 +92,43 @@ class (Monad m) => MonadPlugins m where
   default setWikiPluginsOff :: (MonadTrans t, m ~ t n, MonadPlugins n) => WikiPlugins -> m (Either WikiError WikiPlugins)
   setWikiPluginsOff = lift . setWikiPluginsOff
 
+  -- | The external plugins the user may run, and who may add them, as
+  -- @GET api\/v1\/external-plugins@ answers ("Wiki.Api.Plugins.External"):
+  -- the wiki's while the policy is not off (and always to an
+  -- administrator), the user's own while it lets users add theirs. The
+  -- plugins' state reads it as the second request of each read of what is
+  -- on ("Wiki.App.View.Plugins.Machine").
+  externalPluginsNow :: m (Either WikiError ExternalPlugins)
+  default externalPluginsNow :: (MonadTrans t, m ~ t n, MonadPlugins n) => m (Either WikiError ExternalPlugins)
+  externalPluginsNow = lift externalPluginsNow
+
+  -- | Set who may add external plugins, as an administrator; anyone else
+  -- is 'Forbidden'. The answer is what 'externalPluginsNow' then answers
+  -- the administrator.
+  setExternalPolicy :: ExternalPolicy -> m (Either WikiError ExternalPlugins)
+  default setExternalPolicy :: (MonadTrans t, m ~ t n, MonadPlugins n) => ExternalPolicy -> m (Either WikiError ExternalPlugins)
+  setExternalPolicy = lift . setExternalPolicy
+
+  -- | Install an external plugin for an owner: its manifest, as the JSON
+  -- text of the file, its bundle's bytes, and, to replace the owner's
+  -- plugin of the same id, the hash of the bundle being replaced
+  -- (@POST api\/v1\/external-plugins\/wiki@ or @…\/mine@). The answer is the
+  -- plugin as installed. The refusals are the server's, in its words: a
+  -- manifest or a bundle that breaks the rules is 'Invalid'; a plugin of
+  -- the id with another hash than @replaces@, or one too many, is
+  -- 'Conflict'; the wiki's are an administrator's, a user's own need the
+  -- policy 'Wiki.Api.Plugins.External.ExternalUsers' ('Forbidden').
+  installExternal :: Owner -> Text -> ByteString -> Maybe Text -> m (Either WikiError ExternalPlugin)
+  default installExternal :: (MonadTrans t, m ~ t n, MonadPlugins n) => Owner -> Text -> ByteString -> Maybe Text -> m (Either WikiError ExternalPlugin)
+  installExternal o manifest bundle = lift . installExternal o manifest bundle
+
+  -- | Remove an owner's external plugin by its id: one of the wiki's, as
+  -- an administrator, or one of the user's own, whatever the policy. One
+  -- the owner does not have is 'NotFound'.
+  removeExternal :: Owner -> PluginId -> m (Either WikiError ())
+  default removeExternal :: (MonadTrans t, m ~ t n, MonadPlugins n) => Owner -> PluginId -> m (Either WikiError ())
+  removeExternal o = lift . removeExternal o
+
 -- | A component's handlers reach the backend through its monad.
 -- Each method runs in 'H.async': the handler waits for it, and the rest
 -- of the tree goes on meanwhile.
@@ -101,6 +140,10 @@ instance (MonadPlugins m) => MonadPlugins (HalogenM st act slots output m) where
   clearPluginOptions = H.async . clearPluginOptions
   wikiPluginsOff = H.async wikiPluginsOff
   setWikiPluginsOff = H.async . setWikiPluginsOff
+  externalPluginsNow = H.async externalPluginsNow
+  setExternalPolicy = H.async . setExternalPolicy
+  installExternal o manifest bundle = H.async . installExternal o manifest bundle
+  removeExternal o = H.async . removeExternal o
 
 -- | The demo's instance: the in-memory state, by the server's rules.
 instance (MonadIO m) => MonadPlugins (MemWiki m) where
@@ -111,3 +154,7 @@ instance (MonadIO m) => MonadPlugins (MemWiki m) where
   clearPluginOptions p = memWrite (setPluginOptionsIn p Nothing)
   wikiPluginsOff = memQuery wikiPluginsIn
   setWikiPluginsOff = memWrite . setWikiPluginsIn
+  externalPluginsNow = memQuery externalPluginsIn
+  setExternalPolicy = memWrite . setExternalPolicyIn
+  installExternal o manifest bundle replaces = liftIO getCurrentTime >>= \now -> memWrite (installExternalIn now o manifest bundle replaces)
+  removeExternal o = memWrite . removeExternalIn o

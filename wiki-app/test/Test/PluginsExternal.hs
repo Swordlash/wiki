@@ -2,8 +2,9 @@
 -- which installed plugins run, the protocol's messages and the problems a
 -- plugin's answer stands for, and the editor's machine of frames
 -- ("Wiki.App.Plugin.External.Machine"), whose rules are a property over
--- generated orders of inputs, reads and a model plugin that answers in
--- time, late, out of order, never, or with junk.
+-- generated orders of inputs (the plugins installed among them, as the
+-- shell's plugins' state reads and changes them) and a model plugin that
+-- answers in time, late, out of order, never, or with junk.
 module Test.PluginsExternal (spec) where
 
 import Data.Aeson (Value, object, (.=))
@@ -18,8 +19,7 @@ import Protolude
 import Test.Hspec
 import Test.QuickCheck
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), noPlugins)
-import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Permission (..), framePath, reservedPluginIds)
-import Wiki.App.Backend (WikiError (..))
+import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Permission (..), framePath, noExternalPlugins, reservedPluginIds)
 import Wiki.App.Backend.Http.Cache (emptyCache)
 import Wiki.App.Backend.Http.Cache qualified as Cache
 import Wiki.App.Backend.Http.Preload (decodePreload, encodePreload)
@@ -235,15 +235,22 @@ data Step
   | -- | Another session, whose read of the reader's choices has not
     -- answered yet.
     NewSession
-  | -- | The session's read of the reader's choices answers, or a read of
-    -- them fails.
+  | -- | The session's read of the reader's choices and of the plugins
+    -- installed answers, or a read of them fails.
     ChoicesRead Bool
   | -- | The administrator turns a plugin off, or on, for everyone.
     WikiOff Int
-  | -- | The server replaces a plugin with another version.
+  | -- | The server replaces a plugin with another version, elsewhere: the
+    -- editor learns of it at the session's next read.
     Replace Int
-  | -- | The read out answers with what the server has, or fails.
-    DeliverRead Bool
+  | -- | The reader replaces a plugin with another version in the settings
+    -- of this tab: the input's plugins installed change at once.
+    ReplaceHere Int
+  | -- | The reader removes a plugin in the settings of this tab.
+    RemoveHere Int
+  | -- | The administrator sets the policy in this tab: off ('True'), or
+    -- users may add theirs.
+    PolicyHere Bool
   | -- | A frame's plugin says it is ready.
     Ready' Int
   | -- | A frame's plugin answers its ask out, rightly.
@@ -276,7 +283,9 @@ instance Arbitrary Step where
       , (4, ChoicesRead <$> frequency [(4, pure True), (1, pure False)])
       , (2, WikiOff <$> choose (0, 1))
       , (1, Replace <$> choose (0, 1))
-      , (8, DeliverRead <$> frequency [(5, pure True), (1, pure False)])
+      , (2, ReplaceHere <$> choose (0, 1))
+      , (1, RemoveHere <$> choose (0, 1))
+      , (1, PolicyHere <$> arbitrary)
       , (10, Ready' <$> choose (0, 2))
       , (20, Answer <$> choose (0, 2))
       , (1, AnswerStale <$> choose (0, 2))
@@ -303,12 +312,11 @@ data Opened = Opened
   -- ^ The ticket of the wait under the frame's number, while one runs.
   }
 
--- | 'World' is the machine with what is around it: the server, the reads
--- out, the frames open, what the editor was told, and what went wrong.
+-- | 'World' is the machine with what is around it: the server, the frames
+-- open, what the editor was told, and what went wrong.
 data World = World
   { model :: Model
   , server :: [ExternalPlugin]
-  , reads :: [Int]
   , open :: Map Int Opened
   , closed :: Set Int
   , told :: Map PluginId Heard
@@ -320,14 +328,22 @@ data World = World
   , stepper :: Event -> Model -> (Model, [Effect])
   }
 
+-- | The plugins the server has at first.
+firstServer :: [ExternalPlugin]
+firstServer = [plugin "spell" "s1" False, plugin "mine" "m1" True]
+
+-- | The plugins installed as a read of them answers.
+installedAs :: [ExternalPlugin] -> ExternalPlugins
+installedAs ps = ExternalPlugins {policy = ExternalUsers, external = ps}
+
 firstInput :: Input
-firstInput = Input {session = 0, known = noPlugins, choicesRead = True, text = Nothing, encrypted = False}
+firstInput = Input {session = 0, known = noPlugins, installed = installedAs firstServer, choicesRead = True, text = Nothing, encrypted = False}
 
 newWorld :: (Event -> Model -> (Model, [Effect])) -> World
 newWorld stepper =
   happen
     (Given firstInput)
-    World {model = initial firstInput, server = [plugin "spell" "s1" False, plugin "mine" "m1" True], reads = [], open = mempty, closed = mempty, told = mempty, given = firstInput, seen = mempty, wrong = [], stepper}
+    World {model = initial firstInput, server = firstServer, open = mempty, closed = mempty, told = mempty, given = firstInput, seen = mempty, wrong = [], stepper}
 
 -- | An event stepped, its effects carried out against the world, and the
 -- rules checked.
@@ -338,9 +354,6 @@ happen event w =
 
 perform :: World -> Effect -> World
 perform w = \case
-  ReadInstalled t
-    | null w.reads -> w {reads = [t]}
-    | otherwise -> w {reads = w.reads <> [t], wrong = "a second read out at once" : w.wrong}
   Open n t address
     | Map.member n w.open || Set.member n w.closed -> w {wrong = ("frame " <> show n <> " opened twice") : w.wrong}
     | otherwise -> w {open = Map.insert n Opened {address, isReady = False, asks = [], sent = [], waiting = Just t} w.open}
@@ -428,26 +441,34 @@ frameAt i w = atMay (Map.toList w.open) i
 
 play :: World -> Step -> World
 play w = \case
-  Type i -> given (\x -> Input {session = x.session, known = x.known, choicesRead = x.choicesRead, text = atMay texts i, encrypted = x.encrypted})
+  Type i -> given (\x -> Input {session = x.session, known = x.known, installed = x.installed, choicesRead = x.choicesRead, text = atMay texts i, encrypted = x.encrypted})
   Toggle i -> case atMay ["spell", "mine"] i of
     Just p ->
       let isOff = maybe False (\c -> c.state == PluginOff) (Map.lookup (PluginId p) w.given.known.mine)
-       in given (\x -> Input {session = x.session, known = Plugins {offForWiki = x.known.offForWiki, mine = (choosing (filter ((/= p) . fst) (current x) <> [(p, if isOff then PluginOn else PluginOff)])).mine}, choicesRead = x.choicesRead, text = x.text, encrypted = x.encrypted})
+       in given (\x -> x {known = Plugins {offForWiki = x.known.offForWiki, mine = (choosing (filter ((/= p) . fst) (current x) <> [(p, if isOff then PluginOn else PluginOff)])).mine}})
     Nothing -> w
-  Encrypt e -> given (\x -> Input {session = x.session, known = x.known, choicesRead = x.choicesRead, text = x.text, encrypted = e})
-  -- The shell holds the defaults, with the wiki's set as it last knew it,
-  -- until the new session's read answers.
-  NewSession -> given (\x -> Input {session = x.session + 1, known = Plugins {offForWiki = x.known.offForWiki, mine = mempty}, choicesRead = False, text = x.text, encrypted = x.encrypted})
-  ChoicesRead ok -> given (\x -> Input {session = x.session, known = x.known, choicesRead = ok, text = x.text, encrypted = x.encrypted})
+  Encrypt e -> given (\x -> x {encrypted = e})
+  -- The shell holds the defaults, with the wiki's set as it last knew it
+  -- and no plugins installed, until the new session's read answers.
+  NewSession -> given (\x -> x {session = x.session + 1, known = Plugins {offForWiki = x.known.offForWiki, mine = mempty}, installed = noExternalPlugins, choicesRead = False})
+  -- The read answers what the server has; a read that fails changes
+  -- nothing held.
+  ChoicesRead ok -> given (\x -> if ok then x {installed = installedAs w.server, choicesRead = True} else x {choicesRead = False})
   WikiOff i -> case atMay ["spell", "mine"] i of
     Just p ->
       let flipped off = if Set.member (PluginId p) off then Set.delete (PluginId p) off else Set.insert (PluginId p) off
-       in given (\x -> Input {session = x.session, known = Plugins {offForWiki = flipped x.known.offForWiki, mine = x.known.mine}, choicesRead = x.choicesRead, text = x.text, encrypted = x.encrypted})
+       in given (\x -> x {known = Plugins {offForWiki = flipped x.known.offForWiki, mine = x.known.mine}})
     Nothing -> w
-  Replace i -> w {server = [if n == i then p {bundle = p.bundle <> "'"} else p | (n, p) <- zip [0 ..] w.server]}
-  DeliverRead ok -> case w.reads of
-    t : rest -> happen (Read t (if ok then Right ExternalPlugins {policy = ExternalUsers, external = w.server} else Left (Unreachable "down"))) w {reads = rest}
-    [] -> w
+  Replace i -> w {server = replaced i w.server}
+  -- What the reader changes in the settings reaches the editor in the same
+  -- step, as the server's answer the plugins' state takes.
+  ReplaceHere i -> heldHere (\x -> x {external = replaced i x.external}) w {server = replaced i w.server}
+  RemoveHere i -> case atMay w.server i of
+    Just gone ->
+      let without = filter (\p -> p.manifest.id /= gone.manifest.id)
+       in heldHere (\x -> x {external = without x.external}) w {server = without w.server}
+    Nothing -> w
+  PolicyHere off -> heldHere (\x -> x {policy = if off then ExternalOff else ExternalUsers}) w
   Ready' i -> onFrame i $ \(n, o) -> happen (Said n (Message ready)) w {open = Map.insert n o {isReady = True} w.open}
   Answer i -> onFrame i $ \(n, o) -> case o.asks of
     (t, text) : rest -> happen (Said n (Message (problemsMessage t (reportsOf text)))) w {open = Map.insert n o {asks = rest} w.open}
@@ -468,6 +489,9 @@ play w = \case
     Nothing -> w
   where
     given change = let input = change w.given in happen (Given input) w {given = input}
+    -- A change made in this tab, held once the session's read answered.
+    heldHere change w' = if w'.given.choicesRead then let input = w'.given {installed = change w'.given.installed} in happen (Given input) w' {given = input} else w'
+    replaced i = zipWith (\n p -> if n == i then p {bundle = p.bundle <> "'"} else p) [0 :: Int ..]
     current x = [(p.text, c.state) | (p, c) <- Map.toList x.known.mine]
     onFrame i f = maybe w f (frameAt i w)
 
@@ -478,7 +502,6 @@ drain w0 = go (50 :: Int) w0
   where
     go 0 w = w {wrong = "the plugins never stopped being asked" : w.wrong}
     go k w
-      | not (null w.reads) = go (k - 1) (play w (DeliverRead True))
       | Just i <- findIndex (\(_, o) -> not o.isReady) (Map.toList w.open) = go (k - 1) (play w (Ready' i))
       | Just i <- findIndex (\(_, o) -> not (null o.asks)) (Map.toList w.open) = go (k - 1) (play w (Answer i))
       | otherwise = w
@@ -509,7 +532,7 @@ machine = describe "the editor's machine of external plugins" $ do
   it "keeps one frame for each plugin that runs, one ask out a frame, takes answers only under the ticket of the ask out, and closes what it opened" $
     -- Half of the runs start with the plugins running and asked, so that
     -- the rest of the run is spent on what happens to them.
-    let runs = (<>) <$> elements [[], [DeliverRead True, Type 1, Ready' 0, Ready' 1]] <*> (choose (10, 80) >>= vector)
+    let runs = (<>) <$> elements [[], [Type 1, Ready' 0, Ready' 1]] <*> (choose (10, 80) >>= vector)
      in withNumTests 2000 . checkCoverage . forAll runs $ \steps ->
           let wrong = runWith step steps
               -- The runs reach what the rules are about.
@@ -521,7 +544,7 @@ machine = describe "the editor's machine of external plugins" $ do
                 $ counterexample (show wrong) (null wrong)
 
   it "is told apart from a machine that breaks each rule" $ do
-    let early = [DeliverRead True, Type 1, Ready' 0, Ready' 1]
+    let early = [Type 1, Ready' 0, Ready' 1]
     -- Taking any answer, as if under the ticket out.
     fails
       ( \e m -> case e of
@@ -535,32 +558,36 @@ machine = describe "the editor's machine of external plugins" $ do
     -- Forgetting the ask out, so that a newer text goes out beside it.
     fails (\e m -> first (\m' -> m' {frames = Map.map (\f -> case f.phase of Asking _ -> f {phase = Idle Nothing}; _ -> f) m'.frames}) (step e m)) (early <> [Type 2]) "a second ask out at once"
     -- Running plugins in an encrypted space.
-    fails (\e m -> case e of Given i -> step (Given Input {session = i.session, known = i.known, choicesRead = i.choicesRead, text = i.text, encrypted = False}) m; _ -> step e m) (early <> [Encrypt True]) "encrypted"
+    fails (\e m -> case e of Given i -> step (Given i {encrypted = False}) m; _ -> step e m) (early <> [Encrypt True]) "encrypted"
     -- Running plugins on the defaults held before the session's choices
     -- are read.
     fails
-      (\e m -> case e of Given i -> step (Given Input {session = i.session, known = i.known, choicesRead = True, text = i.text, encrypted = i.encrypted}) m; _ -> step e m)
-      (early <> [NewSession, DeliverRead True, DeliverRead True, Ready' 0])
+      (\e m -> case e of Given i -> step (Given i {choicesRead = True, installed = installedAs firstServer}) m; _ -> step e m)
+      (early <> [NewSession, Ready' 0])
       "while this session's choices are unknown"
     -- Ignoring the plugins off for the wiki.
     fails
-      (\e m -> case e of Given i -> step (Given Input {session = i.session, known = Plugins {offForWiki = mempty, mine = i.known.mine}, choicesRead = i.choicesRead, text = i.text, encrypted = i.encrypted}) m; _ -> step e m)
+      (\e m -> case e of Given i -> step (Given i {known = Plugins {offForWiki = mempty, mine = i.known.mine}}) m; _ -> step e m)
       (early <> [WikiOff 1, Type 2])
       "off for the reader or the wiki"
+    -- Keeping the frame of a plugin removed in this tab, or of one that no
+    -- longer runs under the policy set in this tab.
+    fails (\e m -> case e of Given i -> step (Given i {installed = m.input.installed}) m; _ -> step e m) (early <> [RemoveHere 0]) "a frame runs a plugin not wanted"
+    fails (\e m -> case e of Given i -> step (Given i {installed = m.input.installed}) m; _ -> step e m) (early <> [PolicyHere True]) "a frame runs a plugin not wanted"
     -- Not closing the frames when the editor closes.
     fails (\e m -> case e of Finished -> (m, []); _ -> step e m) early "left open"
 
   it "stops a plugin that does not answer in time, says why, and does not start it again while the same version is on" $ do
-    let w = foldl' play (newWorld step) [DeliverRead True, Type 1, Ready' 0, Ready' 1, Timeout 0, Type 2]
+    let w = foldl' play (newWorld step) [Type 1, Ready' 0, Ready' 1, Timeout 0, Type 2]
     w.wrong `shouldBe` []
     map (\s -> (s.plugin.manifest.id.text, s.reason)) (Map.elems w.model.stopped) `shouldBe` [("mine", "it did not answer within 10 seconds")]
     Map.keys w.model.frames `shouldBe` [PluginId "spell"]
     -- Another version runs again.
-    let w' = foldl' play w [Replace 1, NewSession, ChoicesRead True, DeliverRead True]
+    let w' = foldl' play w [Replace 1, NewSession, ChoicesRead True]
     sort (Map.keys w'.model.frames) `shouldBe` [PluginId "mine", PluginId "spell"]
 
   it "counts a plugin's problems for the text it was sent, and asks for the newest text once the answer has come" $ do
-    let w = foldl' play (newWorld step) [DeliverRead True, Type 1, Ready' 0, Answer 0, Type 2]
+    let w = foldl' play (newWorld step) [Type 1, Ready' 0, Answer 0, Type 2]
     w.wrong `shouldBe` []
     Map.toList (map (\h -> (h.text, h.problems)) w.model.heard) `shouldBe` [(PluginId "mine", ("x", expectedFor "Mine" "x"))]
     -- The newest text is out, and the answer for it replaces the last.
@@ -568,15 +595,30 @@ machine = describe "the editor's machine of external plugins" $ do
     map (\h -> h.text) (Map.elems w'.model.heard) `shouldBe` ["ax\nbx"]
     map (\h -> map (\p -> p.from) h.problems) (Map.elems w'.model.heard) `shouldBe` [[1, 2]]
 
-  it "runs no plugin before the read answers, nor after a read of an earlier session" $ do
-    let w = foldl' play (newWorld step) [NewSession, ChoicesRead True, DeliverRead True]
+  it "runs no plugin before the session's read answers, and each installed once it does" $ do
+    let w = foldl' play (newWorld step) [NewSession]
     Map.null w.model.frames `shouldBe` True
-    w.reads `shouldSatisfy` (not . null)
-    let w' = play w (DeliverRead True)
+    let w' = play w (ChoicesRead True)
     Map.size w'.model.frames `shouldBe` 2
 
+  it "follows a plugin replaced, removed, or the policy set in this tab, in the step the input changes" $ do
+    let w = foldl' play (newWorld step) [Type 1, Ready' 0, Ready' 1]
+        frameOf p x = (\f -> (f.number, f.plugin.bundle)) <$> Map.lookup (PluginId p) x.model.frames
+    -- Another version: its frame closed and a new one made, at once.
+    let replaced = play w (ReplaceHere 0)
+    replaced.wrong `shouldBe` []
+    (snd <$> frameOf "spell" replaced) `shouldBe` Just "s1'"
+    (fst <$> frameOf "spell" replaced) `shouldNotBe` (fst <$> frameOf "spell" w)
+    -- Removed: its frame closed.
+    let removed = play w (RemoveHere 0)
+    Map.keys removed.model.frames `shouldBe` [PluginId "mine"]
+    -- The policy off: none runs; on again, both.
+    let off = play w (PolicyHere True)
+    Map.null off.open `shouldBe` True
+    Map.size (play off (PolicyHere False)).open `shouldBe` 2
+
   it "runs no plugin until the session's choices are read, closes every frame when they are not, and keeps them closed when the read fails" $ do
-    let w = foldl' play (newWorld step) [DeliverRead True, Type 1, Ready' 0, Ready' 1, NewSession, DeliverRead True, DeliverRead True]
+    let w = foldl' play (newWorld step) [Type 1, Ready' 0, Ready' 1, NewSession]
     w.wrong `shouldBe` []
     Map.null w.open `shouldBe` True
     let failed = play w (ChoicesRead False)
@@ -586,7 +628,7 @@ machine = describe "the editor's machine of external plugins" $ do
     read'.wrong `shouldBe` []
 
   it "stops a plugin that sends what it was not asked for: a flood, or an answer to no ask out" $ do
-    let early = [DeliverRead True, Type 1, Ready' 0, Ready' 1]
+    let early = [Type 1, Ready' 0, Ready' 1]
         reasons w = map (\s -> s.reason) (Map.elems w.model.stopped)
     reasons (foldl' play (newWorld step) (early <> [Flood 0])) `shouldBe` ["it sent a message it was not asked for"]
     reasons (foldl' play (newWorld step) (early <> [Answer 0, AnswerStale 0])) `shouldBe` ["it sent an answer it was not asked for"]

@@ -92,8 +92,14 @@ deployArgs a = case a.action of
         ++ flag "--fresh" (a.fresh)
     -- The TeX on this machine is the deploy's default, so it takes no
     -- option, unless the state remembers TeX Live under the toolchain,
-    -- which --no-texlive forgets.
+    -- which --no-texlive forgets. With the PDF exports off (--no-pdf), a
+    -- remembered TeX Live stays as it is. Any other answer, over a state
+    -- that remembers them off, gives --pdf first, which turns them on
+    -- again.
     texArgs = case a.tex of
+      NoPdf -> ["--no-pdf"]
+      _ -> flag "--pdf" (a.rememberedNoPdf) ++ texLiveArgs
+    texLiveArgs = case a.tex of
       MachineTex -> flag "--no-texlive" (a.rememberedTexLive)
       ToolchainTex ->
         "--texlive"
@@ -101,6 +107,7 @@ deployArgs a = case a.action of
           ++ option "--texlive-installer" (a.texInstaller)
           ++ option "--perl-source" (a.perlSource)
       NoTex -> ["--no-texlive"]
+      NoPdf -> []
     -- The page is on by default, so it takes no option, unless the state
     -- remembers it off, which --whats-new forgets.
     whatsNewArgs

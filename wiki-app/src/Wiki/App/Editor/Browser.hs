@@ -137,7 +137,9 @@ module Wiki.App.Editor.Browser
   , completeAsked
   , answerCompletion
   , elsewhereAsked
+  , elsewhereAbandoned
   , answerElsewhere
+  , closeCompletions
   , completeAction
 
     -- * Leaving the page
@@ -224,6 +226,7 @@ $( browserJS
      , ("js_emojied", "wiki_editor_emojied", Safe, [t|Element -> Int -> JSText -> IO ()|])
      , ("js_completed", "wiki_editor_completed", Safe, [t|Element -> Int -> JSText -> IO ()|])
      , ("js_completed_elsewhere", "wiki_editor_completed_elsewhere", Safe, [t|Element -> Int -> JSText -> IO ()|])
+     , ("js_close_completions", "wiki_editor_close_completions", Safe, [t|Element -> IO ()|])
      , ("js_title_line", "wiki_editor_title_line", Safe, [t|Element -> IO ()|])
      , ("js_problems", "wiki_editor_problems", Safe, [t|Element -> JSText -> JSText -> IO Bool|])
      , ("js_next_problem", "wiki_editor_next_problem", Safe, [t|Element -> IO ()|])
@@ -1028,10 +1031,21 @@ completeAsked event = do
 -- | The question a @wiki-complete-elsewhere@ event asks, in the shape of
 -- 'completeAsked''s: the group "In other spaces" of the list after @[[@
 -- at the cursor (#301). CodeMirror asks it beside the question of the
--- list of the space's pages, once two letters follow the @[[@, and waits
--- for 'answerElsewhere'. Pure, since the event does not change.
+-- list of the space's pages, whenever the line before the cursor has a
+-- @[[@, and waits for 'answerElsewhere'; the editor decides whether
+-- anything is looked up. Pure, since the event does not change.
 elsewhereAsked :: Event -> Maybe (Int, Complete.Request)
 elsewhereAsked = completeAsked
+
+-- | The number of the question about the pages of other spaces that a
+-- @wiki-complete-elsewhere-abandoned@ event says CodeMirror gave up: the
+-- text changed, the list was closed, or the text lost the focus, before
+-- its answer. Pure, since the event does not change.
+elsewhereAbandoned :: Event -> Maybe Int
+elsewhereAbandoned event = do
+  detail <- CompletionDetail <$> detailOf event
+  guard (detail.id > 0)
+  Just detail.id
 
 -- | What a @wiki-complete-action@ event asks the editor to do, once an
 -- entry of the list is written: @link-page@ (open the dialog of a link to
@@ -1054,6 +1068,13 @@ answerCompletion host i found =
 answerElsewhere :: (MonadIO m) => Element -> Int -> Maybe Completion -> m ()
 answerElsewhere host i found =
   liftIO . js_completed_elsewhere host i $ maybe (toJSText "") (jsonText . Complete.completionJson) found
+
+-- | Close the completion's list of the editor in the host, and of the rows
+-- that share it, with every entry of it, and give up the questions still
+-- asked for it: a key pressed after chooses nothing of it. Nothing before
+-- CodeMirror is in place, nor natively.
+closeCompletions :: (MonadIO m) => Element -> m ()
+closeCompletions = liftIO . js_close_completions
 
 ----------------------------------------------------------------------
 -- A presentation's rows

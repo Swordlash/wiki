@@ -629,7 +629,14 @@ confirms it against reality and the plan is amended if it does not hold.
     ends with a working engine, and the unit's `ExecStart` carries `--no-pdf` exactly
     otherwise (the found engine failing or absent and nothing installed, the install
     or its check failing, `--no-texlive` or the question declined); a later run that
-    ends with a working engine drops it; `--status` reads the unit and says so. When
+    ends with a working engine drops it; `--status` reads the unit and says so. The
+    deploy's own `--no-pdf` (the owner, 2026-11-26, #393) turns the PDF exports off
+    whatever TeX the machine has: the TeX step checks nothing, installs nothing and
+    asks nothing; `pdf_exports=no` is remembered until `--pdf`; the native bootstrap
+    gets `--without-tex`; the wizard offers it as a fourth answer; and the servers of
+    the upgrade's rehearsal and of the move to PostgreSQL start with `--no-pdf`, each
+    where its program takes the option (the upgrade asks the program's `--help`). It
+    is refused with `--rollback`, `--stop` and `--status`. When
     the install needs Perl and the machine has none, or one without its standard
     modules, the deploy builds Perl (one pinned version, a shallow `git clone` of
     `https://github.com/Perl/perl5` at its tag, with no checksum: the owner,
@@ -1838,7 +1845,7 @@ confirmed 2026-11-10; before that the session implemented everything itself): a
 session on Fable plans, briefs and reviews, and one Opus subagent in a worktree of
 its own implements each package; a session on another model implements itself.
 Before a pull request merges, it is reviewed by Codex, as `AGENTS.md` says: the
-session runs the Codex CLI on the pushed head, `gpt-6.1-sol` at high reasoning
+session runs the Codex CLI on the pushed head, `gpt-6.2-sol` at high reasoning
 effort, and when its quota has run out asks the GitHub Codex bot instead, with a
 comment of `@codex review` on the pull request (the owner, 2026-11-10: the CLI is
 the default; on the owner's machine it is signed in with the owner's account, so
@@ -2809,7 +2816,22 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   so a change in another tab or by an administrator does not reach
   an editor already open; `wiki-plugin.js` is not served for
   download; one oversized message is deserialized once by the
-  browser before it is refused. **D3 merged (#382, eight Codex rounds, four builders):** the
+  browser before it is refused. **E3 merged (#386, three Codex
+  rounds):** Settings, Plugins lists the external plugins with the
+  built-in ones' switch; under the policy `users` a user adds,
+  replaces and removes their own, and the administration sets the
+  policy and the wiki's plugins; every upload is confirmed against
+  the files just picked (what the plugin reads, its hosts, for
+  whom), checked with the server's own `parseManifest` and
+  `checkBundle` first; the read of the installed plugins and every
+  write are the plugins' one machine's, in its one flight, and the
+  editor takes them from the context (`external`);
+  `wiki-plugin.js` is served for download. Left: a tab left open
+  learns of another tab's or an administrator's change at its own
+  next write, session or page load; a refusal for a plugin whose
+  row is gone is not drawn; the icon's upload on the home page and
+  in a space's settings is `display: none`, and "Attach files" in
+  the editor shows no focus ring. **D3 merged (#382, eight Codex rounds, four builders):** the
   assistant's API keys are the plugin's named secrets and its
   provider, model, effort, service's address, mode and page cap the
   plugin's options on the server, in the clear; the migration is a
@@ -2862,9 +2884,38 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   encrypted spaces in the browser), then a second group "In other
   spaces" in the editor, at most 10 after 2 letters and a pause,
   written as `[[/s/<space>/p/<page>/|<title>]]`, by a machine with
-  one lookup out; no ask from an encrypted page. Left of #301 after
-  it: braces and `\begin…\end` for commands in math, splitting an
-  item on its later lines. **Held requests (#385, after #377):** the
+  one lookup out; no ask from an encrypted page. The rest of #301 is
+  built and in review: the editor's group (#389), splitting an item
+  on its later lines (#390), a math command's braces from KaTeX's
+  own arities (#391, on #389), and `\begin…\end` after it (#392).
+  **The guard of a plain write asks the server by the page (#394,
+  found by #389's rounds in the code before it).** Before a save, a
+  draft, an attachment, a comment's text or a resolve goes out
+  plain, the HTTP backend asks `GET api/v1/pages/<page>/plain`
+  (`plainNow`: 204, 409 with the draft's codes, 404), which the
+  service worker leaves to the network; a refusal is `Stale` with
+  the reader's words, and the editor's merge offers nothing for
+  another page at the edited page's address. The guard before it
+  went by the space the tab last read the page in, and by a list of
+  spaces that could leave the space out (access taken away) or come
+  from the worker's copy. **Left:** a yes is old when it is used if
+  a conversion began since, or if a later question about the page
+  was refused while the yes was on its way (the owner, 2026-11-26:
+  left; the reads of the spaces' list are numbered against this,
+  the questions are not): the text reaches the server, which
+  refuses it and keeps nothing, and a resolve in a space encrypted
+  in that window is taken and answered without the thread's text;
+  `createPage`, with no page to ask about, reads the list of
+  spaces, which the worker may answer from its copy; the refusal
+  "no longer encrypted" is still a conflict and opens the merge
+  view. **Still open, for a design of its own:** what a view sends
+  of typed text outside a write (the letters after `@`, the logins
+  a draft mentions, in both previews) goes by the view's snapshot of
+  the space, and the mentions' asker keeps its answers by letters
+  across a change of reader. Two rounds of #394 showed that a view
+  which asks, waits and then sends is not closed by rechecks: it
+  needs one backend call keyed by the page, as the write guard is.
+  **Held requests (#385, after #377):** the
   browser examples that hold a request start over a backend with no
   time limit, through one helper (`holdingEnv`, `startHolding` in
   `Test.Browser.Http`); left: five holds in `Test/Browser/Vault.hs`
@@ -3693,7 +3744,12 @@ needs. Each was true when its package merged; check before relying on one.
   (a second or two with a working engine, up to 20 s with one that hangs) is skipped
   with `--without-tex`, which a server deploy passes since its TeX step probes on the
   service's PATH anyway (#157); `bootstrap.sh native` still runs the check without
-  it, so a `--backend-only` deploy probes once more; a server with `--no-pdf` keeps
+  it, so a `--backend-only` deploy probes once more; with the deploy's `--no-pdf`
+  (#393) no step probes, except a server of the upgrade's rehearsal whose program
+  was built before the option (the old program's, or both under `--no-build` with a
+  wiki-server built before #393); `--texlive-installer`, `--perl-source` and
+  `--texlive-mirror` are not refused with `--no-pdf`, and the deploy's other options
+  are accepted and ignored with `--rollback`; a server with `--no-pdf` keeps
   the PDFs off until the next deploy, even if a working TeX appears meanwhile;
   `check-tex.sh`'s default 20 s has no test of its own. Every `install-tl` and
   `tlmgr` call runs from `<toolchain>/texlive` with `TEXLIVE_INSTALL_NO_RESUME=1` and

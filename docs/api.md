@@ -279,6 +279,7 @@ take that from themself, which the space's view does not offer.
 | POST | `api/v1/spaces/<space>/pages` | `NewPage` `{"parent": id or null, "title", "body", "kind"}`: `null` is under the space's home page; `kind` is `"document"` or `"presentation"`, and missing is `"document"` | 201 `Page`, with `ETag` | 404, 403, 400 (among others, a kind this server does not know) | `createPage`, `createPageOf` |
 | PUT | `api/v1/pages/<page>` | `PageEdit` `{"title", "body"}`, with `If-Match` | `Page`, with its new `ETag` | 404, 403, 400, 409 | `savePage` |
 | GET | `api/v1/pages/<page>/location` | | `PageLocation` `{"space": [slug], "page": [slug]}`, where the page is now: its space's path and its own path there, from under the space's home page (`[]` for the home page); both are `[]` for the wiki's own home page, the front page. A page's permanent address, `/l/<page>/`, is read with it | 404, the same answer, body and all, for an id no page has and for a page the caller may not view | `pageLocation` |
+| GET | `api/v1/pages/<page>/plain` | | 204, no body, with `Cache-Control: private, no-store`: the server takes the page's text as plain text now. The application asks it before it sends any plain text of a page (a save, a draft, an attachment, a comment; a lookup of letters typed may use it later), so that the answer is about where the page is now and comes from the server, never from a copy the service worker kept. Only the right to view the page is needed | 409 `Stale` (`converting` or `space-encrypted`, as for a draft) while a space of the page's chain is encrypted or being converted; 404, as for `location`, for a page the caller may not view | `plainNow` |
 | GET | `api/v1/pages/<page>/backlinks` | | `[Backlink]` `{"page", "title", "location": {"space": [slug], "page": [slug]}}`, the pages that link to the page, each once, by title in natural order: those whose text has a link the page view follows to it (a path, a wiki link, a permanent address, an embed, a link in raw HTML; not the page's link to itself). Only the pages the caller may view are listed, with nothing about the others. `[]` for the front page, for a page of an encrypted space, whose links the server cannot read, and for a page nothing links to | 404, the same answer for an id no page has and for a page the caller may not view | `pageBacklinks` |
 | POST | `api/v1/pages/<page>/move` | `PageMove` `{"space", "parent": id or null}`: `null` is under the space's home page | `Page` | 404, 403, 400 (among others, its space's home page, or a page with it under it moved to another space) | `movePage` |
 | POST | `api/v1/pages/<page>/shift` | `ShiftBy` `{"shift"}` | `Page`, with its new position | 404, 403, 400 | `shiftPage` |
@@ -617,7 +618,7 @@ a user has at most 50 (`maxStars`).
 | Method | Path | Body | Response | Errors | `MonadWiki` |
 | ------ | ---- | ---- | -------- | ------ | ----------- |
 | GET | `api/v1/search?q=<words>&space=<space>&only&limit=<n>&templates` | | `[SearchHit]`, the best first | | `searchPages` |
-| GET | `api/v1/pages/titled?q=<letters>&except=<space>&limit=<n>` | | `[TitleHit]` `{"page", "space", "spacePath", "pagePath", "title"}`, the best first | 400 | `findPagesByTitle` |
+| GET | `api/v1/pages/titled?q=<letters>&except=<space>&limit=<n>` | | `[TitleHit]` `{"page", "space", "spacePath", "pagePath", "title"}`, the best first, with `Cache-Control: private, no-store`: the letters are typed in a page, and the address holds them | 400 | `findPagesByTitle` |
 
 The parameters are the application's own search address's
 (`/search/?q=…&space=…&only`), except that `space` is the space's id rather
@@ -1593,8 +1594,9 @@ Live older than 2021 refuses unicode-math's table under the limits, then
 loops). An engine that runs out of time is killed with every process it
 started. `status` is `working` (it made a
 PDF), `failing` (it was found and did not), `not-found`, or `off` (WP5.61):
-the server was started with `--no-pdf`, which the deploy sets when it finds
-no `xelatex` that works and installs none, and neither looks for the engine
+the server was started with `--no-pdf`, which the deploy sets when it is
+given `--no-pdf` itself and when it finds no `xelatex` that works and
+installs none, and neither looks for the engine
 nor offers the PDFs. `off` has `path` and `output` `null`, `checkedAt` the
 time the server started, and is logged as `tex-engine` with `status=off`; a
 `check` then tries nothing and answers the same `off` with 200, not an

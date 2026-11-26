@@ -27,22 +27,17 @@ import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, i
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
-import Test.Browser.Mount (slugs, startOn, startWith)
+import Test.Browser.Mount (makePresentation, slugs, startOn, startWith)
 import Test.Browser.Text (completing, editorText, inputsSeen, insertText, markdown, problemsMarked, proposeText, selectText, setMarkdown, watchEditor)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
-import Wiki.App.Backend (MonadWiki (..))
-import Wiki.App.Backend.Mem (runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
 import Wiki.App.Shell qualified as Shell
-import Wiki.Core.Page (Page (id, updatedAt))
-import Wiki.Core.PageKind qualified as Kind
 import Wiki.Core.SlideRows (Row (..), RowKey (..), Rows (..), assemble, cutRows, deleteRow, newRow)
 import Wiki.Core.SlideRows qualified as SlideRows
 import Wiki.Core.Slides (moveSlide)
-import Wiki.Core.Space (Space (id))
 
 $( browserJS
      ["jsbits/test-slides.js", "jsbits/test-files.js", "jsbits/test-search.js"]
@@ -2114,11 +2109,7 @@ spec m = readsOnce Idle $ do
       (opener, wiki) <- startWith m (Just "user-editor") (Page (slugs ["blog"]) (slugs ["hello-world"]))
       -- One shell at a time: the editor's, which a route followed moves.
       unmount opener
-      unsafeIOToPageM . runMemWiki wiki $ do
-        blog <- either (panic . show) identity <$> getSpace (slugs ["blog"])
-        hello <- either (panic . show) identity <$> getPage blog.id (slugs ["hello-world"])
-        made <- either (panic . show) identity <$> setPageKind hello.id Kind.Presentation
-        void (either (panic . show) identity <$> savePage made.id made.updatedAt "Deck" text)
+      makePresentation wiki text
       ui <- startOn m wiki helloEditor
       -- The editor waits for its CodeMirror in a fork
       -- ('Wiki.App.Editor.Browser.whileAttaching'), and the preview for its

@@ -9,25 +9,26 @@
 -- = The input
 --
 -- The editor gives the machine an 'Input' with each render: the session's
--- number, which plugins are on ("Wiki.Api.Plugins"), whether that is this
+-- number, which plugins are on ("Wiki.Api.Plugins"), the external plugins
+-- installed ("Wiki.Api.Plugins.External"), whether both are this
 -- session's read of them, the text to diagnose (the editor's text as last
--- checked), and whether the page is in an encrypted space. Each field
--- changes in the step that takes the input ('Given'): a new text is a new
--- 'version', a new session forgets what was installed and reads it again,
--- and the frames follow at once.
+-- checked), and whether the page is in an encrypted space. The shell's
+-- plugins' state ("Wiki.App.View.Plugins.Machine") reads the first three,
+-- and the editor takes them from the context. Each field changes in the
+-- step that takes the input ('Given'): a new text is a new 'version', a
+-- new session forgets which plugins were stopped, and the frames follow
+-- at once, so that a plugin installed, removed, replaced or turned off in
+-- the settings of this tab starts or stops in the editor in that step.
 --
 -- = Which plugins run
 --
--- The machine reads the external plugins installed when it starts, and
--- again with each new session; one read is out at a time, and a read
--- wanted while one is out is sent when that one answers. An answer of an
--- earlier session changes nothing. The plugins that run are the ones that
--- are on ("Wiki.App.Plugin.Registry"'s 'externalOn'), and none in an
--- encrypted space. None runs either until this session's read of what is
--- on has answered ('choicesRead'): until then the shell holds the
--- defaults, under which a plugin the reader turned off is on, and a
--- plugin is sent the page's text only when the reader's own choices say
--- it may be. A read of them that fails keeps every plugin stopped. Each has one frame, made when the plugin starts to run
+-- The plugins that run are the ones that are on, among those installed
+-- ("Wiki.App.Plugin.Registry"'s 'externalOn'), and none in an encrypted
+-- space. None runs either until this session's read of them has answered
+-- ('choicesRead'): until then the shell holds the defaults, under which a
+-- plugin the reader turned off is on, and a plugin is sent the page's text
+-- only when the reader's own choices say it may be. A read of them that
+-- fails keeps every plugin stopped. Each has one frame, made when the plugin starts to run
 -- and closed when it stops: turned off, removed, replaced by another
 -- version (another bundle), or stopped for misbehaving. A plugin stopped
 -- stays stopped while the same version stays on, so its frame is not made
@@ -70,7 +71,6 @@ module Wiki.App.Plugin.External.Machine
   , Event (..)
   , Effect (..)
   , initial
-  , initialRead
   , step
   , wanted
   , stoppedPlugins
@@ -86,7 +86,6 @@ import Data.Text qualified as T
 import Protolude
 import Wiki.Api.Plugins (PluginId, Plugins)
 import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins, framePath)
-import Wiki.App.Backend (WikiError)
 import Wiki.App.Plugin.External (Heard (..))
 import Wiki.App.Plugin.External.Frame (FrameSaid (..))
 import Wiki.App.Plugin.External.Protocol (FromPlugin (..), answerWithin, diagnose, fromPlugin, maxMessageLength, problemsIn, startWithin)
@@ -99,8 +98,11 @@ data Input = Input
   -- @sessionNumber@).
   , known :: Plugins
   -- ^ Which plugins are on, as the shell last read them.
+  , installed :: ExternalPlugins
+  -- ^ The external plugins installed, as the shell last read them or
+  -- changed them.
   , choicesRead :: Bool
-  -- ^ Whether 'known' is this session's read of what is on
+  -- ^ Whether 'known' and 'installed' are this session's read
   -- ("Wiki.App.View.Common"'s @pluginsRead@), and not the defaults the
   -- shell holds until that read answers, or when it failed. No plugin
   -- runs while it is not.
@@ -119,14 +121,6 @@ data Model = Model
   -- ^ The input last given.
   , version :: Int
   -- ^ The text's version: one more each time the input's text changes.
-  , installed :: Maybe (Either WikiError ExternalPlugins)
-  -- ^ The plugins installed, as this session's read answered, or why it
-  -- could not; 'Nothing' until it answers.
-  , reading :: Maybe (Int, Int)
-  -- ^ The read out, if one is: its ticket, and the session it was asked
-  -- in.
-  , readAgain :: Bool
-  -- ^ Whether a read was wanted while that one was out.
   , frames :: Map PluginId Frame
   -- ^ The frame of each plugin that runs.
   , stopped :: Map PluginId Stopped
@@ -179,8 +173,6 @@ data Stopped = Stopped
 data Event
   = -- | The editor gave this input.
     Given Input
-  | -- | The answer to the read made under this ticket.
-    Read Int (Either WikiError ExternalPlugins)
   | -- | The frame of this number said something.
     Said Int FrameSaid
   | -- | The wait under this frame's number and this ticket ended
@@ -193,10 +185,7 @@ data Event
 
 -- | 'Effect' is what a step asks the component to do.
 data Effect
-  = -- | Read the external plugins installed; the answer comes back as
-    -- 'Read' under the ticket.
-    ReadInstalled Int
-  | -- | Make the frame of this number at this address, then wait
+  = -- | Make the frame of this number at this address, then wait
     -- 'startWithin' under the frame's number; the end of the wait comes
     -- back as 'Waited' with the ticket.
     Open Int Int Text
@@ -211,36 +200,24 @@ data Effect
     Tell (Map PluginId Heard)
   deriving stock (Eq, Show)
 
--- | The machine for the first input, before anything is read.
+-- | The machine for the first input.
 initial :: Input -> Model
 initial input =
   Model
     { input
     , version = 0
-    , installed = Nothing
-    , reading = Nothing
-    , readAgain = False
     , frames = mempty
     , stopped = mempty
     , heard = mempty
     , next = 0
     }
 
--- | The machine for the first input, with the plugins installed as a
--- read made at once answered, in the input's session, when it could be
--- made at once ('Wiki.App.Backend.atOnce'): a page the server prerenders
--- then carries the answer deterministically, and the program that adopts
--- it reads it from there and asks nothing. Without one, the machine reads
--- when it starts, as 'initial'.
-initialRead :: Input -> Maybe (Either WikiError ExternalPlugins) -> Model
-initialRead input answered = (initial input) {installed = answered}
-
 -- | The plugins that are to run now: the ones on, among those installed
 -- in this session, and none in an encrypted space.
 wanted :: Model -> [ExternalPlugin]
 wanted m
   | m.input.encrypted || not m.input.choicesRead = []
-  | otherwise = maybe [] (externalOn m.input.known) (m.installed >>= rightToMaybe)
+  | otherwise = externalOn m.input.known m.input.installed
 
 -- | The plugins stopped, with why, in the order of their ids.
 stoppedPlugins :: Model -> [Stopped]
@@ -254,14 +231,7 @@ restInEncrypted m = m.input.encrypted && not (null (wanted m {input = m.input {e
 -- | The state after an event, and what it asks to be done.
 step :: Event -> Model -> (Model, [Effect])
 step event m = case event of
-  Given input -> settled m (givenInput input m)
-  Read ticket answer -> case m.reading of
-    Just (out, asked)
-      | out == ticket ->
-          let m1 = m {reading = Nothing}
-              m2 = if asked == m.input.session then m1 {installed = Just answer} else m1
-           in if m.readAgain then settled m (readNow m2 {readAgain = False}) else settled m (m2, [])
-    _ -> (m, [])
+  Given input -> settled m (givenInput input m, [])
   Said n said -> case frameNumbered n m of
     Nothing -> (m, [])
     Just (p, f) -> settled m (heardFrom p f said m)
@@ -280,23 +250,14 @@ step event m = case event of
   where
     seconds d = show (round d :: Int) <> " seconds"
 
--- | The model with a new input taken: a new session forgets what was
--- installed and what was stopped, and reads again; a new text is a new
--- version. The first input of all reads too.
-givenInput :: Input -> Model -> (Model, [Effect])
+-- | The model with a new input taken: a new session forgets which plugins
+-- were stopped; a new text is a new version.
+givenInput :: Input -> Model -> Model
 givenInput input m
-  | input.session /= m.input.session = reading m1 {installed = Nothing, stopped = mempty}
-  | isNothing m.installed && isNothing m.reading = reading m1
-  | otherwise = (m1, [])
+  | input.session /= m.input.session = m1 {stopped = mempty}
+  | otherwise = m1
   where
     m1 = m {input, version = if input.text /= m.input.text then m.version + 1 else m.version}
-    reading x
-      | isJust x.reading = (x {readAgain = True}, [])
-      | otherwise = readNow x
-
--- | A read sent now.
-readNow :: Model -> (Model, [Effect])
-readNow m = (m {reading = Just (m.next, m.input.session), next = m.next + 1}, [ReadInstalled m.next])
 
 -- | The frame with this number, and its plugin's id.
 frameNumbered :: Int -> Model -> Maybe (PluginId, Frame)

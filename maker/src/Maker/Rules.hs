@@ -178,7 +178,7 @@ bootstrap ctx lockFd logBefore started = do
 -- one line.
 nativeCheck :: Context -> IO ()
 nativeCheck ctx = do
-  (report, ok) <- Check.checkNative ctx.root Check.Options {postgres = ctx.postgres, wizard = ctx.wizard, tex = True}
+  (report, ok) <- Check.checkNative ctx.root Check.Options {postgres = ctx.postgres, wizard = ctx.wizard, tex = ctx.tex}
   when (not ok) $ do
     hPutStr stderr (unlines report)
     say ctx $

@@ -216,8 +216,9 @@ data ServeOptions = ServeOptions
   -- ^ Whether the server makes PDFs: 'False' with @--no-pdf@. Off, the
   -- server does not look for its TeX engine, offers no PDF formats, and
   -- refuses a PDF export ("Wiki.Server.Export"'s 'EngineOff').
-  -- toolchain/deploy-local.sh sets @--no-pdf@ when it finds no @xelatex@
-  -- that works and installs none.
+  -- toolchain/deploy-local.sh sets @--no-pdf@ when it is given
+  -- @--no-pdf@ itself, and when it finds no @xelatex@ that works and
+  -- installs none.
   , whatsNew :: Bool
   -- ^ Whether the server shows the page "What's new?", the newest
   -- changelog entries it was compiled with ("Wiki.Server.WhatsNew"):
@@ -300,7 +301,7 @@ serveOptions = do
   rclone <- strOption (long "rclone" <> metavar "PATH" <> value "rclone" <> showDefault <> help "The rclone program, for backups the administration copies to an rclone remote")
   assistantHosts <- concat <$> many (option hosts (long "assistant-hosts" <> metavar "ADDRESSES" <> help "Addresses the writing assistant may reach from the browser besides Anthropic's and OpenAI's APIs, separated by commas (https://openrouter.ai,http://localhost:11434): origins for the page's security policy only, which the assistant's settings do not offer; the administration's Server section lists the services users choose from, whose addresses it allows too"))
   noGuide <- switch (long "no-guide" <> help "Do not install the guide (a public space Guide, the wiki's documentation) when the server first starts with no spaces")
-  noPdf <- switch (long "no-pdf" <> help "Make no PDFs: do not look for xelatex, and offer no PDF exports (toolchain/deploy-local.sh sets it when it finds no xelatex that works)")
+  noPdf <- switch (long "no-pdf" <> help "Make no PDFs: do not look for xelatex, and offer no PDF exports (toolchain/deploy-local.sh sets it with its own --no-pdf, and when it finds no xelatex that works)")
   noWhatsNew <- switch (long "no-whats-new" <> help "Show no page \"What's new?\" (the changelog entries the server was built with), and no link to it")
   apiStretchBudget <- option stretch (long "api-max-stretch" <> metavar "t=PASSES,m=BYTES" <> value defaultStretch <> showDefaultWith (toS . stretchText) <> help "The most Argon2id the API for a page's Markdown runs on the server to check a password: an account whose password record asks for more passes or more memory cannot sign in there. The default is what the wiki's own registration asks for")
   maxImportMb <- option auto (long "max-import-size" <> metavar "MB" <> value (defaultMaxImportSize `div` (1024 * 1024)) <> showDefault <> help "The largest archive an import takes, in MiB")

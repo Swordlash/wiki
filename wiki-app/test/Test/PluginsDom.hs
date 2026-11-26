@@ -15,7 +15,9 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Control.Monad.UUID (MonadUUID (..))
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.Aeson (object)
+import Data.ByteString qualified as BS
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
@@ -30,7 +32,7 @@ import Protolude hiding (find)
 import Test.Harness.MemDom
 import Test.Hspec
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), noPlugins)
-import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPolicy (..), Permission (..))
+import Wiki.Api.Plugins.External (Contribution (..), ExternalManifest (..), ExternalPlugin (..), ExternalPolicy (..), Permission (..), maxBundleBytes)
 import Wiki.App (component, input)
 import Wiki.App.Account (Accounts (..), SignInError (..))
 import Wiki.App.Assistant (MonadAssistant (..))
@@ -54,13 +56,14 @@ import Wiki.App.Backend.WhatsNew (MonadWhatsNew)
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.DemoUsers (MonadDemoUsers)
 import Wiki.App.Islands (MonadIslands (..))
+import Wiki.App.Islands.Monad (ChosenFile (..))
 import Wiki.App.Plugin (Manifest (..))
 import Wiki.App.Plugin.Registry (manifests)
 import Wiki.App.Route (Route (..), SettingsSection (..), route)
 import Wiki.App.Route qualified as R
 import Wiki.App.Security (MonadSecurity)
 import Wiki.App.Shell qualified as Shell
-import Wiki.App.View.Common (Context (..))
+import Wiki.App.View.Common (Context (..), errorMessage)
 import Wiki.App.View.Editor qualified as Editor
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Slug (Slug, mkSlug)
@@ -71,6 +74,7 @@ spec = do
   section
   editor
   external
+  externalSettings
 
 assistant, errors :: PluginId
 assistant = PluginId "assistant"
@@ -102,6 +106,12 @@ data Holding = Holding
   , framesAsked :: Maybe (IORef [Text])
   -- ^ Where to note the address of each external plugin's frame the
   -- editor asks for, in order.
+  , filesChosen :: Maybe (IORef [ChosenFile])
+  -- ^ The files a file input's change brings, standing in for the
+  -- browser's.
+  , stateRefused :: Bool
+  -- ^ Whether every write of a user's state of a plugin fails, as one
+  -- the network loses does.
   }
 
 -- | 'Holder' is the demo's backend, as 'Holding' says.
@@ -121,6 +131,7 @@ instance (MonadIslands m, MonadIO m) => MonadIslands (Holder m) where
   openPluginFrame container address said = do
     Holder (asks (\h -> h.framesAsked)) >>= traverse_ (\r -> liftIO (modifyIORef' r (<> [address])))
     lift (openPluginFrame container address said)
+  pluginFilesChosen event = Holder (asks (\h -> h.filesChosen)) >>= maybe (lift (pluginFilesChosen event)) (liftIO . readIORef)
 
 instance (MonadUUID m) => MonadUUID (Holder m) where
   generateV4 = lift generateV4
@@ -160,10 +171,14 @@ instance (MonadPlugins m, MonadIO m) => MonadPlugins (Holder m) where
     whenM (Holder (asks (\h -> h.readHeld))) (heldBy "the plugins on")
     Holder (asks (\h -> h.failing)) >>= bool (lift pluginsNow) (pure (Left (Unreachable "the network")))
   setPluginState p s =
-    Holder (asks (\h -> h.afterHandled)) >>= \case
-      True -> lift (setPluginState p s) <* heldBy ("state " <> p.text)
-      False -> heldBy ("state " <> p.text) >> lift (setPluginState p s)
+    Holder (asks (\h -> (h.stateRefused, h.afterHandled))) >>= \case
+      (True, _) -> pure (Left (Unreachable "the network"))
+      (False, True) -> lift (setPluginState p s) <* heldBy ("state " <> p.text)
+      (False, False) -> heldBy ("state " <> p.text) >> lift (setPluginState p s)
   setWikiPluginsOff w = heldBy "the wiki's set" >> lift (setWikiPluginsOff w)
+  externalPluginsNow = do
+    whenM (Holder (asks (\h -> h.readHeld))) (heldBy "the plugins installed")
+    lift externalPluginsNow
 
 -- | Wait, when there is a gate, until the test lets this write go.
 heldBy :: (MonadIO m) => Text -> Holder m ()
@@ -207,7 +222,7 @@ withSection st body = withShellAt st free (UserSettings PluginsSection) (\view _
 
 -- | Nothing held, nothing failed.
 free :: Holding
-free = Holding {gate = Nothing, failing = False, afterHandled = False, readHeld = False, framesAsked = Nothing}
+free = Holding {gate = Nothing, failing = False, afterHandled = False, readHeld = False, framesAsked = Nothing, filesChosen = Nothing, stateRefused = False}
 
 -- | Each plugin's row: its id, whether it shows on, and its switch's
 -- state.
@@ -553,7 +568,9 @@ external = describe "Wiki.App.View.Editor's external plugins, in the shell on th
       frameOf = "plugin-frame/wiki/doubled-words/0123abcd/diagnostics"
   -- On a clock the test owns and never moves: the frame stood in natively
   -- never says it is ready, and the pause for it stays asleep.
-  it "asks for no plugin's frame while the session's read of the plugins on is out, and for its frame once it answers" $ withTestClock $ \_ -> do
+  -- The read is two requests, what is on and then the plugins installed:
+  -- no frame before both have answered.
+  it "asks for no plugin's frame while either request of the session's read of the plugins is out, and for its frame once both answer" $ withTestClock $ \_ -> do
     gate <- newGate
     asked <- newIORef []
     withShellAt withExternal free {gate = Just gate, readHeld = True, framesAsked = Just asked} editing $ \view _ _ quiet -> do
@@ -562,6 +579,11 @@ external = describe "Wiki.App.View.Editor's external plugins, in the shell on th
       map (\h -> h.asked) waiting `shouldSatisfy` (\hs -> not (null hs) && all (== "the plugins on") hs)
       readIORef asked `shouldReturn` []
       traverse_ (\h -> answer gate h ()) waiting
+      quiet
+      installing <- held gate
+      map (\h -> h.asked) installing `shouldBe` ["the plugins installed"]
+      readIORef asked `shouldReturn` []
+      traverse_ (\h -> answer gate h ()) installing
       quiet
       readIORef asked `shouldReturn` [frameOf]
 
@@ -573,3 +595,169 @@ external = describe "Wiki.App.View.Editor's external plugins, in the shell on th
   where
     slugs :: [Text] -> [Slug]
     slugs = mapMaybe (rightToMaybe . mkSlug)
+
+--------------------------------------------------------------------------------
+-- External plugins in the settings
+
+-- | An installed plugin of these tests: its id, its hosts, and whether it
+-- is the reader's own.
+installedAs :: Text -> [Text] -> Bool -> ExternalPlugin
+installedAs pid hosts mine =
+  ExternalPlugin
+    { manifest =
+        ExternalManifest
+          { id = PluginId pid
+          , name = T.toTitle pid
+          , version = "1.2.3"
+          , description = "Finds " <> pid <> "."
+          , api = 1
+          , contributes = Set.singleton Diagnostics
+          , permissions = Set.singleton DocumentRead
+          , hosts
+          }
+    , bundle = "b-" <> pid
+    , size = 10
+    , mine
+    , installedAt = UTCTime (fromGregorian 2026 11 25) 0
+    }
+
+-- | The demo's wiki, the editor signed in, under this policy, with the
+-- wiki's plugin "spell" and the editor's own "mine" and "spell".
+withInstalled :: ExternalPolicy -> MemState
+withInstalled policy =
+  asEditor
+    { externalPolicy = policy
+    , externalWiki = Map.fromList [(PluginId "spell", installedAs "spell" ["https://spell.example.org"] False)]
+    , externalOwn = Map.fromList [(UserId "user-editor", Map.fromList [(PluginId "mine", installedAs "mine" [] True), (PluginId "spell", installedAs "spell" [] True)])]
+    }
+
+-- | A file the reader picks, its bytes noted as read when they are.
+fileOf :: IORef [Text] -> Text -> ByteString -> ChosenFile
+fileOf readsOf name bytes = ChosenFile {name, size = fromIntegral (BS.length bytes), bytes = modifyIORef' readsOf (<> [name]) $> bytes}
+
+-- | A manifest of a plugin of this id.
+manifestOf :: Text -> ByteString
+manifestOf pid = encodeUtf8 ("{\"manifest\": 1, \"id\": \"" <> pid <> "\", \"name\": \"A <b>new</b> one\", \"version\": \"2.0.0\", \"api\": 1, \"contributes\": {\"diagnostics\": {}}, \"permissions\": [\"document.read\"], \"hosts\": [\"https://new.example.org\"]}")
+
+-- | The shell outside the demo, whose settings offer external plugins.
+onServer :: Shell.Input (Holder (MemWiki MemDOM)) -> Shell.Input (Holder (MemWiki MemDOM))
+onServer i = i {Shell.demo = Nothing}
+
+-- | Pick these files in the file input the selector names, as the browser
+-- tells the view of them.
+pick :: View q i o -> IORef [ChosenFile] -> Text -> [ChosenFile] -> IO ()
+pick view chosen selector files = do
+  writeIORef chosen files
+  element view selector >>= N.dispatch "change" (object [])
+
+externalSettings :: Spec
+externalSettings = describe "Wiki.App.View.Plugins' external plugins, in the shell on the in-memory DOM" $ do
+  it "lists the external plugins after the built-in ones, whose each is, its version, hosts and permissions, and a user's own the wiki's hides" $
+    withShellAtWith onServer (withInstalled ExternalUsers) free (UserSettings PluginsSection) $ \view _ _ _ -> do
+      rows view >>= (`shouldSatisfy` \rs -> map (\(i, _, _, _) -> i) rs == map (\m -> m.id.text) manifests <> ["spell", "mine", "spell"])
+      let at owner pid = ".plugin-external[data-owner=" <> owner <> "][data-plugin=" <> pid <> "] "
+      textOf view (at "wiki" "spell" <> ".plugin-about") `shouldReturn` "The wiki's · version 1.2.3"
+      textOf view (at "mine" "mine" <> ".plugin-about") `shouldReturn` "Yours · version 1.2.3"
+      textOf view (at "wiki" "spell" <> ".plugin-hosts") `shouldReturn` "It may send what it reads to https://spell.example.org, and to no other site."
+      textOf view (at "mine" "mine" <> ".plugin-hosts") `shouldReturn` "It may connect to no other site: what it reads stays in your browser."
+      textOf view (at "wiki" "spell" <> ".plugin-permissions") `shouldReturn` "It reads the text of the page being edited, while its editor is open."
+      -- The user's own "spell" runs not: the wiki's does in its place.
+      isJust <$> find view (at "mine" "spell" <> ".plugin-hidden") `shouldReturn` True
+      isJust <$> find view (at "mine" "mine" <> ".plugin-hidden") `shouldReturn` False
+      -- Only the user's own are theirs to replace and remove.
+      isJust <$> find view (at "wiki" "spell" <> ".plugin-remove") `shouldReturn` False
+      isJust <$> find view (at "mine" "mine" <> ".plugin-remove") `shouldReturn` True
+
+  it "says external plugins are off under the policy off, and lists none" $
+    withShellAtWith onServer (withInstalled ExternalOff) free (UserSettings PluginsSection) $ \view _ _ _ -> do
+      textOf view ".plugins-external-off" `shouldReturn` "External plugins are off on this wiki: none runs."
+      length <$> findAll view ".plugin-external" `shouldReturn` 0
+
+  it "warns before an upload, with the hosts and permissions of the files picked, and uploads only once confirmed" $ do
+    chosen <- newIORef []
+    readsOf <- newIORef []
+    withShellAtWith onServer (withInstalled ExternalUsers) free {filesChosen = Just chosen} (UserSettings PluginsSection) $ \view _ wiki quiet -> do
+      pick view chosen ".plugin-add input[type=file]" [fileOf readsOf "new.json" (manifestOf "new"), fileOf readsOf "new.js" "wikiPlugin.plugin({ diagnostics: () => [] });"]
+      quiet
+      -- The manifest's words are text: its name's markup is not markup.
+      textOf view ".plugin-warning .plugin-warning-title" `shouldReturn` "A <b>new</b> one 2.0.0 (new)"
+      length <$> findAll view ".plugin-warning b" `shouldReturn` 0
+      textOf view ".plugin-warning .plugin-hosts" `shouldReturn` "It may send what it reads to https://new.example.org, and to no other site."
+      textOf view ".plugin-warning .plugin-permissions" `shouldReturn` "It reads the text of the page being edited, while its editor is open."
+      -- Nothing is uploaded before the confirmation.
+      let own = Map.findWithDefault mempty (UserId "user-editor") . (\st -> st.externalOwn) <$> readIORef wiki
+      Map.keys <$> own `shouldReturn` [PluginId "mine", PluginId "spell"]
+      click view ".plugin-warning .plugin-confirm"
+      quiet
+      Map.keys <$> own `shouldReturn` [PluginId "mine", PluginId "new", PluginId "spell"]
+      isJust <$> find view ".plugin-external[data-owner=mine][data-plugin=new]" `shouldReturn` True
+      length <$> findAll view ".plugin-warning" `shouldReturn` 0
+
+  it "shows a manifest refused in the rule's words, and refuses a file too large without reading it" $ do
+    chosen <- newIORef []
+    readsOf <- newIORef []
+    withShellAtWith onServer (withInstalled ExternalUsers) free {filesChosen = Just chosen} (UserSettings PluginsSection) $ \view _ wiki quiet -> do
+      pick view chosen ".plugin-add input[type=file]" [fileOf readsOf "plugin.json" "{\"manifest\": 1}", fileOf readsOf "plugin.js" "x"]
+      quiet
+      textOf view ".plugin-pick-error" `shouldReturn` "These files cannot be uploaded: A plugin's manifest has the field id."
+      readIORef readsOf `shouldReturn` ["plugin.json", "plugin.js"]
+      click view ".plugin-pick-drop"
+      quiet
+      length <$> findAll view ".plugin-pick" `shouldReturn` 0
+      writeIORef readsOf []
+      let huge = ChosenFile {name = "huge.js", size = fromIntegral maxBundleBytes + 1, bytes = modifyIORef' readsOf (<> ["huge.js"]) $> ""}
+      pick view chosen ".plugin-add input[type=file]" [fileOf readsOf "plugin.json" (manifestOf "new"), huge]
+      quiet
+      textOf view ".plugin-pick-error" `shouldReturn` "These files cannot be uploaded: huge.js has 2097153 bytes: a plugin's bundle is at most 2097152 bytes (2 MiB)."
+      readIORef readsOf `shouldReturn` []
+      Map.keys . Map.findWithDefault mempty (UserId "user-editor") . (\st -> st.externalOwn) <$> readIORef wiki `shouldReturn` [PluginId "mine", PluginId "spell"]
+
+  it "lets an administrator set the policy and install a plugin for everyone, after the warning, and remove it" $ do
+    chosen <- newIORef []
+    readsOf <- newIORef []
+    withShellAtWith onServer (demoState demoNow) {current = Just (UserId "user-admin")} free {filesChosen = Just chosen} (Admin R.Permissions) $ \view _ wiki quiet -> do
+      textOf view ".admin-external-off" >>= (`shouldSatisfy` T.isPrefixOf "External plugins are off")
+      click view ".admin-external-policy-users"
+      quiet
+      (\st -> st.externalPolicy) <$> readIORef wiki `shouldReturn` ExternalUsers
+      length <$> findAll view ".admin-external-off" `shouldReturn` 0
+      pick view chosen ".admin-external .plugin-add input[type=file]" [fileOf readsOf "new.json" (manifestOf "new"), fileOf readsOf "new.js" "wikiPlugin.plugin({ diagnostics: () => [] });"]
+      quiet
+      textOf view ".plugin-warning .plugin-warning-text" >>= (`shouldSatisfy` T.isInfixOf "for everyone on this wiki")
+      Map.keys . (\st -> st.externalWiki) <$> readIORef wiki `shouldReturn` []
+      click view ".plugin-warning .plugin-confirm"
+      quiet
+      Map.keys . (\st -> st.externalWiki) <$> readIORef wiki `shouldReturn` [PluginId "new"]
+      click view ".admin-external-plugin[data-plugin=new] .plugin-remove"
+      quiet
+      Map.keys . (\st -> st.externalWiki) <$> readIORef wiki `shouldReturn` []
+      length <$> findAll view ".admin-external-plugin" `shouldReturn` 0
+
+  -- Codex's first round on #386: a refused switch of an external plugin
+  -- went back without a word, as the external row drew only the refusals
+  -- of uploads and removals.
+  it "says on an external plugin's row why its switch was refused, as on a built-in one's, and puts the switch back" $
+    withShellAtWith onServer (withInstalled ExternalUsers) free {stateRefused = True} (UserSettings PluginsSection) $ \view _ _ quiet -> do
+      let switchOn at = element view (at <> " .plugin-toggle") >>= checked
+      for_ [".plugin-external[data-owner=wiki][data-plugin=spell]", ".plugin[data-plugin=assistant]"] $ \at -> do
+        switchOn at `shouldReturn` True
+        click view (at <> " .plugin-toggle")
+        quiet
+        (findAll view (at <> " .plugin-refused") >>= traverse N.textContent) `shouldReturn` ["Not changed: " <> errorMessage (Unreachable "the network")]
+        switchOn at `shouldReturn` True
+
+  -- An upload of the reader's own refused because the administrator
+  -- changed the policy meanwhile: the read after it lists no plugin of the
+  -- reader's and offers no upload, and the refusal is drawn all the same.
+  it "says why an upload of the reader's own was refused when the policy no longer lets users add theirs" $
+    for_ [ExternalWiki, ExternalOff] $ \policy -> do
+      chosen <- newIORef []
+      readsOf <- newIORef []
+      withShellAtWith onServer (withInstalled ExternalUsers) free {filesChosen = Just chosen} (UserSettings PluginsSection) $ \view _ wiki quiet -> do
+        pick view chosen ".plugin-add input[type=file]" [fileOf readsOf "new.json" (manifestOf "new"), fileOf readsOf "new.js" "wikiPlugin.plugin({ diagnostics: () => [] });"]
+        quiet
+        modifyIORef' wiki (\st -> st {externalPolicy = policy})
+        click view ".plugin-warning .plugin-confirm"
+        quiet
+        length <$> findAll view ".plugin-add" `shouldReturn` 0
+        (policy,) <$> (findAll view ".plugins-external .plugin-refused" >>= traverse N.textContent) `shouldReturn` (policy, ["Not done: " <> errorMessage Forbidden])

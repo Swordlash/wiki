@@ -149,8 +149,8 @@ function wiki_test_editor_watch() {
 }
 
 // Watch for the open editor's question about the pages of other spaces
-// after [[ asked with the cursor's line up to the cursor reading `before`
-// (a "wiki-complete-elsewhere" event, web/src/editor.js's
+// after [[ asked with the cursor's line up to the cursor ending with
+// `before` (a "wiki-complete-elsewhere" event, web/src/editor.js's
 // elsewhereSource), from now on: CodeMirror asks on a timer of its own
 // after the last key, which the program does not know of.
 function wiki_test_editor_watch_elsewhere(before) {
@@ -158,7 +158,7 @@ function wiki_test_editor_watch_elsewhere(before) {
   if (!host) return;
   host.wikiTestElsewhere = new Promise((resolve) => {
     const heard = (event) => {
-      if (event.detail?.before !== before) return;
+      if (!event.detail?.before?.endsWith(before)) return;
       host.removeEventListener("wiki-complete-elsewhere", heard);
       resolve("asked");
     };
@@ -173,6 +173,31 @@ function wiki_test_editor_elsewhere_asked(ms) {
   const asked = wiki_test_editor_host()?.wikiTestElsewhere;
   if (!asked) return Promise.resolve("not watched");
   return Promise.race([asked, new Promise((resolve) => setTimeout(() => resolve("pending"), ms))]);
+}
+
+// Record the open editor's questions about the pages of other spaces from
+// now on (a "wiki-complete-elsewhere" event each), by the cursor's line up
+// to the cursor, for wiki_test_editor_elsewhere_asks.
+function wiki_test_editor_count_elsewhere() {
+  const host = wiki_test_editor_host();
+  if (!host) return;
+  host.wikiTestElsewhereAsks = [];
+  if (host.wikiTestElsewhereCounting) return;
+  host.wikiTestElsewhereCounting = true;
+  host.addEventListener("wiki-complete-elsewhere", (event) => host.wikiTestElsewhereAsks?.push(event.detail?.before ?? ""));
+}
+
+// The questions recorded since wiki_test_editor_count_elsewhere, as a JSON
+// list of the lines up to the cursor.
+function wiki_test_editor_elsewhere_asks() {
+  return JSON.stringify(wiki_test_editor_host()?.wikiTestElsewhereAsks ?? []);
+}
+
+// Click the first element a selector finds as a program would
+// (HTMLElement.click), moving no focus: the editor's text keeps it, and
+// with it the completion's list, which a press elsewhere closes.
+function wiki_test_click_keeping_focus(selector) {
+  document.querySelector(selector)?.click();
 }
 
 // How many "wiki-input" events the open editor made since it was watched.

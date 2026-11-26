@@ -57,6 +57,7 @@ data Bootstrap = Bootstrap
   , lockFd :: Maybe Int
   , withoutPostgres :: Bool
   , withWizard :: Bool
+  , withoutTex :: Bool
   , systemTools :: Bool
   , libsodiumSource :: Maybe FilePath
   }
@@ -157,6 +158,7 @@ parser =
         <*> optional (option auto (long "lock-fd" <> metavar "FD"))
         <*> switch (long "without-postgres" <> help "wiki-server is built without PostgreSQL: no libpq")
         <*> switch (long "with-wizard" <> help "The configuration wizard is built too: terminfo")
+        <*> switch (long "without-tex" <> help "Do not try xelatex in the check of the native build (a deploy with --no-pdf, and the wizard, need none)")
         <*> switch (long "system-tools" <> help "GHC and cabal are the machine's own")
         <*> optional (strOption (long "libsodium-source" <> metavar "FILE" <> help "libsodium's release tarball, used instead of a download"))
     checkNativeOptions =
@@ -203,6 +205,7 @@ contextFromEnvironment rootArg mode' = do
       , mode = mode'
       , postgres = True
       , wizard = False
+      , tex = True
       , systemTools = False
       , libsodiumSource = Nothing
       }
@@ -229,6 +232,7 @@ main = do
               , mode = b.mode
               , postgres = not b.withoutPostgres
               , wizard = b.withWizard
+              , tex = not b.withoutTex
               , systemTools = b.systemTools
               , libsodiumSource = b.libsodiumSource
               }

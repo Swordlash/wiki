@@ -101,6 +101,7 @@ import Halogen.TH (hh)
 import Numeric.Natural (Natural)
 import Protolude
 import Wiki.Api.Plugins (PluginId, Plugins)
+import Wiki.Api.Plugins.External (ExternalPlugins)
 import Wiki.App.Backend (MonadWiki (avatarUrl), Session (grants, homePage, mathMacros, standing, user), WikiError (..), sessionPrincipal)
 import Wiki.App.Route (Route (..), pageRoute)
 import Wiki.Core.HomePage (HomePage (showAnonymous))
@@ -142,13 +143,18 @@ data Context = Context
   -- each, as the shell last read them with the session
   -- ('Wiki.App.Plugin.Registry.pluginsOn' reads it). Nothing off and
   -- nothing chosen until the read answers, and when it fails.
+  , external :: ExternalPlugins
+  -- ^ The external plugins the reader may run and who may add them
+  -- ("Wiki.Api.Plugins.External"), as the shell last read them or changed
+  -- them ('Wiki.App.View.Plugins.Machine.heldInstalled'). None until the
+  -- read answers, and when it fails.
   , optionsRefused :: Map PluginId WikiError
   -- ^ Why the reader's last write of each plugin's options was refused,
   -- for the plugin's surfaces ('Wiki.App.Plugin.Registry.refusalFor');
   -- "Wiki.App.View.Plugins.Machine"'s @optionsRefused@.
   , pluginsRead :: Bool
-  -- ^ Whether 'plugins' is what this session's read answered, and not
-  -- the defaults held until it does, or when it failed
+  -- ^ Whether 'plugins' and 'external' are what this session's read
+  -- answered, and not the defaults held until it does, or when it failed
   -- ('Wiki.App.View.Plugins.Machine.readIn'). The built-in plugins run on
   -- the defaults meanwhile; an external plugin, which is sent the page's
   -- text, runs only once this is true.

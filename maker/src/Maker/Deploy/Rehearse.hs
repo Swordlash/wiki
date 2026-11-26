@@ -22,7 +22,7 @@ module Maker.Deploy.Rehearse
   )
 where
 
-import Control.Exception (finally)
+import Control.Exception (IOException, finally, try)
 import Control.Monad (unless, when)
 import Maker.Deploy.Plan
 import Maker.Deploy.Prepare (pgCompose, pgWrapperFor)
@@ -31,6 +31,7 @@ import System.Directory (doesFileExist, removePathForcibly)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Posix.Files (setFileMode)
+import System.Process.Typed (nullStream, proc, readProcessInterleaved, setStdin)
 
 -- | The PostgreSQL database the copy is restored into, beside the
 -- deployment's own @wiki@ in its container.
@@ -83,8 +84,29 @@ rehearse p = do
       psql ("CREATE DATABASE " <> rehearsalDatabase)
       writeFile scratchRestore (pgWrapperFor name pgDir dbPort "pg_restore" rehearsalDatabase)
       setFileMode scratchRestore 0o700
+    -- With the PDF exports off by --no-pdf, the rehearsal's servers try no
+    -- TeX engine either, as far as each program takes the option. Each is
+    -- asked with its own --help, which lists every option and runs nothing.
+    -- A new program built before rehearse took the switches (an older -O2
+    -- build, which --no-build reuses) would refuse them and end the
+    -- rehearsal: it is given neither. An old program built before --no-pdf
+    -- would refuse to start: it is not given it.
+    pdfArgs <-
+      if v "pdf_exports" /= "no"
+        then pure []
+        else do
+          newTakes <- helpLists newBin "rehearse" "--old-no-pdf"
+          if not newTakes
+            then do
+              say ("the wiki-server at " <> newBin <> " was built before its rehearse took --no-pdf, so the rehearsal's servers try their TeX engine this once; a deploy without --no-build builds it again")
+              pure []
+            else do
+              oldTakes <- helpLists oldBin "serve" "--no-pdf"
+              unless oldTakes $
+                say ("the wiki-server the wiki runs now, at " <> oldBin <> ", takes no --no-pdf, so its server in the rehearsal tries its TeX engine this once")
+              pure ("--no-pdf" : ["--old-no-pdf" | oldTakes])
     code <-
-      runInherit newBin (["rehearse", "--old", oldBin, "--data", dir </> "data"] <> liveArgs <> ["--scratch", scratch] <> scratchArgs)
+      runInherit newBin (["rehearse", "--old", oldBin, "--data", dir </> "data"] <> liveArgs <> ["--scratch", scratch] <> scratchArgs <> pdfArgs)
         `finally` (removePathForcibly scratch >> when postgres (removePathForcibly scratchRestore >> dropScratch))
     case code of
       ExitSuccess -> say "the rehearsal passed: the new program reads the wiki as the old one did"
@@ -95,3 +117,14 @@ rehearse p = do
       ExitFailure _ -> die "the rehearsal of the upgrade could not be done (see above). The running wiki is as it was; nothing was changed. To deploy without the rehearsal this once, run the deploy again with --no-rehearsal"
   where
     scratchUrl port = "postgres://wiki@127.0.0.1:" <> (if null port then "5433" else port) <> "/" <> rehearsalDatabase
+
+-- | Whether a wiki-server's command takes an option: its @COMMAND --help@,
+-- which lists every option of the command and runs nothing, has a line
+-- that starts with the option. A program that cannot be run, or does not
+-- know the command, takes nothing.
+helpLists :: FilePath -> String -> String -> IO Bool
+helpLists program command option = do
+  result <- try (readProcessInterleaved (setStdin nullStream (proc program [command, "--help"])))
+  pure $ case result of
+    Right (_, out) -> any (\l -> take 1 (words l) == [option]) (lines (decodeFs out))
+    Left (_ :: IOException) -> False

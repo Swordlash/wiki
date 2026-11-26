@@ -59,6 +59,31 @@ spec smoke = describe "reading offline, through the service worker" $
       report ("the worker kept " <> tshow (length keptPages) <> " pages and " <> tshow (length answers) <> " answers of the API")
       offlineFine reader
 
+    -- The question the editor asks before a draft goes to the server,
+    -- whether the page's text is plain now (wiki-api's
+    -- @pages/<page>/plain@): it goes out before the draft. The text is
+    -- taken back after, so that the page keeps no draft. (That the worker
+    -- never answers it from a copy is the next step's, offline.)
+    step' "asks the server whether a page's text is plain before a draft goes out" $ \w -> do
+      let reader = w.page
+      visit reader (address smoke (firstPage <> "edit/"))
+      editorReady reader
+      pressOn (editorText reader) "Control+End"
+      typeText (editorText reader) " Draft."
+      -- The draft is kept once the typing stops: a pause the program waits
+      -- in, then the question, then the draft.
+      waitQuiet reader
+      hasText (locator reader "#app .editor-draft-status") "Draft saved"
+      -- The question went out: the page's record of its fetches, the
+      -- browser's, a condition.
+      holdsInPage reader "performance.getEntriesByType('resource').some(e => /\\/api\\/v1\\/pages\\/[^/]+\\/plain$/.test(new URL(e.name).pathname))"
+      -- Taken back: the text as saved, and the draft discarded.
+      mapM_ (const (pressOn (editorText reader) "Backspace")) [1 .. 7 :: Int]
+      waitQuiet reader
+      typed <- markdownIn reader
+      expect (not ("Draft." `Text.isInfixOf` typed)) ("the text typed was not taken back: " <> show typed)
+      offlineFine reader
+
     -- Offline: the page reloaded is the copy kept, saying so, with the
     -- offline notice, and the program starts on it from the files kept.
     step' "shows a page read here offline from what the worker kept, saying since when, with the offline notice; a link followed from what was kept; a page never read, the offline page" $ \w -> do
@@ -68,6 +93,38 @@ spec smoke = describe "reading offline, through the service worker" $
       visit reader (address smoke firstPage)
       count copyLine `shouldReturn` 1
       hasText (locator reader "#app .offline-notice") "You are offline"
+      -- The question whether a page's text is plain now is the network's
+      -- alone (web/src/sw.js): with an answer to it put in the worker's
+      -- cache of API answers, it still fails offline, where an address the
+      -- worker answers is answered from that cache. A copy kept from before
+      -- an encryption would otherwise say yes. (Shown failing with the
+      -- question's address taken out of the worker's list of addresses it
+      -- never keeps.)
+      asked :: Text <-
+        evaluate
+          reader
+          "(async () => {\
+          \  const name = (await caches.keys()).find((n) => n.startsWith('wiki-answers '));\
+          \  const url = new URL('api/v1/pages/kept-here/plain', document.baseURI).href;\
+          \  await (await caches.open(name)).put(url, new Response(null, { status: 204 }));\
+          \  try { await fetch(url); return 'answered'; } catch { return 'failed'; }\
+          \})()"
+      asked `shouldBe` "failed"
+      -- Nor is the lookup of pages by the letters typed after [[ kept, or
+      -- answered from a copy: its address holds the letters, which are the
+      -- page's text (wiki-api's @pages/titled@). An answer put in the
+      -- worker's cache for such an address still fails offline. (Shown
+      -- failing with the lookup's address taken out of the worker's list.)
+      looked :: Text <-
+        evaluate
+          reader
+          "(async () => {\
+          \  const name = (await caches.keys()).find((n) => n.startsWith('wiki-answers '));\
+          \  const url = new URL('api/v1/pages/titled?q=kept&limit=10', document.baseURI).href;\
+          \  await (await caches.open(name)).put(url, new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }));\
+          \  try { await fetch(url); return 'answered'; } catch { return 'failed'; }\
+          \})()"
+      looked `shouldBe` "failed"
       hasText (locator reader "#app .page-body") "Saved by someone else."
       -- The time, in the reader's zone and language, once the island has
       -- written it: the browser's, a condition.

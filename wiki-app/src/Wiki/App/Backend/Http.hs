@@ -2258,9 +2258,10 @@ freshKey sid given = maybe given fst . Map.lookup sid . (\h -> h.heldKeys) <$> r
 -- | 'encryptedOr' for a write, which sends a title and a text, with the
 -- list of spaces fetched first ('freshSpaces'), so that no plain text is
 -- ever sent to the server for an encrypted space, even to be refused. A
--- space the list does not name is refused, and nothing is sent: the
--- reader's access to it may have been taken away after it was encrypted,
--- and the list then says nothing of its encryption. (A list the service
+-- space the list does not name is 'NotFound', as the server would answer,
+-- and nothing is sent: the reader's access to it may have been taken away
+-- after it was encrypted, and the list then says nothing of its
+-- encryption. (A list the service
 -- worker answered from its copy, offline, is taken as the server's: see
 -- "Known gaps" in docs/PLAN.md.)
 encryptedFetched :: (MonadIO m) => SpaceId -> HttpWiki m (Either WikiError a) -> (KeyId -> HttpWiki m (Either WikiError a)) -> HttpWiki m (Either WikiError a)
@@ -2269,7 +2270,7 @@ encryptedFetched sid plain sealed =
     Right spaces
       | Just k <- encryptionIn sid spaces -> sealed k
       | any (\s -> s.id == sid) spaces -> plain
-      | otherwise -> pure (Left (Conflict "This space is no longer open to you: nothing was sent. Open the space again."))
+      | otherwise -> pure (Left NotFound)
     Left e -> pure (Left e)
 
 -- | A plain write about a page that may carry its text or text about it: a
@@ -2283,7 +2284,8 @@ plainPageWrite pid plain =
     Right () -> plain
     Left (Stale ConversionRuns _) -> pure (Left (Conflict "This page's space is being encrypted or decrypted now: nothing was sent. Open the page again once that is done."))
     Left (Stale _ _) -> pure (Left (Conflict "This page's space has been encrypted since the page was opened: nothing was sent. Open the page again."))
-    Left NotFound -> pure (Left (Conflict "This page is no longer there, or no longer open to you: nothing was sent. Open the page again."))
+    -- 'NotFound' (a page deleted, or no longer open to the reader) and
+    -- every other refusal are the server's, as the write would have had.
     Left e -> pure (Left e)
 
 -- | 'plainNow': whether the page's text may be sent plain now. Refused

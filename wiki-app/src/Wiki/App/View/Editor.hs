@@ -401,7 +401,7 @@ import Wiki.Core.Assistant.Prompt (Span (..))
 import Wiki.Core.Attachment (Attachment (..), FileName (..), MimeType (..))
 import Wiki.Core.Diff (Diff (..), diffText)
 import Wiki.Core.Draft qualified as D
-import Wiki.Core.Id (PageId (..), UserId)
+import Wiki.Core.Id (PageId, UserId)
 import Wiki.Core.Markdown (attachmentReference)
 import Wiki.Core.Markdown.Box (BoxKind (name), boxChoices)
 import Wiki.Core.Markdown.Edit
@@ -1712,7 +1712,7 @@ component =
           Just
             [hh|
               <div class="editor-preview" aria-label="Preview">
-                {{ HH.slot "preview" () Preview.component Preview.Input {place = placeOf st.input work, page = Just work.page.id, title = work.shownTitle, body = work.shownBody, titled = True, slides = previewSlides st work} FromPreview }}
+                {{ HH.slot "preview" () Preview.component Preview.Input {place = placeOf st.input work, title = work.shownTitle, body = work.shownBody, titled = True, slides = previewSlides st work} FromPreview }}
               </div>
             |]
       | otherwise = Nothing
@@ -1957,7 +1957,6 @@ component =
                 data-live-key={{ liveKey st.input.space.id st.input.path }}
                 data-title-line={{ if templateWork st then "false" else "true" :: Text }}
                 data-live-title={{ liveTitle st }}
-                data-live-page={{ livePage st }}
                 {{ HE.handler' (EventType "wiki-input") typed }}
                 {{ HE.handler' (EventType "wiki-selection") (\ev -> Just $! Selected (selectedSpan ev)) }}
                 {{ HE.handler' (EventType "wiki-changes") (\ev -> Just $! ChangesLeft (changesLeft ev)) }}
@@ -2071,15 +2070,6 @@ component =
     liveTitle :: State -> Text
     liveTitle st = case st.loaded of
       Ready w -> w.title
-      _ -> ""
-
-    -- The id of the page whose text is edited, which CodeMirror sends with
-    -- the text to the preview in a window of its own: the window asks
-    -- about that page, not about whichever page is at the address now
-    -- ("Wiki.App.View.LivePreview"). Empty until the page is loaded.
-    livePage :: State -> Text
-    livePage st = case st.loaded of
-      Ready w -> w.page.id.text
       _ -> ""
 
     -- CodeMirror's text after a change, taken in the event's listener.
@@ -2439,32 +2429,15 @@ component =
       -- letters are typed: the backend's answer, or none when the backend
       -- could not answer, which CodeMirror then asks for again.
       -- In an encrypted space, from its readers, asked for by the space
-      -- alone: the letters typed are its text, and stay here. In a space
-      -- this editor was given as plain, the letters are sent only once the
-      -- server has said the page's text is taken plain now ('plainNow'):
-      -- another tab may have started encrypting the space since. An answer
-      -- found for the reader before a change of session is no answer
-      -- ('sessionNumber'): CodeMirror keeps none, and asks again.
+      -- alone: the letters typed are its text, and stay here.
       MentionAsked i letters -> do
-        st0 <- get
-        let space = st0.input.space
-            asked = st0.input.context.sessionNumber
-        found <- case st0.loaded of
-          _ | isJust space.encryption -> fmap (take maxPeopleFound . filter (startsWith letters)) <$> spaceReaders space.id
-          Ready w ->
-            plainNow w.page.id >>= \case
-              Left e -> pure (Left e)
-              -- The server's yes was for the reader signed in when the
-              -- question was asked: under another one (a sign-in in
-              -- another tab while the question was out), the letters are
-              -- not sent, and there is no answer.
-              Right () -> do
-                still <- gets (\st -> st.input.context.sessionNumber)
-                if still == asked then mentionCandidates letters else pure (Left NotFound)
-          _ -> pure (Left NotFound)
-        now <- gets (\st -> st.input.context.sessionNumber)
+        space <- gets (\st -> st.input.space)
+        found <-
+          if isJust space.encryption
+            then fmap (take maxPeopleFound . filter (startsWith letters)) <$> spaceReaders space.id
+            else mentionCandidates letters
         host <- gets (\st -> st.hostElement)
-        for_ host $ \h -> H.liftEffect (answerMention h i (guard (now == asked) *> rightToMaybe found))
+        for_ host $ \h -> H.liftEffect (answerMention h i (rightToMaybe found))
       -- CodeMirror asks which emoji a name may be, as a colon and letters
       -- are typed: those whose names match, from the parser's own list.
       EmojiAsked i letters -> do
@@ -3347,13 +3320,19 @@ component =
     -- Handle a save refused because of someone else's save: fetch their
     -- version and show it beside the author's text, which is saved as a
     -- draft at once. If their version cannot be fetched, the refusal is
-    -- shown as it is, with the text still there.
+    -- shown as it is, with the text still there. So it is when the page
+    -- at the editor's address now is another page (the page edited was
+    -- moved, and another took its address): its version is not the edited
+    -- page's, and nothing is merged with it, saved over it or taken from
+    -- it. The pages are told apart by their ids.
     conflicted :: Text -> After -> H.HalogenM State Action Slots ViewOutput m ()
     conflicted why after = do
       input <- gets (\st -> st.input)
+      edited <- gets (\st -> case st.loaded of Ready w -> Just w.page.id; _ -> Nothing)
       owner <- Body.ensureOwned (\st -> st.owners) (\owners st -> st {owners})
       fetchPage owner input >>= \case
         Left _ -> modify (\st -> st {problem = Just (Conflict why)})
+        Right (theirs, _) | Just theirs.id /= edited -> modify (\st -> st {problem = Just (Conflict why)})
         Right (theirs, theirAddresses) -> do
           by <- either (const Nothing) (\v -> v.author) <$> getVersion theirs.id theirs.updatedAt
           gets (\st -> st.loaded) >>= \case

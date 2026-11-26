@@ -640,10 +640,11 @@ data PagesApi form mode = PagesApi
   , plain :: mode :- Capture "page" PageId :> "plain" :> Verb 'GET 204 '[JSON] (Unkept NoContent)
   -- ^ @plainNow@: whether the server takes the page's text as plain text
   -- now, asked by the browser before it sends any (a save, a draft, an
-  -- attachment, a comment, letters typed for a lookup). 204 when the
-  -- caller may view the page and no space of its chain, where the page is
-  -- now, is encrypted or being converted. 409 'Wiki.Api.Error.Stale'
-  -- otherwise, with the draft's codes (@converting@, @space-encrypted@).
+  -- attachment, a comment; a lookup of letters typed may use it later).
+  -- 204 when the caller may view the page and no space of its chain,
+  -- where the page is now, is encrypted or being converted. 409
+  -- 'Wiki.Api.Error.Stale' otherwise, with the draft's codes
+  -- (@converting@, @space-encrypted@).
   -- A page the caller may not view is 'Wiki.Api.Error.NotFound', as for
   -- @location@. The answer is @no-store@, so that the service worker never
   -- answers it from what it kept.

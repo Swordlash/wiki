@@ -8,6 +8,7 @@ module Test.Complete (spec) where
 
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString qualified as BS
 import Data.IntMap.Strict qualified as IntMap
 import Data.IntSet qualified as IntSet
 import Data.List (lookup, nub)
@@ -34,6 +35,8 @@ import Wiki.Core.Markdown.Complete
 import Wiki.Core.Markdown.Edit (htmlTagLabel)
 import Wiki.Core.Markdown.Problems qualified as Problems
 import Wiki.Core.Markdown.Starts (linesFromStart)
+import Wiki.Core.Math (definedMacroArities)
+import Wiki.Core.Math.KatexCommands (builtinMacroArguments)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind (..))
 import Wiki.Core.PageMatch (TitleHit (..))
@@ -287,23 +290,34 @@ spec = describe "Wiki.App.Editor.Complete" $ do
         (typed, unchecked typed, cost' < 2_000_000) `shouldBe` (typed, Nothing, True)
 
   describe "commands in math" $ do
-    let macros = [MathCommand {name = "\\R", origin = "this page"}, MathCommand {name = "\\vect", origin = "Team"}, MathCommand {name = "\\vect", origin = "the wiki"}]
+    let macros = [MathCommand {name = "\\R", origin = "this page", arguments = 0}, MathCommand {name = "\\vect", origin = "Team", arguments = 1}, MathCommand {name = "\\vect", origin = "the wiki", arguments = 0}]
         mathHeld = (held Document []) {mathMacros = macros}
         mathAnswer typed rest = answered (sources mathHeld) (typed <> rest) (lineRequest typed rest)
     it "offers the macros of the page, its spaces and the wiki with where each comes from, the nearer shadowing the farther" $ do
       (map (\c -> (c.label, c.note)) . (.candidates) <$> mathAnswer "$\\ve" "$")
         `shouldBe` Just [("\\vec", Just "KaTeX"), ("\\vee", Just "KaTeX"), ("\\vect", Just "Team"), ("\\verb", Just "KaTeX"), ("\\vert", Just "KaTeX"), ("\\veebar", Just "KaTeX")]
-    it "writes a command's name as text, the cursor after it" $ do
-      let first' = do
-            Object o <- completionJson <$> mathAnswer "$\\fr" "$"
+    it "writes a command that takes no argument by its name as text, the cursor after it, and one that takes some with its braces in place of the cursor's line, each pair a place Tab goes to (#301)" $ do
+      let option typed label' = do
+            Object o <- completionJson <$> mathAnswer typed "$"
             Array options <- KeyMap.lookup "options" o
-            head (toList options)
-      first'
-        `shouldBe` Just (object ["label" .= ("\\frac" :: Text), "insert" .= ("\\frac" :: Text), "detail" .= ("KaTeX" :: Text)])
+            find (\case Object p -> KeyMap.lookup "label" p == Just (String label'); _ -> False) (toList options)
+      option "$\\alp" "\\alpha"
+        `shouldBe` Just (object ["label" .= ("\\alpha" :: Text), "insert" .= ("\\alpha" :: Text), "detail" .= ("KaTeX" :: Text)])
+      option "$\\fr" "\\frac"
+        `shouldBe` Just (object ["label" .= ("\\frac" :: Text), "insert" .= ("$\\frac{}{}$" :: Text), "select" .= [7 :: Int, 7], "line" .= ("$\\fr$" :: Text), "query" .= [1 :: Int, 4], "places" .= [[7 :: Int, 7], [9, 9]], "after" .= (10 :: Int), "detail" .= ("KaTeX" :: Text)])
+      -- One pair is a walk too: Tab goes on to after it.
+      option "$\\sq" "\\sqrt"
+        `shouldBe` Just (object ["label" .= ("\\sqrt" :: Text), "insert" .= ("$\\sqrt{}$" :: Text), "select" .= [7 :: Int, 7], "line" .= ("$\\sq$" :: Text), "query" .= [1 :: Int, 4], "places" .= [[7 :: Int, 7]], "after" .= (8 :: Int), "detail" .= ("KaTeX" :: Text)])
+      -- The nearer macro's arguments: Team's \vect takes one.
+      option "$\\ve" "\\vect"
+        `shouldBe` Just (object ["label" .= ("\\vect" :: Text), "insert" .= ("$\\vect{}$" :: Text), "select" .= [7 :: Int, 7], "line" .= ("$\\ve$" :: Text), "query" .= [1 :: Int, 4], "places" .= [[7 :: Int, 7]], "after" .= (8 :: Int), "detail" .= ("Team" :: Text)])
     it "offers the macros of the page's block of macros, and not a definition in a listing or a later formula" $ do
       let page = T.intercalate "\n" ["# Title", "", "```math", "\\newcommand{\\R}{\\mathbb{R}}", "\\DeclareMathOperator{\\Tr}{Tr}", "```", "", "Text $\\def\\later{x}$.", "", "```tex", "\\newcommand{\\listed}{x}", "```"]
       map (.name) (pageMacroCommands page) `shouldBe` ["\\R", "\\Tr"]
-      map (\c -> (c.name, c.origin)) (macroCommands "Team" "\\newcommand{\\vect}[1]{\\vec{#1}}") `shouldBe` [("\\vect", "Team")]
+      map (\c -> (c.name, c.origin, c.arguments)) (macroCommands "Team" "\\newcommand{\\vect}[1]{\\vec{#1}}\n\\let\\eps=\\varepsilon") `shouldBe` [("\\vect", "Team", 1), ("\\eps", "Team", 0)]
+    it "reads the wiki's built-in macros with the arguments KaTeX gives them, as KaTeX read web/src/katex-macros.tex when Wiki.Core.Math.KatexCommands was generated" $ do
+      tex <- decodeUtf8 <$> BS.readFile "../web/src/katex-macros.tex"
+      definedMacroArities tex `shouldBe` [(name, Just n) | (name, n) <- builtinMacroArguments]
     it "reads the macros kept with the editor, not the page, at each answer" $ do
       -- The editor keeps the macros it offers, worked out when their
       -- sources change. An answer on the long deck with them allocates what
@@ -328,7 +342,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
         (typed, with' < without + 2_000_000) `shouldBe` (typed, True)
     it "answers a backslash's first letter within a bound of allocation: KaTeX's thousand commands are ordered once, not at each answer" $ do
       _ <- evaluate (length katexOrdered)
-      for_ ["$\\f", "$\\fr", "$\\x"] $ \typed -> do
+      for_ ["$\\f", "$\\fr", "$\\x", "$\\al"] $ \typed -> do
         typed' <- evaluate (T.copy typed)
         cost <- allocated (let a = mathAnswer typed' "$" in a == a)
         (typed, cost < mathBound) `shouldBe` (typed, True)
@@ -675,12 +689,15 @@ linkBound :: Int64
 linkBound = 20_000_000
 
 -- | The allocation an answer after a backslash in math stays within:
--- 0.81 to 0.85 MB natively for the letters measured, the commands matched
--- in their order. Sorting KaTeX's commands again at each answer allocates
--- 1.14 to 1.18 MB, over the bound: the sort is lazy, and only the part the
--- list takes is paid for, so the margin is narrow on purpose.
+-- 0.82 MB natively for letters whose commands take no argument (@\\al@),
+-- 1.07 to 1.20 MB where some listed take arguments (@\\f@, @\\fr@,
+-- @\\x@): the braces of each are written, and the formula with them is
+-- parsed again once for each number of arguments, about 0.12 MB each
+-- (#301). Sorting KaTeX's commands again at each answer allocates 4.3 to
+-- 4.4 MB (measured on #301's build, 2026-11-26; 1.14 to 1.18 MB before,
+-- as measured for #299), over the bound either way.
 mathBound :: Int64
-mathBound = 1_000_000
+mathBound = 1_500_000
 
 -- | KaTeX's commands in the list's order, forced before an answer is
 -- counted: the program orders them once.

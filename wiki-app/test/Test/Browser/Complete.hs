@@ -447,12 +447,14 @@ spec m = readsOnce Idle $ do
     -- The walk is over in the row: Tab is the form's.
     reached "Tab" `shouldReturn` "Tab"
 
-  -- Commands in math (WP5.124 (e)): where the list opens and what it
-  -- offers are tested natively ("Test.Markdown.CompleteMath"); here, the
-  -- list in the long guide, a space's macro in it with where it comes
-  -- from, the command's name written with the cursor after it, and a line
-  -- break's two backslashes left to Enter.
-  it "completes \\fr to \\frac in a formula in the middle of the long guide, the cursor after it, as a step of the undo, and lists the space's macros" $ runPage $ do
+  -- Commands in math (WP5.124 (e)): where the list opens, what it offers
+  -- and what an entry writes are tested natively
+  -- ("Test.Markdown.CompleteMath"); here, the list in the long guide, the
+  -- command's braces written with the cursor in the first pair, Tab
+  -- through them (#301), a space's macro listed in a pair with where it
+  -- comes from, each write a step of the undo, and a line break's two
+  -- backslashes left to Enter.
+  it "completes \\fr to \\frac with its braces in a formula in the middle of the long guide, Tab through them, as a step of the undo, and lists the space's macros in them" $ runPage $ do
     ui <- editingAs "user-admin" guidePage
     text <- editorText ui
     guide <- markdown ui >>= \t -> t <$ (t `shouldSatisfy` ((> 10_000) . T.length))
@@ -465,19 +467,34 @@ spec m = readsOnce Idle $ do
     (take 1 <$> labels ui) `shouldReturn` ["\\frac"]
     untilListTakesKeys ui
     press "Enter"
-    markdown ui `shouldReturn` T.take at guide <> "$\\frac" <> T.drop at guide
-    (snd <$> editorSelection ui) `shouldReturn` units + T.length "$\\frac"
-    -- In a brace typed after it, the Docs space's macro, with the space's
-    -- name beside it.
-    typeText text "{\\Ho"
+    markdown ui `shouldReturn` T.take at guide <> "$\\frac{}{}" <> T.drop at guide
+    (snd <$> editorSelection ui) `shouldReturn` units + T.length "$\\frac{"
+    -- In the first pair, the Docs space's macro, with the space's name
+    -- beside it; chosen, it is written by its name (it takes no argument),
+    -- and the walk goes on.
+    typeText text "\\Ho"
     _ <- completionAnswered ui
     (findAll ui ".cm-tooltip-autocomplete .cm-completionDetail" >>= traverse textContent) `shouldReturn` ["Docs"]
     labels ui `shouldReturn` ["\\Hom"]
-    -- The command written is a step of the undo of its own: one undo takes
-    -- back "{\\Ho", the next the command, leaving "$\\fr" as typed.
-    press "Escape"
+    untilListTakesKeys ui
+    press "Enter"
+    markdown ui `shouldReturn` T.take at guide <> "$\\frac{\\Hom}{}" <> T.drop at guide
+    -- Tab to the second pair, and on to after the braces.
+    press "Tab"
+    (snd <$> editorSelection ui) `shouldReturn` units + T.length "$\\frac{\\Hom}{"
+    typeText text "2"
+    press "Tab"
+    markdown ui `shouldReturn` T.take at guide <> "$\\frac{\\Hom}{2}" <> T.drop at guide
+    (snd <$> editorSelection ui) `shouldReturn` units + T.length "$\\frac{\\Hom}{2}"
+    -- Each write is a step of the undo of its own: the "2", the macro
+    -- chosen, the letters typed for it, then the command with its braces,
+    -- leaving "$\\fr" as typed.
     press "Control+z"
-    markdown ui `shouldReturn` T.take at guide <> "$\\frac" <> T.drop at guide
+    markdown ui `shouldReturn` T.take at guide <> "$\\frac{\\Hom}{}" <> T.drop at guide
+    press "Control+z"
+    markdown ui `shouldReturn` T.take at guide <> "$\\frac{\\Ho}{}" <> T.drop at guide
+    press "Control+z"
+    markdown ui `shouldReturn` T.take at guide <> "$\\frac{}{}" <> T.drop at guide
     press "Control+z"
     markdown ui `shouldReturn` T.take at guide <> "$\\fr" <> T.drop at guide
 

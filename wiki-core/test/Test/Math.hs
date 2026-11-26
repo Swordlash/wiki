@@ -110,6 +110,25 @@ spec = describe "Wiki.Core.Math" $ do
         )
         `shouldBe` ["\\Prob", "\\E", "\\tr", "\\abs", "\\pair", "\\eps", "\\opt"]
 
+    it "says how many arguments in braces a macro takes, where its definition gives that for certain as KaTeX reads it (#301)" $ do
+      definedMacroArities
+        ( "\\newcommand{\\Prob}{\\operatorname{P}}\n\\renewcommand\\E[1]{\\mathbb{E}[#1]}\n\\newcommand{\\abs} [ 1 ] {\\left|#1\\right|}"
+            <> "\n\\def\\pair#1#2{(#1, #2)}\n\\gdef\\one#1{#1}\n\\def\\zero{0}"
+        )
+        `shouldBe` [("\\Prob", Just 0), ("\\E", Just 1), ("\\abs", Just 1), ("\\pair", Just 2), ("\\one", Just 1), ("\\zero", Just 0)]
+      -- Not for certain: an optional argument (KaTeX has none), a star
+      -- (KaTeX reads none), \providecommand (nothing where the macro
+      -- exists), \DeclareMathOperator (not KaTeX's), a spaced parameter,
+      -- \edef, \let, a count that is not a number, and a macro defined
+      -- twice (KaTeX keeps the last, or refuses it). A delimited parameter
+      -- (\dot) is not read as a definition at all.
+      definedMacroArities
+        ( "\\newcommand{\\opt}[2][x]{#1#2}\n\\newcommand*{\\star}[1]{#1}\n\\providecommand{\\maybe}[1]{#1}\n\\DeclareMathOperator{\\tr}{tr}"
+            <> "\n\\def\\dot#1.{#1}\n\\def\\spaced#1 #2{#1}\n\\edef\\ex#1{#1}\n\\let\\eps=\\varepsilon\n\\newcommand{\\odd}[x]{#1}"
+            <> "\n\\newcommand{\\twice}[1]{#1}\n\\renewcommand{\\twice}[2]{#1#2}"
+        )
+        `shouldBe` [("\\opt", Nothing), ("\\star", Nothing), ("\\maybe", Nothing), ("\\tr", Nothing), ("\\spaced", Nothing), ("\\ex", Nothing), ("\\eps", Nothing), ("\\odd", Nothing), ("\\twice", Nothing)]
+
     it "finds the macros a new block takes out" $
       removedMacros "\\newcommand{\\a}{1}\n\\newcommand{\\b}{2}" "\\newcommand{\\b}{3}" `shouldBe` ["\\a"]
 

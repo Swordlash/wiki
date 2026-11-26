@@ -7,15 +7,17 @@
 module Test.Markdown.CompleteMath (spec) where
 
 import Data.Char (isAsciiLower, isAsciiUpper)
+import Data.List (lookup)
 import Data.Text qualified as T
 import Protolude
 import Test.Cases (longTexts)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.Markdown.CompleteStarts (alikeEverywhere, caseAt)
-import Test.QuickCheck (Arbitrary (..), Gen, Property, counterexample, elements, forAll, (===))
+import Test.QuickCheck (Arbitrary (..), Gen, Property, classify, conjoin, counterexample, elements, forAll, property, (.&&.), (===))
 import Wiki.Core.Markdown.Ast (Block (..), Inline (..), ListItem (..), parseMarkdown)
 import Wiki.Core.Markdown.Complete
+import Wiki.Core.Math.KatexCommands (katexArguments, katexCommands)
 
 spec :: Spec
 spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
@@ -58,15 +60,80 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
       (map (.label) <$> listAt [] "$$\n\\en‸") `shouldSatisfy` maybe False (elem "\\end")
 
   describe "what choosing writes" $ do
-    it "writes the command's name alone, the cursor after it, as text" $ do
-      written "$\\fr‸$" "\\frac" `shouldBe` Just ("\\frac‸", AsText)
+    it "writes a command that takes no argument by its name alone, the cursor after it, as text" $ do
       written "$\\alp‸$" "\\alpha" `shouldBe` Just ("\\alpha‸", AsText)
       written "> $$\n> \\beg‸" "\\begin" `shouldBe` Just ("\\begin‸", AsText)
       written "$\\left( x \\ri‸" "\\right" `shouldBe` Just ("\\right‸", AsText)
+    it "writes a command that takes arguments with a pair of braces for each, in place of the cursor's line: the cursor in the first pair, Tab to the next, and on to after the last (#301)" $ do
+      walkAt [] "$\\fr‸$" "\\frac" `shouldBe` Just (["$\\frac{‸}{}$", "$\\frac{}{‸}$", "$\\frac{}{}‸$"], LineAsText "$\\fr$" (1, 4))
+      fst <$> walkAt [] "Text $a + \\sq‸$ b" "\\sqrt" `shouldBe` Just ["Text $a + \\sqrt{‸}$ b", "Text $a + \\sqrt{}‸$ b"]
+      fst <$> walkAt [] "$$\n\\tex‸" "\\text" `shouldBe` Just ["\\text{‸}", "\\text{}‸"]
+      fst <$> walkAt [] "- $\\frac{\\overl‸}{2}$" "\\overline" `shouldBe` Just ["- $\\frac{\\overline{‸}}{2}$", "- $\\frac{\\overline{}‸}{2}$"]
+      -- Optional arguments, in brackets, are not written.
+      fst <$> walkAt [] "$a \\xrightarr‸$" "\\xrightarrow" `shouldBe` Just ["$a \\xrightarrow{‸}$", "$a \\xrightarrow{}‸$"]
+    it "writes the braces where nothing after the cursor can be an argument: the end of the math, of a group, of a cell or a row, a superscript, the end of a pair of delimiters"
+      $ for_
+        [ "$\\frac{\\fr‸ }{}$"
+        , "$\\fr‸^2$"
+        , "$a = \\fr‸_1$"
+        , "$\\frac{\\fr‸}{}$"
+        , "$\\sqrt[\\fr‸]{x}$"
+        , "$\\begin{matrix} \\fr‸ & b \\end{matrix}$"
+        , "$\\fr‸ \\\\ b$"
+        , "$\\left( \\fr‸ \\right)$"
+        , "$\\fr‸"
+        , "$$\n\\fr‸"
+        , "$$\n\\fr‸\n$$"
+        , "$$\n\\fr‸\n\n$$"
+        , "$$\n\\begin{aligned}\n\\fr‸\n\\end{aligned}\n$$"
+        , "```math\n\\fr‸\n```"
+        ]
+      $ \marked -> (marked, snd <$> walkAt [] marked "\\frac") `shouldSatisfy` (lineAsText . snd)
+    it "writes the name alone where what follows the cursor may be an argument the reader meant: braces, a bracket, a digit, a letter, a command, any other character, and on the next line in display math" $ do
+      for_
+        [ "$\\fr‸{a}{b}$"
+        , "$\\fr‸ {a}{b}$"
+        , "$\\fr‸12$"
+        , "$\\fr‸ x$"
+        , "$\\fr‸\\alpha\\beta$"
+        , "$\\fr‸\\rightarrow$"
+        , "$\\fr‸+1$"
+        , "$\\fr‸ = 1$"
+        , "$$\n\\fr‸\n{a}{b}\n$$"
+        , "> $$\n> \\fr‸\n> $$"
+        ]
+        $ \marked -> (marked, walkAt [] marked "\\frac") `shouldBe` (marked, Just (["\\frac‸"], AsText))
+      (snd <$> walkAt [] "$\\sq‸[3]{x}$" "\\sqrt") `shouldBe` Just AsText
+    it "writes the name alone for a command whose arguments KaTeX's tables do not give for certain: a colour, a delimiter's size, a macro of KaTeX's that is a function" $
+      for_ [("$\\colo‸$", "\\color"), ("$\\textcolo‸$", "\\textcolor"), ("$\\bi‸$", "\\big"), ("$\\lef‸$", "\\left"), ("$\\operatorn‸$", "\\operatorname"), ("$\\p‸$", "\\pu")] $ \(marked, label) ->
+        (label, snd <$> walkAt [] marked label) `shouldBe` (label, Just AsText)
+    it "writes a macro's braces as its definition gives them, and the name alone for a macro of a nearer definition that gives none for certain, KaTeX's command or a farther macro of its name shadowed" $ do
+      fst <$> walkAt [cmdTaking "\\abs" "the wiki" 1] "$\\ab‸$" "\\abs" `shouldBe` Just ["$\\abs{‸}$", "$\\abs{}‸$"]
+      walkAt [cmd "\\frac" "this page"] "$\\fr‸$" "\\frac" `shouldBe` Just (["\\frac‸"], AsText)
+      walkAt [cmd "\\vect" "this page", cmdTaking "\\vect" "the wiki" 1] "$\\ve‸$" "\\vect" `shouldBe` Just (["\\vect‸"], AsText)
+    it "writes the name alone where the parser would read the math otherwise with the braces written" $ do
+      let at = placeAt "$\\fr‸$"
+          -- A parser that reads no math in a probe that holds a brace,
+          -- where the parser itself reads the same math.
+          braceless probe = readLine at.above (if any ("{" `T.isInfixOf`) probe.written then Probe {from = probe.from, written = ["No math here."]} else probe)
+          writing readOf = (.writing) <$> (find ((== "\\frac") . (.label)) . (.candidates) =<< complete [mathSource (mathCommands [])] readOf at)
+      writing braceless `shouldBe` Just AsText
+      writing (readLine at.above) `shouldBe` Just (LineAsText "$\\fr$" (1, 4))
+    modifyMaxSuccess (`div` 2) . longTexts . prop "writes braces only where the whole text, written and its places filled, reads as it did with the command alone, the braces in the math, over long texts" $
+      forAll genPlace bracesReadBack
+    prop "writes as many pairs of braces as KaTeX's tables give a command, and its name alone for every other" $
+      forAll (elements [c | c <- katexCommands, T.length c > 2]) $ \name ->
+        case find ((== name) . (.label)) =<< listAt [] ("$" <> T.dropEnd 1 name <> "‸$") of
+          Nothing -> classify True "not listed" True
+          Just c -> counterexample (toS name) (pairsOf c === fromMaybe 0 (lookup name katexArguments))
     it "chooses with Enter only once a letter follows the backslash" $
       (.enter) <$> completeAt [] "$\\fr‸$" `shouldBe` Just (EnterChoosesAfter 2)
   where
-    cmd name origin = MathCommand {name, origin}
+    cmd name origin = MathCommand {name, origin, arguments = 0}
+    cmdTaking name origin arguments = MathCommand {name, origin, arguments}
+    lineAsText = \case
+      Just (LineAsText _ _) -> True
+      _ -> False
 
 -- | The place a marked text gives: the lines above the cursor's, the
 -- cursor's before the mark and after it, the lines below.
@@ -95,6 +162,74 @@ written marked label = do
   let (text, ranges) = skeletonText c.skeleton
   (s, _) <- snd <$> head ranges
   Just (T.take s text <> "‸" <> T.drop s text, c.writing)
+
+-- | What choosing an entry writes, with the cursor at each place in the
+-- order Tab goes through them (the last where the writing goes on), and
+-- how it is written: a command's name as text, or, with its braces, in
+-- place of the cursor's line.
+walkAt :: [MathCommand] -> Text -> Text -> Maybe ([Text], Writes)
+walkAt macros marked label' = do
+  c <- find ((== label') . (.label)) =<< listAt macros marked
+  let (text, ranges) = skeletonText c.skeleton
+  Just ([T.take s text <> "‸" <> T.drop s text | (_, (s, _)) <- ranges], c.writing)
+
+-- | How many pairs of braces an entry writes: its places to fill but the
+-- last, where the writing goes on.
+pairsOf :: Candidate -> Int
+pairsOf c = case c.writing of
+  LineAsText _ _ -> length [() | Field n _ <- c.skeleton, n /= 0]
+  _ -> 0
+
+-- | Whether every entry with braces at a place writes what it should, and
+-- the whole text, written with a word in each pair, reads as the text with
+-- a word in place of the command did: the same blocks, the braces inside
+-- the same math. Asked where the text read that word in math (a formula
+-- closed, display math): a formula still being typed is not math yet, and
+-- its check is the probe's ('Wiki.Core.Markdown.Complete.complete').
+bracesReadBack :: (Text, Text) -> Property
+bracesReadBack (upTo, rest) =
+  counterexample (toS (upTo <> "‸" <> rest))
+    $ classify inMath "in math as the text is"
+    $ conjoin
+      [ counterexample (toS c.label) $
+          fst (skeletonText c.skeleton) === lineBefore <> c.label <> T.concat (replicate n "{}") <> T.takeWhile (/= '\n') rest
+            .&&. (if inMath then shownReading (upToCommand <> filled c.label n <> rest) (filled c.label n) === shownReading baseline "" else property True)
+      | c <- fromMaybe [] (listAt [] (upTo <> "‸" <> rest))
+      , let n = pairsOf c
+      , n > 0
+      ]
+  where
+    upToCommand = T.dropWhileEnd (\c -> isAsciiLower c || isAsciiUpper c) upTo & T.dropEnd 1
+    lineBefore = T.takeWhileEnd (/= '\n') upToCommand
+    word = "Zqxjvword"
+    fill = "Zqxjvfill"
+    baseline = upToCommand <> "\\" <> word <> rest
+    filled name n = name <> T.concat (replicate n ("{" <> fill <> "}"))
+    -- The parser's reading of a text as shown, with what was written in
+    -- place of the command shown as the word.
+    shownReading text written' = case parseMarkdown text of
+      Right blocks -> (if T.null written' then identity else T.replace (shown written') (shown ("\\" <> word))) (show blocks)
+      Left _ -> "no reading"
+    shown t = T.dropEnd 1 (T.drop 1 (show t))
+    inMath = case parseMarkdown baseline of
+      Right blocks -> any (holdsInMath word) blocks
+      Left _ -> False
+
+-- | Whether a block holds a word in math: a formula's or display math's.
+holdsInMath :: Text -> Block -> Bool
+holdsInMath w = \case
+  MathBlock tex -> w `T.isInfixOf` tex
+  Para xs -> any inline xs
+  Plain xs -> any inline xs
+  BlockQuote bs -> any (holdsInMath w) bs
+  List _ items -> or [any (holdsInMath w) bs | ListItem _ bs <- items]
+  _ -> False
+  where
+    inline = \case
+      Math _ tex -> w `T.isInfixOf` tex
+      Emph xs -> any inline xs
+      Strong xs -> any inline xs
+      _ -> False
 
 -- | A place for a backslash and letters: what comes before it in its block
 -- (math opened or not, in containers or not), and what closes it, if

@@ -240,6 +240,29 @@ spec = describe "Wiki.App.Editor.Complete" $ do
         let k = paragraphAt page percent
         costs <- for ["/t", "[[!", "[[Gu", "$\\f", "Text \\f"] (\typed -> (typed,) <$> firstAnswer page (k, typed))
         (name :: Text, [(t, c) | (t, c) <- costs, c > bound]) `shouldBe` (name, [])
+    -- #301: a line like a definition in a code listing near the top, a
+    -- TypeScript index signature in a fence, took every start below it:
+    -- [[! and [[ read the whole text above (140 MB to 1.6 GB), and / and
+    -- a backslash opened nothing. Below it now, the text is read from the
+    -- paragraph above the cursor's line, and each answer stays within the
+    -- bound near the guide's end: measured natively on 2026-11-25,
+    -- unoptimised, 5.7, 3.6, 21 and 13 MB. A [[ at that paragraph costs
+    -- 19 MB without the fence too, more than the bound at the guide's
+    -- middle above.
+    it "reads the text from a start in the middle of the Markdown guide below a TypeScript fence near its top" $ do
+      let ls = T.splitOn "\n" markdownReference
+          page = T.intercalate "\n" (take 2 ls <> ["```ts", "interface Prices {", "  [key: string]: number", "}", "```", ""] <> drop 2 ls)
+          k = paragraphAt page 50
+          lines' = T.splitOn "\n" page
+          opens typed =
+            let now = T.intercalate "\n" (take k lines' <> [typed, ""] <> drop k lines')
+             in isJust (fst (answer (sources onLong) (earlierOf page) noReadings now (Request {line = k + 1, before = typed, after = "", nodes = ["Paragraph", "Document"]})))
+      costs <- for ["/t", "[[!", "[[Gu", "$\\f"] $ \typed -> do
+        cost <- firstAnswer page (k, typed)
+        pure (typed, maybe False ((< 20) . length) (linesFromStart (earlierOf page) (take k lines')), cost < 50_000_000)
+      costs `shouldBe` [(t, True, True) | t <- ["/t", "[[!", "[[Gu", "$\\f"]]
+      -- The / menu and the commands of math open there.
+      map opens ["/t", "$\\f"] `shouldBe` [True, True]
     it "where no start serves, reads the whole text above for a marker or a link, and opens nothing for a / or a backslash without reading it" $ do
       -- Before the first check (none kept) and more than the limit above:
       -- a marker and a link to a page are answered as from the whole

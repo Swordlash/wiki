@@ -2824,9 +2824,24 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   the integration takes the library's snippet extension and its
   clear effect from a transaction it makes, which its documentation
   does not promise (if that fails, there is no walk and nothing else
-  changes); any undo ends a walk. Left of #301: braces and
-  `\begin…\end` for commands in math, pages of other spaces after
-  `[[`, the slow path on long pages with a `[…]:` line, splitting an
+  changes); any undo ends a walk. **The third cut merged (#387):** a line like
+  a link definition inside a fence or an HTML block no longer makes
+  the starts below it unusable; the code lines come from the shapes
+  of the parse the check already makes, not from a scan for fences;
+  display math made from a paragraph (its range is the whole
+  paragraph's and covers a footnote's definition after it) and
+  indented code stay suspects, as does such a line in prose. **The
+  fourth cut, pages of other spaces after `[[`, is designed (the
+  owner, 2026-11-25: "rób po kolei") and being built in two pull
+  requests:** a lookup by title on the server (`GET
+  api/v1/pages/titled`, the reader's own view decided in the query,
+  never an encrypted chain; the existing search is unfit: whole words
+  only on PostgreSQL, a scan of every body on SQLite, and it opens
+  encrypted spaces in the browser), then a second group "In other
+  spaces" in the editor, at most 10 after 2 letters and a pause,
+  written as `[[/s/<space>/p/<page>/|<title>]]`, by a machine with
+  one lookup out; no ask from an encrypted page. Left of #301 after
+  it: braces and `\begin…\end` for commands in math, splitting an
   item on its later lines. **Held requests (#385, after #377):** the
   browser examples that hold a request start over a backend with no
   time limit, through one helper (`holdingEnv`, `startHolding` in

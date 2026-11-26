@@ -15,8 +15,40 @@
 -- that ask answers ('wanted').
 --
 -- A value is kept in two asks: the plugin's check, and, when the check
--- passes, the keep. The value typed is in the ask, so that what is kept is
--- what was checked.
+-- passes, the keep. The check answers the value to keep, as the plugin
+-- makes it from the text typed (the assistant trims the spaces around a
+-- key), and the keep's ask carries that value: what is kept is what was
+-- checked, not the text typed.
+--
+-- = The end of a keep
+--
+-- A plugin can show that a value is being checked (the assistant turns
+-- off its other controls meanwhile). So the field tells the plugin when
+-- the keep of a typed value is over ('KeepEnded'), whichever way it ends,
+-- in the step that takes the last answer of it:
+--
+-- * the check refused the value (its problem shown);
+-- * the check passed under a binding the field no longer has, and nothing
+--   is kept ('reboundProblem' shown);
+-- * the check threw (its problem shown);
+-- * the keep failed: the vault's write was refused, or the vault was
+--   locked meanwhile (its problem shown);
+-- * the keep was done ('KeptIt' first, then 'KeepEnded').
+--
+-- A field that closes with its check or keep out tells nothing: it closes
+-- with the plugin's settings, or with its reader, and the plugin's view
+-- drops what it showed of the check for another reader then.
+--
+-- = What the check was for
+--
+-- A plugin's check can depend on more than the value: the assistant tries
+-- an API key against one service, at one address. The plugin names that
+-- in its input to the field ('binding'), and the field takes a new input
+-- in the step that hears of it ('Rebound'). The check's ask carries the
+-- binding it was asked under, and the step that takes its answer keeps the
+-- value only if the binding is still that one. Otherwise nothing is kept,
+-- and the field says why: a key checked against one service is never kept
+-- for another.
 --
 -- = What is shown
 --
@@ -56,9 +88,11 @@ module Wiki.App.View.SecretField.Machine
   , Job (..)
   , Told (..)
   , initial
+  , initialBound
   , step
   , busy
   , needsOwner
+  , reboundProblem
   )
 where
 
@@ -81,10 +115,12 @@ data Shown
 data Job
   = -- | Whether the secret is set.
     Read
-  | -- | The plugin's check of a value.
-    Check Text
-  | -- | Keep a value that passed the check.
-    Put Text
+  | -- | The plugin's check of a value, under the binding the field had
+    -- when it was asked.
+    Check Text Text
+  | -- | Keep a value that passed the check: the text typed, and the value
+    -- the check answered, which is kept.
+    Put Text Text
   | -- | Forget the secret's value.
     Remove
   | -- | Unlock the vault with a passkey.
@@ -100,8 +136,8 @@ instance Show Job where
       named :: [Char]
       named = case job of
         Read -> "Read"
-        Check _ -> "Check <value>"
-        Put _ -> "Put <value>"
+        Check _ binding -> "Check <value> " <> show binding
+        Put _ _ -> "Put <value>"
         Remove -> "Remove"
         UnlockByPasskey -> "UnlockByPasskey"
         UnlockByPassword _ -> "UnlockByPassword <password>"
@@ -110,11 +146,13 @@ instance Show Job where
 -- every job but the plugin's check.
 needsOwner :: Job -> Bool
 needsOwner = \case
-  Check _ -> False
+  Check _ _ -> False
   _ -> True
 
--- | 'Told' is what the field tells the plugin.
-data Told = KeptIt | RemovedIt | UnlockedIt
+-- | 'Told' is what the field tells the plugin: a value kept, the value
+-- forgotten, the vault unlocked, or the keep of a typed value over, kept
+-- or not ("The end of a keep" in the module's header).
+data Told = KeptIt | RemovedIt | UnlockedIt | KeepEnded
   deriving stock (Eq, Show)
 
 -- | 'Model' is the field's state.
@@ -132,6 +170,9 @@ data Model = Model
   -- ^ The next ask's number.
   , problem :: Maybe Text
   -- ^ Why the last ask failed, until the next one is made.
+  , binding :: Text
+  -- ^ What the plugin's check is for, as the plugin's input last said
+  -- ('Wiki.App.Plugin.FieldInput').
   }
   deriving stock (Eq, Show)
 
@@ -151,6 +192,9 @@ data Event
     PasskeyPressed
   | -- | "Unlock with your password".
     PasswordPressed
+  | -- | The plugin gave the field a new input, which binds its check to
+    -- this ('Wiki.App.Plugin.FieldInput').
+    Rebound Text
   | -- | What the secrets read as changed: a key kept or let go in this
     -- browser (the vault unlocked or locked), or a secret of a plugin kept
     -- or forgotten, by this field, another, or another tab.
@@ -161,9 +205,10 @@ data Event
     Finished
   deriving stock (Eq, Show)
 
--- | 'Answer' is what an ask answers: a read, with what it found; or
--- another job, done or not.
-data Answer = ReadAs Shown | Done (Either Text ())
+-- | 'Answer' is what an ask answers: a read, with what it found; the
+-- plugin's check, with the value to keep or why not; or another job, done
+-- or not.
+data Answer = ReadAs Shown | Checked (Either Text Text) | Done (Either Text ())
   deriving stock (Eq, Show)
 
 -- | 'Effect' is what a step asks the component to do.
@@ -179,7 +224,12 @@ data Effect
 
 -- | The field before anything is read.
 initial :: Model
-initial = Model {shown = Loading, typed = "", password = "", doing = Nothing, wanted = False, next = 0, problem = Nothing}
+initial = Model {shown = Loading, typed = "", password = "", doing = Nothing, wanted = False, next = 0, problem = Nothing, binding = ""}
+
+-- | The field before anything is read, for a plugin that binds its check
+-- to this ('Rebound').
+initialBound :: Text -> Model
+initialBound binding = initial {binding}
 
 -- | Whether an ask is out.
 busy :: Model -> Bool
@@ -190,10 +240,11 @@ step :: Event -> Model -> (Model, [Effect])
 step event m = case event of
   Opened -> reading m
   Changed -> reading m
+  Rebound binding -> (m {binding}, [])
   Typed t -> (m {typed = t}, [])
   TypedPassword t -> (m {password = t}, [])
   KeepPressed
-    | Here _ <- m.shown, not (busy m), not (T.null (T.strip m.typed)) -> asking (Check m.typed) m
+    | Here _ <- m.shown, not (busy m), not (T.null (T.strip m.typed)) -> asking (Check m.typed m.binding) m
     | otherwise -> (m, [])
   ForgetPressed
     | Here True <- m.shown, not (busy m) -> asking Remove m
@@ -208,7 +259,9 @@ step event m = case event of
     Just (out, job)
       | out == n ->
           let (m', effects) = answered job answer m {doing = Nothing}
-           in landed (Release n : effects) m'
+              -- The last answer of a keep: no keep asked after its check.
+              ended = [Tell KeepEnded | keeping job, not (busy m')]
+           in landed (Release n : effects <> ended) m'
     _ -> (m, [Release n])
   Finished -> (m, [Release n | Just (n, _) <- [m.doing]])
 
@@ -218,18 +271,38 @@ answered job answer m = case (job, answer) of
   (Read, ReadAs s) -> (m {shown = s}, [])
   -- A read that threw: what it found is unknown.
   (Read, Done r) -> (m {shown = either Unreadable (const m.shown) r}, [])
-  -- The check passed: the keep follows, of the value checked.
-  (Check value, Done (Right ())) -> asking (Put value) m
-  (Put value, Done (Right ())) -> (m {shown = Here True, typed = if m.typed == value then "" else m.typed}, [Tell KeptIt])
+  -- The check passed: the keep follows, of the value the check answered,
+  -- if the check was for what the plugin binds it to now.
+  (Check typed binding, Checked (Right value))
+    | binding == m.binding -> asking (Put typed value) m
+    | otherwise -> (m {problem = Just reboundProblem}, [])
+  (Check _ _, Checked (Left why)) -> (m {problem = Just why}, [])
+  (Put typed _, Done (Right ())) -> (m {shown = Here True, typed = if m.typed == typed then "" else m.typed}, [Tell KeptIt])
   (Remove, Done (Right ())) -> (m {shown = Here False}, [Tell RemovedIt])
   (UnlockByPasskey, Done (Right ())) -> unlocked m
   (UnlockByPassword _, Done (Right ())) -> unlocked m
   (_, Done (Left why)) -> (m {problem = Just why}, [])
-  -- A read answers with what it found, every other job with 'Done'.
+  -- A read answers with what it found, a check with 'Checked', every other
+  -- job with 'Done'.
   (_, ReadAs _) -> (m, [])
+  (_, Checked _) -> (m, [])
+  (Check _ _, Done (Right ())) -> (m, [])
   where
     -- The vault is open: the plugin is told, and the secret read again.
     unlocked x = (x {password = "", wanted = True}, [Tell UnlockedIt])
+
+-- | Whether a job is a part of the keep of a typed value: its check, or
+-- the keep that follows it.
+keeping :: Job -> Bool
+keeping = \case
+  Check _ _ -> True
+  Put _ _ -> True
+  _ -> False
+
+-- | What the field says when what the check was for changed while it was
+-- out.
+reboundProblem :: Text
+reboundProblem = "The settings changed while the value was checked, so it was not kept. Keep it again to check it for the settings as they are now."
 
 -- | The state once an ask answered: the read wanted meanwhile is asked,
 -- unless the answer made another ask.

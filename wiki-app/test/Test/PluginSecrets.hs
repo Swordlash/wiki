@@ -7,7 +7,8 @@
 -- read; an item moved to another plugin's name is not opened, nor written
 -- over; two devices that change the vault at once both keep their change;
 -- two tabs of one browser that change what it keeps at once both keep
--- their change, one after the other.
+-- their change, one after the other; and a read of the vault in one tab
+-- never keeps a copy of the plugin's item older than another tab's change.
 module Test.PluginSecrets (spec, storageSpec) where
 
 import Control.Concurrent.STM (isEmptyTMVar, newEmptyTMVarIO, putTMVar, takeTMVar)
@@ -27,6 +28,7 @@ import Wiki.Api.Plugins (PluginId (..))
 import Wiki.App.Plugin (Manifest (..), SecretName (..), SecretSpec (..), Unavailable (..), builtin)
 import Wiki.App.Plugin.Host.Secrets
 import Wiki.App.Plugin.Registry (manifests)
+import Wiki.App.Vault (vaultSlot)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Vault (Item (..), ItemName (..), Vault (..), itemOf, withItem)
 import Wiki.Core.Vault.Plugin (decodeSecrets, encodeSecrets, maxPluginIdForSecrets, pluginItem, pluginSealingData, secretNameOk)
@@ -37,6 +39,7 @@ spec = describe "Wiki.App.Plugin.Host.Secrets" $ do
   isolation
   twoDevices
   twoTabs
+  twoTabsVault
   inThisBrowser
   registry
 
@@ -122,9 +125,9 @@ inTheVault = describe "in the user's vault" $ do
     itemSecrets w notes `shouldReturn` Just (Map.fromList [(token, "sk-1"), (other, "two")])
     on w d (removeSecret alice notes token) `shouldReturn` Right ()
     on w d (readSecrets alice notes) `shouldReturn` Right (Map.fromList [(other, "two")])
-    -- The last secret forgotten, the item goes.
+    -- The last secret forgotten, the item stays, with no secret.
     on w d (removeSecret alice notes other) `shouldReturn` Right ()
-    itemSecrets w notes `shouldReturn` Nothing
+    itemSecrets w notes `shouldReturn` Just mempty
     on w d (readSecrets alice notes) `shouldReturn` Right mempty
 
   it "refuses a name the manifest does not declare, before anything is read" $ do
@@ -145,13 +148,15 @@ inTheVault = describe "in the user's vault" $ do
     setVault w.server (withItem (ItemName "plugin-notes") Item {keyId = Nothing, sealed} v)
     on w d (readSecrets alice notes) `shouldReturn` Right (Map.fromList [(token, "kept")])
 
-  it "answers that the vault is locked where this browser holds no key to it, and writes nothing" $ do
+  it "answers that the vault is locked where this browser holds no key to it, and writes nothing but its copy of what the vault holds" $ do
     (w, _) <- unlocked
     locked <- newDevice w.counter True
     on w locked (readSecrets alice notes) `shouldReturn` Left Locked
     on w locked (putSecret alice notes token "sk-1") >>= (`shouldSatisfy` isLeft)
     (\s -> s.stores) <$> serverState w.server `shouldReturn` 0
-    deviceRecords locked `shouldReturn` mempty
+    -- The copy says the vault holds no item of the plugin's: a surface
+    -- that starts knows the vault is locked here without asking.
+    Map.keys <$> deviceRecords locked `shouldReturn` [(heldSlot alice (ItemName "plugin-notes")).text]
 
   it "does not open the vault of another user with this user's key" $ do
     (w, d) <- unlocked
@@ -173,6 +178,76 @@ inTheVault = describe "in the user's vault" $ do
     on w d (putSecret alice mail token "mine") >>= (`shouldSatisfy` isLeft)
     itemOf (ItemName "plugin-mail") <$> vaultNow w `shouldReturn` Just moved
 
+  it "asks the server once whether there is a vault, for the field, where there is none, and then reads what this browser keeps" $ do
+    counter <- newIORef 0
+    server <- newServer Nothing
+    d <- newDevice counter True
+    let w = World {server, counter, vaultKey = 0}
+        fetches = (\s -> s.fetches) <$> serverState server
+    -- As a surface starts: nothing asked, and with no vault key here and
+    -- nothing known of a vault, the vault may be locked.
+    on w d (readSecretsHere alice notes) `shouldReturn` Left Locked
+    fetches `shouldReturn` 0
+    on w d (readSecretsForField alice notes) `shouldReturn` Right mempty
+    first' <- fetches
+    first' `shouldSatisfy` (> 0)
+    -- Known now: there is no vault, and nothing is asked again.
+    on w d (readSecretsForField alice notes) `shouldReturn` Right mempty
+    on w d (readSecretsHere alice notes) `shouldReturn` Right mempty
+    fetches `shouldReturn` first'
+
+  it "reads, as a surface starts, the copy this browser holds and asks the server nothing; the field reads the vault where there is no copy" $ do
+    (w, d) <- unlocked
+    let fetches = (\s -> s.fetches) <$> serverState w.server
+    on w d (putSecret alice notes token "sk-1") `shouldReturn` Right ()
+    -- The change kept the copy: nothing fetched for the read.
+    before <- fetches
+    on w d (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
+    fetches `shouldReturn` before
+    -- Another browser, which holds no copy: as a surface starts it reads
+    -- what it keeps, and asks nothing; the field reads the vault, and
+    -- keeps the copy.
+    other' <- newDevice w.counter True
+    withVaultKey other' alice w.vaultKey
+    on w other' (readSecretsHere alice notes) `shouldReturn` Right mempty
+    fetches `shouldReturn` before
+    on w other' (readSecretsForField alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
+    afterField <- fetches
+    afterField `shouldSatisfy` (> before)
+    on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
+    fetches `shouldReturn` afterField
+    -- Locked here, with the copy: locked, and nothing fetched.
+    modifyIORef' other'.keys (Map.delete (vaultSlot alice).text)
+    on w other' (readSecretsHere alice notes) `shouldReturn` Left Locked
+    on w other' (readSecretsForField alice notes) `shouldReturn` Left Locked
+    fetches `shouldReturn` afterField
+    -- A change on the first browser: the second's copy is older, and a
+    -- refresh reads the vault and keeps the newer one.
+    on w d (putSecret alice notes token "sk-2") `shouldReturn` Right ()
+    withVaultKey other' alice w.vaultKey
+    on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-1")])
+    on w other' (refreshSecrets alice notes)
+    on w other' (readSecretsHere alice notes) `shouldReturn` Right (Map.fromList [(token, "sk-2")])
+
+  it "keeps no copy older than a change another tab made while a read of the vault waited to keep its copy" $ do
+    (w, d) <- unlocked
+    -- Another browser keeps the key: this one holds no copy yet.
+    e <- newDevice w.counter True
+    withVaultKey e alice w.vaultKey
+    on w e (putSecret alice notes token "sk-1") `shouldReturn` Right ()
+    answerOfB <- newEmptyTMVarIO
+    let tabB = on w d (removeSecretHeld alice notes token) >>= atomically . putTMVar answerOfB
+    -- Tab A's read has fetched the vault, which holds the key, and is
+    -- about to keep its copy; tab B forgets the key meanwhile. A writes
+    -- once B waits for the lock of tabs, or once B is done.
+    beforeNextWrite d $ do
+      void (forkIO tabB)
+      waitingForLock d (not <$> isEmptyTMVar answerOfB)
+    on w d (refreshSecrets alice notes)
+    atomically (takeTMVar answerOfB) `shouldReturn` Right ()
+    itemSecrets w notes `shouldReturn` Just mempty
+    on w d (readSecretsHere alice notes) `shouldReturn` Right mempty
+
   it "makes a change again when another device stored the vault first, at most three times in all" $ do
     (w, d) <- unlocked
     let elsewhere = vaultNow w >>= setVault w.server
@@ -183,17 +258,8 @@ inTheVault = describe "in the user's vault" $ do
     on w d (putSecret alice notes token "never kept") >>= (`shouldSatisfy` isLeft)
     itemSecrets w notes `shouldReturn` Just (Map.fromList [(token, "kept at last")])
 
-  it "forgets a plugin's secrets without the vault key, here and in the vault" $ do
-    (w, d) <- unlocked
-    on w d (putSecret alice notes token "sk-1") `shouldReturn` Right ()
-    on w d (putSecret alice mail token "sk-2") `shouldReturn` Right ()
-    locked <- newDevice w.counter True
-    on w locked (forgetSecrets alice notes) `shouldReturn` Right ()
-    itemSecrets w notes `shouldReturn` Nothing
-    itemSecrets w mail `shouldReturn` Just (Map.fromList [(token, "sk-2")])
-
 -- | 'Op' is a change a plugin asks for.
-data Op = Put Manifest SecretName Text | Remove Manifest SecretName | Forget Manifest
+data Op = Put Manifest SecretName Text | Remove Manifest SecretName
 
 instance Show Op where
   showsPrec _ op rest = described <> rest
@@ -202,48 +268,43 @@ instance Show Op where
       described = toS $ case op of
         Put m n v -> "Put " <> m.id.text <> " " <> n.text <> " " <> show v
         Remove m n -> "Remove " <> m.id.text <> " " <> n.text
-        Forget m -> "Forget " <> m.id.text
 
 -- | The plugin an op is of.
 pluginOf :: Op -> Manifest
 pluginOf = \case
   Put m _ _ -> m
   Remove m _ -> m
-  Forget m -> m
 
 -- | Whether the plugin's manifest declares the op's name.
 declares :: Op -> Bool
 declares = \case
   Put m n _ -> n `elem` map (\s -> s.name) m.secrets
   Remove m n -> n `elem` map (\s -> s.name) m.secrets
-  Forget _ -> True
 
 -- | An op of one of the three plugins, with a name of any of them, so that
 -- some are refused.
-genOp :: Bool -> Gen Op
-genOp forgets = do
+genOp :: Gen Op
+genOp = do
   m <- elements [notes, mail, calendar]
   n <- SecretName <$> elements ["token", "other", "password", "key"]
-  frequency ([(5, Put m n <$> elements ["a", "b", "sk-ü", ""]), (3, pure (Remove m n))] <> [(1, pure (Forget m)) | forgets])
+  frequency [(5, Put m n <$> elements ["a", "b", "sk-ü", ""]), (3, pure (Remove m n))]
 
 -- | What an op makes of a plugin's secrets.
 applied :: Op -> Map SecretName Text -> Map SecretName Text
 applied = \case
   Put _ n v -> Map.insert n v
   Remove _ n -> Map.delete n
-  Forget _ -> const mempty
 
 -- | Run an op on a device, with the lock.
 runOp :: UserId -> Op -> Served (Fake MemDOM) (Either Text ())
 runOp u = \case
   Put m n v -> putSecret u m n v
   Remove m n -> removeSecret u m n
-  Forget m -> forgetSecrets u m
 
 isolation :: Spec
 isolation = describe "one plugin's change" $
   modifyMaxSuccess (const 60) . prop "leaves every other item and every wrap of the vault as it was, and gives the plugin what it asked for" $
-    forAll (listOf1 (genOp True)) $ \ops -> ioProperty $ do
+    forAll (listOf1 genOp) $ \ops -> ioProperty $ do
       (w, d) <- unlocked
       results <- for ops $ \op -> do
         before <- vaultNow w
@@ -300,11 +361,10 @@ heldOp :: UserId -> Op -> Served (Fake MemDOM) (Either Text ())
 heldOp u = \case
   Put m n v -> putSecretHeld u m n v
   Remove m n -> removeSecretHeld u m n
-  Forget _ -> panic "no forget made with the lock held"
 
--- | A change of a name the plugin declares, no forget among them.
+-- | A change of a name the plugin declares.
 declaredOp :: Gen Op
-declaredOp = genOp False `suchThat` declares
+declaredOp = genOp `suchThat` declares
 
 -- | Two tabs of one browser are two pages: each holds a lock of its own
 -- page, and both read and write the browser's one record of secrets. Tab
@@ -317,7 +377,7 @@ declaredOp = genOp False `suchThat` declares
 twoTabs :: Spec
 twoTabs = describe "two tabs of one browser, where the user has no vault" $
   modifyMaxSuccess (const 100) . prop "change what the browser keeps one after the other, so that neither writes over the other's change" $
-    forAll (listOf declaredOp) $ \seeds -> forAll (genOp True `suchThat` declares) $ \fromA -> forAll declaredOp $ \fromB -> ioProperty $ do
+    forAll (listOf declaredOp) $ \seeds -> forAll declaredOp $ \fromA -> forAll declaredOp $ \fromB -> ioProperty $ do
       counter <- newIORef 0
       server <- newServer Nothing
       d <- newDevice counter True
@@ -331,13 +391,73 @@ twoTabs = describe "two tabs of one browser, where the user has no vault" $
         void (forkIO tabB)
         waitingForLock d (not <$> isEmptyTMVar answerOfB)
       answerOfA <- on w d (runOp alice fromA)
-      -- A wrote nothing (a forget of nothing): B was not started.
+      -- A wrote nothing: B was not started.
       unstarted <- atomicModifyIORef' d.writeHooks (\h -> ([], not (null h)))
       when unstarted tabB
       answerB <- atomically (takeTMVar answerOfB)
       let expected m = foldl (flip applied) mempty [op | op <- seeds <> [fromA, fromB], (pluginOf op).id == m.id]
       readBack <- for [notes, mail, calendar] $ \m -> (\r -> counterexample (toS m.id.text) (r === Right (expected m))) <$> on w d (readSecrets alice m)
       pure (answerOfA === Right () .&&. answerB === Right () .&&. conjoin readBack)
+
+-- | 'TabOp' is what a tab does with a plugin's secrets in the vault: a
+-- change, or a read of the vault, which keeps this browser's copy of the
+-- plugin's item.
+data TabOp = Change Op | Refresh Manifest
+
+instance Show TabOp where
+  showsPrec d = \case
+    Change op -> showsPrec d op
+    Refresh m -> (("Refresh " <> toS m.id.text) <>)
+
+genTabOp :: Gen TabOp
+genTabOp = frequency [(1, Change <$> declaredOp), (1, Refresh <$> elements [notes, mail, calendar])]
+
+-- | The plugin a tab's op is of.
+tabPlugin :: TabOp -> Manifest
+tabPlugin = \case
+  Change op -> pluginOf op
+  Refresh m -> m
+
+-- | Two tabs of one browser where the user has a vault: tab B's op starts
+-- while tab A is between its fetch of the vault and its write of the
+-- copy. A copy written from a fetch made before the other tab's change
+-- would hide that change from every surface that reads the copy. Seeds
+-- are changes made on this browser or another, so that a read here has
+-- something to keep.
+twoTabsVault :: Spec
+twoTabsVault = describe "two tabs of one browser, where the user has a vault" $
+  modifyMaxSuccess (const 100) . prop "keep a copy of each item they read or change equal to the server's last item" $
+    forAll (listOf ((,) <$> arbitrary <*> declaredOp)) $ \seeds -> forAll genTabOp $ \fromA -> forAll genTabOp $ \fromB -> ioProperty $ do
+      (w, d) <- unlocked
+      e <- newDevice w.counter True
+      withVaultKey e alice w.vaultKey
+      for_ seeds (\(here, op) -> on w (if here then d else e) (runOp alice op) >>= either (panic . ("a change failed: " <>)) pure)
+      answerOfB <- newEmptyTMVarIO
+      let tabB =
+            atomically
+              . putTMVar answerOfB
+              =<< on
+                w
+                d
+                ( case fromB of
+                    Change op -> heldOp alice op
+                    Refresh m -> Right () <$ readSecretsHeld alice m
+                )
+      beforeNextWrite d $ do
+        void (forkIO tabB)
+        waitingForLock d (not <$> isEmptyTMVar answerOfB)
+      answerOfA <- case fromA of
+        Change op -> on w d (runOp alice op)
+        Refresh m -> Right () <$ on w d (refreshSecrets alice m)
+      unstarted <- atomicModifyIORef' d.writeHooks (\h -> ([], not (null h)))
+      when unstarted tabB
+      answerB <- atomically (takeTMVar answerOfB)
+      copies <- for (ordNubOn (\m -> m.id) [tabPlugin fromA, tabPlugin fromB]) $ \m -> do
+        server' <- fromMaybe mempty <$> itemSecrets w m
+        (\r -> counterexample (toS m.id.text) (r === Right server')) <$> on w d (readSecretsHere alice m)
+      pure (answerOfA === Right () .&&. answerB === Right () .&&. conjoin copies)
+  where
+    ordNubOn f = Map.elems . Map.fromList . map (\x -> (f x, x))
 
 inThisBrowser :: Spec
 inThisBrowser = describe "in this browser, where the user has no vault" $ do
@@ -355,8 +475,11 @@ inThisBrowser = describe "in this browser, where the user has no vault" $ do
     all isSealed (Map.elems store) `shouldBe` True
     here (removeSecret alice notes token) `shouldReturn` Right ()
     here (removeSecret alice mail token) `shouldReturn` Right ()
-    -- Nothing kept, nothing recorded.
-    Map.member "secrets:user-alice" <$> deviceRecords d `shouldReturn` False
+    -- Nothing kept: the entries stay, with no secret, as the vault's item
+    -- does.
+    store' <- storeOf d alice
+    Map.keys store' `shouldBe` [ItemName "plugin-mail", ItemName "plugin-notes"]
+    here (readSecrets alice notes) `shouldReturn` Right mempty
 
   it "keeps them here for a user with a server but no vault yet, and folds them into the vault once there is one" $ do
     counter <- newIORef 0

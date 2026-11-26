@@ -147,7 +147,7 @@ instance (MonadWhatsNew m) => MonadWhatsNew (Holder m)
 instance (MonadSecurity m) => MonadSecurity (Holder m)
 
 instance (MonadAssistant m, MonadIO m) => MonadAssistant (Holder m) where
-  dropDeviceKey u = heldBy ("drop " <> u.text) >> lift (dropDeviceKey u)
+  dropDeviceKeyBy o u = heldBy ("drop " <> u.text) >> lift (dropDeviceKeyBy o u)
 
 instance (MonadVault m) => MonadVault (Holder m)
 

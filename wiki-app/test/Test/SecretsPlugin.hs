@@ -73,13 +73,13 @@ settings =
     render st =
       HH.section
         [HP.class_ (HH.ClassName "secretive")]
-        ( secretField "secret" st.granted.secrets FieldInput {name = tokenName, check = checkToken} FromField
-            : secretField "secret" st.granted.secrets FieldInput {name = endpointName, check = checkToken} FromField
+        ( secretField "secret" st.granted.secrets FieldInput {name = tokenName, check = checkToken, binding = ""} FromField
+            : secretField "secret" st.granted.secrets FieldInput {name = endpointName, check = checkToken, binding = ""} FromField
             : [HH.p [HP.class_ (HH.ClassName "secretive-read")] [HH.text (either (\u -> "unavailable: " <> show u) (T.intercalate ", " . map (\n -> n.text)) r)] | Just r <- [st.read]]
         )
 
-    checkToken :: Text -> m (Either Text ())
-    checkToken value = pure (if "bad" `T.isPrefixOf` value then Left "This token is refused." else Right ())
+    checkToken :: Text -> m (Either Text Text)
+    checkToken value = pure (if "bad" `T.isPrefixOf` value then Left "This token is refused." else Right value)
 
     handleAction :: Action m -> H.HalogenM (State m) (Action m) Slots OptionsOutput m ()
     handleAction = \case

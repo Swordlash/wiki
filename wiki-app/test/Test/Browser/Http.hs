@@ -24,6 +24,7 @@ module Test.Browser.Http
   , serveDemo
   , quietServer
   , answerWith
+  , servePlugins
   , answerUsers
   , answerRaw
   , asked
@@ -137,6 +138,7 @@ $( browserJS
      [ ("js_server_start", "wiki_test_server_start", Safe, [t|IO ()|])
      , ("js_server_stop", "wiki_test_server_stop", Safe, [t|IO ()|])
      , ("js_server_answer", "wiki_test_server_answer", Safe, [t|JSText -> JSText -> Int -> JSText -> IO ()|])
+     , ("js_server_plugins", "wiki_test_server_plugins", Safe, [t|IO ()|])
      , ("js_server_offline", "wiki_test_server_offline", Safe, [t|Bool -> IO ()|])
      , ("js_server_hold", "wiki_test_server_hold", Safe, [t|IO ()|])
      , ("js_server_hold_at", "wiki_test_server_hold_at", Safe, [t|JSText -> JSText -> IO ()|])
@@ -326,6 +328,13 @@ ownRegistration user = RegistrationChallenge {credential = user, response = fake
 
 serverStops :: PageM s ()
 serverStops = unsafeIOToPageM js_server_stop
+
+-- | The server keeps the plugins' options as the real one does
+-- (@jsbits\/test-fetch.js@'s @wiki_test_server_plugins@): written whole,
+-- cleared, and read back with which plugins are on. Installed after the
+-- server starts, until it stops.
+servePlugins :: PageM s ()
+servePlugins = unsafeIOToPageM js_server_plugins
 
 answerWith :: (ToJSON a) => Text -> Text -> Int -> a -> PageM s ()
 answerWith method url status value = unsafeIOToPageM (js_server_answer (toJSText method) (toJSText url) status (toJSText (decodeUtf8 (toS (encode value)))))
@@ -1259,6 +1268,33 @@ views m = describe "the application over it" $ do
     unmount ui
     serverStops
 
+  -- The pages a signed-in reader reloads, each started from what a first
+  -- run of it carried, as the server's render carries it: nothing is asked
+  -- of the server, the vault included. The server's render runs where no
+  -- assistant is (natively, 'Wiki.App.Assistant.assistantHere'), so what
+  -- only a browser reads (the plugins' secrets, the vault) is never
+  -- carried, and must not be read as the page starts.
+  for_ reloaded $ \(what, at) ->
+    it ("starts " <> what <> " from what the page carries, signed in, and asks nothing") $ runPage $ do
+      serverStarts
+      serveDemo
+      reading <- unsafeIOToPageM (newHttpEnv browserTransport)
+      first' <- startServerOver m reading at
+      _ <- askedNow
+      carried <- unsafeIOToPageM (cacheOf reading)
+      unmount first'
+      serverStops
+      -- A server that answers nothing from here on, and the page with
+      -- what it carries.
+      serverStarts
+      perform (js_embed (toJSText preloadId) (toJSText (encodePreload carried)))
+      env <- fromPage
+      ui <- startServerOver m env at
+      map (\r -> r.method <> " " <> r.url) <$> askedNow `shouldReturn` []
+      unmount ui
+      perform (js_unembed (toJSText preloadId))
+      serverStops
+
   it "adopts a page the server rendered, from what it carries, and asks nothing" $ runPage $ do
     -- What the server's render reads at the tour: who is asking, the
     -- spaces, the tour's space and its pages.
@@ -1326,6 +1362,12 @@ views m = describe "the application over it" $ do
     -- Every element but what is inside an island, which its library fills
     -- after the shell has adopted it.
     adoptable = "*:not(.wiki-math *, .wiki-mermaid *, .wiki-tikz *, .wiki-code *, .wiki-time *)"
+    reloaded =
+      [ ("a page" :: [Char], Page (slugs ["docs"]) (slugs ["tour"]))
+      , ("the editor", EditPage (slugs ["docs"]) (slugs ["tour"]))
+      , ("the writing assistant's settings", UserSettings AssistantSection)
+      , ("the settings' Plugins", UserSettings PluginsSection)
+      ]
 
 -- | What the page has sent on the live channel, each message read.
 said :: PageM s [ClientMessage]

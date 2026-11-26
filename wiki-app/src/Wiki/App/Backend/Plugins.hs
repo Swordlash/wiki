@@ -29,7 +29,7 @@ import Protolude
 import Wiki.Api.Plugins (PluginChoice, PluginId, PluginState, Plugins, WikiPlugins)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Backend.Mem (MemWiki, memQuery, memWrite)
-import Wiki.App.Backend.Mem.State (pluginsIn, setPluginOptionsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
+import Wiki.App.Backend.Mem.State (pluginsIn, setPluginOptionsIfNoneIn, setPluginOptionsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
 
 -- | 'MonadPlugins' is the backend interface for which plugins are on.
 --
@@ -62,6 +62,15 @@ class (Monad m) => MonadPlugins m where
   default setPluginOptions :: (MonadTrans t, m ~ t n, MonadPlugins n) => PluginId -> Value -> m (Either WikiError PluginChoice)
   setPluginOptions p = lift . setPluginOptions p
 
+  -- | 'setPluginOptions', only if the user has no options for the plugin
+  -- (@If-None-Match: *@): options there already are 'Conflict', and
+  -- nothing is written. The server checks it in the write's own
+  -- transaction, so two such writes cannot both find none. The move of
+  -- the writing assistant's legacy settings adopts them this way.
+  setPluginOptionsIfNone :: PluginId -> Value -> m (Either WikiError PluginChoice)
+  default setPluginOptionsIfNone :: (MonadTrans t, m ~ t n, MonadPlugins n) => PluginId -> Value -> m (Either WikiError PluginChoice)
+  setPluginOptionsIfNone p = lift . setPluginOptionsIfNone p
+
   -- | Clear the signed-in user's options for a plugin, leaving its state
   -- as it is. The result and the refusals are 'setPluginState''s.
   clearPluginOptions :: PluginId -> m (Either WikiError PluginChoice)
@@ -88,6 +97,7 @@ instance (MonadPlugins m) => MonadPlugins (HalogenM st act slots output m) where
   pluginsNow = H.async pluginsNow
   setPluginState p = H.async . setPluginState p
   setPluginOptions p = H.async . setPluginOptions p
+  setPluginOptionsIfNone p = H.async . setPluginOptionsIfNone p
   clearPluginOptions = H.async . clearPluginOptions
   wikiPluginsOff = H.async wikiPluginsOff
   setWikiPluginsOff = H.async . setWikiPluginsOff
@@ -97,6 +107,7 @@ instance (MonadIO m) => MonadPlugins (MemWiki m) where
   pluginsNow = memQuery pluginsIn
   setPluginState p = memWrite . setPluginStateIn p
   setPluginOptions p = memWrite . setPluginOptionsIn p . Just
+  setPluginOptionsIfNone p = memWrite . setPluginOptionsIfNoneIn p
   clearPluginOptions p = memWrite (setPluginOptionsIn p Nothing)
   wikiPluginsOff = memQuery wikiPluginsIn
   setWikiPluginsOff = memWrite . setWikiPluginsIn

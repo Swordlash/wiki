@@ -3,10 +3,16 @@
 -- | The host's field for one of a plugin's secrets
 -- ('Wiki.App.Plugin.SecretField'): the secret's label and description,
 -- whether it is set, a field to type a new value into, "Keep" (after the
--- plugin's check) and "Forget". Where the user's vault is locked in this
--- browser, the field offers the unlock in its place, with a passkey or
--- the password ("Wiki.App.Vault"). A value kept is never shown again: the
--- field only says that the secret is set.
+-- plugin's check; Enter in the field too) and "Forget". Where the user's
+-- vault is locked in this browser, the field offers the unlock in its
+-- place, with a passkey or the password ("Wiki.App.Vault"). For a user
+-- who lost every way to unlock it, the field says what is left: a reset
+-- of the password makes the vault anew when the password was its only way
+-- to unlock it, and everything in it is lost
+-- ('Wiki.App.Vault.resetLosses'). It links to the settings' Security
+-- section, which says how the password is reset. Nothing else empties a
+-- plugin's secrets without the vault's key. A value kept is never shown
+-- again: the field only says that the secret is set.
 --
 -- The field's logic is a machine ("Wiki.App.View.SecretField.Machine").
 -- The host makes one field for one reader and one plugin
@@ -35,16 +41,17 @@ import Data.Map.Strict qualified as Map
 import Data.Row (Empty)
 import Data.Text qualified as T
 import Halogen qualified as H
+import Halogen.HTML.Events qualified as HE
 import Halogen.Machine qualified as Machine
 import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
 import Protolude hiding (State)
 import Wiki.App.Assistant (KeyOwner, MonadAssistant (..), closeKeyOwner, openKeyOwner)
 import Wiki.App.Assistant.Sync (MonadVault, owned)
-import Wiki.App.Plugin (FieldInput (..), FieldOutput (..), Manifest (..), SecretName (..), SecretSpec (..), Unavailable (..))
-import Wiki.App.Plugin.Host.Secrets (putSecret, readSecrets, removeSecret)
+import Wiki.App.Plugin (FieldInput (..), FieldOutput (..), LinkClick, Manifest (..), OptionsLink, SecretName (..), SecretSpec (..), Unavailable (..), followOptionsLink, optionsLinkProps)
+import Wiki.App.Plugin.Host.Secrets (putSecret, readSecretsForField, removeSecret)
 import Wiki.App.Vault (unlockWithPasskey, unlockWithPassword)
-import Wiki.App.View.SecretField.Machine (Answer (..), Effect (..), Event (..), Job (..), Model (..), Shown (..), Told (..), busy, initial, needsOwner, step)
+import Wiki.App.View.SecretField.Machine (Answer (..), Effect (..), Event (..), Job (..), Model (..), Shown (..), Told (..), busy, initialBound, needsOwner, step)
 import Wiki.Core.Id (UserId)
 import Wiki.Core.User (Password (..))
 
@@ -61,14 +68,16 @@ data Action m
   | Finalize
   | Receive (FieldInput m)
   | Happened Event
+  | Followed LinkClick
 
 -- | The field for one reader (the user signed in, if anyone is) and one
--- plugin, by its manifest.
-component :: forall m. (Typeable m, MonadAssistant m, MonadVault m, MonadUnliftIO m) => Maybe UserId -> Manifest -> H.Component (Const Void) (FieldInput m) FieldOutput m
-component user manifest =
+-- plugin, by its manifest, with the link to the settings' Security
+-- section.
+component :: forall m. (Typeable m, MonadAssistant m, MonadVault m, MonadUnliftIO m) => Maybe UserId -> Manifest -> OptionsLink -> H.Component (Const Void) (FieldInput m) FieldOutput m
+component user manifest security =
   H.mkComponent
     H.ComponentSpec
-      { initialState = \input -> pure State {input, machine = Machine.new initial, owners = mempty}
+      { initialState = \input -> pure State {input, machine = Machine.new (initialBound input.binding), owners = mempty}
       , render
       , eval =
           H.mkEval
@@ -118,17 +127,21 @@ component user manifest =
                 <button type="button" class="secret-field-unlock-passkey" disabled={{ busy m }} onClick={{ const (Happened PasskeyPressed) }}>Unlock with a passkey</button>
                 <input type="password" class="secret-field-password" autocomplete="current-password" aria-label="Your password" value={{ m.password }} disabled={{ busy m }} onValueInput={{ Happened . TypedPassword }}>
                 <button type="button" class="secret-field-unlock-password" disabled={{ busy m || T.null m.password }} onClick={{ const (Happened PasswordPressed) }}>Unlock with your password</button>
+                <p class="secret-field-note secret-field-lost">
+                  Lost every way to unlock it? A reset of your password makes your vault anew if the password was its only way to unlock it, and everything in the vault is lost: the secrets of every plugin, such as this one, and your key pair. You then keep this secret again.
+                  <a class="secret-field-security" {{ optionsLinkProps security Followed }}>Security says how your password is reset.</a>
+                </p>
               </div>
             |]
           Here set ->
             [hh|
-              <div class="secret-field-change">
+              <form class="secret-field-change" {{ HE.preventingDefault (HE.onSubmit (const (Happened KeepPressed))) }}>
                 <input type="password" class="secret-field-value" autocomplete="off" aria-label={{ label }} placeholder={{ if set then "A new value" else "" :: Text }} value={{ m.typed }} disabled={{ busy m }} onValueInput={{ Happened . Typed }}>
-                <button type="button" class="secret-field-keep" disabled={{ busy m || T.null (T.strip m.typed) }} onClick={{ const (Happened KeepPressed) }}>Keep</button>
+                <button type="submit" class="secret-field-keep" disabled={{ busy m || T.null (T.strip m.typed) }}>Keep</button>
                 {% if set %}
                   <button type="button" class="secret-field-forget" disabled={{ busy m }} onClick={{ const (Happened ForgetPressed) }}>Forget</button>
                 {% end %}
-              </div>
+              </form>
             |]
 
     handleAction :: Action m -> H.HalogenM (State m) (Action m) Empty FieldOutput m ()
@@ -141,9 +154,14 @@ component user manifest =
         happen Opened
       Finalize -> Machine.finish machineSpec Finished
       -- The plugin's check may be another function: the next check uses
-      -- it. The name is the slot's, which does not change.
-      Receive input -> modify (\st -> st {input})
+      -- it. The name is the slot's, which does not change. What the check
+      -- is for goes to the machine in this step, before any wait: a check
+      -- out answers into the binding as it is now.
+      Receive input -> do
+        modify (\st -> st {input})
+        happen (Rebound input.binding)
       Happened e -> happen e
+      Followed f -> followOptionsLink security f
 
     happen :: Event -> H.HalogenM (State m) (Action m) Empty FieldOutput m ()
     happen = Machine.happen machineSpec
@@ -177,18 +195,21 @@ component user manifest =
           KeptIt -> Kept name
           RemovedIt -> Removed name
           UnlockedIt -> Unlocked
+          KeepEnded -> KeepOver name
       where
         -- A job of the vault's.
         work u name = \case
-          Read -> ReadAs . shownOf name <$> readSecrets u manifest
-          Put value -> Done <$> putSecret u manifest name value
+          -- As this browser holds it: a page the server rendered asks
+          -- nothing as it starts ("Wiki.App.Plugin.Host.Secrets").
+          Read -> ReadAs . shownOf name <$> readSecretsForField u manifest
+          Put _ value -> Done <$> putSecret u manifest name value
           Remove -> Done <$> removeSecret u manifest name
           UnlockByPasskey -> Done . void <$> unlockWithPasskey u
           UnlockByPassword p -> Done . void <$> unlockWithPassword u (Password p)
-          Check _ -> pure (Done (Left "A check is the plugin's."))
+          Check _ _ -> pure (Done (Left "A check is the plugin's."))
         -- The plugin's check of a value.
         checked input = \case
-          Check value -> Done <$> input.check value
+          Check value _ -> Checked <$> input.check value
           _ -> pure (Done (Left "Only a check is the plugin's."))
         shownOf name = \case
           Right secrets -> Here (Map.member name secrets)
@@ -204,8 +225,8 @@ answerOf = either (\e -> Done (Left ("Something went wrong: " <> toS (displayExc
 doingText :: Job -> Maybe Text
 doingText = \case
   Read -> Nothing
-  Check _ -> Just "Checking…"
-  Put _ -> Just "Keeping…"
+  Check _ _ -> Just "Checking…"
+  Put _ _ -> Just "Keeping…"
   Remove -> Just "Forgetting…"
   UnlockByPasskey -> Just "Unlocking with a passkey…"
   UnlockByPassword _ -> Just "Unlocking…"

@@ -74,7 +74,7 @@ import Test.QuickCheck qualified as QC
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), WikiPlugins (..), maxPluginsPerUser, optionsNull, pluginIdRule)
 import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Backend.Http.Cache (Cache (plugins), Reading (..), Stored (cache), afterWrite, changedBy, emptyCache, kept, storedAnswer, storedOf)
-import Wiki.App.Backend.Mem.State (MemState (..), pluginsIn, setPluginOptionsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
+import Wiki.App.Backend.Mem.State (MemState (..), pluginsIn, setPluginOptionsIfNoneIn, setPluginOptionsIn, setPluginStateIn, setWikiPluginsIn, wikiPluginsIn)
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Plugin (Manifest (..))
 import Wiki.App.Plugin.Registry (manifests, optionsFor)
@@ -201,6 +201,9 @@ handled u e st0 = case e of
   WriteOptions _ p o -> case setPluginOptionsIn p o st of
     Left err -> (st0, Wrote (Left err))
     Right (st', c) -> (st' {current = st0.current}, Wrote (Right c))
+  WriteOptionsIfNone _ p v -> case setPluginOptionsIfNoneIn p v st of
+    Left err -> (st0, Wrote (Left err))
+    Right (st', c) -> (st' {current = st0.current}, Wrote (Right c))
   SaveOff _ off -> case setWikiPluginsIn WikiPlugins {off} st of
     Left err -> (st0, SetSaved (Left err))
     Right (st', w) -> (st' {current = st0.current}, SetSaved (Right w))
@@ -320,8 +323,12 @@ data World = World
   -- ^ The writes the reader asked for, with the session they were asked
   -- in.
   , lastWrite :: Map PluginId Bool
-  -- ^ Whether the last answer to a write of each plugin taken in this
-  -- session was a success.
+  -- ^ Whether the last answer to a write of each plugin's state taken in
+  -- this session was a success.
+  , optionsTold :: Map PluginId WikiError
+  -- ^ The refusal of the last write of each plugin's options answered in
+  -- this session, until options are chosen again: what the plugin's
+  -- surfaces are to be told.
   , lastSave :: Maybe Bool
   -- ^ Whether the last answer to a save taken in this session was one.
   , lastOptions :: Map PluginId (Maybe Value)
@@ -367,6 +374,7 @@ startOver tab =
     , paid = 0
     , chosen = []
     , lastWrite = mempty
+    , optionsTold = mempty
     , lastSave = Nothing
     , lastOptions = mempty
     , givenOptions = mempty
@@ -379,8 +387,13 @@ startOver tab =
   where
     firstRead = pluginsIn (as "admin")
 
+-- | The world after a step, with the rule of what a plugin's surfaces are
+-- told checked once the step is whole ('toldChecked').
 play :: World -> Step -> World
-play w = \case
+play w s = toldChecked (playing w s)
+
+playing :: World -> Step -> World
+playing w = \case
   Click i s -> case (atMay ids i, knownNow w.model) of
     (Just p, Just known)
       | not (Set.member p known.offForWiki) ->
@@ -407,7 +420,14 @@ play w = \case
           took =
             (w.turn, OptionsWrite p o) `elem` w1.model.queued
               || any (\x -> case x.effect of WriteOptions _ q o' -> q == p && o' == o; _ -> False) (drop (length w.outs) w1.outs)
-       in givenChecked w1 {givenOptions = if took then Map.insert p o w1.givenOptions else w1.givenOptions}
+       in -- A choice is the plugin's last, written or not: a refusal of
+          -- earlier options is no longer told.
+          givenChecked
+            w1
+              { givenOptions = if took then Map.insert p o w1.givenOptions else w1.givenOptions
+              , optionsTold = Map.delete p w1.optionsTold
+              , seen = ["options chosen after a refusal of options" | Map.member p w1.optionsTold] <> w1.seen
+              }
     Nothing -> w
   Handle -> case break (isNothing . (\o -> o.answer)) w.outs of
     (earlier, o : later') ->
@@ -453,7 +473,7 @@ play w = \case
                in afterEvent "a write of options comes back" (OptionsWritten t p r) $
                     w'
                       { seen = [tag | ours] <> w'.seen
-                      , lastWrite = if ours then Map.insert p (isRight r) w'.lastWrite else w'.lastWrite
+                      , optionsTold = if ours then either (\e -> Map.insert p e) (const (Map.delete p)) r w'.optionsTold else w'.optionsTold
                       , owed = if ours then w'.owed + 1 else w'.owed
                       , -- The answer to these options came: from now on
                         -- the plugin is given what the model holds.
@@ -513,6 +533,7 @@ play w = \case
             , fresh = False
             , tab = changedBy (const emptyCache) <$> w.tab
             , lastWrite = mempty
+            , optionsTold = mempty
             , lastSave = Nothing
             , lastOptions = mempty
             , givenOptions = mempty
@@ -525,6 +546,7 @@ play w = \case
       Load _ -> Read (Left (Unreachable "lost"))
       WriteState {} -> Wrote (Left (Unreachable "lost"))
       WriteOptions {} -> Wrote (Left (Unreachable "lost"))
+      WriteOptionsIfNone {} -> Wrote (Left (Unreachable "lost"))
       SaveOff {} -> SetSaved (Left (Unreachable "lost"))
     isSave = \case
       SaveOff {} -> True
@@ -532,8 +554,8 @@ play w = \case
 
 -- | What the views show of the model: what is known, the changes not done,
 -- and the refusals. What waits its turn is checked apart ('sentNext').
-shown :: Model -> (Maybe (Either WikiError Plugins), Map PluginId PluginState, Map PluginId (Maybe Value), Maybe (Set PluginId), Map PluginId WikiError, Maybe WikiError)
-shown m = (m.known, m.writing, m.writingOptions, m.wantedOff, m.refused, m.problem)
+shown :: Model -> (Maybe (Either WikiError Plugins), Map PluginId PluginState, Map PluginId (Maybe Value), Maybe (Set PluginId), (Map PluginId WikiError, Map PluginId WikiError), Maybe WikiError)
+shown m = (m.known, m.writing, m.writingOptions, m.wantedOff, (m.refused, m.optionsRefused), m.problem)
 
 -- | The writes a step sent, from one world to the next, each with the
 -- session it goes out in: one that waited its turn leaves 'queued' for
@@ -547,6 +569,7 @@ writeOf = \case
   WriteState _ p s -> Just (StateWrite p s)
   SaveOff _ off -> Just (OffWrite off)
   WriteOptions _ p o -> Just (OptionsWrite p o)
+  WriteOptionsIfNone _ p v -> Just (AdoptWrite p v)
   Load _ -> Nothing
 
 -- | The HTTP backend's cache after an answer arrived, before the machine
@@ -628,7 +651,8 @@ givenChecked w =
 -- since the last change elsewhere, it holds exactly what the server holds
 -- for its reader; and no switch or box shows a change that is not out. A
 -- refusal stays only while the last answer about its plugin, or the last
--- save's, is one.
+-- save's, is one, and a plugin's row shows the refusal of a write of its
+-- state only.
 checked :: World -> World
 checked w = givenChecked w {faults = w.faults <> settledRule, seen = ["checked settled after a write" | quiet, w.fresh, "a write taken" `elem` w.seen] <> w.seen}
   where
@@ -652,10 +676,31 @@ checked w = givenChecked w {faults = w.faults <> settledRule, seen = ["checked s
            | (p, True) <- Map.toList w.lastWrite
            , Map.member p w.model.refused
            ]
+        <> [ "shows on the row of " <> p.text <> " a refusal that is no write of its state's: " <> show e
+           | (p, e) <- Map.toList w.model.refused
+           , Map.lookup p w.lastWrite /= Just False
+           ]
         <> [ "shows the refusal of a save, after a save succeeded"
            | w.lastSave == Just True
            , isJust w.model.problem
            ]
+
+-- | The rule that a plugin's surfaces are told exactly the refusal of the
+-- last write of its options, until options are chosen again, checked
+-- after each step: the step that chooses options clears the world's
+-- refusal after the model's step.
+toldChecked :: World -> World
+toldChecked w =
+  w
+    { faults =
+        w.faults
+          <> [ "tells the surfaces of " <> p.text <> " the refusal " <> show told <> ", where the last write of its options answered " <> show expected
+             | p <- ordNub (Map.keys w.model.optionsRefused <> Map.keys w.optionsTold)
+             , let told = Map.lookup p w.model.optionsRefused
+                   expected = Map.lookup p w.optionsTold
+             , told /= expected
+             ]
+    }
 
 runOf :: [Step] -> World
 runOf = foldl' play start
@@ -687,6 +732,7 @@ machine = describe "the plugins' state, on generated runs" $ do
                 , (2, "a choice after a read learnt another tab's")
                 , (5, "an options write taken")
                 , (1, "an options write refused")
+                , (1, "options chosen after a refusal of options")
                 , (2, "options chosen with an ask out")
                 ]
                   <> [(5, tag) | tag <- more]
@@ -724,9 +770,10 @@ machine = describe "the plugins' state, on generated runs" $ do
     w1.model.writingOptions `shouldBe` mempty
     optionsFor assistant (held w1.model) `shouldBe` Just (Number 1)
     -- Refused: the plugin is given the server's options again, and its
-    -- row shows why.
+    -- surfaces are told why; its row is not, which shows its state's.
     let w2 = foldl' play w1 [SetOptions 0 (Just Null), Handle, Deliver 0]
-    Map.lookup assistant w2.model.refused `shouldBe` Just (Invalid optionsNull)
+    Map.lookup assistant w2.model.optionsRefused `shouldBe` Just (Invalid optionsNull)
+    Map.lookup assistant w2.model.refused `shouldBe` Nothing
     optionsFor assistant (held w2.model) `shouldBe` Just (Number 1)
     -- Cleared: nothing is kept for the plugin.
     let w3 = foldl' play w2 [Handle, Deliver 0, SetOptions 0 Nothing, Handle, Deliver 0, Handle, Deliver 0]
@@ -857,6 +904,33 @@ machine = describe "the plugins' state, on generated runs" $ do
         (\e m -> case e of OptionsWritten {} -> first (\m' -> m' {writingOptions = m.writingOptions}) (step e m); _ -> step e m)
         [SetOptions 0 (Just (Number 1)), Handle, Deliver 0, Handle, Deliver 0]
         "shows changes not out"
+    it "an options refusal told: a refused write of options not kept for the plugin's surfaces" $
+      fails
+        (\e m -> case e of OptionsWritten {} -> first (\m' -> m' {optionsRefused = m.optionsRefused}) (step e m); _ -> step e m)
+        [SetOptions 0 (Just Null), Handle, Deliver 0]
+        "tells the surfaces of"
+    it "an options refusal cleared by a later choice: options chosen that keep it" $
+      fails
+        (\e m -> case e of OptionsChosen {} -> first (\m' -> m' {optionsRefused = m.optionsRefused}) (step e m); _ -> step e m)
+        [SetOptions 0 (Just Null), Handle, Deliver 0, SetOptions 0 (Just (Number 1))]
+        "tells the surfaces of"
+    -- Options chosen while a write of others is out: the refusal of those
+    -- arrives after the choice, and the choice's success clears it.
+    it "an options refusal cleared by a later success: a success of options that keeps it" $
+      fails
+        (\e m -> case e of OptionsWritten _ _ (Right _) -> first (\m' -> m' {optionsRefused = m.optionsRefused}) (step e m); _ -> step e m)
+        [SetOptions 0 (Just Null), SetOptions 0 (Just (Number 1)), Handle, Deliver 0, Handle, Deliver 0]
+        "tells the surfaces of"
+    it "a refused switch not told to the surfaces: a write of a state's refusal told as one of options" $
+      fails
+        (\e m -> case e of Written _ p (Left err) -> first (\m' -> m' {optionsRefused = Map.insert p err m'.optionsRefused}) (step e m); _ -> step e m)
+        [Click 0 PluginOff, Lose, Handle, Deliver 0]
+        "tells the surfaces of"
+    it "an options refusal not on the row: a write of options' refusal shown on the plugin's row" $
+      fails
+        (\e m -> case e of OptionsWritten _ p (Left err) -> first (\m' -> m' {refused = Map.insert p err m'.refused}) (step e m); _ -> step e m)
+        [SetOptions 0 (Just Null), Handle, Deliver 0]
+        "a refusal that is no write of its state's"
     it "a read after a write of options: its answer taken with no read after it" $
       fails
         ( \e m -> case (e, step e m) of

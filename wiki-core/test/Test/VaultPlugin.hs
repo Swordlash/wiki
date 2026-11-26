@@ -6,6 +6,7 @@ module Test.VaultPlugin (spec) where
 import Data.ByteString qualified as BS
 import Data.Char (isAsciiLower)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Protolude
 import Test.Cases (coverage)
@@ -70,6 +71,17 @@ padding = describe "what an item seals" $ do
 
   it "is a block for no secrets" $
     BS.length (encodeUtf8 (encodeSecrets mempty)) `shouldBe` paddingBlock
+
+  prop "is the contents it was made of, the legacy places taken with the secrets" $
+    forAll genSecrets $ \s -> forAll (Set.fromList <$> listOf (elements ["item:abc", "record:0f1e", "record:99"])) $ \taken ->
+      coverage . cover 20 (not (Set.null taken)) "places taken" $
+        decodeContents (encodeContents Contents {secrets = s, taken}) === Right Contents {secrets = s, taken}
+
+  it "reads an item written before the places taken were kept as one that took none" $
+    decodeContents "{\"token\":\"sk-1\"}   " `shouldBe` Right Contents {secrets = Map.fromList [(SecretName "token", "sk-1")], taken = mempty}
+
+  it "keeps the places taken under a key no secret's name can be" $
+    secretNameOk (SecretName takenKey) `shouldBe` False
 
 folding :: Spec
 folding = describe "folding what a browser kept into the vault" $

@@ -11,6 +11,12 @@
 -- devices, so that two devices can hold the same vault key. Two runs on
 -- one device at once are two tabs of that browser: they share its keys,
 -- its records and its locks of tabs.
+--
+-- The device keeps the owners of keys let go ('closeOwner'), as the
+-- browser's script does: a key or a record written under one, or a drop
+-- under one, is refused, checked after the hook a test puts before the
+-- write ('beforeNextWrite'), as the script checks in the step that writes,
+-- after the wait on IndexedDB.
 module Test.FakeVault
   ( Device (..)
   , newDevice
@@ -23,6 +29,7 @@ module Test.FakeVault
   , withVaultKey
   , deviceRecords
   , beforeNextWrite
+  , closeOwner
   , waitingForLock
   , FakeMemDOM
   )
@@ -34,17 +41,19 @@ import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Class (MonadTrans (..))
 import Data.Aeson (eitherDecodeStrict, encode)
 import Data.ByteString.Lazy qualified as BSL
+import Data.Digest.Pure.SHA (sha256, showDigest)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad (MemDOM)
 import Halogen.VDom.DOM.Monad.Class (MonadAttributes, MonadBrowserDOM, MonadDOM)
 import Protolude
-import Wiki.App.Assistant (KeyRef, MonadAssistant (..), TabLock (..), heldHandle, keyRefOf)
+import Wiki.App.Assistant (KeyOwner (..), KeyRef, MonadAssistant (..), TabLock (..), heldHandle, keyRefOf)
 import Wiki.App.Assistant.Sync (MonadVault (..))
 import Wiki.App.Vault (vaultSlot)
 import Wiki.Core.Id (UserId (..))
-import Wiki.Core.Vault (Ciphertext (..), Item (..), KeyId (..), Sealed (..), Unlock (..), Vault (..), WrappedKey (..), identityData, identityItem, vaultFormat)
+import Wiki.Core.Vault (Ciphertext (..), Item (..), KeyId (..), Nonce (..), Sealed (..), Unlock (..), Vault (..), WrappedKey (..), identityData, identityItem, vaultFormat)
 
 -- | 'Device' is one browser's keys and records.
 data Device = Device
@@ -68,18 +77,36 @@ data Device = Device
   , changes :: HS.Subscribe IO ()
   -- ^ What 'secretsChanges' gives: a key kept or let go, a secret kept or
   -- forgotten, in any tab of the browser.
+  , closed :: IORef (Set KeyOwner)
+  -- ^ The owners of keys let go ('closeOwner').
   }
 
 -- | A device with nothing kept, numbering its keys with this counter.
 newDevice :: IORef Int -> Bool -> IO Device
 newDevice counter sealing =
-  Device <$> newIORef mempty <*> newIORef mempty <*> pure sealing <*> pure counter <*> newIORef [] <*> newTVarIO (0, mempty) <*> newTVarIO mempty <*> newTVarIO 0 <*> HS.create
+  Device <$> newIORef mempty <*> newIORef mempty <*> pure sealing <*> pure counter <*> newIORef [] <*> newTVarIO (0, mempty) <*> newTVarIO mempty <*> newTVarIO 0 <*> HS.create <*> newIORef mempty
 
 -- | Run this before the next write of a key or a record on the device
 -- that no hook given before it took: a test's place to act between a
 -- tab's read and its write.
 beforeNextWrite :: Device -> IO () -> IO ()
 beforeNextWrite d act = modifyIORef' d.writeHooks (<> [act])
+
+-- | Let an owner of keys go, as a sign-out does
+-- ('Wiki.App.Assistant.closeKeyOwnersOf'): nothing is written under it
+-- from now on.
+closeOwner :: Device -> KeyOwner -> IO ()
+closeOwner d o = modifyIORef' d.closed (Set.insert o)
+
+-- | Write, after the hook, if the owner is open ('whileOpen').
+ownedWrite :: Device -> KeyOwner -> IO a -> IO (Either Text a)
+ownedWrite d o act = writing d >> whileOpen d o act
+
+-- | Act if the owner is open: the page's always.
+whileOpen :: Device -> KeyOwner -> IO a -> IO (Either Text a)
+whileOpen d o act = do
+  shut <- Set.member o <$> readIORef d.closed
+  if shut && o /= KeyOwner 0 then pure (Left "The step that asked to write this has ended.") else Right <$> act
 
 -- | Wait until a request on the device waits for a lock of tabs, or the
 -- condition given holds (the other tab's work ended without waiting).
@@ -129,9 +156,13 @@ handleOf :: Int -> KeyRef
 handleOf = fromMaybe (panic "a key's number is never 0") . keyRefOf
 
 -- | What a seal with this key and data holds: the key, the data and the
--- text, in the clear.
+-- text, in the clear. The nonce is made from them, so that seals of two
+-- texts have two nonces, as AES-GCM's random nonces do: the move of the
+-- assistant's legacy settings tells a vault's item by its nonce.
 fakeSeal :: Int -> Text -> Text -> Sealed
-fakeSeal k ad text = Sealed {nonce = "AAAAAAAAAAAAAAAA", ciphertext = Ciphertext (decodeUtf8 (BSL.toStrict (encode (k, ad, text))))}
+fakeSeal k ad text = Sealed {nonce = Nonce (toS (take 16 (showDigest (sha256 sealed)))), ciphertext = Ciphertext (decodeUtf8 (BSL.toStrict sealed))}
+  where
+    sealed = encode (k, ad, text)
 
 -- | The text of a seal, if it was made with this key and data.
 fakeOpen :: Int -> Text -> Sealed -> Either Text Text
@@ -166,14 +197,15 @@ deviceRecords d = readIORef d.records
 
 instance (MonadAssistant m, MonadIO m) => MonadAssistant (Fake m) where
   deviceRecord slot = device >>= \d -> liftIO (Right . Map.lookup slot.text <$> readIORef d.records)
-  keepDeviceRecord slot record = device >>= \d -> liftIO (writing d >> modifyIORef' d.records (Map.alter (const record) slot.text)) $> Right ()
+  keepDeviceRecordBy o slot record = device >>= \d -> liftIO (ownedWrite d o (modifyIORef' d.records (Map.alter (const record) slot.text)))
+  dropDeviceRecordIfBy o slot bytes = device >>= \d -> liftIO (fromRight (Right False) <$> ownedWrite d o (atomicModifyIORef' d.records (\rs -> if Map.lookup slot.text rs == Just bytes then (Map.delete slot.text rs, Right True) else (rs, Right False))))
   newVaultKeyBy _ _ = handleOf <$> fresh
   sealWith k text ad = pure (Right (fakeSeal (heldHandle k) ad text))
   openWith k sealed ad = pure (fakeOpen (heldHandle k) ad sealed)
   forgetKey _ = pass
-  keepDeviceKeyBy _ slot k _ = device >>= \d -> liftIO (writing d >> modifyIORef' d.keys (Map.insert slot.text (heldHandle k)) >> changed d) $> Right ()
+  keepDeviceKeyBy o slot k _ = device >>= \d -> liftIO (ownedWrite d o (modifyIORef' d.keys (Map.insert slot.text (heldHandle k)) >> changed d))
   deviceKeyBy _ slot = device >>= \d -> liftIO ((handleOf <$>) . Map.lookup slot.text <$> readIORef d.keys)
-  dropDeviceKey slot = device >>= \d -> liftIO (modifyIORef' d.keys (Map.delete slot.text) >> changed d)
+  dropDeviceKeyBy o slot = device >>= \d -> liftIO (void (whileOpen d o (modifyIORef' d.keys (Map.delete slot.text) >> changed d)))
   secretsChanges = (\d -> d.changes.emitter) <$> device
   announceSecretsChanged = device >>= liftIO . changed
   requestTabLock name = device >>= \d -> liftIO $ atomically $ stateTVar d.requests (\(n, asked) -> (TabLock (n + 1), (n + 1, Map.insert (n + 1) name asked)))

@@ -500,14 +500,23 @@ async function wiki_vault_device_key(user, owner) {
 }
 
 // Let go of a user's vault key on this device: the page's and the stored.
-async function wiki_vault_drop_key(user) {
+// Under an owner (an operation of the user's, such as the move of the
+// assistant's settings), only while the owner is open: checked as the drop
+// starts, and again in the step that starts the transaction that deletes
+// the stored key, so that a drop asked before a sign-out deletes nothing
+// that a sign-in after it kept.
+async function wiki_vault_drop_key(user, owner) {
+  if (!wikiVaultOwnerOpen(owner)) return;
   wikiVaultPageKeys();
   wikiVaultLetGo(String(user));
   wikiVaultChannel?.postMessage({ dropped: String(user) });
   try {
-    await wikiVaultStore("readwrite", (store) => store.delete(String(user)));
+    await wikiVaultStore("readwrite", (store) => {
+      if (!wikiVaultOwnerOpen(owner)) throw new Error("The step that asked to drop this key has ended.");
+      return store.delete(String(user));
+    });
   } catch {
-    // Nothing stored.
+    // Nothing stored, or the owner let go.
   }
   wikiVaultSecretsChanged();
 }
@@ -821,4 +830,89 @@ function wiki_passkey_abort() {
   wikiPasskeyOffer++;
   wikiPasskeySignIn?.abort();
   wikiPasskeySignIn = null;
+}
+
+// The assistant's database (Wiki.App.Assistant's assistantDatabase:
+// "wiki-assistant", store "settings"), opened.
+function wikiAssistantDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("wiki-assistant", 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains("settings")) request.result.createObjectStore("settings");
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+// Keep a user's record of the assistant's database (its JSON, as text,
+// stored as the bytes the store's library stores), or delete it when
+// "present" is false, for an operation under an owner of keys: only while
+// the owner is open, checked in the step that starts the transaction that
+// writes. A sign-out here lets the user's owners go (Wiki.App.Shell), so a
+// write asked before it and reaching here after it writes nothing. "" when
+// done, or what failed.
+async function wiki_vault_keep_record(user, text, present, owner) {
+  let db;
+  try {
+    db = await wikiAssistantDatabase();
+  } catch (error) {
+    return String(error?.message ?? error);
+  }
+  try {
+    await new Promise((resolve, reject) => {
+      if (!wikiVaultOwnerOpen(owner)) throw new Error("the step that asked to keep this has ended");
+      const transaction = db.transaction("settings", "readwrite");
+      const store = transaction.objectStore("settings");
+      if (present) store.put(new TextEncoder().encode(String(text)), String(user));
+      else store.delete(String(user));
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    return "";
+  } catch (error) {
+    return String(error?.message ?? error);
+  } finally {
+    db.close();
+  }
+}
+
+// Delete a user's record of the assistant's database only if it still
+// holds these bytes (the record's JSON, as text), deciding and deleting in
+// one transaction: a tab of an earlier version that writes the record in
+// between keeps its write, which the move of the record reads next. Under
+// an owner of keys, only while the owner is open, checked in the same
+// step as the delete. Whether the record was deleted; false where it could
+// not be read.
+async function wiki_vault_drop_record_if(user, expected, owner) {
+  const want = new TextEncoder().encode(String(expected));
+  let db;
+  try {
+    db = await wikiAssistantDatabase();
+  } catch {
+    return false;
+  }
+  try {
+    return await new Promise((resolve) => {
+      const transaction = db.transaction("settings", "readwrite");
+      const store = transaction.objectStore("settings");
+      let dropped = false;
+      const read = store.get(String(user));
+      read.onsuccess = () => {
+        const kept = read.result;
+        if (kept == null || !wikiVaultOwnerOpen(owner)) return;
+        const have = ArrayBuffer.isView(kept) ? new Uint8Array(kept.buffer, kept.byteOffset, kept.byteLength) : new Uint8Array(kept);
+        if (have.length === want.length && have.every((b, i) => b === want[i])) {
+          store.delete(String(user));
+          dropped = true;
+        }
+      };
+      transaction.oncomplete = () => resolve(dropped);
+      transaction.onerror = () => resolve(false);
+      transaction.onabort = () => resolve(false);
+    });
+  } finally {
+    db.close();
+  }
 }

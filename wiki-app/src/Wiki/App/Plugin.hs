@@ -94,6 +94,7 @@ import Halogen.HTML qualified as HH
 import Halogen.HTML.Properties qualified as HP
 import Halogen.Router (Follow, Router)
 import Halogen.Router qualified as Router
+import Halogen.Subscription (Emitter)
 import Protolude
 import Wiki.Api.Plugins (PluginId (..))
 import Wiki.App.Editor.Browser (clearField, focusElement)
@@ -207,13 +208,19 @@ data AgentOutput
   | SetOptions (Maybe Value)
 
 -- | 'AgentInput' is what the host gives an agent each time the editor
--- renders: who is signed in, the plugin's options, the page being edited
--- once it is loaded, and the capabilities.
+-- renders: who is signed in, the plugin's options and why their last
+-- write was refused, the page being edited once it is loaded, and the
+-- capabilities.
 data AgentInput m = AgentInput
   { user :: Maybe UserId
   , options :: Maybe Value
   -- ^ The plugin's options for the user: as the server keeps them, or as
   -- last set while their write is out. 'Nothing' when there are none.
+  , refused :: Maybe Text
+  -- ^ Why the server refused the last write of the plugin's options for
+  -- the user, in the server's words; 'options' are then the server's. It
+  -- stays until a later write of the options succeeds, or options are set
+  -- again ('SetOptions'). 'Nothing' when the last write was not refused.
   , editing :: Maybe Editing
   , can :: Capabilities m
   }
@@ -266,11 +273,21 @@ data Face = Logo Text (Maybe Text) | ChatGlyph | Letter Text
 newtype Options m = Options {surface :: H.Component (Const Void) (OptionsInput m) OptionsOutput m}
 
 -- | 'OptionsInput' is what the settings page gives a plugin's options: who
--- is signed in, the plugin's options ('AgentInput''s @options@), and the
--- capabilities.
+-- is signed in, the plugin's options and why their last write was refused
+-- ('AgentInput''s @options@ and @refused@), whether the page was adopted,
+-- and the capabilities.
 data OptionsInput m = OptionsInput
   { user :: Maybe UserId
   , options :: Maybe Value
+  , refused :: Maybe Text
+  , adopted :: Bool
+  -- ^ Whether the settings are shown at the address the page started at,
+  -- from what the page carries: a page the server rendered asks the server
+  -- nothing as the program adopts it. The secrets then show what this
+  -- browser holds of them. False once the reader has gone to another
+  -- address: settings shown then read the secrets from the server as they
+  -- open ('Secrets''s @refresh@), since the copy this browser holds can be
+  -- older than the vault.
   , can :: Capabilities m
   }
 
@@ -332,12 +349,24 @@ data Document = Document
 -- the one it had; 'remove' forgets one. A name the manifest does not
 -- declare is refused before anything is read. 'field' is the host's form
 -- for one secret, which unlocks the vault where it is locked
--- ('secretField'). Each function but 'field' waits: call it in 'H.async'.
+-- ('secretField'). 'changes' tells each time what the secrets read as may
+-- have changed: the vault unlocked or locked in this browser, a secret
+-- kept or forgotten, here or in another tab; a surface that shows them
+-- reads them again. It is made in place: call it with 'Halogen.liftEffect',
+-- and subscribe. Each other function but 'field' waits: call it in
+-- 'H.async'.
 data Secrets m = Secrets
   { get :: m (Either Unavailable (Map SecretName Text))
+  -- ^ As this browser holds them where it can: what a surface reads as it
+  -- starts, which asks the server nothing ("Wiki.App.Plugin.Host.Secrets").
+  , refresh :: m ()
+  -- ^ Read them from the server, for when they are needed fresh (a
+  -- request about to be made, settings that show them opened): a change
+  -- since is announced, and 'changes' tells of it.
   , put :: SecretName -> Text -> m (Either Text ())
   , remove :: SecretName -> m (Either Text ())
   , field :: SecretField m
+  , changes :: m (Emitter IO ())
   }
 
 -- | 'Unavailable' is why a plugin's secrets cannot be read: the user's
@@ -373,23 +402,38 @@ fieldSlot s name = let (session, user) = s.field.reader in FieldSlot session use
 -- | 'FieldInput' is what a plugin gives a 'SecretField': the secret's name,
 -- one the manifest declares, and a check of a value before it is kept,
 -- with what to tell the reader when it fails (the assistant tries an API
--- key). The check waits; the field shows that it is checking.
+-- key). The check waits; the field shows that it is checking. A check
+-- that passes answers the value to keep, as the plugin makes it from the
+-- text typed: the field keeps that value, so that what is kept is what was
+-- checked (the assistant trims the spaces around a key, and tries the key
+-- trimmed). A plugin that keeps the text as typed answers it unchanged.
+--
+-- 'binding' names what the check is for, when it depends on more than the
+-- value: the assistant's is the service the key is tried against, its
+-- provider and its address. A value is kept only if the binding is the same
+-- when the check answers as when it was asked; otherwise the field keeps
+-- nothing and says so. A plugin whose check depends on the value alone
+-- gives an empty binding.
 data FieldInput m = FieldInput
   { name :: SecretName
-  , check :: Text -> m (Either Text ())
+  , check :: Text -> m (Either Text Text)
+  , binding :: Text
   }
 
 -- | 'FieldOutput' is what a 'SecretField' tells the plugin: a value was kept
 -- under the name, or the name's value was forgotten, or the field unlocked
--- the vault, so that the plugin reads its secrets again ('get').
-data FieldOutput = Kept SecretName | Removed SecretName | Unlocked
+-- the vault, so that the plugin reads its secrets again ('get'). And
+-- 'KeepOver': the keep of a value typed under the name is over, kept
+-- (after 'Kept') or not (the check refused it, the write failed), so that
+-- a plugin that shows the check as going on shows it no more.
+data FieldOutput = Kept SecretName | Removed SecretName | Unlocked | KeepOver SecretName
   deriving stock (Eq, Show)
 
 -- | A 'SecretField' for one secret, in a surface whose children include
 -- fields under the given label:
 --
 -- > type Slots = ("secret" .== H.Slot (Const Void) FieldOutput FieldSlot)
--- > ... secretField "secret" can.secrets FieldInput {name, check} FromField
+-- > ... secretField "secret" can.secrets FieldInput {name, check, binding = ""} FromField
 secretField
   :: forall label
   ->forall action slots m

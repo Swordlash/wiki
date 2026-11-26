@@ -149,7 +149,7 @@ $( browserJS
      , ("js_salt", "wiki_vault_salt", Safe, [t|IO JSText|])
      , ("js_keep_keyPromise", "wiki_vault_keep_key", Safe, [t|JSText -> Int -> Bool -> Int -> IO (Promise JSText)|])
      , ("js_device_keyPromise", "wiki_vault_device_key", Safe, [t|JSText -> Int -> IO (Promise Int)|])
-     , ("js_drop_keyPromise", "wiki_vault_drop_key", Safe, [t|JSText -> IO (Promise ())|])
+     , ("js_drop_keyPromise", "wiki_vault_drop_key", Safe, [t|JSText -> Int -> IO (Promise ())|])
      , ("js_listen", "wiki_vault_listen", Safe, [t|IO ()|])
      , ("js_signed_in", "wiki_vault_signed_in", Safe, [t|IO ()|])
      , ("js_slotsPromise", "wiki_vault_slots", Safe, [t|IO (Promise JSText)|])
@@ -175,6 +175,8 @@ $( browserJS
      , ("js_tab_lock_request", "wiki_tab_lock_request", Safe, [t|JSText -> IO Int|])
      , ("js_tab_lock_grantedPromise", "wiki_tab_lock_granted", Safe, [t|Int -> IO (Promise ())|])
      , ("js_tab_lock_release", "wiki_tab_lock_release", Safe, [t|Int -> IO ()|])
+     , ("js_drop_record_ifPromise", "wiki_vault_drop_record_if", Safe, [t|JSText -> JSText -> Int -> IO (Promise Bool)|])
+     , ("js_keep_recordPromise", "wiki_vault_keep_record", Safe, [t|JSText -> JSText -> Bool -> Int -> IO (Promise JSText)|])
      ]
  )
 
@@ -222,14 +224,20 @@ js_keep_key a1 a2 a3 a4 = if inBrowser then wait =<< js_keep_keyPromise a1 a2 a3
 js_device_key :: JSText -> Int -> IO Int
 js_device_key a1 a2 = if inBrowser then wait =<< js_device_keyPromise a1 a2 else pure inert
 
-js_drop_key :: JSText -> IO ()
-js_drop_key a1 = if inBrowser then wait =<< js_drop_keyPromise a1 else pure inert
+js_drop_key :: JSText -> Int -> IO ()
+js_drop_key a1 a2 = if inBrowser then wait =<< js_drop_keyPromise a1 a2 else pure inert
 
 js_slots :: IO JSText
 js_slots = if inBrowser then wait =<< js_slotsPromise else pure inert
 
 js_generation :: IO Int
 js_generation = if inBrowser then wait =<< js_generationPromise else pure inert
+
+js_drop_record_if :: JSText -> JSText -> Int -> IO Bool
+js_drop_record_if a1 a2 a3 = if inBrowser then wait =<< js_drop_record_ifPromise a1 a2 a3 else pure inert
+
+js_keep_record :: JSText -> JSText -> Bool -> Int -> IO JSText
+js_keep_record a1 a2 a3 a4 = if inBrowser then wait =<< js_keep_recordPromise a1 a2 a3 a4 else pure inert
 
 js_tab_lock_granted :: Int -> IO ()
 js_tab_lock_granted a1 = if inBrowser then wait =<< js_tab_lock_grantedPromise a1 else pure inert
@@ -284,8 +292,14 @@ newtype KeyRef = KeyRef Int
 -- signs out ('closeKeyOwnersOf'). Letting an owner go deletes every key
 -- registered under it, even those of an operation whose worker was
 -- killed with the section, and keys made after it are not registered:
--- no key of a step cut off stays in the page. 'pageKeys' is the page's,
--- which is never let go.
+-- no key of a step cut off stays in the page. Nothing is written to this
+-- browser under an owner let go either: no key kept, and no record of the
+-- assistant's database kept or deleted ('keepDeviceRecordBy',
+-- 'dropDeviceRecordIfBy', 'dropDeviceKeyBy'), each checked in the step
+-- that writes. So an operation that outlives its reader (the move of the
+-- assistant's legacy settings, a read of the vault that answers after a
+-- sign-out) leaves nothing of its in this browser. 'pageKeys' is the
+-- page's, which is never let go.
 newtype KeyOwner = KeyOwner Int
   deriving stock (Eq, Ord, Show)
 
@@ -455,8 +469,29 @@ class (Monad m) => MonadAssistant m where
   -- | Store what this device keeps for a user, replacing what it kept; or,
   -- with nothing, delete it.
   keepDeviceRecord :: UserId -> Maybe ByteString -> m (Either Text ())
-  default keepDeviceRecord :: (MonadTrans t, MonadAssistant n, m ~ t n) => UserId -> Maybe ByteString -> m (Either Text ())
-  keepDeviceRecord user = lift . keepDeviceRecord user
+  keepDeviceRecord = keepDeviceRecordBy pageKeys
+
+  -- | 'keepDeviceRecord', for an operation under this owner ('KeyOwner'):
+  -- refused once the owner is let go, which the browser checks in the step
+  -- that starts the write. A record is JSON, and crosses to the browser as
+  -- text.
+  keepDeviceRecordBy :: KeyOwner -> UserId -> Maybe ByteString -> m (Either Text ())
+  default keepDeviceRecordBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> UserId -> Maybe ByteString -> m (Either Text ())
+  keepDeviceRecordBy o user = lift . keepDeviceRecordBy o user
+
+  -- | Delete what this device keeps for a user only if it is still these
+  -- bytes: decided and done in one transaction of the store, so that a tab
+  -- of an earlier version that writes the record in between keeps its
+  -- write. Whether it was deleted.
+  dropDeviceRecordIf :: UserId -> ByteString -> m (Either Text Bool)
+  dropDeviceRecordIf = dropDeviceRecordIfBy pageKeys
+
+  -- | 'dropDeviceRecordIf', for an operation under this owner
+  -- ('KeyOwner'): nothing is deleted once the owner is let go, checked in
+  -- the transaction that deletes.
+  dropDeviceRecordIfBy :: KeyOwner -> UserId -> ByteString -> m (Either Text Bool)
+  default dropDeviceRecordIfBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> UserId -> ByteString -> m (Either Text Bool)
+  dropDeviceRecordIfBy o user = lift . dropDeviceRecordIfBy o user
 
   -- | A new vault key (AES-GCM), which can be exported only if asked: to
   -- be wrapped for a passkey.
@@ -510,8 +545,14 @@ class (Monad m) => MonadAssistant m where
 
   -- | Let go of this device's vault key for a user.
   dropDeviceKey :: UserId -> m ()
-  default dropDeviceKey :: (MonadTrans t, MonadAssistant n, m ~ t n) => UserId -> m ()
-  dropDeviceKey = lift . dropDeviceKey
+  dropDeviceKey = dropDeviceKeyBy pageKeys
+
+  -- | 'dropDeviceKey', for an operation under this owner ('KeyOwner'):
+  -- nothing is let go once the owner is let go, checked as the drop starts
+  -- and again in the transaction that deletes the stored key.
+  dropDeviceKeyBy :: KeyOwner -> UserId -> m ()
+  default dropDeviceKeyBy :: (MonadTrans t, MonadAssistant n, m ~ t n) => KeyOwner -> UserId -> m ()
+  dropDeviceKeyBy o = lift . dropDeviceKeyBy o
 
   -- | The changes of what the users' secrets read as in this page: a key
   -- kept or let go on this device (a vault unlocked or locked, by this
@@ -741,7 +782,15 @@ instance (MonadAssistant m) => MonadAssistant (ReaderT r m)
 instance MonadAssistant BrowserDOM where
   assistantHere = pure inBrowser
   deviceRecord = recordIn
-  keepDeviceRecord = keepRecordIn
+
+  -- The page's own writes go through the store's library; an operation's
+  -- under an owner through one call of @jsbits\/vault.js@ that checks the
+  -- owner as it starts the transaction ('KeyOwner').
+  keepDeviceRecordBy (KeyOwner 0) user record = keepRecordIn user record
+  keepDeviceRecordBy (KeyOwner owner) user record = liftIO $ do
+    failure <- evaluate . fromJSText =<< js_keep_record (toJSText user.text) (toJSText (maybe "" decodeUtf8 record)) (isJust record) owner
+    pure (if T.null failure then Right () else Left ("This browser could not keep the assistant's settings (" <> failure <> ")."))
+  dropDeviceRecordIfBy (KeyOwner owner) user bytes = liftIO (Right <$> (evaluate =<< js_drop_record_if (toJSText user.text) (toJSText (decodeUtf8 bytes)) owner))
   newVaultKeyBy (KeyOwner owner) exportable = liftIO (KeyRef <$> (evaluate =<< js_new_key exportable owner))
   sealWith (KeyRef k) text info = liftIO $ do
     answer <- evaluate . fromJSText =<< js_seal k (toJSText text) (toJSText info)
@@ -757,7 +806,7 @@ instance MonadAssistant BrowserDOM where
   deviceKeyBy (KeyOwner owner) user = liftIO $ do
     k <- evaluate =<< js_device_key (toJSText user.text) owner
     pure (if k == 0 then Nothing else Just (KeyRef k))
-  dropDeviceKey user = liftIO (evaluate =<< js_drop_key (toJSText user.text))
+  dropDeviceKeyBy (KeyOwner owner) user = liftIO (evaluate =<< js_drop_key (toJSText user.text) owner)
   secretsChanges = liftIO secretsHeard
   announceSecretsChanged = liftIO js_secrets_changed
   requestTabLock name = liftIO (TabLock <$> js_tab_lock_request (toJSText name))
@@ -839,7 +888,18 @@ instance MonadAssistant BrowserDOM where
 instance MonadAssistant MemDOM where
   assistantHere = pure False
   deviceRecord = recordIn
-  keepDeviceRecord = keepRecordIn
+
+  -- The in-memory document has no owners of keys ('openKeyOwner' gives the
+  -- page's): every write is the page's.
+  keepDeviceRecordBy _ = keepRecordIn
+
+  -- The in-memory document runs one program at a time: nothing writes
+  -- between the read and the delete.
+  dropDeviceRecordIfBy _ user bytes =
+    recordIn user >>= \case
+      Right (Just now) | now == bytes -> fmap (const True) <$> keepRecordIn user Nothing
+      Right _ -> pure (Right False)
+      Left why -> pure (Left why)
   newVaultKeyBy _ _ = pure (KeyRef 0)
   sealWith _ _ _ = pure (Left noBrowser)
   openWith _ _ _ = pure (Left noBrowser)
@@ -847,7 +907,7 @@ instance MonadAssistant MemDOM where
   newSalt = pure ""
   keepDeviceKeyBy _ _ _ _ = pure (Left noBrowser)
   deviceKeyBy _ _ = pure Nothing
-  dropDeviceKey _ = pass
+  dropDeviceKeyBy _ _ = pass
 
   -- No key is kept here, and the page is the only one.
   secretsChanges = liftIO ((\s -> s.emitter) <$> HS.create)

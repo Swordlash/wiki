@@ -985,11 +985,15 @@ data AccountApi form mode = AccountApi
   -- is not one, or a first choice of a user who has choices for
   -- 'Wiki.Api.Plugins.maxPluginsPerUser' plugins already, is
   -- 'Wiki.Api.Error.Invalid'.
-  , setPluginOptions :: mode :- "plugins" :> Capture "plugin" PluginId :> "options" :> ReqBody '[JSON] PluginOptions :> Put '[JSON] PluginChoice
+  , setPluginOptions :: mode :- "plugins" :> Capture "plugin" PluginId :> "options" :> Header "If-None-Match" Text :> ReqBody '[JSON] PluginOptions :> Put '[JSON] PluginChoice
   -- ^ Replace the user's options for a plugin with the body, a JSON value
   -- other than @null@ of at most 'Wiki.Api.Plugins.maxOptionsBytes'
   -- bytes. The plugin's state is not touched. The response and the other
-  -- refusals are 'setPluginState''s.
+  -- refusals are 'setPluginState''s. With @If-None-Match: *@ the options
+  -- are written only if the user has none for the plugin, checked in the
+  -- write's own transaction: options there already are 412
+  -- ('Wiki.Api.Error.Conflict'), and nothing is written. Any other
+  -- @If-None-Match@ is 'Wiki.Api.Error.Invalid'.
   , clearPluginOptions :: mode :- "plugins" :> Capture "plugin" PluginId :> "options" :> Delete '[JSON] PluginChoice
   -- ^ Clear the user's options for a plugin. The state is not touched.
   -- The response is the user's choice for the plugin after it.

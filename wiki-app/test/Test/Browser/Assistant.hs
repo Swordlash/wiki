@@ -46,29 +46,39 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types qualified as Aeson
 import Data.ByteString.Lazy qualified as BSL
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Text qualified as T
 import Halogen.JSBits (JSText, Safety (..), browserJS, fromJSText, toJSText)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, replace)
-import Test.Browser.Http (answerWith, serveDemo, serverStarts, serverStops, startServer)
-import Test.Browser.Mount (slugs, startOn, startWith)
+import System.IO.Unsafe (unsafePerformIO)
+import Test.Browser.Http (answerWith, serveDemo, servePlugins, serverStarts, serverStops, startServerOver)
+import Test.Browser.Mount (slugs)
+import Test.Browser.Mount qualified as Mount
 import Test.Browser.Text (editorText, markdown, untilFocusTaken)
 import Test.Hspec.Halogen
+import Test.LegacyKeys (Keys, changeKeys)
 import Web.Storage.IndexedDB (MonadIndexedDB)
+import Wiki.Api.Plugins (Plugins)
 import Wiki.Api.ServerSettings (AssistantApi (..), AssistantService (..))
 import Wiki.Api.Types (SessionInfo (..))
 import Wiki.App.Assistant (MonadAssistant (..))
-import Wiki.App.Assistant.Keys (Keys (..), changeKeys, readKeys)
 import Wiki.App.Assistant.Sync (MonadVault)
-import Wiki.App.Backend (MonadWiki (..), Session (..), session)
+import Wiki.App.Backend (MonadWiki (..), Session (..), WikiError, session)
+import Wiki.App.Backend.Http (browserTransport, newHttpEnv, runHttpWiki)
 import Wiki.App.Backend.Mem (newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State qualified as M
+import Wiki.App.Backend.Plugins (MonadPlugins (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
+import Wiki.App.Plugin (Manifest (..))
+import Wiki.App.Plugin.Host.Secrets (deviceSecretsSlot, loadLocal, localSlot, readSecrets)
+import Wiki.App.Plugin.Registry (assistantId, manifests, optionsFor)
 import Wiki.App.Route (Route (..), SettingsSection (..))
 import Wiki.App.Shell qualified as Shell
 import Wiki.Core.Assistant (ApiKey (..), Mode (..), ModelName (..), Provider (..), ProviderSettings (..), Settings (..), aboutTokens, chooseProvider, defaultSettings, settingsOf, withBaseUrl, withEffort, withKey, withMode, withModel)
 import Wiki.Core.Assistant.Reference (markdownReference)
+import Wiki.Core.Assistant.Split (fromParts)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Page (Page (id, updatedAt))
 import Wiki.Core.PageKind qualified as Kind
@@ -629,9 +639,9 @@ spec m = readsOnce Quiet $ do
     -- The test page is the machine's own: a secure context.
     length <$> findAll ui ".assistant-insecure" `shouldReturn` 0
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
-    findIn anthropic ".assistant-key" >>= (`typeText` "sk-ant-test-key")
-    findIn anthropic ".assistant-key-form button" >>= click
-    findIn anthropic ".assistant-key-kept" >>= (`shouldHaveText` "A key is kept for Anthropic (Claude) in this browser.")
+    findIn anthropic ".secret-field-value" >>= (`typeText` "sk-ant-test-key")
+    findIn anthropic ".secret-field-keep" >>= click
+    findIn anthropic ".secret-field-set" >>= (`shouldHaveText` "Set")
     -- Its list of models, fetched with it, and fetched again on request.
     findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
     findAllIn anthropic ".assistant-model-choice optgroup[label='Recommended'] option" >>= traverse textContent >>= (`shouldBe` ["Claude Opus 5.5", "Claude Sonnet 5.5"])
@@ -645,8 +655,8 @@ spec m = readsOnce Quiet $ do
     -- The page never shows a key once kept.
     outerHTML anthropic >>= (`shouldNotSatisfy'` T.isInfixOf "sk-ant-test-key")
     -- Forgotten, it is gone from the browser.
-    findIn anthropic ".assistant-forget" >>= click
-    findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "")
+    findIn anthropic ".secret-field-forget" >>= click
+    findIn anthropic ".secret-field-value" >>= (`getProperty` "value") >>= (`shouldBe` "")
     (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
     (\s -> (settingsOf Anthropic s).fetched) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
     -- The scripted provider, chosen and tested: its script refuses, then
@@ -706,8 +716,11 @@ spec m = readsOnce Quiet $ do
     findIn anthropic ".assistant-service" >>= (`getProperty` "value") >>= (`shouldBe` "")
     _ <- perform (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-service") (toJSText gateway))
     (\s -> (settingsOf Anthropic s).baseUrl) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (Url gateway))
-    (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ApiKey "gw-token"))
-    -- The other service's own list, fetched at once with the key.
+    -- The key was kept for Anthropic's own service: it is not sent to the
+    -- gateway, and the settings say so.
+    (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
+    findIn anthropic ".assistant-key-elsewhere" >>= textContent >>= (`shouldSatisfy` T.isInfixOf ("is for another address: https://api.anthropic.com. Enter the key for " <> gateway))
+    -- The other service's own list, fetched at once, without the key.
     findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
     findIn anthropic ".assistant-service" >>= (`getProperty` "value") >>= (`shouldBe` gateway)
     length <$> findAllIn anthropic ".assistant-insecure-base-url" `shouldReturn` 0
@@ -781,7 +794,7 @@ spec m = readsOnce Quiet $ do
     findAll ui ".assistant-provider-settings[data-provider='openai'] .assistant-service option" >>= traverse textContent >>= (`shouldBe` ["OpenAI's own"])
     find ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service-hint" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "the only one this wiki offers")
 
-  it "tests the connection to another address without a key, until a key is typed, which is then the only one tested" $ runFresh $ do
+  it "tests the connection to another address without a key, while none is kept" $ runFresh $ do
     scriptWith [] (object [])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
     (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
@@ -794,13 +807,6 @@ spec m = readsOnce Quiet $ do
     [checked] <- checks
     fieldText ["key"] checked `shouldBe` Just ""
     fieldText ["baseUrl"] checked `shouldBe` Just gateway
-    -- A key typed: the only test offered is the one with the key.
-    findIn anthropic ".assistant-key" >>= (`typeText` "gw-typed")
-    length <$> findAllIn anthropic ".assistant-test" `shouldReturn` 0
-    findIn anthropic ".assistant-key-form button[type='submit']" >>= (`shouldHaveText` "Test and keep the key")
-    -- Emptied again, the connection test is back.
-    findIn anthropic ".assistant-key" >>= clear
-    findIn anthropic ".assistant-test" >>= (`shouldHaveText` "Test the connection (no key)")
 
   it "tests a typed key before keeping it: a refused one is not kept and stays in the field, an accepted one is kept with its models, and Enter tests it" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
@@ -813,8 +819,8 @@ spec m = readsOnce Quiet $ do
     -- A key the gateway refuses: the reason by the field, nothing kept,
     -- the key left in the field to be corrected.
     refuse >>= (`shouldBe` True)
-    findIn anthropic ".assistant-key" >>= (`typeText` "gw-wrong")
-    findIn anthropic ".assistant-key-form button[type='submit']" >>= click
+    findIn anthropic ".secret-field-value" >>= (`typeText` "gw-wrong")
+    findIn anthropic ".secret-field-keep" >>= click
     refused <- findIn anthropic ".assistant-check-fails" >>= textContent
     refused `shouldSatisfy` T.isInfixOf "claude-gateway.example.com refused the key: it has probably expired or been revoked."
     refused `shouldSatisfy` T.isInfixOf "(401)"
@@ -822,27 +828,27 @@ spec m = readsOnce Quiet $ do
     refused `shouldNotSatisfy'` T.isInfixOf "gw-wrong"
     (map (fieldText ["key"]) <$> checks) `shouldReturn` [Just "gw-wrong"]
     keyOf `shouldReturn` Nothing
-    length <$> findAllIn anthropic ".assistant-key-kept" `shouldReturn` 0
-    findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "gw-wrong")
+    length <$> findAllIn anthropic ".secret-field-set" `shouldReturn` 0
+    findIn anthropic ".secret-field-value" >>= (`getProperty` "value") >>= (`shouldBe` "gw-wrong")
     -- Once the settings have stored that the gateway answered.
-    findIn anthropic ".assistant-key-form button[type='submit']" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
+    findIn anthropic ".secret-field-keep" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
     -- The corrected key, submitted with Enter: kept, the field emptied,
     -- the models fetched with it.
     accept >>= (`shouldBe` True)
-    field <- findIn anthropic ".assistant-key"
+    field <- findIn anthropic ".secret-field-value"
     clear field
     typeText field "gw-token"
     press "Enter"
-    findIn anthropic ".assistant-key-kept" >>= (`shouldHaveText` "A key is kept for Anthropic (Claude) in this browser.")
+    findIn anthropic ".secret-field-set" >>= (`shouldHaveText` "Set")
     findIn anthropic ".assistant-check-kept" >>= (`shouldHaveText` "The key works and is kept.")
     (map (fieldText ["key"]) <$> checks) `shouldReturn` [Just "gw-wrong", Just "gw-token"]
     keyOf `shouldReturn` Just (ApiKey "gw-token")
     findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
     -- Forgotten, the field is empty: what was typed is not kept in the page.
-    findIn anthropic ".assistant-forget" >>= click
-    findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "")
+    findIn anthropic ".secret-field-forget" >>= click
+    findIn anthropic ".secret-field-value" >>= (`getProperty` "value") >>= (`shouldBe` "")
 
-  it "disables the provider's inputs while a typed key is tested, and keeps nothing when the address changes before the answer" $ runFresh $ do
+  it "disables the provider's inputs while a typed key is tested, and keeps the key tested at the address it was tested at" $ runFresh $ do
     scriptWith [] (object ["anthropic" .= take 2 scriptedModels])
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
     (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
@@ -850,24 +856,17 @@ spec m = readsOnce Quiet $ do
     let settingsNow = settingsOf Anthropic <$> settingsFor m (UserId "user-editor")
     -- A gateway that answers only when the test lets the check go.
     unsafeIOToPageM js_hold_check >>= (`shouldBe` True)
-    findIn anthropic ".assistant-key" >>= (`typeText` "gw-token")
-    findIn anthropic ".assistant-key-form button[type='submit']" >>= click
-    findIn anthropic ".assistant-key-form button[type='submit']" >>= (`shouldHaveText` "Checking…")
-    for_ [".assistant-service", ".assistant-key", ".assistant-model", ".assistant-default-effort"] $ \selector ->
+    findIn anthropic ".secret-field-value" >>= (`typeText` "gw-token")
+    findIn anthropic ".secret-field-keep" >>= click
+    findIn anthropic ".secret-field-busy" >>= (`shouldHaveText` "Checking…")
+    for_ [".assistant-service", ".secret-field-value", ".assistant-model", ".assistant-default-effort"] $ \selector ->
       findIn anthropic selector >>= (`getAttribute` "disabled") >>= (`shouldBe` Just "")
-    -- The address changes all the same before the answer comes, as a
-    -- change from another device would: the choice's change, sent by the
-    -- test, since the choice takes no input from the user. The demo
-    -- offers the provider's own service only, which is the other address.
-    _ <- perform (js_choose (toJSText ".assistant-provider-settings[data-provider='anthropic'] .assistant-service") (toJSText ""))
-    (\ps -> ps.baseUrl) <$> settingsNow >>= (`shouldBe` Nothing)
-    -- The old address's answer keeps nothing, and says why; the key stays
-    -- in the field, to be tested at the new address.
+    -- The address cannot change before the answer: the key kept is the
+    -- one tested, at the address it was tested at.
     letGo
-    findIn anthropic ".assistant-check-fails" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The base URL changed while the key was tested, so the key was not kept")
-    (\ps -> ps.key) <$> settingsNow >>= (`shouldBe` Nothing)
-    length <$> findAllIn anthropic ".assistant-key-kept" `shouldReturn` 0
-    findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "gw-token")
+    findIn anthropic ".secret-field-set" >>= (`shouldHaveText` "Set")
+    (\ps -> ps.baseUrl) <$> settingsNow >>= (`shouldBe` Just (Url gateway))
+    (\ps -> ps.key) <$> settingsNow >>= (`shouldBe` Just (ApiKey "gw-token"))
     (map (fieldText ["baseUrl"]) <$> checks) `shouldReturn` [Just gateway]
 
   it "refuses a typed key with which the service refuses its model list (a 401), and keeps nothing" $ runFresh $ do
@@ -876,11 +875,11 @@ spec m = readsOnce Quiet $ do
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
     (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
-    findIn anthropic ".assistant-key" >>= (`typeText` "gw-wrong")
-    findIn anthropic ".assistant-key-form button[type='submit']" >>= click
+    findIn anthropic ".secret-field-value" >>= (`typeText` "gw-wrong")
+    findIn anthropic ".secret-field-keep" >>= click
     findIn anthropic ".assistant-check-fails" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "claude-gateway.example.com refused the key: it has probably expired or been revoked.")
     (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Nothing)
-    findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "gw-wrong")
+    findIn anthropic ".secret-field-value" >>= (`getProperty` "value") >>= (`shouldBe` "gw-wrong")
     -- The list's refusal is enough: no message test was made.
     checks `shouldReturn` []
 
@@ -890,9 +889,9 @@ spec m = readsOnce Quiet $ do
     keep m (UserId "user-editor") (withModel Anthropic "claude-retired-1" (withBaseUrl Anthropic gateway defaultSettings))
     (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
-    findIn anthropic ".assistant-key" >>= (`typeText` "gw-token")
-    findIn anthropic ".assistant-key-form button[type='submit']" >>= click
-    findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
+    findIn anthropic ".secret-field-value" >>= (`typeText` "gw-token")
+    findIn anthropic ".secret-field-keep" >>= click
+    findIn anthropic ".secret-field-set" >>= (`shouldHaveText` "Set")
     findIn anthropic ".assistant-check-kept" >>= (`shouldHaveText` "The key works and is kept.")
     findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
     -- Tested, and kept, with the list's first model, in place of the one
@@ -912,11 +911,11 @@ spec m = readsOnce Quiet $ do
     let fail404 = encode (object ["kind" .= ("not_found" :: Text), "status" .= (404 :: Int)])
         keyNow = (\s -> (settingsOf Anthropic s).key) <$> settingsFor m (UserId "user-editor")
     unsafeIOToPageM (js_check (toJSText (decodeUtf8 (BSL.toStrict fail404)))) >>= (`shouldBe` True)
-    findIn anthropic ".assistant-key" >>= (`typeText` "gw-token")
-    findIn anthropic ".assistant-key-form button[type='submit']" >>= click
+    findIn anthropic ".secret-field-value" >>= (`typeText` "gw-token")
+    findIn anthropic ".secret-field-keep" >>= click
     findIn anthropic ".assistant-check-fails" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The provider has no such model")
     keyNow `shouldReturn` Nothing
-    findIn anthropic ".assistant-key" >>= (`getProperty` "value") >>= (`shouldBe` "gw-token")
+    findIn anthropic ".secret-field-value" >>= (`getProperty` "value") >>= (`shouldBe` "gw-token")
     -- The list stays, to choose another model from.
     findIn anthropic ".assistant-listed" >>= (`shouldHaveText` "2 models fetched from Anthropic (Claude), 2 of them offered for a chat.")
     findIn anthropic ".assistant-model" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
@@ -924,9 +923,9 @@ spec m = readsOnce Quiet $ do
     (\s -> (settingsOf Anthropic s).model) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ModelName "claude-sonnet-5-5"))
     -- The gateway has that one: pressed again, the key is kept with it.
     unsafeIOToPageM (js_check (toJSText "null")) >>= (`shouldBe` True)
-    findIn anthropic ".assistant-key-form button[type='submit']" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
-    findIn anthropic ".assistant-key-form button[type='submit']" >>= click
-    findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
+    findIn anthropic ".secret-field-keep" >>= (`getAttribute` "disabled") >>= (`shouldBe` Nothing)
+    findIn anthropic ".secret-field-keep" >>= click
+    findIn anthropic ".secret-field-set" >>= (`shouldHaveText` "Set")
     (map (fieldText ["model"]) <$> checks) `shouldReturn` [Just "claude-opus-5-5", Just "claude-sonnet-5-5"]
     keyNow `shouldReturn` Just (ApiKey "gw-token")
     (\s -> (settingsOf Anthropic s).model) <$> settingsFor m (UserId "user-editor") >>= (`shouldBe` Just (ModelName "claude-sonnet-5-5"))
@@ -937,9 +936,9 @@ spec m = readsOnce Quiet $ do
     keep m (UserId "user-editor") (withBaseUrl Anthropic gateway defaultSettings)
     (ui, _) <- startWith m (Just "user-editor") (UserSettings AssistantSection)
     anthropic <- find ui ".assistant-provider-settings[data-provider='anthropic']"
-    findIn anthropic ".assistant-key" >>= (`typeText` "gw-token")
-    findIn anthropic ".assistant-key-form button[type='submit']" >>= click
-    findIn anthropic ".assistant-key-kept" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "A key is kept")
+    findIn anthropic ".secret-field-value" >>= (`typeText` "gw-token")
+    findIn anthropic ".secret-field-keep" >>= click
+    findIn anthropic ".secret-field-set" >>= (`shouldHaveText` "Set")
     findIn anthropic ".assistant-check-kept" >>= (`shouldHaveText` "The key works and is kept.")
     findIn anthropic ".assistant-not-listed" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "The list of models could not be fetched.")
     (map (fieldText ["model"]) <$> checks) `shouldReturn` [Just "claude-opus-5-5"]
@@ -960,7 +959,10 @@ settingsOver m services = do
     wiki <- newMemWiki ((demoState demoNow) {M.current = Just (UserId "user-editor")})
     runMemWiki wiki session
   answerWith "GET" "api/v1/session" 200 SessionInfo {user = me.user, groups = me.groups, grants = me.grants, standing = SignedIn, providers = [], exports = [], boxes = [], homePage = me.homePage, mathMacros = Nothing, assistantServices = services, whatsNew = Nothing}
-  ui <- startServer m (UserSettings AssistantSection)
+  servePlugins
+  env <- unsafeIOToPageM (newHttpEnv browserTransport)
+  unsafeIOToPageM (writeIORef optionsHere (Just (runTest (runHttpWiki env pluginsNow :: m (Either WikiError Plugins)))))
+  ui <- startServerOver m env (UserSettings AssistantSection)
   _ <- find ui ".assistant-provider-settings[data-provider='anthropic'] .assistant-service"
   pure ui
 
@@ -1051,13 +1053,64 @@ send ui message = do
   find ui ".assistant-input" >>= (`typeText` message)
   find ui ".assistant-send" >>= click
 
+-- | Keep settings for a user as the assistant kept them before plugins: a
+-- record of this browser, sealed with a key of the assistant's own (L2).
+-- The shell moves it to the plugin's places when it starts
+-- ("Wiki.App.Assistant.Migrate"): the keys to the plugin's secrets, kept
+-- in this browser in the demo, which has no vault; the rest to the
+-- plugin's options, which the demo's backend keeps.
 keep :: forall m -> (MonadBrowserTest m, MonadAssistant m, MonadVault m) => UserId -> Settings -> PageM s ()
-keep m user settings = void (unsafeIOToPageM (runTest (changeKeys user (const settings) :: m (Either Text Keys))))
+keep m user settings = unsafeIOToPageM . runTest $ do
+  -- What an example before this one on the page moved is gone: the keys
+  -- in this browser and the cache of the lists.
+  _ <- keepDeviceRecord (deviceSecretsSlot user) Nothing
+  _ <- keepDeviceRecord (localSlot user assistantId) Nothing
+  void (changeKeys user (const settings) :: m (Either Text Keys))
 
--- | The settings kept for a user, read once the program is quiet: its
--- writes of the settings are done in an 'H.async'.
-settingsFor :: forall m -> (MonadBrowserTest m, MonadAssistant m) => UserId -> PageM s Settings
-settingsFor m user = waitQuiet *> unsafeIOToPageM (either (const defaultSettings) (\k -> k.settings) <$> runTest (readKeys user :: m (Either Text Keys)))
+-- | The settings kept for a user, read once the program is quiet: the
+-- keys among the assistant's secrets, what was learnt in its cache in
+-- this browser, and the options as the backend the example started last
+-- reads them ('MonadPlugins', 'optionsHere'): the demo's wiki, or the
+-- test's server.
+settingsFor :: forall m -> (MonadBrowserTest m, MonadAssistant m, MonadVault m) => UserId -> PageM s Settings
+settingsFor m user =
+  waitQuiet
+    *> unsafeIOToPageM
+      ( do
+          let manifest = fromMaybe (panic "no assistant") (head (filter (\x -> x.id == assistantId) manifests))
+          keys <- runTest (readSecrets user manifest :: m _)
+          learnt <- runTest (loadLocal user assistantId :: m _)
+          options <- readIORef optionsHere >>= maybe (pure Nothing) (fmap (either (const Nothing) (optionsFor assistantId)))
+          pure (fromParts options (fromRight mempty keys) learnt)
+      )
+
+-- | Which plugins are on, with their options, as the backend the example
+-- started last reads them for its reader: one page runs one example at a
+-- time.
+optionsHere :: IORef (Maybe (IO (Either WikiError Plugins)))
+optionsHere = unsafePerformIO (newIORef Nothing)
+{-# NOINLINE optionsHere #-}
+
+-- | 'Mount.startWith', the wiki kept for 'settingsFor'.
+startWith
+  :: forall m
+  ->(Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m)
+  => Maybe Text
+  -> Route
+  -> PageM s (Mounted s Shell.Query Void m, IORef M.MemState)
+startWith m who route = do
+  (ui, wiki) <- Mount.startWith m who route
+  unsafeIOToPageM (writeIORef optionsHere (Just (runMemWiki wiki pluginsNow)))
+  pure (ui, wiki)
+
+-- | 'Mount.startOn', the wiki kept for 'settingsFor'.
+startOn
+  :: forall m
+  ->(Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m)
+  => IORef M.MemState
+  -> Route
+  -> PageM s (Mounted s Shell.Query Void m)
+startOn m wiki route = unsafeIOToPageM (writeIORef optionsHere (Just (runMemWiki wiki pluginsNow))) *> Mount.startOn m wiki route
 
 -- | Run an example on a page without the scripted provider's script, and
 -- leave the page without one. The script is a global of the page

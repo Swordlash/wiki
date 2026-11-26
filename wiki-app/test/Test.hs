@@ -4,6 +4,8 @@ import Protolude
 import Test.ApiKeys qualified as ApiKeys
 import Test.ApiKeysDom qualified as ApiKeysDom
 import Test.Assistant qualified as Assistant
+import Test.AssistantMove qualified as AssistantMove
+import Test.AssistantSettings qualified as AssistantSettings
 import Test.Backend.Http qualified as Http
 import Test.Backend.Mem qualified as Mem
 import Test.Backend.Persist qualified as Persist
@@ -112,6 +114,8 @@ main = do
       PluginsExternalDom.spec
       PluginImports.spec
       PluginSecrets.spec
+      AssistantMove.spec
+      AssistantSettings.spec
       SecretField.spec
       SecretFieldDom.spec
       Complete.spec

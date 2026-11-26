@@ -390,3 +390,43 @@ function wiki_test_unembed(id) {
 function wiki_test_click_now(selector) {
   document.querySelector(selector)?.click();
 }
+
+// The server's plugins for the signed-in user, kept as the real server
+// keeps them (Wiki.Server.Plugins): which plugins are on, read by GET
+// api/v1/plugins, and each plugin's options, which PUT
+// api/v1/account/plugins/<id>/options replaces whole and DELETE on the
+// same address clears; each write answers the user's choice for the
+// plugin after it. Nothing is off for the wiki, and no state is chosen.
+function wiki_test_server_plugins() {
+  const mine = new Map();
+  const json = (status, value) => ({ status, body: JSON.stringify(value) });
+  const choice = (id) => ({ state: "default", options: mine.get(id) ?? null });
+  globalThis.wikiTestHandlers = [
+    ...(globalThis.wikiTestHandlers ?? []),
+    (request) => {
+      const path = new URL(request.url, "http://test.invalid/").pathname;
+      if (request.method === "GET" && path.endsWith("/api/v1/plugins")) {
+        return json(200, { offForWiki: [], mine: Object.fromEntries([...mine.keys()].map((id) => [id, choice(id)])) });
+      }
+      const options = path.match(/\/api\/v1\/account\/plugins\/([a-z0-9-]+)\/options$/);
+      if (options === null) return null;
+      const id = options[1];
+      if (request.method === "PUT") {
+        const value = JSON.parse(request.body);
+        if (value === null) return json(400, { error: "Invalid", message: "Options are not null: clear them with DELETE." });
+        // If-None-Match: * writes them only where there are none, as the
+        // server does.
+        const condition = Object.entries(request.headers).find(([k]) => k.toLowerCase() === "if-none-match")?.[1];
+        if (condition !== undefined && condition !== "*") return json(400, { error: "Invalid", message: "The If-None-Match header here is * (write the options only where there are none), or nothing." });
+        if (condition === "*" && mine.has(id)) return json(412, { error: "Conflict", message: "You have options for this plugin already, and If-None-Match: * asks to write them only where there are none. Nothing was written." });
+        mine.set(id, value);
+        return json(200, choice(id));
+      }
+      if (request.method === "DELETE") {
+        mine.delete(id);
+        return json(200, choice(id));
+      }
+      return null;
+    },
+  ];
+}

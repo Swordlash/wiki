@@ -239,12 +239,16 @@ unavailable :: WikiError
 unavailable = Invalid "This demo has no server: the assistant's keys stay in this browser."
 
 -- | 'Owned' runs an operation of the vault with every key it registers in
--- the page under one owner ('Wiki.App.Assistant.KeyOwner'): the methods
--- that make a key, keep one on this device or prove the password, whatever
--- owner they are given, are given this one. A settings' section runs each
--- operation of its under an owner of its own ('owned'), and lets the owner
--- go when the operation ends or the section closes: what the operation
--- left in the page then goes, even when the close killed its worker.
+-- the page, and every write it makes to this browser, under one owner
+-- ('Wiki.App.Assistant.KeyOwner'): the methods that make a key, keep one
+-- on this device, let one go, keep or delete a record of the assistant's
+-- database, or prove the password, whatever owner they are given, are
+-- given this one. A settings' section runs each operation of its under an
+-- owner of its own ('owned'), and lets the owner go when the operation
+-- ends or the section closes: what the operation left in the page then
+-- goes, even when the close killed its worker. A sign-out lets go of the
+-- user's owners, so an operation that answers after it writes nothing of
+-- this browser: no key, no record, no copy of the vault.
 newtype Owned m a = Owned (ReaderT KeyOwner m a)
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO)
 
@@ -263,6 +267,9 @@ instance (MonadAssistant m) => MonadAssistant (Owned m) where
   newVaultKeyBy _ exportable = owner >>= \o -> lift (newVaultKeyBy o exportable)
   keepDeviceKeyBy _ user key onDisk = owner >>= \o -> lift (keepDeviceKeyBy o user key onDisk)
   deviceKeyBy _ user = owner >>= \o -> lift (deviceKeyBy o user)
+  dropDeviceKeyBy _ user = owner >>= \o -> lift (dropDeviceKeyBy o user)
+  keepDeviceRecordBy _ user record = owner >>= \o -> lift (keepDeviceRecordBy o user record)
+  dropDeviceRecordIfBy _ user bytes = owner >>= \o -> lift (dropDeviceRecordIfBy o user bytes)
   createPasskeyBy _ options salt info = owner >>= \o -> lift (createPasskeyBy o options salt info)
   usePasskeyBy _ options salt info = owner >>= \o -> lift (usePasskeyBy o options salt info)
   unwrapWithBy _ wrapping wrapped info exportable = owner >>= \o -> lift (unwrapWithBy o wrapping wrapped info exportable)

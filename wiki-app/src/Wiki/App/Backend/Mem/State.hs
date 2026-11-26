@@ -173,6 +173,7 @@ module Wiki.App.Backend.Mem.State
   , externalPluginsIn
   , setPluginStateIn
   , setPluginOptionsIn
+  , setPluginOptionsIfNoneIn
   , wikiPluginsIn
   , setWikiPluginsIn
   )
@@ -2557,6 +2558,18 @@ setPluginOptionsIn p options st = do
   when (options == Just Null) (Left (Invalid optionsNull))
   u <- signedIn st
   choiceIn u p (\before -> PluginChoice {state = maybe PluginDefault (\c -> c.state) before, options}) st
+
+-- | 'setPluginOptionsIn' with a value, only if the signed-in user has no
+-- options for the plugin, as the server's @setPluginOptionsIfNone@ does
+-- for @If-None-Match: *@: options there already are 'Conflict', after the
+-- other checks, and nothing is written.
+setPluginOptionsIfNoneIn :: PluginId -> Value -> Write PluginChoice
+setPluginOptionsIfNoneIn p options st = do
+  void (setPluginOptionsIn p (Just options) st)
+  u <- signedIn st
+  case Map.lookup p (Map.findWithDefault mempty u st.pluginChoices) of
+    Just before | isJust before.options -> Left (Conflict "You have options for this plugin already, and If-None-Match: * asks to write them only where there are none. Nothing was written.")
+    _ -> setPluginOptionsIn p (Just options) st
 
 -- | Keep a user's choice for a plugin, made from the one kept before, as
 -- the server's @writeColumn@ does: a choice of the default with no

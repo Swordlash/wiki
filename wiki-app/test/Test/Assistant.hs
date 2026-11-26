@@ -20,11 +20,11 @@ import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Protolude
 import Test.Hspec
+import Test.LegacyKeys (Keys (..), changeKeys, readKeys)
 import Web.Storage.IndexedDB (Database (..))
 import Web.Storage.IndexedDB qualified as IDB
 import Wiki.Api.Vault (StoredVault (..))
 import Wiki.App.Assistant (KeyOwner (..), MonadAssistant (..), assistantDatabase, pageKeys, readRecord, writeRecord)
-import Wiki.App.Assistant.Keys (Keys (..), changeKeys, readKeys)
 import Wiki.App.Assistant.Sync (Fetched (..), MonadVault (..), owned)
 import Wiki.App.Vault (VaultDevice (..), readDevice, setVaultAskEachTime, settleKeys, unlockWithPassword)
 import Wiki.Core.Assistant
@@ -245,7 +245,7 @@ instance (MonadVault m, MonadIO m) => MonadVault (Recorded m) where
   provePasswordBy o p = asking o >> lift (provePasswordBy o p)
 
 -- | A monad with an action run before its next write of a device record
--- ('keepDeviceRecord'), once: where a test puts another change between a
+-- ('keepDeviceRecordBy', which 'keepDeviceRecord' calls), once: where a test puts another change between a
 -- change's read and its write. Everything else is the monad's below.
 newtype Hooked m a = Hooked (ReaderT (IORef (Maybe (IO ()))) m a)
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadUnliftIO)
@@ -254,10 +254,10 @@ instance MonadTrans Hooked where
   lift = Hooked . lift
 
 instance (MonadAssistant m, MonadIO m) => MonadAssistant (Hooked m) where
-  keepDeviceRecord user record = do
+  keepDeviceRecordBy o user record = do
     action <- Hooked ask >>= \ref -> liftIO (atomicModifyIORef' ref (Nothing,))
     liftIO (sequence_ action)
-    lift (keepDeviceRecord user record)
+    lift (keepDeviceRecordBy o user record)
 
 instance (MonadVault m) => MonadVault (Hooked m)
 

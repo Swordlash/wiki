@@ -1,12 +1,12 @@
 -- | The user's vault on this device (WP5.74 of docs/PLAN.md,
 -- "Wiki.Core.Vault"): the vault key and the user's key pair, as this
 -- browser keeps them, and the steps that bring them up to date with the
--- server's vault. The writing assistant's part of the vault is
--- "Wiki.App.Assistant.Keys"'s; this module is the rest.
+-- server's vault. A plugin's secrets in the vault are
+-- "Wiki.App.Plugin.Host.Secrets"'s; this module is the rest.
 --
 -- = What this device keeps
 --
--- The browser keeps three things per user, apart from the assistant's:
+-- The browser keeps three things per user, apart from the plugins':
 --
 -- * the vault key, as a WebCrypto key that cannot be exported, in the
 --   IndexedDB slot 'vaultSlot';
@@ -22,8 +22,9 @@
 -- = Bringing the device up to date
 --
 -- 'settleKeys' fetches the server's vault and finds the vault key on this
--- device: the one kept in 'vaultSlot', or the assistant's when its
--- settings sync, or the one a password unwraps. It checks that the key
+-- device: the one kept in 'vaultSlot', or, on a browser whose legacy
+-- record of the assistant is not moved yet, the assistant's, or the one a
+-- password unwraps. It checks that the key
 -- opens the vault. With it, the user's private key is unsealed and kept
 -- here when this device does not hold it yet; and when the vault holds no
 -- key pair yet, one is made, its private half sealed into the vault and
@@ -59,7 +60,7 @@ module Wiki.App.Vault
   , vaultKeyHere
   , fetched
   , keepVaultKey
-  , keepSharedKey
+  , keepKeysAsAsked
 
     -- * Unlocking and the ways to unlock
   , unlockWithPasskey
@@ -106,7 +107,8 @@ import Wiki.App.Backend (WikiError (..))
 import Wiki.Core.Assistant.Vault (DeviceRecord (..), Stored (..), assistantItem, readStored, sealingData, wrappingData, wrappingInfo)
 import Wiki.Core.Id (UserId (..))
 import Wiki.Core.User (Password)
-import Wiki.Core.Vault (CredentialId, Item (..), KeyId, Salt (..), Unlock (..), Vault (..), WrappedKey, identityItem, itemOf, passkeyWraps, vaultFormat, withItem, withWrap, withoutWrap, wrapFor)
+import Wiki.Core.Vault (CredentialId, Item (..), ItemName (..), KeyId, Salt (..), Unlock (..), Vault (..), WrappedKey, identityItem, itemOf, passkeyWraps, vaultFormat, withItem, withWrap, withoutWrap, wrapFor)
+import Wiki.Core.Vault.Plugin (pluginSealingData)
 
 --------------------------------------------------------------------------------
 -- This device
@@ -163,16 +165,16 @@ writeDevice u d = keepDeviceRecord (vaultSlot u) (Just (BSL.toStrict (encode d))
 -- ('afterSignIn'); a user who signs in with a provider types no password,
 -- and unlocks with a passkey before an encrypted space can be read.
 --
--- The assistant's own key stays, as what was typed in its settings is
--- sealed with it, unless it is the vault key: what the vault key seals,
--- it opens. Without the vault key here to compare, the assistant's key is
--- taken for the vault key when the assistant's settings sync, sealed with
--- the vault key ('shareWithAssistant').
+-- On a browser whose legacy record of the assistant is not moved yet
+-- ("Wiki.App.Assistant.Migrate"), the assistant's own key stays, as the
+-- record is sealed with it, unless it is the vault key: what the vault key
+-- seals, it opens. Without the vault key here to compare, the assistant's
+-- key is taken for the vault key when its record follows the vault.
 forgetUserKeys :: (MonadAssistant m) => UserId -> m ()
 forgetUserKeys u = slotsOfUser u >>= traverse_ dropDeviceKey
 
 -- | The slots of a user's keys on this device that a sign-out lets go of
--- ('forgetUserKeys'): the vault's and the private key's, and the
+-- ('forgetUserKeys'): the vault's and the private key's, and the legacy
 -- assistant's when its key is the vault key.
 slotsOfUser :: (MonadAssistant m) => UserId -> m [UserId]
 slotsOfUser u = do
@@ -300,7 +302,6 @@ settleWith u password = do
         Nothing -> pure s
         Just v -> forgettingAfter v $ do
           keepVaultKey u v
-          lift (shareWithAssistant u v)
           withIdentity u device v s
       let offering = isJust password && isNothing (wrapFor ByPassword s.vault) && not device.offered
       when offering (void (lift (writeDevice u device {offered = True})))
@@ -337,24 +338,6 @@ unwrapWith' k s w exportable = do
   wrapping <- ExceptT (passwordKey k s.vault.salt)
   forgetting wrapping (unwrap wrapping w exportable) `recover` \_ -> throwError "Your password does not unlock your vault: it was set again since (a reset), or the vault was changed. Unlock it with a passkey."
 
--- | Keep the vault key as the assistant's too, when the assistant's
--- settings sync and this device holds no key of the assistant's: one
--- unlock opens the whole vault. A key the assistant holds already is left
--- alone, since what was typed here while it was locked is sealed with it.
-shareWithAssistant :: (MonadAssistant m) => UserId -> KeyRef -> m ()
-shareWithAssistant u v =
-  deviceKey u >>= \case
-    Just k -> forgetKey k
-    Nothing ->
-      deviceRecord u >>= \case
-        Right (Just bytes)
-          | Right (Current r) <- readStored bytes
-          , isJust r.server -> do
-              -- The copy is the vault key: 'vaultKeyOnDisk' says where.
-              onDisk <- vaultKeyOnDisk u
-              void (keepDeviceKey u v onDisk)
-        _ -> pass
-
 --------------------------------------------------------------------------------
 -- Unlocking and the ways to unlock
 
@@ -383,7 +366,6 @@ settleHolding u s v = do
   device <- lift (readDevice u)
   fresh <- forgetting v $ do
     keepVaultKey u v
-    lift (shareWithAssistant u v)
     withIdentity u device v s
   describe u (Just fresh) True
 
@@ -434,7 +416,6 @@ addPasswordUnlock u given password = holdingDeviceRecords $ runExceptT $ do
     -- is kept (as one that cannot be exported) and opens the key pair.
     device <- lift (readDevice u)
     keepVaultKey u v
-    lift (shareWithAssistant u v)
     withIdentity u device v stored
   describe u (Just fresh) True
 
@@ -464,7 +445,7 @@ createWithProvedPassword u password = holdingDeviceRecords $ runExceptT $ do
 -- | Unlock the vault with a passkey too: a vault the password alone
 -- unlocks (the password proved again unwraps its key), wrapped for a
 -- passkey of the user's, or a new one. The passkey is then one more way
--- to unlock it, and what the assistant's syncing needs.
+-- to unlock it.
 addPasskeyUnlock :: (MonadAssistant m, MonadVault m, MonadUnliftIO m) => UserId -> Maybe Password -> m (Either Text UserKeys)
 addPasskeyUnlock u password = holdingDeviceRecords $ runExceptT $ do
   s <- fetched >>= maybe (throwError "You have no vault.") pure
@@ -520,18 +501,7 @@ setVaultAskEachTime u asking = holdingDeviceRecords $ runExceptT $ do
   v <- lift (vaultKeyHere u stored) >>= maybe (throwError "Unlock your vault on this device first.") pure
   -- The setting is recorded first: 'vaultKeyOnDisk' reads it.
   ExceptT (writeDevice u VaultDevice {held = device.held, askEachTime = asking, offered = device.offered})
-  onDisk <- lift (vaultKeyOnDisk u)
-  forgetting v (keepVaultKey u v)
-  lift (deviceKey (identitySlot u)) >>= traverse_ (\k -> forgetting k (ExceptT (keepDeviceKey (identitySlot u) k (not asking))))
-  -- The assistant's slot may hold the same vault key (shared when its
-  -- settings sync), which follows the same rule. A key of the assistant's
-  -- own (one that does not open the vault) is left as it is.
-  lift (deviceKey u)
-    >>= traverse_
-      ( \k -> forgetting k $ do
-          same <- lift (maybe (pure False) (\s -> opensVault k s.vault) stored)
-          when same (ExceptT (keepDeviceKey u k onDisk))
-      )
+  forgetting v (keepKeysAsAsked u stored v)
   describe u stored True
 
 --------------------------------------------------------------------------------
@@ -593,8 +563,11 @@ describe u stored unlocked = do
       }
 
 -- | The vault key this device holds that opens the vault, if it holds one:
--- the vault's own slot first, then the assistant's (whose key is the
--- vault key when its settings sync). The key is the caller's to forget.
+-- the vault's own slot first, then the legacy assistant's. A browser that
+-- turned the assistant's syncing on before the vault had a slot of its
+-- own may hold the vault key there only, until its legacy record is moved
+-- ("Wiki.App.Assistant.Migrate"), which copies the key to the vault's
+-- slot and empties the assistant's. The key is the caller's to forget.
 vaultKeyHere :: (MonadAssistant m) => UserId -> Maybe StoredVault -> m (Maybe KeyRef)
 vaultKeyHere u = \case
   Nothing -> pure Nothing
@@ -611,7 +584,10 @@ vaultKeyHere u = \case
                 False -> forgetKey k >> firstOpening rest
 
 -- | Whether a key opens the vault: whether it opens the vault's key pair,
--- or else the assistant's settings.
+-- or else the legacy assistant's settings, or else a plugin's secrets
+-- ("Wiki.Core.Vault.Plugin"). A vault that a syncing assistant made holds
+-- no key pair until a browser settles it, and, once its settings are
+-- moved, no item of the assistant's but the plugin's.
 opensVault :: (MonadAssistant m) => KeyRef -> Vault -> m Bool
 opensVault k v = case (itemOf identityItem v, itemOf assistantItem v) of
   (Just i, _)
@@ -620,7 +596,35 @@ opensVault k v = case (itemOf identityItem v, itemOf assistantItem v) of
           Right opened -> forgetKey opened $> True
           Left _ -> pure False
   (_, Just a) -> isRight <$> openWith k a.sealed sealingData
-  _ -> pure False
+  _ -> anyOpens [(i, pluginId) | (ItemName name, i) <- Map.toList v.items, Just pluginId <- [T.stripPrefix "plugin-" name]]
+  where
+    anyOpens = \case
+      [] -> pure False
+      (i, pluginId) : rest ->
+        openWith k i.sealed (pluginSealingData pluginId) >>= \case
+          Right _ -> pure True
+          Left _ -> anyOpens rest
+
+-- | Keep the keys this browser holds for the user as the vault's "ask each
+-- time" now says, when it has just changed: the vault key (given, opening
+-- the vault fetched), the private key, and the legacy assistant's key when
+-- it is the vault key. With "ask each time", each is kept for the page's
+-- life only; without, on disk too.
+keepKeysAsAsked :: (MonadAssistant m) => UserId -> Maybe StoredVault -> KeyRef -> Step m ()
+keepKeysAsAsked u stored v = do
+  onDisk <- lift (vaultKeyOnDisk u)
+  keepVaultKey u v
+  lift (deviceKey (identitySlot u)) >>= traverse_ (\k -> forgetting k (ExceptT (keepDeviceKey (identitySlot u) k onDisk)))
+  -- The legacy assistant's slot may hold the same vault key, on a browser
+  -- that synced the assistant's settings and has not moved them yet. A key
+  -- of the assistant's own (one that does not open the vault) is left as
+  -- it is.
+  lift (deviceKey u)
+    >>= traverse_
+      ( \k -> forgetting k $ do
+          same <- lift (maybe (pure False) (\s -> opensVault k s.vault) stored)
+          when same (ExceptT (keepDeviceKey u k onDisk))
+      )
 
 -- | Keep the vault key as this device's, on disk or for the page's life
 -- only, as 'vaultKeyOnDisk' says.
@@ -629,36 +633,25 @@ keepVaultKey u key = do
   onDisk <- lift (vaultKeyOnDisk u)
   ExceptT (keepDeviceKey (vaultSlot u) key onDisk)
 
--- | Whether this device may keep the vault key on disk. The key has two
--- copies when the assistant's settings sync: the vault's slot and the
--- assistant's, which hold the same key. Each copy can reopen the vault and
--- the assistant's settings after a reload. So both copies follow one rule:
--- on disk only when neither the vault nor a syncing assistant asks for an
--- unlock each time.
+-- | Whether this device may keep the vault key on disk: only when the
+-- vault does not ask for an unlock each time. On a browser whose legacy
+-- record of the assistant is not moved yet, the record's "ask each time"
+-- counts too, when the record followed the vault: until the move makes it
+-- the vault's own ("Wiki.App.Assistant.Migrate"), a key kept on disk would
+-- open after a reload the vault that record asked to unlock each time.
 vaultKeyOnDisk :: (MonadAssistant m) => UserId -> m Bool
 vaultKeyOnDisk u = do
   device <- readDevice u
-  assistant <- assistantAsksEachTime u
-  pure (not device.askEachTime && not assistant)
+  legacy <- legacyAsksEachTime u
+  pure (not device.askEachTime && not legacy)
 
--- | Whether the assistant's settings sync, sealed with the vault key, and
--- the assistant asks for the passkey each time the wiki opens.
-assistantAsksEachTime :: (MonadAssistant m) => UserId -> m Bool
-assistantAsksEachTime u =
+-- | Whether this browser's legacy record of the assistant follows the
+-- vault and asks for an unlock each time the wiki opens.
+legacyAsksEachTime :: (MonadAssistant m) => UserId -> m Bool
+legacyAsksEachTime u =
   deviceRecord u <&> \case
     Right (Just bytes) | Right (Current r) <- readStored bytes -> isJust r.server && r.askEachTime
     _ -> False
-
--- | Keep the vault key in both of this device's slots for it, the
--- assistant's and the vault's, when the assistant starts to share it or
--- unlocks it ("Wiki.App.Assistant.Keys"). The assistant's record may not
--- say yet that it syncs, so its setting is given.
-keepSharedKey :: (MonadAssistant m) => UserId -> Bool -> KeyRef -> Step m ()
-keepSharedKey u assistantAsks key = do
-  device <- lift (readDevice u)
-  let onDisk = not device.askEachTime && not assistantAsks
-  ExceptT (keepDeviceKey u key onDisk)
-  ExceptT (keepDeviceKey (vaultSlot u) key onDisk)
 
 -- | The vault with the user's key pair: the private key unsealed and kept
 -- here when this device does not hold it, or a key pair made and stored
@@ -700,7 +693,7 @@ keepIdentityKey u device k keyId = do
 resetLosses :: [Text]
 resetLosses =
   [ "your key pair, which encrypted spaces use (a new one is made at your next sign-in);"
-  , "the writing assistant's settings and API keys, where they sync across your devices;"
+  , "your plugins' secrets, such as the writing assistant's API keys;"
   , "your encrypted pages will be destroyed for you: you read an encrypted space again only once another member opens it and shares its key with your new key pair, and an encrypted space nobody else can read is lost."
   ]
 
@@ -730,7 +723,7 @@ newPasskey password salt = do
       `recover` \why -> lift (discardPasskey options.rpId credential) >> forgetWrapping >> throwError why
   unless made.prf $ do
     forgetWrapping
-    throwError "This passkey cannot sync the keys: it has no PRF extension, which the browser or the password manager that keeps it does not offer. It was kept to sign in with, and is listed under Passkeys in your account. Try a passkey kept elsewhere (Google Password Manager, iCloud Keychain, Windows Hello, a security key)."
+    throwError "This passkey cannot unlock your vault: it has no PRF extension, which the browser or the password manager that keeps it does not offer. It was kept to sign in with, and is listed under Passkeys in your account. Try a passkey kept elsewhere (Google Password Manager, iCloud Keychain, Windows Hello, a security key)."
   case made.wrapping of
     Just wrapping -> pure (credential, wrapping)
     Nothing ->
@@ -745,12 +738,12 @@ newPasskey password salt = do
 usedPasskey :: (MonadAssistant m, MonadVault m) => Salt -> Maybe [CredentialId] -> Step m (CredentialId, KeyRef)
 usedPasskey salt only = do
   options <- server beginAssertion
-  when (null options.allow) (throwError "You have no passkey for this wiki any more: turn syncing off, and on again with a new passkey.")
+  when (null options.allow) (throwError "You have no passkey for this wiki any more: unlock your vault with your password, or add a passkey under Settings, Security.")
   let allowed = maybe options.allow (\these -> filter (`elem` these) options.allow) only
-  when (null allowed) (throwError "None of your passkeys holds a copy of the vault's key: turn syncing off, and on again with a passkey.")
+  when (null allowed) (throwError "None of your passkeys holds a copy of the vault's key: unlock it with your password, then add a passkey to it under Settings, Security, Keys.")
   used <- passkey (usePasskey AssertionOptions {challenge = options.challenge, rpId = options.rpId, allow = allowed} salt.text wrappingInfo)
   _ <- server (finishAssertion used.response) `recover` \why -> lift (traverse_ forgetKey used.wrapping) >> throwError why
-  wrapping <- maybe (throwError "This passkey gave no PRF output, so it cannot unlock the keys. Use another passkey, or remove this one under Passkeys in your account and turn syncing on again with a new one.") pure used.wrapping
+  wrapping <- maybe (throwError "This passkey gave no PRF output, so it cannot unlock the keys. Use another passkey, or remove this one under Passkeys in your account and add a new one to your vault under Settings, Security, Keys.") pure used.wrapping
   pure (used.response.id, wrapping)
 
 wrap :: (MonadAssistant m) => KeyRef -> KeyRef -> Step m WrappedKey

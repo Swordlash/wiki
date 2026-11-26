@@ -684,37 +684,42 @@ the browser's dialog, and browsers that can also offer your passkey in the
 login field as you focus it. The authenticator verifies you (fingerprint,
 face, PIN), so a passkey counts as both factors and no code is asked for.
 After a password, the second factor's form offers **Use a passkey instead**.
-The passkeys the assistant's syncing uses below are the same ones. Like
-syncing, passkeys need HTTPS (or the machine's own address).
+The passkeys that unlock your vault ([below](#your-keys)) are the same
+ones. Passkeys need HTTPS (or the machine's own address).
 
 ### Keys across devices
 
-The assistant's API keys stay out of the server's sight. In the browser they
-are sealed (AES-GCM, with WebCrypto) under a vault key the browser keeps and
-cannot export, so even this browser's storage holds no key as text, in the
-demo too. Over `wiki-server` the assistant's settings (**Settings**,
-**Writing assistant**) offer **Sync across devices**:
+The assistant's API keys stay out of the server's sight. They are the
+writing assistant's secrets, as a plugin keeps them: sealed (AES-GCM, with
+WebCrypto) in your vault ([Your keys](#your-keys)), one item per plugin,
+under a vault key the browser keeps and cannot export. The server keeps the
+vault and cannot open it, so the keys follow you to every device where your
+vault is unlocked, with nothing to turn on. The rest of the assistant's
+settings (the provider, the mode, the page's cap, and each provider's
+model, effort and service) are the plugin's options, which the server keeps
+for you unencrypted, so that they follow you too. The lists of models are
+kept in each browser.
 
-- **Turn on with a passkey.** The browser asks you to make a passkey for the
-  wiki (Touch ID, Windows Hello, your phone, a security key, or the passkeys
-  of Google Password Manager or iCloud Keychain, which follow you). The
-  passkey's PRF extension gives the browser a secret no one else can compute;
-  the vault key is encrypted with a key derived from it, and the server keeps
-  the sealed settings and that encrypted vault key, neither of which it can
-  open. A passkey without the PRF extension is said to be one; it cannot
-  sync the keys, and is kept to sign in with.
-- **Unlock with passkey**, on another device: one touch, and the keys are
-  there. A key typed there before unlocking stays there, and joins the
-  synced keys once you unlock; it never replaces a synced one.
-- **A changed key** is sealed and sent again; your other devices fetch it
-  the next time the wiki opens there, with no touch.
-- **Add passkey** (on a device where the keys are unlocked: one touch of a
-  passkey you have, then the new one), **Remove**, and **Ask for the
-  passkey each time the wiki opens**, which keeps no key on the device, only
-  the sealed vault.
-- **Turn off** deletes the vault on the server and needs no passkey, which
-  is the way back after losing every one; the keys stay in your browsers,
-  and the passkeys stay, to sign in with.
+- **A key's field**, under **Settings**, **Writing assistant**, says
+  whether a key is set, tests a typed key against its provider before
+  keeping it, and forgets it. A key kept is never shown again.
+- **Where your vault is locked** in this browser, the field offers
+  **Unlock with a passkey** or your password in its place, and the editor's
+  assistant says to unlock it. With **Ask for a passkey or your password
+  each time the wiki opens** (under **Keys**, in **Settings**, **Security**),
+  that is once a visit.
+- **Lost every way to unlock your vault?** The locked field says what is
+  left, and links to **Security**: a reset of your password makes your
+  vault anew when the password was its only way to unlock it, and
+  everything in the vault is lost, your plugins' secrets and your key pair
+  with it. You then keep your keys again. Nothing else empties your
+  secrets without the vault's key.
+- **Keys from before** (kept in one browser, or synced with **Sync across
+  devices**) are moved at the first sign-in or unlock with this version:
+  the keys into your vault, the rest into the options. A browser that has
+  not moved its keys yet keeps working meanwhile.
+- Where you have no vault (the demo, a user who signs in with a provider
+  and made none), the keys stay in this browser, sealed.
 
 Passkeys need HTTPS (or the machine's own address), so over plain HTTP the
 page says so instead. A browser offers no encryption to such a page either:
@@ -728,8 +733,7 @@ one the proxy passes on the `Host` the browser sent, port included (nginx's
 another site" names the origin it was made on and the one the wiki expected.
 They need a browser with the PRF extension, which the
 browsers the wiki runs in have: Chrome and Edge 140 or later, Firefox 133 or
-later, Safari 18.2 or later. A passkey here does
-not sign you in; it only unlocks the assistant's keys.
+later, Safari 18.2 or later.
 
 ### Your keys
 
@@ -738,7 +742,7 @@ spaces will use to share their keys with you: a space's key is sealed to
 your public key (HPKE, RFC 9180), and only your private key opens it. The
 key pair is made in your browser the first time you sign in with your
 password, and its private half is sealed in your vault, the same vault the
-assistant's keys sync in; the server keeps the vault and your public key,
+assistant's keys are kept in; the server keeps the vault and your public key,
 and cannot open the vault. **Keys**, in **Settings**, **Security**,
 shows:
 
@@ -750,7 +754,7 @@ shows:
 - **What unlocks your keys**: your passkeys, and your password if you chose
   it. Signing in with your password unlocks them on a new device by itself
   when your password is among them. A user whose vault a passkey unlocks
-  already (the assistant's syncing) is asked once, at a sign-in with the
+  already is asked once, at a sign-in with the
   password, whether the password should unlock it too; the answer is no
   unless you say yes, and **Keys** adds or takes it away later.
 - **Ask for a passkey or your password each time the wiki opens**, which
@@ -760,8 +764,8 @@ Changing your password keeps your keys: your browser carries them over to
 the new password in the same request. A password reset cannot, since your
 old password is gone: if a passkey of yours unlocks your keys, nothing is
 lost, and **Keys** lets the new password unlock them too; if your password
-was the only way, the reset deletes them (your key pair, and the
-assistant's synced settings and API keys), says so before it is done, and
+was the only way, the reset deletes them (your key pair, and your
+plugins' secrets, such as the assistant's API keys), says so before it is done, and
 your next sign-in makes a new key pair. If you sign in with a provider
 instead of a password, a passkey makes your keys, under **Keys**.
 
@@ -4365,7 +4369,7 @@ To run CI on a machine of your own (x86_64 Linux, Debian or Ubuntu):
 | [wiki-api/](wiki-api/) | `wiki-api` | Request and response types (aeson), shared by the client and the server. |
 | [wiki-app/](wiki-app/) | `wiki-app` | The Halogen application: `wiki-app` (the wasm program) and `wiki-app-prerender` (native: writes the page with the application already rendered into it). |
 | [wiki-server/](wiki-server/) | `wiki-server` | The server, native only: servant over PostgreSQL or SQLite (Beam), rendering each page per request, with pandoc for the exports. |
-| [wiki-smoke/](wiki-smoke/) | `wiki-smoke` | The smoke suites in Haskell, native only: the built page driven in headless Chromium through haskell-halogen-playwright, which waits on the page's program. `wiki-smoke-screenshots` takes the README's screenshots; `wiki-smoke-waits` checks that the waits hold on the wiki; `wiki-smoke-demo` is the demo's smoke test, `wiki-smoke-passkeys` the assistant's keys synced with real passkeys against a real wiki-server, and `wiki-smoke-server` the server's smoke test, with the encrypted spaces' walk and their canary (`npm run smoke-test` runs the three), the demo's and the server's also run weekly with the processor four times slower. |
+| [wiki-smoke/](wiki-smoke/) | `wiki-smoke` | The smoke suites in Haskell, native only: the built page driven in headless Chromium through haskell-halogen-playwright, which waits on the page's program. `wiki-smoke-screenshots` takes the README's screenshots; `wiki-smoke-waits` checks that the waits hold on the wiki; `wiki-smoke-demo` is the demo's smoke test, `wiki-smoke-passkeys` the vault's passkeys and the assistant's keys in it, with real passkeys against a real wiki-server, and `wiki-smoke-server` the server's smoke test, with the encrypted spaces' walk and their canary (`npm run smoke-test` runs the three), the demo's and the server's also run weekly with the processor four times slower. |
 | [docs/](docs/) | | The authors' Markdown reference (`markdown.md`), the HTTP API (`api.md`), the export format (`export.md`), the plan of work (`PLAN.md`), and the README's screenshots. |
 | [web/](web/) | | The page around the application: `index.html`, `index.js` (loads `app.wasm`), CSS, and `bundle.sh`, which bundles the islands' libraries from `web/src/`; `licenses/`, the texts of TikZJax's licence and its fonts', which the bundle serves beside them. |
 | [toolchain/](toolchain/) | | Build, test and deploy scripts, adapted from haskell-halogen's, and `smoke-suite.sh`, which runs a suite of `wiki-smoke`. |
@@ -4645,7 +4649,7 @@ page's Halogen program says it is idle. Each suite runs with
 | Suite | What it drives |
 | --- | --- |
 | `demo` | the serverless demo as a static host serves it: every prerendered page adopted, a long walk with back, forward and reload, a dark scheme and a phone, slides, the clipboard, offline, the writing assistant |
-| `passkeys` | the assistant's keys synced with real passkeys from Chromium's virtual authenticator, against a real wiki-server |
+| `passkeys` | the vault unlocked with real passkeys from Chromium's virtual authenticator, and the assistant's keys kept in it, against a real wiki-server |
 | `server` | the server's build of the page against a real wiki-server on SQLite: the administrator's walk, a visitor, a provider's sign-in, every route adopted, the demo imported, interactive SVGs, encrypted spaces and their canary, health and metrics, offline |
 | `server-postgres` | the same on PostgreSQL |
 | `waits` | that the driver's waits hold on the wiki's pages |

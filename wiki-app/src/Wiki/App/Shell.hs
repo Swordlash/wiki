@@ -131,7 +131,7 @@ module Wiki.App.Shell
   )
 where
 
-import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Control.Monad.IO.Unlift (MonadUnliftIO, withRunInIO)
 import Control.Monad.UUID (MonadUUID)
 import Data.Map.Strict qualified as Map
 import Data.Row.Internal (LT (..), Row (R))
@@ -147,6 +147,8 @@ import Halogen.Machine qualified as Machine
 import Halogen.Query.Event.Window qualified as Window
 import Halogen.Router (Follow, Router)
 import Halogen.Router qualified as Router
+import Halogen.Subscription qualified as HS
+import Halogen.Sync qualified as Sync
 import Halogen.TH (hh)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (State)
@@ -157,7 +159,8 @@ import Wiki.Api.Links (archiveExportUrl)
 import Wiki.Api.Plugins (PluginId, Plugins (..), WikiPlugins (..))
 import Wiki.Api.ServerSettings (HomePage (showAnonymous, title))
 import Wiki.App.Account (Accounts (..), SignInError (..))
-import Wiki.App.Assistant (MonadAssistant, announceSignIn, closeKeyOwnersOf, keysDroppedElsewhere, listenToOtherTabs)
+import Wiki.App.Assistant (MonadAssistant (..), announceSignIn, closeKeyOwner, closeKeyOwnersOf, keysDroppedElsewhere, listenToOtherTabs, openKeyOwner)
+import Wiki.App.Assistant.Migrate (migrateAssistant)
 import Wiki.App.Assistant.Sync (MonadVault)
 import Wiki.App.Backend (MonadLoad (..), MonadWiki (..), Session (..), WikiError (..), anonymous, sameAsking, shutOut)
 import Wiki.App.Backend.Admin (MonadAdmin)
@@ -178,7 +181,7 @@ import Wiki.App.Live (Feed (..), Live (..))
 import Wiki.App.Offline (browserOnline, install, installAvailable, installChanges, offlineCopy)
 import Wiki.App.Plugin (Manifest (..), Options (..), OptionsInput (..), OptionsOutput (..), Plugin (..))
 import Wiki.App.Plugin.Host (capabilities)
-import Wiki.App.Plugin.Registry (assistantId, optionsFor, plugins, pluginsOn)
+import Wiki.App.Plugin.Registry (assistantId, optionsFor, plugins, pluginsOn, refusalFor)
 import Wiki.App.Recent (rememberVisit)
 import Wiki.App.Route (AdminSection, Route (..), SettingsSection (..), adminSections, locationRoute, sectionName, sectionTitle, settingsName, settingsSections, settingsTitle, settledRoute)
 import Wiki.App.Route qualified as R
@@ -204,6 +207,7 @@ import Wiki.App.View.Invite qualified as InviteView
 import Wiki.App.View.Latest (Asks, noAsks)
 import Wiki.App.View.Latest qualified as Latest
 import Wiki.App.View.LivePreview qualified as LivePreviewView
+import Wiki.App.View.Migration.Machine qualified as MigrationMachine
 import Wiki.App.View.NewPage qualified as NewPageView
 import Wiki.App.View.NewSpace qualified as NewSpaceView
 import Wiki.App.View.NotificationSettings qualified as NotificationSettingsView
@@ -462,6 +466,11 @@ data State m = State
   -- the service worker served offline was loaded without a network, and no
   -- event reports that.
   , offlineCopy :: Maybe UTCTime
+  , preloadEnded :: Bool
+  -- ^ Whether the shell has ended the preload ('endPreload'): the reader
+  -- went to another address than the one the page started at. Until then
+  -- the page shows what it carries, and a plugin's settings are told they
+  -- were adopted ('Wiki.App.Plugin.OptionsInput').
   , keysLooked :: Bool
   -- ^ Whether this page start has looked whether nobody is signed in, to
   -- let go of every user's keys: once a page start.
@@ -513,6 +522,17 @@ data State m = State
   -- ("Wiki.App.View.Latest").
   -- Two of a kind can be out at once (two reloads), and an answer is
   -- taken only if no newer one of its kind was ("Wiki.App.View.Latest").
+  , assistantMove :: MigrationMachine.Model
+  -- ^ The move of the writing assistant's legacy settings for the reader
+  -- ("Wiki.App.View.Migration.Machine"). The shell runs it, so that a run
+  -- goes on whatever view is shown, and gives the options it finds to
+  -- the plugins' state.
+  , optionsLearnt :: Maybe (HS.Listener IO ())
+  -- ^ Where a step of the plugins' state tells the shell that what it
+  -- knows of the assistant's options changed
+  -- ('MigrationMachine.optionsLearnt'): the shell's own subscription, made
+  -- at the start in a browser, which steps the move's machine on the
+  -- shell's loop ('OptionsLearnt').
   }
 
 -- | Whose changes a route followed away would lose ('leaving'): what the
@@ -543,6 +563,8 @@ data Action
   = Initialize
   | Arrived Route
   | KeysDropped
+  | SecretsChanged
+  | OptionsLearnt
   | Followed (Follow Route)
   | ToggleSwitcher
   | CloseSwitcher
@@ -645,6 +667,7 @@ component =
                   , entry = 0
                   , offline = False
                   , offlineCopy = Nothing
+                  , preloadEnded = False
                   , keysLooked = False
                   , installable = False
                   , shown = Nothing
@@ -653,6 +676,8 @@ component =
                   , stale = Nothing
                   , droppedUnsaved = False
                   , pluginState = Machine.new (PluginsMachine.initialWith readPlugins 0)
+                  , assistantMove = MigrationMachine.initial
+                  , optionsLearnt = Nothing
                   , worldAsks = noAsks
                   , hereAsks = noAsks
                   , backlinkAsks = noAsks
@@ -1072,12 +1097,14 @@ component =
       -- are there whether the plugin is on or off.
       AssistantSection -> case head [(p.manifest, o) | p <- plugins, Just o <- [p.options], p.manifest.id == assistantId] of
         Just (manifest, Options options) ->
-          HH.slot
-            "pluginOptions"
-            (assistantId, who)
-            options
-            OptionsInput {user = who, options = optionsFor assistantId (context st).plugins, can = capabilities (context st) manifest}
-            (FromPluginOptions assistantId)
+          [hh|
+            <div class="settings-plugin-options">
+              {% for why in maybeToList st.assistantMove.problem %}
+                <p class="error settings-migration-problem" role="alert">{{ "Your writing assistant's settings from before could not all be moved: " <> why }}</p>
+              {% end %}
+              {{ HH.slot "pluginOptions" (assistantId, who) options OptionsInput {user = who, options = optionsFor assistantId (context st).plugins, refused = refusalFor assistantId (context st).optionsRefused, adopted = not st.preloadEnded, can = capabilities (context st) manifest} (FromPluginOptions assistantId) }}
+            </div>
+          |]
         Nothing -> HH.text ""
       where
         who = (\u -> u.id) <$> st.session.user
@@ -1612,6 +1639,20 @@ component =
         H.liftEffect (liftIO listenToOtherTabs)
         dropped <- H.liftEffect keysDroppedElsewhere
         void $ H.subscribe (KeysDropped <$ dropped)
+        -- The secrets' changes in this browser (an unlock, a key kept), at
+        -- each of which the move of the assistant's legacy settings goes on
+        -- if it waits; and the move's first run, for whoever the page
+        -- starts with. Only in a browser: a page rendered ahead of the
+        -- program has no keys and no secrets.
+        whenM (H.liftEffect assistantHere) $ do
+          secrets <- H.liftEffect secretsChanges
+          void $ H.subscribe (SecretsChanged <$ secrets)
+          -- Made and kept in this step, before the plugins' state is
+          -- stepped again.
+          learnt <- H.liftEffect (liftIO HS.create)
+          void $ H.subscribe (OptionsLearnt <$ learnt.emitter)
+          modify (\st -> st {optionsLearnt = Just learnt.listener})
+          migrationGiven
         handleAction InstallChanged
         router <- gets (\st -> st.router)
         void $ H.subscribe (Arrived <$> Router.changes router)
@@ -1667,6 +1708,8 @@ component =
       -- Another tab let go of the user's keys (a sign-out there): nothing
       -- of an encrypted space stays open here, and the session is asked
       -- for again, with everything shown.
+      SecretsChanged -> migrationStep MigrationMachine.Nudged
+      OptionsLearnt -> migrationStep MigrationMachine.OptionsLearnt
       KeysDropped -> do
         readerChanging
         H.async forgetEncrypted
@@ -1961,6 +2004,7 @@ component =
       -- Before the new route renders: its views fetch the page content
       -- they show, rather than read what the server prerendered the first
       -- route with.
+      modify (\st -> st {preloadEnded = True})
       H.async endPreload
       -- The questions and results about the wiki's data are not shown
       -- again on coming back to the administration.
@@ -2027,7 +2071,9 @@ component =
     reload next = do
       -- Going to another route after the change ends the preload, as
       -- 'arrive' does.
-      when (isJust next) (H.async endPreload)
+      when (isJust next) $ do
+        modify (\st -> st {preloadEnded = True})
+        H.async endPreload
       loadWorld
       void (gatesAt =<< maybe (gets (\st -> st.route)) (pure . settledRoute) next)
       modify (\st -> st {generation = st.generation + 1})
@@ -2090,18 +2136,59 @@ component =
     -- what it held, and drops a write chosen in the session before. The
     -- same number changes nothing.
     newPluginSession :: H.HalogenM (State m) Action Slots output m ()
-    newPluginSession = gets (\st -> st.sessionNumber) >>= Machine.happen pluginsSpec . PluginsMachine.Given
+    newPluginSession = do
+      gets (\st -> st.sessionNumber) >>= Machine.happen pluginsSpec . PluginsMachine.Given
+      whenM (H.liftEffect assistantHere) migrationGiven
+
+    -- The move of the assistant's legacy settings given the session's
+    -- number and its reader, in this step.
+    migrationGiven :: H.HalogenM (State m) Action Slots output m ()
+    migrationGiven = gets (\st -> MigrationMachine.Given st.sessionNumber ((\u -> u.id) <$> st.session.user)) >>= migrationStep
+
+    -- The move's machine stepped in one 'state' call, and its effects
+    -- carried out with no wait between them: a run is forked, and its
+    -- answer stepped when it comes.
+    migrationStep :: MigrationMachine.Event -> H.HalogenM (State m) Action Slots output m ()
+    migrationStep e = do
+      effects <- state (\st -> let (m, fx) = MigrationMachine.step e st.assistantMove in (fx, st {assistantMove = m}))
+      traverse_ carryMigration effects
+
+    carryMigration :: MigrationMachine.Effect -> H.HalogenM (State m) Action Slots output m ()
+    carryMigration = \case
+      -- The plugin's options as the server keeps them, read in this step:
+      -- 'Nothing' until the plugins' state has read them in this session.
+      -- The run's writes in this browser go under an owner of the reader's
+      -- keys, made in this step, before the run waits: the reader's
+      -- sign-out lets it go ('forgetFormer'), and the run then writes
+      -- nothing more ("Wiki.App.Assistant.Migrate"). The run lets it go
+      -- when it ends.
+      MigrationMachine.Run n u vaultToo -> do
+        known <- gets (\st -> optionsFor assistantId <$> PluginsMachine.knownNow (Machine.current st.pluginState))
+        o <- H.sync (liftIO (openKeyOwner u))
+        void . H.fork $
+          (H.async (withRunInIO (\run -> try (run (migrateAssistant o u vaultToo known)))) `H.finally` H.sync (liftIO (closeKeyOwner o)))
+            >>= migrationStep
+            . MigrationMachine.Answered n
+            . either (\(e :: SomeException) -> Left (toS (displayException e))) identity
+      MigrationMachine.AdoptOptions foundIn v -> Machine.happen pluginsSpec (PluginsMachine.OptionsAdopted foundIn assistantId v)
 
     -- The plugins' state, run by the shell so that its asks outlive the
     -- views that made them.
-    pluginsSpec :: Machine.Spec () (State m) Action Slots output m PluginsMachine.Event PluginsMachine.Effect PluginsMachine.Model
-    pluginsSpec = Machine.Spec {Machine.step = PluginsMachine.step, Machine.carry = carryPlugins, Machine.get = \st -> st.pluginState, Machine.set = \machine st -> st {pluginState = machine}}
+    -- Each step also tells, after its own effects, when it changed what is
+    -- known of the assistant's options, so that the move of the legacy
+    -- settings goes on ('MigrationMachine.optionsLearnt').
+    pluginsSpec :: Machine.Spec () (State m) Action Slots output m PluginsMachine.Event (Either PluginsMachine.Effect ()) PluginsMachine.Model
+    pluginsSpec = Machine.Spec {Machine.step = pluginsStep, Machine.carry = either carryPlugins (const learnt), Machine.get = \st -> st.pluginState, Machine.set = \machine st -> st {pluginState = machine}}
+      where
+        pluginsStep e m = let (m', effects) = PluginsMachine.step e m in (m', map Left effects <> [Right () | MigrationMachine.optionsLearnt m m'])
+        learnt = Machine.Now (gets (\st -> st.optionsLearnt) >>= traverse_ (\l -> Sync.sync (liftIO (HS.notify l ()))))
 
     carryPlugins :: PluginsMachine.Effect -> Machine.Carry () (State m) Action Slots output m PluginsMachine.Event
     carryPlugins = \case
       PluginsMachine.Load asked -> Machine.Ask (Machine.run pluginsNow) (PluginsMachine.Loaded asked . answerOf)
       PluginsMachine.WriteState asked p s -> Machine.Ask (Machine.run (setPluginState p s)) (PluginsMachine.Written asked p . answerOf)
       PluginsMachine.WriteOptions asked p o -> Machine.Ask (Machine.run (maybe (clearPluginOptions p) (setPluginOptions p) o)) (PluginsMachine.OptionsWritten asked p . answerOf)
+      PluginsMachine.WriteOptionsIfNone asked p v -> Machine.Ask (Machine.run (setPluginOptionsIfNone p v)) (PluginsMachine.AdoptWritten asked p . answerOf)
       PluginsMachine.SaveOff asked off -> Machine.Ask (Machine.run (setWikiPluginsOff WikiPlugins {off})) (PluginsMachine.Saved asked . answerOf)
 
     -- Whose changes not saved the content shown holds, if any: an
@@ -2373,7 +2460,7 @@ sameUser :: Session -> Session -> Bool
 sameUser a b = ((\u -> u.id) <$> a.user) == ((\u -> u.id) <$> b.user)
 
 context :: State m -> Context
-context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth, plugins = PluginsMachine.held (Machine.current st.pluginState), pluginsRead = PluginsMachine.readIn st.sessionNumber (Machine.current st.pluginState)}
+context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth, plugins = PluginsMachine.held (Machine.current st.pluginState), optionsRefused = (Machine.current st.pluginState).optionsRefused, pluginsRead = PluginsMachine.readIn st.sessionNumber (Machine.current st.pluginState)}
   where
     available =
       st.spaces <> case st.here of

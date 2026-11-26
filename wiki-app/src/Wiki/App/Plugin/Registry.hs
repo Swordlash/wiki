@@ -23,6 +23,7 @@ module Wiki.App.Plugin.Registry
   , contributed
   , optionsOf
   , optionsFor
+  , refusalFor
   , assistantId
   )
 where
@@ -35,11 +36,12 @@ import Data.Set qualified as Set
 import Protolude
 import Wiki.Api.Plugins (PluginChoice (..), PluginState (..), Plugins (..))
 import Wiki.Api.Plugins.External (ExternalPlugin, ExternalPlugins)
+import Wiki.App.Backend (WikiError (..))
 import Wiki.App.Plugin (Agent, Diagnostics, Manifest (..), Options, Plugin (..), PluginId)
 import Wiki.App.Plugin.Assistant (assistant, assistantId)
 import Wiki.App.Plugin.Errors (errors)
 import Wiki.App.Plugin.External (manifestOf, runnable)
-import Wiki.App.View.Common (Context (..))
+import Wiki.App.View.Common (Context (..), errorMessage)
 
 -- | Every plugin built into the wiki, in the order their contributions are
 -- shown.
@@ -118,3 +120,14 @@ optionsOf given = [(p.manifest.id, o) | p <- given, Just o <- [p.options]]
 -- server's.
 optionsFor :: PluginId -> Plugins -> Maybe Value
 optionsFor p known = (\c -> c.options) =<< Map.lookup p known.mine
+
+-- | Why the reader's last write of a plugin's options was refused, in the
+-- server's words: what its surfaces are told with the options
+-- ('Wiki.App.Plugin.OptionsInput''s @refused@), from the context's
+-- refusals ('Context''s @optionsRefused@).
+refusalFor :: PluginId -> Map PluginId WikiError -> Maybe Text
+refusalFor p refusals = sentence <$> Map.lookup p refusals
+  where
+    sentence = \case
+      Invalid why -> why
+      e -> errorMessage e

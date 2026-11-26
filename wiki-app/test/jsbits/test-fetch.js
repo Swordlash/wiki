@@ -3,7 +3,8 @@
 // through haskell-halogen-net's fetch call (Halogen.Net.Fetch) as they would
 // to wiki-server, and are answered here from a table the test fills, by
 // method and address. An address the table has no answer for is a 404 with
-// the API's NotFound.
+// the API's NotFound, but the question whether a page's text is plain now,
+// which is a yes (wikiTestPlain).
 //
 // The test can take the network away (a request then fails as fetch fails
 // offline, with a TypeError) and hold the answers back until it lets them
@@ -162,7 +163,15 @@ async function wikiTestAnswer(request) {
     answer = await handle(request);
     if (answer) break;
   }
-  return answer ?? wikiTestServer.answers.get(`${request.method} ${request.url}`) ?? { status: 404, body: '{"error":"NotFound"}' };
+  return answer ?? wikiTestServer.answers.get(`${request.method} ${request.url}`) ?? wikiTestPlain(request) ?? { status: 404, body: '{"error":"NotFound"}' };
+}
+
+// The question the application asks before it sends a page's text plain
+// (GET api/v1/pages/<page>/plain, Wiki.App.Backend's plainNow): yes, as
+// wiki-server answers it for a page of a plain space, unless the table
+// answers it otherwise.
+function wikiTestPlain(request) {
+  return request.method === "GET" && /^api\/v1\/pages\/[^/]+\/plain$/.test(request.url) ? { status: 204, body: "", headers: { "Cache-Control": "private, no-store" } } : null;
 }
 
 // Waits for a held request's release, keeping the request in 'holding'

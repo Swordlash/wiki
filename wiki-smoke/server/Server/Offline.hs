@@ -59,6 +59,32 @@ spec smoke = describe "reading offline, through the service worker" $
       report ("the worker kept " <> tshow (length keptPages) <> " pages and " <> tshow (length answers) <> " answers of the API")
       offlineFine reader
 
+    -- The question the editor asks before letters typed after an @ go to
+    -- the server, whether the page's text is plain now (wiki-api's
+    -- @pages/<page>/plain@): asked of the network, and never kept, so that
+    -- no copy of an answer from before an encryption can speak for the
+    -- page offline (web/src/sw.js). The letters are taken back, so that
+    -- the page has no draft after.
+    step' "asks the server, and never keeps the answer, whether a page's text is plain before a mention's letters go out" $ \w -> do
+      let reader = w.page
+      visit reader (address smoke (firstPage <> "edit/"))
+      editorReady reader
+      pressOn (editorText reader) "Control+End"
+      typeText (editorText reader) " @ad"
+      waitQuiet reader
+      -- The question went out: the page's record of its fetches, the
+      -- browser's, a condition.
+      holdsInPage reader "performance.getEntriesByType('resource').some(e => /\\/api\\/v1\\/pages\\/[^/]+\\/plain$/.test(new URL(e.name).pathname))"
+      answers <- keptPaths reader "answers"
+      expect (not (null answers)) "the worker kept no answer of the API at all"
+      expect (not (any ("/plain" `Text.isSuffixOf`) answers)) ("kept the answer to whether a page's text is plain: " <> show answers)
+      pressOn (editorText reader) "Escape"
+      mapM_ (const (pressOn (editorText reader) "Backspace")) [1 .. 4 :: Int]
+      waitQuiet reader
+      typed <- markdownIn reader
+      expect (not ("@ad" `Text.isInfixOf` typed)) ("the letters were not taken back: " <> show typed)
+      offlineFine reader
+
     -- Offline: the page reloaded is the copy kept, saying so, with the
     -- offline notice, and the program starts on it from the files kept.
     step' "shows a page read here offline from what the worker kept, saying since when, with the offline notice; a link followed from what was kept; a page never read, the offline page" $ \w -> do

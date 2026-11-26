@@ -1215,7 +1215,8 @@ plainText = describe "the question whether a page's text is plain now" $ do
         | otherwise -> status 500 ""
     env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
     runHttpWiki env (getPage hello.space (slugs "hello-world")) `shouldReturn` Right hello
-    for_ (writesOf hello) $ \(name, write') -> runHttpWiki env write' >>= \r -> (name, refused "no longer open to you" r) `shouldBe` (name, True)
+    -- Refused as the write itself would have been.
+    for_ (writesOf hello) $ \(name, write') -> runHttpWiki env write' >>= \r -> (name, r) `shouldBe` (name, Left NotFound)
     writesOut <$> readIORef asked `shouldReturn` []
 
   it "sends nothing while the page's space is being converted" $ do
@@ -1245,7 +1246,7 @@ plainText = describe "the question whether a page's text is plain now" $ do
         posts rs = [requestUrl r | r <- rs, methodOf r == "POST"]
     (gone, goneAsked) <- scripted (server ([] :: [Space]))
     goneEnv <- newHttpEnvWith gone (withSpaces [blog] emptyCache)
-    runHttpWiki goneEnv (createPage blog.id Nothing "New" "Text") >>= (`shouldSatisfy` refused "no longer open to you")
+    runHttpWiki goneEnv (createPage blog.id Nothing "New" "Text") `shouldReturn` Left NotFound
     posts <$> readIORef goneAsked `shouldReturn` []
     (there, thereAsked) <- scripted (server [blog])
     thereEnv <- newHttpEnvWith there (withSpaces [blog] emptyCache)

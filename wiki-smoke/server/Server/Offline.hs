@@ -61,11 +61,10 @@ spec smoke = describe "reading offline, through the service worker" $
 
     -- The question the editor asks before a draft goes to the server,
     -- whether the page's text is plain now (wiki-api's
-    -- @pages/<page>/plain@): asked of the network, and never kept, so that
-    -- no copy of an answer from before an encryption can speak for the
-    -- page offline (web/src/sw.js). The text is taken back after, so that
-    -- the page keeps no draft.
-    step' "asks the server, and never keeps the answer, whether a page's text is plain before a draft goes out" $ \w -> do
+    -- @pages/<page>/plain@): it goes out before the draft. The text is
+    -- taken back after, so that the page keeps no draft. (That the worker
+    -- never answers it from a copy is the next step's, offline.)
+    step' "asks the server whether a page's text is plain before a draft goes out" $ \w -> do
       let reader = w.page
       visit reader (address smoke (firstPage <> "edit/"))
       editorReady reader
@@ -78,9 +77,6 @@ spec smoke = describe "reading offline, through the service worker" $
       -- The question went out: the page's record of its fetches, the
       -- browser's, a condition.
       holdsInPage reader "performance.getEntriesByType('resource').some(e => /\\/api\\/v1\\/pages\\/[^/]+\\/plain$/.test(new URL(e.name).pathname))"
-      answers <- keptPaths reader "answers"
-      expect (not (null answers)) "the worker kept no answer of the API at all"
-      expect (not (any ("/plain" `Text.isSuffixOf`) answers)) ("kept the answer to whether a page's text is plain: " <> show answers)
       -- Taken back: the text as saved, and the draft discarded.
       mapM_ (const (pressOn (editorText reader) "Backspace")) [1 .. 7 :: Int]
       waitQuiet reader
@@ -97,6 +93,23 @@ spec smoke = describe "reading offline, through the service worker" $
       visit reader (address smoke firstPage)
       count copyLine `shouldReturn` 1
       hasText (locator reader "#app .offline-notice") "You are offline"
+      -- The question whether a page's text is plain now is the network's
+      -- alone (web/src/sw.js): with an answer to it put in the worker's
+      -- cache of API answers, it still fails offline, where an address the
+      -- worker answers is answered from that cache. A copy kept from before
+      -- an encryption would otherwise say yes. (Shown failing with the
+      -- question's address taken out of the worker's list of addresses it
+      -- never keeps.)
+      asked :: Text <-
+        evaluate
+          reader
+          "(async () => {\
+          \  const name = (await caches.keys()).find((n) => n.startsWith('wiki-answers '));\
+          \  const url = new URL('api/v1/pages/kept-here/plain', document.baseURI).href;\
+          \  await (await caches.open(name)).put(url, new Response(null, { status: 204 }));\
+          \  try { await fetch(url); return 'answered'; } catch { return 'failed'; }\
+          \})()"
+      asked `shouldBe` "failed"
       hasText (locator reader "#app .page-body") "Saved by someone else."
       -- The time, in the reader's zone and language, once the island has
       -- written it: the browser's, a condition.

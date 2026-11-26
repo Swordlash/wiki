@@ -1166,9 +1166,10 @@ plainText = describe "the question whether a page's text is plain now" $ do
       plainAt p = endpointUrl (\e -> e.pages.plain p)
       stale code = status 409 (encode (ApiError.Stale code "Not as the browser believed."))
       writesOut rs = [(methodOf r, requestUrl r) | r <- rs, methodOf r /= "GET"]
-      -- A refusal of the question, as the reader is told it.
-      refused why = \case
-        Left (Conflict t) -> why `T.isInfixOf` t && "nothing was sent" `T.isInfixOf` t
+      -- A refusal of the question, as the reader is told it: the space's
+      -- state with the server's code, never a conflict of versions.
+      refused code why = \case
+        Left (Stale c t) -> c == code && why `T.isInfixOf` t && "nothing was sent" `T.isInfixOf` t
         _ -> False
 
   it "asks the server about the page before each plain write, and sends the write when it says yes" $ do
@@ -1200,7 +1201,7 @@ plainText = describe "the question whether a page's text is plain now" $ do
         | otherwise -> status 500 ""
     env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
     runHttpWiki env (getPage hello.space (slugs "hello-world")) `shouldReturn` Right hello
-    for_ (writesOf hello) $ \(name, write') -> runHttpWiki env write' >>= \r -> (name, refused "encrypted since the page was opened" r) `shouldBe` (name, True)
+    for_ (writesOf hello) $ \(name, write') -> runHttpWiki env write' >>= \r -> (name, refused ApiError.SpaceIsEncrypted "encrypted since the page was opened" r) `shouldBe` (name, True)
     writesOut <$> readIORef asked `shouldReturn` []
     -- The refusal says the space is not as this tab believed: the list is
     -- read again, as after any such refusal.
@@ -1226,8 +1227,36 @@ plainText = describe "the question whether a page's text is plain now" $ do
         | requestUrl r == "api/v1/spaces" -> ok [blog]
         | otherwise -> status 500 ""
     env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
-    for_ (writesOf hello) $ \(name, write') -> runHttpWiki env write' >>= \r -> (name, refused "being encrypted or decrypted" r) `shouldBe` (name, True)
+    for_ (writesOf hello) $ \(name, write') -> runHttpWiki env write' >>= \r -> (name, refused ApiError.ConversionRuns "being encrypted or decrypted" r) `shouldBe` (name, True)
     writesOut <$> readIORef asked `shouldReturn` []
+
+  -- #394's third round: deleting a comment or a thread and resolving a
+  -- thread send no text, so no question goes before them, for a page whose
+  -- space is encrypted too; a comment's text still waits for the answer.
+  it "asks nothing before a change of comments that carries no text, and asks before one that does" $ do
+    (transport, asked) <- scripted $ \r ->
+      if
+        | requestUrl r == plainAt hello.id -> stale ApiError.SpaceIsEncrypted
+        | otherwise -> status 500 ""
+    env <- newHttpEnvWith transport (withSpaces [blog] emptyCache)
+    let changes =
+          [ void <$> deleteComment hello.id (CommentThreadId "t1") (CommentId "c1")
+          , void <$> deleteThread hello.id (CommentThreadId "t1")
+          , void <$> setResolved hello.id (CommentThreadId "t1") True
+          ]
+    for_ changes $ \change -> do
+      earlier <- length <$> readIORef asked
+      _ <- runHttpWiki env change
+      rs <- readIORef asked
+      -- The change itself, and no question.
+      [(methodOf r /= "GET", requestUrl r == plainAt hello.id) | r <- take (length rs - earlier) rs] `shouldBe` [(True, False)]
+    -- A comment's text: the question, and no write on its no (the list of
+    -- spaces read again after it, as after any refusal for the space's
+    -- state).
+    earlier <- length <$> readIORef asked
+    runHttpWiki env (openThread hello.id Nothing "A comment") >>= (`shouldSatisfy` isLeft)
+    rs <- readIORef asked
+    [(methodOf r, requestUrl r) | r <- take (length rs - earlier) rs, requestUrl r /= "api/v1/spaces"] `shouldBe` [("GET", plainAt hello.id)]
 
   it "sends nothing when the question gets no answer, as offline" $ do
     (transport, asked) <- scripted $ \r ->

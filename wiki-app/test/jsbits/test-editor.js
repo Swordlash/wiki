@@ -148,6 +148,33 @@ function wiki_test_editor_watch() {
   host.addEventListener("wiki-input", () => host.wikiTestInputs++);
 }
 
+// Watch for the open editor's question about the pages of other spaces
+// after [[ asked with the cursor's line up to the cursor reading `before`
+// (a "wiki-complete-elsewhere" event, web/src/editor.js's
+// elsewhereSource), from now on: CodeMirror asks on a timer of its own
+// after the last key, which the program does not know of.
+function wiki_test_editor_watch_elsewhere(before) {
+  const host = wiki_test_editor_host();
+  if (!host) return;
+  host.wikiTestElsewhere = new Promise((resolve) => {
+    const heard = (event) => {
+      if (event.detail?.before !== before) return;
+      host.removeEventListener("wiki-complete-elsewhere", heard);
+      resolve("asked");
+    };
+    host.addEventListener("wiki-complete-elsewhere", heard);
+  });
+}
+
+// Wait until the question watched for has been asked: "asked" then,
+// "pending" at the deadline `ms`, the suite's watchdog, and "not watched"
+// when nothing was watched for.
+function wiki_test_editor_elsewhere_asked(ms) {
+  const asked = wiki_test_editor_host()?.wikiTestElsewhere;
+  if (!asked) return Promise.resolve("not watched");
+  return Promise.race([asked, new Promise((resolve) => setTimeout(() => resolve("pending"), ms))]);
+}
+
 // How many "wiki-input" events the open editor made since it was watched.
 function wiki_test_editor_inputs() {
   return wiki_test_editor_host()?.wikiTestInputs ?? 0;

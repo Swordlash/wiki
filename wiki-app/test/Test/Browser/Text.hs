@@ -26,6 +26,8 @@ module Test.Browser.Text
   , selectText
   , watchEditor
   , inputsSeen
+  , watchElsewhere
+  , elsewhereAsked
   , proposeText
   )
 where
@@ -59,8 +61,13 @@ $( browserJS
      , ("js_watch", "wiki_test_editor_watch", Safe, [t|IO ()|])
      , ("js_inputs", "wiki_test_editor_inputs", Safe, [t|IO Int|])
      , ("js_propose", "wiki_test_editor_propose", Safe, [t|Int -> Int -> JSText -> IO ()|])
+     , ("js_watch_elsewhere", "wiki_test_editor_watch_elsewhere", Safe, [t|JSText -> IO ()|])
+     , ("js_elsewhere_askedPromise", "wiki_test_editor_elsewhere_asked", Safe, [t|Int -> IO (Promise JSText)|])
      ]
  )
+
+js_elsewhere_asked :: Int -> IO JSText
+js_elsewhere_asked ms = if inBrowser then wait =<< js_elsewhere_askedPromise ms else pure inert
 
 -- | What one types into: CodeMirror's content, found once CodeMirror has
 -- taken the textarea's place.
@@ -239,6 +246,27 @@ watchEditor :: Mounted s q o m -> PageM s ()
 watchEditor ui = do
   _ <- editorText ui
   unsafeIOToPageM js_watch
+
+-- | Watch for the editor's question about the pages of other spaces after
+-- @[[@ (#301) asked at the cursor's line reading this up to the cursor,
+-- from now on, for 'elsewhereAsked'. Call it before the keys that make
+-- the line so.
+watchElsewhere :: Mounted s q o m -> Text -> PageM s ()
+watchElsewhere ui before = do
+  _ <- editorText ui
+  unsafeIOToPageM (js_watch_elsewhere (toJSText before))
+
+-- | Wait until the question 'watchElsewhere' watched for has been asked.
+-- CodeMirror asks on a timer of its own a moment after the last key, which
+-- the program does not know of; the program's answer after it is waited
+-- for as usual ('waitQuiet'). It fails at the suite's watchdog
+-- ('watchdogMs').
+elsewhereAsked :: (HasCallStack) => Mounted s q o m -> PageM s ()
+elsewhereAsked ui = do
+  _ <- editorText ui
+  status <- fromJSText <$> perform (js_elsewhere_asked watchdogMs)
+  unless (status == "asked") . expectationFailure $
+    "after " <> show watchdogMs <> " ms, the editor had not asked about the pages of other spaces: " <> status
 
 -- | How many input events the editor made since 'watchEditor': one for
 -- each change of its text.

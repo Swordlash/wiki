@@ -21,7 +21,7 @@ import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (clickButton, slugs, startChanged, startWith)
-import Test.Browser.Text (clearBody, completing, completionAnswered, editorSelection, editorText, listReady, markdown, mathIn, problemsMarked, selectText, setMarkdown, utf16Length)
+import Test.Browser.Text (clearBody, completing, completionAnswered, editorSelection, editorText, elsewhereAsked, listReady, markdown, mathIn, problemsMarked, selectText, setMarkdown, untilListTakesKeys, utf16Length, watchElsewhere)
 import Test.Hspec (around)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (..))
@@ -1003,7 +1003,7 @@ spec m = readsOnce Idle $ around withTestClock $ do
     setMarkdown ui "# Cases\n\nCompute $2x + y here\n\nThen $2 + x\n\nSee [this](other \"Amount: $USD\") and $3.50 or $5 each."
     eventually $ underlined `shouldReturn` "$2x + y here$2 + x"
 
-  it "completes a mention with the users whose names start with what is typed, but not in code, a link or math" $ \_ -> runPage $ do
+  it "completes a mention with the users whose names start with what is typed, but not in code, a link or math" $ \clock -> runPage $ do
     ui <- startChanged m withMentionable (Just "user-editor") helloEditor
     text <- editorText ui
     clearBody ui
@@ -1053,9 +1053,19 @@ spec m = readsOnce Idle $ around withTestClock $ do
     typeAfter 5 ["@", "a", "n"]
     markdown ui `shouldReturn` "# Hello, world\n\n[see @an](https://example.org)"
     noCompletion ui
-    -- Nor in a link to a page of the wiki, [[page|label]]. (In its label:
-    -- letters typed in its address are looked up among the pages of other
-    -- spaces after a pause, which sleeps on this group's clock.)
+    -- Nor in a link to a page of the wiki, [[page]]. The letters typed in
+    -- its address are looked up among the pages of other spaces too
+    -- (#301), after a pause that sleeps on this group's clock: the
+    -- question is awaited, the clock advanced past the pause, and the
+    -- lookup's answer taken, before the list is looked for.
+    clearBody ui
+    typeText text "[[Plans ]]"
+    watchElsewhere ui "[[Plans @an"
+    typeAfter 8 ["@", "a", "n"]
+    markdown ui `shouldReturn` "# Hello, world\n\n[[Plans @an]]"
+    elsewhereAfterPause clock ui
+    noCompletion ui
+    -- Nor in its label.
     clearBody ui
     typeText text "[[plans|Plans ]]"
     typeAfter 14 ["@", "a", "n"]
@@ -1112,8 +1122,52 @@ spec m = readsOnce Idle $ around withTestClock $ do
     waitQuiet
     completionAnswered ui `shouldReturn` "active"
     listLabels ui `shouldReturn` ["Onboarding notes", "Onboarding"]
+
+  -- #301, as above, with letters that match no page of the space and a
+  -- page of another: the group alone is shown, and Enter writes its link;
+  -- and Escape while the lookup is out, with no list shown, gives the
+  -- completion up, so the answer after it opens nothing.
+  it "shows other spaces' pages alone when the space has none for the letters, Enter writing the link, and Escape before their answer opens nothing" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "docs" "Zebra handbook") (Just "user-editor") helloEditor
+    text <- editorText ui
+    clearBody ui
+    watchElsewhere ui "See [[zeb"
+    typeText text "See [[zeb"
+    elsewhereAfterPause clock ui
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Zebra handbook"]
+    (findAll ui ".cm-tooltip-autocomplete completion-section" >>= traverse textContent) `shouldReturn` ["In other spaces"]
+    untilListTakesKeys ui
+    press "Enter"
+    markdown ui `shouldReturn` "# Hello, world\n\nSee [[/s/docs/p/zebra-handbook/|Zebra handbook]]"
+    -- Escape while the lookup is out: no list is shown, and the
+    -- completion is still asked for.
+    clearBody ui
+    watchElsewhere ui "See [[zeb"
+    typeText text "See [[zeb"
+    elsewhereAsked ui
+    waitQuiet
+    completing ui `shouldReturn` "pending"
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    press "Escape"
+    completing ui `shouldReturn` ""
+    -- The pause ends and the lookup answers, after the Escape: no list.
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completing ui `shouldReturn` ""
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    markdown ui `shouldReturn` "# Hello, world\n\nSee [[zeb"
   where
     helloEditor = EditPage (slugs ["blog"]) (slugs ["hello-world"])
+    -- The editor's question about the pages of other spaces, watched for
+    -- before the keys ('watchElsewhere'), asked and taken by the program:
+    -- its pause asleep on the clock, which is advanced past it, and the
+    -- lookup's answer taken.
+    elsewhereAfterPause clock ui = do
+      elsewhereAsked ui
+      waitQuiet
+      perform (advance clock elsewhereDelay)
+      waitQuiet
     -- The labels of the completion's list shown, in its order.
     listLabels ui = findAll ui ".cm-tooltip-autocomplete .cm-completionLabel" >>= traverse textContent
     -- A page with this title at the top of the demo's space of this slug.

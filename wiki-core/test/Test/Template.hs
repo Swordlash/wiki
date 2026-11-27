@@ -35,15 +35,17 @@ spec = describe "Template" $ do
         not ("{{" `T.isInfixOf` t) ==> fillTemplate values t === t
 
   describe "builtinTemplates" $ do
-    it "are meeting notes, a decision record and a how-to guide, then a starter deck" $
-      map (\t -> t.key) builtinTemplates `shouldBe` ["meeting-notes", "decision-record", "how-to", "starter-deck"]
+    it "are meeting notes, a decision record, a how-to guide and a day, then a starter deck" $
+      map (\t -> t.key) builtinTemplates `shouldBe` ["meeting-notes", "decision-record", "how-to", "day", "starter-deck"]
     it "are documents but the starter deck, a presentation" $
       map (\t -> (t.key, t.kind)) builtinTemplates
-        `shouldBe` [("meeting-notes", Document), ("decision-record", Document), ("how-to", Document), ("starter-deck", Presentation)]
-    it "each start with its title as a heading and use every placeholder" $
+        `shouldBe` [("meeting-notes", Document), ("decision-record", Document), ("how-to", Document), ("day", Document), ("starter-deck", Presentation)]
+    it "each start with its title as a heading and use every placeholder, but the day" $
+      -- A day's page is titled with the day it is about, which its author
+      -- writes: the day the page is made and who made it are no part of it.
       for_ builtinTemplates $ \t -> do
         (t.key, "# {{title}}\n" `T.isPrefixOf` t.body) `shouldBe` (t.key, True)
-        for_ placeholderNames $ \name ->
+        for_ (if t.key == "day" then ["title"] else placeholderNames) $ \name ->
           (t.key, name, ("{{" <> name <> "}}") `T.isInfixOf` t.body) `shouldBe` (t.key, name, True)
     it "parse, filled, as Markdown with headings" $
       for_ builtinTemplates $ \t ->

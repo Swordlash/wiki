@@ -76,6 +76,18 @@ If someone else saves the page while you have ticks not saved, "Save" does not o
 
 An item without a box ends a list of tasks there (the next items are another list), so `{.sorted}` sorts the tasks up to it. To sort several lists, put them in a box of the class: `[[!div]]{.sorted}` … `[[/div]]`.
 
+`{.day}` on the line before a list makes it a day's list, as the template "Day" starts a day's page. An item that starts with a time is an entry at that time (`09:00`), or from one time to another (`9:30-10:30`, the end after the start); an item without one is an entry for the whole day; `!` at the start of an item, after its box and before its time, highlights it. The page shows the items in groups: "All day" first, then each part of the day that has an entry, in the order of the clock (Night before 6:00, Dawn from 6:00, Morning from 9:00, Noon from 12:00, Afternoon from 15:00, Evening from 18:00, Night again from 21:00), the entries of a part by their start. A highlighted entry stays at its time and is marked there, without its `!`. Tasks are ticked as in any list. Only the page shows the groups: the text keeps its order, and the exports, the feed and search show the list as written. Unlike `{.sorted}`, `{.day}` takes in the whole list, the items with a box and those without.
+
+{.day}
+- 09:00 Standup
+- 9:30-10:30 Review of the plan
+- ! 14:00 Demo for the client
+- ! Ania's birthday
+- [ ] 16:00 Call the bank
+- Buy milk
+
+A time is `H:MM` or `HH:MM`, written as plain text at the start of the item, with a space after it. Anything else there (`25:00`, `9:5`, `10:30-9:30`, a time in code or in emphasis) leaves the item an entry for the whole day, shown as written.
+
 ## Links
 
 A link to a page of the wiki is a path, relative to the current page or, starting with `/`, to the wiki: [the guide](guide), [setup](../setup), [a team's page](/engineering/onboarding). A page's own address in the wiki, `/s/engineering/p/onboarding/` (what the address bar shows after the wiki's own part), links to that page too, even where a subspace has the page's name; the editor's "Link to a page" (Ctrl+Shift+K) writes links this way, after you pick the page, and one of its sections if you like. A wiki link is shorter: [[onboarding]] links to the page `onboarding`, and [[onboarding|our onboarding]] does too, with another label.

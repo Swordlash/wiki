@@ -2717,8 +2717,14 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   day (the owner's: Dawn 6-9, Morning 9-12, Noon 12-15, Afternoon 15-18,
   Evening 18-21, Night 21-6), with "Highlights" above them, all read from
   the list; nothing is moved in the source. A pure function in wiki-core
-  reads a text's entries. To settle with the owner before briefing: the
-  mark that highlights, and what an item with a task box and a time is.
+  reads a text's entries. Settled (the owner, 2026-11-27): an
+  exclamation mark at the start of an item highlights it (`- ! 09:00
+  Demo`, `- ! Ania's birthday`); an item with a task box and a time
+  (`- [ ] 09:00 Call the bank`) is an entry and a task at once, ticked
+  as in a TODO list and shown as done in the calendar. The same day he
+  asked for the calendar next ("Może kalendarz byśmy zrobili"), ahead
+  of the emoji and the Mermaid and TikZ plugins; a read-only design
+  stage runs first.
 - **WP5.93 The calendar, a kind of page (#204, the third of three).** The
   owner, 2026-11-11: "the calendar is a nice next example of a plugin".
   So the day's page and the calendar are not built before the plugins'

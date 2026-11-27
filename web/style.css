@@ -1736,21 +1736,29 @@ pre.numbered > code {
 }
 
 /* A group with a task in it is a list of tasks, which has no bullets: its
-   items without a box keep theirs, and its text starts where an ordinary
-   list's does (the browser's 40px), so that the groups line up. */
+   items without a box keep theirs (but an item whose bullet is its emoji,
+   below), and its text starts where an ordinary list's does (the
+   browser's 40px), so that the groups line up. */
 .page-body .day-group > .task-list {
   padding-left: 40px;
 }
 
-.page-body .day-group > .task-list > li:not(.task-list-item) {
+.page-body .day-group > .task-list > li:not(.task-list-item):not(.emoji-item) {
   list-style: disc;
 }
 
 /* A highlighted entry, "!" at the start of its item: shown at its time,
    its text bold, and in no colour of its own (the owner keeps colour for
-   other marks). */
+   other marks). The lists in its item are not its text: they are of the
+   normal weight, and an entry highlighted among them is bold by its own
+   class. */
 .day-highlight {
   font-weight: 600;
+}
+
+.day-highlight ul,
+.day-highlight ol {
+  font-weight: normal;
 }
 
 /* A box the reader may tick in the page view (Wiki.App.View.Page). */

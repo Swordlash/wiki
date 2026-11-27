@@ -22,12 +22,16 @@ module Wiki.App.Editor.Complete
   , macroCommands
   , pageMacroCommands
   , pageSource
+  , HeldSpace (..)
+  , heldSpaces
+  , elsewhereSource
   , Readings
   , noReadings
   , Earlier (..)
   , earlierFrom
   , noEarlier
   , answer
+  , linkLetters
   , completionJson
   )
 where
@@ -38,8 +42,8 @@ import Data.Map.Lazy qualified as Map
 import Data.Map.Strict qualified as Strict
 import Data.Text qualified as T
 import Protolude
-import Wiki.App.Route (pageLinkText)
-import Wiki.Core.Id (PageId)
+import Wiki.App.Route (ownPageLinkText, pageLinkText)
+import Wiki.Core.Id (PageId, SpaceId)
 import Wiki.Core.Markdown.Box (BoxKind)
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.Markdown.Edit (pageMacros)
@@ -47,9 +51,10 @@ import Wiki.Core.Markdown.Starts (Earlier (..), earlierFrom, linesBelow, linesFr
 import Wiki.Core.Math (definedMacros)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind)
-import Wiki.Core.PageMatch (Matchable (..), matchRank, matchable, typedLetters)
-import Wiki.Core.Slug (Slug)
-import Wiki.Core.Space (Space, pagePath)
+import Wiki.Core.PageMatch (Matchable (..), TitleHit (..), matchRank, matchable, typedLetters)
+import Wiki.Core.Path (ancestry)
+import Wiki.Core.Slug (Slug, slugText)
+import Wiki.Core.Space (Space (conversion, encryption, id, name, slug), pagePath)
 
 -- | 'Request' is CodeMirror's question: the cursor's line, from 1, in the
 -- whole text (the master's, for a row of a presentation edited slide by
@@ -229,17 +234,97 @@ pageSource held wanted
         , origin = Nothing
         }
       where
-        -- The reader's own label, typed already, stays; otherwise the
-        -- link's own, as a label is written at the cursor (in a table's
-        -- cell, its bars escaped; where none reads as one, none), and its
-        -- end.
-        written
-          | T.null typed.kept = "[[" <> p.address <> labelPart <> "]]"
-          | otherwise = "[[" <> p.address <> typed.kept
-        labelPart = case (p.label, typed.labels) of
-          (Just label, PlainLabel) -> "|" <> label
-          (Just label, EscapedLabel) -> "\\|" <> T.replace "|" "\\|" label
-          _ -> ""
+        written = linkWritten typed p.address p.label
+
+-- | The wiki link a page's entry writes, given its address and its label
+-- if it needs one ('pageLinkText', 'ownPageLinkText'). The reader's own
+-- label, typed already, stays, and so does the end the reader typed
+-- ('Typed''s 'kept'). Otherwise the link's own label is written as a label
+-- is written at the cursor: after a bar; in a table's cell, after an
+-- escaped bar, its own bars escaped; where none reads as one, none. Then
+-- the link's end.
+linkWritten :: Typed -> Text -> Maybe Text -> Text
+linkWritten typed address label
+  | T.null typed.kept = "[[" <> address <> labelPart <> "]]"
+  | otherwise = "[[" <> address <> typed.kept
+  where
+    labelPart = case (label, typed.labels) of
+      (Just l, PlainLabel) -> "|" <> l
+      (Just l, EscapedLabel) -> "\\|" <> T.replace "|" "\\|" l
+      _ -> ""
+
+-- | 'HeldSpace' is a space as the editor holds it, for the pages of other
+-- spaces after @[[@ (#301): its name, its path from the top level, and
+-- whether it is plain (neither encrypted nor being encrypted or
+-- decrypted). The lookup's machine ("Wiki.App.Editor.Elsewhere.Machine")
+-- closes the list when one of these changes, and 'elsewhereSource' offers
+-- a page only of a space held plain at the same path.
+data HeldSpace = HeldSpace
+  { name :: Text
+  , path :: [Slug]
+  , plain :: Bool
+  }
+  deriving stock (Eq, Show)
+
+-- | The spaces given, as the editor holds them, by id: each space's path
+-- is the slugs of its chain of spaces from the top level, as
+-- 'Wiki.Core.Permission.spaceChain' reads it. The chain is followed in a
+-- map of the spaces by id, made once, rather than by a scan of the list
+-- for each space of each chain: the editor works this out at every change
+-- of its input.
+heldSpaces :: [Space] -> Map.Map SpaceId HeldSpace
+heldSpaces spaces = Map.map held byId
+  where
+    byId = Map.fromList [(s.id, s) | s <- spaces]
+    held s =
+      HeldSpace
+        { name = s.name
+        , path = map (\c -> c.slug) (fromMaybe [] (ancestry (`Map.lookup` byId) s.id))
+        , plain = isNothing s.encryption && isNothing s.conversion
+        }
+
+-- | The pages of other spaces after @[[@ (#301): the pages the lookup of
+-- pages by title found ("Wiki.Core.PageMatch"'s 'TitleHit'), in the order
+-- it gave them. The lookup leaves out the space of the page edited, whose
+-- pages 'pageSource' offers. Each entry shows the page's title, and in
+-- grey the name of its space (from the spaces given, by the space's id)
+-- and where it is: the space's path and the page's path, or the space's
+-- path for its home page.
+--
+-- A hit is offered only when its space, by its id, is one the editor
+-- holds plain at the same path ('HeldSpace'): the preview resolves the
+-- link written against the spaces the editor holds, and a space created
+-- or moved since the editor heard of the spaces is offered once it has.
+-- A space the editor holds as encrypted, or being encrypted or decrypted,
+-- is not offered: the answer may have been made before the space's
+-- encryption began.
+--
+-- Choosing one writes a link to the page's own address with its title as
+-- the label ('ownPageLinkText'): @[[\/s\/eng\/p\/onboarding\/|Onboarding]]@.
+-- A space's home page is the space's address, @[[\/s\/eng\/|Engineering]]@,
+-- labelled with the space's name. The label is written as 'linkWritten'
+-- writes it: escaped in a table's cell, and the reader's own label kept.
+elsewhereSource :: Map.Map SpaceId HeldSpace -> [TitleHit] -> Source
+elsewhereSource held hits wanted
+  | wanted.typed.trigger /= LinkToPage = []
+  | otherwise = [candidate hit s.name | hit <- hits, Just s <- [Map.lookup hit.space held], s.plain, s.path == hit.spacePath]
+  where
+    candidate hit spaceName =
+      Candidate
+        { label = hit.title
+        , skeleton = [Literal (linkWritten wanted.typed address (Just label)), Field 0 ""]
+        , writing = AsText
+        , action = Nothing
+        , note = Just (spaceName <> " · " <> place)
+        , origin = Nothing
+        }
+      where
+        home = null hit.pagePath
+        (address, label) = ownPageLinkText hit.spacePath hit.pagePath (if home then spaceName else hit.title)
+        spacePlace = T.intercalate "/" (map slugText hit.spacePath)
+        place
+          | home = spacePlace <> ", the home page"
+          | otherwise = spacePlace <> "/" <> T.intercalate "/" (map slugText hit.pagePath)
 
 -- | How many pages the list offers at most: enough to scroll through, few
 -- enough for a space of thousands of pages to answer at once.
@@ -278,7 +363,28 @@ noReadings = Readings {above = [], byLine = Map.empty}
 -- whole text above, and anything else opens no list
 -- ('readsWholeAbove').
 answer :: [Source] -> Earlier -> Readings -> Text -> Request -> (Maybe Completion, Readings)
-answer found earlier memo text request = case T.splitOn "\n" text of
+answer found earlier memo text request = case readAround earlier memo text request of
+  Just (readAt, at, memo') -> (complete found readAt at, memo')
+  Nothing -> (Nothing, memo)
+
+-- | The letters typed after @[[@ where a link to a page opens a list (the
+-- trigger 'LinkToPage'), against the text the editor holds, as 'answer'
+-- reads the request; 'Nothing' when no such list opens there, or the
+-- cursor's line in that text is not the request's. And the memo of the
+-- parser's readings, as 'answer' leaves it. The lookup of other spaces'
+-- pages (#301) asks the server for these letters.
+linkLetters :: Earlier -> Readings -> Text -> Request -> (Maybe Text, Readings)
+linkLetters earlier memo text request = case readAround earlier memo text request of
+  Just (readAt, at, memo') -> ((\typed -> typed.letters) <$> mfilter (\typed -> typed.trigger == LinkToPage) (triggerAt readAt at), memo')
+  Nothing -> (Nothing, memo)
+
+-- | The cursor's place for a request, against the text the editor holds,
+-- and the parser's reading of a line there, as 'answer' reads them; and
+-- the memo of those readings. 'Nothing' when the cursor's line in that
+-- text is not the request's, or no start of a block serves and nothing
+-- reads the whole text above.
+readAround :: Earlier -> Readings -> Text -> Request -> Maybe (LineReader, At, Readings)
+readAround earlier memo text request = case T.splitOn "\n" text of
   ls
     | request.line >= 1
     , Just current <- ls `atMay` (request.line - 1)
@@ -297,8 +403,8 @@ answer found earlier memo text request = case T.splitOn "\n" text of
             readFrom m probe = fromMaybe (readLine above probe) (Map.lookup probe m)
             first' = foldl' add kept (firstProbes at)
             byLine = foldl' add first' (probesOf (readFrom first') at)
-         in (complete found (readFrom byLine) at, Readings {above, byLine})
-  _ -> (Nothing, memo)
+         in Just (readFrom byLine, at, Readings {above, byLine})
+  _ -> Nothing
 
 -- | An answer as @web/src/editor.js@ reads it: where the text the entry
 -- chosen replaces starts in the line, and how far after the cursor it

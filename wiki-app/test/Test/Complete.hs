@@ -23,9 +23,9 @@ import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Editor.Complete
 import Wiki.App.Editor.Tools (Control (..), controlName, htmlTags, notOffered, slashEntries, toolbarGroups)
-import Wiki.App.Route (PageLink (..), pageLinkText, pageRoute, resolvePageLink)
+import Wiki.App.Route (PageLink (..), oneLine, pageLinkText, pageRoute, resolvePageLink)
 import Wiki.Core.Assistant.Reference (markdownReference)
-import Wiki.Core.Id (PageId (..))
+import Wiki.Core.Id (PageId (..), SpaceId (..))
 import Wiki.Core.Markdown (Destination (..), classifyDestination)
 import Wiki.Core.Markdown.Ast (Block (..), BoxHead (..), Footnote (..), Inline (..), ListItem (..), allInlines, parseMarkdown, plainText)
 import Wiki.Core.Markdown.Ast qualified as Ast
@@ -36,8 +36,9 @@ import Wiki.Core.Markdown.Problems qualified as Problems
 import Wiki.Core.Markdown.Starts (linesFromStart)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind (..))
+import Wiki.Core.PageMatch (TitleHit (..))
 import Wiki.Core.Slug (Slug, mkSlug, slugText, slugify)
-import Wiki.Core.Space (Space (homePage, slug))
+import Wiki.Core.Space (Space (homePage, id, name, slug))
 import Wiki.Core.Space qualified as S
 
 -- | The answer, from no memo of the parser's readings.
@@ -365,6 +366,81 @@ spec = describe "Wiki.App.Editor.Complete" $ do
         let offered = isJust (answered (sources h) page (Request {line = 3, before = "See [[Gu", after = lineAfter, nodes = ["Paragraph", "Document"]}))
         (n, cost < linkBound, offered) `shouldBe` (n, True, n < 2_000)
 
+  describe "the pages of other spaces offered after [[ (#301)" $ do
+    let onboarding = hitIn "team" ["handbook", "onboarding"] "Onboarding"
+        teamHome = hitIn "team" [] "Team handbook"
+        wiki = hitIn "projects" ["the-wiki"] "The wiki"
+        elsewhere = [elsewhereSource spaceNames [onboarding, teamHome, wiki]]
+        offeredElsewhere typed afterwards = map (\c -> (c.label, c.note)) . (.candidates) <$> answered elsewhere (typed <> afterwards) (lineRequest typed afterwards)
+        writtenElsewhere typed afterwards label = do
+          found <- answered elsewhere (typed <> afterwards) (lineRequest typed afterwards)
+          c <- find (\c -> c.label == label) found.candidates
+          Just (T.take found.from typed <> fst (skeletonText c.skeleton) <> T.drop found.through afterwards)
+    it "shows each page by its title, with its space's name and where it is in grey, in the lookup's order" $
+      offeredElsewhere "See [[on" ""
+        `shouldBe` Just
+          [ ("Onboarding", Just "Team · team/handbook/onboarding")
+          , ("Team handbook", Just "Team · team, the home page")
+          , ("The wiki", Just "Projects · team/projects/the-wiki")
+          ]
+    it "writes the page's own address with its title, and a space's address with the space's name for its home page" $ do
+      writtenElsewhere "See [[on" "" "Onboarding" `shouldBe` Just "See [[/s/team/p/handbook/onboarding/|Onboarding]]"
+      writtenElsewhere "See [[te" "" "Team handbook" `shouldBe` Just "See [[/s/team/|Team]]"
+      writtenElsewhere "[[wi" "" "The wiki" `shouldBe` Just "[[/s/team/projects/p/the-wiki/|The wiki]]"
+    it "keeps the reader's own label, replaces the rest of a link typed already, and escapes the bar in a table's cell" $ do
+      writtenElsewhere "[[on" "|Read this]] now" "Onboarding" `shouldBe` Just "[[/s/team/p/handbook/onboarding/|Read this]] now"
+      writtenElsewhere "[[on" "board]] now" "Onboarding" `shouldBe` Just "[[/s/team/p/handbook/onboarding/|Onboarding]] now"
+      let inCell = do
+            found <- answered [elsewhereSource spaceNames [hitIn "team" ["plans"] "Plans | Q3"]] "| h | i |\n| --- | --- |\n| [[pl | x |" (Request {line = 3, before = "| [[pl", after = " | x |", nodes = ["Paragraph", "Document"]})
+            fst . skeletonText . (.skeleton) <$> head found.candidates
+      inCell `shouldBe` Just "[[/s/team/p/plans/\\|Plans \\| Q3]]"
+    it "offers a page only of a space the editor holds, at the path it holds" $ do
+      let plans = hitIn "team" ["plans"] "Plans"
+          moved = TitleHit {page = plans.page, space = plans.space, spacePath = slugs ["elsewhere"], pagePath = plans.pagePath, title = plans.title}
+          unknown = TitleHit {page = plans.page, space = SpaceId "space-new", spacePath = plans.spacePath, pagePath = plans.pagePath, title = plans.title}
+      answered [elsewhereSource spaceNames [moved, unknown]] "[[pl" (lineRequest "[[pl" "") `shouldBe` Nothing
+      (map (.label) . (.candidates) <$> answered [elsewhereSource spaceNames [moved, hitIn "team" ["plans"] "Plans"]] "[[pl" (lineRequest "[[pl" "")) `shouldBe` Just ["Plans"]
+    -- Round 4 of #389's review: a reply made before a space's encryption
+    -- began is no list of that space's pages once the editor holds the
+    -- space as encrypted, or being encrypted.
+    -- Round 5 of #389's review: the spaces held are worked out from a map
+    -- of the spaces by id; each path is still the space's whole chain.
+    it "holds each space at the path of its chain from the top level, a subspace's under its parent's" $ do
+      let spaces = Map.elems (demoState demoNow).spaces
+          pathOf slugName = [h.path | s <- spaces, slugText s.slug == slugName, Just h <- [Map.lookup s.id (heldSpaces spaces)]]
+      pathOf "projects" `shouldBe` [slugs ["team", "projects"]]
+      pathOf "team" `shouldBe` [slugs ["team"]]
+      Map.keysSet (heldSpaces spaces) `shouldBe` Map.keysSet (Map.fromList [(s.id, ()) | s <- spaces])
+    it "offers no page of a space the editor holds as encrypted, or being encrypted or decrypted" $ do
+      let plans = hitIn "team" ["plans"] "Plans"
+          sealedTeam = Map.adjust (\h -> h {plain = False}) plans.space spaceNames
+      answered [elsewhereSource sealedTeam [plans]] "[[pl" (lineRequest "[[pl" "") `shouldBe` Nothing
+      (map (.label) . (.candidates) <$> answered [elsewhereSource sealedTeam [plans, hitIn "projects" ["plans"] "Plans of projects"]] "[[pl" (lineRequest "[[pl" "")) `shouldBe` Just ["Plans of projects"]
+    it "writes a title's line breaks as one space each" $
+      (fst . skeletonText . (.skeleton) <$> (answered [elsewhereSource spaceNames [hitIn "team" ["plans"] "Plans\n\n  for Q3"]] "[[pl" (lineRequest "[[pl" "") >>= head . (.candidates))) `shouldBe` Just "[[/s/team/p/plans/|Plans for Q3]]"
+    it "offers nothing but after [[, and nothing with no page found" $ do
+      offeredElsewhere "[[!di" "" `shouldBe` Nothing
+      answered elsewhere "`[[on`" (Request {line = 1, before = "`[[on", after = "`", nodes = ["InlineCode", "Paragraph", "Document"]}) `shouldBe` Nothing
+      answered [elsewhereSource spaceNames []] "[[on" (lineRequest "[[on" "") `shouldBe` Nothing
+    it "reads a link written alone on a line, and on the line after a block's start, as the link, and the block still ends at its own end" $ do
+      let alone = "[[/s/team/p/handbook/onboarding/|Onboarding]]"
+          linksIn t = [(destination, plainText description) | Right blocks <- [parseMarkdown t], Link _ destination _ description <- allInlines blocks]
+      linksIn alone `shouldBe` [("/s/team/p/handbook/onboarding/", "Onboarding")]
+      linksIn ("[[!div]]\n" <> alone <> "\n[[/div]]") `shouldBe` [("/s/team/p/handbook/onboarding/", "Onboarding")]
+      [() | Right blocks <- [parseMarkdown ("[[!div]]\n" <> alone <> "\n[[/div]]\n\nAfter")], Ast.Div {} <- blocks] `shouldBe` [()]
+    modifyMaxSuccess (* 3) . prop "writes a link the parser reads as one wiki link with the label written, which leads from a page of another space to the page found" $
+      checkCoverage (forAll genElsewhere elsewhereResolves)
+
+  describe "linkLetters" $ do
+    let lettersOf t request = fst (linkLetters noEarlier noReadings t request)
+    it "gives the letters typed after [[ where a list of pages opens" $ do
+      lettersOf "See [[onb" (lineRequest "See [[onb" "") `shouldBe` Just "onb"
+      lettersOf "[[on c]]" (lineRequest "[[on c" "]]") `shouldBe` Just "on c"
+    it "gives none where no list of pages opens, or the line is not the request's" $ do
+      lettersOf "[[!di" (lineRequest "[[!di" "") `shouldBe` Nothing
+      lettersOf "[[onb" (Request {line = 1, before = "[[onb", after = "", nodes = ["CodeText", "FencedCode", "Document"]}) `shouldBe` Nothing
+      lettersOf "[[onbo" (lineRequest "[[onb" "") `shouldBe` Nothing
+
   describe "pageLinkText, over generated trees of pages" $ do
     it "names a sibling by its title when the title reads back as its slug" $
       pageLinkText (slugs ["a", "b"]) (slugs ["a", "on-call"]) "On-call" `shouldBe` ("On-call", Nothing)
@@ -684,7 +760,7 @@ slugs = map (either (panic . show) identity . mkSlug)
 -- | Titles that slugify alike, that a link's address cannot hold, or its
 -- label, and plain ones.
 titles :: [Text]
-titles = ["On-call", "On call", "on-call", "Guide", "guide", "Plans | Q3", "A]b", "Ops/Dev", "Q&A", "Who is on call?", "Café", "Notes: 2026", "x", "Deep", "Ops", "Release 2.0", "[draft]"]
+titles = ["On-call", "On call", "on-call", "Guide", "guide", "Plans | Q3", "A]b", "Ops/Dev", "Q&A", "Who is on call?", "Café", "Notes: 2026", "x", "Deep", "Ops", "Release 2.0", "[draft]", "Line\nbreak", "Two\n\nparagraphs", "Spaced \n  out\r\n"]
 
 -- | A tree of pages under a home page, each title from 'titles', each slug
 -- its title's, made unique among its siblings as the wiki does (@-2@).
@@ -734,7 +810,7 @@ linksResolve pages =
     spaces = space : filter (\s -> s.id /= space.id) (Map.elems (demoState demoNow).spaces)
     spacePath = [space.slug]
     pathOf p = fromMaybe (panic "no path") (S.pagePath space (\i -> find (\q -> q.id == i) pages) p.id)
-    target p = (pageRoute spacePath (pathOf p), p.title)
+    target p = (pageRoute spacePath (pathOf p), oneLine p.title)
     -- What a written link is read as: where it leads, and its text.
     readsAs linking written' = case parseMarkdown written' of
       Right blocks
@@ -761,7 +837,7 @@ linksResolve pages =
     joined = \case
       [] -> "."
       segments -> T.intercalate "/" segments
-    labelOf = T.replace "]" "&#93;" . T.replace "&" "&amp;"
+    labelOf = T.replace "]" "&#93;" . T.replace "&" "&amp;" . oneLine
     -- 'pageLinkText''s rule for a title as the last segment.
     titleAllowed t = T.all (\c -> isAlphaNum c || c == ' ' || c == '-') t && T.strip t == t && not (T.null t)
 
@@ -814,3 +890,109 @@ longDeck = T.intercalate "\n" (["# Long", ""] <> concatMap slide [1 .. 60 :: Int
           <> concat [para n k 12 | k <- [34, 46 .. 94]]
     para n start count = sentences n start count <> [""]
     sentences n start count = ["Line " <> show k <> " of slide " <> show n <> ": the quick brown fox jumps over the lazy dog." | k <- [start .. start + count - 1 :: Int]]
+
+----------------------------------------------------------------------
+-- The pages of other spaces
+
+-- | The demo's spaces, but for the one the edited page is in ('space'),
+-- each with its path from the top.
+otherSpaces :: [(Space, [Text])]
+otherSpaces =
+  [ (s, path)
+  | (slugName, path) <- [("team", ["team"]), ("projects", ["team", "projects"]), ("blog", ["blog"])]
+  , s <- Map.elems (demoState demoNow).spaces
+  , slugText s.slug == slugName
+  ]
+
+-- | The demo's spaces but the Docs, by their ids, each with its name and
+-- its path, plain, as the editor gives them to 'elsewhereSource'.
+spaceNames :: Map.Map SpaceId HeldSpace
+spaceNames = Map.fromList [(s.id, HeldSpace {name = s.name, path = slugs path, plain = True}) | (s, path) <- otherSpaces]
+
+-- | A page the lookup found in the demo's space of this slug, at its path
+-- there, with its title.
+hitIn :: Text -> [Text] -> Text -> TitleHit
+hitIn slugName path title = case find (\(s, _) -> slugText s.slug == slugName) otherSpaces of
+  Just (s, spacePath) -> TitleHit {page = PageId ("p-" <> slugName), space = s.id, spacePath = slugs spacePath, pagePath = slugs path, title}
+  Nothing -> panic ("no space " <> slugName)
+
+-- | 'ElsewhereCase' is a link to a page of another space being typed: the
+-- page found; the lines above, the text before the link on its line, the
+-- letters typed after the @[[@, what of the link the reader typed already
+-- after the cursor, what makes the line what it is after that, and the
+-- lines below.
+data ElsewhereCase = ElsewhereCase
+  { hit :: TitleHit
+  , above :: [Text]
+  , pre :: Text
+  , typed :: Text
+  , rest :: Text
+  , lineEnd :: Text
+  , below :: [Text]
+  }
+  deriving stock (Show)
+
+genElsewhere :: Gen ElsewhereCase
+genElsewhere = do
+  (s, spacePath) <- elements otherSpaces
+  -- A page's path whose segment is a word of the route's own (@p@), which
+  -- its address writes with a @~@; and the space's home page.
+  pagePath <- elements [[], ["onboarding"], ["handbook", "on-call"], ["p"], ["q-a", "pages"]]
+  title <- elements titles
+  (above, pre, lineEnd, below) <-
+    elements
+      [ ([], "", "", [])
+      , ([], "See ", " now", [])
+      , (["| h | i |", "| --- | --- |"], "| ", " | x |", [])
+      , (["[[!div]]"], "", "", ["[[/div]]"])
+      , ([], "- ", "", [])
+      , ([], "**", "**", [])
+      ]
+  typed <- elements ["on", "Gu", "q&"]
+  -- A label the reader typed is after a bar, escaped in a table's cell,
+  -- whose bars the table takes otherwise.
+  let bar = if pre == "| " then "\\|" else "|"
+  rest <- elements ["", "", "board]]", bar <> "Mine]]", bar <> "Q&amp;A]]"]
+  let hit = TitleHit {page = PageId "p-found", space = s.id, spacePath = slugs spacePath, pagePath = slugs pagePath, title}
+  pure ElsewhereCase {hit, above, pre, typed, rest, lineEnd, below}
+
+-- | The entry of the page found writes a link that the parser reads as the
+-- line's one wiki link, with the reader's own label where one was typed
+-- and otherwise the page's title (the space's name for its home page),
+-- and that leads from a page of the demo's Docs to the page found: its
+-- own address, the space's for its home page.
+elsewhereResolves :: ElsewhereCase -> Property
+elsewhereResolves c =
+  cover 15 (null c.hit.pagePath) "a space's home page"
+    . cover 15 (isJust keptLabel) "a label kept"
+    . cover 10 (c.pre == "| ") "in a table's cell"
+    $ case answered [elsewhereSource spaceNames [c.hit]] text request >>= \found -> (found,) <$> head found.candidates of
+      Nothing -> counterexample "nothing offered" (property False)
+      Just (found, candidate) ->
+        let line' = T.take found.from upTo <> fst (skeletonText candidate.skeleton) <> T.drop found.through fromCursor
+            result = T.intercalate "\n" (c.above <> [line'] <> c.below)
+            written' = [(destination, plainText description) | Right blocks <- [parseMarkdown result], Link _ destination _ description <- allInlines blocks]
+         in counterexample (toS result) $
+              case written' of
+                [(destination, label)] ->
+                  conjoin
+                    [ label === expectedLabel
+                    , resolvePageLink spaces' docsPath (Just (PageId "p0")) docsPages (slugs ["guide"]) destination === Just (PageLink target "")
+                    ]
+                other -> counterexample (show other) (property False)
+  where
+    upTo = c.pre <> "[[" <> c.typed
+    fromCursor = c.rest <> c.lineEnd
+    text = T.intercalate "\n" (c.above <> [upTo <> fromCursor] <> c.below)
+    request = Request {line = length c.above + 1, before = upTo, after = fromCursor, nodes = ["Paragraph", "Document"]}
+    home = null c.hit.pagePath
+    keptLabel = T.stripPrefix "|" c.rest <|> T.stripPrefix "\\|" c.rest
+    expectedLabel
+      | Just kept <- keptLabel = T.replace "&amp;" "&" (T.dropEnd 2 kept)
+      | home = maybe c.hit.title (\h -> h.name) (Map.lookup c.hit.space spaceNames)
+      | otherwise = oneLine c.hit.title
+    target = pageRoute c.hit.spacePath c.hit.pagePath
+    spaces' = Map.elems (demoState demoNow).spaces
+    docsPath = [space.slug]
+    docsPages = [summary "p0" Nothing "Home" (slugOf "home") 0, summary "p1" (Just (PageId "p0")) "Guide" (slugOf "guide") 1]
+    slugOf = either (panic . show) identity . mkSlug

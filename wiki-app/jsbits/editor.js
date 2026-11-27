@@ -354,6 +354,18 @@ function wiki_editor_completed(host, id, found) {
   host.wikiEditor?.completed(id, found === "" ? null : JSON.parse(found));
 }
 
+// Close the completion's list of the editor and of its rows, with every
+// entry of it.
+function wiki_editor_close_completions(host) {
+  host.wikiEditor?.closeCompletions();
+}
+
+// The answer to the question `id` about the pages of other spaces after
+// "[[": `found` in the same shape, or "" for none.
+function wiki_editor_completed_elsewhere(host, id, found) {
+  host.wikiEditor?.completedElsewhere(id, found === "" ? null : JSON.parse(found));
+}
+
 // The preview of a page being edited, in a window of its own (WP5.36 of
 // docs/PLAN.md, Wiki.App.View.LivePreview). The editor's CodeMirror
 // (web/src/editor.js) sends what is typed on the "wiki-live-preview"

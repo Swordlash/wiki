@@ -110,6 +110,21 @@ spec smoke = describe "reading offline, through the service worker" $
           \  try { await fetch(url); return 'answered'; } catch { return 'failed'; }\
           \})()"
       asked `shouldBe` "failed"
+      -- Nor is the lookup of pages by the letters typed after [[ kept, or
+      -- answered from a copy: its address holds the letters, which are the
+      -- page's text (wiki-api's @pages/titled@). An answer put in the
+      -- worker's cache for such an address still fails offline. (Shown
+      -- failing with the lookup's address taken out of the worker's list.)
+      looked :: Text <-
+        evaluate
+          reader
+          "(async () => {\
+          \  const name = (await caches.keys()).find((n) => n.startsWith('wiki-answers '));\
+          \  const url = new URL('api/v1/pages/titled?q=kept&limit=10', document.baseURI).href;\
+          \  await (await caches.open(name)).put(url, new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }));\
+          \  try { await fetch(url); return 'answered'; } catch { return 'failed'; }\
+          \})()"
+      looked `shouldBe` "failed"
       hasText (locator reader "#app .page-body") "Saved by someone else."
       -- The time, in the reader's zone and language, once the island has
       -- written it: the browser's, a condition.

@@ -872,8 +872,10 @@ handlers env caller =
           , createPage = \s new -> versioned <$> wiki (createPageOf new.kind s new.parent new.title new.body)
           , export = \s format request respond -> liftIO (exporting request respond (\key -> exportSpace env.exports env.texEngine key env.storage who s format))
           }
-    , pagesTitled = \q except limit ->
-        wiki (findPagesByTitle (titleQueryOf q except limit))
+    , -- Kept by no cache: the address holds letters typed in a page
+      -- ('Wiki.Api.Unkept').
+      pagesTitled = \q except limit ->
+        addHeader "private, no-store" <$> wiki (findPagesByTitle (titleQueryOf q except limit))
     , pages =
         PagesApi
           { save = \p version edit -> versioned <$> wiki (savePage p version.time edit.title edit.body)

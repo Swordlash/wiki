@@ -134,6 +134,7 @@ library
       Wiki.App.SlideFit
       Wiki.App.Editor.Browser
       Wiki.App.Editor.Complete
+      Wiki.App.Editor.Elsewhere.Machine
       Wiki.App.Editor.Problems
       Wiki.App.Editor.Tools
       Wiki.App.Vault
@@ -418,6 +419,7 @@ test-suite wiki-app-test
         Test.Preview
         Test.Problems
         Test.Complete
+        Test.Elsewhere
         Test.Readme
         Test.Rect
         Test.Route

@@ -618,7 +618,7 @@ a user has at most 50 (`maxStars`).
 | Method | Path | Body | Response | Errors | `MonadWiki` |
 | ------ | ---- | ---- | -------- | ------ | ----------- |
 | GET | `api/v1/search?q=<words>&space=<space>&only&limit=<n>&templates` | | `[SearchHit]`, the best first | | `searchPages` |
-| GET | `api/v1/pages/titled?q=<letters>&except=<space>&limit=<n>` | | `[TitleHit]` `{"page", "space", "spacePath", "pagePath", "title"}`, the best first | 400 | `findPagesByTitle` |
+| GET | `api/v1/pages/titled?q=<letters>&except=<space>&limit=<n>` | | `[TitleHit]` `{"page", "space", "spacePath", "pagePath", "title"}`, the best first, with `Cache-Control: private, no-store`: the letters are typed in a page, and the address holds them | 400 | `findPagesByTitle` |
 
 The parameters are the application's own search address's
 (`/search/?q=…&space=…&only`), except that `space` is the space's id rather

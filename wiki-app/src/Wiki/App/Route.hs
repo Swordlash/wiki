@@ -106,6 +106,9 @@ module Wiki.App.Route
   , resolvePageLink
   , resolvePageLinkWith
   , pageLinkText
+  , ownPageLinkText
+  , linkLabel
+  , oneLine
   , LinkReading (..)
   , Step (..)
   , Reading (..)
@@ -902,7 +905,43 @@ pageLinkText linking linked title = fromMaybe slugForm (find shorter titleForm)
         && not ("-" `T.isPrefixOf` title || "-" `T.isSuffixOf` title)
     shorter form = written form < written slugForm
     written (address, label) = T.length address + maybe 0 (\l -> 1 + T.length l) label
-    escapeLabel = T.replace "]" "&#93;" . T.replace "&" "&amp;"
+    escapeLabel = linkLabel
+
+-- | 'linkLabel' is a page's title as a wiki link's label writes it, so
+-- that the link reads back with that title as its text
+-- (commonmark-extensions' wiki links hold no bracket and decode character
+-- references): @&@ as @&amp;@ and @]@ as @&#93;@. A title may hold line
+-- breaks, which a label on one line of Markdown cannot: each break, with
+-- the white space around it and any blank lines, is one space
+-- ('oneLine').
+linkLabel :: Text -> Text
+linkLabel = T.replace "]" "&#93;" . T.replace "&" "&amp;" . oneLine
+
+-- | A title on one line: each line break, with the white space around it
+-- and any blank lines between, made one space. A title with no line break
+-- is as it is.
+oneLine :: Text -> Text
+oneLine t = case T.split (\c -> c == '\n' || c == '\r') t of
+  [_] -> t
+  parts -> T.intercalate " " (filter (not . T.null) (zipWith trim [0 :: Int ..] parts))
+    where
+      final = length parts - 1
+      trim i part
+        | i == 0 = T.stripEnd part
+        | i == final = T.stripStart part
+        | otherwise = T.strip part
+
+-- | 'ownPageLinkText' is what a wiki link to a page of another space
+-- writes between its brackets (#301): the page's own address, as the
+-- route codec prints it ('pageRoute': @\/s\/eng\/p\/onboarding\/@, or
+-- @\/s\/eng\/@ for a space's home page, whose path is empty), and the
+-- label ('linkLabel'). The page's own address names one page for every
+-- reader, whatever the space's subspaces are called, so the link is the
+-- same wherever it is written. Like a relative path, it keeps working when
+-- the page or its space is renamed, since slugs stay, and leads nowhere
+-- once the page moves.
+ownPageLinkText :: [Slug] -> [Slug] -> Text -> (Text, Text)
+ownPageLinkText spacePath pagePath label = (Duplex.print route (pageRoute spacePath pagePath), linkLabel label)
 
 -- | 'LinkReading' is a destination as 'resolvePageLink' reads it before it
 -- looks at the wiki: what its text names, each segment decoded and made a

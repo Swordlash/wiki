@@ -136,6 +136,10 @@ module Wiki.App.Editor.Browser
     -- * The completion of the wiki's own Markdown
   , completeAsked
   , answerCompletion
+  , elsewhereAsked
+  , elsewhereAbandoned
+  , answerElsewhere
+  , closeCompletions
   , completeAction
 
     -- * Leaving the page
@@ -147,7 +151,7 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.Aeson (FromJSON (..), ToJSON (..), decodeStrict, eitherDecodeStrict, encode, object, withObject, (.:), (.=))
 import Data.ByteString.Lazy qualified as BSL
 import Data.Coerce (coerce)
-import Data.Foreign (foreignToInt)
+import Data.Foreign (foreignToInt, foreignToString, readProp)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (lookup)
 import Data.Text qualified as T
@@ -221,6 +225,8 @@ $( browserJS
      , ("js_mentioned", "wiki_editor_mentioned", Safe, [t|Element -> Int -> JSText -> IO ()|])
      , ("js_emojied", "wiki_editor_emojied", Safe, [t|Element -> Int -> JSText -> IO ()|])
      , ("js_completed", "wiki_editor_completed", Safe, [t|Element -> Int -> JSText -> IO ()|])
+     , ("js_completed_elsewhere", "wiki_editor_completed_elsewhere", Safe, [t|Element -> Int -> JSText -> IO ()|])
+     , ("js_close_completions", "wiki_editor_close_completions", Safe, [t|Element -> IO ()|])
      , ("js_title_line", "wiki_editor_title_line", Safe, [t|Element -> IO ()|])
      , ("js_problems", "wiki_editor_problems", Safe, [t|Element -> JSText -> JSText -> IO Bool|])
      , ("js_next_problem", "wiki_editor_next_problem", Safe, [t|Element -> IO ()|])
@@ -314,18 +320,29 @@ $( jsFields
      ]
  )
 
--- | The detail of a @wiki-complete@ event: a question about the list of
--- the wiki's own Markdown ('completeAsked').
+-- | The detail of a @wiki-complete@ or @wiki-complete-elsewhere@ event: a
+-- question about the list of the wiki's own Markdown ('completeAsked'), or
+-- about the pages of other spaces after @[[@ ('elsewhereAsked').
 newtype CompletionDetail = CompletionDetail JSVal
   deriving newtype (Inert)
 
+-- | A number of a question's detail made from JSON, as a native test
+-- dispatches the event ('readProp'): 0 when it has none. A browser reads
+-- the field of the object itself.
+nativeDetailInt :: Text -> CompletionDetail -> Int
+nativeDetailInt name (CompletionDetail value) = fromMaybe 0 (readProp name (Just . foreignToInt) value)
+
+-- | A text of a question's detail made from JSON, as 'nativeDetailInt'.
+nativeDetailText :: Text -> CompletionDetail -> Text
+nativeDetailText name (CompletionDetail value) = fromMaybe "" (readProp name (Just . foreignToString) value)
+
 $( jsFields
      ''CompletionDetail
-     [ Fixed "id" ''Int
-     , Fixed "line" ''Int
-     , Fixed "before" ''Text
-     , Fixed "after" ''Text
-     , Fixed "nodes" ''Text
+     [ Natively [|nativeDetailInt "id"|] (Fixed "id" ''Int)
+     , Natively [|nativeDetailInt "line"|] (Fixed "line" ''Int)
+     , Natively [|nativeDetailText "before"|] (Fixed "before" ''Text)
+     , Natively [|nativeDetailText "after"|] (Fixed "after" ''Text)
+     , Natively [|nativeDetailText "nodes"|] (Fixed "nodes" ''Text)
      ]
  )
 
@@ -358,8 +375,13 @@ $( jsFields
 -- | The detail of one of CodeMirror's events on the host, if the event
 -- carries one: a value of the event's own shape, read purely, since the
 -- event does not change.
+--
+-- Natively there is no CustomEvent: a test dispatches an event made from
+-- JSON, and its @detail@ is read from that ('readProp').
 detailOf :: Event -> Maybe JSVal
-detailOf event = let detail = (CustomEvent event).detail in if isNull detail then Nothing else Just detail
+detailOf event@(Event value)
+  | inBrowser = let detail = (CustomEvent event).detail in if isNull detail then Nothing else Just detail
+  | otherwise = readProp "detail" Just value
 
 -- | The CodeMirror in the host, if the page's islands have put one there.
 codeMirror :: Element -> IO (Maybe CodeMirror)
@@ -1006,6 +1028,25 @@ completeAsked event = do
   guard (detail.id > 0)
   Just (detail.id, Complete.Request {line = detail.line, before = detail.before, after = detail.after, nodes = T.words detail.nodes})
 
+-- | The question a @wiki-complete-elsewhere@ event asks, in the shape of
+-- 'completeAsked''s: the group "In other spaces" of the list after @[[@
+-- at the cursor (#301). CodeMirror asks it beside the question of the
+-- list of the space's pages, whenever the line before the cursor has a
+-- @[[@, and waits for 'answerElsewhere'; the editor decides whether
+-- anything is looked up. Pure, since the event does not change.
+elsewhereAsked :: Event -> Maybe (Int, Complete.Request)
+elsewhereAsked = completeAsked
+
+-- | The number of the question about the pages of other spaces that a
+-- @wiki-complete-elsewhere-abandoned@ event says CodeMirror gave up: the
+-- text changed, the list was closed, or the text lost the focus, before
+-- its answer. Pure, since the event does not change.
+elsewhereAbandoned :: Event -> Maybe Int
+elsewhereAbandoned event = do
+  detail <- CompletionDetail <$> detailOf event
+  guard (detail.id > 0)
+  Just detail.id
+
 -- | What a @wiki-complete-action@ event asks the editor to do, once an
 -- entry of the list is written: @link-page@ (open the dialog of a link to
 -- a page) or @attach@ (choose a file to upload), the entry's action
@@ -1019,6 +1060,21 @@ completeAction event = jsValText <$> detailOf event
 answerCompletion :: (MonadIO m) => Element -> Int -> Maybe Completion -> m ()
 answerCompletion host i found =
   liftIO . js_completed host i $ maybe (toJSText "") (jsonText . Complete.completionJson) found
+
+-- | Answer the question about the pages of other spaces with this number:
+-- their list, in the shape 'answerCompletion' gives, or 'Nothing' for
+-- none. CodeMirror shows them below the space's own pages, in a group of
+-- their own.
+answerElsewhere :: (MonadIO m) => Element -> Int -> Maybe Completion -> m ()
+answerElsewhere host i found =
+  liftIO . js_completed_elsewhere host i $ maybe (toJSText "") (jsonText . Complete.completionJson) found
+
+-- | Close the completion's list of the editor in the host, and of the rows
+-- that share it, with every entry of it, and give up the questions still
+-- asked for it: a key pressed after chooses nothing of it. Nothing before
+-- CodeMirror is in place, nor natively.
+closeCompletions :: (MonadIO m) => Element -> m ()
+closeCompletions = liftIO . js_close_completions
 
 ----------------------------------------------------------------------
 -- A presentation's rows

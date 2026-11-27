@@ -13,14 +13,15 @@ module Test.Browser.Editor (spec) where
 
 import Control.Monad.UUID (MonadUUID)
 import Data.IORef (IORef, modifyIORef', readIORef)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Halogen.Activity.Control (TestClock, advance, withTestClock)
+import Halogen.Activity.Control (Sleeping (..), TestClock, advance, sleeping, withTestClock)
 import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
-import Test.Browser.Mount (clickButton, slugs, startChanged, startWith)
-import Test.Browser.Text (clearBody, completing, editorSelection, editorText, markdown, mathIn, problemsMarked, selectText, setMarkdown, utf16Length)
+import Test.Browser.Mount (clickButton, makePresentation, slugs, startChanged, startChangedWith, startOn, startWith)
+import Test.Browser.Text (clearBody, clickKeepingFocus, completing, completionAnswered, countElsewhere, editorSelection, editorText, elsewhereAsked, elsewhereAsks, listReady, markdown, mathIn, problemsMarked, selectText, setMarkdown, untilListTakesKeys, utf16Length, watchElsewhere)
 import Test.Hspec (around)
 import Test.Hspec.Halogen
 import Wiki.Api.ServerSettings (ServerSettingsOf (..))
@@ -28,10 +29,11 @@ import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend (MonadWiki (..))
 import Wiki.App.Backend.Admin (MonadAdmin (..))
 import Wiki.App.Backend.Mem (runMemWiki)
-import Wiki.App.Backend.Mem.State (MemState (..), insertUser)
+import Wiki.App.Backend.Mem.State (MemState (..), insertPage, insertUser)
+import Wiki.App.Demo (demoNow)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
-import Wiki.App.View.Editor (draftDelay, previewDelay, savedNoticeTime)
+import Wiki.App.View.Editor (draftDelay, elsewhereDelay, previewDelay, savedNoticeTime)
 import Wiki.App.View.PagePicker qualified as PagePicker
 import Wiki.Core.Attachment (Attachment (name), FileName (..))
 import Wiki.Core.Draft (Draft (..))
@@ -39,7 +41,8 @@ import Wiki.Core.Id (UserId (..))
 import Wiki.Core.Markdown.Ast (Block (..), Inline (..), parseMarkdown)
 import Wiki.Core.Markdown.Box (BoxKind (..))
 import Wiki.Core.Page (Page (attachments, body, id, title, updatedAt))
-import Wiki.Core.Space (Space (id, mathMacros))
+import Wiki.Core.Slug (slugText)
+import Wiki.Core.Space (Space (id, mathMacros, slug))
 import Wiki.Core.User (Login (..), User (..))
 
 -- The page has no file dialog the harness can answer, so a test hands the
@@ -1000,7 +1003,7 @@ spec m = readsOnce Idle $ around withTestClock $ do
     setMarkdown ui "# Cases\n\nCompute $2x + y here\n\nThen $2 + x\n\nSee [this](other \"Amount: $USD\") and $3.50 or $5 each."
     eventually $ underlined `shouldReturn` "$2x + y here$2 + x"
 
-  it "completes a mention with the users whose names start with what is typed, but not in code, a link or math" $ \_ -> runPage $ do
+  it "completes a mention with the users whose names start with what is typed, but not in code, a link or math" $ \clock -> runPage $ do
     ui <- startChanged m withMentionable (Just "user-editor") helloEditor
     text <- editorText ui
     clearBody ui
@@ -1050,11 +1053,23 @@ spec m = readsOnce Idle $ around withTestClock $ do
     typeAfter 5 ["@", "a", "n"]
     markdown ui `shouldReturn` "# Hello, world\n\n[see @an](https://example.org)"
     noCompletion ui
-    -- Nor in a link to a page of the wiki, [[page]].
+    -- Nor in a link to a page of the wiki, [[page]]. The letters typed in
+    -- its address are looked up among the pages of other spaces too
+    -- (#301), after a pause that sleeps on this group's clock: the
+    -- question is awaited, the clock advanced past the pause, and the
+    -- lookup's answer taken, before the list is looked for.
     clearBody ui
     typeText text "[[Plans ]]"
+    watchElsewhere ui "[[Plans @an"
     typeAfter 8 ["@", "a", "n"]
     markdown ui `shouldReturn` "# Hello, world\n\n[[Plans @an]]"
+    elsewhereAfterPause clock ui
+    noCompletion ui
+    -- Nor in its label.
+    clearBody ui
+    typeText text "[[plans|Plans ]]"
+    typeAfter 14 ["@", "a", "n"]
+    markdown ui `shouldReturn` "# Hello, world\n\n[[plans|Plans @an]]"
     noCompletion ui
     -- Nor in math, between dollars or TeX's own delimiters.
     clearBody ui
@@ -1072,8 +1087,314 @@ spec m = readsOnce Idle $ around withTestClock $ do
     traverse_ press [" ", "@", "a", "n"]
     _ <- listShown ui
     pass
+
+  -- #301: after [[ and two letters, the pages of other spaces are looked
+  -- up once a pause has ended, which sleeps on this group's clock until
+  -- the example advances it: the lookup is out for as long as the example
+  -- chooses. The space's own pages are shown meanwhile and take the keys;
+  -- Escape closes the list then, and the answer that comes after it opens
+  -- nothing. The group itself, and Enter on one of its pages, are
+  -- "Test.Browser.Complete"'s.
+  it "shows the space's own pages after [[ while other spaces' are looked up, and Escape then closes the list for good" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "blog" "Onboarding notes" . withPage "docs" "Onboarding") (Just "user-editor") helloEditor
+    text <- editorText ui
+    clearBody ui
+    typeText text "See [[onb"
+    -- The space's own list, ready for its keys, with the other spaces'
+    -- pages still asked for: their pause sleeps on the clock.
+    listReady ui
+    listLabels ui `shouldReturn` ["Onboarding notes"]
+    completing ui `shouldReturn` "pending"
+    press "Escape"
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    -- The question is given up: the lookup's pause is no longer asleep on
+    -- the clock, so no lookup goes out after it.
+    waitQuiet
+    lookupPauses clock `shouldReturn` 0
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completing ui `shouldReturn` ""
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    markdown ui `shouldReturn` "# Hello, world\n\nSee [[onb"
+    -- Typed on, the list shows both groups once the lookup answers.
+    typeText text "o"
+    listReady ui
+    waitQuiet
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Onboarding notes", "Onboarding"]
+
+  -- #301: the reader changes (the demo's switcher, clicked with the focus
+  -- left in the text, as another tab's change would come) while the list
+  -- shows pages of other spaces found for the reader before. The list is
+  -- closed, entries and all: Enter then writes none of them.
+  it "closes the list of other spaces' pages when the reader changes, and Enter then chooses none of them" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "docs" "Onboarding") (Just "user-editor") helloEditor
+    text <- editorText ui
+    clearBody ui
+    watchElsewhere ui "See [[onb"
+    typeText text "See [[onb"
+    elsewhereAfterPause clock ui
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Onboarding"]
+    -- Another reader: the administrator.
+    clickKeepingFocus ".user-switcher-toggle"
+    clickKeepingFocus ".user-option[data-login='admin']"
+    waitQuiet
+    find ui ".user-switcher-toggle" >>= (`shouldHaveText` "Ada Admin")
+    completing ui `shouldReturn` ""
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    press "Enter"
+    markdown ui >>= (`shouldSatisfy` (not . T.isInfixOf "/s/docs"))
+
+  -- #301, as above, with letters that match no page of the space and a
+  -- page of another: the group alone is shown, and Enter writes its link;
+  -- and Escape while the lookup is out, with no list shown, gives the
+  -- completion up, so the answer after it opens nothing.
+  it "shows other spaces' pages alone when the space has none for the letters, Enter writing the link, and Escape before their answer opens nothing" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "docs" "Zebra handbook") (Just "user-editor") helloEditor
+    text <- editorText ui
+    clearBody ui
+    watchElsewhere ui "See [[zeb"
+    typeText text "See [[zeb"
+    elsewhereAfterPause clock ui
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Zebra handbook"]
+    (findAll ui ".cm-tooltip-autocomplete completion-section" >>= traverse textContent) `shouldReturn` ["In other spaces"]
+    untilListTakesKeys ui
+    press "Enter"
+    markdown ui `shouldReturn` "# Hello, world\n\nSee [[/s/docs/p/zebra-handbook/|Zebra handbook]]"
+    -- Escape while the lookup is out: no list is shown, and the
+    -- completion is still asked for.
+    clearBody ui
+    watchElsewhere ui "See [[zeb"
+    typeText text "See [[zeb"
+    elsewhereAsked ui
+    waitQuiet
+    completing ui `shouldReturn` "pending"
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    press "Escape"
+    completing ui `shouldReturn` ""
+    -- The question is given up: no lookup's pause is asleep any more.
+    waitQuiet
+    lookupPauses clock `shouldReturn` 0
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completing ui `shouldReturn` ""
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    markdown ui `shouldReturn` "# Hello, world\n\nSee [[zeb"
+
+  -- Round 4 of #389's review: CodeMirror's gate counted the letters from
+  -- the first [[ of the line that no ]] closes, and refused more than the
+  -- server takes; the letters are those after the last [[ that opens a
+  -- link, which Haskell reads. A long [[ in code before them, which opens
+  -- no link, still lets the group open.
+  it "looks up the letters after the last [[ of the line, however long the text before it" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "docs" "Zebra handbook") (Just "user-editor") helloEditor
+    text <- editorText ui
+    clearBody ui
+    let before = "`[[" <> T.replicate 200 "a" <> "` See [[zeb"
+    watchElsewhere ui before
+    typeText text before
+    elsewhereAfterPause clock ui
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Zebra handbook"]
+
+  -- Round 5 of #389's review: prose typed after a link closed on the line
+  -- asked the component at every pause, which read the line with the
+  -- parser to answer nothing. Only an unfinished [[ asks. A mention after
+  -- the link makes CodeMirror ask its sources, and its answer is waited
+  -- for, so that a question about other spaces asked with it would be
+  -- recorded. (Shown failing with the gate any [[ on the line.)
+  it "asks nothing about other spaces' pages for prose after a link closed on the line, and asks at a new [[ on it" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "docs" "Zebra handbook") (Just "user-editor") helloEditor
+    text <- editorText ui
+    let linked = "# Hello, world\n\nSee [[zebra-handbook]]"
+    setMarkdown ui linked
+    selectText ui (T.length linked) (T.length linked)
+    countElsewhere ui
+    typeText text " and @ad"
+    _ <- completionAnswered ui
+    elsewhereAsks ui `shouldReturn` []
+    press "Escape"
+    watchElsewhere ui "[[ze"
+    typeText text " [[ze"
+    elsewhereAfterPause clock ui
+    elsewhereAsks ui >>= (`shouldSatisfy` any (T.isSuffixOf "[[ze"))
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Zebra handbook"]
+
+  -- Round 7 of #389's review: a letter typed that finds no page of
+  -- another space while the space's own list still has one, then
+  -- deleted. The library asked the group again only for a letter typed,
+  -- not for one deleted, so the pages found before did not come back.
+  -- They do, and once Escape has closed the list a letter deleted opens
+  -- nothing. (Shown failing with the group's "nothing" given to the
+  -- library as null.)
+  it "asks again about other spaces' pages when a letter that found none is deleted, but not once Escape closed the list" $ \clock -> runPage $ do
+    ui <- startChanged m (withPage "blog" "Onbx local" . withPage "docs" "Onboarding") (Just "user-editor") helloEditor
+    text <- editorText ui
+    clearBody ui
+    watchElsewhere ui "See [[onb"
+    typeText text "See [[onb"
+    elsewhereAsked ui
+    waitQuiet
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Onbx local", "Onboarding"]
+    watchElsewhere ui "See [[onbx"
+    typeText text "x"
+    elsewhereAsked ui
+    waitQuiet
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Onbx local"]
+    -- The x deleted: the letters are asked about again.
+    watchElsewhere ui "See [[onb"
+    press "Backspace"
+    elsewhereAsked ui
+    waitQuiet
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Onbx local", "Onboarding"]
+    -- Closed with Escape: a letter deleted then asks nothing, at once.
+    press "Escape"
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    press "Backspace"
+    completing ui `shouldReturn` ""
+    length <$> findAll ui ".cm-tooltip-autocomplete" `shouldReturn` 0
+    markdown ui `shouldReturn` "# Hello, world\n\nSee [[on"
+
+  -- Round 5 of #389's review: CodeMirror put in place again on the same
+  -- host (back to the page as saved, from a restored draft) ended the old
+  -- editor's question without telling the component, whose lookup of it
+  -- then went out after its pause. The question is given up, and the new
+  -- CodeMirror's question is asked and answered. (Shown failing with the
+  -- asker's stop ending its questions untold.)
+  it "gives up a question about other spaces' pages when CodeMirror is put in place again, and answers the new one's" $ \clock -> runPage $ do
+    (ui, wiki) <- startChangedWith m (withPage "docs" "Zebra handbook") (Just "user-editor") (Page (slugs ["blog"]) (slugs ["hello-world"]))
+    _ <- unsafeIOToPageM . runMemWiki wiki $ do
+      blog <- either (panic . show) identity <$> getSpace (slugs ["blog"])
+      hello <- either (panic . show) identity <$> getPage blog.id (slugs ["hello-world"])
+      saveDraft hello.id hello.updatedAt hello.title "# Hello, world\n\nMy words."
+    find ui ".page-view .actions a[href$='/edit/']" >>= click
+    waitQuiet
+    find ui ".editor-draft-found" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "Restored your unsaved draft")
+    text <- editorText ui
+    clearBody ui
+    watchElsewhere ui "[[zeb"
+    typeText text "See [[zeb"
+    elsewhereAsked ui
+    waitQuiet
+    lookupPauses clock `shouldReturn` 1
+    -- Back to the page as saved, the focus left in the text: the page read
+    -- again, and CodeMirror put in place again.
+    clickKeepingFocus ".editor-draft-discard"
+    waitQuiet
+    length <$> findAll ui ".editor-draft-found" `shouldReturn` 0
+    lookupPauses clock `shouldReturn` 0
+    perform (advance clock elsewhereDelay)
+    waitQuiet
+    -- The new CodeMirror's question.
+    again <- editorText ui
+    clearBody ui
+    watchElsewhere ui "[[zeb"
+    typeText again "See [[zeb"
+    elsewhereAfterPause clock ui
+    completionAnswered ui `shouldReturn` "active"
+    listLabels ui `shouldReturn` ["Zebra handbook"]
+
+  -- Round 4 of #389's review: every way a question about the pages of
+  -- other spaces ends before its lookup goes out. Each way starts with the
+  -- question asked and its pause asleep on the clock; once it has ended,
+  -- no pause is asleep and, the clock advanced past the pause, no list is
+  -- shown. What differs from that is collected for every way, so that one
+  -- run tells each way that fails.
+  it "gives up a question about other spaces' pages however it ends, and opens no list after it" $ \clock -> runPage $ do
+    (ui, wiki) <- startChangedWith m (withPage "blog" "Onboarding notes" . withPage "docs" "Zebra handbook") (Just "user-editor") helloEditor
+    text <- editorText ui
+    let opened = "# Hello, world\n\nSee "
+        -- The question watched for ('watchElsewhere') asked, and taken by
+        -- the program: the pauses of the lookup asleep then.
+        asked shell = elsewhereAsked shell >> waitQuiet >> lookupPauses clock
+        -- A question after "See [[" and these letters, typed on a line of
+        -- its own.
+        asking typed = do
+          clearBody ui
+          watchElsewhere ui ("[[" <> typed)
+          typeText text ("See [[" <> typed)
+          asked ui
+        -- What is left of the question once it has ended this way: the
+        -- pauses asleep before (one) and after (none), and the lists shown
+        -- once the clock is past the pause (none).
+        ended shell way before = do
+          waitQuiet
+          after <- lookupPauses clock
+          perform (advance clock elsewhereDelay)
+          waitQuiet
+          lists <- length <$> findAll shell ".cm-tooltip-autocomplete"
+          pure [(way :: Text, before, after, lists) | (before, after, lists) /= (1, 0, 0)]
+    -- Typing on: the link ended.
+    typingOn <- asking "zeb" >>= \a -> typeText text "]]" >> ended ui "typing on" a
+    -- The [[ deleted with the letters, in one edit.
+    deleted <- asking "zeb" >>= \a -> selectText ui (T.length opened) (T.length opened + 5) >> press "Backspace" >> ended ui "the [[ deleted" a
+    -- Escape with the space's own list shown.
+    escapedList <- asking "onb" >>= \a -> listReady ui >> press "Escape" >> ended ui "Escape with a list" a
+    -- Escape with no list shown: only the other spaces' pages asked for.
+    escapedNone <- asking "zeb" >>= \a -> press "Escape" >> ended ui "Escape with none" a
+    -- An entry of the space's own list chosen.
+    chosen <- asking "onb" >>= \a -> listReady ui >> press "Enter" >> ended ui "an entry chosen" a
+    -- The text loses the focus to another control, with only the other
+    -- spaces' pages asked for.
+    blurred <- asking "zeb" >>= \a -> (find ui ".editor-side-by-side" >>= focus) >> ended ui "the focus lost" a
+    -- The machine's Close: another reader, chosen with the focus left in
+    -- the text.
+    closed <-
+      asking "zeb" >>= \a -> do
+        clickKeepingFocus ".user-switcher-toggle"
+        clickKeepingFocus ".user-option[data-login='admin']"
+        ended ui "the reader changed" a
+    -- A slide's row closed, with the focus left in its text: the page made
+    -- a presentation, the row of its first slide opened and typed in.
+    unmount ui
+    makePresentation wiki (T.intercalate "\n" ["# Deck", "", "By me.", "", "## One", "", "First."])
+    deck <- startOn m wiki helloEditor
+    waitQuiet
+    let rowToggle = ".editor-slides > li:nth-child(2) .slide-row-toggle"
+    find deck rowToggle >>= click
+    waitQuiet
+    row <- find deck ".editor-slides > li:nth-child(2) .cm-content"
+    focus row
+    press "Control+End"
+    watchElsewhere deck "[[zeb"
+    typeText row " [[zeb"
+    rowClosed <- asked deck >>= \a -> clickKeepingFocus rowToggle >> ended deck "a slide's row closed" a
+    concat [typingOn, deleted, escapedList, escapedNone, chosen, blurred, closed, rowClosed] `shouldBe` []
   where
     helloEditor = EditPage (slugs ["blog"]) (slugs ["hello-world"])
+    -- The editor's question about the pages of other spaces, watched for
+    -- before the keys ('watchElsewhere'), asked and taken by the program:
+    -- its pause asleep on the clock, which is advanced past it, and the
+    -- lookup's answer taken.
+    elsewhereAfterPause clock ui = do
+      elsewhereAsked ui
+      waitQuiet
+      perform (advance clock elsewhereDelay)
+      waitQuiet
+    -- How many pauses of the lookup of other spaces' pages are asleep on
+    -- the clock: a lookup goes out when one ends.
+    lookupPauses clock = length . filter (\s -> s.counted && s.seconds == elsewhereDelay) <$> unsafeIOToPageM (sleeping clock)
+    -- The labels of the completion's list shown, in its order.
+    listLabels ui = findAll ui ".cm-tooltip-autocomplete .cm-completionLabel" >>= traverse textContent
+    -- A page with this title at the top of the demo's space of this slug.
+    withPage :: Text -> Text -> MemState -> MemState
+    withPage spaceSlug title st = case filter (\s -> slugText s.slug == spaceSlug) (Map.elems st.spaces) of
+      s : _ -> fst (insertPage s.id Nothing title ("# " <> title <> "\n") demoNow st)
+      [] -> panic ("no space " <> spaceSlug)
     -- The TeX of each formula the wiki's parser finds, in the order of the
     -- text: in a paragraph, or a block of its own for display math alone
     -- in one.

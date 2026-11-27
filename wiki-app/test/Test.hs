@@ -19,6 +19,7 @@ import Test.DeckDom qualified as DeckDom
 import Test.DecryptedExport qualified as DecryptedExport
 import Test.Demo qualified as Demo
 import Test.EditorDom qualified as EditorDom
+import Test.Elsewhere qualified as Elsewhere
 import Test.Entries qualified as Entries
 import Test.Export qualified as Export
 import Test.Favicon qualified as Favicon
@@ -119,6 +120,7 @@ main = do
       SecretField.spec
       SecretFieldDom.spec
       Complete.spec
+      Elsewhere.spec
       Licence.spec
       Readme.spec
     around_ (holding maxBound) $ do

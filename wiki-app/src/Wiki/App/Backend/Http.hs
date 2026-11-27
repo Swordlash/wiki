@@ -904,8 +904,10 @@ instance (MonadIO m) => MonadWiki (HttpWiki m) where
   -- Sent as it is, and not cached: each answer is for the letters typed
   -- once. The server leaves the encrypted spaces out, and nothing here
   -- adds their pages: a title the browser decrypted is not offered where
-  -- it would be written into a page the server can read.
-  findPagesByTitle q = send (endpoints.pagesTitled (Just q.letters) q.except (Just q.limit))
+  -- it would be written into a page the server can read. Letters typed
+  -- in a page are its text: the editor asks 'plainNow' of the page
+  -- first.
+  findPagesByTitle q = send (getResponse <$> endpoints.pagesTitled (Just q.letters) q.except (Just q.limit))
 
   -- A page of an encrypted space has no draft: the server would read it,
   -- and the editor does not keep one anywhere else.

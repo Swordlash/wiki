@@ -378,10 +378,16 @@ EOF
 expect_header='Expect:'
 
 # One request to the wiki: METHOD, the path under WIKI_URL (its query, if
-# any, encoded with query_encode), then curl's options. The answer's body is in $work/body, its headers in
-# $work/headers, its status in http_status. The status is 0 when an answer
-# came, whatever its HTTP status, and the body is kept whole (its size is
-# what curl received); otherwise the failure says what to check.
+# any, encoded with query_encode), then curl's options. The answer's body
+# is in $work/body, its headers in $work/headers, its status in
+# http_status. The status is 0 when an answer came, whatever its HTTP
+# status, and the body is kept whole (its size is what curl received);
+# otherwise the failure says what to check.
+#
+# Every value of curl's config (the sign-in, the proxy, the URL) is one
+# line of it, so one with a line break would add lines of its own: the
+# check below, the last step before curl, refuses any such value, and
+# nothing is sent.
 wiki_request() {
   method=$1 path=$2
   shift 2
@@ -390,6 +396,25 @@ wiki_request() {
   : >"$work/body"
   [ "$method" = GET ] || set -- -X "$method" "$@"
   request_url=$wiki_base/$path
+  quiet_begin
+  config_break=''
+  case $request_url in
+    *"$nl"* | *"$cr"*) config_break=url ;;
+  esac
+  case $wiki_user$wiki_password$wiki_token$wiki_proxy in
+    *"$nl"* | *"$cr"*) config_break=${config_break:-sign-in} ;;
+  esac
+  quiet_end
+  case $config_break in
+    url)
+      fail "$EX_USAGE" "WIKI_URL, or the address asked for, has a line break in it: it is not an address curl can use, and nothing was sent"
+      return
+      ;;
+    sign-in)
+      fail "$EX_USAGE" "the login, the password, the token or the proxy has a line break in it: nothing was sent"
+      return
+      ;;
+  esac
   received=$(wiki_curl -sS -g --proto =http,https --connect-timeout 20 \
     -A "wiki.sh/$WIKI_SH_VERSION" -H "$expect_header" \
     -o "$work/body" -D "$work/headers" -w '%{http_code} %{size_download}' \
@@ -403,7 +428,11 @@ wiki_request() {
     fi
     return 0
   fi
-  curl_said=$(head -n 1 "$work/curl-error" 2>/dev/null)
+  # curl's own diagnostic: its first line that begins "curl: ", since under
+  # sh -x the shell's trace lines come before it; the first line when
+  # there is none (the shell's "curl: not found" has no such start).
+  curl_said=$(sed -n '/^curl: /{p;q;}' "$work/curl-error" 2>/dev/null)
+  [ -n "$curl_said" ] || curl_said=$(head -n 1 "$work/curl-error" 2>/dev/null)
   curl_said=${curl_said#curl: }
   curl_said=${curl_said#\(*\) }
   case $curl_status in

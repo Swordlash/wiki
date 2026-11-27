@@ -2555,6 +2555,40 @@ config_url_setting() {
   else
     pass "a curl whose standard input was taken away sent nothing"
   fi
+  # Under sh -x, the shell's trace comes before curl's own words in what
+  # curl wrote on standard error: the failures quote curl's.
+  env -i PATH="$work/fakes/nostdin:$work/fakes/nojq:$PATH" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-nostdin" \
+    "$shell" -x "$client" list </dev/null >"$work/out" 2>"$work/err"
+  status=$?
+  expect 1 "under -x, a curl whose standard input was taken away is exit 1"
+  has err "from its standard input (no URL specified): check" "under -x, the failure quotes curl's own words"
+  env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL=http://127.0.0.1:1 WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-nostdin" \
+    "$shell" -x "$client" list </dev/null >"$work/out" 2>"$work/err"
+  status=$?
+  expect 8 "under -x, a wiki where nothing listens is exit 8"
+  has err "is the wiki running there, and is WIKI_URL right? (Failed to connect to 127.0.0.1 port 1" "under -x, the connection's failure quotes curl's own words"
+
+  # A line break in WIKI_URL, or in a page's path, would add lines to
+  # curl's config: refused, and nothing sent (the log of every command
+  # line, which no test empties, gains none). A request does add one.
+  sent_before=$(wc -l <"$work/curl.args-all")
+  client list
+  check "a request adds to the log of every command line" [ "$(wc -l <"$work/curl.args-all")" -gt "$sent_before" ]
+  cr=$(printf '\r')
+  for which in "line feed" "carriage return"; do
+    if [ "$which" = "line feed" ]; then bad="$url${nl}/api/list/"; else bad="$url$cr"; fi
+    sent_before=$(wc -l <"$work/curl.args-all")
+    env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$bad" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-nostdin" \
+      "$shell" "$client" list </dev/null >"$work/out" 2>"$work/err"
+    status=$?
+    expect 2 "a WIKI_URL with a $which is a wrong use"
+    has err "WIKI_URL, or the address asked for, has a line break in it: it is not an address curl can use, and nothing was sent" "the refusal says the address with a $which has a line break"
+    check "nothing was sent for a WIKI_URL with a $which" [ "$(wc -l <"$work/curl.args-all")" = "$sent_before" ]
+  done
+  sent_before=$(wc -l <"$work/curl.args-all")
+  client get team/projects "the-wiki${nl}x"
+  expect 2 "a page's path with a line break is a wrong use"
+  check "nothing was sent for a page's path with a line break" [ "$(wc -l <"$work/curl.args-all")" = "$sent_before" ]
 
   # Each text as one argument of search: the URL curl's config names, its
   # q decoded as the server reads a query, is the text byte for byte; and

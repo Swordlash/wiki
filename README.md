@@ -3275,7 +3275,9 @@ input through a pipe, or through a temporary file of its own that it removes
 at once (bash 3.2, macOS's `sh`, always does; a newer bash may for a large
 input). Each request's address, with the words of a search, goes the same
 way, so a curl that did not read its standard input sends nothing, and fails
-with a message that says so. curl's command line holds the script's own
+with a message that says so. A wrapper around curl must leave its standard
+input alone: one that closes it outright can leave curl waiting to read its
+settings. curl's command line holds the script's own
 options and the paths of files alone (the answer's files, a page's text, an
 attachment, the CA bundle `WIKI_CACERT`, which is no secret). Under MSYS2,
 MSYS2 converts those paths for a native Windows curl; that is untested, and

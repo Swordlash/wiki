@@ -2875,19 +2875,33 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   display math made from a paragraph (its range is the whole
   paragraph's and covers a footnote's definition after it) and
   indented code stay suspects, as does such a line in prose. **The
-  fourth cut, pages of other spaces after `[[`, is designed (the
-  owner, 2026-11-25: "rób po kolei") and being built in two pull
-  requests:** a lookup by title on the server (`GET
+  fourth cut merged (#388, #389): pages of other spaces after
+  `[[`.** A lookup by title on the server (`GET
   api/v1/pages/titled`, the reader's own view decided in the query,
-  never an encrypted chain; the existing search is unfit: whole words
-  only on PostgreSQL, a scan of every body on SQLite, and it opens
-  encrypted spaces in the browser), then a second group "In other
-  spaces" in the editor, at most 10 after 2 letters and a pause,
-  written as `[[/s/<space>/p/<page>/|<title>]]`, by a machine with
-  one lookup out; no ask from an encrypted page. The rest of #301 is
-  built and in review: the editor's group (#389), splitting an item
-  on its later lines (#390), a math command's braces from KaTeX's
-  own arities (#391, on #389), and `\begin…\end` after it (#392).
+  never an encrypted chain, answered `private, no-store` and left to
+  the network by the service worker; the existing search is unfit:
+  whole words only on PostgreSQL, a scan of every body on SQLite, and
+  it opens encrypted spaces in the browser), and a second group "In
+  other spaces" in the editor, at most 10 after 2 letters and a
+  pause, written as `[[/s/<space>/p/<page>/|<title>]]`, by a machine
+  with one lookup out (`Wiki.App.Editor.Elsewhere.Machine`). Each
+  question first asks `plainNow` about the page the letters were
+  typed in, under its own ticket, and the yes sends the lookup in
+  the same step; a question CodeMirror gives up is told to the
+  machine, which then sends nothing. **Left (the owner, 2026-11-26
+  and 2026-11-27):** the yes is old when the lookup goes if the
+  space began to be encrypted in between, the gap #394 declares
+  below: the letters after `[[` then reach the server once, which
+  keeps and logs nothing of them (closing it means matching the
+  titles in the browser); after letters that match nothing in any
+  space, Backspace does not ask again, and the next letter or
+  Ctrl+Space does, which is CodeMirror's rule for every list of the
+  editor. **Splitting an item on its later lines merged (#390):**
+  Enter in a later line of an item's first paragraph splits the
+  item as on the first line; an item's second paragraph and the
+  cases #390's description pins stay a plain line break. The rest of
+  #301 is built and in review: a math command's braces from KaTeX's
+  own arities (#391), and `\begin…\end` after it (#392, on #391).
   **The guard of a plain write asks the server by the page (#394,
   found by #389's rounds in the code before it).** Before a save, a
   draft, an attachment, a comment's text or a resolve goes out
@@ -2915,6 +2929,11 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   across a change of reader. Two rounds of #394 showed that a view
   which asks, waits and then sends is not closed by rechecks: it
   needs one backend call keyed by the page, as the write guard is.
+  The lookup of pages after `[[` (#389) has the shape to copy: the
+  view's machine asks `plainNow` about the page under the question's
+  ticket and sends in the step that takes the yes, and a question
+  given up in between sends nothing; what that leaves is the old yes
+  named above.
   **Held requests (#385, after #377):** the
   browser examples that hold a request start over a backend with no
   time limit, through one helper (`holdingEnv`, `startHolding` in

@@ -19,10 +19,17 @@
 -- Each item is one entry ('dayEntries'). An item is read from its start,
 -- in this order: the task box, which the parser has already taken off
 -- (@[ ]@ or @[x]@, as in "Wiki.Core.Markdown.Tasks"); then @!@ and a
--- space, which highlights the entry; then a time and a space (or the end
--- of the item's text): @09:00@ is an entry at nine, @9:30-10:30@ an entry
--- from half past nine to half past ten. What is left is the entry's label.
--- An item without a time is an entry for the whole day.
+-- space (or the end of the item's text), which highlights the entry; then
+-- a time and a space (or the end of the item's text): @09:00@ is an entry
+-- at nine, @9:30-10:30@ an entry from half past nine to half past ten.
+-- What is left is the entry's label. An item without a time is an entry
+-- for the whole day.
+--
+-- The item's text is the text of its first paragraph. Display math
+-- written in an item ends that paragraph: the parser makes the math a
+-- block of its own. So in @- 09:00$$x$$@ the paragraph is @09:00@ alone,
+-- and the item is an entry at nine, as @- 09:00 $$x$$@ is. In the same
+-- way @- ! $$x$$@ and @- !$$x$$@ are highlighted entries.
 --
 -- The rule is narrow on purpose. Something at the start that is not
 -- exactly a mark or a time (@25:00@, @9:5@, @10:30-9:30@, @!09:00@, a time
@@ -64,7 +71,8 @@ data DayEntry = DayEntry
   -- ^ The item's task box as the parser gives it: none, to do ('False')
   -- or done ('True').
   , highlight :: Bool
-  -- ^ Whether the item starts with @!@ and a space, after its box.
+  -- ^ Whether the item starts with @!@, after its box, and the @!@ is
+  -- followed by a space or is the end of the item's first paragraph.
   , time :: EntryTime
   , label :: Text
   -- ^ The plain text of the rest of the item's first paragraph, after
@@ -107,12 +115,16 @@ entryOf place (ListItem task blocks) = case blocks of
        in DayEntry {place, task, highlight, time, label = T.strip (plainText rest)}
 
 -- | Whether the inlines start with the mark, and the inlines after it.
--- The mark is @!@ and a space at the start of the first inline, which must
--- be text: a @!@ in code or emphasis is no mark. A @!@ with nothing after
--- it is no mark either, so the item @- !@ is an entry labelled @!@.
+-- The mark is @!@ at the start of the first inline, which must be text: a
+-- @!@ in code or emphasis is no mark. The @!@ must be followed by a space
+-- or be the end of the item's first paragraph, as a time must. So the
+-- item @- !@ is a highlighted entry for the whole day with an empty label.
+-- A @!@ followed directly by other text (@!x@), by code or by an emoji is
+-- no mark.
 markOf :: [Inline] -> (Bool, [Inline])
 markOf = \case
   Str t : rest | Just after <- T.stripPrefix "! " t -> (True, Str after : rest)
+  [Str "!"] -> (True, [])
   xs -> (False, xs)
 
 -- | The time at the start of the inlines, and the inlines after it. The

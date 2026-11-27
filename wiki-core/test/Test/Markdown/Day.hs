@@ -157,11 +157,19 @@ spec = describe "Wiki.Core.Markdown.Day" $ do
     describe "the order: box, mark, time" $ do
       it "reads a mark after a time as the label's" $
         item "- 09:00 ! Demo" `shouldBe` entry False (At (at 9 0)) "! Demo"
-      it "reads no mark without a space after it" $
+      it "reads no mark followed directly by text" $ do
         item "- !09:00 Demo" `shouldBe` allDay "!09:00 Demo"
-      it "reads a ! with nothing after it as the label, not a mark" $ do
-        item "- !" `shouldBe` allDay "!"
-        item "- ! " `shouldBe` allDay "!"
+        item "- !09:00" `shouldBe` allDay "!09:00"
+        item "- !x" `shouldBe` allDay "!x"
+      it "reads no mark followed directly by code, emphasis or an emoji" $ do
+        item "- !`x`" `shouldBe` allDay "!x"
+        item "- !*x*" `shouldBe` allDay "!x"
+        item "- !:smile:" `shouldBe` allDay "!\128516"
+      it "reads a ! that is all of the item as a mark, with an empty label" $ do
+        -- The parser drops the space at the end, so both are the same tree.
+        parseMarkdown "- ! " `shouldBe` parseMarkdown "- !"
+        item "- !" `shouldBe` entry True AllDay ""
+        item "- [ ] !" `shouldBe` (entry True AllDay "") {task = Just False}
       it "reads one mark only" $
         item "- ! ! Demo" `shouldBe` entry True AllDay "! Demo"
       it "reads the mark and the time after a box" $
@@ -189,6 +197,21 @@ spec = describe "Wiki.Core.Markdown.Day" $ do
     it "reads an escaped mark as a mark: the parser gives the same text" $ do
       parseMarkdown "- \\! 09:00 Demo" `shouldBe` parseMarkdown "- ! 09:00 Demo"
       item "- \\! 09:00 Demo" `shouldBe` entry True (At (at 9 0)) "Demo"
+
+    describe "reads the text before display math as all of the first paragraph" $ do
+      -- The parser makes display math a block of its own, so the item's
+      -- first paragraph ends where the math starts.
+      it "as the parser gives it" $ do
+        parseMarkdown "- 09:00$$x$$" `shouldBe` Right [List BulletList [ListItem Nothing [Plain [Str "09:00"], MathBlock "x"]]]
+        parseMarkdown "- 09:00 $$x$$" `shouldBe` parseMarkdown "- 09:00$$x$$"
+        parseMarkdown "- ! $$x$$" `shouldBe` Right [List BulletList [ListItem Nothing [Plain [Str "!"], MathBlock "x"]]]
+      it "a time" $ do
+        item "- 09:00$$x$$" `shouldBe` entry False (At (at 9 0)) ""
+        item "- 09:00 $$x$$" `shouldBe` entry False (At (at 9 0)) ""
+      it "a mark" $ do
+        parseMarkdown "- !$$x$$" `shouldBe` parseMarkdown "- ! $$x$$"
+        item "- ! $$x$$" `shouldBe` entry True AllDay ""
+        item "- !$$x$$" `shouldBe` entry True AllDay ""
 
     it "reads the items of a nested list as part of their item" $
       entriesOf "- 09:00 Standup\n  - 10:00 not an entry\n  - ! nor this\n- Buy milk\n"
@@ -266,16 +289,18 @@ spec = describe "Wiki.Core.Markdown.Day" $ do
 genList :: Gen (Text, [(DayEntry, Text)])
 genList = (,) <$> elements ["-", "*", "+"] <*> resize 8 (listOf1 genWritten)
 
--- | An entry and its line, without the bullet. The label is one to three
+-- | An entry and its line, without the bullet. The label is up to three
 -- words of ASCII letters, which can be read as no mark, no time and no
--- other markup, and it is never empty, so that a box or a mark is never
--- the whole item.
+-- other markup. It is empty only when a mark or a time is written: a mark
+-- or a time can be all of the item, but a box alone is never written.
 genWritten :: Gen (DayEntry, Text)
 genWritten = do
   task <- elements [Nothing, Just False, Just True]
   highlight <- arbitrary
   (time, timeText) <- genTime
-  label <- T.unwords <$> resize 3 (listOf1 (T.pack <$> resize 8 (listOf1 (elements (['a' .. 'z'] <> ['A' .. 'Z'])))))
+  let word = T.pack <$> resize 8 (listOf1 (elements (['a' .. 'z'] <> ['A' .. 'Z'])))
+      labelWords = if highlight || time /= AllDay then listOf word else listOf1 word
+  label <- T.unwords <$> resize 3 labelWords
   let box = case task of
         Nothing -> []
         Just False -> ["[ ]"]

@@ -3020,7 +3020,7 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   wiki-core only: the entries of a list (`Wiki.Core.Markdown.Day`):
   a time or a span at the start of an item, `!` before it for a
   highlight, the task box, the parts of the day, and the date in a
-  page's title (merged, #396). (2) The page view groups a list marked `{.day}` (the owner,
+  page's title (merged, #396). (2, merged, #397) The page view groups a list marked `{.day}` (the owner,
   2026-11-27: as `{.sorted}` marks a list; other lists of the page
   stay lists, and the calendar reads the same lists) under the
   parts of the day and "All day", each entry shown once: a
@@ -3029,7 +3029,20 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   first text), in the Halogen
   renderer only (exports, the feed and search show the list as
   written; task numbers stay the source's, as for `{.sorted}`), and
-  a built-in template "Day". (3) The kind "calendar" (in
+  a built-in template "Day". As built: the parser cuts a list where
+  items with a task box meet items without, so the renderer joins
+  the lists after a `{.day}` list while each is of the same kind
+  and starts with the other kind of item (`joinDayLists`); "All
+  day" is first, then the parts of the day that have an entry, the
+  hours before 6:00 and from 21:00 as two groups named "Night"; a
+  group's name is no text of the page (an attribute drawn by CSS,
+  and `aria-label`). Left (the owner, 2026-11-27): a list written
+  with another bullet character right after a day's list is taken
+  in when its first item's box differs (the tree does not keep the
+  character); a numbered day's list is drawn with bullets; on a
+  slide, a `[[!pause]]` inside a day's list ends the join, and a
+  day's list revealed in steps shows a group's name a step early;
+  in the preview the lists taken in lose their own line markers. (3) The kind "calendar" (in
   `knownKinds`, an `OtherKind`, no new constructor) and the
   interface's one new contribution, `pageKind`: "New page" offers
   the kinds of the plugins that are on, the page view mounts the

@@ -238,6 +238,20 @@ spec m = readsOnce Quiet $ do
     -- Beside the space's home page, a document.
     [(p.title, p.kind) | p <- listed] `shouldBe` [("Home", Kind.Document), ("Launch talk", Kind.Presentation)]
 
+  it "lists a calendar's days in an encrypted space, their titles decrypted in the browser, and the server stores none of their text" $ runPage $ do
+    env <- encryptedSpace "user-admin"
+    void (ok =<< run env (encryptSpace secret.id))
+    days <- ok =<< run env (createPageOf Kind.calendarKind secret.id Nothing "Launch days" "The launch, day by day.")
+    for_ ["2026-11-25", "2026-11-27", "Notes"] $ \t -> void (ok =<< run env (createPage secret.id (Just days.id) t ("About " <> t <> ".")))
+    serveDemo
+    answerWith "GET" "api/v1/session" 200 =<< sessionOf "user-admin"
+    ui <- startServer m (R.Page [secretSlug] [days.slug])
+    find ui ".page-view .page-body" >>= textContent >>= (`shouldSatisfy` T.isInfixOf "day by day")
+    find ui ".calendar-day a" >>= (`shouldHaveText` "Friday, 27 November 2026")
+    (traverse textContent =<< findAll ui ".calendar-day") `shouldReturn` ["Friday, 27 November 2026", "Wednesday, 25 November 2026"]
+    stored <- unsafeIOToPageM (fromJSText <$> js_stored)
+    filter (`T.isInfixOf` stored) ["Launch days", "About 2026", "day by day"] `shouldBe` []
+
   it "gives a second member the key through a pending grant, when a member opens the space" $ runPage $ do
     env <- encryptedSpace "user-admin"
     void (ok =<< run env (encryptSpace secret.id))

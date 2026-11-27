@@ -42,6 +42,9 @@
 -- ('joinDayLists'), and the page view shows its items in groups: the
 -- entries for the whole day first, then the parts of the day in the order
 -- of the clock ('dayGroups').
+--
+-- On a day's page, a task that is not done and whose day or hour has
+-- passed is missed ('missed'), and the page view marks it.
 module Wiki.Core.Markdown.Day
   ( -- * Entries
     DayEntry (..)
@@ -55,6 +58,9 @@ module Wiki.Core.Markdown.Day
 
     -- * The date of a day's page
   , dayOfTitle
+
+    -- * Missed tasks
+  , missed
 
     -- * A page's day lists
   , dayClass
@@ -71,7 +77,7 @@ module Wiki.Core.Markdown.Day
 where
 
 import Data.Text qualified as T
-import Data.Time (Day, TimeOfDay (..), makeTimeOfDayValid)
+import Data.Time (Day, LocalTime (..), TimeOfDay (..), makeTimeOfDayValid)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Protolude
 import Wiki.Core.Markdown.Ast (Attributes, Block (..), Footnote (..), Inline (..), ListItem (..), ListKind (..), classes, plainText)
@@ -226,6 +232,28 @@ dayOfTitle title = do
     fits i c
       | i == 4 || i == 7 = c == '-'
       | otherwise = isDigit c
+
+-- | Whether an entry of a day's page is a missed task: a task that is not
+-- done, whose time has passed. The arguments are the page's date (the
+-- date in its title, 'dayOfTitle'), the present time where the reader is,
+-- and the entry.
+--
+-- Every task of a day before today is missed. A task of today is missed
+-- once the present time is later than its time: a span's end, a start's
+-- start. A task at 14:00 is not missed at 14:00 exactly, and is missed
+-- from the moment after. A task for the whole day is missed only once its
+-- day is over, so never on its own day. A task of a later day is never
+-- missed, and neither is a done task or an entry without a box.
+missed :: Day -> LocalTime -> DayEntry -> Bool
+missed day now entry = case entry.task of
+  Just False -> case compare day now.localDay of
+    LT -> True
+    GT -> False
+    EQ -> case entry.time of
+      AllDay -> False
+      At start -> now.localTimeOfDay > start
+      Span _ end -> now.localTimeOfDay > end
+  _ -> False
 
 -- | The class that makes a list a day's list: @{.day}@ on the line before
 -- the list, or @[[!div]]{.day}@ around it.

@@ -1747,10 +1747,22 @@ pre.numbered > code {
 }
 
 /* A highlighted entry, "!" at the start of its item: shown at its time,
-   in the theme's yellow. */
+   its text bold, with a bar in the accent colour in the gutter left of its
+   bullet or its box, where neither covers it. */
 .day-highlight {
-  background: var(--h-yellow);
-  border-radius: 0.2rem;
+  position: relative;
+  font-weight: 600;
+}
+
+.day-highlight::before {
+  content: "";
+  position: absolute;
+  left: -1.75rem;
+  top: 0.15em;
+  bottom: 0.15em;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 /* A box the reader may tick in the page view (Wiki.App.View.Page). */

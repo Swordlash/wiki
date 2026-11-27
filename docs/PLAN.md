@@ -3067,11 +3067,34 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   the kinds of the plugins that are on, the page view mounts the
   plugin's surface, and with the plugin off the page shows as a
   document; the calendar's first surface lists its days, the pages
-  under it titled with a date, as links. (4) The library as a lazy
-  island, after a spike handed back (size, the five-day week, the
-  line of the present time, clicks without the interaction
-  package): month with the highlights, weeks of five and seven
-  days, the day; a click opens a day's page that exists. **One way
+  under it titled with a date, as links. (4) The library as a lazy island: month with the highlights,
+  weeks of five and seven days, the day; a click opens a day's page
+  that exists. **The spike (2026-11-27, every feature tried in
+  Chromium under the page's CSP):** FullCalendar 7.1.5 (MIT, one
+  package with `temporal-polyfill` as its peer): 81 KB gzip of
+  JavaScript and 3.5 KB of CSS as a lazy file of its own, not
+  precached; no CSP change; month, the two weeks and the day,
+  whole-day entries above, the line of the present time, Monday
+  first, a 24-hour clock, clicks on an entry and on a day's number
+  without the interaction package, the range reported on paging,
+  nothing draggable, colours from our CSS variables, and a month
+  that fits 390 px. FullCalendar 6 (the legacy line) and
+  `@event-calendar/core` are smaller (66 and 55 KB) and both
+  overflow at a phone's width; the second has no licence file and
+  no links on the days' numbers. To do in the build: the month
+  shows highlights only through a refetch when the view changes;
+  the island mounts on a child element of its own; today's cell
+  takes a quiet tint from our tokens, not the library's yellow (the
+  owner disliked a yellow band on #397); Tab passes every day's
+  number before the first entry. Built in two pull requests: (4a)
+  the island, the bundle and the binding, with the interface's
+  changes (the surface's input gains the host's capabilities; a
+  link can be followed without an anchor's click), the views drawn
+  from the pages under the calendar alone (the days that have a
+  page marked, a click opens one); (4b) a capability that reads a
+  day's page, the surface as a machine (one read out at a time, a
+  ticket for each range, entries kept by page id), and the entries
+  in the views. **One way
   to read the entries:** the plugin's capability lists the
   calendar's children and reads each day's page in the range with
   the calls that exist (`getPage` is a read and records nothing),

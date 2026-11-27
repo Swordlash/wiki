@@ -9,13 +9,26 @@
 --
 -- The first runs on SQLite, in a temporary directory; the second on the
 -- PostgreSQL database the URL names, which must be empty (its backups run
--- the pg_dump on the PATH, or the one WIKI_PG_DUMP names). The wiki is made
+-- the pg_dump on the PATH, or the one WIKI_PG_DUMP names, and check the
+-- copy with the pg_restore on the PATH). The wiki is made
 -- with rows of its own rather than through the storage's operations, which
 -- would take far longer: 1,000 users, one
 -- public space of 2,000 pages (bodies of about 1 KB, since nothing timed
--- here reads every body), 10,000 watches, and 200,000 notifications, 500
--- of them the viewer's. The page timed is watched by 50 users. The bench
--- uses only what both the storage before WP5.16a and after it have.
+-- here reads every body) under the space's home page, 10,000 watches, and
+-- 200,000 notifications, 500 of them the viewer's. The page timed is
+-- watched by 50 users. The bench uses only what both the storage before
+-- WP5.16a and after it have.
+--
+-- With @smallest@ first, the bench runs each step once, on the smallest
+-- wiki on which every step has something to do ('smallest'). CI runs it on
+-- SQLite, so that a change of the storage that breaks a step fails there:
+--
+-- > cabal run wiki-server-bench --builddir=dist-newstyle/native -- smallest
+--
+-- Every step checks what it is answered, and stops the bench on an error,
+-- on an empty list where a read should find something, and on an answer
+-- of the sitemap or the feed other than 200: a step that timed a
+-- 'NotFound' would time nothing.
 --
 -- Then the reads of WP5.16b, after more is added: 18 private spaces of
 -- 1,000 pages each, so that the wiki has 20,000 pages, each with a word
@@ -58,10 +71,12 @@ import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import System.IO (BufferMode (..), hSetBuffering)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Timeout (timeout)
 import Text.Printf (printf)
-import Wiki.Api.Activity (ActivityQuery (..), activityPageSize)
-import Wiki.Api.Events (ClientMessage (..), ServerMessage (..), eventsPath)
-import Wiki.App.Backend (MonadWiki (..))
+import Wiki.Api.Activity (Activity (..), ActivityQuery (..), activityPageSize)
+import Wiki.Api.Events (ClientMessage (..), PageEvent (..), ServerMessage (..), eventsPath)
+import Wiki.Api.Notifications (Notifications (..))
+import Wiki.App.Backend (MonadWiki (..), Session (..))
 import Wiki.App.Backend.Admin (MonadAdmin (..))
 import Wiki.App.Backend.Comments (MonadComments (..))
 import Wiki.App.Backend.Notifications (MonadNotifications (..))
@@ -74,6 +89,7 @@ import Wiki.Core.Permission (SpacePermission (..), Subject (..))
 import Wiki.Core.Search (SearchQuery (..), searchQuery)
 import Wiki.Core.Slug (Slug, mkSlug)
 import Wiki.Core.Space (Space (..))
+import Wiki.Core.User (User (..))
 import Wiki.Server.Events qualified as Events
 import Wiki.Server.Feed (FeedKind (..), feedApplication, newFeedCache, sitemapApplication)
 import Wiki.Server.Storage (Config (..), Place (..), Storage, Who (..), backUp, defaultConfig, inDataDir, postgresAt, runStoredWiki, withStorage, writing)
@@ -82,14 +98,54 @@ import Wiki.Server.Storage.Layout (PgPrograms (..), defaultPgPrograms)
 import Wiki.Server.Storage.Rows (chunksOf, insertPage, insertVersion, micro)
 import Wiki.Server.Storage.Schema (AuditLog (..), Notifications (..), PageVersions (..), Spaces (..), Users (..), Watches (..), WikiDb (..), wikiDb)
 
-users, pages, watches, kept, watchers, tabs, tabUsers :: Int
-users = 1_000
-pages = 2_000
-watches = 10_000
-kept = 200_000
-watchers = 50
-tabs = 100
-tabUsers = 10
+-- | 'Size' is how big the wiki of the timings is. 'full' is a big wiki, the
+-- size the timings are for. 'smallest' is a wiki just big enough for every
+-- step to have something to do, for a run that checks that the bench still
+-- works.
+data Size = Size
+  { users :: Int
+  -- ^ The users of the wiki.
+  , pages :: Int
+  -- ^ The pages of the public space, which becomes a blog.
+  , watches :: Int
+  -- ^ The watches of pages, 'watchers' of them of the page saved.
+  , watchers :: Int
+  -- ^ The users who watch the page saved.
+  , kept :: Int
+  -- ^ The notifications.
+  , mine :: Int
+  -- ^ The notifications of the viewer.
+  , tabs :: Int
+  -- ^ The tabs subscribed to the page commented on.
+  , tabUsers :: Int
+  -- ^ The users those tabs belong to.
+  , others :: Int
+  -- ^ The private spaces that 'grow' adds.
+  , otherPages :: Int
+  -- ^ The pages of each private space.
+  , versions :: Int
+  -- ^ The versions that 'grow' adds to each page of the public space.
+  , entries :: Int
+  -- ^ The entries that 'grow' adds to the audit log: at least 99 pages of
+  -- them, since the read of the activity is of page 100.
+  , lonePage :: Int
+  -- ^ The page of a private space whose word is searched among all pages.
+  , spacePage :: Int
+  -- ^ The page of the public space whose word is searched in that space.
+  , viewedPage :: Int
+  -- ^ The page of the public space viewed with its mentions.
+  , once :: Bool
+  -- ^ Whether each step runs once, rather than as many times as 'report'
+  -- is given.
+  }
+
+full, smallest :: Size
+full = Size {users = 1_000, pages = 2_000, watches = 10_000, watchers = 50, kept = 200_000, mine = 500, tabs = 100, tabUsers = 10, others = 18, otherPages = 1_000, versions = 19, entries = 100_000, lonePage = 12_345, spacePage = 1_234, viewedPage = 1_500, once = False}
+smallest = Size {users = 60, pages = 20, watches = 100, watchers = 50, kept = 100, mine = 50, tabs = 4, tabUsers = 2, others = 2, otherPages = 10, versions = 2, entries = 100 * activityPageSize, lonePage = 25, spacePage = 12, viewedPage = 15, once = True}
+
+-- | All the pages of the wiki once 'grow' has added the private spaces.
+allPages :: Size -> Int
+allPages size = size.pages + size.others * size.otherPages
 
 main :: IO ()
 main = do
@@ -97,11 +153,14 @@ main = do
   getArgs >>= \case
     ["attachments", dir, n, mb] -> seedAttachments dir (readNumber n) (readNumber mb)
     ["blobs", dir, n] -> seedBlobs dir (readNumber n)
-    [] -> timings Nothing
-    ["postgres", url] -> timings (Just (encodeUtf8 (T.pack url)))
-    _ -> die "usage: wiki-server-bench [postgres URL | attachments DIR PAGES MB | blobs DIR N]"
+    "smallest" : rest -> atSize smallest rest
+    rest -> atSize full rest
   where
     readNumber t = fromMaybe (panic ("not a number: " <> toS t)) (readMaybe t)
+    atSize size = \case
+      [] -> timings size Nothing
+      ["postgres", url] -> timings size (Just (encodeUtf8 (T.pack url)))
+      _ -> die "usage: wiki-server-bench [smallest] [postgres URL] | attachments DIR PAGES MB | blobs DIR N"
 
 -- | Seed a data directory with a wiki of this many pages in one space and
 -- this many attachments of 1 MiB, of random bytes, one on each of the
@@ -109,17 +168,17 @@ main = do
 seedAttachments :: FilePath -> Int -> Int -> IO ()
 seedAttachments dir n mb =
   withStorage defaultConfig (inDataDir dir) $ \st -> do
-    space <- runStoredWiki st Administrator (createSpace Nothing "Big") >>= either (panic . show) pure
+    space <- runStoredWiki st Administrator (createSpace Nothing "Big") >>= must
     now <- micro <$> getCurrentTime
     writing st $
       for_ [0 .. n - 1] $ \i -> do
-        let p = pageOf space.id now i
+        let p = pageOf space now i
         insertPage p
         insertVersion p Nothing
     withFile "/dev/urandom" ReadMode $ \random ->
       for_ [0 .. mb - 1] $ \i -> do
         bytes <- BS.hGet random (1024 * 1024)
-        runStoredWiki st Administrator (uploadAttachment (pageId (i `mod` n)) ("file-" <> show i <> ".bin") "application/octet-stream" bytes) >>= either (panic . show) (const pass)
+        runStoredWiki st Administrator (uploadAttachment (pageId (i `mod` n)) ("file-" <> show i <> ".bin") "application/octet-stream" bytes) >>= void . must
     printf "seeded %s: %d pages, %d MiB of attachments\n" dir n mb
 
 -- | Seed a data directory with a wiki of one page and this many
@@ -127,64 +186,90 @@ seedAttachments dir n mb =
 seedBlobs :: FilePath -> Int -> IO ()
 seedBlobs dir n =
   withStorage defaultConfig (inDataDir dir) $ \st -> do
-    space <- runStoredWiki st Administrator (createSpace Nothing "Blobs") >>= either (panic . show) pure
-    p <- runStoredWiki st Administrator (createPage space.id Nothing "Attachments" "Many.") >>= either (panic . show) pure
+    space <- runStoredWiki st Administrator (createSpace Nothing "Blobs") >>= must
+    p <- runStoredWiki st Administrator (createPage space.id Nothing "Attachments" "Many.") >>= must
     for_ [0 .. n - 1] $ \i ->
-      runStoredWiki st Administrator (uploadAttachment p.id ("file-" <> show i <> ".txt") "text/plain" (encodeUtf8 (T.justifyLeft 1024 '.' (show i)))) >>= either (panic . show) (const pass)
+      runStoredWiki st Administrator (uploadAttachment p.id ("file-" <> show i <> ".txt") "text/plain" (encodeUtf8 (T.justifyLeft 1024 '.' (show i)))) >>= void . must
     printf "seeded %s: %d attachments\n" dir n
 
--- | The timings of WP5.16a and WP5.16b, on SQLite or on the PostgreSQL
--- database given.
-timings :: Maybe ByteString -> IO ()
-timings postgres = do
+-- | The timings of WP5.16a and WP5.16b, on a wiki of this size, on SQLite
+-- or on the PostgreSQL database given.
+timings :: Size -> Maybe ByteString -> IO ()
+timings size postgres = do
   hub <- Events.newHub
   dump <- fromMaybe defaultPgPrograms.dump <$> lookupEnv "WIKI_PG_DUMP"
   withSystemTempDirectory "wiki-bench" $ \dir -> do
     let at = case postgres of
           Nothing -> inDataDir (dir </> "data")
           Just url -> Place {dataDir = dir </> "data", database = postgresAt url, programs = defaultPgPrograms {dump}}
-    printf "on %s\n" (maybe "SQLite" (const "PostgreSQL") postgres :: Text)
+    printf "on %s%s\n" (maybe "SQLite" (const "PostgreSQL") postgres :: Text) (if size.once then ", the smallest wiki, each step once" else "" :: Text)
     withStorage defaultConfig {publish = Events.publish hub, notify = Events.notify hub} at $ \st -> do
-      seeded <- timed (seed st)
+      seeded <- timed (seed size st)
       printf "seeded in %.1f s\n" (snd seeded)
       let (space, target) = fst seeded
           viewer = AsUser (UserId (userId 0))
           saver = AsUser (UserId (userId 1))
+          report what n = timeRuns what (if size.once then 1 else n)
+          every = commas (allPages size)
+          inSpace = commas size.pages
       let pageView = runStoredWiki st viewer $ do
-            _ <- session
-            _ <- getPage space [slugOf target]
-            void (watching (WatchPage (pageId target)))
+            -- The storage answers a session it cannot read as a visitor's.
+            s <- session
+            when (((\u -> u.id) <$> s.user) /= Just (UserId (userId 0))) (panic "the page view's session is not the viewer's")
+            _ <- getPage space [slugOf target] >>= must
+            void (watching (WatchPage (pageId target)) >>= must)
       report "page view: session, getPage, watching" 20 pageView
       counted st pageView
-      report "page view: the bell (500 notifications)" 5 (void (runStoredWiki st viewer notifications))
-      report "save of a page 50 users watch" 10 $ do
-        p <- runStoredWiki st saver (getPage space [slugOf target]) >>= either (panic . show) pure
-        runStoredWiki st saver (savePage p.id p.updatedAt p.title (p.body <> "\n\nMore.")) >>= either (panic . show) (const pass)
+      report ("page view: the bell (" <> commas size.mine <> " notifications)") 5 (runStoredWiki st viewer notifications >>= must >>= \n -> found "the bell" n.items)
+      report ("save of a page " <> commas size.watchers <> " users watch") 10 $ do
+        p <- runStoredWiki st saver (getPage space [slugOf target]) >>= must
+        runStoredWiki st saver (savePage p.id p.updatedAt p.title (p.body <> "\n\nMore.")) >>= void . must
       report "backup" 3 (backedUp st)
       readsDuringBackup st viewer space target
-      commentWithTabs st hub viewer target
-      grown <- timed (grow st space)
+      -- A watchdog only, for the run that checks, where the step answers
+      -- in milliseconds. The full run waits: subscribing its tabs may take
+      -- longer on a slow database.
+      (if size.once then timeout 60_000_000 else fmap Just) (commentWithTabs size st hub viewer target) >>= maybe (panic "comment on a page with tabs: no end within 60 s") pure
+      grown <- timed (grow size st space)
       printf "grown in %.1f s\n" (snd grown)
-      report "search: a word on 1 page of 20,000" 10 (void (runStoredWiki st Administrator (searchPages (searchQuery "token12345"))))
-      report "search: a word on every page of 20,000" 5 (void (runStoredWiki st Administrator (searchPages (searchQuery "fifty"))))
-      report "search: a word on 1 page, in a 2,000-page space" 10 (void (runStoredWiki st Administrator (searchPages SearchQuery {text = "token1234", space = Just space, includeSubspaces = True, limit = 50, templates = False})))
+      let search q = runStoredWiki st Administrator (searchPages q) >>= found q.text
+          lone = "token" <> show size.lonePage
+      report ("search: a word on 1 page of " <> every) 10 (search (searchQuery lone))
+      report ("search: a word on every page of " <> every) 5 (search (searchQuery "fifty"))
+      report ("search: a word on 1 page, in a " <> inSpace <> "-page space") 10 (search SearchQuery {text = "token" <> show size.spacePage, space = Just space, includeSubspaces = True, limit = 50, templates = False})
       -- The lookup of pages by title reads the nodes of every page of the
-      -- spaces the asker may view: the administrator's are the 20,000
-      -- pages, the viewer's the 2,000 of the public space.
-      report "pages by title: two letters on every page of 20,000" 10 (void (runStoredWiki st Administrator (findPagesByTitle (titleQuery "pa"))))
-      report "pages by title: letters on 1 page of 20,000" 10 (void (runStoredWiki st Administrator (findPagesByTitle (titleQuery "page 12345"))))
-      report "pages by title: two letters, for a viewer of 2,000 pages" 10 (void (runStoredWiki st viewer (findPagesByTitle (titleQuery "pa"))))
-      report "sitemap of a 2,000-page public space, written" 5 (newFeedCache >>= \cache -> asked (sitemapApplication st cache "/"))
-      report "feed of a 2,000-page blog, written" 5 (newFeedCache >>= \cache -> asked (feedApplication st cache "/" Atom ["big"]))
+      -- spaces the asker may view: the administrator's are all the pages,
+      -- the viewer's those of the public space.
+      let titles who q = runStoredWiki st who (findPagesByTitle (titleQuery q)) >>= must >>= found q
+      report ("pages by title: two letters on every page of " <> every) 10 (titles Administrator "pa")
+      report ("pages by title: letters on 1 page of " <> every) 10 (titles Administrator ("page " <> show size.lonePage))
+      report ("pages by title: two letters, for a viewer of " <> inSpace <> " pages") 10 (titles viewer "pa")
+      report ("sitemap of a " <> inSpace <> "-page public space, written") 5 (newFeedCache >>= \cache -> asked (sitemapApplication st cache "/"))
+      report ("feed of a " <> inSpace <> "-page blog, written") 5 (newFeedCache >>= \cache -> asked (feedApplication st cache "/" Atom ["big"]))
       cache <- newFeedCache
+      asked (sitemapApplication st cache "/")
       report "sitemap, asked again within a minute" 20 (asked (sitemapApplication st cache "/"))
       report "page view: getPage, watching, mentionable (3)" 20 $ runStoredWiki st viewer $ do
-        _ <- getPage space [slugOf 1500]
-        _ <- watching (WatchPage (pageId 1500))
-        void (mentionable [loginOf 1, loginOf 2, "nobody"])
-      report "blog listing: 2,000 posts of 20 versions each" 5 (void (runStoredWiki st viewer (postDetails space)))
+        _ <- getPage space [slugOf size.viewedPage] >>= must
+        _ <- watching (WatchPage (pageId size.viewedPage)) >>= must
+        mentionable [loginOf 1, loginOf 2, "nobody"] >>= found "the mentioned"
+      report ("blog listing: " <> inSpace <> " posts of " <> commas (size.versions + 1) <> " versions each") 5 (runStoredWiki st viewer (postDetails space) >>= must >>= found "the posts")
       cursor <- activityCursor st
-      report "activity: page 100 of 100,000 entries" 10 (void (runStoredWiki st Administrator (activity (pageHundred cursor))))
+      report ("activity: page 100 of " <> commas size.entries <> " entries") 10 (runStoredWiki st Administrator (activity (pageHundred cursor)) >>= must >>= \a -> found "the activity" a.entries)
+
+-- | The value of an answer of the storage, or a stop of the bench with the
+-- error.
+must :: (Applicative f, Show e) => Either e a -> f a
+must = either (panic . show) pure
+
+-- | A stop of the bench when a read found nothing: the step would time a
+-- read of nothing.
+found :: (Applicative f, Foldable t) => Text -> t a -> f ()
+found what xs = when (null xs) (panic ("nothing found for " <> what))
+
+-- | A number with commas between its thousands, as the labels write it.
+commas :: Int -> Text
+commas = T.reverse . T.intercalate "," . T.chunksOf 3 . T.reverse . show
 
 -- | The query for page 100 of the audit log, given the oldest entry of
 -- page 99.
@@ -198,31 +283,33 @@ activityCursor st =
     >>= maybe (panic "no entry ends page 99") (\e -> pure e.id)
 
 -- | Ask an application for its root as a reader would, and read the
--- whole answer.
+-- whole answer. An answer other than 200 stops the bench.
 asked :: Application -> IO ()
 asked app = void . app defaultRequest $ \response -> do
-  let (_, _, withBody) = responseToStream response
+  let (status, _, withBody) = responseToStream response
+  when (fromEnum status /= 200) (panic ("the application answered " <> show status))
   withBody $ \body -> body (\b -> void (evaluate (BSL.length (toLazyByteString b)))) pass
   pure ResponseReceived
 
--- | Grow the wiki for the reads of WP5.16b: 18 private spaces of 1,000
--- pages, 19 more versions of each page of the big space, which becomes a
--- blog, and 100,000 entries in the audit log.
-grow :: Storage -> SpaceId -> IO ()
-grow st space = do
-  others <- for [1 .. 18 :: Int] $ \i -> runStoredWiki st Administrator (createSpace Nothing ("Other " <> show i)) >>= either (panic . show) pure
+-- | Grow the wiki for the reads of WP5.16b: private spaces of pages of
+-- their own (18 of 1,000 at the full size), more versions of each page of
+-- the big space, which becomes a blog (19), and entries in the audit log
+-- (100,000).
+grow :: Size -> Storage -> SpaceId -> IO ()
+grow size st space = do
+  others <- for [1 .. size.others] $ \i -> runStoredWiki st Administrator (createSpace Nothing ("Other " <> show i)) >>= must
   now <- micro <$> getCurrentTime
   writing st $ do
     runUpdate (update wikiDb.spaces (\x -> x.blog <-. val_ True) (\x -> x.id ==. val_ space.text))
     for_ (zip [0 :: Int ..] others) $ \(k, s) ->
-      for_ [0 .. 999] $ \j -> insertPage (pageOf s.id now (pages + k * 1000 + j))
-    for_ (chunksOf 500 [(i, v) | i <- [0 .. pages - 1], v <- [1 .. 19 :: Int]]) $ \chunk ->
+      for_ [0 .. size.otherPages - 1] $ \j -> insertPage (pageOf s now (size.pages + k * size.otherPages + j))
+    for_ (chunksOf 500 [(i, v) | i <- [0 .. size.pages - 1], v <- [1 .. size.versions]]) $ \chunk ->
       runInsert . insert wikiDb.page_versions $
         insertValues
-          [ VersionRow {page_id = pageText i, updated_at = addUTCTime (fromIntegral i + fromIntegral v / 100) now, title = "Page " <> show i, body = "", author = Just (userId (v `mod` users))}
+          [ VersionRow {page_id = pageText i, updated_at = addUTCTime (fromIntegral i + fromIntegral v / 100) now, title = "Page " <> show i, body = "", author = Just (userId (v `mod` size.users))}
           | (i, v) <- chunk
           ]
-    for_ (chunksOf 500 [1 .. 100_000 :: Int]) $ \chunk ->
+    for_ (chunksOf 500 [1 .. size.entries]) $ \chunk ->
       runInsert . insert wikiDb.audit_log $
         insertValues
           [ AuditRow {id = "bench-entry-" <> show i, at = addUTCTime (fromIntegral i) now, actor_id = userId (i `mod` 20), actor_login = loginOf (i `mod` 20), action = "group.create", subject_kind = "group", subject_id = Nothing, subject_name = "A group", detail = "{}", address = ""}
@@ -232,38 +319,38 @@ grow st space = do
 -- | Seed the wiki: the space and its pages through the storage's own rows,
 -- and the rest as rows of SQL. The space's id, and the index of the page
 -- timed.
-seed :: Storage -> IO (SpaceId, Int)
-seed st = do
-  space <- runStoredWiki st Administrator (createSpace Nothing "Big") >>= either (panic . show) pure
-  _ <- runStoredWiki st Administrator (setSpacePublic space.id True) >>= either (panic . show) pure
+seed :: Size -> Storage -> IO (SpaceId, Int)
+seed size st = do
+  space <- runStoredWiki st Administrator (createSpace Nothing "Big") >>= must
+  _ <- runStoredWiki st Administrator (setSpacePublic space.id True) >>= must
   now <- micro <$> getCurrentTime
   writing st $ do
-    for_ (chunksOf 500 [0 .. users - 1]) $ \chunk ->
+    for_ (chunksOf 500 [0 .. size.users - 1]) $ \chunk ->
       runInsert . insert wikiDb.users $
         insertValues [UserRow {id = userId i, login = loginOf i, display_name = "User " <> show i, password_hash = Nothing, disabled = False, email = Nothing, email_verified_at = Nothing, notification_mail = Nothing, watch_own = True, feed_token = Nothing, avatar_blob = Nothing, avatar_media_type = Nothing, opaque_record = Nothing, opaque_stretch = Nothing} | i <- chunk]
-    for_ [0 .. pages - 1] $ \i -> do
-      let p = pageOf space.id now i
+    for_ [0 .. size.pages - 1] $ \i -> do
+      let p = pageOf space now i
       insertPage p
-      insertVersion p (Just (UserId (userId (i `mod` users))))
+      insertVersion p (Just (UserId (userId (i `mod` size.users))))
     -- The page timed is page 0: watched by users 1 to 50 (user 1 saves it,
     -- and is not told of their own save). The other watches are spread
     -- over the other pages.
     let watchRow u p = WatchRow {user_id = userId u, page_id = Just (pageText p), space_id = Nothing, watching = True}
-    runInsert (insert wikiDb.watches (insertValues [watchRow u 0 | u <- [1 .. watchers]]))
-    for_ (chunksOf 500 [0 .. watches - watchers - 1]) $ \chunk ->
-      runInsert (insert wikiDb.watches (insertValues [watchRow (i `mod` users) (1 + i `div` users) | i <- chunk]))
+    runInsert (insert wikiDb.watches (insertValues [watchRow u 0 | u <- [1 .. size.watchers]]))
+    for_ (chunksOf 500 [0 .. size.watches - size.watchers - 1]) $ \chunk ->
+      runInsert (insert wikiDb.watches (insertValues [watchRow (i `mod` size.users) (1 + i `div` size.users) | i <- chunk]))
     -- 500 notifications for the viewer (user 0), the rest for the others,
     -- each about one of the space's pages, numbered by the database in
     -- this order.
-    for_ (chunksOf 500 [0 .. kept - 1]) $ \chunk ->
+    for_ (chunksOf 500 [0 .. size.kept - 1]) $ \chunk ->
       runInsert . insert wikiDb.notifications $
         insertExpressions
           [ NotificationRow
               { seq = default_
               , id = val_ ("n" <> show i)
-              , user_id = val_ (userId (if i < 500 then 0 else 1 + i `mod` (users - 1)))
+              , user_id = val_ (userId (if i < size.mine then 0 else 1 + i `mod` (size.users - 1)))
               , kind = val_ "changed"
-              , page_id = val_ (pageText (i `mod` pages))
+              , page_id = val_ (pageText (i `mod` size.pages))
               , thread_id = val_ Nothing
               , actor = val_ (userId 2)
               , actor_name = val_ "Someone"
@@ -276,7 +363,7 @@ seed st = do
           | i <- chunk
           ]
   -- The user who saves may edit the space; everyone may read it.
-  _ <- runStoredWiki st Administrator (setSpaceGrant space.id (SubjectUser (UserId (userId 1))) Edit True) >>= either (panic . show) pure
+  _ <- runStoredWiki st Administrator (setSpaceGrant space.id (SubjectUser (UserId (userId 1))) Edit True) >>= must
   pure (space.id, 0)
 
 userId :: Int -> Text
@@ -294,12 +381,15 @@ pageId = PageId . pageText
 slugOf :: Int -> Slug
 slugOf i = either (panic . show) identity (mkSlug ("page-" <> show i))
 
-pageOf :: SpaceId -> UTCTime -> Int -> Page
+-- | Page i of a space, under the space's home page. A page with no parent
+-- is on no path of a space that has a home page, so a read of it by its
+-- path finds nothing.
+pageOf :: Space -> UTCTime -> Int -> Page
 pageOf space now i =
   Page
     { id = pageId i
-    , space
-    , parent = Nothing
+    , space = space.id
+    , parent = space.homePage
     , title = "Page " <> show i
     , slug = slugOf i
     , body = T.replicate 20 ("A line of the page's text, " <> show i <> ", about fifty bytes.\n") <> "Its own word: token" <> show i <> ".\n"
@@ -323,8 +413,8 @@ timed act = do
 
 -- | Run an action some times, one after another, and print the median and
 -- the slowest time it took.
-report :: Text -> Int -> IO () -> IO ()
-report what n act = do
+timeRuns :: Text -> Int -> IO () -> IO ()
+timeRuns what n act = do
   ts <- sort <$> replicateM n (snd <$> timed act)
   printf "%-45s median %8.2f ms, slowest %8.2f ms (%d runs)\n" what (1000 * (ts !! (n `div` 2))) (1000 * foldr max 0 ts) n
 
@@ -353,7 +443,7 @@ readsDuringBackup :: Storage -> Who -> SpaceId -> Int -> IO ()
 readsDuringBackup st who space target = do
   backup <- async (timed (backedUp st))
   let loop acc = do
-        (_, t) <- timed (runStoredWiki st who (getPage space [slugOf target]))
+        (_, t) <- timed (runStoredWiki st who (getPage space [slugOf target]) >>= must)
         poll backup >>= \case
           Nothing -> loop (t : acc)
           Just (Left e) -> throwIO e
@@ -362,33 +452,41 @@ readsDuringBackup st who space target = do
   printf "%-45s backup %8.2f ms, %d reads, slowest %8.2f ms\n" ("reads during a backup" :: Text) (1000 * took) (length ts) (1000 * foldr max 0 ts)
 
 -- | How long a comment on a page takes to reach every tab subscribed to
--- it: 'tabs' tabs of 'tabUsers' users, over real WebSockets.
-commentWithTabs :: Storage -> Events.Hub -> Who -> Int -> IO ()
-commentWithTabs st hub commenter target = do
+-- it: the size's tabs, of its tab users, over real WebSockets.
+commentWithTabs :: Size -> Storage -> Events.Hub -> Who -> Int -> IO ()
+commentWithTabs size st hub commenter target = do
   -- The clients send no Origin, so the wiki's own origin does not matter.
   let app request = Events.eventsApplication st hub (whoOf request) [] request
       whoOf request = maybe Anonymous (AsUser . UserId . decodeUtf8) (lookup "X-Bench-User" (requestHeaders request))
   testWithApplication (pure app) $ \port -> do
     ready <- newEmptyMVar
     heard <- newEmptyMVar
-    clients <- for [0 .. tabs - 1] $ \i -> async $
-      WS.runClientWith "127.0.0.1" port ("/" <> toS eventsPath) WS.defaultConnectionOptions [("X-Bench-User", encodeUtf8 (userId (10 + i `mod` tabUsers)))] $ \c -> do
+    clients <- for [0 .. size.tabs - 1] $ \i -> async $
+      WS.runClientWith "127.0.0.1" port ("/" <> toS eventsPath) WS.defaultConnectionOptions [("X-Bench-User", encodeUtf8 (userId (10 + i `mod` size.tabUsers)))] $ \c -> do
         WS.sendTextData c (encode (Subscribe (pageId target)))
         let untilSubscribed =
               WS.receiveData c >>= \m -> case decode m of
                 Just (Subscribed {}) -> pass
+                Just (Refused _) -> panic "a tab's subscription was refused"
                 _ -> untilSubscribed
+            -- Only the comment counts: a tab subscribing after this one
+            -- sends it an event too, of who reads the page. One thread is
+            -- opened, so the page is enough; the thread's id is not known
+            -- before 'openThread' returns.
             untilEvent =
               WS.receiveData c >>= \m -> case decode m of
-                Just (Event _ _) -> getMonotonicTime >>= putMVar heard
+                Just (Event p (ThreadOpened _)) | p == pageId target -> getMonotonicTime >>= putMVar heard
                 _ -> untilEvent
         untilSubscribed
         putMVar ready ()
         untilEvent
-    replicateM_ tabs (takeMVar ready)
+    -- A tab that fails stops the bench at once, rather than leaving it
+    -- waiting for the tab's turn.
+    traverse_ link clients
+    replicateM_ size.tabs (takeMVar ready)
     start <- getMonotonicTime
-    _ <- runStoredWiki st commenter (openThread (pageId target) Nothing "A comment.") >>= either (panic . show) pure
+    _ <- runStoredWiki st commenter (openThread (pageId target) Nothing "A comment.") >>= must
     committed <- getMonotonicTime
-    ends <- replicateM tabs (takeMVar heard)
+    ends <- replicateM size.tabs (takeMVar heard)
     traverse_ wait clients
-    printf "%-45s committed %8.2f ms, all %d tabs told %8.2f ms\n" ("comment on a page with 100 tabs (10 users)" :: Text) (1000 * (committed - start)) tabs (1000 * (foldr max 0 ends - start))
+    printf "%-45s committed %8.2f ms, all %d tabs told %8.2f ms\n" ("comment on a page with " <> commas size.tabs <> " tabs (" <> commas size.tabUsers <> " users)") (1000 * (committed - start)) size.tabs (1000 * (foldr max 0 ends - start))

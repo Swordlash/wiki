@@ -112,6 +112,12 @@ manifests = describe "a plugin's manifest" $ do
     refusedFor [("id", Just "Doubled Words")] "The manifest's id"
     for_ (Set.toList reservedPluginIds) $ \p -> refusedFor [("id", Just (toJSON p.text))] "built into the wiki"
 
+  it "reads a stored manifest whose id a built-in plugin took since, which an upload refuses" $ do
+    -- A plugin installed under "calendar" before the calendar was built in.
+    let stored = manifestWith [("id", Just "calendar")]
+    (\m -> m.id) <$> Aeson.eitherDecodeStrict' @ExternalManifest stored `shouldBe` Right (PluginId "calendar")
+    void (refusal stored)
+
   it "keeps a name and a description to one line of their lengths" $ do
     refusedFor [("name", Just "   ")] "1 to 80 characters"
     refusedFor [("name", Just (toJSON (T.replicate 81 "n")))] "1 to 80 characters"

@@ -17,7 +17,7 @@ import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Database.Beam (all_, runSelectReturningList, select)
+import Database.Beam (all_, runSelectReturningList, runUpdate, select, update, val_, (<-.), (==.))
 import Network.HTTP.Types (Header, hContentType, methodDelete, methodGet, methodPost, methodPut)
 import Protolude
 import System.Directory (removeFile, renameFile)
@@ -36,7 +36,7 @@ import Wiki.Api.Plugins.External
 import Wiki.Core.Audit (AuditEntry (..))
 import Wiki.Core.Id (BlobId (..), UserId (..))
 import Wiki.Server.PluginFrame (codeScript, frameScripts, scriptHash, wikiPluginModule)
-import Wiki.Server.Storage (reading, withStorageAside)
+import Wiki.Server.Storage (reading, withStorageAside, writing)
 import Wiki.Server.Storage.Blobs (blobFile, blobOf)
 import Wiki.Server.Storage.Layout (attachmentsDir)
 import Wiki.Server.Storage.Schema (InstalledPlugins (..), WikiDb (..), wikiDb)
@@ -48,6 +48,7 @@ spec backing = describe "external plugins" $ do
   ownPlugins backing
   frames backing
   removing backing
+  reserved backing
   module' backing
 
 -- | The demo with passwords for the editor, the reader and the admin.
@@ -351,6 +352,36 @@ removing backing = describe "removing" $ do
     _ :: Account <- sendJson r methodPut (onAdmin r (links.admin.setDisabled (UserId "user-reader"))) AccountDisabled {disabled = True} >>= jsonAs 200
     (\x -> x.status) <$> send r methodDelete (onAdmin r (links.admin.removeUser (UserId "user-reader"))) [] "" `shouldReturn` 204
     ownersOf `shouldReturn` [(Just "user-editor", "mine")]
+
+-- | A plugin installed under an id that a plugin built into the wiki took
+-- since: the row is rewritten to the id "calendar", as an upgrade would
+-- find a plugin installed under it before the calendar was built in.
+reserved :: Backing -> Spec
+reserved backing = describe "a plugin whose id became a built-in plugin's" $
+  it "is listed, runs for nobody, and is removed by whoever could remove it before" $
+    withUsers backing $ \r -> do
+      editor <- sessionOf r "editor"
+      setPolicy r ExternalUsers
+      wikis <- installForWiki r (manifestOf "dated" []) codeA Nothing >>= jsonAs @ExternalPlugin 200
+      own <- installMine r editor (manifestOf "dated-mine" []) codeB Nothing >>= jsonAs @ExternalPlugin 200
+      -- Both run before: the 404s below can fail.
+      for_ [wikis, own] $ \p -> (\x -> x.status) <$> getUrlWith r (onPublic r (framePath p)) editor `shouldReturn` 200
+      withStorageAside r.place $ \st -> for_ ["dated", "dated-mine" :: Text] $ \old ->
+        writing st
+          $ runUpdate
+          $ update
+            wikiDb.external_plugins
+            (\row -> mconcat [row.plugin_id <-. val_ "calendar", row.manifest <-. val_ (manifestOf "calendar" [])])
+            (\row -> row.plugin_id ==. val_ old)
+      sort . ids <$> listAs r editor `shouldReturn` [("calendar", False), ("calendar", True)]
+      -- No frame, for either.
+      for_ [(wikis, "dated"), (own, "dated-mine")] $ \(p, old) ->
+        (\x -> x.status) <$> getUrlWith r (T.replace ("/" <> old <> "/") "/calendar/" (onPublic r (framePath p))) editor `shouldReturn` 404
+      -- Replaced under the same id: refused, as any upload of that id.
+      _ <- installForWiki r (manifestOf "calendar" []) codeA (Just wikis.bundle) >>= invalidAs
+      (\x -> x.status) <$> send r methodDelete (onAdmin r (links.externalPlugins.removeForWiki (PluginId "calendar"))) [] "" `shouldReturn` 204
+      (\x -> x.status) <$> send r methodDelete (onPublic r (links.externalPlugins.removeMine (PluginId "calendar"))) editor "" `shouldReturn` 204
+      ids <$> listAs r editor `shouldReturn` []
 
 module' :: Backing -> Spec
 module' backing = describe "the module a plugin imports" $

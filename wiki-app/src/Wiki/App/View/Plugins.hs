@@ -23,7 +23,8 @@
 -- a warning that says what the plugin reads and where it may send it
 -- ("Wiki.App.View.PluginUpload"). A plugin of the user's own with the id
 -- of one of the wiki's does not run: the wiki's runs in its place, and
--- the row says so. While the policy is off, the section says so and lists
+-- the row says so. Nor does a plugin whose id a plugin built into the wiki
+-- took after it was installed: its row says so, and it can be removed. While the policy is off, the section says so and lists
 -- none. The demo has no server to serve a plugin's frame, so it has no
 -- external plugins.
 --
@@ -54,7 +55,7 @@ import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plu
 import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Owner (..), ownerOf)
 import Wiki.App.Islands.Monad (MonadIslands (..))
 import Wiki.App.Plugin (Manifest (..))
-import Wiki.App.Plugin.External (manifestOf, runnable)
+import Wiki.App.Plugin.External (manifestOf, reservedById, runnable)
 import Wiki.App.Plugin.Registry (assistantId, isOn, manifests)
 import Wiki.App.Route (Route (UserSettings), SettingsSection (AssistantSection))
 import Wiki.App.View.Common (attr, errorMessage)
@@ -188,7 +189,11 @@ component =
     externalRow m known installed p =
       [hh|
         <li class={{ "plugin plugin-external plugin-" <> if isOnNow then "on" else "off" :: Text }} data-plugin={{ p.manifest.id.text }} data-owner={{ if p.mine then "mine" else "wiki" :: Text }}>
-          {{ switchView m known manifest }}
+          {% if reservedById p %}
+            <div class="plugin-choice"><div class="plugin-head"><span class="plugin-name">{{ manifest.name }}</span></div></div>
+          {% else %}
+            {{ switchView m known manifest }}
+          {% end %}
           <p class="plugin-about account-note">{{ ownerText (ownerOf p) <> " · version " <> p.manifest.version }}</p>
           {% if not (T.null p.manifest.description) %}
             <p class="plugin-description account-note">{{ p.manifest.description }}</p>
@@ -199,7 +204,9 @@ component =
             {% end %}
           </ul>
           <p class="plugin-hosts">{{ hostsText p.manifest.hosts }}</p>
-          {% if hidden %}
+          {% if reservedById p %}
+            <p class="plugin-reserved account-note" role="note">{{ "Its id, " <> p.manifest.id.text <> ", is now a plugin's built into the wiki, so it does not run. Remove it, or install it again under another id." }}</p>
+          {% elif hidden %}
             <p class="plugin-hidden account-note" role="note">The wiki has a plugin with the same id, which runs in this one's place.</p>
           {% else %}
             {{ stateNote m known manifest }}
@@ -225,7 +232,9 @@ component =
       where
         manifest = manifestOf p
         key = (ownerOf p, p.manifest.id)
-        isOnNow = shownOn m known manifest
+        -- A plugin whose id is a built-in one's never runs: its row is off,
+        -- whatever the choice kept under that id says.
+        isOnNow = not (reservedById p) && shownOn m known manifest
         -- A user's own plugin that does not run by the policy: the wiki
         -- has one of the same id ('runnable').
         hidden = p.mine && p `notElem` runnable installed

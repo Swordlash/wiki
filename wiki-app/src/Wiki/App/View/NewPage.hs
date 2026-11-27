@@ -180,14 +180,22 @@ component =
           Right parentPage | not st.creating -> do
             modify (\s -> s {creating = True, problem = Nothing})
             body <- startingBody st
-            result <- createPageOf st.kind st.input.space.id ((\p -> p.id) <$> parentPage) st.title body
-            modify (\s -> s {creating = False})
-            case result of
-              Left e -> modify (\s -> s {problem = Just e})
-              -- The editor, on the page just created: the shell reloads the
-              -- space's pages, which now include it, and navigates there.
-              Right page ->
-                H.raise (Changed (Just (EditPage (spacePathOf st.input.context.spaces st.input.space.id) (fromMaybe [] st.input.parent <> [page.slug]))))
+            -- The fetch of a template waits, and the kind's plugin may go
+            -- off meanwhile ('Receive' then makes the form a document
+            -- again). The create is decided here, in the step that sends
+            -- it, from the plugins as they are now.
+            offeredNow <- gets (\s -> st.kind `elem` map (\(k, _, _) -> k) (kindsOffered s.input.context))
+            if not offeredNow
+              then modify (\s -> s {creating = False})
+              else do
+                result <- createPageOf st.kind st.input.space.id ((\p -> p.id) <$> parentPage) st.title body
+                modify (\s -> s {creating = False})
+                case result of
+                  Left e -> modify (\s -> s {problem = Just e})
+                  -- The editor, on the page just created: the shell reloads the
+                  -- space's pages, which now include it, and navigates there.
+                  Right page ->
+                    H.raise (Changed (Just (EditPage (spacePathOf st.input.context.spaces st.input.space.id) (fromMaybe [] st.input.parent <> [page.slug]))))
           _ -> pass
 
 -- | The new page's body: empty, or the chosen template with its

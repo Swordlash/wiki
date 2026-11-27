@@ -305,6 +305,7 @@ data KindInput = KindInput
   , options :: Maybe Value
   , mayEdit :: Bool
   }
+  deriving stock (Eq)
 
 -- | 'Child' is a page directly under the page shown, as the space's list
 -- of pages holds it (in an encrypted space, with its title decrypted in
@@ -313,6 +314,7 @@ data Child = Child
   { page :: PageSummary
   , link :: Link
   }
+  deriving stock (Eq)
 
 --------------------------------------------------------------------------------
 -- Options
@@ -511,6 +513,12 @@ data Local m = Local
 -- the host makes each link, and the plugin draws it and follows its
 -- clicks.
 data Link = Link (Router Route) Route
+
+-- | Two links are the same when they lead to the same route: the
+-- application has one router. A surface given an input equal to the one
+-- it has draws nothing again.
+instance Eq Link where
+  Link _ a == Link _ b = a == b
 
 -- | The link to a route of this router: for the host, which makes the
 -- capabilities and the inputs.

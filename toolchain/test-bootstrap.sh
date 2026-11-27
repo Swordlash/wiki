@@ -1020,7 +1020,15 @@ readiness_fixture() {
     printf 'module.exports = {};\n' >"$case_dir/repo/node_modules/$package/index.js"
   done
   mkdir -p "$case_dir/repo/node_modules/katex/dist" "$case_dir/repo/node_modules/highlight.js/lib/languages" \
-    "$case_dir/repo/node_modules/@drgrice1/tikzjax/dist"
+    "$case_dir/repo/node_modules/@drgrice1/tikzjax/dist" "$case_dir/repo/node_modules/fullcalendar/themes/classic" \
+    "$case_dir/repo/node_modules/temporal-polyfill/fns"
+  touch "$case_dir/repo/node_modules/fullcalendar/daygrid.js" \
+    "$case_dir/repo/node_modules/fullcalendar/skeleton.css" \
+    "$case_dir/repo/node_modules/fullcalendar/themes/classic/index.js" \
+    "$case_dir/repo/node_modules/fullcalendar/themes/classic/theme.css" \
+    "$case_dir/repo/node_modules/temporal-polyfill/fns/Instant.js" \
+    "$case_dir/repo/node_modules/temporal-polyfill/fns/PlainDateTime.js" \
+    "$case_dir/repo/node_modules/temporal-polyfill/fns/ZonedDateTime.js"
   touch "$case_dir/repo/node_modules/katex/dist/katex.min.css" \
     "$case_dir/repo/node_modules/@drgrice1/tikzjax/dist/run-tex.js" \
     "$case_dir/repo/node_modules/@drgrice1/tikzjax/dist/core.dump.gz" \
@@ -1184,6 +1192,16 @@ if npm_command serve >"$case_dir/missing-server" 2>&1; then fail 'missing local 
 assert_contains "$case_dir/missing-server" 'npm package http-server'
 [ ! -s "$EVENTS" ] || fail 'missing server package reached build or downloaded a replacement'
 pass 'partial npm dependencies and missing local executables fail with npm ci instructions'
+
+# A package whose root is there but not an entry point the bundle imports:
+# FullCalendar's month view, a part of its package, as a partial install
+# would leave it.
+readiness_fixture partial-npm-package
+rm "$case_dir/repo/node_modules/fullcalendar/daygrid.js"
+if npm_command build >"$case_dir/partial" 2>&1; then fail 'a package without an entry point the bundle imports passed'; fi
+assert_contains "$case_dir/partial" 'npm package fullcalendar'
+[ ! -s "$EVENTS" ] || fail 'a partial npm package reached build'
+pass 'a package missing an entry point the bundle imports fails with npm ci instructions'
 
 readiness_fixture pins
 rm "$CACHE/chrome-headless-shell-linux64/$CHROMIUM_NAME"

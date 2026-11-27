@@ -115,7 +115,7 @@ spec = describe "Wiki.Core.Markdown.Complete, from a start of a block" $ do
           slash = [SlashEntry {label = show command, keywords = [], sample = "", does = WritesCommand command} | command <- [Edit.Bold, Edit.Table]]
           asked =
             [ ("/" :: Text, [slashSource slash], "/ta")
-            , ("\\", [mathSource (mathCommands [])], "$\\fr")
+            , ("\\", [mathSource OfferEnvironments (mathCommands [])], "$\\fr")
             , ("[[!", [wikiSource Presentation []], "[[!")
             , ("[!", [wikiSource Presentation []], "> [!")
             ]
@@ -310,7 +310,7 @@ sourcesOf :: Case -> [Source]
 sourcesOf c = case c.kind of
   Markers -> [wikiSource Presentation []]
   Slash -> [slashSource entries]
-  Commands -> [mathSource (mathCommands [])]
+  Commands -> [mathSource OfferEnvironments (mathCommands [])]
   where
     entries = [SlashEntry {label = show command, keywords = [], sample = "", does = WritesCommand command} | command <- [Edit.Bold, Edit.Table, Edit.Quote, Edit.CodeBlock, Edit.SpoilerBlock, Edit.Box "NOTE"]]
 
@@ -571,7 +571,7 @@ genBelowListing = do
   (srcs, trigger, typed) <-
     elements
       [ ([slashSource [SlashEntry {label = show command, keywords = [], sample = "", does = WritesCommand command} | command <- [Edit.Bold, Edit.Table]]], "/ta", "/ta")
-      , ([mathSource (mathCommands [])], "\\fr", "$\\fr")
+      , ([mathSource OfferEnvironments (mathCommands [])], "\\fr", "$\\fr")
       , ([wikiSource Presentation []], "[[!", "[[!")
       , ([wikiSource Presentation []], "[!", "> [!")
       ]

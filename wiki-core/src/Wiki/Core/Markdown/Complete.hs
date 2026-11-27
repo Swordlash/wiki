@@ -73,6 +73,7 @@ module Wiki.Core.Markdown.Complete
     -- * Commands in math
   , MathCommand (..)
   , mathCommands
+  , Environments (..)
   , mathSource
 
     -- * The / menu
@@ -105,7 +106,7 @@ import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxKind, boxChoices)
 import Wiki.Core.Markdown.Edit (Command, Places (..), Selection (..), applyWithPlaces, cursor)
 import Wiki.Core.Markdown.Problems (everyBlock)
-import Wiki.Core.Math.KatexCommands (katexArguments, katexCommands)
+import Wiki.Core.Math.KatexCommands (katexArguments, katexCommands, katexEnvironments)
 import Wiki.Core.PageKind (PageKind (..))
 
 ----------------------------------------------------------------------
@@ -248,7 +249,7 @@ data LabelForm = PlainLabel | EscapedLabel | NoLabel
 -- of a line. An end marker's list is asked for after @[[/@ anywhere; its
 -- candidates are the blocks an end marker there ends ('complete').
 triggerAt :: LineReader -> At -> Maybe Typed
-triggerAt readAt at = (fst <$> mathAt readAt at) <|> otherTriggerAt readAt at
+triggerAt readAt at = ((\(typed, _, _) -> typed) <$> mathAt readAt at) <|> otherTriggerAt readAt at
 
 -- | What opens a list at a place other than a command in math.
 otherTriggerAt :: LineReader -> At -> Maybe Typed
@@ -822,12 +823,18 @@ data Writes = AsSnippet | AsText | LineAsText Text (Int, Int)
 -- would end, for the parser (the innermost block open there, if one is:
 -- an end marker of another name ends nothing); and what the parser reads
 -- of a skeleton written at the cursor, so that a source offers what is
--- read as it says.
+-- read as it says; and, in math, the TeX of the math at the cursor as the
+-- text is, with 'mathWord' in place of the command ('pageMath'; a
+-- formula over lines too). 'Nothing' where only a probe that closes the
+-- math after the cursor's line reads math there (math still being typed,
+-- which the page does not close yet): then what the page holds after
+-- that line is in no math read.
 data Wanted = Wanted
   { at :: At
   , typed :: Typed
   , closable :: [MarkerName]
   , writes :: Skeleton -> LineReading
+  , pageMath :: Maybe Text
   }
 
 -- | 'Source' gives the candidates for what is wanted, in its order, or
@@ -987,7 +994,7 @@ complete sources readAt at = do
   -- A command in math, read once: its probe is read again with what an
   -- entry writes ('writes').
   let math = mathAt readAt at
-  typed <- (fst <$> math) <|> otherTriggerAt readAt at
+  typed <- ((\(t, _, _) -> t) <$> math) <|> otherTriggerAt readAt at
   let closable = case typed.trigger of
         EndMarker ->
           let prefix = T.take typed.from at.before
@@ -997,11 +1004,12 @@ complete sources readAt at = do
         -- In math: the probe that read the command in math, with the
         -- skeleton's text in place of the backslash and the letters.
         (InMath _, _) -> case math of
-          Just (_, rest) -> readAt (mathProbe (T.take typed.from at.before) (fst (skeletonText skeleton)) rest)
+          Just (_, rest, _) -> readAt (mathProbe (T.take typed.from at.before) (fst (skeletonText skeleton)) rest)
           Nothing -> noReading 1
         (_, Just shape) -> readAt (writtenProbe at shape (readAt (Probe 1 [shape.prefix <> probeOf shape.trigger])).enclosing skeleton)
         (_, Nothing) -> noReading 1
-      wanted = Wanted {at, typed, closable, writes}
+      pageMath = (\(_, _, tex) -> tex) =<< math
+      wanted = Wanted {at, typed, closable, writes, pageMath}
       found = concatMap ($ wanted) sources
   guard (not (null found))
   Just Completion {from = typed.from, through = typed.through, candidates = map (asWrittenAt at typed) found, enter = if waitsForLetter typed.trigger then EnterChoosesAfter 2 else EnterChooses, escape = if typed.trigger == SlashMenu then EscapeDismisses else EscapeCloses}
@@ -1355,7 +1363,7 @@ mathRests at prefix =
     afterOpener delimiter before = fromMaybe before (lastMay (afterDelimiters delimiter before))
     -- The lines above the cursor's in its paragraph, where display math
     -- opened on an earlier line is (a blank line ends it).
-    paragraphAbove = reverse (takeWhile (not . T.null . T.strip) (reverse at.above))
+    paragraphAbove = reverse (takeWhile (not . T.all isBlank) (reverse at.above))
     -- The line after the cursor, as far as the first probe reads: where
     -- it goes on further, 'mathAt' declines before these are read.
     lineAfter = T.take afterBound at.after
@@ -1410,8 +1418,13 @@ openBraces = go 0 . T.unpack
 --
 -- With the command, the text after the cursor of the probe that read it in
 -- math ('mathRests'), which a check of what an entry writes reads again
--- ('complete''s 'writes').
-mathAt :: LineReader -> At -> Maybe (Typed, Text)
+-- ('complete''s 'writes'); and the TeX of the math at the cursor as the
+-- text is, with nothing closed by a probe, where the text as it is reads
+-- math there ('Wanted''s 'pageMath'). That is the first probe's reading,
+-- a formula over lines too: the list opens after a probe closes a formula
+-- on the cursor's line (@$\\fr‸@ above @{a}{b}$@), where the text as it
+-- is reads one formula over the two lines.
+mathAt :: LineReader -> At -> Maybe (Typed, Text, Maybe Text)
 mathAt readAt at = do
   guard (at.place /= InLinkText)
   (prefix, letters) <- mathShape at
@@ -1434,7 +1447,7 @@ mathAt readAt at = do
         <|> (guard (not (null (afterDelimiters "$" prefix)) && null (afterDelimiters "$" at.after)) *> (mathPlace closedHere.blocksRead >>= \p -> (p, hereRest) <$ guard (p == InFormula)))
         <|> (mathPlace closedBelow.blocksRead >>= \p -> (p, belowRest) <$ guard (p == InDisplay))
     _ -> Nothing
-  Just . (,rest) $
+  Just . (,rest,snd <$> mathFormulaWith True whole.blocksRead) $
     Typed
       { trigger = InMath place
       , letters
@@ -1456,23 +1469,29 @@ mathPlace = fmap fst . mathFormula
 -- | The math 'mathPlace' finds, with its TeX: the formula's, or the
 -- display math's.
 mathFormula :: [Block] -> Maybe (MathPlace, Text)
-mathFormula = asum . map onBlock
+mathFormula = mathFormulaWith False
+
+-- | The math that holds 'mathWord', with its TeX, as 'mathFormula' finds
+-- it; with 'True', a formula that runs over lines too ('pageMath': the
+-- math the page reads at the cursor, which the list does not open in).
+mathFormulaWith :: Bool -> [Block] -> Maybe (MathPlace, Text)
+mathFormulaWith overLines = asum . map onBlock
   where
     onBlock = \case
       MathBlock tex | mathWord `T.isInfixOf` tex -> Just (InDisplay, tex)
       Para xs -> own xs
       Plain xs -> own xs
-      BlockQuote bs -> mathFormula bs
-      List _ items -> asum [mathFormula bs | ListItem _ bs <- items]
-      Alert _ _ bs -> mathFormula bs
-      Div _ bs -> mathFormula bs
-      Spoiler _ bs -> mathFormula bs
+      BlockQuote bs -> mathFormulaWith overLines bs
+      List _ items -> asum [mathFormulaWith overLines bs | ListItem _ bs <- items]
+      Alert _ _ bs -> mathFormulaWith overLines bs
+      Div _ bs -> mathFormulaWith overLines bs
+      Spoiler _ bs -> mathFormulaWith overLines bs
       _ -> Nothing
     own = asum . map ownInline
     ownInline = \case
       Math kind tex
         | mathWord `T.isInfixOf` tex
-        , not ("\n" `T.isInfixOf` tex) ->
+        , overLines || not ("\n" `T.isInfixOf` tex) ->
             Just (if kind == Ast.DisplayMath then InDisplay else InFormula, tex)
       Emph xs -> own xs
       Strong xs -> own xs
@@ -1547,6 +1566,16 @@ katexInOrder = sortOn shownOrder [MathCommand {name, origin = "KaTeX", arguments
   where
     taking = Map.fromList katexArguments
 
+-- | 'Environments' is whether the list after a backslash in math offers
+-- KaTeX's environments ('mathSource'). It offers none where a macro the
+-- editor holds (the wiki's, a space's, the page's block of macros) is
+-- named @\\begin@ or @\\end@: a written @\\begin{pmatrix}@ and its
+-- @\\end@ would expand to something else. The editor decides it from the
+-- names of those macros, not from the list's entries. A definition inside
+-- one of the page's formulas is not read, here as for the macros offered.
+data Environments = OfferEnvironments | NoEnvironments
+  deriving stock (Eq, Show)
+
 -- | The list after a backslash in math: the commands whose name starts
 -- with the letters typed (as written: TeX tells @\\Gamma@ from
 -- @\\gamma@), in their order ('mathCommands': the shorter first, then by
@@ -1562,44 +1591,187 @@ katexInOrder = sortOn shownOrder [MathCommand {name, origin = "KaTeX", arguments
 -- undo. Only where nothing after the cursor can be an argument of the
 -- command ('noArgumentAfter': @\\fr‸{a}{b}@, @\\fr‸12@ keep what they
 -- have), and where the parser reads the math with the braces written as
--- it read it before, the braces in it ('bracesRead'). Anywhere else, and
+-- it read it before, the braces in it ('mathReadBack'). Anywhere else, and
 -- for every other command, the name is written as it is, the cursor after
 -- it ('AsText'), and what follows is the reader's to type.
-mathSource :: [MathCommand] -> Source
-mathSource commands wanted = case wanted.typed.trigger of
+--
+-- The list also holds KaTeX's environments that take no argument
+-- ('environmentsInOrder'), labelled @\\begin{pmatrix}@ and matched by the
+-- start of the label as a command is by its name, in the same order (so
+-- @\\b@ to @\\begi@ find them; @\\begin@ is a command typed whole, and
+-- after @\\begin{@ no list opens). Those KaTeX reads only in display math
+-- are offered only there. Choosing one writes
+-- @\\begin{pmatrix}\\end{pmatrix}@ in place of the cursor's line, the
+-- cursor between them and Tab to after the end. An environment takes no
+-- argument, so what follows the cursor is not taken into it; but none is
+-- offered where what follows may be the environment's own text
+-- ('environmentFits'), nor where the parser would read the math otherwise
+-- with it written ('mathReadBack'), nor where 'NoEnvironments' is given.
+mathSource :: Environments -> [MathCommand] -> Source
+mathSource offered commands wanted = case wanted.typed.trigger of
   InMath place
     | not (any ((== typedName) . (.name)) commands) ->
-        let checks = readBack place
-         in take shownCommands [command place checks c | c <- commands, typedName `T.isPrefixOf` c.name]
+        let readsBack = mathReadBack wanted place
+            checks = [(n, readsBack.readsWith (alone <> T.replicate n ("{" <> mathWord <> "}"))) | n <- [1 .. 9 :: Int]]
+         in take shownCommands (inShownOrder [(c.name, command place checks c) | c <- commands, typedName `T.isPrefixOf` c.name] (environments place readsBack))
   _ -> []
   where
     typedName = "\\" <> wanted.typed.letters
     at = wanted.at
+    prefix = T.take wanted.typed.from at.before
+    alone = "\\" <> mathWord
     named c = Candidate {label = c.name, skeleton = [Literal c.name, Field 0 ""], writing = AsText, action = Nothing, note = Just c.origin, origin = Nothing}
     command place checks c
       | c.arguments > 0
-      , noArgumentAfter place at
+      , noArgumentAfter place at wanted.pageMath
       , fromMaybe False (lookup c.arguments checks) =
-          (lineCandidate at wanted.typed (bracesWritten (T.take wanted.typed.from at.before) c.name c.arguments at.after)) {label = c.name, note = Just c.origin}
+          (lineCandidate at wanted.typed (bracesWritten prefix c.name c.arguments at.after)) {label = c.name, note = Just c.origin}
       | otherwise = named c
-    -- The parser's reading of each number of braces, asked once for the
-    -- list (the list is made once, and each reading when a command offered
-    -- takes that many).
-    readBack place = [(n, bracesRead wanted place n) | n <- [1 .. 9 :: Int]]
+    -- The environments offered, each with its label. The parser is asked
+    -- once for them all, with two written one after the other: the first
+    -- offered whose name is letters alone and the first with a star. The
+    -- names differ in their letters only, which the parser reads in math
+    -- alike, and the property of "Test.Markdown.CompleteMath" checks every
+    -- name offered on its own.
+    --
+    -- What follows the cursor is the rest of the math the page reads
+    -- there ('pageMath'), a formula over lines too ('environmentFits').
+    -- Math the page does not close yet, a formula or display math, is
+    -- read closed by a probe after the cursor's line, so the lines below
+    -- are in no math read, and an @\\end@ there would not be seen. There an
+    -- environment is offered only where the line after the cursor's is
+    -- absent or empty, not a character on it (a quotation's @>@ too): that
+    -- line is read and nothing in it is interpreted.
+    --
+    -- None is offered where the editor says 'NoEnvironments': a macro in
+    -- force defines @\\begin@ or @\\end@.
+    environments place readsBack
+      | null matching || redefined || not fits || not (readsBack.readsWith together) = []
+      | otherwise = [(e.opening, environmentCandidate e) | e <- matching]
+      where
+        matching = [e | e <- environmentsInOrder, place == InDisplay || not e.displayOnly, typedName `T.isPrefixOf` e.opening]
+        redefined = offered == NoEnvironments
+        fits = case wanted.pageMath of
+          Just tex -> environmentFits tex
+          Nothing -> maybe True T.null (head at.below) && maybe False (environmentFits . snd) readsBack.baseline
+        starred e = "*" `T.isSuffixOf` e.environment
+        together = T.concat [e.opening <> mathWord <> environmentEnd e | Just e <- [find (not . starred) matching, find starred matching]]
+    environmentCandidate e = (lineCandidate at wanted.typed (environmentWritten prefix e at.after)) {label = e.opening, note = Just "KaTeX"}
+    -- The commands and the environments merged, each list in the order
+    -- the list shows them ('shownOrder', by label).
+    inShownOrder xs [] = map snd xs
+    inShownOrder [] ys = map snd ys
+    inShownOrder (x : xs) (y : ys)
+      | shownKey x <= shownKey y = snd x : inShownOrder xs (y : ys)
+      | otherwise = snd y : inShownOrder (x : xs) ys
+    shownKey (label, _) = (T.length label, label)
 
--- | Whether the parser reads the math at the cursor, with a command of so
--- many arguments written in place of the backslash and the letters, as it
--- read it with no argument: the same math ('MathPlace'), and the same TeX
--- but for the command with its braces, each holding a word ('mathWord').
--- So the braces do not end the math, or join it to text that was not in
--- it, wherever they are.
-bracesRead :: Wanted -> MathPlace -> Int -> Bool
-bracesRead wanted place n = case (mathFormula (wanted.writes [Literal alone]).blocksRead, mathFormula (wanted.writes [Literal filled]).blocksRead) of
-  (Just (before, tex), Just (after, tex')) -> before == place && after == place && tex' == T.replace alone filled tex
-  _ -> False
+-- | 'MathReadBack' is the parser's reading of the math at the cursor with
+-- 'mathWord' in place of the backslash and the letters ('baseline': the
+-- math, and its TeX), read once for a list; and whether the parser reads
+-- the math as it read it there with a text written in place of the
+-- backslash and the letters ('readsWith').
+data MathReadBack = MathReadBack {baseline :: Maybe (MathPlace, Text), readsWith :: Text -> Bool}
+
+-- | The parser's reading of the math at the cursor ('MathReadBack'). A text
+-- written is read as the math was when the parser reads the same math
+-- ('MathPlace') with it, and the same TeX but for the text written in
+-- place of the backslash and 'mathWord' (the text holds the word, in each
+-- pair of braces or in an environment's body, for the math to be found).
+-- So what is written does not end the math, or join it to text that was
+-- not in it, wherever it is.
+mathReadBack :: Wanted -> MathPlace -> MathReadBack
+mathReadBack wanted place = MathReadBack {baseline, readsWith}
   where
     alone = "\\" <> mathWord
-    filled = alone <> T.replicate n ("{" <> mathWord <> "}")
+    baseline = mathFormula (wanted.writes [Literal alone]).blocksRead
+    readsWith written = case (baseline, mathFormula (wanted.writes [Literal written]).blocksRead) of
+      (Just (before, tex), Just (after, tex')) -> before == place && after == place && tex' == T.replace alone written tex
+      _ -> False
+
+-- | 'MathEnvironment' is an environment of KaTeX's that the list after a
+-- backslash in math offers (#301): its name (@pmatrix@), the text that
+-- begins it, which the list shows as its label (@\\begin{pmatrix}@), and
+-- whether KaTeX reads it only in display math
+-- ("Wiki.Core.Math.KatexCommands"' 'katexEnvironments').
+data MathEnvironment = MathEnvironment {environment :: Text, opening :: Text, displayOnly :: Bool}
+
+-- | KaTeX's environments that take no argument, in the order the list shows
+-- them (by their labels, as 'shownOrder' orders commands), put in it once
+-- for the program.
+environmentsInOrder :: [MathEnvironment]
+environmentsInOrder = sortOn (\e -> (T.length e.opening, e.opening)) [MathEnvironment {environment, opening = "\\begin{" <> environment <> "}", displayOnly} | (environment, displayOnly) <- katexEnvironments]
+
+-- | The text that ends an environment: @\\end{pmatrix}@.
+environmentEnd :: MathEnvironment -> Text
+environmentEnd e = "\\end{" <> e.environment <> "}"
+
+-- | What an environment writes in place of the cursor's line: the line's
+-- text before the backslash, the environment's begin and its end, and the
+-- line's text after the cursor; the place to fill between the begin and
+-- the end, and the writing going on after the end.
+environmentWritten :: Text -> MathEnvironment -> Text -> Written
+environmentWritten prefix e rest =
+  Written
+    { text = prefix <> e.opening <> environmentEnd e <> rest
+    , fill = [(start, start)]
+    , after = Just (start + T.length (environmentEnd e))
+    }
+  where
+    start = T.length prefix + T.length e.opening
+
+-- | The rest of a math's TeX after 'mathWord' and its backslash: what
+-- follows the cursor in that math.
+afterWordIn :: Text -> Text
+afterWordIn tex = T.drop (T.length mathWord + 1) (snd (T.breakOn ("\\" <> mathWord) tex))
+
+-- | Whether a character is one KaTeX's lexer passes over between tokens in
+-- math: a space, a tab, a carriage return or a line feed (its
+-- @spaceRegexString@ in @katex/src/Lexer.ts@). Other white space, such as
+-- a no-break space, is a character KaTeX reads, and an argument of the
+-- command before it.
+katexSpace :: Char -> Bool
+katexSpace c = c == ' ' || c == '\t' || c == '\r' || c == '\n'
+
+-- | Whether a text of TeX holds the control word @\\end@: the backslash
+-- and the letters, not followed by another letter (@\\endgroup@ is
+-- another command).
+holdsEnd :: Text -> Bool
+holdsEnd t = or [maybe True (\(c, _) -> not (isAsciiLower c || isAsciiUpper c)) (T.uncons (T.drop 4 found)) | (_, found) <- T.breakOnAll "\\end" t]
+
+-- | Whether an environment written at the cursor, its begin and its end
+-- together, is what the reader may mean, given the TeX of the math at the
+-- cursor with 'mathWord' in place of the command: the page's
+-- ('Wanted''s 'pageMath'), or, for math the page does not close yet, the
+-- probe's ('MathReadBack''s 'baseline', where 'mathSource' asks too that
+-- the line after the cursor's be empty). Only the rest of that TeX, after
+-- the word, is read ('afterWordIn'): within the completion's read limit,
+-- the marks of quotations and lists taken off by the parser. Nothing
+-- outside the math and nothing before the cursor is read.
+--
+-- An environment takes no argument, so what follows does not matter, but
+-- for three cases where it may be the environment's own text, and then
+-- none is offered:
+--
+-- * the rest starts with @{@, past KaTeX's white space ('katexSpace'): the
+--   environment's name may be there already (@\\be‸{pmatrix}@, or the
+--   name on the next line, which KaTeX reads too);
+-- * the rest starts with @%@ there: KaTeX passes over a comment, and the
+--   name may follow it on the next line;
+-- * the rest holds the control word @\\end@ anywhere ('holdsEnd'): the
+--   reader may be typing the begin of an environment written already
+--   (@\\be‸ a & b \\end{pmatrix}@).
+--
+-- The last is not told apart from an @\\end@ of an environment begun
+-- before the cursor (@\\begin{aligned} x &= \\be‸ \\end{aligned}@), nor
+-- from one in a comment: telling them apart would read TeX by hand. There
+-- no entry is offered, which leaves an entry out and never writes a
+-- second end.
+environmentFits :: Text -> Bool
+environmentFits tex =
+  not (any (`T.isPrefixOf` T.dropWhile katexSpace rest) ["{", "%"]) && not (holdsEnd rest)
+  where
+    rest = afterWordIn tex
 
 -- | What a command with arguments writes in place of the cursor's line: the
 -- line's text before the backslash, the command's name, an empty pair of
@@ -1634,17 +1806,30 @@ bracesWritten prefix name n rest =
 --
 -- Anywhere else (a container's mark before the next line, @>@, too) the
 -- name is written alone.
-noArgumentAfter :: MathPlace -> At -> Bool
-noArgumentAfter place at
-  | not (T.null rest) = endsArgument rest
-  | otherwise = case place of
-      InFormula -> True
-      InDisplay -> case dropWhile (T.all isBlank) at.below of
-        [] -> True
-        line : _ ->
-          let t = T.dropWhile isBlank line
-           in any (`T.isPrefixOf` t) ["$$", "```", "~~~"] || endsArgument t
+--
+-- Where the page reads math at the cursor as it is ('Wanted''s
+-- 'pageMath'), what follows is the rest of that math's TeX instead, past
+-- KaTeX's white space ('katexSpace': a no-break space is an argument to
+-- KaTeX, and the name is written alone before it): nothing (the end of
+-- the math), or one of
+-- the above. So a formula that runs over lines is read whole
+-- (@$\\fr‸@ above @{a}{b}$@ keeps its arguments), and a quotation's marks
+-- are the parser's to take off. The lines of the page are read as above
+-- only for math the page does not close yet.
+noArgumentAfter :: MathPlace -> At -> Maybe Text -> Bool
+noArgumentAfter place at = \case
+  Just tex -> endsArgument (T.dropWhile katexSpace (afterWordIn tex))
+  Nothing -> inLines
   where
+    inLines
+      | not (T.null rest) = endsArgument rest
+      | otherwise = case place of
+          InFormula -> True
+          InDisplay -> case dropWhile (T.all isBlank) at.below of
+            [] -> True
+            line : _ ->
+              let t = T.dropWhile isBlank line
+               in any (`T.isPrefixOf` t) ["$$", "```", "~~~"] || endsArgument t
     rest = T.dropWhile isBlank at.after
     endsArgument t = case T.uncons t of
       Just ('\\', more) -> "\\" `T.isPrefixOf` more || any (`wordStarts` more) ["end", "right"]

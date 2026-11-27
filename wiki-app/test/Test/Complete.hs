@@ -308,6 +308,10 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       -- One pair is a walk too: Tab goes on to after it.
       option "$\\sq" "\\sqrt"
         `shouldBe` Just (object ["label" .= ("\\sqrt" :: Text), "insert" .= ("$\\sqrt{}$" :: Text), "select" .= [7 :: Int, 7], "line" .= ("$\\sq$" :: Text), "query" .= [1 :: Int, 4], "places" .= [[7 :: Int, 7]], "after" .= (8 :: Int), "detail" .= ("KaTeX" :: Text)])
+      -- An environment: its begin and its end, the cursor between them, and
+      -- Tab to after the end.
+      option "$\\be" "\\begin{pmatrix}"
+        `shouldBe` Just (object ["label" .= ("\\begin{pmatrix}" :: Text), "insert" .= ("$\\begin{pmatrix}\\end{pmatrix}$" :: Text), "select" .= [16 :: Int, 16], "line" .= ("$\\be$" :: Text), "query" .= [1 :: Int, 4], "places" .= [[16 :: Int, 16]], "after" .= (29 :: Int), "detail" .= ("KaTeX" :: Text)])
       -- The nearer macro's arguments: Team's \vect takes one.
       option "$\\ve" "\\vect"
         `shouldBe` Just (object ["label" .= ("\\vect" :: Text), "insert" .= ("$\\vect{}$" :: Text), "select" .= [7 :: Int, 7], "line" .= ("$\\ve$" :: Text), "query" .= [1 :: Int, 4], "places" .= [[7 :: Int, 7]], "after" .= (8 :: Int), "detail" .= ("Team" :: Text)])
@@ -315,6 +319,20 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       let page = T.intercalate "\n" ["# Title", "", "```math", "\\newcommand{\\R}{\\mathbb{R}}", "\\DeclareMathOperator{\\Tr}{Tr}", "```", "", "Text $\\def\\later{x}$.", "", "```tex", "\\newcommand{\\listed}{x}", "```"]
       map (.name) (pageMacroCommands page) `shouldBe` ["\\R", "\\Tr"]
       map (\c -> (c.name, c.origin, c.arguments)) (macroCommands "Team" "\\newcommand{\\vect}[1]{\\vec{#1}}\n\\let\\eps=\\varepsilon") `shouldBe` [("\\vect", "Team", 1), ("\\eps", "Team", 0)]
+    it "offers no environment where a macro in force is named \\begin or \\end: a space's macro of no argument, a space named like KaTeX, the wiki's (#392's review)" $ do
+      let environments h = filter ("\\begin{" `T.isPrefixOf`) . map (.label) . (.candidates) <$> answered (sources h) "$\\be$" (lineRequest "$\\be" "$")
+      length <$> environments mathHeld `shouldBe` Just 19
+      environments mathHeld {mathMacros = macroCommands "Team" "\\newcommand{\\end}{q}"} `shouldBe` Just []
+      environments mathHeld {mathMacros = macroCommands "KaTeX" "\\def\\end{q}"} `shouldBe` Just []
+      environments mathHeld {mathMacros = macroCommands "the wiki" "\\renewcommand{\\begin}[1]{\\mathrm{#1}}"} `shouldBe` Just []
+    -- Known and left: the completion does not read the definitions inside
+    -- the page's formulas, here as for the macros it offers. KaTeX applies
+    -- a formula's \def\end to the formulas after it, and the list still
+    -- offers the environments there (the owner, 2026-11-27).
+    it "still offers the environments after a formula of the page that defines \\end: definitions inside formulas are not read" $ do
+      let page = T.intercalate "\n" ["# Title", "", "Text $\\def\\end#1{q}$ here.", "", "$\\be$"]
+          environments h = filter ("\\begin{" `T.isPrefixOf`) . map (.label) . (.candidates) <$> answered (sources h) "$\\be$" (lineRequest "$\\be" "$")
+      length <$> environments mathHeld {mathMacros = pageMacroCommands page <> macros} `shouldBe` Just 19
     it "reads the wiki's built-in macros with the arguments KaTeX gives them, as KaTeX read web/src/katex-macros.tex when Wiki.Core.Math.KatexCommands was generated" $ do
       tex <- decodeUtf8 <$> BS.readFile "../web/src/katex-macros.tex"
       definedMacroArities tex `shouldBe` [(name, Just n) | (name, n) <- builtinMacroArguments]
@@ -342,7 +360,10 @@ spec = describe "Wiki.App.Editor.Complete" $ do
         (typed, with' < without + 2_000_000) `shouldBe` (typed, True)
     it "answers a backslash's first letter within a bound of allocation: KaTeX's thousand commands are ordered once, not at each answer" $ do
       _ <- evaluate (length katexOrdered)
-      for_ ["$\\f", "$\\fr", "$\\x", "$\\al"] $ \typed -> do
+      -- KaTeX's environments are ordered once too, by the first answer
+      -- that lists one (#301).
+      _ <- evaluate (let a = mathAnswer "$\\be" "$" in a == a)
+      for_ ["$\\f", "$\\fr", "$\\x", "$\\al", "$\\b", "$\\be", "$\\begi"] $ \typed -> do
         typed' <- evaluate (T.copy typed)
         cost <- allocated (let a = mathAnswer typed' "$" in a == a)
         (typed, cost < mathBound) `shouldBe` (typed, True)
@@ -712,16 +733,27 @@ allocated value = do
 linkBound :: Int64
 linkBound = 20_000_000
 
--- | The allocation an answer after a backslash in math stays within:
--- 0.82 MB natively for letters whose commands take no argument (@\\al@),
--- 1.07 to 1.20 MB where some listed take arguments (@\\f@, @\\fr@,
--- @\\x@): the braces of each are written, and the formula with them is
--- parsed again once for each number of arguments, about 0.12 MB each
--- (#301). Sorting KaTeX's commands again at each answer allocates 4.3 to
--- 4.4 MB (measured on #301's build, 2026-11-26; 1.14 to 1.18 MB before,
--- as measured for #299), over the bound either way.
+-- | The allocation an answer after a backslash in math stays within,
+-- measured natively on 2026-11-26 (#301):
+--
+-- * 0.83 MB for letters whose commands take no argument (@\\al@);
+-- * 1.08 to 1.10 MB where some listed take arguments (@\\f@, @\\fr@,
+--   @\\x@): the braces of each are written, and the formula with them is
+--   parsed again once for each number of arguments;
+-- * 1.12 to 1.16 MB where environments are listed (@\\be@, @\\begi@):
+--   about 0.15 MB for the entries, and 0.19 MB for the one check, per
+--   answer, that the math reads the same with them written (0.78 to 0.83
+--   MB before the environments; whether a macro defines @\\begin@ or
+--   @\\end@ is the editor's to know from the definitions, not looked up
+--   in the commands at each answer);
+-- * 1.58 MB after @\\b@ alone, the most: 68 commands, some with braces,
+--   and 19 environments (1.24 MB before the environments).
+--
+-- The regression the bound guards, KaTeX's commands built and sorted again
+-- at each answer, allocates 4.2 to 4.9 MB for the same letters, well over
+-- it.
 mathBound :: Int64
-mathBound = 1_500_000
+mathBound = 2_000_000
 
 -- | KaTeX's commands in the list's order, forced before an answer is
 -- counted: the program orders them once.

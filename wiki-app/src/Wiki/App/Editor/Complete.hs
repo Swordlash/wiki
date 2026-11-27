@@ -170,7 +170,25 @@ baseOrder p = (p.nearness, T.length p.address + maybe 0 (\l -> 1 + T.length l) p
 -- the toolbar writes, and the commands of math. A plugin's source (#186)
 -- goes after them.
 sources :: Held -> [Source]
-sources held = [wikiSource held.kind held.boxes, pageSource held, slashSource held.entries, mathSource (mathCommands held.mathMacros)]
+sources held = [wikiSource held.kind held.boxes, pageSource held, slashSource held.entries, mathSource (environmentsOf held) (mathCommands held.mathMacros)]
+
+-- | Whether the list after a backslash in math offers KaTeX's environments
+-- ("Wiki.Core.Markdown.Complete"' 'Environments'): not where a macro the
+-- editor holds (the page's block of macros, a space's, the wiki's) is
+-- named @\\begin@ or @\\end@. Decided from those macros' names, not from
+-- the list's entries: a space's macro named like KaTeX's own command is
+-- still a macro. A definition inside one of the page's formulas is not
+-- read, here as for the macros offered ('pageMacroCommands'): KaTeX
+-- applies it to the formulas after it, and the list still offers the
+-- environments there.
+environmentsOf :: Held -> Environments
+environmentsOf held
+  | any ((`elem` beginAndEnd) . (.name)) held.mathMacros = NoEnvironments
+  | otherwise = OfferEnvironments
+
+-- | The names @\\begin@ and @\\end@, made once for 'environmentsOf'.
+beginAndEnd :: [Text]
+beginAndEnd = ["\\begin", "\\end"]
 
 -- | The macros a block of TeX defines ("Wiki.Core.Math"'
 -- 'definedMacroArities'), as commands math offers, each with where it

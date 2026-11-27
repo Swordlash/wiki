@@ -253,7 +253,7 @@ spec walk = describe "the walk" $ onOnePage demoContext (holdProgram walk.gate) 
     click (withText "New page" (locator page "#app .space-view .actions a"))
     arrive walk page (named "New page" (at "/s/team/new-page/" "new-page-view")) "the new page's form, with templates"
     starts <- allTextContents (locator page "#app .new-page-choice")
-    map (head' . Text.words) starts `shouldBe` ["Blank", "Weekly", "Meeting", "Decision", "How-to"]
+    map (head' . Text.words) starts `shouldBe` ["Blank", "Weekly", "Meeting", "Decision", "How-to", "Day"]
     typeText (locator page "#app .new-page-title") "Smoke sync"
     check (locator (withText "Weekly sync" (locator page "#app .new-page-choice")) "input")
     click (locator page "#app .new-page-view button.primary")

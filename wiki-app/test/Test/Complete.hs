@@ -241,7 +241,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
     -- top, as before, each was 140 MB to 1.6 GB.
     it "reads the text from a start in the middle and near the end of the Markdown guide, and in the fiftieth slide of a long deck" $
       for_ [("the guide's middle", markdownReference, 50, 15_000_000), ("near the guide's end", markdownReference, 90, 50_000_000), ("the fiftieth slide", longDeck, 82, 100_000_000)] $ \(name, page, percent, bound) -> do
-        let k = paragraphAt page percent
+        let k = sectionAt page percent
         costs <- for ["/t", "[[!", "[[Gu", "$\\f", "Text \\f"] (\typed -> (typed,) <$> firstAnswer page (k, typed))
         (name :: Text, [(t, c) | (t, c) <- costs, c > bound]) `shouldBe` (name, [])
     -- #301: a line like a definition in a code listing near the top, a
@@ -911,6 +911,19 @@ changedFrom now (per, toLine, removed, was) = T.take at now <> was <> T.drop (at
   where
     near = T.length now * per `div` 1000
     at = if toLine then T.length (T.dropWhileEnd (/= '\n') (T.take near now)) else near
+
+-- | The line of the first heading at or after a share of a text, in
+-- percent, from 0: a trigger typed on a line of its own just before it
+-- ends the section above. The costs measured at a share of the guide are
+-- those of the start of a section, which an edit of the guide elsewhere
+-- does not move into the middle of a section (#397: a paragraph added
+-- to the guide's lists moved the guide's middle from a heading into the
+-- section on macros, whose definitions cost more to read).
+sectionAt :: Text -> Int -> Int
+sectionAt text percent = fromMaybe (length ls) (find heading [length ls * percent `div` 100 ..])
+  where
+    ls = T.splitOn "\n" text
+    heading i = maybe False ("#" `T.isPrefixOf`) (atMay ls i) && maybe False T.null (atMay ls (i - 1))
 
 -- | The first line of the first paragraph at or after a share of a text,
 -- in percent, from 0: where a trigger is typed on a line of its own.

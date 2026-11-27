@@ -27,4 +27,14 @@ title: A day's list, shown by the parts of the day
 
 - "New page" offers a template "Day": a `{.day}` list with an example of
   each way to write an entry. Give the page the day's date as its title,
-  such as `2026-11-27`.
+  such as `2026-11-27`. A page made from it starts so:
+
+  ```markdown
+  # 2026-11-27
+
+  {.day}
+  - ! 09:00 Standup
+  - 10:00-11:30 Review of the plan
+  - [ ] 15:00 Call the bank
+  - Buy milk
+  ```

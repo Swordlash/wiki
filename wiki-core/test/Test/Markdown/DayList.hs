@@ -102,6 +102,9 @@ spec = describe "Wiki.Core.Markdown.Day's lists" $ do
       unmarked (firstItem "- ! 09:00 Demo") `shouldBe` ListItem Nothing [Plain [Str "09:00 Demo"]]
       unmarked (firstItem "- [ ] ! Call *now*\n  - nested") `shouldBe` firstItem "- [ ] Call *now*\n  - nested"
       unmarked (firstItem "- ! *Demo*") `shouldBe` ListItem Nothing [Plain [Emph [Str "Demo"]]]
+    it "takes off a mark that is all of the item's text, before display math too" $ do
+      unmarked (firstItem "- !") `shouldBe` ListItem Nothing [Plain []]
+      unmarked (firstItem "- ! $$x$$") `shouldBe` ListItem Nothing [Plain [], MathBlock "x"]
     it "leaves an item without a mark as it is" $
       for_ ["- 09:00 ! Demo", "- !09:00", "- `!` Demo", "- Buy milk", "- ```\n  ! code\n  ```"] $ \source ->
         unmarked (firstItem source) `shouldBe` firstItem source

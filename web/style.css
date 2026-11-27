@@ -1719,8 +1719,8 @@ pre.numbered > code {
 /* A day's list, {.day} (Wiki.Core.Markdown.Render): its groups, "All
    day" and the parts of the day, each named by its data-label. The name
    is drawn here and is no text of the page, so a comment's quote never
-   takes it in. */
-.page-body .day-group::before {
+   takes it in. Wherever a day's list is drawn: a page, a comment, a slide. */
+.day-group::before {
   content: attr(data-label);
   display: block;
   margin-top: 0.6rem;
@@ -1731,7 +1731,7 @@ pre.numbered > code {
   color: var(--muted);
 }
 
-.page-body .day-group > ul {
+.day-group > ul {
   margin-top: 0.2rem;
 }
 
@@ -1741,12 +1741,11 @@ pre.numbered > code {
   list-style: disc;
 }
 
-/* A highlighted entry, "! " at the start of its item: shown at its time,
-   in the theme's yellow, with a bar before it. */
-.page-body .day-highlight {
+/* A highlighted entry, "!" at the start of its item: shown at its time,
+   in the theme's yellow. */
+.day-highlight {
   background: var(--h-yellow);
-  box-shadow: -0.5rem 0 0 var(--h-yellow), -0.7rem 0 0 var(--warning);
-  border-radius: 0 0.2rem 0.2rem 0;
+  border-radius: 0.2rem;
 }
 
 /* A box the reader may tick in the page view (Wiki.App.View.Page). */

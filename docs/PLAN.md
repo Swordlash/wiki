@@ -3087,14 +3087,23 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   takes a quiet tint from our tokens, not the library's yellow (the
   owner disliked a yellow band on #397); Tab passes every day's
   number before the first entry. Built in two pull requests: (4a)
-  the island, the bundle and the binding, with the interface's
-  changes (the surface's input gains the host's capabilities; a
-  link can be followed without an anchor's click), the views drawn
-  from the pages under the calendar alone (the days that have a
-  page marked, a click opens one); (4b) a capability that reads a
-  day's page, the surface as a machine (one read out at a time, a
-  ticket for each range, entries kept by page id), and the entries
-  in the views. **One way
+  the island, the bundle and the binding, the month alone (#403):
+  the days that have a page are links, a click opens one, and the
+  list of days folds under it; the interface gains two functions
+  beside a link's properties (`openLink`, `linkAddress`); (4b) the
+  entries, designed 2026-11-27: the page view gives each page under
+  the calendar a read of its own, built from what the page view has
+  (the host's capabilities stay as they are; a plugin can read only
+  the pages under its page); the plugin parses the text inside the
+  ask's work (no text over 64 KB); the surface becomes a machine
+  (the range the island shows, at most four reads out and never two
+  for one page, a ticket for each, a change of reader or calendar
+  emptying it in the step that takes it, a failed read kept until
+  "Try again"); the island is told every entry and filters by its
+  view; missed follows the page view's clock. In two pull requests:
+  the machine with the month's highlights, then the weeks and the
+  day. Not opened before #400 and #401 are merged: review, not
+  building, is the limit. **One way
   to read the entries:** the plugin's capability lists the
   calendar's children and reads each day's page in the range with
   the calls that exist (`getPage` is a read and records nothing),

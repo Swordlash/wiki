@@ -91,14 +91,14 @@
 --   on. When the channel told of what it made or changed since it was
 --   sent, the threads have it already; otherwise it is applied only when
 --   the threads are as they were when it was sent (an answer applied
---   since of another write to the same thread changed them too), and a
---   read asked after
---   it follows, which puts it in its place ('wrote'). What the answer does
---   beside the threads is the machine's too, and only then: the comments
---   view that asked is told it ('Answered'), and a thread opened in the
---   session of quoting still open ends it and is chosen ('opened'). A
---   session is numbered ('Quoting'): the same quote chosen again is
---   another.
+--   since of another write that changes the same comment, or the same
+--   thread's resolution, changed them too: 'overlaps'), and a read asked
+--   after it follows, which puts it in its place ('wrote'). What the
+--   answer does beside the threads is the machine's too, and only then:
+--   the comments view that asked is told it ('Answered'), and a thread
+--   opened in the session of quoting still open ends it and is chosen
+--   ('opened'). A session is numbered ('Quoting'): the same quote chosen
+--   again is another.
 --
 -- The quote being commented on and the thread chosen are the model's
 -- ('quoting', 'focused'): the reader's own changes to them are events
@@ -117,6 +117,7 @@ module Wiki.App.View.Comments.Machine
   , step
   , lacking
   , readyThreads
+  , overlaps
   )
 where
 
@@ -231,16 +232,16 @@ data Writing = Writing
   , session :: Maybe Int
   -- ^ For a thread about a quote, the session of quoting it was written
   -- in.
-  , thread :: Maybe CommentThreadId
-  -- ^ The thread the write changes, as its request names it ('writtenTo');
-  -- 'Nothing' for a thread it opens, whose id the server gives.
+  , part :: Maybe Part
+  -- ^ The part of the threads the write changes that another write can
+  -- change too ('partOf').
   , told :: [PageEvent]
   -- ^ What the live channel told about the page since the write was sent.
   , quiet :: Bool
   -- ^ Whether the threads shown are as they were when the write was sent,
   -- as far as its answer applied can tell: nothing told, no read's answer
   -- taken, no subscription answered, and no answer applied of another
-  -- write to the same thread.
+  -- write that changes the same part ('overlaps').
   }
   deriving stock (Eq, Show)
 
@@ -416,7 +417,7 @@ step event m
             session = case request of
               OpenThread (Just q) _ -> Just q.session
               _ -> Nothing
-            writing = Writing {page, session, thread = writtenTo request, told = [], quiet = True}
+            writing = Writing {page, session, part = partOf request, told = [], quiet = True}
          in (m {written = n, writes = if m.page == Just page then Map.insert n writing m.writes else m.writes}, [Send place n page request])
       -- The answer of a write sent on another visit, of this page or
       -- another, changes nothing and asks nothing: the forms it came from
@@ -461,21 +462,63 @@ opened w answer m = case answer of
 unquiet :: Model -> Model
 unquiet m = m {writes = map (\w -> w {quiet = False}) m.writes}
 
--- | The writes out to this thread, with the thread changed since they
--- were sent. A write that opens a thread is to none of them.
-unquietOn :: CommentThreadId -> Model -> Model
-unquietOn tid m = m {writes = map (\w -> if w.thread == Just tid then w {quiet = False} else w) m.writes}
+-- | The writes out that change this part of the threads, with it
+-- changed since they were sent.
+unquietOn :: Part -> Model -> Model
+unquietOn p m = m {writes = map (\w -> if w.part == Just p then w {quiet = False} else w) m.writes}
 
--- | The thread a write changes, by the id its request names: every write
--- but the opening of a thread, whose id the server gives.
-writtenTo :: Request -> Maybe CommentThreadId
-writtenTo = \case
+-- | 'Part' is a part of the threads that more than one write can change,
+-- so that two answers applied in the other order than the server handled
+-- their writes show something else than the server has: a comment, by
+-- its id, or whether a thread is resolved, by the thread's id.
+data Part
+  = TheComment CommentId
+  | TheResolution CommentThreadId
+  deriving stock (Eq, Show)
+
+-- | The part of the threads a write changes that another write can change
+-- too, by the ids its request names. Each write's answer is one event,
+-- applied by 'applyEvent' to the one thread it names, so writes to two
+-- threads never meet. On one thread:
+--
+-- * an edit and a deletion of a comment: that comment. Two edits applied
+--   in the other order show the older text; an edit applied after the
+--   comment's deletion puts the comment back ('withComment' adds a
+--   comment it does not find). Two deletions of one comment meet too,
+--   though only one of them is ever made;
+-- * resolving or reopening a thread: whether the thread is resolved. Two
+--   applied in the other order show the other state;
+-- * a reply: nothing another write names. It adds a comment whose id no
+--   other write can name yet, at the end of its thread. An edit, a
+--   deletion of another comment or a resolution changes another part of
+--   the thread, and after the thread's deletion the reply is applied to
+--   no thread;
+-- * opening a thread: nothing that exists. The thread's id is new, and no
+--   write out names it;
+-- * deleting a thread: nothing another write's answer can undo. Every
+--   other event on a thread that is gone changes nothing ('withReply',
+--   'withComment', 'withoutComment' and 'resolvedAs' leave the threads as
+--   they are when they do not find the thread), so the thread is gone in
+--   either order.
+--
+-- Two replies to one thread, or two threads opened, applied in the other
+-- order than the server's show the same comments and threads in another
+-- order, until a read's answer or the subscription's puts them in the
+-- server's: that is shown, and is not held back.
+partOf :: Request -> Maybe Part
+partOf = \case
+  EditComment _ cid _ -> Just (TheComment cid)
+  DeleteComment _ cid -> Just (TheComment cid)
+  Resolve tid _ -> Just (TheResolution tid)
+  Reply _ _ -> Nothing
   OpenThread _ _ -> Nothing
-  Reply tid _ -> Just tid
-  EditComment tid _ _ -> Just tid
-  DeleteComment tid _ -> Just tid
-  DeleteThread tid -> Just tid
-  Resolve tid _ -> Just tid
+  DeleteThread _ -> Nothing
+
+-- | Whether the answers of these two writes can show something else than
+-- the server has when applied in the other order than the server handled
+-- them: they change the same 'Part'.
+overlaps :: Request -> Request -> Bool
+overlaps a b = isJust (partOf a) && partOf a == partOf b
 
 -- | The answer to a write sent on this visit, taken. Nothing says where
 -- the write's commit falls among what the channel told, so:
@@ -485,18 +528,16 @@ writtenTo = \case
 --   place already: nothing more;
 -- * otherwise, when the threads shown are as they were when the write was
 --   sent, its event is applied, so that the reader sees it at once. The
---   thread it changed then differs from the one the other writes out to
---   that thread were sent on ('unquietOn'): the server may have handled
+--   other writes out that change the same part of the threads ('partOf')
+--   are then no longer quiet ('unquietOn'): the server may have handled
 --   one of them before this write or after it, and nothing in that
 --   write's answer says which, so that answer is not applied (two edits
 --   of one comment, the later one's answer taken first, then the earlier
---   one's, would show the older text). A write to another thread is left
---   quiet: every write changes one thread, named by id in its request,
---   and changes to two threads give the same threads in either order. A
---   write that opens a thread changes none that a write out names, and
---   holds back none. Two threads opened together may show in the order
---   their answers came, not the server's, until a read's answer or the
---   subscription's;
+--   one's, would show the older text). That holds also when this answer
+--   changed nothing shown: a reopening answered first, on a thread shown
+--   open, and the resolution sent before it answered after, would show
+--   the thread resolved. Every other write out is left quiet: its answer,
+--   applied after this one, shows what the server has in either order;
 -- * either way, a read asked after the answer follows ('reading', which
 --   asks it once the read out, if any, is answered): its answer was read
 --   after the write was made, and it puts the write in its place among
@@ -508,7 +549,7 @@ wrote w answer m = case answer of
     | any (about e) w.told -> (m, [])
     | w.quiet ->
         let m' = m {threads = applied e m.threads, heard = heardNow (remembered e m.threads) m}
-         in lookingFirst (reading (maybe m' (\tid -> if m'.threads /= m.threads then unquietOn tid m' else m') w.thread))
+         in lookingFirst (reading (maybe m' (`unquietOn` m') w.part))
   _ -> reading m
 
 -- | Whether an event the channel told is about what a write's answer made

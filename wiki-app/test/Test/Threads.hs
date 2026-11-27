@@ -972,6 +972,18 @@ spec = describe "Wiki.App.View.Comments.Machine" $ modifyMaxSuccess (max cases) 
          in ([(t.id, [c.id | c <- t.comments]) | t <- readyThreads w.view], w.view.behind)
               `shouldBe` ([(CommentThreadId "t1", [CommentId "c1", CommentId "c3"]), (CommentThreadId "t2", [CommentId "c2", CommentId "c4"])], True)
 
+    for_ [("in order", [Deliver 0, Deliver 0]), ("in the other order", [Deliver 1, Deliver 0])] $ \(order, answers) ->
+      it ("shows both an edit of a comment and a reply in its thread answered " <> order <> ", the channel silent and the read after them failing" <> how) $
+        -- Codex on #398, round 2: an edit of a comment and a reply in the
+        -- same thread out together. The first answer applied held back
+        -- the second, which then waited for the channel or the read after
+        -- it; with the channel silent and that read failing, it was not
+        -- shown. An edit and a reply change different parts of the thread
+        -- ('overlaps'): both answers are applied.
+        let w = foldl' play w0 ([OtherOpens False, Handle, Deliver 0, ReaderEdits 0, ReaderReplies 0, Handle, Handle] <> answers <> [HandleFail, Deliver 0, HandleFail, Deliver 0])
+         in ([(t.id, [(c.id, editsOf c.body) | c <- t.comments]) | t <- readyThreads w.view], w.view.behind)
+              `shouldBe` ([(CommentThreadId "t1", [(CommentId "c1", 1), (CommentId "c3", 0)])], True)
+
     it ("leaves a new visit's forms alone when a write sent on an earlier visit of the page is answered" <> how) $
       -- Codex on #284: the reader writes on page A, goes to B and back to
       -- A, and the old write's answer emptied the new visit's form.
@@ -1022,6 +1034,45 @@ spec = describe "Wiki.App.View.Comments.Machine" $ modifyMaxSuccess (max cases) 
     it ("asks again for a person whose lookup failed, at the next change of the threads" <> how) $
       let w = foldl' play w0 [Tell, OtherOpens False, Tell, PeopleFound, PeopleFail, OtherReplies 0, Tell]
        in map (\l -> l.logins) w.lookupsOut `shouldBe` [["ann", "zed"]]
+
+  -- The table of 'overlaps', against 'applyEvent': every pair of the
+  -- reader's writes on one page's two threads, handled by the model's
+  -- server in one order, both made, and answered in the other. When the
+  -- two do not overlap, the machine applies both answers, and shows the
+  -- server's comments and threads (in the answers' order, which a read
+  -- puts right: compared without it). When they overlap, the second
+  -- answer is not applied.
+  it "applies the later of two answers taken in the other order than the server's exactly when the writes do not overlap" $ do
+    let pairs :: [(Bool, [Text])]
+        pairs =
+          [ (overlaps a b, problem)
+          | a <- writes
+          , b <- writes
+          , let (s1, ra) = handleWrite "reader" pageA a server0
+                (s2, rb) = handleWrite "reader" pageA b s1
+          , Right ea <- [ra]
+          , Right eb <- [rb]
+          , let m2 = fst (step (Write (0 :: Int) pageA b) (fst (step (Write (0 :: Int) pageA a) shown0)))
+                m3 = fst (step (Wrote (0 :: Int) 2 b (Right (answerOf b eb))) m2)
+                m4 = fst (step (Wrote (0 :: Int) 1 a (Right (answerOf a ea))) m3)
+                problem
+                  | overlaps a b = [show (a, b) <> ": the second answer was applied" | m4.threads /= m3.threads]
+                  | otherwise = [show (a, b) <> ": shows " <> show (unordered (readyThreads m4)) | unordered (readyThreads m4) /= unordered (threadsOn pageA s2)]
+          ]
+    concatMap snd pairs `shouldBe` []
+    -- Both sides of the table are met.
+    (any fst pairs, any (not . fst) pairs) `shouldBe` (True, True)
+    -- Each kind of overlap is needed: applied in the other order, these
+    -- answers show something else than the server has.
+    [ (a, b)
+      | (a, b) <- [(EditComment t1 c2 "", EditComment t1 c2 ""), (EditComment t1 c2 "", DeleteComment t1 c2), (Resolve t1 True, Resolve t1 False)]
+      , let (s1, ra) = handleWrite "reader" pageA a server0
+            (s2, rb) = handleWrite "reader" pageA b s1
+      , Right ea <- [ra]
+      , Right eb <- [rb]
+      , unordered (applyEvent (answerOf a ea) (applyEvent (answerOf b eb) (threadsOn pageA server0))) == unordered (threadsOn pageA s2)
+      ]
+      `shouldBe` []
 
   -- Codex on #316, round 3: the page's plain space is made encrypted,
   -- and the page view takes the new input while the page is read again.
@@ -1087,3 +1138,44 @@ spec = describe "Wiki.App.View.Comments.Machine" $ modifyMaxSuccess (max cases) 
     -- the effects of that step.
     threadsOf cs = step (Replaced pageA [threadOf cs]) (fst (step (Fetched pageA True theSpace "") (initial (Just pageA) True theSpace "" Nothing)))
     ticketOf fx = fromMaybe (panic "no lookup of avatars") (head [k | Avatars k _ <- fx])
+    -- Page A's two threads about quotes for the table of 'overlaps': t1
+    -- with its first comment and a reply, t2 with its only comment.
+    t1 = CommentThreadId "t1"
+    t2 = CommentThreadId "t2"
+    c1 = CommentId "c1"
+    c2 = CommentId "c2"
+    c3 = CommentId "c3"
+    server0 =
+      emptyServer
+        { count = 3
+        , pages =
+            Map.insert
+              pageA
+              [ Thread {id = t1, page = pageA, anchor = Just (quoteOf 0), resolved = False, createdAt = at 1, comments = [commentOf 1 t1 "ann", commentOf 2 t1 "bob"]}
+              , Thread {id = t2, page = pageA, anchor = Just (quoteOf 1), resolved = False, createdAt = at 3, comments = [commentOf 3 t2 "ann"]}
+              ]
+              emptyServer.pages
+        }
+    -- The machine on page A with those threads shown, as the channel gave
+    -- them.
+    shown0 = fst (step (Replaced pageA (threadsOn pageA server0)) (fst (step (Fetched pageA True theSpace "") (initial (Just pageA) True theSpace "" Nothing))))
+    -- Every kind of write on them, the refused ones too (the first comment
+    -- of a thread with a reply).
+    writes =
+      [ OpenThread Nothing ""
+      , Reply t1 ""
+      , Reply t2 ""
+      , EditComment t1 c1 ""
+      , EditComment t1 c2 ""
+      , EditComment t2 c3 ""
+      , DeleteComment t1 c1
+      , DeleteComment t1 c2
+      , DeleteComment t2 c3
+      , Resolve t1 True
+      , Resolve t1 False
+      , Resolve t2 True
+      , DeleteThread t1
+      , DeleteThread t2
+      ]
+    -- Threads and their comments compared without their order.
+    unordered ts = sort [(t.id, t.resolved, sort [(c.id, c.body) | c <- t.comments]) | t <- ts]

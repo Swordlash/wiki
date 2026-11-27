@@ -193,9 +193,9 @@
 --
 -- With 'missedAt' too (the page view of a day's page), the item of a
 -- missed task ('Wiki.Core.Markdown.Day.missed') has the class
--- @day-missed@. The class is all the renderer adds: the stylesheet colours
--- the item and gives it the word a screen reader reads, so the page's text
--- stays the items' alone.
+-- @day-missed@, which the stylesheet colours, and its box's @aria-label@
+-- starts with "Missed: ", so that a screen reader says so on the box. Both
+-- are attributes, so the page's text stays the items' alone.
 module Wiki.Core.Markdown.Render
   ( Options (..)
   , MentionTarget (..)
@@ -600,7 +600,8 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
     -- page's text (a comment's quote, "Wiki.Core.Anchor") is the items'
     -- alone. A highlighted entry's item has the class @day-highlight@,
     -- and its mark is not shown ('unmarked'). A missed task's item has the
-    -- class @day-missed@, when 'missedAt' is given.
+    -- class @day-missed@, and its box is labelled as missed, when
+    -- 'missedAt' is given.
     renderDay :: Attributes -> [ListItem] -> R [HH.HTML w i]
     renderDay written items = do
       attrs <- ownAttrs written
@@ -610,7 +611,7 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
           shownItem e item = if e.highlight then unmarked item else item
           missedNow e = maybe False (\(day, now) -> missed day now e) opts.missedAt
           marks e = ["day-highlight" | e.highlight] <> ["day-missed" | missedNow e]
-      rendered <- sequence [renderItemWith (marks e) BulletList e.place (shownItem e item) | (e, item) <- zip entries items]
+      rendered <- sequence [renderItemWith (marks e) (missedNow e) BulletList e.place (shownItem e item) | (e, item) <- zip entries items]
       modify (\c -> c {sorting = before})
       let byPlace = M.fromList (zip [0 :: Int ..] (zip items rendered))
           groupOf (g, es) =
@@ -635,21 +636,22 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
     -- (a task's by its index, another item's by its place in the list) and
     -- whether it is a done task, which a sorted list shows last.
     renderItem :: ListKind -> Int -> ListItem -> R (Text, HH.HTML w i, Bool)
-    renderItem = renderItemWith []
+    renderItem = renderItemWith [] False
 
-    -- 'renderItem', its @li@ with these classes too.
-    renderItemWith :: [Text] -> ListKind -> Int -> ListItem -> R (Text, HH.HTML w i, Bool)
-    renderItemWith extra kind place item@(ListItem task _) = do
+    -- 'renderItem', its @li@ with these classes too, and a task's box
+    -- labelled as missed when the flag says so.
+    renderItemWith :: [Text] -> Bool -> ListKind -> Int -> ListItem -> R (Text, HH.HTML w i, Bool)
+    renderItemWith extra missedBox kind place item@(ListItem task _) = do
       -- The next task's index: the item's own, if it is a task.
       index <- gets (.tasks)
-      html <- renderItem' extra kind item
+      html <- renderItem' extra missedBox kind item
       let key = case task of
             Just _ -> "task-" <> show index <> "-" <> show (opts.taskDrawn index)
             Nothing -> "item-" <> show place
       pure (key, html, fromMaybe False task)
 
-    renderItem' :: [Text] -> ListKind -> ListItem -> R (HH.HTML w i)
-    renderItem' extra kind (ListItem task bs) = case task of
+    renderItem' :: [Text] -> Bool -> ListKind -> ListItem -> R (HH.HTML w i)
+    renderItem' extra missedBox kind (ListItem task bs) = case task of
       Nothing | Just (keyword, emoji) <- emojiBullet kind bs -> do
         let bullet = [PNode (emojiSpan ["emoji", "emoji-bullet"] keyword emoji)]
         inner <- case bs of
@@ -661,7 +663,7 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
       Just done -> do
         -- Counted before the tasks in it, as the tree orders them.
         index <- state (\c -> (c.tasks, c {tasks = c.tasks + 1}))
-        let label = nonEmptyOr "Task" (taskLabel bs)
+        let label = (if missedBox then ("Missed: " <>) else identity) (nonEmptyOr "Task" (taskLabel bs))
             enabled = case opts.taskBoxes of
               Nothing -> [HP.disabled True]
               Just onTick -> [HP.attr (HH.AttrName "data-task") (show index), HE.onChecked (onTick index)]

@@ -181,15 +181,19 @@ surface =
       Initialize -> do
         st <- get
         H.getRef st.host >>= traverse_ (\el -> H.sync (showMonth el st.marks) >> modify (\s -> s {shown = Just el}))
-      -- A change of the pages under the calendar (a day added, in this
-      -- tab or another) changes the days the month marks: the month is
-      -- told, not put in again.
+      -- The page view gives its input at each of its renders: taken, and
+      -- the list drawn again, only when it changed, since a calendar of
+      -- years of days is a long list. A change of the pages under the
+      -- calendar (a day added, in this tab or another) that changes the
+      -- days the month marks is told to the month, which is not put in
+      -- again.
       Receive input -> do
         st <- get
-        let marks = marked input.under
-        put st {input, marks}
-        when (marks /= st.marks) $
-          for_ st.shown (\el -> H.sync (showMonth el marks))
+        unless (input == st.input) $ do
+          let marks = marked input.under
+          put st {input, marks}
+          when (marks /= st.marks) $
+            for_ st.shown (\el -> H.sync (showMonth el marks))
       -- Drawn, the month folds the list, unless the reader has the focus
       -- in it: the check and the fold are one call of the browser's, made
       -- in this step. The list is open in every render, so no render

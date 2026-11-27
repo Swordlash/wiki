@@ -668,6 +668,26 @@ externalSettings = describe "Wiki.App.View.Plugins' external plugins, in the she
       isJust <$> find view (at "wiki" "spell" <> ".plugin-remove") `shouldReturn` False
       isJust <$> find view (at "mine" "mine" <> ".plugin-remove") `shouldReturn` True
 
+  -- Codex's first round on #401: a plugin installed under an id that a
+  -- built-in plugin took since (the calendar) was dropped as it was read,
+  -- and could not be removed.
+  it "lists a plugin of the user's own whose id a built-in plugin took since, with no switch, says it does not run, and removes it" $
+    let installed = (withInstalled ExternalUsers) {externalOwn = Map.fromList [(UserId "user-editor", Map.fromList [(PluginId "calendar", installedAs "calendar" [] True), (PluginId "mine", installedAs "mine" [] True)])]}
+        at pid = ".plugin-external[data-owner=mine][data-plugin=" <> pid <> "] "
+     in withShellAtWith onServer installed free (UserSettings PluginsSection) $ \view _ wiki quiet -> do
+          textOf view (at "calendar" <> ".plugin-reserved") `shouldReturn` "Its id, calendar, is now a plugin's built into the wiki, so it does not run. Remove it, or install it again under another id."
+          -- Its row has no switch, which would be the built-in calendar's;
+          -- another plugin's row has one.
+          isJust <$> find view (at "calendar" <> ".plugin-toggle") `shouldReturn` False
+          isJust <$> find view (at "mine" <> ".plugin-toggle") `shouldReturn` True
+          isJust <$> find view (at "mine" <> ".plugin-reserved") `shouldReturn` False
+          -- The one switch under the id is the built-in calendar's, on.
+          (findAll view ".plugin[data-plugin=calendar] .plugin-toggle" >>= traverse checked) `shouldReturn` [True]
+          click view (at "calendar" <> ".plugin-remove")
+          quiet
+          Map.keys . Map.findWithDefault mempty (UserId "user-editor") . (\st -> st.externalOwn) <$> readIORef wiki `shouldReturn` [PluginId "mine"]
+          length <$> findAll view (at "calendar") `shouldReturn` 0
+
   it "says external plugins are off under the policy off, and lists none" $
     withShellAtWith onServer (withInstalled ExternalOff) free (UserSettings PluginsSection) $ \view _ _ _ -> do
       textOf view ".plugins-external-off" `shouldReturn` "External plugins are off on this wiki: none runs."

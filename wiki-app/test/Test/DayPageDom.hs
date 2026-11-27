@@ -3,7 +3,8 @@
 -- marked once the view has read the reader's clock, and as the clock
 -- passes their hour; a box ticked takes the mark off and unticking puts it
 -- back; a page whose title is no date marks nothing; and the first render
--- marks nothing, as the server's prerender does not. The reader's clock is
+-- marks nothing, as the server's prerender does not; a page that is no
+-- day's page reads no clock. The reader's clock is
 -- the test's: a moment of 27 November 2026 plus the time on the test's
 -- clock ('withTestClock'), so that one 'advance' moves both the view's
 -- ticker and the time it reads. Which entries are missed is the pure
@@ -145,6 +146,26 @@ spec = describe "a day's page in the page view, with the reader's clock" $ do
         setInput view (w.input ["2026-11-26"] (Just (clockOf clock)))
         settle view
         missedItems view `shouldReturn` ["09:00 Write the notes"]
+
+  it "reads no clock on a page that is no day's page, so that it renders no more often" $
+    withTestClock $ \clock -> withWiki $ \w -> do
+      -- Every read of the clock is followed by a write of the view's
+      -- state, and so by a render and a parse of the page: a page that
+      -- reads no clock renders as often as it did before there was one.
+      reads' <- newIORef (0 :: Int)
+      let counted = modifyIORef' reads' (+ 1) >> clockOf clock
+      withView (run w.wiki) Page.component (w.input ["notes"] (Just counted)) $ \view -> do
+        settle view
+        advance clock (minutes 3)
+        settle view
+        readIORef reads' `shouldReturn` 0
+        -- The count can grow: a day's page reads the clock when it is
+        -- fetched, and on the ticker.
+        setInput view (w.input ["2026-11-27"] (Just counted))
+        settle view
+        advance clock (minutes 3)
+        settle view
+        readIORef reads' `shouldReturn` 4
 
   it "marks nothing without a clock, as in the server's prerender" $
     withWiki $ \w ->

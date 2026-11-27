@@ -132,8 +132,9 @@
 -- are read from the text shown, with the ticks not saved in it, so a box
 -- ticked takes the mark off at once. The present time is the reader's,
 -- read from the input's clock (the browser's, 'Wiki.App.Browser.readerClock')
--- in the view's 'Initialize', when a page is fetched, and once a minute
--- after, while a day's page is shown. The initial state has no time, so
+-- while a day's page is shown: in the view's 'Initialize', when a page is
+-- fetched, and once a minute after. An ordinary page reads no clock and
+-- renders no more often for it. The initial state has no time, so
 -- the first render marks nothing, as the server's prerender, which has no
 -- clock, does not: the program adopts that page unchanged, and the marks
 -- come with the render after.
@@ -179,6 +180,7 @@ import Wiki.App.Live qualified as Live
 import Wiki.App.Plugin (Child (..), KindInput (..), KindView (..), Manifest (..), PluginId, linkTo)
 import Wiki.App.Plugin.Registry (Contributed (..), contributed, optionsFor, plugins, pluginsOn)
 import Wiki.App.Route (Against (..), Route (..), pageRoute)
+import Wiki.App.Route qualified as Route
 import Wiki.App.View.Body qualified as Body
 import Wiki.App.View.Comments qualified as CommentsView
 import Wiki.App.View.Comments.Machine (Threads (..))
@@ -209,7 +211,7 @@ import Wiki.Core.Page (Page (attachments, body, createdAt, createdBy, id, kind, 
 import Wiki.Core.PageKind (PageKind (..), isPresentation)
 import Wiki.Core.Permission (mayMovePage)
 import Wiki.Core.Slug (Slug)
-import Wiki.Core.Space (Space (encryption, homePage, id, name), rootPage)
+import Wiki.Core.Space (Space (encryption, homePage, id, name), pagePath, rootPage)
 import Wiki.Core.User (Avatar, User (id))
 import Wiki.Core.Version (Author (..), Version (..))
 
@@ -323,9 +325,9 @@ data State = State
   -- and those not answered yet ("Wiki.App.View.Body"'s 'Body.Owners').
   , present :: Maybe LocalTime
   -- ^ The present time in the reader's time zone, as the view last read
-  -- it from the input's clock ('readClock'). 'Nothing' in the initial
-  -- state, so that the first render marks no task missed, and always
-  -- where the input has no clock.
+  -- it from the input's clock ('readClock'), on a day's page. 'Nothing' in
+  -- the initial state, so that the first render marks no task missed, and
+  -- always where the input has no clock.
   }
 
 -- | An address put on the clipboard: by a click on a heading's or a box's
@@ -653,8 +655,16 @@ component =
       , Just (owner, k) <- [find (\(_, v) -> v.kind == page.kind) (contributed (pluginsOn input.context) (plugins @m)).pageKinds]
       ]
       where
+        -- The pages under it, each with the link to its address. The
+        -- space's pages are indexed by id once a render, and only for a
+        -- page a plugin shows (the view keeps nothing derived from its
+        -- input between renders): a calendar has a page a day, and a
+        -- search of the list for each day and each page above it took
+        -- seconds a render for years of days.
+        index = Map.fromList [(p.id, p) | p <- input.pages]
+        spacePath = spacePathOf input.context.spaces input.space.id
         under =
-          [ Child {page = c, link = linkTo input.context.router (pageRouteOf input.context.spaces input.space input.pages c.id)}
+          [ Child {page = c, link = linkTo input.context.router (maybe Route.Unknown (pageRoute spacePath) (pagePath input.space (`Map.lookup` index) c.id))}
           | c <- input.pages
           , c.parent == Just page.id
           ]
@@ -832,9 +842,7 @@ component =
         -- server's prerender has none.
         readClock
         clocked <- gets (\st -> isJust st.input.clock)
-        when clocked . void . H.fork . forever $ do
-          H.delay clockTick
-          whenM (gets (isJust . dayShown)) readClock
+        when clocked . void . H.fork . forever $ H.delay clockTick >> readClock
         gets (\st -> st.loaded) >>= \case
           Loading -> load >> H.liftEffect revealFragment
           loaded -> do
@@ -1319,11 +1327,13 @@ component =
       after <- gets unsaved
       when (before /= after) $ H.liftEffect (guardUnload after)
 
-    -- The present time, read from the input's clock, if it has one. A
-    -- read of the browser's clock does not wait.
+    -- The present time, read from the input's clock, if it has one, while
+    -- a day's page is shown. On any other page nothing is read or written,
+    -- so the view renders no more often than without a clock. A read of
+    -- the browser's clock does not wait.
     readClock :: H.HalogenM State Action Slots ViewOutput m ()
     readClock =
-      gets (\st -> st.input.clock)
+      gets (\st -> guard (isJust (dayShown st)) *> st.input.clock)
         >>= traverse_
           ( \clock -> do
               now <- H.sync (liftIO clock)

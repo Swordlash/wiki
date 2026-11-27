@@ -149,23 +149,34 @@ maxDescriptionLength = 300
 reservedPluginIds :: Set PluginId
 reservedPluginIds = Set.fromList (map PluginId ["assistant", "errors", "calendar"])
 
--- | The manifest these bytes are, or why they are none. They are at most
+-- | The manifest these bytes are, as an upload gives them to install or
+-- replace a plugin, or why they are none. They are at most
 -- 'maxManifestBytes' bytes of one JSON object; 'manifestFromValue' says
--- what the object holds.
+-- what the object holds; and the id is not one of the wiki's own
+-- ('reservedPluginIds').
+--
+-- The id's check is here, at the upload, and not in 'manifestFromValue',
+-- which also reads the manifests stored and listed: a plugin installed
+-- before a built-in plugin took its id is still read, so that it is listed
+-- and can be removed. It does not run ("Wiki.App.Plugin.External"'s
+-- @runnable@, the server's frame).
 parseManifest :: ByteString -> Either Text ExternalManifest
 parseManifest bytes
   | BS.length bytes > maxManifestBytes = Left ("A plugin's manifest is at most " <> show maxManifestBytes <> " bytes (16 kB).")
   | otherwise = case eitherDecodeStrict' bytes of
       Left e -> Left ("A plugin's manifest is JSON: " <> toS e)
-      Right v -> manifestFromValue v
+      Right v -> do
+        m <- manifestFromValue v
+        when (Set.member m.id reservedPluginIds) (Left ("The id " <> m.id.text <> " is a plugin's built into the wiki: choose another."))
+        pure m
 
 -- | The manifest a JSON value is, or why it is none. The value is an
 -- object with these fields and no others, so that a manifest written for
 -- a later version is refused rather than half read:
 --
 -- * @manifest@: 1 ('manifestFormat');
--- * @id@: a plugin's id ('parsePluginId'), not one of the wiki's own
---   ('reservedPluginIds');
+-- * @id@: a plugin's id ('parsePluginId'); whether it is one of the
+--   wiki's own is 'parseManifest''s check, an upload's;
 -- * @name@: 1 to 80 characters, on one line;
 -- * @version@: three numbers, @1.0.0@;
 -- * @description@ (may be left out): at most 300 characters, on one line;
@@ -187,7 +198,6 @@ manifestFromValue = \case
     format <- required "manifest" (field "manifest") >>= int "manifest"
     unless (format == manifestFormat) (Left ("This wiki reads manifests of format " <> show manifestFormat <> " (the field manifest), not " <> show format <> "."))
     pid <- required "id" (field "id") >>= string "id" >>= either (\why -> Left ("The manifest's id: " <> why)) Right . parsePluginId
-    when (Set.member pid reservedPluginIds) (Left ("The id " <> pid.text <> " is a plugin's built into the wiki: choose another."))
     name <- required "name" (field "name") >>= string "name" >>= oneLine "name" 1 maxNameLength
     version <- required "version" (field "version") >>= string "version" >>= versionOf
     description <- maybe (Right "") (string "description" >=> oneLine "description" 0 maxDescriptionLength) (field "description")

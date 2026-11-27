@@ -3006,7 +3006,7 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   wiki-core only: the entries of a list (`Wiki.Core.Markdown.Day`):
   a time or a span at the start of an item, `!` before it for a
   highlight, the task box, the parts of the day, and the date in a
-  page's title. (2) The page view groups a list marked `{.day}` (the owner,
+  page's title (merged, #396). (2) The page view groups a list marked `{.day}` (the owner,
   2026-11-27: as `{.sorted}` marks a list; other lists of the page
   stay lists, and the calendar reads the same lists) under the
   parts of the day and "All day", each entry shown once: a
@@ -3049,7 +3049,23 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   37) the button is disabled, and its title on hover says to enable
   the personal space to unlock it (the owner, the same day). To
   settle in its design stage: whether the brief links to making
-  today's page when a calendar has none.
+  today's page when a calendar has none. **How entries look, and
+  what is missed (the owner, 2026-11-27, from #397's
+  screenshots):** a highlighted entry is bold, with no background.
+  A task whose day or hour has passed and that is not ticked is
+  missed, and is shown in red (in the dark theme a colour that
+  reads there, orange if red does not): on a day's page, in the
+  calendar's view and in the brief. This needs the page's date and
+  the present time where the list is drawn, which #397's renderer
+  does not have; it is a small pull request of its own after #397
+  for the day's page, and part of (4) and (5). In the brief, a
+  highlighted task that was missed stays, under the day it belongs
+  to, until it is ticked or moved to another day; and a task is
+  ticked from the brief, which writes the day's page it is on (a
+  write from the plugin's surface: a capability, behind the guard
+  of a plain write). To settle in (5)'s design stage: how far back
+  the brief reads for missed tasks (a read per day's page; 30 days
+  proposed).
   **Later, each when something needs it:** making
   a day's page that does not exist from a click; `pageAction` and
   `sidebar` contributions (the days folded in the tree); dragging

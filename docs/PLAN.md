@@ -2899,9 +2899,33 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   editor. **Splitting an item on its later lines merged (#390):**
   Enter in a later line of an item's first paragraph splits the
   item as on the first line; an item's second paragraph and the
-  cases #390's description pins stay a plain line break. The rest of
-  #301 is built and in review: a math command's braces from KaTeX's
-  own arities (#391), and `\begin…\end` after it (#392, on #391).
+  cases #390's description pins stay a plain line break. **A math
+  command's braces merged (#391):** choosing `\frac` after `\fr`
+  writes `\frac{}{}`, the cursor in the first pair, Tab to the next
+  and past the last; the number of pairs is KaTeX's own (a table
+  generated from the bundled KaTeX and checked against it), or the
+  macro's where a block of macros defines it once and plainly. The
+  name alone is written where anything after the cursor could be an
+  argument, and where the parser would not read the math the same
+  with the braces in. One rule, for #392 too (the owner,
+  2026-11-27): completion reads the macros of the wiki, of the
+  spaces and of the page's block of macros, never the definitions
+  inside the page's formulas. **Left (the owner, 2026-11-27; round
+  2's six findings):** a command chosen inside a place of another
+  (`\sqrt` in `\frac`'s numerator) ends the outer walk, since
+  `@codemirror/autocomplete` keeps one active snippet, and the
+  arrow keys reach the outer place; a KaTeX command redefined in an
+  earlier formula of the page gets KaTeX's number of pairs; a name
+  defined in a block of macros and again by a delimited `\def`, or
+  inside a group of the block, gets the pairs of the definition the
+  scanner reads (`definitionsAndRest`, which also decides which
+  formulas a page hides, so it was not changed); `\sq‸]` writes
+  `\sqrt{}]` though KaTeX would take `]` as the argument (the list
+  keeps `]` for `[0, \frac{}{}]`); with an assistant's undecided
+  change that starts with a backslash right after the cursor, the
+  written text lands inside that change's range (the `/` menu's
+  `smallestChange`), and rejecting the change takes the completion
+  with it. `\begin…\end` after it is built and in review (#392).
   **The guard of a plain write asks the server by the page (#394,
   found by #389's rounds in the code before it).** Before a save, a
   draft, an attachment, a comment's text or a resolve goes out

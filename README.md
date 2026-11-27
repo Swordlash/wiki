@@ -3269,7 +3269,10 @@ password = my password
 
 The password reaches curl through a file descriptor, never its command line,
 so the process list does not show it, and `sh -x wiki.sh ...` does not trace
-it.
+it. Where curl cannot read a descriptor (a native Windows curl under MSYS2),
+the script finds that out before its first request and gives curl the same
+settings in a file only you can read (mode 600), in its temporary directory,
+removed as soon as curl returns.
 
 curl runs with `-q`, so your `~/.curlrc` is not read: a setting there (`fail`,
 `output`, `url`) cannot change the client's requests or how it reads their

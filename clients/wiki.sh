@@ -12,8 +12,10 @@
 # through unchanged.
 #
 # The password never reaches a command line: curl reads the sign-in from a
-# config given on descriptor 3 (a here-document), so the process list never
-# shows it, and the code that handles it runs with tracing (set -x) off.
+# config given on descriptor 3 (a here-document), or, where curl cannot read
+# a descriptor, from a file only the user may read, so the process list
+# never shows it, and the code that handles it runs with tracing (set -x)
+# off.
 #
 # The awk and jq programs in single quotes are not to be expanded by the
 # shell.
@@ -70,7 +72,10 @@ tab=$(printf '\t')
 #                            by mkdir, removed when the run ends
 #   curl's config            a here-document on descriptor 3: a pipe, or on
 #                            bash 3.2 a file the shell itself makes and
-#                            removes
+#                            removes; where curl cannot read descriptor 3
+#                            (curl_config_via), the file curl-config in the
+#                            run's directory, written under umask 077
+#                            (mode 600) and removed as soon as curl returns
 #
 # The caller's umask is kept for a new FILE, and the script's own is 077,
 # so that nothing else it makes can be read by others.
@@ -327,9 +332,25 @@ curl_quote() {
 # descriptor 3, a here-document: "user" for a login and password (HTTP
 # Basic), or an Authorization header for a key (WIKI_TOKEN), each value
 # quoted, so none of it is on curl's command line (a proxy's address may
-# hold a password too), and no value can add an option.
+# hold a password too), and no value can add an option. Where curl cannot
+# read descriptor 3 (curl_config_via is file), wiki_request writes the same
+# config to $work/curl-config first, and curl reads that file.
 wiki_curl() {
+  if [ "$curl_config_via" = file ]; then
+    curl -q --config "$work/curl-config" "$@"
+    return
+  fi
   quiet_begin
+  curl_settings
+  quiet_end
+  curl -q --config /dev/fd/3 "$@" 3<<EOF
+$settings
+EOF
+}
+
+# The lines of curl's config, in settings. Called with tracing off
+# (quiet_begin), since they hold the password or the key.
+curl_settings() {
   settings=''
   if [ -n "$wiki_token" ]; then
     settings="header = \"Authorization: Bearer $(curl_quote "$wiki_token")\""
@@ -342,10 +363,41 @@ wiki_curl() {
   elif [ -n "$wiki_cacert" ]; then
     settings="$settings${nl}cacert = \"$(curl_quote "$wiki_cacert")\""
   fi
-  quiet_end
-  curl -q --config /dev/fd/3 "$@" 3<<EOF
-$settings
+}
+
+# How curl reads its config in this run: '' until the first request, then
+# descriptor or file. A curl that is a native Windows program run from
+# MSYS2 cannot open /dev/fd/3 (MSYS2 turns it into a path under /proc that
+# is no file for Windows), nor can any curl where /dev/fd is missing: such
+# a curl ends every request with status 26. (A strictly confined curl, a
+# snap, has a /tmp of its own, and cannot read the run's directory either.)
+# The probe gives curl a config whose only line is a URL of a scheme no
+# curl knows, and no URL on the command line. Status 1 (the scheme is
+# unknown) shows the config was read, and no request is made. Anything else
+# (26 when the descriptor cannot be opened, 2 when no URL was read) means
+# the file is used.
+curl_config_via=''
+check_curl_config() {
+  [ -z "$curl_config_via" ] || return 0
+  curl -q --config /dev/fd/3 -s >/dev/null 2>&1 3<<EOF
+url = "wiki-sh-probe://probe/"
 EOF
+  if [ "$?" = 1 ]; then curl_config_via='descriptor'; else curl_config_via='file'; fi
+}
+
+# The config written to $work/curl-config, for a curl that cannot read
+# descriptor 3. The umask is 077 for the whole script; the subshell sets it
+# again so that the file is mode 600 whatever came before. Tracing is off
+# while the file is written.
+write_curl_config() {
+  rm -f "$work/curl-config"
+  quiet_begin
+  curl_settings
+  (umask 077 && printf '%s\n' "$settings" >"$work/curl-config") 2>/dev/null
+  written=$?
+  settings=''
+  quiet_end
+  return "$written"
 }
 
 # The Expect header of the requests: none (curl's own Expect: 100-continue
@@ -366,11 +418,18 @@ wiki_request() {
   rm -f "$work/body" "$work/headers" "$work/curl-error"
   : >"$work/body"
   [ "$method" = GET ] || set -- -X "$method" "$@"
+  check_curl_config
+  if [ "$curl_config_via" = file ] && ! write_curl_config; then
+    rm -f "$work/curl-config"
+    fail "$EX_ERROR" "cannot write curl's settings to $work/curl-config: is the disk full?"
+    return
+  fi
   received=$(wiki_curl -sS -g --proto =http,https --connect-timeout 20 \
     -A "wiki.sh/$WIKI_SH_VERSION" -H "$expect_header" \
     -o "$work/body" -D "$work/headers" -w '%{http_code} %{size_download}' \
     "$@" "$wiki_base/$path" </dev/null 2>"$work/curl-error")
   curl_status=$?
+  [ "$curl_config_via" != file ] || rm -f "$work/curl-config"
   http_status=${received%% *}
   if [ "$curl_status" = 0 ]; then
     if [ "$(($(wc -c <"$work/body")))" != "${received#* }" ]; then
@@ -389,7 +448,17 @@ wiki_request() {
     35 | 51 | 53 | 54 | 58 | 59 | 60 | 64 | 66 | 77 | 80 | 82 | 83 | 90 | 91) fail "$EX_CONNECTION" "the secure connection to $wiki_base failed: check its certificate, or WIKI_URL's scheme ($curl_said)" ;;
     52 | 55 | 56) fail "$EX_CONNECTION" "the connection to $wiki_base broke: try again ($curl_said)" ;;
     1 | 3) fail "$EX_USAGE" "WIKI_URL is not an address curl can use: $wiki_base ($curl_said)" ;;
-    26) fail "$EX_ERROR" "cannot read the text to send ($curl_said)" ;;
+    # 26 is a file curl could not read: its config (any request), or the
+    # body a put sends (--data-binary @FILE) or an attach (--upload-file).
+    26)
+      config_said=$(sed -n '/read config from/{s/^curl: //;p;q;}' "$work/curl-error" 2>/dev/null)
+      if [ -n "$config_said" ]; then
+        curl_said=$config_said
+        fail "$EX_ERROR" "curl cannot read its settings, the sign-in among them ($curl_said): check which curl is first on the PATH (command -v curl); under MSYS2, the MSYS curl of /usr/bin reads them where a Windows curl may not"
+      else
+        fail "$EX_ERROR" "cannot read the text to send ($curl_said)"
+      fi
+      ;;
     23) fail "$EX_ERROR" "the answer could not be kept: is the disk full, or a file size limit (ulimit -f) reached? ($curl_said)" ;;
     127) fail "$EX_ERROR" "curl is not installed: install it (apt install curl, brew install curl)" ;;
     *) fail "$EX_ERROR" "curl failed with status $curl_status: $curl_said" ;;
@@ -3069,8 +3138,10 @@ run says on standard error that the certificate is not checked, and
 WIKI_CACERT is not used.
 
 The password is given to curl through a file descriptor, never on its
-command line. Versions are remembered under WIKI_STATE_DIR (by default
-~/.local/state/wiki), one file per page.
+command line; where curl cannot read one (a native Windows curl under
+MSYS2), through a file only you can read, removed at once. Versions are
+remembered under WIKI_STATE_DIR (by default ~/.local/state/wiki), one file
+per page.
 
 Exit codes: 0 done; 1 another failure; 2 a wrong use (or no version known for
 a put, or a file that holds another part than the one named); 3 sign-in

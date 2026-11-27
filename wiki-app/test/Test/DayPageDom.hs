@@ -124,17 +124,24 @@ spec = describe "a day's page in the page view, with the reader's clock" $ do
         isJust <$> find view ".task-done" `shouldReturn` False
         missedItems view `shouldReturn` ["14:00 Call the bank"]
 
-  it "marks nothing on a page whose title is no date, and marks the same list on a day's page" $
+  it "marks nothing on a page whose title is no date, and reads the clock again when a day's page is fetched" $
     withTestClock $ \clock -> withWiki $ \w ->
       withView (run w.wiki) Page.component (w.input ["notes"] (Just (clockOf clock))) $ \view -> do
         settle view
         textOf view ".page-text" >>= (`shouldSatisfy` T.isInfixOf "09:00 Write the notes")
         missedItems view `shouldReturn` []
+        -- An hour later, at half past two: the ticker reads no clock for a
+        -- page that is not a day's page.
         advance clock (minutes 60)
         settle view
         missedItems view `shouldReturn` []
-        -- The check of absence can fail: yesterday's page, shown in the
-        -- same view, has the same list, and its task is missed.
+        -- Today's page, shown in the same view: its task at two is missed
+        -- only if the view read the clock again when it fetched the page.
+        setInput view (w.input ["2026-11-27"] (Just (clockOf clock)))
+        settle view
+        missedItems view `shouldReturn` ["14:00 Call the bank"]
+        -- The check of absence on "Notes" can fail: yesterday's page has
+        -- the same list, and its task is missed.
         setInput view (w.input ["2026-11-26"] (Just (clockOf clock)))
         settle view
         missedItems view `shouldReturn` ["09:00 Write the notes"]

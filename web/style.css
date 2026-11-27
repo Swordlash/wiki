@@ -1766,8 +1766,9 @@ pre.numbered > code {
    struck through: its first paragraph's and its other paragraphs', but
    not the lists in it. A highlighted one stays bold. The palette's red
    reads in both schemes: 6.6:1 on the page's background in the light one
-   and 7.5:1 in the dark one, and more than 5:1 under a comment's
-   highlight. The colour is not the only sign: the item starts with the
+   and 7.5:1 in the dark one, and more than 5:1 under a comment's quote
+   (but not under the quote of the thread open in the panel, which is
+   darker). The colour is not the only sign: the item starts with the
    word "Missed", which a screen reader reads and the page does not show.
    The word is drawn here and is no text of the page, so a comment's
    quote never takes it in. */

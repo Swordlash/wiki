@@ -135,11 +135,11 @@
 -- while a day's page is shown ('watchMarks'): in the view's 'Initialize',
 -- when a page is fetched, and when the text shown changes (a tick, an
 -- untick, a discard). Each read sets one timer to the next moment a mark
--- can change ("Wiki.Core.Markdown.Day"'s 'nextChange'), which reads the
--- clock again; there is no timer when no later time changes a mark (a
--- page of a past date, every deadline come). Each read starts a new
--- generation of timer, and a timer of an older one does nothing when it
--- wakes. An ordinary page reads no clock and renders no more often for
+-- can change ("Wiki.Core.Markdown.Day"'s 'nextChange'), at most
+-- 'longestWait' ahead, which reads the clock again; there is no timer when
+-- no later time changes a mark (a page of a past date, every deadline
+-- come). Each such read starts a new generation of timer, and a timer of
+-- an older one does nothing when it wakes. An ordinary page reads no clock and renders no more often for
 -- it. The initial state has no time, so
 -- the first render marks nothing, as the server's prerender, which has no
 -- clock, does not: the program adopts that page unchanged, and the marks
@@ -210,7 +210,7 @@ import Wiki.Core.Id
   , UserId
   )
 import Wiki.Core.Markdown qualified as Md
-import Wiki.Core.Markdown.Day (DayEntry, dayOfTitle, nextChange, pageDayEntries)
+import Wiki.Core.Markdown.Day (DayEntry, dayOfTitle, missed, nextChange, pageDayEntries)
 import Wiki.Core.Notification (WatchTarget (..))
 import Wiki.Core.Offered qualified as Offered
 import Wiki.Core.Page (Page (attachments, body, createdAt, createdBy, id, kind, parent, slug, space, template, title, updatedAt, updatedBy), PageSummary (id, parent, title), retitled)
@@ -331,8 +331,9 @@ data State = State
   -- and those not answered yet ("Wiki.App.View.Body"'s 'Body.Owners').
   , markTimer :: Int
   -- ^ The generation of the timer to the next change of a mark
-  -- ('watchMarks'): one more at each read of the clock. A timer that wakes
-  -- under an older generation does nothing.
+  -- ('watchMarks'): one more at each read of the clock when a page is
+  -- shown, fetched or its text shown changes. A timer that wakes under an
+  -- older generation does nothing.
   , present :: Maybe LocalTime
   -- ^ The present time in the reader's time zone, as the view last read
   -- it from the input's clock ('watchMarks'), on a day's page. 'Nothing' in
@@ -1340,29 +1341,48 @@ component =
 
     -- On a day's page, with a clock: read the present time, keep it, and
     -- set one timer to the next moment a mark can change ('nextChange'
-    -- over the entries of the text shown), which does the same when it
-    -- wakes. The read starts a new generation ('markTimer'), so a timer set
-    -- before it does nothing when it wakes. No timer when no later time
-    -- changes a mark. On any other page nothing is read or written, so the
-    -- view renders no more often than without a clock. A read of the
-    -- browser's clock does not wait.
+    -- over the entries of the text shown). The read starts a new
+    -- generation ('markTimer'), so a timer set before it does nothing when
+    -- it wakes. No timer when no later time changes a mark. On any other
+    -- page nothing is read or written, so the view renders no more often
+    -- than without a clock. A read of the browser's clock does not wait.
     --
     -- The timer is 'H.delay': nothing in the program waits for a mark, and
     -- a counted pause of hours would hold up every wait for the page to be
     -- quiet (a smoke test's, a native test's 'settle'). The test's clock
-    -- moves it all the same. A timer that wakes late (a laptop that slept)
-    -- reads the real clock, so the marks are right from then on.
+    -- moves it all the same.
     watchMarks :: H.HalogenM State Action Slots ViewOutput m ()
     watchMarks = do
       st <- get
       for_ ((,) <$> dayShown st <*> st.input.clock) $ \(day, clock) -> do
         now <- H.sync (liftIO clock)
-        let next = nextChange day now (entriesShown st)
-            generation = st.markTimer + 1
+        let generation = st.markTimer + 1
         modify (\s -> s {present = Just now, markTimer = generation})
-        for_ next $ \at -> void . H.fork $ do
-          H.delay (diffLocalTime at now)
-          whenM (gets (\s -> s.markTimer == generation)) watchMarks
+        armMarks generation day now (entriesShown st)
+
+    -- The timer of a generation: a pause to the next change of a mark, or
+    -- of 'longestWait' when that is further, then 'wakeMarks', if no later
+    -- generation has started meanwhile.
+    armMarks :: Int -> Day -> LocalTime -> [DayEntry] -> H.HalogenM State Action Slots ViewOutput m ()
+    armMarks generation day now entries =
+      for_ (nextChange day now entries) $ \at -> void . H.fork $ do
+        H.delay (min longestWait (diffLocalTime at now))
+        whenM (gets (\s -> s.markTimer == generation)) (wakeMarks generation)
+
+    -- A timer of the current generation woke: read the clock, and set the
+    -- next timer, of the same generation. The time is written only when
+    -- it changes a mark, so a wake before the next change (one at the end
+    -- of 'longestWait') costs no render. A timer that wakes late (a laptop
+    -- that slept) reads the real clock, so the marks are right from then on.
+    wakeMarks :: Int -> H.HalogenM State Action Slots ViewOutput m ()
+    wakeMarks generation = do
+      st <- get
+      for_ ((,) <$> dayShown st <*> st.input.clock) $ \(day, clock) -> do
+        now <- H.sync (liftIO clock)
+        let entries = entriesShown st
+            marks t = map (missed day t) entries
+        when ((marks <$> st.present) /= Just (marks now)) $ modify (\s -> s {present = Just now})
+        armMarks generation day now entries
 
     -- Give the box set last the focus, scrolled into view by the least
     -- amount, once the render that follows a change is done (a change of
@@ -1650,6 +1670,15 @@ copiedTime = 2
 -- date ('Wiki.Core.Markdown.Day.dayOfTitle').
 dayShown :: State -> Maybe Day
 dayShown st = pageOf st.loaded >>= \page -> dayOfTitle page.title
+
+-- | The longest pause of the timer to the next change of a mark
+-- ('watchMarks'): twelve hours, as the calendar's view waits. A change
+-- further away (a day's page for next month) is waited for in pauses of
+-- this length, each of which reads the clock again: a pause measured on
+-- the computer's clock does not follow a change of the wall clock (summer
+-- time, the clock set by hand), and this bounds how late a mark can come.
+longestWait :: NominalDiffTime
+longestWait = 12 * 60 * 60
 
 -- | The entries of the day's lists of the text shown, with the ticks not
 -- saved in it: what the marks are of. A text that does not parse has

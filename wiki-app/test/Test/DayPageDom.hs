@@ -14,7 +14,7 @@ module Test.DayPageDom (spec) where
 
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Text qualified as T
-import Data.Time (LocalTime (..), NominalDiffTime, TimeOfDay (..), addLocalTime, fromGregorian)
+import Data.Time (LocalTime (..), NominalDiffTime, TimeOfDay (..), addLocalTime, diffLocalTime, fromGregorian)
 import Halogen.Router qualified as Router
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Halogen.VDom.DOM.Monad.Native qualified as N
@@ -48,10 +48,11 @@ afternoon = "{.day}\n- 09:00 Standup\n- [ ] 14:00 Call the bank\n- [ ] 16:30 Sen
 morning :: Text
 morning = "{.day}\n- [ ] 09:00 Write the notes\n"
 
--- | The demo's team space, as its administrator sees it, with three pages
+-- | The demo's team space, as its administrator sees it, with four pages
 -- at its top: today's, 27 November 2026 ('afternoon'), yesterday's
--- ('morning'), and "Notes", a page whose title is no date, with
--- yesterday's list.
+-- ('morning'), the page of 6 January 2027, forty days later, with the
+-- same list as yesterday's, and "Notes", a page whose title is no date,
+-- with yesterday's list.
 data Wiki = Wiki
   { wiki :: IORef MemState
   , input :: [Text] -> Maybe (IO LocalTime) -> Page.Input
@@ -68,7 +69,7 @@ withWiki body = do
     admin <- session
     spaces <- listSpaces
     team <- orPanic <$> getSpace (slugs ["team"])
-    for_ [("2026-11-27", afternoon), ("2026-11-26", morning), ("Notes", morning)] $ \(title, text) ->
+    for_ [("2026-11-27", afternoon), ("2026-11-26", morning), ("2027-01-06", morning), ("Notes", morning)] $ \(title, text) ->
       orPanic <$> createPage team.id Nothing title text
     ps <- orPanic <$> listPages team.id
     pure (admin, spaces, team, ps)
@@ -205,6 +206,21 @@ spec = describe "a day's page in the page view, with the reader's clock" $ do
         reads' `shouldReturn` 1
         passing clock view (minutes (24 * 60))
         reads' `shouldReturn` 1
+
+  it "waits for a change forty days away in pauses of twelve hours, and marks the task when it comes" $
+    withTestClock $ \clock -> withWiki $ \w -> do
+      (reading, reads') <- countedClock clock
+      withView (run w.wiki) Page.component (w.input ["2027-01-06"] (Just reading)) $ \view -> do
+        settle view
+        reads' `shouldReturn` 1
+        -- A day and a half: three pauses of twelve hours, each a read.
+        passing clock view (minutes (36 * 60))
+        reads' `shouldReturn` 4
+        missedItems view `shouldReturn` []
+        -- Its day and hour: the task is missed.
+        elapsed <- now clock
+        passing clock view (diffLocalTime (LocalTime (fromGregorian 2027 1 6) (TimeOfDay 9 0 0)) start - elapsed)
+        missedItems view `shouldReturn` ["09:00 Write the notes"]
 
   it "reads the clock again when a day's page is fetched in the same view" $
     withTestClock $ \clock -> withWiki $ \w ->

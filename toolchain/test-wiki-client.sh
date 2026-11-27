@@ -2,8 +2,8 @@
 # Tests of clients/wiki.sh, the shell client of the wiki's API, against a
 # real wiki-server: every command, the versions it remembers, each kind of
 # refusal with its exit code, the configuration file's mode check, the
-# password kept out of curl's command line and out of `sh -x`, curl's
-# config through a file where curl cannot read a descriptor, and the MCP
+# password kept out of curl's command line, out of `sh -x` and out of any
+# file (it reaches curl on curl's standard input), and the MCP
 # server (`wiki.sh mcp`) through a pipe, its replies checked with jq.
 #
 #   sh toolchain/test-wiki-client.sh
@@ -279,71 +279,50 @@ while ! mkdir "\$FAIL_DIR/call-\$n" 2>/dev/null; do n=\$((n + 1)); done
 [ "\$n" != "\$FAIL_AT" ] || exit 1
 exec "$real_mv" "\$@"
 EOF
-# And a curl that records its config, the one the client gives on
-# descriptor 3 (the recorder above sees only the command line): it copies
-# the config to curl.config.last and adds it to curl.config, then runs the
-# real curl with that copy on descriptor 3.
+# And a curl that records its config, the one the client gives on curl's
+# standard input: it copies the config to curl.config.last and adds it to
+# curl.config, adds its command line to curl.args, then runs the real curl
+# with that copy on its standard input. With SECRET_DIRS set, it first adds
+# to curl.secret-files each file under those directories that holds
+# "wörd", the letters of every test password.
 mkdir -p "$work/fakes/config"
 cat >"$work/fakes/config/curl" <<EOF
 #!/bin/sh
-cat /dev/fd/3 >"$work/curl.config.last"
+cat >"$work/curl.config.last"
 cat "$work/curl.config.last" >>"$work/curl.config"
-exec "$real_curl" "\$@" 3<"$work/curl.config.last"
+printf '%s\n' "\$*" >>"$work/curl.args"
+if [ -n "\${SECRET_DIRS:-}" ]; then
+  for dir in \$SECRET_DIRS; do
+    grep -rlF "wörd" "\$dir" >>"$work/curl.secret-files" 2>/dev/null
+  done
+fi
+exec "$real_curl" "\$@" <"$work/curl.config.last"
 EOF
-chmod +x "$work/fakes/config/curl"
-# And a curl that cannot read descriptor 3, as a native Windows curl under
-# MSYS2 cannot: it records every command line in nofd.args, ends with
-# status 26 when its config is /dev/fd/3, as such a curl does, and
-# otherwise records the config file's path (nofd.path), its mode
-# (nofd.modes) and its lines (nofd.config) before it runs the real curl.
-# With NOFD_26=config it refuses any config, and with NOFD_26=body the file
-# of a put's or an attach's body, each with curl's own words. A wc beside
-# it, which the client runs right after curl returns, records in nofd.left
-# when the config file named in nofd.path is still there.
-mkdir -p "$work/fakes/nofd"
-cat >"$work/fakes/nofd/curl" <<EOF
+# And a curl that ends with status 26 in curl's own words: with
+# REFUSE=config for its config, with REFUSE=body for the file of a put's
+# or an attach's body. Otherwise it runs the real curl.
+mkdir -p "$work/fakes/refuse"
+cat >"$work/fakes/refuse/curl" <<EOF
 #!/bin/sh
-printf '%s\n' "\$*" >>"$work/nofd.args"
-config=''
+if [ "\${REFUSE:-}" = config ]; then
+  printf "curl: cannot read config from '-'\n" >&2
+  printf 'curl: option --config: error encountered when reading a file\n' >&2
+  exit 26
+fi
 previous=''
 for argument in "\$@"; do
-  [ "\$previous" != --config ] || config=\$argument
   case \$previous in
     --data-binary | --upload-file)
-      if [ "\${NOFD_26:-}" = body ]; then
-        printf 'curl: Failed to open %s\n' "\${argument#@}" >&2
-        printf 'curl: option %s: error encountered when reading a file\n' "\$previous" >&2
-        exit 26
-      fi
+      printf 'curl: Failed to open %s\n' "\${argument#@}" >&2
+      printf 'curl: option %s: error encountered when reading a file\n' "\$previous" >&2
+      exit 26
       ;;
   esac
   previous=\$argument
 done
-config_refused=''
-case \$config in /dev/fd/*) config_refused=1 ;; esac
-[ "\${NOFD_26:-}" != config ] || config_refused=1
-if [ -n "\$config_refused" ]; then
-  printf "curl: cannot read config from '%s'\n" "\$config" >&2
-  printf 'curl: option --config: error encountered when reading a file\n' >&2
-  exit 26
-fi
-printf '%s\n' "\$config" >"$work/nofd.path"
-ls -ld -- "\$config" | cut -c1-10 >>"$work/nofd.modes"
-cat -- "\$config" >>"$work/nofd.config"
 exec "$real_curl" "\$@"
 EOF
-real_wc=$(command -v wc)
-cat >"$work/fakes/nofd/wc" <<EOF
-#!/bin/sh
-if [ -f "$work/nofd.path" ] && [ -e "\$(cat "$work/nofd.path")" ]; then
-  printf '%s\n' "\$(cat "$work/nofd.path")" >>"$work/nofd.left"
-fi
-exec "$real_wc" "\$@"
-EOF
-chmod +x "$work/fakes/nofd/curl" "$work/fakes/nofd/wc"
-# The command line of the client's probe of whether curl reads descriptor
-# 3, which the recorders see before the first request of a run.
-curl_probe='-q --config /dev/fd/3 -s'
+chmod +x "$work/fakes/config/curl" "$work/fakes/refuse/curl"
 chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv" "$work/fakes/pausecp/cp" "$work/fakes/failmv/mv"
 # The PATH the client runs with: the recording curl, and the failing jq
 # unless the MCP server is under test.
@@ -355,17 +334,17 @@ nojq_path=$work/fakes/curl:$work/fakes/nojq:$PATH
 env PATH="$curl_path" curl -s -u "editor:$editor_password" http://127.0.0.1:1/ >/dev/null 2>&1
 check "the recorder sees a password given to curl -u" grep -qF "wörd" "$work/curl.args"
 : >"$work/curl.args"
+# So does the recorder of the config, which also finds a file that holds
+# one.
+mkdir -p "$work/secret-demo"
+printf 'password = %s\n' "$editor_password" >"$work/secret-demo/file"
+printf '' | env PATH="$work/fakes/config:$PATH" SECRET_DIRS="$work/secret-demo" curl -s -u "editor:$editor_password" http://127.0.0.1:1/ >/dev/null 2>&1
+check "the recorder of the config sees a password given to curl -u" grep -qF "wörd" "$work/curl.args"
+check "the recorder of the config finds a file that holds a password" grep -qxF "$work/secret-demo/file" "$work/curl.secret-files"
+rm -rf "$work/secret-demo" "$work/curl.secret-files" "$work/curl.config" "$work/curl.config.last"
+: >"$work/curl.args"
 sh -x -c 'password=$1; : "$password"' sh "$editor_password" 2>"$work/trace" >/dev/null
 check "a trace shows a password in a variable" grep -qF "wörd" "$work/trace"
-# The fake curl without descriptors refuses /dev/fd/3 as such a curl does,
-# and the wc beside it sees a config file left behind.
-"$work/fakes/nofd/curl" -q --config /dev/fd/3 -s http://127.0.0.1:1/ 3</dev/null 2>/dev/null
-check "the curl without descriptors ends with 26 on --config /dev/fd/3" [ "$?" = 26 ]
-: >"$work/nofd-left-behind"
-printf '%s\n' "$work/nofd-left-behind" >"$work/nofd.path"
-"$work/fakes/nofd/wc" -c <"$work/nofd-left-behind" >/dev/null
-check "the wc beside it sees a config file still there" grep -qxF "$work/nofd-left-behind" "$work/nofd.left"
-rm -f "$work/nofd-left-behind" "$work/nofd."*
 
 # The client, with an environment of only the variables below (env -i):
 # its status in status, its output in $work/out and $work/err. jq is the
@@ -641,7 +620,7 @@ suite() {
   expect 8 "WIKI_PROXY is the proxy curl goes through"
   lacks curl.args "127.0.0.1:1" "the proxy is not on curl's command line"
   insecure_setting
-  descriptor_setting
+  stdin_setting
 
   # The configuration file, read only when nobody else may read it, through
   # a symbolic link too.
@@ -681,7 +660,7 @@ suite() {
 
   # Nothing of the password on curl's command line, nor in a trace.
   if grep -qF "wörd" "$work/curl.args"; then fail "a password on curl's command line"; else pass "no password on curl's command line"; fi
-  check "curl reads the sign-in from a descriptor" grep -q -- '--config /dev/fd/3 -sS' "$work/curl.args"
+  check "curl reads the sign-in from its standard input" grep -q -- '^-q --config - ' "$work/curl.args"
   env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$1-trace" \
     "$shell" -x "$client" get "$page" >"$work/out" 2>"$work/err"
   status=$?
@@ -847,9 +826,7 @@ EOF
     sed 's/^/  reply: /' "$work/mcp-addresses.out" | cut -c1-200 >&2
   fi
   printf '%s\n' "$url/api/markdown/s/team/~edit/p/~history/" "$url/api/markdown/s/team/projects/p/the-wiki/" "$url/api/list/s/team/~edit/" >"$work/expected-sent"
-  # The probe of whether curl reads descriptor 3 (descriptor_setting) has
-  # no URL on its command line, and is left out.
-  grep -vx -- "$curl_probe" "$work/curl.args" | sed 's/.* //' >"$work/sent"
+  sed 's/.* //' "$work/curl.args" >"$work/sent"
   check "the MCP tools sent nothing for the malformed addresses, and exactly the well-formed ones" cmp -s "$work/sent" "$work/expected-sent"
 }
 
@@ -2329,6 +2306,7 @@ insecure_setting() {
   # then the shell and its arguments.
   insecure_run() {
     : >"$work/curl.config"
+    : >"$work/curl.args"
     env -i PATH="$work/fakes/config:$PATH" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-insecure" \
       "$@" <"$input" >"$work/out" 2>"$work/err"
     status=$?
@@ -2353,17 +2331,20 @@ insecure_setting() {
   has err "WIKI_INSECURE must be 1 (do not check the server's certificate) or 0, not yes" "the refusal says what WIKI_INSECURE takes"
   check "nothing is asked of the wiki with WIKI_INSECURE=yes" [ ! -s "$work/curl.config" ]
 
-  # With WIKI_CACERT: the CA bundle is given to curl alone, and not with
+  # With WIKI_CACERT: the CA bundle is given to curl alone, on its command
+  # line (where MSYS2 converts a path for a Windows curl), and not with
   # WIKI_INSECURE=1, which says so. curl wants the file to be there, even
   # over http, but does not read it there: an empty one does.
   : >"$work/ca.pem"
   insecure_run WIKI_CACERT="$work/ca.pem" "$shell" "$client" list
   expect 0 "list with WIKI_CACERT over http"
-  check "WIKI_CACERT is in curl's config" grep -q '^cacert = ' "$work/curl.config"
+  check "WIKI_CACERT is on curl's command line" grep -qF -- "--config - --cacert $work/ca.pem -sS" "$work/curl.args"
+  lacks curl.config "cacert" "WIKI_CACERT is not in curl's config"
   insecure_run WIKI_CACERT="$work/ca.pem" WIKI_INSECURE=1 "$shell" "$client" list
   expect 0 "list with WIKI_CACERT and WIKI_INSECURE=1"
   check "WIKI_INSECURE=1 wins over WIKI_CACERT in curl's config" grep -qx insecure "$work/curl.config"
   lacks curl.config "cacert" "no CA bundle in curl's config with WIKI_INSECURE=1"
+  lacks curl.args "--cacert" "no CA bundle on curl's command line with WIKI_INSECURE=1"
   has err "the server's certificate is not checked (WIKI_INSECURE), and WIKI_CACERT is not used" "the warning says WIKI_CACERT is not used"
 
   # From the configuration file, where a value in the environment wins.
@@ -2409,85 +2390,60 @@ insecure_setting() {
   check "mcp says WIKI_INSECURE=1 once on standard error ($(warnings) times)" [ "$(warnings)" = 1 ]
 }
 
-# A curl that cannot read descriptor 3, as a native Windows curl under
-# MSYS2 cannot. The client finds that out once, before
-# its first request, and gives curl the same config through a file in its
-# run's directory: mode 600, removed as soon as curl returns, and gone with
-# the directory when the run ends. No password is on curl's command line.
-# When curl cannot read the file either, the failure says that curl cannot
-# read its settings; a body curl cannot read keeps its own failure.
-descriptor_setting() {
+# The config on curl's standard input: the sign-in arrives there, on no
+# command line and in no file of the client's (its run's directory, under a
+# TMPDIR of its own, and its state directory), and a put still sends the
+# text it reads from the user's standard input. A config curl cannot read
+# and a body curl cannot read each have their own failure.
+stdin_setting() {
+  rm -rf "$work/stdin-tmp" "$work/state-$shell-stdin" "$work/curl.secret-files"
+  mkdir "$work/stdin-tmp" "$work/state-$shell-stdin"
   # The client with the variables of the run first (as env takes them),
-  # then the shell and its arguments, its TMPDIR a new directory.
-  nofd_run() {
-    rm -f "$work/nofd."*
-    rm -rf "$work/nofd-tmp"
-    mkdir "$work/nofd-tmp"
-    env -i PATH="$work/fakes/nofd:$work/fakes/nojq:$PATH" HOME="$work/home" TMPDIR="$work/nofd-tmp" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-nofd" \
+  # then the shell and its arguments; fake names the fake curl.
+  stdin_run() {
+    : >"$work/curl.config"
+    : >"$work/curl.args"
+    env -i PATH="$work/fakes/$fake:$work/fakes/nojq:$PATH" HOME="$work/home" TMPDIR="$work/stdin-tmp" SECRET_DIRS="$work/stdin-tmp $work/state-$shell-stdin" \
+      WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-stdin" \
       "$@" <"$input" >"$work/out" 2>"$work/err"
     status=$?
   }
-  in_run_directory() {
-    case $(cat "$work/nofd.path") in
-      "$work/nofd-tmp/wiki-sh."*/curl-config) return 0 ;;
-      *) return 1 ;;
-    esac
-  }
-  # Each check of a run with the config file.
-  through_the_file() {
-    check "$1: the descriptor was tried once" [ "$(grep -cx -- "$curl_probe" "$work/nofd.args")" = 1 ]
-    check "$1: the config file is in the run's directory" in_run_directory
-    check "$1: the config file held the sign-in" grep -q '^user = "editor:.*wörd' "$work/nofd.config"
-    check "$1: the config file was mode 600 ($(sort -u "$work/nofd.modes" | tr '\n' ' '))" [ "$(sort -u "$work/nofd.modes")" = "-rw-------" ]
-    check "$1: the config file was gone when curl returned" [ ! -e "$work/nofd.left" ]
-    check "$1: nothing of the run is left when it ends" [ -z "$(ls -A "$work/nofd-tmp")" ]
-    if grep -qF "wörd" "$work/nofd.args"; then fail "$1: a password on curl's command line"; else pass "$1: no password on curl's command line"; fi
-  }
-  nofd_run "$shell" "$client" list
-  expect 0 "list with a curl that cannot read a descriptor"
-  has out "Space: Team" "with a curl that cannot read a descriptor, list lists the wiki"
-  through_the_file "list without descriptors"
-  nofd_run "$shell" "$client" get "$page"
-  expect 0 "get with a curl that cannot read a descriptor"
-  cp "$work/out" "$work/nofd-page"
-  input=$work/nofd-page
-  nofd_run "$shell" "$client" put "$page"
-  expect 0 "put with a curl that cannot read a descriptor"
-  through_the_file "put without descriptors"
-  # The config file is written in the client's own shell, whose trace
-  # reaches standard error: tracing is off while the sign-in is handled.
+  fake=config input=/dev/null
+  stdin_run "$shell" "$client" get "$page"
+  expect 0 "get with the config on curl's standard input"
+  check "the sign-in arrives on curl's standard input" grep -q '^user = "editor:.*wörd' "$work/curl.config"
+  lacks curl.args "wörd" "no password in curl's arguments for a get"
+  {
+    cat "$work/out"
+    printf 'A line put from standard input, under %s.\n' "$shell"
+  } >"$work/stdin-page"
+  input=$work/stdin-page
+  stdin_run "$shell" "$client" put "$page"
+  expect 0 "put of the text on the user's standard input"
+  check "the put's sign-in arrives on curl's standard input" grep -q '^user = "editor:.*wörd' "$work/curl.config"
+  lacks curl.args "wörd" "no password in curl's arguments for a put"
   input=/dev/null
-  nofd_run "$shell" -x "$client" get "$page"
-  expect 0 "get under -x with a curl that cannot read a descriptor"
-  check "get under -x went through the config file" in_run_directory
-  has err "write_curl_config" "the trace shows the config file written"
-  lacks err "wörd" "no password in the trace with the config file"
+  stdin_run "$shell" "$client" get "$page"
+  expect 0 "get after the put from standard input"
+  check "the wiki has the text put from standard input" cmp -s "$work/out" "$work/stdin-page"
+  check "no file of the client's held the password" [ ! -s "$work/curl.secret-files" ]
+  input=$work/restore
+  stdin_run "$shell" "$client" put "$page" --force
+  expect 0 "the page's text back after the put from standard input"
 
-  # The failures: no config curl can read, then a body it cannot read.
-  input=/dev/null
-  nofd_run NOFD_26=config "$shell" "$client" list
-  expect 1 "a curl that cannot read its config at all is exit 1"
-  has err "curl cannot read its settings, the sign-in among them (cannot read config from '$work/nofd-tmp/wiki-sh." "the failure says curl cannot read its settings, in curl's words"
-  has err "check which curl is first on the PATH (command -v curl); under MSYS2, the MSYS curl of /usr/bin" "the failure says which curl to check"
+  # The failures.
+  fake=refuse input=/dev/null
+  stdin_run REFUSE=config "$shell" "$client" list
+  expect 1 "a curl that cannot read its config is exit 1"
+  has err "curl cannot read its settings, the sign-in among them, from its standard input (cannot read config from '-')" "the failure says curl cannot read its settings, in curl's words"
+  has err "check that the curl first on the PATH (command -v curl) is curl itself" "the failure says which curl to check"
   lacks err "the text to send" "a config curl cannot read is not the text to send"
-  input=$work/nofd-page
-  nofd_run NOFD_26=body "$shell" "$client" put "$page"
+  input=$work/restore
+  stdin_run REFUSE=body "$shell" "$client" put "$page" --force
   input=/dev/null
   expect 1 "a put whose body curl cannot read is exit 1"
   has err "cannot read the text to send (Failed to open " "a body curl cannot read is the text to send"
   lacks err "settings" "a body curl cannot read is not curl's settings"
-
-  # With a curl that reads descriptor 3, the MCP server tries it once for
-  # several requests (the tool calls of insecure_setting).
-  : >"$work/curl.args"
-  input=$work/insecure-mcp.in
-  env -i PATH="$curl_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-nofd" \
-    "$shell" "$client" mcp <"$input" >"$work/out" 2>"$work/err"
-  status=$?
-  input=/dev/null
-  expect 0 "mcp with two tool calls"
-  check "mcp asked the wiki more than once ($(grep -c -- '-sS' "$work/curl.args") times)" [ "$(grep -c -- '-sS' "$work/curl.args")" -ge 2 ]
-  check "mcp tried the descriptor once ($(grep -cx -- "$curl_probe" "$work/curl.args") times)" [ "$(grep -cx -- "$curl_probe" "$work/curl.args")" = 1 ]
 }
 
 # The MCP server through a pipe: requests of both the current revision

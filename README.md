@@ -3267,12 +3267,12 @@ user = editor
 password = my password
 ```
 
-The password reaches curl through a file descriptor, never its command line,
-so the process list does not show it, and `sh -x wiki.sh ...` does not trace
-it. Where curl cannot read a descriptor (a native Windows curl under MSYS2),
-the script finds that out before its first request and gives curl the same
-settings in a file only you can read (mode 600), in its temporary directory,
-removed as soon as curl returns.
+The password reaches curl on its standard input, never its command line, so
+the process list does not show it, and `sh -x wiki.sh ...` does not trace
+it. Every curl reads its standard input, a native Windows curl under MSYS2
+too, and no file is made for it. The CA bundle (`WIKI_CACERT`) is no secret
+and is given on curl's command line, so that MSYS2 converts its path for a
+Windows curl.
 
 curl runs with `-q`, so your `~/.curlrc` is not read: a setting there (`fail`,
 `output`, `url`) cannot change the client's requests or how it reads their

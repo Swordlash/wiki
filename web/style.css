@@ -2168,6 +2168,24 @@ pre.numbered > code {
   padding-left: 1.2rem;
 }
 
+/* A calendar's days, after its text (the plugin "calendar",
+   Wiki.App.Plugin.Calendar): headed as the attachments are. */
+.calendar-days {
+  margin-top: 2.5rem;
+}
+
+.calendar-days h2 {
+  font-size: 1.1rem;
+}
+
+.calendar-day-list {
+  padding-left: 1.2rem;
+}
+
+.calendar-empty {
+  color: var(--muted);
+}
+
 .attachment-meta {
   margin-left: 0.6rem;
   font-size: 0.85rem;

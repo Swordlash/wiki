@@ -10,18 +10,26 @@ module Test.Plugins (spec) where
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
+import Data.Time (UTCTime (..), fromGregorian)
+import Halogen.Router qualified as Router
+import Halogen.VDom.DOM.Monad (runMemDOM)
 import Protolude
 import Test.Hspec
 import Test.QuickCheck
 import Wiki.Api.Plugins (PluginChoice (..), PluginState (..), Plugins (..), noPlugins)
-import Wiki.App.Plugin (AgentButton (..), Diagnostics (..), Drawn (..), Face (..), Manifest (..), Plugin (..), PluginId (..), builtin)
+import Wiki.App.Plugin (AgentButton (..), Child (..), Diagnostics (..), Drawn (..), Face (..), KindView (..), Manifest (..), Plugin (..), PluginId (..), builtin, linkTo)
 import Wiki.App.Plugin.Assistant.Agent (buttonsOf)
+import Wiki.App.Plugin.Calendar (dayName, days)
 import Wiki.App.Plugin.Errors (errors, islandFailures)
 import Wiki.App.Plugin.Registry (Contributed (..), builtinIds, contributed, isOn, manifests, onAmong, optionsOf, plugins)
+import Wiki.App.Route (Route (..), route)
 import Wiki.Core.Assistant (Provider (..), Settings, chooseProvider, defaultSettings, serviceName, settingsOf, withBaseUrl, withKey, withReached)
+import Wiki.Core.Id (PageId (..), SpaceId (..))
 import Wiki.Core.Markdown.Problems (Checked (..), IslandPlace (..), Problem (..), ProblemKind (..), Severity (..), allProblems, checkText)
 import Wiki.Core.Markdown.Render (IslandKey (..))
-import Wiki.Core.PageKind (PageKind (..))
+import Wiki.Core.Page (PageSummary (..))
+import Wiki.Core.PageKind (PageKind (..), calendarKind, knownKinds)
+import Wiki.Core.Slug (mkSlug)
 
 -- | A plugin of the tests, whose diagnostics are one warning naming it.
 saying :: Text -> Plugin IO
@@ -30,6 +38,7 @@ saying name =
     { manifest = builtin name name ""
     , diagnostics = Just (Diagnostics (const [Problem {from = 1, to = 1, kind = Marker, severity = Warning, message = name}]))
     , agent = Nothing
+    , pageKind = Nothing
     , options = Nothing
     }
 
@@ -111,11 +120,11 @@ spec = describe "plugins" $ do
       for_ table $ \(wikiOff, s, byDefault, expected) ->
         (wikiOff, s, byDefault, isOn (known wikiOff s) (manifestOf byDefault)) `shouldBe` (wikiOff, s, byDefault, expected)
     it "has every built-in plugin on by default, and on with nothing read" $ do
-      map (\m -> m.onByDefault) manifests `shouldBe` [True, True]
+      map (\m -> m.onByDefault) manifests `shouldBe` [True, True, True]
       onAmong manifests noPlugins `shouldBe` builtinIds
     it "turns each built-in plugin off for the wiki, or for the user alone" $ do
-      onAmong manifests noPlugins {offForWiki = Set.fromList [PluginId "errors"]} `shouldBe` Set.fromList [PluginId "assistant"]
-      onAmong manifests noPlugins {mine = Map.fromList [(PluginId "assistant", PluginChoice {state = PluginOff, options = Nothing})]} `shouldBe` Set.fromList [PluginId "errors"]
+      onAmong manifests noPlugins {offForWiki = Set.fromList [PluginId "errors"]} `shouldBe` Set.fromList [PluginId "assistant", PluginId "calendar"]
+      onAmong manifests noPlugins {mine = Map.fromList [(PluginId "assistant", PluginChoice {state = PluginOff, options = Nothing})]} `shouldBe` Set.fromList [PluginId "errors", PluginId "calendar"]
 
   describe "optionsOf"
     $ it "gives a plugin's options whether the plugin is on or off"
@@ -135,6 +144,14 @@ spec = describe "plugins" $ do
       isJust (contributed (Set.delete (PluginId "assistant") builtinIds) builtins).agent `shouldBe` False
       isJust (contributed (Set.delete (PluginId "errors") builtinIds) builtins).agent `shouldBe` True
       length (contributed Set.empty builtins).diagnostics `shouldBe` 0
+    it "gives the calendar's kind of page while the calendar is on, and not while it is off" $ do
+      let kindsOf chosen = [(m.id, k.kind, k.label) | (m, k) <- (contributed chosen builtins).pageKinds]
+      kindsOf builtinIds `shouldBe` [(PluginId "calendar", calendarKind, "Calendar")]
+      kindsOf (Set.delete (PluginId "calendar") builtinIds) `shouldBe` []
+      kindsOf (Set.fromList [PluginId "calendar"]) `shouldBe` [(PluginId "calendar", calendarKind, "Calendar")]
+      length (contributed (Set.delete (PluginId "calendar") builtinIds) builtins).diagnostics `shouldBe` 1
+    it "brings only kinds the backends take" $
+      [k.kind | p <- builtins, Just k <- [p.pageKind], k.kind `notElem` knownKinds] `shouldBe` []
     it "ignores an id that no plugin has" $
       length (contributed (Set.fromList [PluginId "nothing"]) builtins).diagnostics `shouldBe` 0
     it "keeps the plugins' order, whatever the set's" $ do
@@ -164,6 +181,38 @@ spec = describe "plugins" $ do
       islandFailures (snd (drawnOf "Plain.\n" (Map.fromList [(IslandKey "$x$" 0, "KaTeX parse error")]))) `shouldBe` []
     it "are the plugin called errors" $
       errors.manifest.id `shouldBe` PluginId "errors"
+
+  describe "the calendar's days" $ do
+    let summary title template position =
+          PageSummary
+            { id = PageId ("p" <> show (position :: Int))
+            , space = SpaceId "s"
+            , parent = Just (PageId "calendar")
+            , title
+            , slug = either (panic . show) identity (mkSlug ("p" <> show position))
+            , createdAt = UTCTime (fromGregorian 2026 11 1) 0
+            , updatedAt = UTCTime (fromGregorian 2026 11 1) 0
+            , position
+            , template
+            , kind = Document
+            }
+        -- The pages under a calendar, by title and whether each is a
+        -- template, in the space's order, each linking home.
+        under titles = do
+          router <- runMemDOM (Router.newRouter "/" Unknown route)
+          pure [Child {page = summary title template position, link = linkTo router Home} | (position, (title, template)) <- zip [0 ..] titles]
+        listed titles = (\cs -> [(d, c.page.title) | (d, c) <- days cs]) <$> under titles
+    it "are the pages titled with a date, newest first" $
+      listed [("2026-11-02", False), ("2026-11-27", False), (" 2025-12-31 ", False)]
+        `shouldReturn` [(fromGregorian 2026 11 27, "2026-11-27"), (fromGregorian 2026 11 2, "2026-11-02"), (fromGregorian 2025 12 31, " 2025-12-31 ")]
+    it "leave out a page whose title is no date, and a template" $
+      listed [("Notes", False), ("2026-11-27 planning", False), ("2026-02-30", False), ("2026-11-26", True), ("2026-11-25", False)]
+        `shouldReturn` [(fromGregorian 2026 11 25, "2026-11-25")]
+    it "keep the space's order for two pages of one date" $ do
+      cs <- under [("2026-11-27", False), ("2026-11-27", False)]
+      [c.page.position | (_, c) <- days cs] `shouldBe` [0, 1]
+    it "name a day in words" $
+      dayName (fromGregorian 2026 11 27) `shouldBe` "Friday, 27 November 2026"
 
   describe "the writing assistant's buttons" $ do
     let neutral = AgentButton {key = "assistant", label = "Assistant", title = "Assistant", ariaLabel = "Assistant", selected = True, unreachable = False, face = ChatGlyph}

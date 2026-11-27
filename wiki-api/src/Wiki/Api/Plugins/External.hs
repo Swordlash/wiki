@@ -147,7 +147,7 @@ maxDescriptionLength = 300
 -- holds the built-in plugins themselves, so a plugin built in later adds
 -- its id here too.
 reservedPluginIds :: Set PluginId
-reservedPluginIds = Set.fromList (map PluginId ["assistant", "errors"])
+reservedPluginIds = Set.fromList (map PluginId ["assistant", "errors", "calendar"])
 
 -- | The manifest these bytes are, or why they are none. They are at most
 -- 'maxManifestBytes' bytes of one JSON object; 'manifestFromValue' says

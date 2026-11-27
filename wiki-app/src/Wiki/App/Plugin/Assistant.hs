@@ -33,6 +33,7 @@ assistant =
     { manifest
     , diagnostics = Nothing
     , agent = Just (Agent Agent.component)
+    , pageKind = Nothing
     , options = Just (Options Options.component)
     }
 

@@ -48,7 +48,7 @@ import Halogen.TH (hh)
 import Protolude hiding (State)
 import Wiki.App.Assistant (KeyOwner, MonadAssistant (..), closeKeyOwner, openKeyOwner)
 import Wiki.App.Assistant.Sync (MonadVault, owned)
-import Wiki.App.Plugin (FieldInput (..), FieldOutput (..), LinkClick, Manifest (..), OptionsLink, SecretName (..), SecretSpec (..), Unavailable (..), followOptionsLink, optionsLinkProps)
+import Wiki.App.Plugin (FieldInput (..), FieldOutput (..), Link, LinkClick, Manifest (..), SecretName (..), SecretSpec (..), Unavailable (..), followLink, linkProps)
 import Wiki.App.Plugin.Host.Secrets (putSecret, readSecretsForField, removeSecret)
 import Wiki.App.Vault (unlockWithPasskey, unlockWithPassword)
 import Wiki.App.View.SecretField.Machine (Answer (..), Effect (..), Event (..), Job (..), Model (..), Shown (..), Told (..), busy, initialBound, needsOwner, step)
@@ -73,7 +73,7 @@ data Action m
 -- | The field for one reader (the user signed in, if anyone is) and one
 -- plugin, by its manifest, with the link to the settings' Security
 -- section.
-component :: forall m. (Typeable m, MonadAssistant m, MonadVault m, MonadUnliftIO m) => Maybe UserId -> Manifest -> OptionsLink -> H.Component (Const Void) (FieldInput m) FieldOutput m
+component :: forall m. (Typeable m, MonadAssistant m, MonadVault m, MonadUnliftIO m) => Maybe UserId -> Manifest -> Link -> H.Component (Const Void) (FieldInput m) FieldOutput m
 component user manifest security =
   H.mkComponent
     H.ComponentSpec
@@ -129,7 +129,7 @@ component user manifest security =
                 <button type="button" class="secret-field-unlock-password" disabled={{ busy m || T.null m.password }} onClick={{ const (Happened PasswordPressed) }}>Unlock with your password</button>
                 <p class="secret-field-note secret-field-lost">
                   Lost every way to unlock it? A reset of your password makes your vault anew if the password was its only way to unlock it, and everything in the vault is lost: the secrets of every plugin, such as this one, and your key pair. You then keep this secret again.
-                  <a class="secret-field-security" {{ optionsLinkProps security Followed }}>Security says how your password is reset.</a>
+                  <a class="secret-field-security" {{ linkProps security Followed }}>Security says how your password is reset.</a>
                 </p>
               </div>
             |]
@@ -161,7 +161,7 @@ component user manifest security =
         modify (\st -> st {input})
         happen (Rebound input.binding)
       Happened e -> happen e
-      Followed f -> followOptionsLink security f
+      Followed f -> followLink security f
 
     happen :: Event -> H.HalogenM (State m) (Action m) Empty FieldOutput m ()
     happen = Machine.happen machineSpec

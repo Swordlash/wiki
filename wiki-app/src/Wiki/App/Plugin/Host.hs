@@ -15,7 +15,7 @@ import Wiki.App.Assistant (MonadAssistant (..), closeKeyOwner, openKeyOwner)
 import Wiki.App.Assistant.Sync (MonadVault, Owned, owned)
 import Wiki.App.Backend (Session (..))
 import Wiki.App.Editor.Browser (currentText, focusText, proposeEdit, trackedChanges)
-import Wiki.App.Plugin (Capabilities (..), Document (..), Local (..), Manifest (..), SecretField (..), Secrets (..), Unavailable (..), optionsLinkTo)
+import Wiki.App.Plugin (Capabilities (..), Document (..), Local (..), Manifest (..), SecretField (..), Secrets (..), Unavailable (..), linkTo)
 import Wiki.App.Plugin.Capability.Assistant (AssistantCapabilities (..), Models (..))
 import Wiki.App.Plugin.Host.Secrets (loadLocal, putSecret, readSecretsHere, refreshSecrets, removeSecret, saveLocal)
 import Wiki.App.Route (Route (UserSettings), SettingsSection (AssistantSection, SecuritySection))
@@ -38,14 +38,14 @@ capabilities context manifest =
   Capabilities
     { here = assistantHere
     , secure = secureContext
-    , optionsLink = optionsLinkTo context.router (UserSettings AssistantSection)
+    , optionsLink = linkTo context.router (UserSettings AssistantSection)
     , secrets =
         Secrets
           { get = maybe (pure (Left NoUser)) (\u -> ownedFor u (readSecretsHere u manifest)) user
           , refresh = for_ user (\u -> ownedFor u (refreshSecrets u manifest))
           , put = \name value -> maybe (pure (Left signedOut)) (\u -> ownedFor u (putSecret u manifest name value)) user
           , remove = \name -> maybe (pure (Left signedOut)) (\u -> ownedFor u (removeSecret u manifest name)) user
-          , field = SecretField {component = SecretField.component user manifest (optionsLinkTo context.router (UserSettings SecuritySection)), reader = (context.sessionNumber, user)}
+          , field = SecretField {component = SecretField.component user manifest (linkTo context.router (UserSettings SecuritySection)), reader = (context.sessionNumber, user)}
           , changes = secretsChanges
           }
     , local =

@@ -118,7 +118,7 @@ import Halogen.TH (hh)
 import Protolude hiding (State)
 import Web.Event.Event (Event, EventType (..))
 import Web.UIEvent.KeyboardEvent (KeyboardEvent (..))
-import Wiki.App.Plugin (Document (..), LinkClick, OptionsLink, attr, focusElement, followOptionsLink, optionsLinkProps)
+import Wiki.App.Plugin (Document (..), Link, LinkClick, attr, focusElement, followLink, linkProps)
 import Wiki.App.Plugin.Capability.Assistant (Heard (..), Models (..), Opening (..), Talk)
 import Wiki.Core.Assistant
   ( AssistantError (kind)
@@ -189,7 +189,7 @@ $(inlineJS "js_clock" "new Date($1).toLocaleTimeString(undefined, { timeStyle: \
 -- current title and Markdown, the selection in it, and the number of the
 -- assistant's changes still to decide.
 data Input m = Input
-  { optionsLink :: OptionsLink
+  { optionsLink :: Link
   , models :: Models m
   , settings :: Maybe (Either Text Settings)
   -- ^ The user's settings, once the editor has read them.
@@ -441,7 +441,7 @@ component =
           <header class="assistant-head">
             <h2>Assistant</h2>
             <span class="assistant-using">{{ usingLine st }}</span>
-            <a class="assistant-settings-link" {{ optionsLinkProps st.input.optionsLink Followed }}>Settings</a>
+            <a class="assistant-settings-link" {{ linkProps st.input.optionsLink Followed }}>Settings</a>
             <button type="button" class="assistant-new" title="Start a new conversation" disabled={{ st.talking }} onClick={{ const NewConversation }}>New</button>
             <button type="button" class="assistant-close" title="Close the assistant (Escape)" onClick={{ const Close }}>Close</button>
           </header>
@@ -626,7 +626,7 @@ component =
               [hh|
                 <p class="assistant-setup assistant-key-elsewhere" role="alert">
                   {{ why <> " " }}
-                  <a {{ optionsLinkProps st.input.optionsLink Followed }}>Open the assistant's settings</a>
+                  <a {{ linkProps st.input.optionsLink Followed }}>Open the assistant's settings</a>
                 </p>
               |]
       Just (Right s) -> case ready s of
@@ -635,7 +635,7 @@ component =
             [hh|
               <p class="assistant-setup">
                 {{ why <> " " }}
-                <a {{ optionsLinkProps st.input.optionsLink Followed }}>Open the assistant's settings</a>
+                <a {{ linkProps st.input.optionsLink Followed }}>Open the assistant's settings</a>
               </p>
             |]
         Right _ -> Nothing
@@ -717,7 +717,7 @@ component =
           <div class="error assistant-error assistant-key-refused" role="alert">
             <p>
               {{ meaning <> " " }}
-              <a class="assistant-settings-open" {{ optionsLinkProps st.input.optionsLink Followed }}>Open the assistant's settings</a>
+              <a class="assistant-settings-open" {{ linkProps st.input.optionsLink Followed }}>Open the assistant's settings</a>
             </p>
             {% if not (T.null detail) %}
               <p class="assistant-error-detail">{{ detail }}</p>
@@ -789,7 +789,7 @@ component =
         H.raise Closed
         -- Back to the page's text, where the user was before the panel.
         gets (\st -> st.input.document) >>= traverse_ (\d -> H.liftEffect (liftIO d.focus))
-      Followed f -> gets (\st -> st.input.optionsLink) >>= (`followOptionsLink` f)
+      Followed f -> gets (\st -> st.input.optionsLink) >>= (`followLink` f)
       ChooseMode md -> changeSettings (withMode md)
       ChooseModel "" -> modify (\st -> st {otherModel = True})
       ChooseModel m -> do

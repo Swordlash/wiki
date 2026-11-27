@@ -8,8 +8,9 @@
 -- A page created and then left without a word written stays, empty; it is
 -- deleted with the page's Delete, as any other page is.
 --
--- A page is a document or a presentation ("Wiki.Core.PageKind"), chosen
--- first: the two kinds are the form's first choice (the owner, issue
+-- A page is a document or a presentation ("Wiki.Core.PageKind"), or of a
+-- kind a plugin that is on brings (a calendar: 'Wiki.App.Plugin.KindView'),
+-- chosen first: the kinds are the form's first choice (the owner, issue
 -- #191). Then it starts blank, or from a template of that kind
 -- ("Wiki.Core.Template"): one of the space's own (its pages marked
 -- 'Wiki.Core.Page.template'), or one built into the wiki (meeting notes, a
@@ -41,6 +42,8 @@ import Halogen.Router qualified as Router
 import Halogen.TH (hh)
 import Protolude hiding (State)
 import Wiki.App.Backend (MonadWiki (..), Session (..), WikiError (..))
+import Wiki.App.Plugin (KindView (..))
+import Wiki.App.Plugin.Registry (Contributed (..), contributed, plugins, pluginsOn)
 import Wiki.App.Route (Route (..), pageRoute)
 import Wiki.App.View.Common
 import Wiki.Core.Id (PageId)
@@ -121,8 +124,9 @@ component =
                 </label>
                 <fieldset class="new-page-kind">
                   <legend>Kind</legend>
-                  {{ kindChoice Document "Document" "A page, read as a document." }}
-                  {{ kindChoice Presentation "Presentation" "A deck of slides, presented one at a time." }}
+                  {% for (kind, label, hint) in kindsOffered ctx %}
+                    {{ kindChoice kind label hint }}
+                  {% end %}
                 </fieldset>
                 <fieldset class="new-page-start">
                   <legend>Start from</legend>
@@ -159,7 +163,12 @@ component =
 
     handleAction :: Action -> H.HalogenM State Action Empty ViewOutput m ()
     handleAction = \case
-      Receive input -> modify (\st -> st {input})
+      -- A kind no longer offered (its plugin turned off) is a document
+      -- again, which starts blank.
+      Receive input -> modify $ \st ->
+        if st.kind `elem` map (\(k, _, _) -> k) (kindsOffered input.context)
+          then st {input}
+          else st {input, kind = Document, start = Blank}
       Followed f -> gets (\st -> st.input.context.router) >>= (`Router.follow` f)
       Typed title -> modify (\st -> st {title})
       -- Another kind has other templates: the page starts blank again.
@@ -200,6 +209,17 @@ startingBody st = case st.start of
       today <- utctDay <$> H.sync (liftIO getCurrentTime)
       let author = maybe "" (\u -> u.displayName) st.input.context.session.user
       pure (fillTemplate Placeholders {Template.title = T.strip st.title, Template.date = today, Template.author = author} body)
+
+-- | The kinds the form offers, each with its label and hint: a document,
+-- a presentation, then the kinds of the plugins that are on for the
+-- reader, in the registry's order. Only their labels are read here, so
+-- the plugins are taken in 'IO', as the editor takes their diagnostics.
+kindsOffered :: Context -> [(PageKind, Text, Text)]
+kindsOffered ctx =
+  [ (Document, "Document", "A page, read as a document.")
+  , (Presentation, "Presentation", "A deck of slides, presented one at a time.")
+  ]
+    <> [(k.kind, k.label, k.hint) | (_, k) <- (contributed (pluginsOn ctx) (plugins @IO)).pageKinds]
 
 -- | The page the new one goes under, if the route names one; 'Nothing'
 -- for the space's top level, which the backend reads as under the space's

@@ -282,7 +282,9 @@ spec m = do
     -- The month opens on today's, which is marked.
     length <$> findAll ui (".calendar-month [aria-current=date][data-date='" <> iso today <> "']") `shouldReturn` 1
     find ui (linkTo here) >>= click
-    find ui ".page-view h1" >>= (`shouldHaveText` iso here)
+    -- The day's page is read from the wiki once the click has gone to it.
+    waitQuiet
+    (find ui ".page-view h1" >>= textContent) `shouldReturn` iso here
     length <$> findAll ui ".calendar-month" `shouldReturn` 0
     -- Back on the calendar, a new month is drawn: paged to the month
     -- before, it marks that month's day.
@@ -307,7 +309,8 @@ spec m = do
     -- The list is open while the month is not drawn: a day of it is
     -- opened, and the calendar's page left.
     find ui ".calendar-day a" >>= click
-    find ui ".page-view h1" >>= (`shouldHaveText` iso day)
+    waitQuiet
+    (find ui ".page-view h1" >>= textContent) `shouldReturn` iso day
     -- The ask let go now meets an element out of the page: the library
     -- loads, and nothing is put in it, nor anywhere else.
     unsafeIOToPageM js_calendar_release

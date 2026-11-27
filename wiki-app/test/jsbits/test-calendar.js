@@ -1,25 +1,28 @@
 // A calendar's month as the browser suite holds it (Test.Browser.Contents):
-// the page's asks for a month (globalThis.wikiIslands.showCalendar, which
-// starts the load of the month's library) held until the test lets them
+// the page's ask for a month (globalThis.wikiIslands.showCalendar, which
+// starts the load of the month's library) held until the test lets it
 // go, as if the library's file took that long; and the console's errors
 // kept meanwhile.
 //
 // The runner serves the bundle's files itself, so no request for them can
 // be held: what is held is the ask that would fetch them. Let go after
-// the page has gone on, an ask meets an element out of the page, as a
+// the page has gone on, the ask meets an element out of the page, as a
 // late load does.
 
-// Hold every ask for a month from now on, keeping the elements they were
-// for, and keep the console's errors.
+// Hold the next ask for a month, keeping the element it was for, and keep
+// the console's errors. Only the one ask is held: the page's islands are
+// given back as soon as it is, so that an example that fails before
+// wiki_test_calendar_release leaves the next one a month to draw.
 function wiki_test_calendar_hold() {
   const islands = globalThis.wikiIslands;
   const held = [];
   const errors = [];
-  globalThis.wikiTestCalendar = { islands, held, errors, settled: [] };
+  globalThis.wikiTestCalendar = { islands, held, errors };
   globalThis.wikiIslands = Object.freeze({
     ...islands,
     showCalendar: (host, days) => {
       held.push({ host, days });
+      globalThis.wikiIslands = islands;
       return Promise.resolve();
     },
   });
@@ -36,12 +39,11 @@ function wiki_test_calendar_held() {
   return globalThis.wikiTestCalendar?.held.length ?? 0;
 }
 
-// Let the held asks go to the page's islands, and give back the page's
-// islands and console. The promise settles once each ask's load has ended,
-// and the month is in place or was not wanted.
+// Let the held ask go to the page's islands, and give back the console.
+// The promise settles once the ask's load has ended, and the month is in
+// place or was not wanted.
 async function wiki_test_calendar_release() {
   const test = globalThis.wikiTestCalendar;
-  globalThis.wikiIslands = test.islands;
   await Promise.all(test.held.map(({ host, days }) => test.islands.showCalendar(host, days)));
   console.error = test.logError;
 }

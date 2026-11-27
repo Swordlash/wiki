@@ -36,6 +36,9 @@ const wallClock = (now) =>
 const plainLeftClick = (event) =>
   event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && !event.defaultPrevented;
 
+// The number of a day, as the cell shows it: 27.
+const numberOf = (day) => String(Number(day.slice(8, 10)));
+
 // The link of a day that has a page: its number, pointing at `address`, the
 // day's page, and named for screen readers with the whole date (`name`,
 // "Friday, 27 November 2026"). A plain click is the application's: its
@@ -46,23 +49,42 @@ const dayLink = (host, day, address, name) => {
   link.className = "calendar-day-link";
   link.href = address;
   link.dataset.date = day;
-  link.textContent = String(Number(day.slice(8, 10)));
+  link.textContent = numberOf(day);
   link.setAttribute("aria-label", name);
   link.addEventListener("click", (event) => {
     if (!plainLeftClick(event)) return;
     event.preventDefault();
     host.dispatchEvent(new CustomEvent("wiki-calendar-day", { detail: day }));
   });
-  // FullCalendar hides a day's number from screen readers, which read the
-  // whole date from a hidden text beside it instead. A link must not be
-  // hidden from them while it takes the focus: once FullCalendar has put
-  // it in the number's place, in the same render, the place is shown to
-  // them again. FullCalendar does not write that attribute again while the
-  // cell stays.
-  queueMicrotask(() => {
-    if (link.parentElement?.getAttribute("aria-hidden") === "true") link.parentElement.removeAttribute("aria-hidden");
-  });
   return link;
+};
+
+// The number of a day without a page, as FullCalendar would show it.
+const dayNumber = (day) => {
+  const number = document.createElement("span");
+  number.textContent = numberOf(day);
+  return number;
+};
+
+// One date for screen readers in each cell. FullCalendar writes a cell's
+// whole date as a text only they read, beside the number, which it hides
+// from them. A day's link is read instead, named with the date: in a cell
+// with a link, FullCalendar's text is hidden and the number's place is
+// shown; in a cell without one, FullCalendar's way is put back, since a
+// cell keeps its elements when its link comes or goes. FullCalendar does
+// not write these attributes again while the cell stays. Called once
+// FullCalendar has put `node` in the number's place, in the same render.
+const oneDateRead = (node, linked) => {
+  const place = node.parentElement;
+  if (!place) return;
+  const beside = [...(place.parentElement?.children ?? [])].filter((other) => other !== place);
+  if (linked) {
+    place.removeAttribute("aria-hidden");
+    for (const other of beside) other.setAttribute("aria-hidden", "true");
+  } else {
+    place.setAttribute("aria-hidden", "true");
+    for (const other of beside) other.removeAttribute("aria-hidden");
+  }
 };
 
 // Put a month in `host`, in an element of its own, with the days in `days`
@@ -73,16 +95,30 @@ const dayLink = (host, day, address, name) => {
 export const mount = (host, days, now) => {
   const byDay = (list) => new Map(list.map(([day, address, name]) => [day, { address, name }]));
   let pages = byDay(days);
+  // The date of the day's link that had the focus when the days changed:
+  // the cells are drawn again, with new links, and the focus goes to the
+  // new link of that date, if it has one.
+  let refocus = null;
   const place = document.createElement("div");
   place.className = "calendar-month-place";
   host.replaceChildren(place);
-  // The number of a day that has a page, made again each time the days
-  // change: a new function is a changed option, and FullCalendar draws the
-  // cells again with it, reading `pages` as it is then.
+  // The number of each day, a link when the day has a page, made again
+  // each time the days change: a new function is a changed option, and
+  // FullCalendar draws the cells again with it, reading `pages` as it is
+  // then.
   const topContent = () => (info) => {
+    if (info.inPopover) return true;
     const day = isoDay(info.date);
     const page = pages.get(day);
-    return page && !info.inPopover ? { domNodes: [dayLink(host, day, page.address, page.name)] } : true;
+    const node = page ? dayLink(host, day, page.address, page.name) : dayNumber(day);
+    queueMicrotask(() => {
+      oneDateRead(node, Boolean(page));
+      if (page && refocus === day && node.isConnected) {
+        refocus = null;
+        node.focus({ preventScroll: true });
+      }
+    });
+    return { domNodes: [node] };
   };
   const calendar = new Calendar(place, {
     plugins: [dayGridPlugin, classicTheme],
@@ -99,6 +135,8 @@ export const mount = (host, days, now) => {
   calendar.render();
   return {
     days: (list) => {
+      const focused = document.activeElement;
+      refocus = place.contains(focused) && focused.classList.contains("calendar-day-link") ? focused.dataset.date : null;
       pages = byDay(list);
       calendar.setOption("dayCellTopContent", topContent());
     },

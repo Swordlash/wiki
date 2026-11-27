@@ -21,7 +21,7 @@
 //   wikiIslands.hpke(): Promise<module>
 //   wikiIslands.showCalendar(host, days): Promise<void>
 //   wikiIslands.dropCalendar(host)
-//   wikiIslands.calendarHooks: { load, now }, for the browser suite
+//   wikiIslands.calendarHooks: { load, module, freshModule, importModule, now }, for the browser suite
 //
 // It also gives the pages' spoilers and the code blocks' copy buttons their
 // behaviour (see "Spoilers" and "Copy buttons" below), with listeners on the
@@ -142,14 +142,27 @@ for (const [language, names] of Object.entries(aliases)) {
 // now, while the script runs: document.currentScript is only set during that.
 const scriptUrl = document.currentScript?.src ?? document.baseURI;
 // A module imported the first time it is needed. A failed load is
-// forgotten, so that the next island tries again.
-const lazily = (path) => {
+// forgotten, so that the next island tries again, at an address of its
+// own: the browser keeps a failed import's error for the document's life,
+// and an import of the same address fails at once, without asking the
+// network. The second attempt adds ?attempt=2 to the address, the third
+// ?attempt=3, and so on; the service worker keeps the file under its
+// address without the query (web/src/sw.js), once. `importModule` imports
+// an address (the calendar's goes through a hook the browser suite
+// replaces).
+const lazily = (path, importModule = (url) => import(url)) => {
   let loading = null;
+  let attempts = 0;
   return () => {
-    loading ??= import(new URL(path, scriptUrl).href).catch((error) => {
-      loading = null;
-      throw error;
-    });
+    if (loading === null) {
+      attempts += 1;
+      const url = new URL(path, scriptUrl);
+      if (attempts > 1) url.searchParams.set("attempt", String(attempts));
+      loading = importModule(url.href).catch((error) => {
+        loading = null;
+        throw error;
+      });
+    }
     return loading;
   };
 };
@@ -160,13 +173,13 @@ const loadAssistant = lazily("islands/assistant.js");
 const loadAvatar = lazily("islands/avatar.js");
 const loadOpaque = lazily("islands/opaque.js");
 const loadHpke = lazily("islands/hpke.js");
-const loadCalendar = lazily("islands/calendar.js");
 
 // The calendar's stylesheet, islands/calendar.css, linked into the page the
 // first time a month is shown. The promise settles once the browser has
 // read it, so that no month is drawn without its styles. A stylesheet that
 // does not load is taken out and forgotten, so that the next month tries
-// again.
+// again. Unlike an import, a stylesheet's failure is not kept by the
+// browser: a new link to the same address asks the network again.
 let calendarStyle = null;
 const loadCalendarStyle = () => {
   calendarStyle ??= new Promise((resolve, reject) => {
@@ -418,15 +431,26 @@ const cropAvatar = (host, file) =>
     .then((avatar) => avatar.crop(host, file))
     .catch((error) => console.error("The avatar's cropper could not be loaded:", error));
 
-// What a calendar's month takes from outside itself: its module and
-// stylesheet (`load`, a promise of the module once both are in), and the
-// time now (`now`), which the month reads for today's day and opens on.
-// The browser suite replaces them (wiki-app/test/jsbits/test-calendar.js):
-// it holds the load to leave a page while the month loads, and fixes the
-// day for a walk that must not cross midnight. The page leaves them as
-// they are.
+// What a calendar's month takes from outside itself, which the browser
+// suite replaces (wiki-app/test/jsbits/test-calendar.js); the page leaves
+// them as they are:
+//
+// - `load`: its module and stylesheet, a promise of the module once both
+//   are in. The suite holds it, to leave a page while the month loads.
+// - `module`: the loader of its module (`lazily`), and `freshModule`, which
+//   makes one that has loaded nothing yet. The suite puts a fresh one in
+//   place, since the page's may have loaded the module already, to see a
+//   failed import tried again at another address.
+// - `importModule`: the import of an address, which the loaders make. The
+//   suite fails the first one.
+// - `now`: the time now, which the month reads for today's day and opens
+//   on. The suite fixes the day for a walk that must not cross midnight.
+const calendarModule = () => lazily("islands/calendar.js", (url) => calendarHooks.importModule(url));
 const calendarHooks = {
-  load: () => Promise.all([loadCalendar(), loadCalendarStyle()]).then(([calendar]) => calendar),
+  load: () => Promise.all([calendarHooks.module(), loadCalendarStyle()]).then(([calendar]) => calendar),
+  module: calendarModule(),
+  freshModule: calendarModule,
+  importModule: (url) => import(url),
   now: () => new Date(),
 };
 

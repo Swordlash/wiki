@@ -98,3 +98,37 @@ function wiki_test_calendar_click(selector, ctrl) {
   document.removeEventListener("click", keep);
   return taken;
 }
+
+// Fail the next import of the month's module, as a network that is down
+// would, and keep the addresses imported from now on. The page's loader of
+// the module may have loaded it already, in an earlier example: a fresh
+// loader is put in its place, which has loaded nothing.
+function wiki_test_calendar_fail_first() {
+  const hooks = globalThis.wikiIslands.calendarHooks;
+  const importModule = hooks.importModule;
+  const failing = { hooks, importModule, module: hooks.module, urls: [] };
+  globalThis.wikiTestCalendarFailing = failing;
+  let failed = false;
+  hooks.importModule = (url) => {
+    failing.urls.push(String(url));
+    if (failed) return importModule(url);
+    failed = true;
+    return Promise.reject(new TypeError(`Failed to fetch dynamically imported module: ${url}`));
+  };
+  hooks.module = hooks.freshModule();
+}
+
+// Give back the page's import and loader, and the addresses imported
+// since wiki_test_calendar_fail_first, each from its islands/ on, as JSON.
+function wiki_test_calendar_unfail() {
+  const failing = globalThis.wikiTestCalendarFailing;
+  if (!failing) return "[]";
+  failing.hooks.importModule = failing.importModule;
+  failing.hooks.module = failing.module;
+  return JSON.stringify(failing.urls.map((url) => url.slice(url.indexOf("islands/"))));
+}
+
+// The date of the day's link that has the focus, or "".
+function wiki_test_calendar_focused_date() {
+  return document.activeElement?.dataset?.date ?? "";
+}

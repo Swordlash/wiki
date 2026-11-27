@@ -15,23 +15,32 @@ module Test.Browser.Contents (spec) where
 import Control.Monad.UUID (MonadUUID)
 import Data.Aeson (decodeStrict)
 import Data.IORef (IORef)
+import Data.Row (type (.==))
 import Data.Text qualified as T
 import Data.Time (Day, defaultTimeLocale, formatTime, fromGregorian, getCurrentTime, utctDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import Halogen qualified as H
+import Halogen.HTML qualified as HH
 import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
 import Halogen.JSBits.Promise (Promise (..), wait)
+import Halogen.Router (Router)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
-import Test.Browser.Mount (slugs, start, startWith, startWritten)
+import Test.Browser.Mount (slugs, start, startWith, startWritten, testRouter)
 import Test.Browser.Outside (untilAttribute, untilFound)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend (MonadWiki (..))
-import Wiki.App.Backend.Mem (runMemWiki)
-import Wiki.App.Backend.Mem.State (MemState)
+import Wiki.App.Backend.Mem (newMemWiki, runMemWiki)
+import Wiki.App.Backend.Mem.State (MemState (..))
+import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Islands (MonadIslands)
+import Wiki.App.Plugin (Child (..), KindInput (..), KindView (..), Plugin (..))
+import Wiki.App.Plugin qualified as Plugin
+import Wiki.App.Plugin.Calendar (calendar)
 import Wiki.App.Route (Route (..))
-import Wiki.Core.Page (Page (body, id, kind, template))
+import Wiki.Core.Id (UserId (..))
+import Wiki.Core.Page (Page (body, id, kind, space, template), PageSummary (parent, slug))
 import Wiki.Core.PageKind qualified as Kind
 import Wiki.Core.Space (Space (id))
 
@@ -54,6 +63,9 @@ $( browserJS
      , ("js_calendar_focused", "wiki_test_calendar_focused", Safe, [t|IO JSText|])
      , ("js_history_back_heardPromise", "wiki_test_history_back_heard", Safe, [t|IO (Promise ())|])
      , ("js_calendar_click", "wiki_test_calendar_click", Safe, [t|JSText -> Bool -> IO Bool|])
+     , ("js_calendar_fail_first", "wiki_test_calendar_fail_first", Safe, [t|IO ()|])
+     , ("js_calendar_unfail", "wiki_test_calendar_unfail", Safe, [t|IO JSText|])
+     , ("js_calendar_focused_date", "wiki_test_calendar_focused_date", Safe, [t|IO JSText|])
      ]
  )
 
@@ -345,6 +357,51 @@ spec m = do
     unsafeIOToPageM js_calendar_months `shouldReturn` 0
     errors `shouldReturn` []
 
+  it "draws the month when it is asked for again after its module failed to load" $ runPage $ do
+    let day = fromGregorian 2026 11 27
+    -- The first import of the month's module fails, as on a network that
+    -- is down; the next imports go to the network.
+    unsafeIOToPageM js_calendar_fail_first
+    (ui, _) <- startWritten m (writeCalendar [day]) (Just "user-admin") (Page (slugs ["team"]) (slugs ["days"]))
+    -- The island tells the page, which says so and keeps the list open.
+    untilFound ".calendar-month-failed"
+    find ui ".calendar-month-failed" >>= textContent >>= (`shouldBe` "The month could not be shown.")
+    find ui ".calendar-all-days" >>= (`getAttribute` "open") >>= (`shouldBe` Just "")
+    unsafeIOToPageM js_calendar_months `shouldReturn` 0
+    -- The reader goes to a day and back: the month is asked for again,
+    -- imported at another address, and drawn.
+    find ui ".calendar-day a" >>= click
+    waitQuiet
+    (find ui ".page-view h1" >>= textContent) `shouldReturn` iso day
+    unsafeIOToPageM js_history_back_heard
+    waitQuiet
+    untilAttribute ".calendar-all-days" "open" Nothing
+    unsafeIOToPageM js_calendar_months `shouldReturn` 1
+    length <$> findAll ui ".calendar-month-failed" `shouldReturn` 0
+    imported <- fromMaybe [] . decodeStrict . encodeUtf8 . fromJSText <$> unsafeIOToPageM js_calendar_unfail
+    imported `shouldBe` ["islands/calendar.js", "islands/calendar.js?attempt=2" :: Text]
+
+  it "keeps the focus on a day's link in the month when the days change" $ runPage $ do
+    let linkOf d = ".calendar-day-link[data-date='" <> iso d <> "']"
+        (d12, d20, d27) = (fromGregorian 2026 11 12, fromGregorian 2026 11 20, fromGregorian 2026 11 27)
+    unsafeIOToPageM (js_calendar_today (toJSText (iso d27)))
+    wiki <- unsafeIOToPageM (newMemWiki ((demoState demoNow) {current = Just (UserId "user-admin")}))
+    router <- unsafeIOToPageM testRouter
+    unsafeIOToPageM (writeCalendar [d27, d12] wiki)
+    before <- unsafeIOToPageM (calendarInput router wiki)
+    ui <- mount m calendarSurface before
+    untilAttribute ".calendar-all-days" "open" Nothing
+    find ui (linkOf d27) >>= focus
+    (fromJSText <$> unsafeIOToPageM js_calendar_focused_date) `shouldReturn` iso d27
+    -- A day is added under the calendar, as in another tab: the month is
+    -- told its new days, and draws its cells again.
+    unsafeIOToPageM . runMemWiki wiki $ either (panic . show) (const ()) <$> createPage before.page.space (Just before.page.id) (iso d20) "A day."
+    after <- unsafeIOToPageM (calendarInput router wiki)
+    void (query ui (H.mkTell (SetInput after)))
+    untilFound (linkOf d20)
+    (fromJSText <$> unsafeIOToPageM js_calendar_focused_date) `shouldReturn` iso d27
+    unsafeIOToPageM (js_calendar_today (toJSText ""))
+
   it "keeps the list of days open when the month is drawn while the focus is in it" $ runPage $ do
     let day = fromGregorian 2026 11 27
     unsafeIOToPageM js_calendar_hold
@@ -428,6 +485,44 @@ writeCalendar ds wiki = runMemWiki wiki $ do
   team <- either (panic . show) identity <$> getSpace (slugs ["team"])
   made <- either (panic . show) identity <$> createPageOf Kind.calendarKind team.id Nothing "Days" ""
   for_ ds $ \d -> either (panic . show) (const ()) <$> createPage team.id (Just made.id) (iso d) "A day."
+
+-- | What the test tells the calendar's surface on its own
+-- ('calendarSurface'): its input from now on.
+data SurfaceQuery a = SetInput KindInput a
+
+type SurfaceSlots = ("surface" .== H.Slot (Const Void) Void ())
+
+-- | The calendar's surface on its own, with an input the test changes
+-- ('SetInput'): a change of the pages under the calendar without the page
+-- view around it, as a day added in another tab brings one.
+calendarSurface :: forall m. (MonadUUID m, MonadIO m) => H.Component SurfaceQuery KindInput Void m
+calendarSurface = case (calendar :: Plugin m).pageKind of
+  Nothing -> panic "the calendar brings no kind of page"
+  Just kindView ->
+    H.mkComponent
+      H.ComponentSpec
+        { initialState = pure
+        , render = \input -> HH.div_ [HH.slot_ "surface" () kindView.surface input]
+        , eval = H.mkEval H.defaultEval {H.handleQuery = handleQuery}
+        }
+  where
+    handleQuery :: SurfaceQuery a -> H.HalogenM KindInput Void SurfaceSlots Void m (Maybe a)
+    handleQuery (SetInput input next) = put input $> Just next
+
+-- | The surface's input for the calendar "Days" of the team's space, as the
+-- page view gives it: the calendar, and the pages under it with links.
+calendarInput :: Router Route -> IORef MemState -> IO KindInput
+calendarInput router wiki = runMemWiki wiki $ do
+  team <- either (panic . show) identity <$> getSpace (slugs ["team"])
+  shown <- either (panic . show) identity <$> getPage team.id (slugs ["days"])
+  listed <- either (panic . show) identity <$> listPages team.id
+  pure
+    KindInput
+      { page = shown
+      , under = [Child {page = c, link = Plugin.linkTo router (Page (slugs ["team"]) (slugs ["days"] <> [c.slug]))} | c <- listed, c.parent == Just shown.id]
+      , options = Nothing
+      , mayEdit = True
+      }
 
 -- | A day as the wiki writes a date: 2026-11-27.
 iso :: Day -> Text

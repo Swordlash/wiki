@@ -199,6 +199,17 @@ function keepable(response, blob) {
   return (response.headers.get("content-type") ?? "").startsWith("image/") && size <= IMAGE_LIMIT;
 }
 
+// The address a file is kept under: its own, without the `attempt` an
+// island's module adds when it is imported again after a failure
+// (web/src/islands.js's lazily), so that a module imported again is kept
+// once, in the place of the first, and found there offline.
+function keptAs(request) {
+  const url = new URL(request.url);
+  if (!url.searchParams.has("attempt")) return request;
+  url.searchParams.delete("attempt");
+  return url.href;
+}
+
 // One of the application's files: the network's answer, as without a
 // worker, kept in place of the one kept if it differs; offline, the one
 // kept.
@@ -209,9 +220,10 @@ async function file(event, request) {
     if (response.status === 200 && response.type === "basic") {
       event.waitUntil(
         (async () => {
-          const kept = await cache.match(request, { ignoreVary: true });
+          const key = keptAs(request);
+          const kept = await cache.match(key, { ignoreVary: true });
           const tag = response.headers.get("etag");
-          if (!kept || tag === null || kept.headers.get("etag") !== tag) await cache.put(request, response.clone());
+          if (!kept || tag === null || kept.headers.get("etag") !== tag) await cache.put(key, response.clone());
         })().catch(() => {}),
       );
     }

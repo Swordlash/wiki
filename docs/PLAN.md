@@ -2984,9 +2984,39 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   `command` each; off, the fence shows as the listing `{.norender}`
   gives, for that reader, in the prerender too, through
   `Context.plugins`; exports, the feed and search belong to the page
-  and do not change. Then the calendar (WP5.92/93) as the first plugin
-  written as one, defining `pageKind`, `pageAction` and `sidebar`;
-  presentations' view half only after it, and only if still wanted.
+  and do not change. **The calendar (WP5.92/93) comes before them
+  (the owner, 2026-11-27), as the first plugin written as one, cut
+  into four pull requests from a read of the code that day.** (1)
+  wiki-core only: the entries of a list (`Wiki.Core.Markdown.Day`):
+  a time or a span at the start of an item, `!` before it for a
+  highlight, the task box, the parts of the day, and the date in a
+  page's title. (2) The page view groups such a list under
+  "Highlights", "All day" and the parts of the day, in the Halogen
+  renderer only (exports, the feed and search show the list as
+  written; task numbers stay the source's, as for `{.sorted}`), and
+  a built-in template "Day". (3) The kind "calendar" (in
+  `knownKinds`, an `OtherKind`, no new constructor) and the
+  interface's one new contribution, `pageKind`: "New page" offers
+  the kinds of the plugins that are on, the page view mounts the
+  plugin's surface, and with the plugin off the page shows as a
+  document; the calendar's first surface lists its days, the pages
+  under it titled with a date, as links. (4) The library as a lazy
+  island, after a spike handed back (size, the five-day week, the
+  line of the present time, clicks without the interaction
+  package): month with the highlights, weeks of five and seven
+  days, the day; a click opens a day's page that exists. **One way
+  to read the entries:** the plugin's capability lists the
+  calendar's children and reads each day's page in the range with
+  the calls that exist (`getPage` is a read and records nothing),
+  and parses them in the browser, so an encrypted space works as a
+  plain one and there is no route, transaction or model of it. A
+  month is then one read per day that has a page, not the one
+  request WP5.93 names; the single request is a later optimisation
+  for plain spaces. **Later, each when something needs it:** making
+  a day's page that does not exist from a click; `pageAction` and
+  `sidebar` contributions (the days folded in the tree); dragging
+  an entry; notifications. Presentations' view half only after the
+  calendar, and only if still wanted.
   **Decided by the session (small, reversible):** built-in features
   moved behind the interface show no origin in grey in the completion
   list (only external plugins will); the `html` frame stays the

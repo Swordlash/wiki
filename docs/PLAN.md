@@ -2722,9 +2722,8 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   Demo`, `- ! Ania's birthday`); an item with a task box and a time
   (`- [ ] 09:00 Call the bank`) is an entry and a task at once, ticked
   as in a TODO list and shown as done in the calendar. The same day he
-  asked for the calendar next ("Może kalendarz byśmy zrobili"), ahead
-  of the emoji and the Mermaid and TikZ plugins; a read-only design
-  stage runs first.
+  asked for the calendar next ("Może kalendarz byśmy zrobili"); its
+  cut into pull requests is under "Open work".
 - **WP5.93 The calendar, a kind of page (#204, the third of three).** The
   owner, 2026-11-11: "the calendar is a nice next example of a plugin".
   So the day's page and the calendar are not built before the plugins'
@@ -2974,19 +2973,19 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   `WIKI_INSECURE=1` in `clients/wiki.sh` (#378); plain HTTP on the
   TLS port is redirected to HTTPS, and HSTS is sent only with
   `--hsts`, off by default because it applies to the host name on
-  every port (#379). **After D, the features behind the interface (the
-  session's plan of 2026-11-24, read from the code):** **E**, the
-  emoji: a `command` with a picker and the colon list's names, the
-  picker drawn by the host from data (its HTML unchanged); off, no
-  Emoji button and no list after a colon, while `:smile:` still shows
-  😄 (the parser's). **I**, Mermaid and TikZ, two plugins in one
-  package: a `block` (the host's islands still draw them) and a
-  `command` each; off, the fence shows as the listing `{.norender}`
-  gives, for that reader, in the prerender too, through
-  `Context.plugins`; exports, the feed and search belong to the page
-  and do not change. **The calendar (WP5.92/93) comes before them
-  (the owner, 2026-11-27), as the first plugin written as one, cut
-  into four pull requests from a read of the code that day.** (1)
+  every port (#379). **After D (the owner, 2026-11-27): the emoji, Mermaid and TikZ
+  stay the host's and are not made plugins.** The session's plan of
+  2026-11-24 had them behind the interface (the emoji as a
+  `command`, the two diagrams as a `block` and a `command` each).
+  Each would have added only a switch: the parser and the host's
+  islands would still do the work, the libraries load lazily
+  already, and a page would look different in the view, where the
+  switch counts, and in exports, the feed and search, where it does
+  not. A `block` contribution is designed when an external plugin
+  brings a drawing of its own (PlantUML, Graphviz). **The calendar
+  (WP5.92/93) is next (the owner, 2026-11-27), as the first plugin
+  written as one, cut into four pull requests from a read of the
+  code that day.** (1)
   wiki-core only: the entries of a list (`Wiki.Core.Markdown.Day`):
   a time or a span at the start of an item, `!` before it for a
   highlight, the task box, the parts of the day, and the date in a
@@ -3026,8 +3025,7 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   moved behind the interface show no origin in grey in the completion
   list (only external plugins will); the `html` frame stays the
   host's (it is the wiki's own Markdown and its security model,
-  decision 72); the tree's `Mermaid` and `Tikz` constructors stay
-  until a block needs a generic one.
+  decision 72); the tree's `Mermaid` and `Tikz` constructors stay.
   **External plugins, designed (2026-11-24; tried in Chromium 153, the
   scripts in the session's scratchpad):** a frame loaded from the
   wiki's own address with `Content-Security-Policy: sandbox

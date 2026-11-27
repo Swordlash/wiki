@@ -7,20 +7,23 @@
 -- to itself; a page made a template, listed apart from the tree; and "New
 -- page" from a template, the space's and a built-in one, with its
 -- placeholders filled in. And a footnote's number, titled with its note,
--- which scrolls to the note when followed.
+-- which scrolls to the note when followed. And a calendar, a kind of page:
+-- its month, drawn by FullCalendar, whose days' numbers open the days'
+-- pages, and a page left while the month's library loads.
 module Test.Browser.Contents (spec) where
 
 import Control.Monad.UUID (MonadUUID)
+import Data.Aeson (decodeStrict)
 import Data.IORef (IORef)
 import Data.Text qualified as T
-import Data.Time (getCurrentTime, utctDay)
-import Data.Time.Format.ISO8601 (iso8601Show)
+import Data.Time (Day, addGregorianMonthsClip, defaultTimeLocale, formatTime, fromGregorian, getCurrentTime, toGregorian, utctDay)
+import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
 import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
-import Test.Browser.Mount (slugs, start, startWith)
-import Test.Browser.Outside (untilAttribute)
+import Test.Browser.Mount (slugs, start, startWith, startWritten)
+import Test.Browser.Outside (untilAttribute, untilFound)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend (MonadWiki (..))
@@ -28,18 +31,35 @@ import Wiki.App.Backend.Mem (runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Route (Route (..))
-import Wiki.Core.Page (Page (body, kind, template))
+import Wiki.Core.Page (Page (body, id, kind, template))
 import Wiki.Core.PageKind qualified as Kind
 import Wiki.Core.Space (Space (id))
 
--- Where things are in the window (test/jsbits/test-layout.js).
+-- Where things are in the window (test/jsbits/test-layout.js); a
+-- calendar's month held and read (test/jsbits/test-calendar.js); and the
+-- browser's Back (test/jsbits/test-live.js). One splice for the module:
+-- on wasm each splice declares the same loader.
 $( browserJS
-     ["jsbits/test-layout.js"]
+     ["jsbits/test-layout.js", "jsbits/test-calendar.js", "jsbits/test-live.js"]
      [ ("js_scroll_toPromise", "wiki_test_scroll_to", Safe, [t|Int -> IO (Promise ())|])
      , ("js_scroll_into_viewPromise", "wiki_test_scroll_into_view", Safe, [t|JSText -> IO (Promise ())|])
      , ("js_box", "wiki_test_box", Safe, [t|JSText -> IO JSText|])
+     , ("js_calendar_hold", "wiki_test_calendar_hold", Safe, [t|IO ()|])
+     , ("js_calendar_held", "wiki_test_calendar_held", Safe, [t|IO Int|])
+     , ("js_calendar_releasePromise", "wiki_test_calendar_release", Safe, [t|IO (Promise ())|])
+     , ("js_calendar_hosts", "wiki_test_calendar_hosts", Safe, [t|IO JSText|])
+     , ("js_calendar_errors", "wiki_test_calendar_errors", Safe, [t|IO JSText|])
+     , ("js_calendar_months", "wiki_test_calendar_months", Safe, [t|IO Int|])
+     , ("js_calendar_today", "wiki_test_calendar_today", Safe, [t|IO JSText|])
+     , ("js_history_back_heardPromise", "wiki_test_history_back_heard", Safe, [t|IO (Promise ())|])
      ]
  )
+
+js_calendar_release :: IO ()
+js_calendar_release = if inBrowser then wait =<< js_calendar_releasePromise else pure inert
+
+js_history_back_heard :: IO ()
+js_history_back_heard = if inBrowser then wait =<< js_history_back_heardPromise else pure inert
 
 js_scroll_to :: Int -> IO ()
 js_scroll_to a1 = if inBrowser then wait =<< js_scroll_toPromise a1 else pure inert
@@ -235,11 +255,65 @@ spec m = do
     day.kind `shouldBe` Kind.Document
     day.body `shouldSatisfy` T.isInfixOf "{.day}"
     treeLink ui "Days" >>= click
+    -- The month's island says it drew the month, and the list of days
+    -- folds; unfolded, it is the keyboard's short way to a day.
+    untilAttribute ".calendar-all-days" "open" Nothing
+    find ui ".calendar-all-days summary" >>= click
     find ui ".calendar-day a" >>= (`shouldHaveText` "Friday, 27 November 2026")
     length <$> findAll ui ".calendar-empty" `shouldReturn` 0
     find ui ".calendar-day a" >>= click
     find ui ".page-view h1" >>= (`shouldHaveText` "2026-11-27")
     length <$> findAll ui ".calendar-days" `shouldReturn` 0
+
+  it "shows a calendar's month with the numbers of its days as links, opens a day, and marks a day of the month before" $ runPage $ do
+    today <- either panic identity . (maybe (Left "the browser gave no date") Right . iso8601ParseM . toS . fromJSText) <$> unsafeIOToPageM js_calendar_today
+    let (y, mo, _) = toGregorian today
+        here = fromGregorian y mo 15
+        before = addGregorianMonthsClip (-1) here
+        linkTo d = ".calendar-day-link[data-date='" <> iso d <> "']"
+    (ui, _) <- startWritten m (writeCalendar [here, before]) (Just "user-admin") (Page (slugs ["team"]) (slugs ["days"]))
+    -- The month is FullCalendar's, drawn once its file has loaded; its
+    -- island says so, which folds the list of days. Then it is read once.
+    untilAttribute ".calendar-all-days" "open" Nothing
+    unsafeIOToPageM js_calendar_months `shouldReturn` 1
+    shown <- findAll ui ".calendar-day-link"
+    traverse (`getAttribute` "data-date") shown `shouldReturn` [Just (iso here)]
+    traverse textContent shown `shouldReturn` ["15"]
+    -- The month opens on today's, which is marked.
+    length <$> findAll ui (".calendar-month [aria-current=date][data-date='" <> iso today <> "']") `shouldReturn` 1
+    find ui (linkTo here) >>= click
+    find ui ".page-view h1" >>= (`shouldHaveText` iso here)
+    length <$> findAll ui ".calendar-month" `shouldReturn` 0
+    -- Back on the calendar, a new month is drawn: paged to the month
+    -- before, it marks that month's day.
+    unsafeIOToPageM js_history_back_heard
+    waitQuiet
+    untilAttribute ".calendar-all-days" "open" Nothing
+    find ui ".calendar-month [aria-label^='Previous']" >>= click
+    untilFound (linkTo before)
+    (findAll ui ".calendar-day-link" >>= traverse (`getAttribute` "data-date")) `shouldReturn` [Just (iso before)]
+    -- The list, folded, holds every day, newest first.
+    find ui ".calendar-all-days" >>= (`getAttribute` "open") >>= (`shouldBe` Nothing)
+    (findAll ui ".calendar-all-days .calendar-day time" >>= traverse textContent) `shouldReturn` map dayWords [here, before]
+
+  it "puts no month in a calendar's page left while the month's library loads, and logs no error" $ runPage $ do
+    let day = fromGregorian 2026 11 27
+    -- The page's asks for a month are held from the start, as if the
+    -- month's file were slow to come.
+    unsafeIOToPageM js_calendar_hold
+    (ui, _) <- startWritten m (writeCalendar [day]) (Just "user-admin") (Page (slugs ["team"]) (slugs ["days"]))
+    find ui ".calendar-all-days" >>= (`getAttribute` "open") >>= (`shouldBe` Just "")
+    unsafeIOToPageM js_calendar_held `shouldReturn` 1
+    -- The list is open while the month is not drawn: a day of it is
+    -- opened, and the calendar's page left.
+    find ui ".calendar-day a" >>= click
+    find ui ".page-view h1" >>= (`shouldHaveText` iso day)
+    -- The ask let go now meets an element out of the page: the library
+    -- loads, and nothing is put in it, nor anywhere else.
+    unsafeIOToPageM js_calendar_release
+    hosts `shouldReturn` [(False, 0)]
+    unsafeIOToPageM js_calendar_months `shouldReturn` 0
+    errors `shouldReturn` []
 
   it "makes a page a presentation, which is offered to be presented, and a document again" $ runPage $ do
     (ui, wiki) <- startWith m (Just "user-admin") (Page (slugs ["docs"]) (slugs ["markdown-guide", "diagrams"]))
@@ -301,3 +375,28 @@ readPage wiki space path =
   unsafeIOToPageM . runMemWiki wiki $ do
     s <- either (panic . show) identity <$> getSpace (slugs space)
     either (panic . show) identity <$> getPage s.id (slugs path)
+
+-- | A calendar "Days" in the demo's team space, with a page under it for
+-- each of these days, titled with its date.
+writeCalendar :: [Day] -> IORef MemState -> IO ()
+writeCalendar ds wiki = runMemWiki wiki $ do
+  team <- either (panic . show) identity <$> getSpace (slugs ["team"])
+  made <- either (panic . show) identity <$> createPageOf Kind.calendarKind team.id Nothing "Days" ""
+  for_ ds $ \d -> either (panic . show) (const ()) <$> createPage team.id (Just made.id) (iso d) "A day."
+
+-- | A day as the wiki writes a date: 2026-11-27.
+iso :: Day -> Text
+iso = toS . iso8601Show
+
+-- | A day as the calendar's list names it: "Friday, 27 November 2026".
+dayWords :: Day -> Text
+dayWords = toS . formatTime defaultTimeLocale "%A, %-d %B %Y"
+
+-- | The elements the held asks for a month were for: whether each is in
+-- the page, and how many children it has.
+hosts :: PageM s [(Bool, Int)]
+hosts = fromMaybe [] . decodeStrict . encodeUtf8 . fromJSText <$> unsafeIOToPageM js_calendar_hosts
+
+-- | The console's errors since the asks were held.
+errors :: PageM s [Text]
+errors = fromMaybe ["unreadable"] . decodeStrict . encodeUtf8 . fromJSText <$> unsafeIOToPageM js_calendar_errors

@@ -11,6 +11,7 @@ module Test.Browser.Mount
   , startChanged
   , startChangedWith
   , startChangedAgain
+  , startWritten
   , startAgain
   , adopt
   , startKept
@@ -135,6 +136,22 @@ startChangedWith
 startChangedWith m change who at = do
   (wiki, router) <- prepare who at
   unsafeIOToPageM (modifyIORef' wiki change)
+  ui <- mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
+  pure (ui, wiki)
+
+-- | 'startWith', over the demo written to first through the in-memory
+-- backend's own calls: for a test that needs pages of its own, there
+-- before the shell first reads the space.
+startWritten
+  :: forall m
+  ->(Typeable m, MonadBrowserTest m, MonadBrowserDOM m, MonadIslands m, MonadAssistant m, MonadUUID m)
+  => (IORef MemState -> IO ())
+  -> Maybe Text
+  -> Route
+  -> PageM s (Mounted s Shell.Query Void m, IORef MemState)
+startWritten m write who at = do
+  (wiki, router) <- prepare who at
+  unsafeIOToPageM (write wiki)
   ui <- mount m (H.hoist (NT (runMemWiki wiki)) component) (input router)
   pure (ui, wiki)
 

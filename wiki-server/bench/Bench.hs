@@ -71,9 +71,11 @@ import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import System.IO (BufferMode (..), hSetBuffering)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Timeout (timeout)
 import Text.Printf (printf)
-import Wiki.Api.Activity (ActivityQuery (..), activityPageSize)
-import Wiki.Api.Events (ClientMessage (..), ServerMessage (..), eventsPath)
+import Wiki.Api.Activity (Activity (..), ActivityQuery (..), activityPageSize)
+import Wiki.Api.Events (ClientMessage (..), PageEvent (..), ServerMessage (..), eventsPath)
+import Wiki.Api.Notifications (Notifications (..))
 import Wiki.App.Backend (MonadWiki (..))
 import Wiki.App.Backend.Admin (MonadAdmin (..))
 import Wiki.App.Backend.Comments (MonadComments (..))
@@ -215,13 +217,14 @@ timings size postgres = do
             void (watching (WatchPage (pageId target)) >>= must)
       report "page view: session, getPage, watching" 20 pageView
       counted st pageView
-      report ("page view: the bell (" <> commas size.mine <> " notifications)") 5 (void (runStoredWiki st viewer notifications >>= must))
+      report ("page view: the bell (" <> commas size.mine <> " notifications)") 5 (runStoredWiki st viewer notifications >>= must >>= \n -> found "the bell" n.items)
       report ("save of a page " <> commas size.watchers <> " users watch") 10 $ do
         p <- runStoredWiki st saver (getPage space [slugOf target]) >>= must
         runStoredWiki st saver (savePage p.id p.updatedAt p.title (p.body <> "\n\nMore.")) >>= void . must
       report "backup" 3 (backedUp st)
       readsDuringBackup st viewer space target
-      commentWithTabs size st hub viewer target
+      -- A watchdog only: the step answers in milliseconds.
+      timeout 60_000_000 (commentWithTabs size st hub viewer target) >>= maybe (panic "comment on a page with tabs: no end within 60 s") pure
       grown <- timed (grow size st space)
       printf "grown in %.1f s\n" (snd grown)
       let search q = runStoredWiki st Administrator (searchPages q) >>= found q.text
@@ -239,6 +242,7 @@ timings size postgres = do
       report ("sitemap of a " <> inSpace <> "-page public space, written") 5 (newFeedCache >>= \cache -> asked (sitemapApplication st cache "/"))
       report ("feed of a " <> inSpace <> "-page blog, written") 5 (newFeedCache >>= \cache -> asked (feedApplication st cache "/" Atom ["big"]))
       cache <- newFeedCache
+      asked (sitemapApplication st cache "/")
       report "sitemap, asked again within a minute" 20 (asked (sitemapApplication st cache "/"))
       report "page view: getPage, watching, mentionable (3)" 20 $ runStoredWiki st viewer $ do
         _ <- getPage space [slugOf size.viewedPage] >>= must
@@ -246,7 +250,7 @@ timings size postgres = do
         mentionable [loginOf 1, loginOf 2, "nobody"] >>= found "the mentioned"
       report ("blog listing: " <> inSpace <> " posts of " <> commas (size.versions + 1) <> " versions each") 5 (runStoredWiki st viewer (postDetails space) >>= must >>= found "the posts")
       cursor <- activityCursor st
-      report ("activity: page 100 of " <> commas size.entries <> " entries") 10 (void (runStoredWiki st Administrator (activity (pageHundred cursor)) >>= must))
+      report ("activity: page 100 of " <> commas size.entries <> " entries") 10 (runStoredWiki st Administrator (activity (pageHundred cursor)) >>= must >>= \a -> found "the activity" a.entries)
 
 -- | The value of an answer of the storage, or a stop of the bench with the
 -- error.
@@ -458,14 +462,22 @@ commentWithTabs size st hub commenter target = do
         let untilSubscribed =
               WS.receiveData c >>= \m -> case decode m of
                 Just (Subscribed {}) -> pass
+                Just (Refused _) -> panic "a tab's subscription was refused"
                 _ -> untilSubscribed
+            -- Only the comment counts: a tab subscribing after this one
+            -- sends it an event too, of who reads the page. One thread is
+            -- opened, so the page is enough; the thread's id is not known
+            -- before 'openThread' returns.
             untilEvent =
               WS.receiveData c >>= \m -> case decode m of
-                Just (Event _ _) -> getMonotonicTime >>= putMVar heard
+                Just (Event p (ThreadOpened _)) | p == pageId target -> getMonotonicTime >>= putMVar heard
                 _ -> untilEvent
         untilSubscribed
         putMVar ready ()
         untilEvent
+    -- A tab that fails stops the bench at once, rather than leaving it
+    -- waiting for the tab's turn.
+    traverse_ link clients
     replicateM_ size.tabs (takeMVar ready)
     start <- getMonotonicTime
     _ <- runStoredWiki st commenter (openThread (pageId target) Nothing "A comment.") >>= must

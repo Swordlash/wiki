@@ -681,12 +681,28 @@ externalSettings = describe "Wiki.App.View.Plugins' external plugins, in the she
           isJust <$> find view (at "calendar" <> ".plugin-toggle") `shouldReturn` False
           isJust <$> find view (at "mine" <> ".plugin-toggle") `shouldReturn` True
           isJust <$> find view (at "mine" <> ".plugin-reserved") `shouldReturn` False
+          -- No Replace, which the upload of its id would refuse; Remove.
+          isJust <$> find view (at "calendar" <> ".plugin-replace") `shouldReturn` False
+          isJust <$> find view (at "mine" <> ".plugin-replace") `shouldReturn` True
+          isJust <$> find view (at "calendar" <> ".plugin-remove") `shouldReturn` True
           -- The one switch under the id is the built-in calendar's, on.
           (findAll view ".plugin[data-plugin=calendar] .plugin-toggle" >>= traverse checked) `shouldReturn` [True]
           click view (at "calendar" <> ".plugin-remove")
           quiet
           Map.keys . Map.findWithDefault mempty (UserId "user-editor") . (\st -> st.externalOwn) <$> readIORef wiki `shouldReturn` [PluginId "mine"]
           length <$> findAll view (at "calendar") `shouldReturn` 0
+
+  it "lists to an administrator a plugin of the wiki's whose id a built-in plugin took since, without Replace, and removes it" $
+    let installed = (demoState demoNow) {current = Just (UserId "user-admin"), externalPolicy = ExternalWiki, externalWiki = Map.fromList [(PluginId "calendar", installedAs "calendar" [] False), (PluginId "spell", installedAs "spell" [] False)]}
+        at pid = ".admin-external-plugin[data-plugin=" <> pid <> "] "
+     in withShellAtWith onServer installed free (Admin R.Permissions) $ \view _ wiki quiet -> do
+          textOf view (at "calendar" <> ".plugin-reserved") `shouldReturn` "Its id, calendar, is now a plugin's built into the wiki, so it does not run. Remove it, or install it again under another id."
+          isJust <$> find view (at "spell" <> ".plugin-reserved") `shouldReturn` False
+          isJust <$> find view (at "calendar" <> ".plugin-replace") `shouldReturn` False
+          isJust <$> find view (at "spell" <> ".plugin-replace") `shouldReturn` True
+          click view (at "calendar" <> ".plugin-remove")
+          quiet
+          Map.keys . (\st -> st.externalWiki) <$> readIORef wiki `shouldReturn` [PluginId "spell"]
 
   it "says external plugins are off under the policy off, and lists none" $
     withShellAtWith onServer (withInstalled ExternalOff) free (UserSettings PluginsSection) $ \view _ _ _ -> do

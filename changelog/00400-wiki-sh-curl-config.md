@@ -19,3 +19,11 @@ technical: true
   Windows curl can open. Under MSYS2, `/usr/bin/curl` is the tested curl.
 - When curl does not read its settings, `wiki.sh` says so, and which curl
   to check, instead of "cannot read the text to send".
+- When curl fails, `wiki.sh` says what to check in its own words, with
+  curl's status number, and no longer quotes curl's message, which could
+  repeat a proxy's password. For a failure of the secure connection, or
+  one it has no words for, it says how to see curl's own:
+
+  ```text
+  wiki.sh: the secure connection to https://wiki.example failed: check its certificate, or WIKI_URL's scheme (curl status 60); to see curl's own words, run: curl -g -sS -o /dev/null 'https://wiki.example/'
+  ```

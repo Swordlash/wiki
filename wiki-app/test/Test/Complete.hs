@@ -35,7 +35,7 @@ import Wiki.Core.Markdown.Complete
 import Wiki.Core.Markdown.Edit (htmlTagLabel)
 import Wiki.Core.Markdown.Problems qualified as Problems
 import Wiki.Core.Markdown.Starts (linesFromStart)
-import Wiki.Core.Math (definedMacroArities, redefinesEnvironments)
+import Wiki.Core.Math (definedMacroArities)
 import Wiki.Core.Math.KatexCommands (builtinMacroArguments)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind (..))
@@ -97,7 +97,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
           , linkable "inside" "The user guide" ["projects", "the-user-guide"]
           , linkable "other" "Projects" ["projects"]
           ]
-        onHandbook = Held {kind = Document, boxes = [], editing = PageId "editing", pages = linkablesFrom handbookEditing pages, entries = [], mathMacros = [], pageRedefinesEnvironments = False}
+        onHandbook = Held {kind = Document, boxes = [], editing = PageId "editing", pages = linkablesFrom handbookEditing pages, entries = [], mathMacros = []}
         offered typed = map (\c -> (c.label, c.note)) . (.candidates) <$> answered (sources onHandbook) typed (lineRequest typed "")
     it "offers every page but the one edited, the nearer first: siblings, then its branch, then the others" $
       (map fst <$> offered "[[")
@@ -319,14 +319,20 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       let page = T.intercalate "\n" ["# Title", "", "```math", "\\newcommand{\\R}{\\mathbb{R}}", "\\DeclareMathOperator{\\Tr}{Tr}", "```", "", "Text $\\def\\later{x}$.", "", "```tex", "\\newcommand{\\listed}{x}", "```"]
       map (.name) (pageMacroCommands page) `shouldBe` ["\\R", "\\Tr"]
       map (\c -> (c.name, c.origin, c.arguments)) (macroCommands "Team" "\\newcommand{\\vect}[1]{\\vec{#1}}\n\\let\\eps=\\varepsilon") `shouldBe` [("\\vect", "Team", 1), ("\\eps", "Team", 0)]
-    it "offers no environment where the definitions in force define \\begin or \\end: a formula earlier on the page, a space's macro of no argument, a space named like KaTeX (#392's review)" $ do
+    it "offers no environment where a macro in force is named \\begin or \\end: a space's macro of no argument, a space named like KaTeX, the wiki's (#392's review)" $ do
       let environments h = filter ("\\begin{" `T.isPrefixOf`) . map (.label) . (.candidates) <$> answered (sources h) "$\\be$" (lineRequest "$\\be" "$")
-          page = T.intercalate "\n" ["# Title", "", "Text $\\def\\end{q}$ here.", "", "$\\be$"]
       length <$> environments mathHeld `shouldBe` Just 19
-      environments mathHeld {pageRedefinesEnvironments = redefinesEnvironments page} `shouldBe` Just []
       environments mathHeld {mathMacros = macroCommands "Team" "\\newcommand{\\end}{q}"} `shouldBe` Just []
       environments mathHeld {mathMacros = macroCommands "KaTeX" "\\def\\end{q}"} `shouldBe` Just []
       environments mathHeld {mathMacros = macroCommands "the wiki" "\\renewcommand{\\begin}[1]{\\mathrm{#1}}"} `shouldBe` Just []
+    -- Known and left: the completion does not read the definitions inside
+    -- the page's formulas, here as for the macros it offers. KaTeX applies
+    -- a formula's \def\end to the formulas after it, and the list still
+    -- offers the environments there (the owner, 2026-11-27).
+    it "still offers the environments after a formula of the page that defines \\end: definitions inside formulas are not read" $ do
+      let page = T.intercalate "\n" ["# Title", "", "Text $\\def\\end#1{q}$ here.", "", "$\\be$"]
+          environments h = filter ("\\begin{" `T.isPrefixOf`) . map (.label) . (.candidates) <$> answered (sources h) "$\\be$" (lineRequest "$\\be" "$")
+      length <$> environments mathHeld {mathMacros = pageMacroCommands page <> macros} `shouldBe` Just 19
     it "reads the wiki's built-in macros with the arguments KaTeX gives them, as KaTeX read web/src/katex-macros.tex when Wiki.Core.Math.KatexCommands was generated" $ do
       tex <- decodeUtf8 <$> BS.readFile "../web/src/katex-macros.tex"
       definedMacroArities tex `shouldBe` [(name, Just n) | (name, n) <- builtinMacroArguments]
@@ -371,7 +377,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       -- page's path (each page above it searched for in the list) and its
       -- link, as the editor did before #294's review, allocated 11 GB.
       let kept = linkables space largeSpace (slugs ["section-0", "page-77"])
-          h = Held {kind = Document, boxes = [], editing = PageId "p77", pages = kept, entries = [], mathMacros = [], pageRedefinesEnvironments = False}
+          h = Held {kind = Document, boxes = [], editing = PageId "p77", pages = kept, entries = [], mathMacros = []}
       _ <- evaluate (kept == kept)
       let asked typed = answered (sources h) typed (lineRequest typed "")
       for_ ["[[", "[[pag", "[[zz"] $ \typed -> do
@@ -386,7 +392,7 @@ spec = describe "Wiki.App.Editor.Complete" $ do
       -- link that ends further away is offered nothing. Asking the parser
       -- again for each character of what followed the cursor, as before
       -- #294's second review, allocated 1.6 GB for 1,000 characters.
-      let h = Held {kind = Document, boxes = [], editing = PageId "none", pages = linkablesFrom [] [linkable "guide" "Guide" ["guide"]], entries = [], mathMacros = [], pageRedefinesEnvironments = False}
+      let h = Held {kind = Document, boxes = [], editing = PageId "none", pages = linkablesFrom [] [linkable "guide" "Guide" ["guide"]], entries = [], mathMacros = []}
       for_ [1_000, 10_000] $ \n -> do
         let lineAfter = T.replicate n "x" <> "|label]] end"
             page = "Some text\n\nSee [[Gu" <> lineAfter
@@ -773,7 +779,7 @@ largeSpace =
 
 -- | What the editor holds of a page of a kind, with no page to link to.
 held :: PageKind -> [BoxKind] -> Held
-held kind boxes = Held {kind, boxes, editing = PageId "none", pages = [], entries = [], mathMacros = [], pageRedefinesEnvironments = False}
+held kind boxes = Held {kind, boxes, editing = PageId "none", pages = [], entries = [], mathMacros = []}
 
 -- | The path of the page edited in the tests of the pages offered.
 handbookEditing :: [Slug]

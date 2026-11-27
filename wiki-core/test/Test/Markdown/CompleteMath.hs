@@ -17,7 +17,6 @@ import Test.Markdown.CompleteStarts (alikeEverywhere, caseAt)
 import Test.QuickCheck (Arbitrary (..), Gen, Property, classify, conjoin, counterexample, elements, forAll, once, property, (.&&.), (===))
 import Wiki.Core.Markdown.Ast (Block (..), Inline (..), ListItem (..), parseMarkdown)
 import Wiki.Core.Markdown.Complete
-import Wiki.Core.Math (redefinesEnvironments)
 import Wiki.Core.Math.KatexCommands (katexArguments, katexCommands, katexEnvironments)
 
 spec :: Spec
@@ -162,7 +161,7 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
         $ \marked -> (marked, environmentsAt marked) `shouldBe` (marked, Just [])
       for_ ["$\\be‸\na & b$", "Text $a + \\be‸", "$\\be‸\n\nNext paragraph."] $ \marked ->
         (marked, elem (labelOf "pmatrix") <$> environmentsAt marked) `shouldBe` (marked, Just True)
-    it "offers none where the editor says a macro in force defines \\begin or \\end, which it decides from the definitions (Test.Complete)" $ do
+    it "offers none where the editor says a macro in force defines \\begin or \\end, which it decides from the macros' names (Test.Complete)" $ do
       let environmentsWith offered marked =
             let at = placeAt marked
              in filter ("\\begin{" `T.isPrefixOf`) . map (.label) . (.candidates) <$> complete [mathSource offered (mathCommands [])] (readLine at.above) at
@@ -170,11 +169,6 @@ spec = describe "Wiki.Core.Markdown.Complete, in math" $ do
       length <$> environmentsWith OfferEnvironments "$$\n\\be‸\n$$" `shouldBe` Just (length katexEnvironments)
       -- Bare \begin is still offered, by its name.
       (map (.label) <$> (let at = placeAt "$$\n\\beg‸\n$$" in (.candidates) <$> complete [mathSource NoEnvironments (mathCommands [])] (readLine at.above) at)) `shouldBe` Just ["\\begin"]
-    it "finds \\begin and \\end defined in a block of TeX or a page, by any defining command, a formula's too; not \\endgroup's or a mention" $ do
-      for_ ["$\\def\\end{q}$ and later $\\be$.", "\\newcommand{\\end}{q}", "\\renewcommand{\\begin}[1]{\\mathrm{#1}}", "\\let\\end\\relax", "\\providecommand{\\begin}{x}", "\\gdef\\begin#1{#1}"] $ \tex ->
-        (tex, redefinesEnvironments tex) `shouldBe` (tex, True)
-      for_ ["\\newcommand{\\endgroupx}{q}", "\\def\\beginning{q}", "$\\begin{pmatrix} a \\end{pmatrix}$", "% \\def\\end{q}"] $ \tex ->
-        (tex, redefinesEnvironments tex) `shouldBe` (tex, False)
     it "offers none where a comment follows the cursor: KaTeX passes over it, and the name may come after" $
       for_ ["```math\n\\be‸ % a comment\n{pmatrix}\n```", "$$\n\\be‸% a comment\n$$"] $ \marked ->
         (marked, environmentsAt marked) `shouldBe` (marked, Just [])

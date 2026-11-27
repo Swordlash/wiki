@@ -1567,12 +1567,12 @@ katexInOrder = sortOn shownOrder [MathCommand {name, origin = "KaTeX", arguments
     taking = Map.fromList katexArguments
 
 -- | 'Environments' is whether the list after a backslash in math offers
--- KaTeX's environments ('mathSource'). It offers none where a macro in
--- force (the page's, in its block of macros or in any formula; a
--- space's; the wiki's) defines @\\begin@ or @\\end@
--- ("Wiki.Core.Math"' 'Wiki.Core.Math.redefinesEnvironments'): a written
--- @\\begin{pmatrix}@ and its @\\end@ would expand to something else. The
--- editor decides it from the definitions, not from the list's entries.
+-- KaTeX's environments ('mathSource'). It offers none where a macro the
+-- editor holds (the wiki's, a space's, the page's block of macros) is
+-- named @\\begin@ or @\\end@: a written @\\begin{pmatrix}@ and its
+-- @\\end@ would expand to something else. The editor decides it from the
+-- names of those macros, not from the list's entries. A definition inside
+-- one of the page's formulas is not read, here as for the macros offered.
 data Environments = OfferEnvironments | NoEnvironments
   deriving stock (Eq, Show)
 

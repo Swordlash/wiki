@@ -426,7 +426,6 @@ import Wiki.Core.Markdown.Edit
 import Wiki.Core.Markdown.Emoji (emojiMatches)
 import Wiki.Core.Markdown.Problems qualified as Problems
 import Wiki.Core.Markdown.Render (IslandKey)
-import Wiki.Core.Math (redefinesEnvironments)
 import Wiki.Core.Page (Page, PageSummary, titleLine, withTitleLine)
 -- Qualified, so that its fields (read with a dot) are not confused with
 -- the work's fields of the same names.
@@ -648,10 +647,6 @@ data State = State
   -- ^ The macros of the page's block of macros (the @math@ fence under its
   -- title, 'pageMacros', which the "Macros" panel edits), worked out with
   -- each check of the text.
-  , pageRedefinesEnvironments :: Bool
-  -- ^ Whether the page defines @\\begin@ or @\\end@ anywhere, in a formula
-  -- too ('Wiki.Core.Math.redefinesEnvironments'), worked out with each
-  -- check of the text: the completion in math then offers no environment.
   , host :: H.RefLabel
   -- ^ The element where CodeMirror goes, in the textarea's place; the
   -- text is reached through it ("Wiki.App.Editor.Browser").
@@ -1221,7 +1216,6 @@ component =
               , shippedMacros = ""
               , outerMacros = outerMacrosOf "" input
               , pageMacroNames = []
-              , pageRedefinesEnvironments = False
               , host
               , fileInput
               , backButton
@@ -3171,7 +3165,7 @@ component =
         gets (\st -> st.loaded) >>= \case
           Ready w -> do
             found <- H.async (liftIO (evaluate (force (Problems.checkText w.page.kind w.body))))
-            modify $ \st -> measuredNow (keepDrawnFailures st {checkWait = Nothing, checked = found, checkedText = w.body, earlier = Complete.earlierFrom w.body found.starts found.definitions, pageMacroNames = Complete.pageMacroCommands w.body, pageRedefinesEnvironments = redefinesEnvironments w.body})
+            modify $ \st -> measuredNow (keepDrawnFailures st {checkWait = Nothing, checked = found, checkedText = w.body, earlier = Complete.earlierFrom w.body found.starts found.definitions, pageMacroNames = Complete.pageMacroCommands w.body})
             gets (\st -> st.hostElement) >>= traverse_ (\host -> H.liftEffect (offerFolds host w.body found.folds >> offerStarts host w.body found.starts))
             -- Cut first: the rows a block left open swallows are problems.
             -- One publication for the pause, after the re-cut.
@@ -3731,7 +3725,6 @@ heldFor st work =
     , pages = st.linkables
     , entries = slashEntries (boxChoices st.input.context.session.boxes)
     , mathMacros = st.pageMacroNames <> st.outerMacros
-    , pageRedefinesEnvironments = st.pageRedefinesEnvironments
     }
 
 -- | The macros the completion in math offers from the wiki and the

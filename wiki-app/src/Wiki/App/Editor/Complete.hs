@@ -75,10 +75,7 @@ data Request = Request
 -- the entries of the @/@ menu, what the toolbar writes
 -- ("Wiki.App.Editor.Tools"' 'Wiki.App.Editor.Tools.slashEntries'); and
 -- the macros math may use, the nearest first (the page's, each space's up
--- its chain, the wiki's), each with where it comes from; and whether the
--- page defines @\\begin@ or @\\end@ anywhere, in a formula too
--- ("Wiki.Core.Math"' 'Wiki.Core.Math.redefinesEnvironments', worked out
--- when the page is checked, as the page's macros are).
+-- its chain, the wiki's), each with where it comes from.
 data Held = Held
   { kind :: PageKind
   , boxes :: [BoxKind]
@@ -86,7 +83,6 @@ data Held = Held
   , pages :: [Linkable]
   , entries :: [SlashEntry]
   , mathMacros :: [MathCommand]
-  , pageRedefinesEnvironments :: Bool
   }
 
 -- | 'Linkable' is a page of the space a link may name, with what the list
@@ -179,13 +175,15 @@ sources held = [wikiSource held.kind held.boxes, pageSource held, slashSource he
 -- | Whether the list after a backslash in math offers KaTeX's environments
 -- ("Wiki.Core.Markdown.Complete"' 'Environments'): not where a macro the
 -- editor holds (the page's block of macros, a space's, the wiki's) is
--- named @\\begin@ or @\\end@, nor where the page defines one anywhere,
--- a formula's definition holding for the formulas after it
--- ('pageRedefinesEnvironments'). Decided from the definitions, by name,
--- not from the list's entries.
+-- named @\\begin@ or @\\end@. Decided from those macros' names, not from
+-- the list's entries: a space's macro named like KaTeX's own command is
+-- still a macro. A definition inside one of the page's formulas is not
+-- read, here as for the macros offered ('pageMacroCommands'): KaTeX
+-- applies it to the formulas after it, and the list still offers the
+-- environments there.
 environmentsOf :: Held -> Environments
 environmentsOf held
-  | held.pageRedefinesEnvironments || any ((`elem` beginAndEnd) . (.name)) held.mathMacros = NoEnvironments
+  | any ((`elem` beginAndEnd) . (.name)) held.mathMacros = NoEnvironments
   | otherwise = OfferEnvironments
 
 -- | The names @\\begin@ and @\\end@, made once for 'environmentsOf'.

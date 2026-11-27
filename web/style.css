@@ -1736,7 +1736,12 @@ pre.numbered > code {
 }
 
 /* A group with a task in it is a list of tasks, which has no bullets: its
-   items without a box keep theirs. */
+   items without a box keep theirs, and its text starts where an ordinary
+   list's does (the browser's 40px), so that the groups line up. */
+.page-body .day-group > .task-list {
+  padding-left: 40px;
+}
+
 .page-body .day-group > .task-list > li:not(.task-list-item) {
   list-style: disc;
 }

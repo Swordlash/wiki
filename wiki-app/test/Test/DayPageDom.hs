@@ -167,6 +167,24 @@ spec = describe "a day's page in the page view, with the reader's clock" $ do
         settle view
         readIORef reads' `shouldReturn` 4
 
+  it "reads the clock once on a page of a past date, where a later time changes nothing" $
+    withTestClock $ \clock -> withWiki $ \w -> do
+      reads' <- newIORef (0 :: Int)
+      let counted = modifyIORef' reads' (+ 1) >> clockOf clock
+      withView (run w.wiki) Page.component (w.input ["2026-11-26"] (Just counted)) $ \view -> do
+        settle view
+        missedItems view `shouldReturn` ["09:00 Write the notes"]
+        advance clock (minutes 5)
+        settle view
+        readIORef reads' `shouldReturn` 1
+        -- Today's page, in the same view, keeps reading: once when it is
+        -- fetched, then on each of the five minutes.
+        setInput view (w.input ["2026-11-27"] (Just counted))
+        settle view
+        advance clock (minutes 5)
+        settle view
+        readIORef reads' `shouldReturn` 7
+
   it "marks nothing without a clock, as in the server's prerender" $
     withWiki $ \w ->
       withView (run w.wiki) Page.component (w.input ["2026-11-26"] Nothing) $ \view -> do

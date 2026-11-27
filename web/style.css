@@ -1805,6 +1805,25 @@ pre.numbered > code {
   }
 }
 
+/* In forced colours (Windows' high contrast) the system draws all text in
+   its own colour, and the red is lost: there a missed task's own text has
+   a wavy underline, which the system keeps. It sits lower than a link's
+   own underline, so a link in the task shows both. The focused quote's
+   underline is left out there, as its colour is lost too and the wavy
+   line already says the task is missed. */
+@media (forced-colors: active) {
+  .day-missed > .task-text,
+  .day-missed > p {
+    text-decoration: underline wavy;
+    text-underline-offset: 0.3em;
+  }
+
+  .day-missed > .task-text mark.comment-mark-focused,
+  .day-missed > p mark.comment-mark-focused {
+    text-decoration: none;
+  }
+}
+
 /* A box the reader may tick in the page view (Wiki.App.View.Page). */
 .page-body .task-list-item input:enabled {
   cursor: pointer;

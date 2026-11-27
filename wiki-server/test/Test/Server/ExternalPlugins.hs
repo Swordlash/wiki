@@ -374,12 +374,15 @@ reserved backing = describe "a plugin whose id became a built-in plugin's" $
             (\row -> mconcat [row.plugin_id <-. val_ "calendar", row.manifest <-. val_ (manifestOf "calendar" [])])
             (\row -> row.plugin_id ==. val_ old)
       sort . ids <$> listAs r editor `shouldReturn` [("calendar", False), ("calendar", True)]
-      -- No frame, for either.
-      for_ [(wikis, "dated"), (own, "dated-mine")] $ \(p, old) ->
-        (\x -> x.status) <$> getUrlWith r (T.replace ("/" <> old <> "/") "/calendar/" (onPublic r (framePath p))) editor `shouldReturn` 404
+      -- No frame for the wiki's. The user's own is behind the wiki's of the
+      -- same id here, so its frame is asked for once that one is removed.
+      (\x -> x.status) <$> getUrlWith r (T.replace "/dated/" "/calendar/" (onPublic r (framePath wikis))) editor `shouldReturn` 404
       -- Replaced under the same id: refused, as any upload of that id.
       _ <- installForWiki r (manifestOf "calendar" []) codeA (Just wikis.bundle) >>= invalidAs
       (\x -> x.status) <$> send r methodDelete (onAdmin r (links.externalPlugins.removeForWiki (PluginId "calendar"))) [] "" `shouldReturn` 204
+      -- The user's own, no longer behind the wiki's of the same id: still
+      -- no frame.
+      (\x -> x.status) <$> getUrlWith r (T.replace "/dated-mine/" "/calendar/" (onPublic r (framePath own))) editor `shouldReturn` 404
       (\x -> x.status) <$> send r methodDelete (onPublic r (links.externalPlugins.removeMine (PluginId "calendar"))) editor "" `shouldReturn` 204
       ids <$> listAs r editor `shouldReturn` []
 

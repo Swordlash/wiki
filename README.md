@@ -3508,7 +3508,14 @@ refused, 4 not found or not yours to read (or no section with that anchor),
 5 the page saved since your version, 6 refused (not allowed, an encrypted
 space, a part's text that would change the page outside it), 7 too many
 failed sign-ins (the line says when to try again), 8 no connection, 1
-anything else.
+anything else. When curl fails, the line says what to check in the script's
+own words, with curl's status number (`curl status 7`), and quotes nothing
+of what curl wrote, which can repeat a proxy's password; to see curl's own
+words, ask the wiki's address with
+`curl -g -sS -o /dev/null 'https://wiki.example/'`, as the line suggests. A
+proxy in use is named when it may be the cause, by its setting alone
+(`WIKI_PROXY`, `https_proxy`, ...), and a `WIKI_CACERT` that names no
+readable file is refused before anything is sent.
 
 **For an assistant that takes MCP servers**, `wiki.sh mcp` is a Model Context
 Protocol server on standard input and output, with the ten tools of the

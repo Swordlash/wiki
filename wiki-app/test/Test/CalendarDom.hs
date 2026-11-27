@@ -124,6 +124,12 @@ spec = describe "the calendar, a plugin's kind of page" $ do
         setInput view (newPage w offForWiki') {NewPage.pages = ps}
         settle view
         kindsOffered view `shouldReturn` ["Document", "Presentation"]
+        -- Before this session's read of the plugins answers, or when it
+        -- failed, the context holds the defaults: no plugin's kind yet.
+        let unread = newPage w noPlugins
+        setInput view unread {NewPage.context = unread.context {pluginsRead = False}, NewPage.pages = ps}
+        settle view
+        kindsOffered view `shouldReturn` ["Document", "Presentation"]
 
     it "makes a calendar, and a document when the plugin goes off while a calendar is chosen" $ withWiki $ \w -> do
       ps <- pagesOf w w.team
@@ -153,12 +159,12 @@ spec = describe "the calendar, a plugin's kind of page" $ do
     -- Codex's first round on #401: the fetch of a space's template waits,
     -- and the plugin went off meanwhile; the create went on with the
     -- calendar's kind.
-    it "makes no page of a kind whose plugin went off while its template was fetched, and makes it with the plugin on" $ withWiki $ \w -> do
+    it "makes no page of a kind whose plugin went off while its template was fetched, or off and on again, and makes it with the plugin on" $ withWiki $ \w -> do
       _ <- runMemDOM . run w.wiki $ do
         t <- orPanic <$> createPageOf calendarKind w.team.id Nothing "Calendar template" "A calendar's text."
         orPanic <$> setPageTemplate t.id True
       ps <- pagesOf w w.team
-      let create title known = withHeldWaits $ \waits -> withView (run w.wiki) NewPage.component (newPage w noPlugins) {NewPage.pages = ps} $ \view -> do
+      let create title knowns = withHeldWaits $ \waits -> withView (run w.wiki) NewPage.component (newPage w noPlugins) {NewPage.pages = ps} $ \view -> do
             drain waits
             typeInto view ".new-page-title" title
             kinds <- findAll view ".new-page-kind-choice input"
@@ -170,14 +176,18 @@ spec = describe "the calendar, a plugin's kind of page" $ do
             click view ".new-page-form button[type=submit]"
             -- The template's fetch, held.
             length <$> pending waits `shouldReturn` 1
-            setInput view (newPage w known) {NewPage.pages = ps}
+            for_ knowns $ \known -> setInput view (newPage w known) {NewPage.pages = ps}
             drain waits
           made title = runMemDOM (run w.wiki (getPage w.team.id (slugs [title])))
-      create "Off meanwhile" offForMe
+      create "Off meanwhile" [offForMe]
       ((\p -> p.kind) <$>) <$> made "off-meanwhile" `shouldReturn` Left NotFound
+      -- Off, then on again, before the fetch answers: the form was made a
+      -- blank document, and the submission it dropped stays dropped.
+      create "Off and on" [offForMe, noPlugins]
+      ((\p -> p.kind) <$>) <$> made "off-and-on" `shouldReturn` Left NotFound
       -- The same with the plugin still on: the page is made, a calendar,
       -- from the template.
-      create "On still" noPlugins
+      create "On still" [noPlugins]
       ((\p -> (p.kind, p.body)) <$>) <$> made "on-still" >>= (`shouldSatisfy` \case Right (k, b) -> k == calendarKind && T.isInfixOf "A calendar's text." b; _ -> False)
 
   describe "the page view" $ do

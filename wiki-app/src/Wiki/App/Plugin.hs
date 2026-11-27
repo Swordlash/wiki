@@ -287,8 +287,11 @@ data Face = Logo Text (Maybe Text) | ChatGlyph | Letter Text
 --
 -- The surface draws from its input alone: it asks no backend, and reads
 -- no clock, so that the page the server renders ahead of the program is
--- the page the program shows. It is not shown on an old version of the
--- page: what the input holds is of the page as it is now.
+-- the page the program shows. What a library draws in the browser, in an
+-- element the surface holds by ref (the calendar's month), comes after
+-- that first render, and the element is empty in it. It is not shown on
+-- an old version of the page: what the input holds is of the page as it
+-- is now.
 data KindView m = KindView
   { kind :: PageKind
   , label :: Text

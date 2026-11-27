@@ -1,5 +1,5 @@
 ---
-pr: 0
+pr: 396
 title: The entries of a day's list are read, for the calendar to come
 technical: true
 ---

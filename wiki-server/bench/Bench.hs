@@ -76,7 +76,7 @@ import Text.Printf (printf)
 import Wiki.Api.Activity (Activity (..), ActivityQuery (..), activityPageSize)
 import Wiki.Api.Events (ClientMessage (..), PageEvent (..), ServerMessage (..), eventsPath)
 import Wiki.Api.Notifications (Notifications (..))
-import Wiki.App.Backend (MonadWiki (..))
+import Wiki.App.Backend (MonadWiki (..), Session (..))
 import Wiki.App.Backend.Admin (MonadAdmin (..))
 import Wiki.App.Backend.Comments (MonadComments (..))
 import Wiki.App.Backend.Notifications (MonadNotifications (..))
@@ -89,6 +89,7 @@ import Wiki.Core.Permission (SpacePermission (..), Subject (..))
 import Wiki.Core.Search (SearchQuery (..), searchQuery)
 import Wiki.Core.Slug (Slug, mkSlug)
 import Wiki.Core.Space (Space (..))
+import Wiki.Core.User (User (..))
 import Wiki.Server.Events qualified as Events
 import Wiki.Server.Feed (FeedKind (..), feedApplication, newFeedCache, sitemapApplication)
 import Wiki.Server.Storage (Config (..), Place (..), Storage, Who (..), backUp, defaultConfig, inDataDir, postgresAt, runStoredWiki, withStorage, writing)
@@ -212,7 +213,9 @@ timings size postgres = do
           every = commas (allPages size)
           inSpace = commas size.pages
       let pageView = runStoredWiki st viewer $ do
-            _ <- session
+            -- The storage answers a session it cannot read as a visitor's.
+            s <- session
+            when (((\u -> u.id) <$> s.user) /= Just (UserId (userId 0))) (panic "the page view's session is not the viewer's")
             _ <- getPage space [slugOf target] >>= must
             void (watching (WatchPage (pageId target)) >>= must)
       report "page view: session, getPage, watching" 20 pageView
@@ -223,8 +226,10 @@ timings size postgres = do
         runStoredWiki st saver (savePage p.id p.updatedAt p.title (p.body <> "\n\nMore.")) >>= void . must
       report "backup" 3 (backedUp st)
       readsDuringBackup st viewer space target
-      -- A watchdog only: the step answers in milliseconds.
-      timeout 60_000_000 (commentWithTabs size st hub viewer target) >>= maybe (panic "comment on a page with tabs: no end within 60 s") pure
+      -- A watchdog only, for the run that checks, where the step answers
+      -- in milliseconds. The full run waits: subscribing its tabs may take
+      -- longer on a slow database.
+      (if size.once then timeout 60_000_000 else fmap Just) (commentWithTabs size st hub viewer target) >>= maybe (panic "comment on a page with tabs: no end within 60 s") pure
       grown <- timed (grow size st space)
       printf "grown in %.1f s\n" (snd grown)
       let search q = runStoredWiki st Administrator (searchPages q) >>= found q.text

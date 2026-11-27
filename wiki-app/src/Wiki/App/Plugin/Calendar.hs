@@ -13,9 +13,9 @@
 -- day's page: a plain click opens it in this tab, through the router, and
 -- any other is the browser's. The list names every day, newest first, each a
 -- link to its page. It is folded in a @\<details>@ once the month is drawn,
--- and open before: on the page the server rendered, while the month's
--- library loads, and when the library cannot be loaded. It is also the
--- keyboard's short way to a day.
+-- unless the reader has the focus in it then, and open before: on the
+-- page the server rendered, while the month's library loads, and when the
+-- library cannot be loaded. It is also the keyboard's short way to a day.
 --
 -- Both read only the page view's list of the pages under the calendar, so
 -- they work in an encrypted space as in a plain one: the titles there are
@@ -29,11 +29,13 @@ module Wiki.App.Plugin.Calendar
   , days
   , dayName
   , dayLink
+  , marked
   )
 where
 
 import Control.Monad.UUID (MonadUUID)
 import Data.List (lookup)
+import Data.List.NonEmpty qualified as NE
 import Data.Row (Empty)
 import Data.Time (Day, defaultTimeLocale, formatTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
@@ -44,7 +46,7 @@ import Protolude hiding (State)
 import Web.DOM.Internal.Types (Element)
 import Web.Event.Event (EventType (..))
 import Wiki.App.Plugin (Child (..), KindInput (..), KindView (..), Link, LinkClick, Manifest (..), Plugin (..), PluginId, attr, builtin, followLink, linkAddress, linkProps, openLink)
-import Wiki.App.Plugin.Calendar.Island (clickedDay, drawnProblem, dropMonth, showMonth)
+import Wiki.App.Plugin.Calendar.Island (Marked (..), clickedDay, drawnProblem, dropMonth, foldList, showMonth)
 import Wiki.Core.Markdown.Day (dayOfTitle)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (calendarKind)
@@ -83,19 +85,26 @@ dayLink under d = (\c -> c.link) <$> lookup d (days under)
 dayName :: Day -> Text
 dayName = toS . formatTime defaultTimeLocale "%A, %-d %B %Y"
 
--- | The dates that have a page, once each, with the address of the first
--- page of each ('dayLink'): what the month marks, and where each mark
--- points.
-datesOf :: [Child] -> [(Day, Text)]
-datesOf under = [(d, linkAddress l) | d <- ordNub (map fst (days under)), Just l <- [dayLink under d]]
+-- | The days the month marks: each date that has a page, once, with the
+-- address of its first page in the order of 'days' (the page 'dayLink'
+-- opens) and its name. One pass over the sorted days, in which the pages
+-- of one date are next to each other.
+marked :: [Child] -> [Marked]
+marked under = [Marked {day = d, address = linkAddress c.link, name = dayName d} | (d, c) NE.:| _ <- NE.groupWith fst (days under)]
 
 data State = State
   { input :: KindInput
   , host :: H.RefLabel
   -- ^ The element the month is drawn in, which no render looks inside.
+  , allDays :: H.RefLabel
+  -- ^ The list of days, a @\<details>@, which the month folds once drawn
+  -- ('foldList').
   , shown :: Maybe Element
   -- ^ The element the month was asked into ('showMonth'), until the
   -- surface goes: 'Finalize' takes the month out of it.
+  , marks :: [Marked]
+  -- ^ The days the month was last told ('marked'), so that a change of
+  -- input that changes none of them tells it nothing.
   , month :: Month
   }
 
@@ -123,7 +132,8 @@ surface =
     H.ComponentSpec
       { initialState = \input -> do
           host <- H.newRefLabel "calendar-month"
-          pure State {input, host, shown = Nothing, month = Waiting}
+          allDays <- H.newRefLabel "calendar-all-days"
+          pure State {input, host, allDays, shown = Nothing, marks = marked input.under, month = Waiting}
       , render
       , eval =
           H.mkEval
@@ -153,7 +163,7 @@ surface =
             | otherwise -> [hh|<p class="calendar-empty">No days yet.</p>|]
           ds ->
             [hh|
-              <details class="calendar-all-days" {{ [attr "open" "" | st.month /= Drawn] }}>
+              <details class="calendar-all-days" open ref={{ st.allDays }}>
                 <summary>All days ({{ show (length ds) :: Text }})</summary>
                 <ul class="calendar-day-list">
                   {% for (d, c) in ds %}
@@ -170,17 +180,24 @@ surface =
       -- out whatever the ask puts in. Natively the ask does nothing.
       Initialize -> do
         st <- get
-        H.getRef st.host >>= traverse_ (\el -> H.sync (showMonth el (datesOf st.input.under)) >> modify (\s -> s {shown = Just el}))
+        H.getRef st.host >>= traverse_ (\el -> H.sync (showMonth el st.marks) >> modify (\s -> s {shown = Just el}))
       -- A change of the pages under the calendar (a day added, in this
       -- tab or another) changes the days the month marks: the month is
       -- told, not put in again.
       Receive input -> do
         st <- get
-        put st {input}
-        let dates = datesOf input.under
-        when (dates /= datesOf st.input.under) $
-          for_ st.shown (\el -> H.sync (showMonth el dates))
-      MonthDrawn problem -> modify (\st -> st {month = maybe Drawn (const Failed) problem})
+        let marks = marked input.under
+        put st {input, marks}
+        when (marks /= st.marks) $
+          for_ st.shown (\el -> H.sync (showMonth el marks))
+      -- Drawn, the month folds the list, unless the reader has the focus
+      -- in it: the check and the fold are one call of the browser's, made
+      -- in this step. The list is open in every render, so no render
+      -- opens or folds it again.
+      MonthDrawn Nothing -> do
+        modify (\st -> st {month = Drawn})
+        gets (\st -> st.allDays) >>= H.getRef >>= traverse_ (H.sync . foldList)
+      MonthDrawn (Just _) -> modify (\st -> st {month = Failed})
       DayClicked d -> gets (\st -> dayLink st.input.under d) >>= traverse_ openLink
       Followed l click -> followLink l click
       Finalize -> gets (\st -> st.shown) >>= traverse_ (H.sync . dropMonth)

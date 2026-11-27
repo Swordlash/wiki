@@ -1,57 +1,56 @@
-// A calendar's month as the browser suite holds it (Test.Browser.Contents):
-// the page's ask for a month (globalThis.wikiIslands.showCalendar, which
-// starts the load of the month's library) held until the test lets it
-// go, as if the library's file took that long; and the console's errors
-// kept meanwhile.
+// A calendar's month as the browser suite drives it (Test.Browser.Contents),
+// through what the month takes from outside itself
+// (globalThis.wikiIslands.calendarHooks, web/src/islands.js): the load of
+// its module and stylesheet, held until the test lets it go, as if the
+// files took that long; and the time now, fixed for an example. And the
+// console's errors, kept while a load is held.
 //
 // The runner serves the bundle's files itself, so no request for them can
-// be held: what is held is the ask that would fetch them. Let go after
-// the page has gone on, the ask meets an element out of the page, as a
-// late load does.
+// be held at the network: what is held is the promise of the files, after
+// the page has asked for the month and kept on its element that it wants
+// one. Let go after the page has gone on, the load ends with the element
+// out of the page and dropped, as a late load does.
 
-// Hold the next ask for a month, keeping the element it was for, and keep
-// the console's errors. Only the one ask is held: the page's islands are
-// given back as soon as it is, so that an example that fails before
-// wiki_test_calendar_release leaves the next one a month to draw.
+// Hold the next load of the month, keeping the elements of the months in
+// the page as it starts, and keep the console's errors. Only the one load
+// is held: the hook is given back as soon as it is asked, so that an
+// example that fails before wiki_test_calendar_release leaves the next one
+// a month to draw.
 function wiki_test_calendar_hold() {
-  const islands = globalThis.wikiIslands;
-  const held = [];
-  const errors = [];
-  globalThis.wikiTestCalendar = { islands, held, errors };
-  globalThis.wikiIslands = Object.freeze({
-    ...islands,
-    showCalendar: (host, days) => {
-      held.push({ host, days });
-      globalThis.wikiIslands = islands;
-      return Promise.resolve();
-    },
-  });
-  const logError = console.error;
-  globalThis.wikiTestCalendar.logError = logError;
+  const hooks = globalThis.wikiIslands.calendarHooks;
+  const load = hooks.load;
+  const test = { hooks, load, held: [], hosts: [], errors: [], logError: console.error };
+  globalThis.wikiTestCalendar = test;
+  hooks.load = () => {
+    hooks.load = load;
+    test.hosts.push(...document.querySelectorAll(".calendar-month"));
+    return new Promise((resolve, reject) => test.held.push(() => load().then(resolve, reject)));
+  };
   console.error = (...args) => {
-    errors.push(args.map(String).join(" "));
-    logError.apply(console, args);
+    test.errors.push(args.map(String).join(" "));
+    test.logError.apply(console, args);
   };
 }
 
-// How many asks are held.
+// How many loads are held.
 function wiki_test_calendar_held() {
   return globalThis.wikiTestCalendar?.held.length ?? 0;
 }
 
-// Let the held ask go to the page's islands, and give back the console.
-// The promise settles once the ask's load has ended, and the month is in
-// place or was not wanted.
+// Let the held load go, and give back the console. The promise settles a
+// task after the files have come: every reaction to the load's promise,
+// the month put in or not, has run by then.
 async function wiki_test_calendar_release() {
   const test = globalThis.wikiTestCalendar;
-  await Promise.all(test.held.map(({ host, days }) => test.islands.showCalendar(host, days)));
+  await Promise.all(test.held.map((go) => go().catch(() => {})));
+  await new Promise((nextTask) => setTimeout(nextTask));
   console.error = test.logError;
 }
 
-// What the elements of the held asks hold now, as JSON: for each, whether
+// What the elements of the held loads hold now, as JSON: for each, whether
 // it is in the page and how many children it has.
 function wiki_test_calendar_hosts() {
-  return JSON.stringify((globalThis.wikiTestCalendar?.held ?? []).map(({ host }) => [host.isConnected, host.childElementCount]));
+  return JSON.stringify((globalThis.wikiTestCalendar?.hosts ?? []).map((host) => [host.isConnected, host.childElementCount]));
 }
 
 // The console's errors kept since wiki_test_calendar_hold, as JSON.
@@ -64,11 +63,21 @@ function wiki_test_calendar_months() {
   return document.querySelectorAll(".calendar-month-place").length;
 }
 
-// Today in the browser's time zone, as the wiki writes a date: the day the
-// month opens on.
-function wiki_test_calendar_today() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// Fix the time now, as the month reads it, at noon of a day (2026-11-27),
+// in the browser's time zone; with "" give it back the browser's clock.
+function wiki_test_calendar_today(day) {
+  const hooks = globalThis.wikiIslands.calendarHooks;
+  if (day === "") {
+    hooks.now = () => new Date();
+    return;
+  }
+  const [year, month, date] = String(day).split("-").map(Number);
+  hooks.now = () => new Date(year, month - 1, date, 12, 0, 0);
+}
+
+// The text of the element that has the focus.
+function wiki_test_calendar_focused() {
+  return document.activeElement?.textContent ?? "";
 }
 
 // Click the first element a selector finds with a click made here, with

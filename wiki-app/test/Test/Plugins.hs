@@ -19,7 +19,8 @@ import Test.QuickCheck
 import Wiki.Api.Plugins (PluginChoice (..), PluginState (..), Plugins (..), noPlugins)
 import Wiki.App.Plugin (AgentButton (..), Child (..), Diagnostics (..), Drawn (..), Face (..), KindView (..), Manifest (..), Plugin (..), PluginId (..), builtin, linkTo)
 import Wiki.App.Plugin.Assistant.Agent (buttonsOf)
-import Wiki.App.Plugin.Calendar (dayName, days)
+import Wiki.App.Plugin.Calendar (dayName, days, marked)
+import Wiki.App.Plugin.Calendar.Island (Marked (..))
 import Wiki.App.Plugin.Errors (errors, islandFailures)
 import Wiki.App.Plugin.Registry (Contributed (..), builtinIds, contributed, isOn, manifests, onAmong, optionsOf, plugins)
 import Wiki.App.Route (Route (..), route)
@@ -211,6 +212,16 @@ spec = describe "plugins" $ do
     it "keep the space's order for two pages of one date" $ do
       cs <- under [("2026-11-27", False), ("2026-11-27", False)]
       [c.page.position | (_, c) <- days cs] `shouldBe` [0, 1]
+    it "are marked in the month once a date, at the address of the first page of the date, named in words" $ do
+      router <- runMemDOM (Router.newRouter "/" Unknown route)
+      let place (n :: Int) = Page [slugOf "team"] [slugOf "days", slugOf ("p" <> show n)]
+          slugOf = either (panic . show) identity . mkSlug
+          child title n = Child {page = summary title False n, link = linkTo router (place n)}
+          cs = [child "2026-11-27" 0, child "Notes" 1, child "2026-11-25" 2, child "2026-11-27" 3]
+      [(m.day, m.address, m.name) | m <- marked cs]
+        `shouldBe` [ (fromGregorian 2026 11 27, Router.href router (place 0), "Friday, 27 November 2026")
+                   , (fromGregorian 2026 11 25, Router.href router (place 2), "Wednesday, 25 November 2026")
+                   ]
     it "name a day in words" $
       dayName (fromGregorian 2026 11 27) `shouldBe` "Friday, 27 November 2026"
 

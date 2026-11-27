@@ -174,31 +174,31 @@ spec = describe "the calendar, a plugin's kind of page" $ do
         settle view
       readIORef w.went `shouldReturn` [R.Page (slugs ["team"]) (slugs ["days", "2026-11-27"])]
 
-    it "shows the month's element empty, and the days in an open list until the month is drawn" $ withWiki $ \w -> do
+    it "shows the month's element empty, and the days in an open list, as the server renders the page" $ withWiki $ \w -> do
       ps <- pagesOf w w.team
       withView (run w.wiki) Page.component (pageInput w w.admin noPlugins w.team ps ["days"]) $ \view -> do
         settle view
         -- The month's element is empty, for the island to fill; the list
-        -- is open, as on the page the server rendered.
+        -- is open. The month, once drawn, folds the list in the browser
+        -- ("Test.Browser.Contents"), with a call that does nothing here.
         textOf view ".calendar-month" `shouldReturn` ""
-        allDays <- find view ".calendar-all-days" >>= maybe (panic "no list of the days") pure
-        N.attribute "open" allDays `shouldReturn` Just ""
+        find view ".calendar-all-days" >>= traverse (N.attribute "open") >>= (`shouldBe` Just (Just ""))
         textOf view ".calendar-all-days summary" `shouldReturn` "All days (2)"
-        -- The month is drawn: the list folds.
-        month view >>= N.dispatch "wiki-island-drawn" (object ["detail" .= ("" :: Text)])
-        settle view
-        N.attribute "open" allDays `shouldReturn` Nothing
-        isJust <$> find view ".calendar-month-failed" `shouldReturn` False
         listedDays view `shouldReturn` ["Friday, 27 November 2026", "Wednesday, 25 November 2026"]
 
-    it "keeps the list open, and says so, when the month's library cannot be loaded" $ withWiki $ \w -> do
+    it "says the month could not be shown when its library cannot be loaded, until it is drawn after all" $ withWiki $ \w -> do
       ps <- pagesOf w w.team
       withView (run w.wiki) Page.component (pageInput w w.admin noPlugins w.team ps ["days"]) $ \view -> do
         settle view
+        isJust <$> find view ".calendar-month-failed" `shouldReturn` False
         month view >>= N.dispatch "wiki-island-drawn" (object ["detail" .= ("Failed to fetch dynamically imported module" :: Text)])
         settle view
         textOf view ".calendar-month-failed" `shouldReturn` "The month could not be shown."
         find view ".calendar-all-days" >>= traverse (N.attribute "open") >>= (`shouldBe` Just (Just ""))
+        -- Asked again (the days changed), the library loaded this time.
+        month view >>= N.dispatch "wiki-island-drawn" (object ["detail" .= ("" :: Text)])
+        settle view
+        isJust <$> find view ".calendar-month-failed" `shouldReturn` False
 
     it "opens the page of a day whose number was clicked in the month, the first of its date, and nothing for a date without one" $ withWiki $ \w -> do
       -- A second page of the 27th, after the first in the space's order.

@@ -16,8 +16,8 @@ import Control.Monad.UUID (MonadUUID)
 import Data.Aeson (decodeStrict)
 import Data.IORef (IORef)
 import Data.Text qualified as T
-import Data.Time (Day, addGregorianMonthsClip, defaultTimeLocale, formatTime, fromGregorian, getCurrentTime, toGregorian, utctDay)
-import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
+import Data.Time (Day, defaultTimeLocale, formatTime, fromGregorian, getCurrentTime, utctDay)
+import Data.Time.Format.ISO8601 (iso8601Show)
 import Halogen.JSBits (Inert (..), JSText, Safety (..), browserJS, fromJSText, inBrowser, toJSText)
 import Halogen.JSBits.Promise (Promise (..), wait)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
@@ -50,7 +50,8 @@ $( browserJS
      , ("js_calendar_hosts", "wiki_test_calendar_hosts", Safe, [t|IO JSText|])
      , ("js_calendar_errors", "wiki_test_calendar_errors", Safe, [t|IO JSText|])
      , ("js_calendar_months", "wiki_test_calendar_months", Safe, [t|IO Int|])
-     , ("js_calendar_today", "wiki_test_calendar_today", Safe, [t|IO JSText|])
+     , ("js_calendar_today", "wiki_test_calendar_today", Safe, [t|JSText -> IO ()|])
+     , ("js_calendar_focused", "wiki_test_calendar_focused", Safe, [t|IO JSText|])
      , ("js_history_back_heardPromise", "wiki_test_history_back_heard", Safe, [t|IO (Promise ())|])
      , ("js_calendar_click", "wiki_test_calendar_click", Safe, [t|JSText -> Bool -> IO Bool|])
      ]
@@ -267,11 +268,14 @@ spec m = do
     length <$> findAll ui ".calendar-days" `shouldReturn` 0
 
   it "shows a calendar's month with the numbers of its days as links, opens a day, and marks a day of the month before" $ runPage $ do
-    today <- either panic identity . (maybe (Left "the browser gave no date") Right . iso8601ParseM . toS . fromJSText) <$> unsafeIOToPageM js_calendar_today
-    let (y, mo, _) = toGregorian today
-        here = fromGregorian y mo 15
-        before = addGregorianMonthsClip (-1) here
+    -- The month's today is fixed (its hook of the time now, at noon of the
+    -- day), and the days written are taken from the same day: the walk
+    -- crosses no midnight and no month's end.
+    let today = fromGregorian 2026 11 27
+        here = fromGregorian 2026 11 15
+        before = fromGregorian 2026 10 15
         linkTo d = ".calendar-day-link[data-date='" <> iso d <> "']"
+    unsafeIOToPageM (js_calendar_today (toJSText (iso today)))
     (ui, _) <- startWritten m (writeCalendar [here, before]) (Just "user-admin") (Page (slugs ["team"]) (slugs ["days"]))
     -- The month is FullCalendar's, drawn once its file has loaded; its
     -- island says so, which folds the list of days. Then it is read once.
@@ -280,6 +284,8 @@ spec m = do
     shown <- findAll ui ".calendar-day-link"
     traverse (`getAttribute` "data-date") shown `shouldReturn` [Just (iso here)]
     traverse textContent shown `shouldReturn` ["15"]
+    -- Named for a screen reader with the whole date.
+    traverse (`getAttribute` "aria-label") shown `shouldReturn` [Just (dayWords here)]
     -- The month opens on today's, which is marked.
     length <$> findAll ui (".calendar-month [aria-current=date][data-date='" <> iso today <> "']") `shouldReturn` 1
     -- The day's number is a link to the day's page: the address the list
@@ -317,11 +323,12 @@ spec m = do
     -- The list, folded, holds every day, newest first.
     find ui ".calendar-all-days" >>= (`getAttribute` "open") >>= (`shouldBe` Nothing)
     (findAll ui ".calendar-all-days .calendar-day time" >>= traverse textContent) `shouldReturn` map dayWords [here, before]
+    unsafeIOToPageM (js_calendar_today (toJSText ""))
 
   it "puts no month in a calendar's page left while the month's library loads, and logs no error" $ runPage $ do
     let day = fromGregorian 2026 11 27
-    -- The page's asks for a month are held from the start, as if the
-    -- month's file were slow to come.
+    -- The load of the month's files is held once the page has asked for
+    -- the month, as if the files were slow to come.
     unsafeIOToPageM js_calendar_hold
     (ui, _) <- startWritten m (writeCalendar [day]) (Just "user-admin") (Page (slugs ["team"]) (slugs ["days"]))
     find ui ".calendar-all-days" >>= (`getAttribute` "open") >>= (`shouldBe` Just "")
@@ -331,12 +338,27 @@ spec m = do
     find ui ".calendar-day a" >>= click
     waitQuiet
     (find ui ".page-view h1" >>= textContent) `shouldReturn` iso day
-    -- The ask let go now meets an element out of the page: the library
-    -- loads, and nothing is put in it, nor anywhere else.
+    -- The files come now, for an element out of the page and dropped:
+    -- nothing is put in it, nor anywhere else.
     unsafeIOToPageM js_calendar_release
     hosts `shouldReturn` [(False, 0)]
     unsafeIOToPageM js_calendar_months `shouldReturn` 0
     errors `shouldReturn` []
+
+  it "keeps the list of days open when the month is drawn while the focus is in it" $ runPage $ do
+    let day = fromGregorian 2026 11 27
+    unsafeIOToPageM js_calendar_hold
+    (ui, _) <- startWritten m (writeCalendar [day]) (Just "user-admin") (Page (slugs ["team"]) (slugs ["days"]))
+    -- While the month loads, the reader comes to a day in the open list.
+    unsafeIOToPageM js_calendar_held `shouldReturn` 1
+    find ui ".calendar-day a" >>= focus
+    -- The month is drawn: the list stays open, the focus where it was.
+    -- (Without the focus in it, the list folds: the walk above.)
+    unsafeIOToPageM js_calendar_release
+    waitQuiet
+    unsafeIOToPageM js_calendar_months `shouldReturn` 1
+    find ui ".calendar-all-days" >>= (`getAttribute` "open") >>= (`shouldBe` Just "")
+    (fromJSText <$> unsafeIOToPageM js_calendar_focused) `shouldReturn` dayWords day
 
   it "makes a page a presentation, which is offered to be presented, and a document again" $ runPage $ do
     (ui, wiki) <- startWith m (Just "user-admin") (Page (slugs ["docs"]) (slugs ["markdown-guide", "diagrams"]))

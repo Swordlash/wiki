@@ -21,6 +21,7 @@
 //   wikiIslands.hpke(): Promise<module>
 //   wikiIslands.showCalendar(host, days): Promise<void>
 //   wikiIslands.dropCalendar(host)
+//   wikiIslands.calendarHooks: { load, now }, for the browser suite
 //
 // It also gives the pages' spoilers and the code blocks' copy buttons their
 // behaviour (see "Spoilers" and "Copy buttons" below), with listeners on the
@@ -417,12 +418,25 @@ const cropAvatar = (host, file) =>
     .then((avatar) => avatar.crop(host, file))
     .catch((error) => console.error("The avatar's cropper could not be loaded:", error));
 
-// A calendar's month in `host`, with the days in `days` (a JSON array of
-// pairs: a date, 2026-11-27, and the address of its page) marked. The first call for an element starts the load
-// of the month's module and stylesheet, and keeps what it wants on the
-// element (`wikiCalendar`): the days, and the month once it is there. A
-// call while the load is out, or once the month is drawn, changes the days
-// only: no second month is put in the element.
+// What a calendar's month takes from outside itself: its module and
+// stylesheet (`load`, a promise of the module once both are in), and the
+// time now (`now`), which the month reads for today's day and opens on.
+// The browser suite replaces them (wiki-app/test/jsbits/test-calendar.js):
+// it holds the load to leave a page while the month loads, and fixes the
+// day for a walk that must not cross midnight. The page leaves them as
+// they are.
+const calendarHooks = {
+  load: () => Promise.all([loadCalendar(), loadCalendarStyle()]).then(([calendar]) => calendar),
+  now: () => new Date(),
+};
+
+// A calendar's month in `host`, with the days in `days` marked: a JSON
+// array of triples, a date (2026-11-27), the address of its page and its
+// name in words. The first call for an element starts the load of the
+// month's module and stylesheet, and keeps what it wants on the element
+// (`wikiCalendar`): the days, and the month once it is there. A call while
+// the load is out, or once the month is drawn, changes the days only: no
+// second month is put in the element.
 //
 // The load may end after the page has gone on: the element is then out of
 // the page, or dropCalendar took what was kept on it, and nothing is put
@@ -441,10 +455,11 @@ const showCalendar = (host, days) => {
   const wanted = { list, month: null };
   host.wikiCalendar = wanted;
   const stillWanted = () => host.isConnected && host.wikiCalendar === wanted;
-  return Promise.all([loadCalendar(), loadCalendarStyle()])
-    .then(([calendar]) => {
+  return calendarHooks
+    .load()
+    .then((calendar) => {
       if (!stillWanted()) return;
-      wanted.month = calendar.mount(host, wanted.list);
+      wanted.month = calendar.mount(host, wanted.list, () => calendarHooks.now());
       drawn(host, null);
     })
     .catch((error) => {
@@ -738,6 +753,7 @@ globalThis.wikiIslands = Object.freeze({
   hpke: loadHpke,
   showCalendar,
   dropCalendar,
+  calendarHooks,
 });
 
 // opaque-hs's client (Crypto.OPAQUE.Client, in Wiki.App.Backend.Opaque)

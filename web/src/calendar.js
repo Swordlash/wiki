@@ -14,10 +14,18 @@ import { Calendar } from "fullcalendar";
 import dayGridPlugin from "fullcalendar/daygrid";
 import classicTheme from "fullcalendar/themes/classic";
 
-// A day of FullCalendar's as the wiki writes a date: 2026-11-27.
-// FullCalendar gives a cell's day as the local midnight that starts it.
-const isoDay = (date) =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+// The day of a cell of the month, as the wiki writes a date: 2026-11-27.
+// The month runs in UTC (`timeZone` below), so FullCalendar's date of a
+// cell is the UTC midnight of its civil day, and this is the identifier
+// FullCalendar writes in the cell's data-date. The reader's time zone
+// plays no part: a civil date that zone skipped (Pacific/Apia's 30
+// December 2011) is still a cell of its own.
+const isoDay = (date) => date.toISOString().slice(0, 10);
+
+// The reader's wall clock now, as the month's UTC clock reads it: the
+// same year, day and hour, so that the month marks the reader's today.
+const wallClock = (now) =>
+  new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds()));
 
 // Whether a click is one the page follows itself, in this tab: the main
 // button, no modifier key, and nothing that prevented it already. Any
@@ -29,14 +37,17 @@ const plainLeftClick = (event) =>
   event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && !event.defaultPrevented;
 
 // The link of a day that has a page: its number, pointing at `address`, the
-// day's page. A plain click is the application's: its default is
-// prevented, and `host` is told the day with a `wiki-calendar-day` event.
-const dayLink = (host, day, address, number) => {
+// day's page, and named for screen readers with the whole date (`name`,
+// "Friday, 27 November 2026"). A plain click is the application's: its
+// default is prevented, and `host` is told the day with a
+// `wiki-calendar-day` event.
+const dayLink = (host, day, address, name) => {
   const link = document.createElement("a");
   link.className = "calendar-day-link";
   link.href = address;
   link.dataset.date = day;
-  link.textContent = number;
+  link.textContent = String(Number(day.slice(8, 10)));
+  link.setAttribute("aria-label", name);
   link.addEventListener("click", (event) => {
     if (!plainLeftClick(event)) return;
     event.preventDefault();
@@ -55,11 +66,13 @@ const dayLink = (host, day, address, number) => {
 };
 
 // Put a month in `host`, in an element of its own, with the days in `days`
-// (pairs of a date, 2026-11-27, and the address of its page) marked. The
-// month opens on today's. What is returned changes the days marked
+// marked: triples of a date (2026-11-27), the address of its page, and its
+// name in words. `now` gives the time now, which the month reads for
+// today's day and opens on. What is returned changes the days marked
 // (`days(list)`) and takes the month out (`destroy()`).
-export const mount = (host, days) => {
-  let pages = new Map(days);
+export const mount = (host, days, now) => {
+  const byDay = (list) => new Map(list.map(([day, address, name]) => [day, { address, name }]));
+  let pages = byDay(days);
   const place = document.createElement("div");
   place.className = "calendar-month-place";
   host.replaceChildren(place);
@@ -68,11 +81,14 @@ export const mount = (host, days) => {
   // cells again with it, reading `pages` as it is then.
   const topContent = () => (info) => {
     const day = isoDay(info.date);
-    return pages.has(day) && !info.inPopover ? { domNodes: [dayLink(host, day, pages.get(day), info.dayNumberText)] } : true;
+    const page = pages.get(day);
+    return page && !info.inPopover ? { domNodes: [dayLink(host, day, page.address, page.name)] } : true;
   };
   const calendar = new Calendar(place, {
     plugins: [dayGridPlugin, classicTheme],
     initialView: "dayGridMonth",
+    timeZone: "UTC",
+    now: () => wallClock(now()),
     firstDay: 1,
     locale: "en-GB",
     headerToolbar: { start: "title", end: "today prev,next" },
@@ -83,7 +99,7 @@ export const mount = (host, days) => {
   calendar.render();
   return {
     days: (list) => {
-      pages = new Map(list);
+      pages = byDay(list);
       calendar.setOption("dayCellTopContent", topContent());
     },
     destroy: () => {

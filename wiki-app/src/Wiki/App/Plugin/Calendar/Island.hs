@@ -21,6 +21,8 @@
 module Wiki.App.Plugin.Calendar.Island
   ( showMonth
   , dropMonth
+  , foldList
+  , Marked (..)
   , drawnProblem
   , clickedDay
   )
@@ -44,17 +46,34 @@ $( browserJS
      ["jsbits/calendar.js"]
      [ ("js_show", "wiki_calendar_show", Safe, [t|Element -> JSText -> IO ()|])
      , ("js_drop", "wiki_calendar_drop", Safe, [t|Element -> IO ()|])
+     , ("js_fold", "wiki_calendar_fold", Safe, [t|Element -> IO ()|])
      ]
  )
 
 -- | Show the month in the element, with these days marked as having a
--- page, each a link to the address given with it. The first call for an element starts the load of the month's
+-- page, each a link to its address, named with its name. The first call for an element starts the load of the month's
 -- library and puts the month in once it has loaded, if the element is
 -- still in the page and nobody dropped the month meanwhile. A later call
 -- changes the days marked, and puts no second month in. It returns at
 -- once: call it in @H.sync@.
-showMonth :: (MonadIO m) => Element -> [(Day, Text)] -> m ()
-showMonth host days = liftIO (js_show host (toJSText (decodeUtf8 (BSL.toStrict (encode [(iso8601Show d, address) | (d, address) <- days])))))
+showMonth :: (MonadIO m) => Element -> [Marked] -> m ()
+showMonth host days = liftIO (js_show host (toJSText (decodeUtf8 (BSL.toStrict (encode [(iso8601Show m.day, m.address, m.name) | m <- days])))))
+
+-- | 'Marked' is a day the month marks as having a page: its date, the
+-- address of its page ('Wiki.App.Plugin.linkAddress'), and its name in
+-- words, which names the link for a screen reader.
+data Marked = Marked
+  { day :: Day
+  , address :: Text
+  , name :: Text
+  }
+  deriving stock (Eq, Show)
+
+-- | Fold the list of days, unless the focus is inside it: in the browser,
+-- one call that checks and folds. Natively it does nothing. Call it in
+-- @H.sync@.
+foldList :: (MonadIO m) => Element -> m ()
+foldList listed = liftIO (js_fold listed)
 
 -- | Take the month out of the element, or forget that it was wanted
 -- there while its library loads. Call it in @H.sync@.

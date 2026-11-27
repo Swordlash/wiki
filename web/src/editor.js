@@ -1229,7 +1229,9 @@ export const smallestChange = (old, text) => {
 };
 
 // The walk through the places of a command the "/" menu wrote (#301): a
-// link's text and then its address, a table's cells, and so on. Tab goes
+// link's text and then its address, a table's cells, and so on; and through
+// the braces of a command of math chosen after a backslash (\frac{}{}), one
+// pair or more. Tab goes
 // to the next place and Shift+Tab to the one before; Tab on the last
 // place puts the cursor where the writing goes on and ends the walk.
 //
@@ -1314,7 +1316,7 @@ const walkEnds = EditorState.transactionExtender.of((tr) => {
 // goes on). None for an entry without places, or with places that are not
 // in its text, in order and apart.
 const walkStart = (state, changes, at, option) => {
-  if (snippetParts === null || !Array.isArray(option.places) || option.places.length < 2 || !Number.isInteger(option.after)) return [];
+  if (snippetParts === null || !Array.isArray(option.places) || option.places.length < 1 || !Number.isInteger(option.after)) return [];
   const places = option.places.map(([from, to]) => [unitsOf(option.insert, from), unitsOf(option.insert, to)]);
   const after = unitsOf(option.insert, option.after);
   const apart = places.every(([from, to], i) => from <= to && (i === 0 ? from >= 0 : from > places[i - 1][1]));
@@ -1374,8 +1376,9 @@ const dismissAt = (state) => {
 // What an option of the wiki's own Markdown writes when it is chosen, in
 // a view: its snippet, or its text as it is (insert), in place of the
 // range the list was for; or, for one given the cursor's whole line (an
-// entry of the "/" menu), its text in place of that line, with its
-// selection and, for a command with several places, a walk through them
+// entry of the "/" menu, a command of math with its braces), its text in
+// place of that line, with its selection and, for a command with several
+// places (or a command of math's one pair of braces), a walk through them
 // (walkStart), if the line still reads as the one the answer was made for
 // (a list kept from before the last key writes nothing); then, for an
 // entry that opens a dialog, a "wiki-complete-action" event on the host,
@@ -1432,7 +1435,8 @@ const writeOption = (host, option, asked) => (view, completion, from, to) => {
       selection: EditorSelection.single(line.from + start, line.from + end),
       scrollIntoView: true,
       annotations: [pickedCompletion.of(completion), Transaction.userEvent.of("input.complete"), isolateHistory.of("full")],
-      // A command with several places: Tab goes through them (walkStart).
+      // A command with several places, or braces in math: Tab goes
+      // through them (walkStart).
       effects: walkStart(view.state, changes, line.from, option),
     });
   }
@@ -1743,7 +1747,8 @@ const completions = (host) => {
   const config = { icons: false, defaultKeymap: false, addToOptions: [emojiOfOption], interactionDelay, updateSyncTime: 0 };
   const ownKeys = Prec.highest(keymap.of(keys.map((binding) => ({ ...binding, stopPropagation: true }))));
   // The keys of a snippet being filled in (an entry of the wiki's own
-  // Markdown chosen, or a command of the "/" menu with several places):
+  // Markdown chosen, a command of the "/" menu with several places, or a
+  // command of math with its braces):
   // Tab and Shift+Tab to its next and previous place, Escape to stop
   // filling it in, as the library binds them, but going no further when
   // they act, so that the form's keydown does not also indent with Tab or

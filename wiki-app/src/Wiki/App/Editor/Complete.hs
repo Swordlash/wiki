@@ -48,7 +48,7 @@ import Wiki.Core.Markdown.Box (BoxKind)
 import Wiki.Core.Markdown.Complete
 import Wiki.Core.Markdown.Edit (pageMacros)
 import Wiki.Core.Markdown.Starts (Earlier (..), earlierFrom, linesBelow, linesFromStart, noEarlier)
-import Wiki.Core.Math (definedMacros)
+import Wiki.Core.Math (definedMacroArities)
 import Wiki.Core.Page (PageSummary (..))
 import Wiki.Core.PageKind (PageKind)
 import Wiki.Core.PageMatch (Matchable (..), TitleHit (..), matchRank, matchable, typedLetters)
@@ -172,11 +172,13 @@ baseOrder p = (p.nearness, T.length p.address + maybe 0 (\l -> 1 + T.length l) p
 sources :: Held -> [Source]
 sources held = [wikiSource held.kind held.boxes, pageSource held, slashSource held.entries, mathSource (mathCommands held.mathMacros)]
 
--- | The macros a block of TeX defines ("Wiki.Core.Math"' 'definedMacros'),
--- as commands math offers, each with where it comes from: a space by its
--- name, the wiki.
+-- | The macros a block of TeX defines ("Wiki.Core.Math"'
+-- 'definedMacroArities'), as commands math offers, each with where it
+-- comes from (a space by its name, the wiki) and the arguments in braces
+-- choosing it writes: as many as its definition gives it for certain, and
+-- none otherwise.
 macroCommands :: Text -> Text -> [MathCommand]
-macroCommands origin tex = [MathCommand {name, origin} | name <- definedMacros tex]
+macroCommands origin tex = [MathCommand {name, origin, arguments = fromMaybe 0 n} | (name, n) <- definedMacroArities tex]
 
 -- | The macros of a page's block of macros, the @math@ fence under its
 -- title that the editor's "Macros" panel edits ("Wiki.Core.Markdown.Edit"'
@@ -421,10 +423,11 @@ readAround earlier memo text request = case T.splitOn "\n" text of
 -- must still read as @line@ (the editor writes nothing otherwise),
 -- @select@ selected in it (from and to, in characters), the @/@ and its
 -- letters, at @query@ in @line@ (from and to, in characters), taken away
--- as a change of their own; and for a command that leaves more than one
--- place to fill, @places@, each from and to in @insert@ in the order Tab
--- goes through them (@select@ the first), and @after@, where the cursor
--- goes after the last.
+-- as a change of their own; and for a command that leaves places to fill
+-- and says where the writing goes on after them (more than one of the @/@
+-- menu's, a command of math with arguments), @places@, each from and to in
+-- @insert@ in the order Tab goes through them (@select@ the first), and
+-- @after@, where the cursor goes after the last.
 completionJson :: Completion -> Value
 completionJson c =
   object
@@ -453,9 +456,11 @@ completionJson c =
         let (text, places) = skeletonText candidate.skeleton
             fill = [range | (n, range) <- places, n /= 0]
             (selectFrom, selectTo) = fromMaybe (T.length text, T.length text) (head fill)
-            -- A command with more than one place: all of them, and where
-            -- the writing goes on after them.
+            -- A command with places and a place 0 (a command of the /
+            -- menu with more than one place, a command of math with
+            -- arguments): all of them, and where the writing goes on
+            -- after them.
             walk = case (fill, lookup 0 places) of
-              (_ : _ : _, Just (after, _)) -> ["places" .= [[a, b] | (a, b) <- fill], "after" .= after]
+              (_ : _, Just (after, _)) -> ["places" .= [[a, b] | (a, b) <- fill], "after" .= after]
               _ -> []
          in ["insert" .= text, "select" .= [selectFrom, selectTo], "line" .= line, "query" .= [queryFrom, queryTo]] <> walk

@@ -95,6 +95,8 @@ module Wiki.Core.Markdown.Complete
 where
 
 import Data.Char (isAsciiLower, isAsciiUpper)
+import Data.List (lookup)
+import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Protolude
@@ -103,7 +105,7 @@ import Wiki.Core.Markdown.Ast qualified as Ast
 import Wiki.Core.Markdown.Box (BoxKind, boxChoices)
 import Wiki.Core.Markdown.Edit (Command, Places (..), Selection (..), applyWithPlaces, cursor)
 import Wiki.Core.Markdown.Problems (everyBlock)
-import Wiki.Core.Math.KatexCommands (katexCommands)
+import Wiki.Core.Math.KatexCommands (katexArguments, katexCommands)
 import Wiki.Core.PageKind (PageKind (..))
 
 ----------------------------------------------------------------------
@@ -246,27 +248,30 @@ data LabelForm = PlainLabel | EscapedLabel | NoLabel
 -- of a line. An end marker's list is asked for after @[[/@ anywhere; its
 -- candidates are the blocks an end marker there ends ('complete').
 triggerAt :: LineReader -> At -> Maybe Typed
-triggerAt readAt at =
-  mathAt readAt at <|> do
-    guard (at.place /= InOwnText)
-    case shapeAt at of
-      Just shape -> do
-        guard (not (heldReturn at))
-        case shape.trigger of
-          StartMarker -> guard (PlacesContents `elem` firstRoles (readAt (Probe 1 [shape.prefix <> "[[!toc]]"])))
-          BoxMarker -> guard (readAt (Probe 1 [shape.prefix <> "[!NOTE]"])).boxed
-          _ -> pass
-        Just
-          Typed
-            { trigger = shape.trigger
-            , letters = shape.letters
-            , from = T.length shape.prefix
-            , lineStart = continuation shape.prefix
-            , through = 0
-            , kept = ""
-            , labels = PlainLabel
-            }
-      Nothing -> pageLink readAt at <|> slash readAt at
+triggerAt readAt at = (fst <$> mathAt readAt at) <|> otherTriggerAt readAt at
+
+-- | What opens a list at a place other than a command in math.
+otherTriggerAt :: LineReader -> At -> Maybe Typed
+otherTriggerAt readAt at = do
+  guard (at.place /= InOwnText)
+  case shapeAt at of
+    Just shape -> do
+      guard (not (heldReturn at))
+      case shape.trigger of
+        StartMarker -> guard (PlacesContents `elem` firstRoles (readAt (Probe 1 [shape.prefix <> "[[!toc]]"])))
+        BoxMarker -> guard (readAt (Probe 1 [shape.prefix <> "[!NOTE]"])).boxed
+        _ -> pass
+      Just
+        Typed
+          { trigger = shape.trigger
+          , letters = shape.letters
+          , from = T.length shape.prefix
+          , lineStart = continuation shape.prefix
+          , through = 0
+          , kept = ""
+          , labels = PlainLabel
+          }
+    Nothing -> pageLink readAt at <|> slash readAt at
 
 -- | Whether the text the parser is asked about for a marker, a box or a
 -- link to a page holds a carriage return: the parser reads it as a line
@@ -979,15 +984,23 @@ data Completion = Completion
 -- opens there or no source has a candidate.
 complete :: [Source] -> LineReader -> At -> Maybe Completion
 complete sources readAt at = do
-  typed <- triggerAt readAt at
+  -- A command in math, read once: its probe is read again with what an
+  -- entry writes ('writes').
+  let math = mathAt readAt at
+  typed <- (fst <$> math) <|> otherTriggerAt readAt at
   let closable = case typed.trigger of
         EndMarker ->
           let prefix = T.take typed.from at.before
            in [name | name <- startedAbove at.above, any isEnd (firstRoles (readAt (Probe 1 [prefix <> closingMarker name])))]
         _ -> []
-      writes skeleton = case shapeAt at of
-        Just shape -> readAt (writtenProbe at shape (readAt (Probe 1 [shape.prefix <> probeOf shape.trigger])).enclosing skeleton)
-        Nothing -> noReading 1
+      writes skeleton = case (typed.trigger, shapeAt at) of
+        -- In math: the probe that read the command in math, with the
+        -- skeleton's text in place of the backslash and the letters.
+        (InMath _, _) -> case math of
+          Just (_, rest) -> readAt (mathProbe (T.take typed.from at.before) (fst (skeletonText skeleton)) rest)
+          Nothing -> noReading 1
+        (_, Just shape) -> readAt (writtenProbe at shape (readAt (Probe 1 [shape.prefix <> probeOf shape.trigger])).enclosing skeleton)
+        (_, Nothing) -> noReading 1
       wanted = Wanted {at, typed, closable, writes}
       found = concatMap ($ wanted) sources
   guard (not (null found))
@@ -1314,10 +1327,22 @@ mathWord = "Zqxjvmath"
 -- character of the formula, not its end; then with a line of @$$@ after
 -- the line (display math being typed).
 mathProbes :: At -> Text -> [Probe]
-mathProbes at prefix =
-  [ probe (fst (stretchOf at))
-  , probe (lineAfter <> T.replicate (openGroups "$" prefix) "}" <> "$")
-  , probe (lineAfter <> T.replicate (openGroups "$$" (T.concat [l <> "\n" | l <- paragraphAbove] <> prefix)) "}" <> "\n$$")
+mathProbes at prefix = [mathProbe prefix ("\\" <> mathWord) rest | rest <- mathRests at prefix]
+
+-- | A probe of math: the cursor's line up to the backslash ('mathShape''s
+-- prefix), a text written in place of the backslash and the letters, and
+-- the text after the cursor of one of 'mathProbes' ('mathRests').
+mathProbe :: Text -> Text -> Text -> Probe
+mathProbe prefix written rest = Probe 1 (T.splitOn "\n" (prefix <> written <> rest))
+
+-- | The texts after the cursor that 'mathProbes' put after the command, in
+-- their order: as it is, closed by a @$@ at the line's end, and closed by
+-- a line of @$$@.
+mathRests :: At -> Text -> [Text]
+mathRests at prefix =
+  [ fst (stretchOf at)
+  , lineAfter <> T.replicate (openGroups "$" prefix) "}" <> "$"
+  , lineAfter <> T.replicate (openGroups "$$" (T.concat [l <> "\n" | l <- paragraphAbove] <> prefix)) "}" <> "\n$$"
   ]
   where
     -- The groups a formula opened before the cursor and leaves open on
@@ -1334,7 +1359,6 @@ mathProbes at prefix =
     -- The line after the cursor, as far as the first probe reads: where
     -- it goes on further, 'mathAt' declines before these are read.
     lineAfter = T.take afterBound at.after
-    probe rest = Probe 1 (T.splitOn "\n" (prefix <> "\\" <> mathWord <> rest))
 
 -- | The text after each occurrence of a delimiter of math (@$@, @$$@) in a
 -- text that is not escaped: not after an odd number of backslashes, as
@@ -1383,7 +1407,11 @@ openBraces = go 0 . T.unpack
 -- spoiler's description or a footnote, in a formula that runs over lines,
 -- or where the block that holds the cursor is still open where the text
 -- read after it is cut ('afterBound').
-mathAt :: LineReader -> At -> Maybe Typed
+--
+-- With the command, the text after the cursor of the probe that read it in
+-- math ('mathRests'), which a check of what an entry writes reads again
+-- ('complete''s 'writes').
+mathAt :: LineReader -> At -> Maybe (Typed, Text)
 mathAt readAt at = do
   guard (at.place /= InLinkText)
   (prefix, letters) <- mathShape at
@@ -1391,8 +1419,8 @@ mathAt readAt at = do
   -- after the cursor (@\\fr‸ac@).
   guard (maybe True (\(c, _) -> not (isAsciiLower c || isAsciiUpper c)) (T.uncons at.after))
   guard (not (heldReturn at))
-  let probes = mathProbes at prefix
-      readings = map readAt probes
+  let rests = mathRests at prefix
+      readings = [readAt (mathProbe prefix ("\\" <> mathWord) rest) | rest <- rests]
   whole <- head readings
   -- The command is in a paragraph's text, a quotation's, an item's, or
   -- in display math, as the text is read: in a heading or a table (a
@@ -1400,13 +1428,13 @@ mathAt readAt at = do
   -- of it.
   guard (holding holdsMath whole.blocksRead)
   guard (not (snd (stretchOf at)) || followed holdsMath whole.blocksRead)
-  place <- case readings of
-    asIs : closedHere : closedBelow : _ ->
-      mathPlace asIs.blocksRead
-        <|> (guard (not (null (afterDelimiters "$" prefix)) && null (afterDelimiters "$" at.after)) *> (mathPlace closedHere.blocksRead >>= \p -> p <$ guard (p == InFormula)))
-        <|> (mathPlace closedBelow.blocksRead >>= \p -> p <$ guard (p == InDisplay))
+  (place, rest) <- case zip readings rests of
+    (asIs, asIsRest) : (closedHere, hereRest) : (closedBelow, belowRest) : _ ->
+      ((,asIsRest) <$> mathPlace asIs.blocksRead)
+        <|> (guard (not (null (afterDelimiters "$" prefix)) && null (afterDelimiters "$" at.after)) *> (mathPlace closedHere.blocksRead >>= \p -> (p, hereRest) <$ guard (p == InFormula)))
+        <|> (mathPlace closedBelow.blocksRead >>= \p -> (p, belowRest) <$ guard (p == InDisplay))
     _ -> Nothing
-  Just
+  Just . (,rest) $
     Typed
       { trigger = InMath place
       , letters
@@ -1423,24 +1451,29 @@ mathAt readAt at = do
 -- display math, at the top of the page or in a list's item, a quotation,
 -- a box's text or a block of the wiki's own.
 mathPlace :: [Block] -> Maybe MathPlace
-mathPlace = asum . map onBlock
+mathPlace = fmap fst . mathFormula
+
+-- | The math 'mathPlace' finds, with its TeX: the formula's, or the
+-- display math's.
+mathFormula :: [Block] -> Maybe (MathPlace, Text)
+mathFormula = asum . map onBlock
   where
     onBlock = \case
-      MathBlock tex | mathWord `T.isInfixOf` tex -> Just InDisplay
+      MathBlock tex | mathWord `T.isInfixOf` tex -> Just (InDisplay, tex)
       Para xs -> own xs
       Plain xs -> own xs
-      BlockQuote bs -> mathPlace bs
-      List _ items -> asum [mathPlace bs | ListItem _ bs <- items]
-      Alert _ _ bs -> mathPlace bs
-      Div _ bs -> mathPlace bs
-      Spoiler _ bs -> mathPlace bs
+      BlockQuote bs -> mathFormula bs
+      List _ items -> asum [mathFormula bs | ListItem _ bs <- items]
+      Alert _ _ bs -> mathFormula bs
+      Div _ bs -> mathFormula bs
+      Spoiler _ bs -> mathFormula bs
       _ -> Nothing
     own = asum . map ownInline
     ownInline = \case
       Math kind tex
         | mathWord `T.isInfixOf` tex
         , not ("\n" `T.isInfixOf` tex) ->
-            Just (if kind == Ast.DisplayMath then InDisplay else InFormula)
+            Just (if kind == Ast.DisplayMath then InDisplay else InFormula, tex)
       Emph xs -> own xs
       Strong xs -> own xs
       Strikeout xs -> own xs
@@ -1466,11 +1499,17 @@ holdsMath = \case
       _ -> False
 
 -- | 'MathCommand' is a command a list after a backslash in math offers: its
--- name with its backslash, and where it comes from, as the list shows it
--- beside the name (KaTeX, the wiki, a space by its name, this page).
+-- name with its backslash; where it comes from, as the list shows it
+-- beside the name (KaTeX, the wiki, a space by its name, this page); and
+-- how many arguments in braces choosing it writes after the name, as
+-- places to fill (#301). That is 0 for a command that takes none, and for
+-- one whose arguments are not known for certain (KaTeX's tables say
+-- nothing of a macro of its own that is a function, @\\operatorname@; a
+-- macro of the wiki's is defined twice, 'Wiki.Core.Math.definedMacroArities').
 data MathCommand = MathCommand
   { name :: Text
   , origin :: Text
+  , arguments :: Int
   }
   deriving stock (Eq, Show)
 
@@ -1504,7 +1543,9 @@ shownOrder c = (T.length c.name, c.name)
 -- | KaTeX's commands, from KaTeX, in the order the list shows them, put in
 -- it once for the program.
 katexInOrder :: [MathCommand]
-katexInOrder = sortOn shownOrder [MathCommand {name, origin = "KaTeX"} | name <- katexCommands]
+katexInOrder = sortOn shownOrder [MathCommand {name, origin = "KaTeX", arguments = Map.findWithDefault 0 name taking} | name <- katexCommands]
+  where
+    taking = Map.fromList katexArguments
 
 -- | The list after a backslash in math: the commands whose name starts
 -- with the letters typed (as written: TeX tells @\\Gamma@ from
@@ -1512,20 +1553,106 @@ katexInOrder = sortOn shownOrder [MathCommand {name, origin = "KaTeX"} | name <-
 -- name). None where the letters name a command already, so that a command
 -- typed whole and Enter stay a new line. At most 'shownCommands'.
 --
--- Choosing one writes its name as it is, in place of the backslash and the
--- letters, the cursor after it ('AsText'): what a command takes after it
--- (its arguments, an environment's body and its end) is the reader's to
--- type, as KaTeX reads them in so many ways (@\\frac12@, @\\left(@,
--- @\\operatorname*{…}@) that braces written for them would often be wrong.
+-- Choosing one that takes arguments in braces ('MathCommand''s
+-- 'arguments') writes its name and an empty pair of braces for each, in
+-- place of the backslash and the letters: @\\frac{}{}@, the cursor in the
+-- first pair, Tab to the next, and Tab on the last to after the braces.
+-- It is written as an entry of the @/@ menu is, the cursor's line given
+-- ('lineCandidate'), so that the places are a walk the editor ends on an
+-- undo. Only where nothing after the cursor can be an argument of the
+-- command ('noArgumentAfter': @\\fr‸{a}{b}@, @\\fr‸12@ keep what they
+-- have), and where the parser reads the math with the braces written as
+-- it read it before, the braces in it ('bracesRead'). Anywhere else, and
+-- for every other command, the name is written as it is, the cursor after
+-- it ('AsText'), and what follows is the reader's to type.
 mathSource :: [MathCommand] -> Source
 mathSource commands wanted = case wanted.typed.trigger of
-  InMath _
+  InMath place
     | not (any ((== typedName) . (.name)) commands) ->
-        take shownCommands [command c | c <- commands, typedName `T.isPrefixOf` c.name]
+        let checks = readBack place
+         in take shownCommands [command place checks c | c <- commands, typedName `T.isPrefixOf` c.name]
   _ -> []
   where
     typedName = "\\" <> wanted.typed.letters
-    command c = Candidate {label = c.name, skeleton = [Literal c.name, Field 0 ""], writing = AsText, action = Nothing, note = Just c.origin, origin = Nothing}
+    at = wanted.at
+    named c = Candidate {label = c.name, skeleton = [Literal c.name, Field 0 ""], writing = AsText, action = Nothing, note = Just c.origin, origin = Nothing}
+    command place checks c
+      | c.arguments > 0
+      , noArgumentAfter place at
+      , fromMaybe False (lookup c.arguments checks) =
+          (lineCandidate at wanted.typed (bracesWritten (T.take wanted.typed.from at.before) c.name c.arguments at.after)) {label = c.name, note = Just c.origin}
+      | otherwise = named c
+    -- The parser's reading of each number of braces, asked once for the
+    -- list (the list is made once, and each reading when a command offered
+    -- takes that many).
+    readBack place = [(n, bracesRead wanted place n) | n <- [1 .. 9 :: Int]]
+
+-- | Whether the parser reads the math at the cursor, with a command of so
+-- many arguments written in place of the backslash and the letters, as it
+-- read it with no argument: the same math ('MathPlace'), and the same TeX
+-- but for the command with its braces, each holding a word ('mathWord').
+-- So the braces do not end the math, or join it to text that was not in
+-- it, wherever they are.
+bracesRead :: Wanted -> MathPlace -> Int -> Bool
+bracesRead wanted place n = case (mathFormula (wanted.writes [Literal alone]).blocksRead, mathFormula (wanted.writes [Literal filled]).blocksRead) of
+  (Just (before, tex), Just (after, tex')) -> before == place && after == place && tex' == T.replace alone filled tex
+  _ -> False
+  where
+    alone = "\\" <> mathWord
+    filled = alone <> T.replicate n ("{" <> mathWord <> "}")
+
+-- | What a command with arguments writes in place of the cursor's line: the
+-- line's text before the backslash, the command's name, an empty pair of
+-- braces for each argument, and the line's text after the cursor; each
+-- pair a place to fill, and the writing going on after the last.
+bracesWritten :: Text -> Text -> Int -> Text -> Written
+bracesWritten prefix name n rest =
+  Written
+    { text = prefix <> name <> T.replicate n "{}" <> rest
+    , fill = [(start + 2 * k + 1, start + 2 * k + 1) | k <- [0 .. n - 1]]
+    , after = Just (start + 2 * n)
+    }
+  where
+    start = T.length prefix + T.length name
+
+-- | Whether nothing after the cursor can be an argument of a command typed
+-- before it, so that braces written for its arguments take nothing the
+-- reader meant for one. TeX takes an argument without braces too: a
+-- letter, a digit, a command, any character but a few (@\\frac12@,
+-- @\\frac\\alpha\\beta@, @\\frac a b@, the spaces passed over), and
+-- @{@ or @[@ starts one. What follows the cursor, past spaces and tabs, is
+-- none of those only where it is:
+--
+-- * nothing, on the line of a formula (the formula ends on its line);
+-- * in display math, nothing on the line and, on the next line with
+--   anything on it, one of the rest of this list, or the end of the math
+--   (@$$@, a fence's backticks or tildes), or no line at all;
+-- * @$@, @}@, @]@, @&@, @^@ or @_@, which end the math, a group or a cell,
+--   or need something before them;
+-- * @\\\\@, @\\end@ or @\\right@, which end a row, an environment or a
+--   pair of delimiters.
+--
+-- Anywhere else (a container's mark before the next line, @>@, too) the
+-- name is written alone.
+noArgumentAfter :: MathPlace -> At -> Bool
+noArgumentAfter place at
+  | not (T.null rest) = endsArgument rest
+  | otherwise = case place of
+      InFormula -> True
+      InDisplay -> case dropWhile (T.all isBlank) at.below of
+        [] -> True
+        line : _ ->
+          let t = T.dropWhile isBlank line
+           in any (`T.isPrefixOf` t) ["$$", "```", "~~~"] || endsArgument t
+  where
+    rest = T.dropWhile isBlank at.after
+    endsArgument t = case T.uncons t of
+      Just ('\\', more) -> "\\" `T.isPrefixOf` more || any (`wordStarts` more) ["end", "right"]
+      Just (c, _) -> c `elem` ['$', '}', ']', '&', '^', '_']
+      Nothing -> True
+    wordStarts word t = case T.stripPrefix word t of
+      Just after -> maybe True (\(c, _) -> not (isAsciiLower c || isAsciiUpper c)) (T.uncons after)
+      Nothing -> False
 
 -- | How many commands the list after a backslash shows at most.
 shownCommands :: Int

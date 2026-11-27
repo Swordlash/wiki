@@ -38,6 +38,7 @@ module Wiki.Core.Math
 
     -- * Which macros a text defines and uses
   , definedMacros
+  , definedMacroArities
   , removedMacros
   , usesMacro
   , onlyDefinitions
@@ -114,19 +115,29 @@ wikiMacros = (wikiMacrosMarker <>)
 -- Which macros a text defines and uses
 
 -- | The commands that define a macro by name, with what each takes before
--- its body.
-data Definer = NewCommand | Def | Let
+-- its body, and whether the number of arguments the macro takes is known
+-- for certain from the definition, as KaTeX reads it ('Certain').
+data Definer = NewCommand Certainty | Def Certainty | Let
+
+-- | 'Certainty' is whether a definer's count of arguments is KaTeX's for
+-- certain: for @\\newcommand@ and @\\renewcommand@ (a number in brackets,
+-- or none) and @\\def@ and @\\gdef@ (parameters @#1#2…@), it is.
+-- @\\providecommand@ defines nothing where the macro exists already,
+-- @\\edef@ and @\\xdef@ expand their body first, and KaTeX has no
+-- @\\DeclareMathOperator@: for those the count is not known.
+data Certainty = Certain | Uncertain
+  deriving stock (Eq)
 
 definers :: [(Text, Definer)]
 definers =
-  [ ("\\newcommand", NewCommand)
-  , ("\\renewcommand", NewCommand)
-  , ("\\providecommand", NewCommand)
-  , ("\\DeclareMathOperator", NewCommand)
-  , ("\\def", Def)
-  , ("\\gdef", Def)
-  , ("\\edef", Def)
-  , ("\\xdef", Def)
+  [ ("\\newcommand", NewCommand Certain)
+  , ("\\renewcommand", NewCommand Certain)
+  , ("\\providecommand", NewCommand Uncertain)
+  , ("\\DeclareMathOperator", NewCommand Uncertain)
+  , ("\\def", Def Certain)
+  , ("\\gdef", Def Certain)
+  , ("\\edef", Def Uncertain)
+  , ("\\xdef", Def Uncertain)
   , ("\\let", Let)
   ]
 
@@ -135,7 +146,24 @@ definers =
 -- @\\newcommand@ and its relatives, of @\\DeclareMathOperator@, of
 -- @\\def@ and its relatives, and of @\\let@. A comment defines nothing.
 definedMacros :: Text -> [Text]
-definedMacros = ordNub . fst . definitionsAndRest . withoutComments
+definedMacros = ordNub . map fst . fst . definitionsAndRest . withoutComments
+
+-- | The macros a block of TeX defines, as 'definedMacros' gives them, each
+-- with the number of arguments in braces it takes where that is known for
+-- certain: the editor's completion in math writes that many braces after
+-- the macro's name (#301), and none where it is 'Nothing'.
+--
+-- Known for certain only where the block defines the macro once, with
+-- @\\newcommand@ or @\\renewcommand@ (@[2]@ after the name, or nothing
+-- for none; KaTeX has no optional arguments, so a second bracket is not
+-- known), or with @\\def@ or @\\gdef@ and parameters that are exactly
+-- @#1@, @#1#2@ and so on (a character between them delimits an argument,
+-- which braces do not write). A macro defined twice in the block is not
+-- known: KaTeX keeps the last definition, or refuses the second.
+definedMacroArities :: Text -> [(Text, Maybe Int)]
+definedMacroArities tex = [(name, if length (filter ((== name) . fst) found) == 1 then join (lookup name found) else Nothing) | name <- ordNub (map fst found)]
+  where
+    found = fst (definitionsAndRest (withoutComments tex))
 
 -- | The macros an old block of definitions has and a new one has not:
 -- those whose removal may break a page that uses them ('usesMacro').
@@ -174,10 +202,12 @@ withoutComments = T.intercalate "\n" . map uncomment . T.lines
             | "\\" `T.isSuffixOf` a && not ("\\\\" `T.isSuffixOf` a) -> go (before <> a <> "%") (T.drop 1 b)
             | otherwise -> before <> a
 
--- | The names a text defines, and the text without the definitions it could
--- read whole. A definition it cannot read whole (an unclosed brace) is left
--- in the text, and its name is not counted.
-definitionsAndRest :: Text -> ([Text], Text)
+-- | The names a text defines, each with the number of arguments its
+-- definition gives it where that is certain ('Certainty'), and the text
+-- without the definitions it could read whole. A definition it cannot read
+-- whole (an unclosed brace) is left in the text, and its name is not
+-- counted.
+definitionsAndRest :: Text -> ([(Text, Maybe Int)], Text)
 definitionsAndRest = go [] ""
   where
     go names kept text = case T.breakOn "\\" text of
@@ -192,18 +222,26 @@ definitionsAndRest = go [] ""
       (command, after) <- Just (controlSequence t)
       kind <- lookup command definers
       case kind of
-        NewCommand -> do
-          let starred = fromMaybe after (T.stripPrefix "*" after)
-          (name, afterName) <- macroName (T.stripStart starred)
-          let afterArgs = optionalBracket (optionalBracket (T.stripStart afterName))
-          (_, afterBody) <- braced (T.stripStart afterArgs)
-          pure (name, afterBody)
-        Def -> do
+        NewCommand certainty -> do
+          let starred = T.stripPrefix "*" after
+          (name, afterName) <- macroName (T.stripStart (fromMaybe after starred))
+          let first' = optionalBracket (T.stripStart afterName)
+              second' = optionalBracket (snd first')
+              -- KaTeX reads no star, and a number in brackets, once.
+              count = case (fst first', fst second') of
+                (Nothing, _) -> Just 0
+                (Just n, Nothing) -> readNumber (T.strip n)
+                (Just _, Just _) -> Nothing
+          (_, afterBody) <- braced (T.stripStart (snd second'))
+          pure ((name, if certainty == Certain && isNothing starred then count else Nothing), afterBody)
+        Def certainty -> do
           (name, afterName) <- controlName (T.stripStart after)
           let params = T.takeWhile (/= '{') afterName
+              -- Exactly #1, #2 and on, in order, with nothing between.
+              plain = T.concat ["#" <> show k | k <- [1 .. T.length params `div` 2]] == params
           guard (T.all (\c -> c == '#' || isDigit c || isSpace c) params)
           (_, afterBody) <- braced (T.drop (T.length params) afterName)
-          pure (name, afterBody)
+          pure ((name, if certainty == Certain && plain then Just (T.length params `div` 2) else Nothing), afterBody)
         Let -> do
           (name, afterName) <- controlName (T.stripStart after)
           let afterEquals = T.stripStart (fromMaybe afterName (T.stripPrefix "=" (T.stripStart afterName)))
@@ -211,7 +249,7 @@ definitionsAndRest = go [] ""
             Just ('\\', _) -> Just (snd (controlSequence afterEquals))
             Just (_, more) -> Just more
             Nothing -> Nothing
-          pure (name, afterValue)
+          pure ((name, Nothing), afterValue)
     -- A macro's name, braced (@{\\x}@) or not (@\\x@).
     macroName t = case T.uncons t of
       Just ('{', inside) -> do
@@ -222,9 +260,13 @@ definitionsAndRest = go [] ""
     controlName t
       | "\\" `T.isPrefixOf` t = let (name, after) = controlSequence t in if T.length name > 1 then Just (name, after) else Nothing
       | otherwise = Nothing
+    -- A bracket and what it holds, and what follows; or none.
     optionalBracket t = case T.uncons t of
-      Just ('[', inside) | (_, after) <- T.breakOn "]" inside, not (T.null after) -> T.stripStart (T.drop 1 after)
-      _ -> t
+      Just ('[', inside) | (held, after) <- T.breakOn "]" inside, not (T.null after) -> (Just held, T.stripStart (T.drop 1 after))
+      _ -> (Nothing, t)
+    readNumber n
+      | not (T.null n) && T.all isDigit n && T.length n < 3 = readMaybe (T.unpack n)
+      | otherwise = Nothing
     -- A group in braces, with the braces in it matched, and what follows.
     braced t = case T.uncons t of
       Just ('{', inside) -> closing (1 :: Int) "" inside

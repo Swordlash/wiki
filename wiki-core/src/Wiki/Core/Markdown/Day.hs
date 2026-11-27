@@ -314,7 +314,9 @@ unmarked (ListItem box bs) = ListItem box $ case bs of
   _ -> bs
   where
     strip xs = case markOf xs of
-      (True, Str t : more) -> [Str t' | let t' = T.dropWhile (== ' ') t, not (T.null t')] <> more
+      (True, Str t : more) -> case T.dropWhile (== ' ') t of
+        "" -> more
+        rest -> Str rest : more
       (True, more) -> more
       (False, _) -> xs
 

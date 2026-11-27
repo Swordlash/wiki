@@ -220,8 +220,8 @@ import Halogen.HTML.Events qualified as HE
 import Halogen.HTML.Properties qualified as HP
 import Protolude
 import Wiki.Core.Markdown.Ast
-import Wiki.Core.Markdown.Day (DayEntry (..), dayEntries, dayGroupLabel, dayGroups, dayListOf, joinDayLists, unmarked)
 import Wiki.Core.Markdown.Box (BoxCounter, BoxIcon (..), BoxKind (..), Numbering, alertKindName, boxCaption, boxStyle, countBox, countSection, definedKind, noNumbers, startCounting)
+import Wiki.Core.Markdown.Day (DayEntry (..), dayEntries, dayGroupLabel, dayGroups, dayListOf, joinDayLists, unmarked)
 import Wiki.Core.Markdown.Frame (FrameScheme (..), SvgFrame (..), frameDocument, interactiveClass, svgFrameHeight)
 import Wiki.Core.Markdown.Html qualified as Html
 import Wiki.Core.Markdown.Link

@@ -316,7 +316,9 @@ spec = describe "Markdown.Render" $ do
       html <- renderHtml . renderLines grouping =<< either (panic . show) pure (parseWithLines ("Before.\n\n" <> day))
       html `shouldBe` "<span aria-hidden=\"true\" class=\"source-line\" data-line=\"1\"></span><p>Before.</p><span aria-hidden=\"true\" class=\"source-line\" data-line=\"4\"></span>" <> grouped
     it "shows the list as written without the option, as a feed does" $
-      showsWith defaultOptions {taskBoxes = Just (\_ _ -> panic "no change is made")} day
+      showsWith
+        defaultOptions {taskBoxes = Just (\_ _ -> panic "no change is made")}
+        day
         ( "<div class=\"day\"><ul><li>09:00 Standup</li><li>9:30-10:30 Review of the plan</li><li>! 14:00 Demo for the client</li><li>! Ania's birthday</li></ul></div>"
             <> "<ul class=\"task-list\"><li class=\"task-list-item\"><input aria-label=\"16:00 Call the bank\" data-task=\"0\" type=\"checkbox\"> <span class=\"task-text\">16:00 Call the bank</span></li>"
             <> "<li class=\"task-list-item task-done\"><input aria-label=\"! Pay the invoice\" checked data-task=\"1\" type=\"checkbox\"> <span class=\"task-text\">! Pay the invoice</span></li></ul>"

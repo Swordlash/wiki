@@ -1761,6 +1761,31 @@ pre.numbered > code {
   font-weight: normal;
 }
 
+/* A missed task on a day's page (Wiki.App.View.Page): a task not done
+   whose day or hour has passed. Its own text is red, as a done task's is
+   struck through: its first paragraph's and its other paragraphs', but
+   not the lists in it. A highlighted one stays bold. The palette's red
+   reads in both schemes: 6.6:1 on the page's background in the light one
+   and 7.5:1 in the dark one, and more than 5:1 under a comment's
+   highlight. The colour is not the only sign: the item starts with the
+   word "Missed", which a screen reader reads and the page does not show.
+   The word is drawn here and is no text of the page, so a comment's
+   quote never takes it in. */
+.day-missed > .task-text,
+.day-missed > p {
+  color: var(--c-red);
+}
+
+.day-missed::before {
+  content: "Missed:";
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* A box the reader may tick in the page view (Wiki.App.View.Page). */
 .page-body .task-list-item input:enabled {
   cursor: pointer;

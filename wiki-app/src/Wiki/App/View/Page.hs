@@ -123,6 +123,20 @@
 -- "Wiki.App.View.Latest"'s rule). The page shown is never
 -- replaced by an older version of itself ('takesPage'), whatever asked
 -- for it and whenever the answer comes.
+--
+-- = A day's page
+--
+-- A page whose title is a date ("Wiki.Core.Markdown.Day"'s 'dayOfTitle')
+-- is a day's page, and its day's lists mark the tasks that were missed: a
+-- task not done whose day or hour has passed ('Md.missedAt'). The tasks
+-- are read from the text shown, with the ticks not saved in it, so a box
+-- ticked takes the mark off at once. The present time is the reader's,
+-- read from the input's clock (the browser's, 'Wiki.App.Browser.readerClock')
+-- in the view's 'Initialize', when a page is fetched, and once a minute
+-- after, while a day's page is shown. The initial state has no time, so
+-- the first render marks nothing, as the server's prerender, which has no
+-- clock, does not: the program adopts that page unchanged, and the marks
+-- come with the render after.
 module Wiki.App.View.Page
   ( Input (..)
   , Slots
@@ -136,7 +150,7 @@ import Control.Monad.UUID (MonadUUID)
 import Data.Map.Strict qualified as Map
 import Data.Row (type (.+), type (.==))
 import Data.Text qualified as T
-import Data.Time (NominalDiffTime, UTCTime)
+import Data.Time (Day, LocalTime, NominalDiffTime, UTCTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Halogen qualified as H
 import Halogen.HTML qualified as HH
@@ -188,6 +202,7 @@ import Wiki.Core.Id
   , UserId
   )
 import Wiki.Core.Markdown qualified as Md
+import Wiki.Core.Markdown.Day (dayOfTitle)
 import Wiki.Core.Notification (WatchTarget (..))
 import Wiki.Core.Offered qualified as Offered
 import Wiki.Core.Page (Page (attachments, body, createdAt, createdBy, id, kind, parent, slug, space, template, title, updatedAt, updatedBy), PageSummary (id, parent, title), retitled)
@@ -213,6 +228,11 @@ data Input = Input
   -- is, and with no comments, which are about the page's text now.
   , feed :: Maybe Feed
   -- ^ The tab's live channel, on a backend that has one.
+  , clock :: Maybe (IO LocalTime)
+  -- ^ Reads the present time in the reader's time zone, against which a
+  -- day's page marks its missed tasks: the browser's
+  -- ('Wiki.App.Browser.readerClock'), or a test's. 'Nothing' in the
+  -- server's prerender, which marks nothing.
   }
 
 type Slots = Body.IslandSlots .+ ("deck" .== H.Slot (Const Void) Void Md.IslandKey) .+ ("deckView" .== H.Slot (Const Void) Void ()) .+ ("kindView" .== H.Slot (Const Void) Void PluginId) .+ ("comments" .== H.Slot CommentsView.Query CommentsView.Output CommentsView.Placement) .+ ("watch" .== H.Slot (Const Void) Void ()) .+ ("star" .== H.Slot (Const Void) Void ()) .+ ("export" .== H.Slot (Const Void) Void ())
@@ -301,6 +321,11 @@ data State = State
   , owners :: Body.Owners
   -- ^ Who holds the addresses of the page's attachments: the fetch shown,
   -- and those not answered yet ("Wiki.App.View.Body"'s 'Body.Owners').
+  , present :: Maybe LocalTime
+  -- ^ The present time in the reader's time zone, as the view last read
+  -- it from the input's clock ('readClock'). 'Nothing' in the initial
+  -- state, so that the first render marks no task missed, and always
+  -- where the input has no clock.
   }
 
 -- | An address put on the clipboard: by a click on a heading's or a box's
@@ -400,6 +425,7 @@ component =
               , writing = False
               , chainProblem = Nothing
               , owners = Body.ownersOf noUrlOwner
+              , present = Nothing
               }
       , render
       , eval =
@@ -453,7 +479,7 @@ component =
           place = placeOf input page addresses (threadsOf st).people
           -- Rendered once: the article shows it with its quotes
           -- highlighted, and its text is where the quotes are looked for.
-          rendered = Body.renderedTicking (Tick <$ guard (boxesEnabled st)) (\i -> Map.findWithDefault 0 i st.staging.drawn) (Just embedded) place st.staging.shown
+          rendered = Body.renderedTicking (Tick <$ guard (boxesEnabled st)) (\i -> Map.findWithDefault 0 i st.staging.drawn) (Just embedded) (missedAt st) place st.staging.shown
           -- A presentation embedded in the page: a viewer of it.
           embedded key target caption = HH.slot_ "deck" key DeckViewer.component DeckViewer.Input {context = input.context, target = DeckViewer.Linked target place, caption, ids = embedIds key, watcher = DeckViewer.browserWatcher}
           text = either (const "") renderedText rendered
@@ -800,6 +826,15 @@ component =
       -- received, and the comments are loaded if they were not with it.
       Initialize -> do
         subscribeFeed
+        -- The reader's clock, after the first render: then once a minute,
+        -- so that a day's page left open marks a task once its hour has
+        -- passed. Nothing waits for the ticker. No clock, no ticker: the
+        -- server's prerender has none.
+        readClock
+        clocked <- gets (\st -> isJust st.input.clock)
+        when clocked . void . H.fork . forever $ do
+          H.delay clockTick
+          whenM (gets (isJust . dayShown)) readClock
         gets (\st -> st.loaded) >>= \case
           Loading -> load >> H.liftEffect revealFragment
           loaded -> do
@@ -1244,6 +1279,7 @@ component =
           -- The addresses shown are this fetch's from now on.
           Body.settleOwned ownersOf' setOwners owner True
           adopt loaded
+          readClock
           checkChain
           resolveAvatars
           gets (\st -> pageOf st.loaded) >>= traverse_ (H.raise . Showing)
@@ -1282,6 +1318,17 @@ component =
       modify (\st -> st {staging = Ticking.step event st.staging})
       after <- gets unsaved
       when (before /= after) $ H.liftEffect (guardUnload after)
+
+    -- The present time, read from the input's clock, if it has one. A
+    -- read of the browser's clock does not wait.
+    readClock :: H.HalogenM State Action Slots ViewOutput m ()
+    readClock =
+      gets (\st -> st.input.clock)
+        >>= traverse_
+          ( \clock -> do
+              now <- H.sync (liftIO clock)
+              modify (\st -> st {present = Just now})
+          )
 
     -- Give the box set last the focus, scrolled into view by the least
     -- amount, once the render that follows a change is done (a change of
@@ -1564,6 +1611,22 @@ permanentAddress st page = Router.href st.input.context.router (PermanentLink pa
 -- in passing.
 copiedTime :: NominalDiffTime
 copiedTime = 2
+
+-- | How often the view reads the reader's clock again while a day's page
+-- is shown: a minute, the resolution of an entry's time.
+clockTick :: NominalDiffTime
+clockTick = 60
+
+-- | The date of the page shown, when it is a day's page: its title is a
+-- date ('Wiki.Core.Markdown.Day.dayOfTitle').
+dayShown :: State -> Maybe Day
+dayShown st = pageOf st.loaded >>= \page -> dayOfTitle page.title
+
+-- | What the page's day's lists mark missed tasks against
+-- ('Md.missedAt'): the date of the day's page shown and the present time,
+-- once the view has read it.
+missedAt :: State -> Maybe (Day, LocalTime)
+missedAt st = (,) <$> dayShown st <*> st.present
 
 -- | What the notice of a copied address says before the address.
 copiedLabel :: Copied -> Text

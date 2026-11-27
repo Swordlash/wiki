@@ -39,6 +39,7 @@ module Wiki.App.Browser
   , openInTab
   , localTime
   , endOfDay
+  , readerClock
   , consoleWarn
   , keepHeights
   , keepContents
@@ -62,7 +63,7 @@ import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.MediaType (MediaType (..))
 import Data.Text qualified as T
-import Data.Time (Day, UTCTime (..), addDays, defaultTimeLocale, formatTime, toGregorian)
+import Data.Time (Day, LocalTime, UTCTime (..), addDays, defaultTimeLocale, formatTime, toGregorian, utc, utcToLocalTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Halogen.JSBits (Inert, JSText, JSVal, Safety (..), browserJS, fromJSBytes, fromJSText, inBrowser, isNull, jsValText, toJSBytes, toJSText)
 import Halogen.JSBits.Fields (Member (..), inlineJS, jsFields)
@@ -615,6 +616,22 @@ endOfDay day
   | otherwise = pure (UTCTime (addDays 1 day) 0)
   where
     (y, m, d) = toGregorian day
+
+-- The present time in the reader's time zone, in milliseconds since 1970
+-- as if that time were UTC: one 'Date' read, so that the time and its
+-- offset from UTC are of the same moment.
+$(inlineJS "js_local_now" "(() => { const d = new Date(); return d.getTime() - d.getTimezoneOffset() * 60000; })()" [t|IO Double|])
+
+-- | 'readerClock' reads the present time in the reader's time zone, as
+-- their browser keeps it: the page view marks a day's missed tasks with
+-- it ("Wiki.Core.Markdown.Day"'s @missed@). WebAssembly has no time zone
+-- of its own, so the browser's 'Date' says it. 'Nothing' natively, where
+-- there is no reader: the server's prerender reads no clock and marks
+-- nothing.
+readerClock :: Maybe (IO LocalTime)
+readerClock
+  | inBrowser = Just (utcToLocalTime utc . posixSecondsToUTCTime . (/ 1000) . realToFrac <$> js_local_now)
+  | otherwise = Nothing
 
 -- | A warning on the browser's console, for whoever looks there, about
 -- something the program carried on without. Natively nothing.

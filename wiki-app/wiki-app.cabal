@@ -384,6 +384,7 @@ test-suite wiki-app-test
         Test.Backend.Persist
         Test.Blog
         Test.CalendarDom
+        Test.DayPageDom
         Test.CommentsDom
         Test.LivePreviewDom
         Test.DeckDom

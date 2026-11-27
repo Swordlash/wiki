@@ -15,6 +15,7 @@ import Test.Blog qualified as Blog
 import Test.CalendarDom qualified as CalendarDom
 import Test.CommentsDom qualified as CommentsDom
 import Test.Complete qualified as Complete
+import Test.DayPageDom qualified as DayPageDom
 import Test.Deck qualified as Deck
 import Test.DeckDom qualified as DeckDom
 import Test.DecryptedExport qualified as DecryptedExport
@@ -93,6 +94,7 @@ main = do
       BellDom.spec
       CommentsDom.spec
       CalendarDom.spec
+      DayPageDom.spec
       DeckDom.spec
       EditorDom.spec
       LivePreviewDom.spec

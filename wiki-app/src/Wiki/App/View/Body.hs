@@ -78,6 +78,7 @@ import Data.Map.Strict qualified as Map
 import Data.Row (HasType, type (.==))
 import Data.Set qualified as Set
 import Data.Text qualified as T
+import Data.Time (Day, LocalTime)
 import Halogen qualified as H
 import Halogen.HTML qualified as HH
 import Halogen.HTML.Events qualified as HE
@@ -347,7 +348,7 @@ rendered
   => Place
   -> Text
   -> Either Md.ParseError [H.ComponentHTML action slots m]
-rendered = renderedTicking Nothing (const 0) Nothing
+rendered = renderedTicking Nothing (const 0) Nothing Nothing
 
 -- | 'rendered', with the page's task boxes enabled when @onTick@ is given:
 -- a change of a box gives it the task's index and whether the box is now
@@ -357,16 +358,20 @@ rendered = renderedTicking Nothing (const 0) Nothing
 -- 'Md.taskDrawn'). @deck@ draws a page embedded with the class
 -- @presentation@ ('Md.deckEmbed'): the page view draws a viewer
 -- ("Wiki.App.View.DeckViewer"); without it the embed is its link.
+-- @missedAt@ is the date of a day's page and the present time, against
+-- which its day's lists mark the missed tasks ('Md.missedAt'): the page
+-- view gives them for a day's page once it has read the reader's clock.
 renderedTicking
   :: forall action slots m
    . (MonadIslands m, MonadUUID m, HasIslands slots)
   => Maybe (Int -> Bool -> action)
   -> (Int -> Int)
   -> Maybe (Md.IslandKey -> PageLink -> Text -> H.ComponentHTML action slots m)
+  -> Maybe (Day, LocalTime)
   -> Place
   -> Text
   -> Either Md.ParseError [H.ComponentHTML action slots m]
-renderedTicking onTick drawn deck place = Md.renderMarkdown (options place) {Md.taskBoxes = onTick, Md.taskDrawn = drawn, Md.deckEmbed = deck}
+renderedTicking onTick drawn deck missedAt place = Md.renderMarkdown (options place) {Md.taskBoxes = onTick, Md.taskDrawn = drawn, Md.deckEmbed = deck, Md.missedAt = missedAt}
 
 -- | 'article', from the result of 'rendered' (and the source, shown if it
 -- could not be parsed).

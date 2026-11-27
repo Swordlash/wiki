@@ -95,7 +95,7 @@ offForWiki' = noPlugins {offForWiki = Set.fromList [PluginId "calendar"]}
 -- the plugins as given.
 pageInput :: Wiki -> Session -> Plugins -> Space -> [PageSummary] -> [Text] -> Page.Input
 pageInput w who known s ps path =
-  Page.Input {context = (viewContextAs w.router who w.spaces 0) {plugins = known}, space = s, pages = ps, path = slugs path, version = Nothing, feed = Nothing}
+  Page.Input {context = (viewContextAs w.router who w.spaces 0) {plugins = known}, space = s, pages = ps, path = slugs path, version = Nothing, feed = Nothing, clock = Nothing}
 
 -- | The texts of the days the view lists, in order.
 listedDays :: View q i o -> IO [Text]

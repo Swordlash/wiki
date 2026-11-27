@@ -4495,7 +4495,10 @@ reader's page never fetches it; `web/src/assistant.js`, the writing assistant's
 providers with Anthropic's and OpenAI's SDKs, into `islands/assistant.js`, which
 it imports the first time the assistant is opened (`toolchain/test-assistant.mjs`,
 run by the smoke test, tests it against the SDKs with a fetch that answers as the
-providers do); and KaTeX's stylesheet and fonts into `islands.css` and `fonts/`. `build-wasm` runs it into the page it builds, and
+providers do); `web/src/calendar.js`, FullCalendar's month for a calendar's page,
+into `islands/calendar.js`, with `web/src/calendar.css` (FullCalendar's styles, its
+classic theme, and the wiki's colours for it) into `islands/calendar.css`, which it
+imports and links the first time a calendar's page is shown; and KaTeX's stylesheet and fonts into `islands.css` and `fonts/`. `build-wasm` runs it into the page it builds, and
 the browser suite's `wiki-app/test/web/bundle.sh` into the test page. npm 11
 runs esbuild's install script only because `package.json`'s `allowScripts`
 approves it (`npm install-scripts approve esbuild`).
@@ -4852,6 +4855,7 @@ three, which only the server links:
 | the page (the editor's assistant) | [`@anthropic-ai/sdk`](https://github.com/anthropics/anthropic-sdk-typescript) and [`openai`](https://github.com/openai/openai-node), with `@opentelemetry/api`, which the first bundles | Apache-2.0 |
 | the page (the assistant's buttons) | the Claude and OpenAI logos as [simple-icons](https://simpleicons.org) draws them (16.36.0 and 15.22.0); the logos are trademarks of their owners, shown to name the provider | CC0-1.0 (the drawings) |
 | the page | [fflate](https://github.com/101arrowz/fflate) (the export's zip files) | MIT |
+| the page (a calendar's month) | [FullCalendar](https://fullcalendar.io/) (`fullcalendar`, with `@full-ui/headless-calendar` and Preact, which it bundles) and [`temporal-polyfill`](https://github.com/fullcalendar/temporal-polyfill) | MIT |
 | the page (signing in with a password) | [`@serenity-kit/opaque`](https://github.com/serenity-kit/opaque) (opaque-ke compiled to WebAssembly), which opaque-hs's client calls | MIT |
 | the page | [`@bjorn3/browser_wasi_shim`](https://github.com/bjorn3/browser_wasi_shim) (`wasi-shim.js`) | MIT or Apache-2.0 |
 | the page | [TikZJax](https://github.com/drgrice1/tikzjax) (`tikzjax/`) | GPL-3.0-or-later |

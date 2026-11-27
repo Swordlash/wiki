@@ -1,0 +1,64 @@
+/* The calendar's month (web/src/calendar.js): FullCalendar's own styles and
+   its classic theme, with the theme's colours taken from the wiki's
+   (web/style.css), so that the month follows the light and the dark theme.
+   web/bundle.sh bundles this file into islands/calendar.css, which
+   islands.js links the first time a calendar's page is shown. */
+@import "fullcalendar/skeleton.css";
+@import "fullcalendar/themes/classic/theme.css";
+
+/* The classic theme's palette, in place of its palette.css. Today's cell
+   takes a quiet tint of the accent, not the theme's yellow. */
+.calendar-month {
+  --fc-classic-button: var(--surface);
+  --fc-classic-button-border: var(--border);
+  --fc-classic-button-strong: var(--border);
+  --fc-classic-button-strong-border: var(--muted);
+  --fc-classic-button-outline: var(--accent);
+  --fc-classic-button-foreground: var(--text);
+  --fc-classic-primary: var(--accent);
+  --fc-classic-primary-foreground: var(--background);
+  --fc-classic-event: var(--accent);
+  --fc-classic-event-contrast: var(--background);
+  --fc-classic-background-event: var(--accent);
+  --fc-classic-background-event-opacity: 15%;
+  --fc-classic-background-event-foreground-opacity: 50%;
+  --fc-classic-highlight: color-mix(in srgb, var(--accent) 20%, transparent);
+  --fc-classic-today: color-mix(in srgb, var(--accent) 9%, transparent);
+  --fc-classic-now: var(--danger);
+  --fc-classic-small-dot-width: 8px;
+  --fc-classic-large-dot-width: 10px;
+  --fc-classic-background: var(--background);
+  --fc-classic-faint: color-mix(in srgb, var(--text) 4%, transparent);
+  --fc-classic-muted: color-mix(in srgb, var(--text) 8%, transparent);
+  --fc-classic-strong: color-mix(in srgb, var(--text) 14%, transparent);
+  --fc-classic-foreground: var(--text);
+  --fc-classic-faint-foreground: var(--muted);
+  --fc-classic-muted-foreground: var(--muted);
+  --fc-classic-border: var(--border);
+  --fc-classic-strong-border: var(--muted);
+}
+
+/* The number of a day that has a page: a link to the page, drawn as the
+   wiki's links are, and underlined so that it stands out among the
+   numbers of the days that have none. */
+.calendar-day-link {
+  padding: 0 0.2rem;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.calendar-day-link:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.calendar-day-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

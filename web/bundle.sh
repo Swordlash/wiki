@@ -29,7 +29,11 @@
 #                    client passwords are signed in and set with, which it
 #                    imports the first time a password is used, and hpke.js
 #                    (web/src/hpke.js), @hpke/core, HPKE over WebCrypto, which
-#                    it imports the first time a key is sealed to someone;
+#                    it imports the first time a key is sealed to someone,
+#                    and calendar.js (web/src/calendar.js), FullCalendar's
+#                    month, with calendar.css (web/src/calendar.css) beside
+#                    it, which it imports and links the first time a
+#                    calendar's page is shown;
 #   tikzjax/         TikZJax's worker and TeX (from npm's @drgrice1/tikzjax,
 #                    its worker patched by web/src/tikz-patch.mjs), which
 #                    tikz.js runs, with the worker that starts it
@@ -118,6 +122,17 @@ npx esbuild web/src/opaque.js \
 npx esbuild web/src/hpke.js \
   --bundle --minify --format=esm --target=es2022 --platform=browser --log-level=warning \
   --metafile="$meta/hpke.json" --outfile="$out_dir/islands/hpke.js"
+
+# A calendar's month, FullCalendar: one file in islands/ too, with its
+# stylesheet beside it (FullCalendar's own, its classic theme, and the
+# wiki's colours for it), both fetched the first time a calendar's page is
+# shown.
+npx esbuild web/src/calendar.js \
+  --bundle --minify --format=esm --target=es2022 --platform=browser --log-level=warning \
+  --metafile="$meta/calendar.json" --outfile="$out_dir/islands/calendar.js"
+npx esbuild web/src/calendar.css \
+  --bundle --minify --log-level=warning \
+  --metafile="$meta/calendar-css.json" --outfile="$out_dir/islands/calendar.css"
 
 # TikZJax's files, copied from its npm package: run-tex.js is its worker
 # (TeX's WebAssembly runtime and dvi2html), tex.wasm.gz and core.dump.gz are

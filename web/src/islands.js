@@ -19,6 +19,8 @@
 //   wikiIslands.cropAvatar(host, file): Promise<void>
 //   wikiIslands.opaque(): Promise<module>
 //   wikiIslands.hpke(): Promise<module>
+//   wikiIslands.showCalendar(host, days): Promise<void>
+//   wikiIslands.dropCalendar(host)
 //
 // It also gives the pages' spoilers and the code blocks' copy buttons their
 // behaviour (see "Spoilers" and "Copy buttons" below), with listeners on the
@@ -55,6 +57,13 @@
 // is the same loader (at the end of this file). Nor is hpke: it loads
 // HPKE, @hpke/core (hpke.js, bundled into islands/hpke.js), the first time
 // a key is sealed to someone or opened.
+//
+// showCalendar puts a calendar's month in the element its page holds
+// (calendar.js, FullCalendar, bundled into islands/calendar.js with its
+// stylesheet beside it, islands/calendar.css, both fetched the first time a
+// calendar's page is shown), for wiki-app/jsbits/calendar.js; dropCalendar
+// takes it out. The element gets a "wiki-island-drawn" event once the month
+// is drawn, as a diagram's does.
 // The demo's export and import, which have nowhere better to be bundled.
 import "./archive.js";
 import katex from "katex";
@@ -150,6 +159,29 @@ const loadAssistant = lazily("islands/assistant.js");
 const loadAvatar = lazily("islands/avatar.js");
 const loadOpaque = lazily("islands/opaque.js");
 const loadHpke = lazily("islands/hpke.js");
+const loadCalendar = lazily("islands/calendar.js");
+
+// The calendar's stylesheet, islands/calendar.css, linked into the page the
+// first time a month is shown. The promise settles once the browser has
+// read it, so that no month is drawn without its styles. A stylesheet that
+// does not load is taken out and forgotten, so that the next month tries
+// again.
+let calendarStyle = null;
+const loadCalendarStyle = () => {
+  calendarStyle ??= new Promise((resolve, reject) => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = new URL("islands/calendar.css", scriptUrl).href;
+    link.addEventListener("load", () => resolve());
+    link.addEventListener("error", () => {
+      link.remove();
+      calendarStyle = null;
+      reject(new Error("The calendar's stylesheet could not be loaded."));
+    });
+    document.head.append(link);
+  });
+  return calendarStyle;
+};
 
 // How many times each element has been asked to render. Mermaid renders
 // asynchronously, so a diagram can finish after the element was asked for
@@ -384,6 +416,51 @@ const cropAvatar = (host, file) =>
   loadAvatar()
     .then((avatar) => avatar.crop(host, file))
     .catch((error) => console.error("The avatar's cropper could not be loaded:", error));
+
+// A calendar's month in `host`, with the days in `days` (a JSON array of
+// dates, 2026-11-27) marked. The first call for an element starts the load
+// of the month's module and stylesheet, and keeps what it wants on the
+// element (`wikiCalendar`): the days, and the month once it is there. A
+// call while the load is out, or once the month is drawn, changes the days
+// only: no second month is put in the element.
+//
+// The load may end after the page has gone on: the element is then out of
+// the page, or dropCalendar took what was kept on it, and nothing is put
+// in. The promise returned settles once the load has ended and the month
+// is in place or was not wanted; it never rejects. A failed load tells the
+// element the error, logs it, and is forgotten, so that a call after it
+// tries again.
+const showCalendar = (host, days) => {
+  const list = JSON.parse(String(days));
+  const kept = host.wikiCalendar;
+  if (kept) {
+    kept.list = list;
+    kept.month?.days(list);
+    return Promise.resolve();
+  }
+  const wanted = { list, month: null };
+  host.wikiCalendar = wanted;
+  const stillWanted = () => host.isConnected && host.wikiCalendar === wanted;
+  return Promise.all([loadCalendar(), loadCalendarStyle()])
+    .then(([calendar]) => {
+      if (!stillWanted()) return;
+      wanted.month = calendar.mount(host, wanted.list);
+      drawn(host, null);
+    })
+    .catch((error) => {
+      if (!stillWanted()) return;
+      delete host.wikiCalendar;
+      console.error("The calendar's month could not be shown:", error);
+      drawn(host, error);
+    });
+};
+
+// Take the month out of `host`, or forget that one was wanted there while
+// its load is out.
+const dropCalendar = (host) => {
+  host.wikiCalendar?.month?.destroy();
+  delete host.wikiCalendar;
+};
 
 // The built-in macros the wiki ships with, as written: what the editor's
 // settings start the server's own copy from.
@@ -659,6 +736,8 @@ globalThis.wikiIslands = Object.freeze({
   cropAvatar,
   opaque: loadOpaque,
   hpke: loadHpke,
+  showCalendar,
+  dropCalendar,
 });
 
 // opaque-hs's client (Crypto.OPAQUE.Client, in Wiki.App.Backend.Opaque)

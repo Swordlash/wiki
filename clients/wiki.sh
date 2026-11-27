@@ -14,7 +14,9 @@
 # The password never reaches a command line: curl reads the sign-in from a
 # config given on its standard input (a here-document), so the process list
 # never shows it, and the code that handles it runs with tracing (set -x)
-# off.
+# off. The script writes no file that holds it; the shell passes the
+# here-document through a pipe, or through a temporary file of its own that
+# it removes at once (bash 3.2 always, a newer bash for a large one).
 #
 # The awk and jq programs in single quotes are not to be expanded by the
 # shell.
@@ -69,9 +71,11 @@ tab=$(printf '\t')
 #   the locks                FILE.wiki-sh-lock beside FILE, and one beside
 #                            each state file (take_lock): directories made
 #                            by mkdir, removed when the run ends
-#   curl's config            a here-document on curl's standard input: a
-#                            pipe, or on bash 3.2 a file the shell itself
-#                            makes and removes
+#   curl's config            no file of the script's: a here-document on
+#                            curl's standard input, which the shell passes
+#                            through a pipe or through a temporary file of
+#                            its own that it removes at once (bash 3.2
+#                            always, a newer bash for a large one)
 #
 # The caller's umask is kept for a new FILE, and the script's own is 077,
 # so that nothing else it makes can be read by others.
@@ -401,13 +405,14 @@ wiki_request() {
     1 | 3) fail "$EX_USAGE" "WIKI_URL is not an address curl can use: $wiki_base ($curl_said)" ;;
     # 26 is a file curl could not read: its config (any request), or the
     # body a put sends (--data-binary @FILE) or an attach (--upload-file).
+    # curl's first line tells them apart by how it begins: "cannot read
+    # config from '-'" for the config, "Failed to open FILE" or "cannot open
+    # 'FILE'" for a body, whose path may hold any words.
     26)
-      config_said=$(sed -n '/read config from/{s/^curl: //;p;q;}' "$work/curl-error" 2>/dev/null)
-      if [ -n "$config_said" ]; then
-        fail "$EX_ERROR" "curl cannot read its settings, the sign-in among them, from its standard input ($config_said): check that the curl first on the PATH (command -v curl) is curl itself, not a wrapper that takes or closes its standard input"
-      else
-        fail "$EX_ERROR" "cannot read the text to send ($curl_said)"
-      fi
+      case $curl_said in
+        "cannot read config from "*) fail "$EX_ERROR" "curl cannot read its settings, the sign-in among them, from its standard input ($curl_said): check that the curl first on the PATH (command -v curl) is curl itself, not a wrapper that takes or closes its standard input" ;;
+        *) fail "$EX_ERROR" "cannot read the text to send ($curl_said)" ;;
+      esac
       ;;
     23) fail "$EX_ERROR" "the answer could not be kept: is the disk full, or a file size limit (ulimit -f) reached? ($curl_said)" ;;
     127) fail "$EX_ERROR" "curl is not installed: install it (apt install curl, brew install curl)" ;;
@@ -3088,8 +3093,10 @@ run says on standard error that the certificate is not checked, and
 WIKI_CACERT is not used.
 
 The password is given to curl on its standard input, never on its command
-line. Versions are remembered under WIKI_STATE_DIR (by default
-~/.local/state/wiki), one file per page.
+line, and wiki.sh writes no file that holds it (the shell may pass the
+input through a temporary file of its own, removed at once). Versions are
+remembered under WIKI_STATE_DIR (by default ~/.local/state/wiki), one file
+per page.
 
 Exit codes: 0 done; 1 another failure; 2 a wrong use (or no version known for
 a put, or a file that holds another part than the one named); 3 sign-in

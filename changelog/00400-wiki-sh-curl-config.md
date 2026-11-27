@@ -10,8 +10,9 @@ technical: true
   MSYS2 (`/mingw64/bin/curl`, `/ucrt64/bin/curl` or Windows' own
   `curl.exe`), where every request failed with "cannot read the text to
   send". curl now reads the sign-in on its standard input, which every curl
-  reads; the password is still on no command line, and no file is made for
-  it. The CA bundle (`WIKI_CACERT`) is given on curl's command line, so
+  reads; the password is still on no command line, and `wiki.sh` writes no
+  file that holds it (the shell may pass the input through a temporary file
+  of its own, removed at once, as before). The CA bundle (`WIKI_CACERT`) is given on curl's command line, so
   that MSYS2 turns its path into one a Windows curl can open.
 - When curl cannot read its settings, `wiki.sh` says so, and which curl to
   check, instead of "cannot read the text to send".

@@ -3270,7 +3270,10 @@ password = my password
 The password reaches curl on its standard input, never its command line, so
 the process list does not show it, and `sh -x wiki.sh ...` does not trace
 it. Every curl reads its standard input, a native Windows curl under MSYS2
-too, and no file is made for it. The CA bundle (`WIKI_CACERT`) is no secret
+too. `wiki.sh` writes no file that holds the password: the shell passes the
+input through a pipe, or through a temporary file of its own that it removes
+at once (bash 3.2, macOS's `sh`, always does; a newer bash may for a large
+input). The CA bundle (`WIKI_CACERT`) is no secret
 and is given on curl's command line, so that MSYS2 converts its path for a
 Windows curl.
 

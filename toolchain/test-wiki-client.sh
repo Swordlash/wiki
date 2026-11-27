@@ -282,9 +282,12 @@ EOF
 # And a curl that records its config, the one the client gives on curl's
 # standard input: it copies the config to curl.config.last and adds it to
 # curl.config, adds its command line to curl.args, then runs the real curl
-# with that copy on its standard input. With SECRET_DIRS set, it first adds
-# to curl.secret-files each file under those directories that holds
-# "wörd", the letters of every test password.
+# with that copy on its standard input. With SECRET_DIRS set (directories,
+# one per line, so that a space in one survives), it first scans each: the
+# directory goes to curl.secret-scanned, each file under it that holds
+# "wörd" (the letters of every test password) to curl.secret-files, and a
+# directory that is missing or a scan that fails to curl.secret-errors, so
+# that a scan that went wrong is not taken for one that found nothing.
 mkdir -p "$work/fakes/config"
 cat >"$work/fakes/config/curl" <<EOF
 #!/bin/sh
@@ -292,8 +295,14 @@ cat >"$work/curl.config.last"
 cat "$work/curl.config.last" >>"$work/curl.config"
 printf '%s\n' "\$*" >>"$work/curl.args"
 if [ -n "\${SECRET_DIRS:-}" ]; then
-  for dir in \$SECRET_DIRS; do
-    grep -rlF "wörd" "\$dir" >>"$work/curl.secret-files" 2>/dev/null
+  printf '%s\n' "\$SECRET_DIRS" | while IFS= read -r dir; do
+    if [ ! -d "\$dir" ]; then
+      printf 'no directory %s\n' "\$dir" >>"$work/curl.secret-errors"
+      continue
+    fi
+    printf '%s\n' "\$dir" >>"$work/curl.secret-scanned"
+    grep -rlF "wörd" -- "\$dir" >>"$work/curl.secret-files" 2>>"$work/curl.secret-errors"
+    [ "\$?" != 2 ] || printf 'grep failed in %s\n' "\$dir" >>"$work/curl.secret-errors"
   done
 fi
 exec "$real_curl" "\$@" <"$work/curl.config.last"
@@ -335,13 +344,21 @@ env PATH="$curl_path" curl -s -u "editor:$editor_password" http://127.0.0.1:1/ >
 check "the recorder sees a password given to curl -u" grep -qF "wörd" "$work/curl.args"
 : >"$work/curl.args"
 # So does the recorder of the config, which also finds a file that holds
-# one.
-mkdir -p "$work/secret-demo"
-printf 'password = %s\n' "$editor_password" >"$work/secret-demo/file"
-printf '' | env PATH="$work/fakes/config:$PATH" SECRET_DIRS="$work/secret-demo" curl -s -u "editor:$editor_password" http://127.0.0.1:1/ >/dev/null 2>&1
+# one, in a directory whose name has a space, and tells a directory it
+# cannot scan from one where it found nothing.
+nl='
+'
+mkdir -p "$work/secret demo/empty"
+printf 'password = %s\n' "$editor_password" >"$work/secret demo/file"
+printf '' | env PATH="$work/fakes/config:$PATH" SECRET_DIRS="$work/secret demo" curl -s -u "editor:$editor_password" http://127.0.0.1:1/ >/dev/null 2>&1
 check "the recorder of the config sees a password given to curl -u" grep -qF "wörd" "$work/curl.args"
-check "the recorder of the config finds a file that holds a password" grep -qxF "$work/secret-demo/file" "$work/curl.secret-files"
-rm -rf "$work/secret-demo" "$work/curl.secret-files" "$work/curl.config" "$work/curl.config.last"
+check "the recorder of the config finds a file that holds a password, under a space" grep -qxF "$work/secret demo/file" "$work/curl.secret-files"
+check "the recorder of the config scanned that directory" grep -qxF "$work/secret demo" "$work/curl.secret-scanned"
+rm -f "$work/curl.secret-files" "$work/curl.secret-scanned" "$work/curl.secret-errors"
+printf '' | env PATH="$work/fakes/config:$PATH" SECRET_DIRS="$work/secret demo/empty$nl$work/secret demo/missing" curl -s http://127.0.0.1:1/ >/dev/null 2>&1
+check "the recorder of the config finds nothing in an empty directory" [ ! -s "$work/curl.secret-files" ]
+check "the recorder of the config says a directory is missing" grep -qxF "no directory $work/secret demo/missing" "$work/curl.secret-errors"
+rm -rf "$work/secret demo" "$work/curl.secret-files" "$work/curl.secret-scanned" "$work/curl.secret-errors" "$work/curl.config" "$work/curl.config.last"
 : >"$work/curl.args"
 sh -x -c 'password=$1; : "$password"' sh "$editor_password" 2>"$work/trace" >/dev/null
 check "a trace shows a password in a variable" grep -qF "wörd" "$work/trace"
@@ -2396,14 +2413,17 @@ insecure_setting() {
 # text it reads from the user's standard input. A config curl cannot read
 # and a body curl cannot read each have their own failure.
 stdin_setting() {
-  rm -rf "$work/stdin-tmp" "$work/state-$shell-stdin" "$work/curl.secret-files"
-  mkdir "$work/stdin-tmp" "$work/state-$shell-stdin"
+  # The client's TMPDIR, with a space in its name, as the scan of it must
+  # survive.
+  stdin_tmp="$work/stdin tmp"
+  rm -rf "$stdin_tmp" "$work/state-$shell-stdin" "$work/curl.secret-files" "$work/curl.secret-scanned" "$work/curl.secret-errors"
+  mkdir "$stdin_tmp" "$work/state-$shell-stdin"
   # The client with the variables of the run first (as env takes them),
   # then the shell and its arguments; fake names the fake curl.
   stdin_run() {
     : >"$work/curl.config"
     : >"$work/curl.args"
-    env -i PATH="$work/fakes/$fake:$work/fakes/nojq:$PATH" HOME="$work/home" TMPDIR="$work/stdin-tmp" SECRET_DIRS="$work/stdin-tmp $work/state-$shell-stdin" \
+    env -i PATH="$work/fakes/$fake:$work/fakes/nojq:$PATH" HOME="$work/home" TMPDIR="$stdin_tmp" SECRET_DIRS="$stdin_tmp$nl$work/state-$shell-stdin" \
       WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-stdin" \
       "$@" <"$input" >"$work/out" 2>"$work/err"
     status=$?
@@ -2426,7 +2446,10 @@ stdin_setting() {
   stdin_run "$shell" "$client" get "$page"
   expect 0 "get after the put from standard input"
   check "the wiki has the text put from standard input" cmp -s "$work/out" "$work/stdin-page"
-  check "no file of the client's held the password" [ ! -s "$work/curl.secret-files" ]
+  check "the client's TMPDIR, whose name has a space, was scanned for the password" grep -qxF "$stdin_tmp" "$work/curl.secret-scanned"
+  check "the client's state directory was scanned for the password" grep -qxF "$work/state-$shell-stdin" "$work/curl.secret-scanned"
+  check "each scan for the password ran without an error" [ ! -s "$work/curl.secret-errors" ]
+  check "no file the client writes holds the password" [ ! -s "$work/curl.secret-files" ]
   input=$work/restore
   stdin_run "$shell" "$client" put "$page" --force
   expect 0 "the page's text back after the put from standard input"
@@ -2444,6 +2467,17 @@ stdin_setting() {
   expect 1 "a put whose body curl cannot read is exit 1"
   has err "cannot read the text to send (Failed to open " "a body curl cannot read is the text to send"
   lacks err "settings" "a body curl cannot read is not curl's settings"
+  # The same where the body's path holds curl's words for its config: the
+  # client's TMPDIR is named so.
+  stdin_tmp="$work/read config from here"
+  mkdir -p "$stdin_tmp"
+  input=$work/restore
+  stdin_run REFUSE=body "$shell" "$client" put "$page" --force
+  input=/dev/null
+  stdin_tmp="$work/stdin tmp"
+  expect 1 "a put whose body's path holds \"read config from\" is exit 1"
+  has err "cannot read the text to send (Failed to open $work/read config from here/wiki-sh." "a body whose path holds \"read config from\" is still the text to send"
+  lacks err "settings" "a body whose path holds \"read config from\" is not curl's settings"
 }
 
 # The MCP server through a pipe: requests of both the current revision

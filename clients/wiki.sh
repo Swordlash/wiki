@@ -430,11 +430,18 @@ wiki_request() {
   fi
   # curl's own diagnostic: its first line that begins "curl: ", since under
   # sh -x the shell's trace lines come before it; the first line when
-  # there is none (the shell's "curl: not found" has no such start).
+  # there is none (the shell's "curl: not found" has no such start). curl
+  # may repeat a value of its config in it (a proxy it refuses, written
+  # out whole, with its user and password), so it is taken with tracing
+  # off, and each secret in it is replaced by [hidden] before any failure
+  # quotes it.
+  quiet_begin
   curl_said=$(sed -n '/^curl: /{p;q;}' "$work/curl-error" 2>/dev/null)
   [ -n "$curl_said" ] || curl_said=$(head -n 1 "$work/curl-error" 2>/dev/null)
   curl_said=${curl_said#curl: }
   curl_said=${curl_said#\(*\) }
+  hide_secrets
+  quiet_end
   case $curl_status in
     6) fail "$EX_CONNECTION" "cannot find the host of $wiki_base: check WIKI_URL and the network ($curl_said)" ;;
     7) fail "$EX_CONNECTION" "cannot connect to $wiki_base: is the wiki running there, and is WIKI_URL right? ($curl_said)" ;;
@@ -459,6 +466,39 @@ wiki_request() {
     127) fail "$EX_ERROR" "curl is not installed: install it (apt install curl, brew install curl)" ;;
     *) fail "$EX_ERROR" "curl failed with status $curl_status: $curl_said" ;;
   esac
+}
+
+# curl_said with every secret of the config replaced by [hidden]: the
+# proxy's address, its user and password (the part before its last @, as
+# curl may print the address in another form), the proxy's password alone,
+# the password and the token. Each is matched as literal text, by the
+# shell's own patterns with the value quoted, so no character of a secret
+# has a meaning of its own. Called with tracing off (quiet_begin).
+hide_secrets() {
+  proxy_rest=${wiki_proxy#*://}
+  proxy_userinfo=''
+  case $proxy_rest in
+    *@*) proxy_userinfo=${proxy_rest%@*} ;;
+  esac
+  proxy_secret=''
+  case $proxy_userinfo in
+    *:*) proxy_secret=${proxy_userinfo#*:} ;;
+  esac
+  for secret in "$wiki_proxy" "$proxy_userinfo" "$proxy_secret" "$wiki_password" "$wiki_token"; do
+    [ -n "$secret" ] || continue
+    rest=$curl_said hidden=''
+    while :; do
+      case $rest in
+        *"$secret"*)
+          hidden="$hidden${rest%%"$secret"*}[hidden]"
+          rest=${rest#*"$secret"}
+          ;;
+        *) break ;;
+      esac
+    done
+    curl_said=$hidden$rest
+  done
+  proxy_rest='' proxy_userinfo='' proxy_secret='' secret='' rest='' hidden=''
 }
 
 # A header of the last answer, by name in lower case: the last block's (an

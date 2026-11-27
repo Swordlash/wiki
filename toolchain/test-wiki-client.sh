@@ -354,7 +354,18 @@ cat >"$work/fakes/nostdin/curl" <<EOF
 printf '%s\n' "\$*" >>"$work/curl.args-all"
 exec "$real_curl" "\$@" --trace-ascii "$work/nostdin.trace" </dev/null
 EOF
-chmod +x "$work/fakes/config/curl" "$work/fakes/refuse/curl" "$work/fakes/nostdin/curl"
+# And a curl that repeats its sign-in in its diagnostic, as no real curl
+# was seen to (a real one repeats a proxy it refuses): it reads the "user"
+# or "header" of its config, undoes the config's quoting, writes the value
+# in a "curl: (7)" line, and ends with status 7.
+mkdir -p "$work/fakes/echo"
+cat >"$work/fakes/echo/curl" <<'EOF'
+#!/bin/sh
+said=$(sed -n -e 's/^user = "\(.*\)"$/\1/p' -e 's/^header = "\(.*\)"$/\1/p' | sed 's/\\\(.\)/\1/g')
+printf 'curl: (7) could not use %s\n' "$said" >&2
+exit 7
+EOF
+chmod +x "$work/fakes/config/curl" "$work/fakes/refuse/curl" "$work/fakes/nostdin/curl" "$work/fakes/echo/curl"
 chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv" "$work/fakes/pausecp/cp" "$work/fakes/failmv/mv"
 # The PATH the client runs with: the recording curl, and the failing jq
 # unless the MCP server is under test.
@@ -673,6 +684,7 @@ suite() {
   insecure_setting
   stdin_setting
   config_url_setting
+  hidden_setting
 
   # The configuration file, read only when nobody else may read it, through
   # a symbolic link too.
@@ -2519,6 +2531,41 @@ stdin_setting() {
   expect 1 "a put whose body's path holds \"read config from\" is exit 1"
   has err "cannot read the text to send (Failed to open $work/read config from here/wiki-sh." "a body whose path holds \"read config from\" is still the text to send"
   lacks err "settings" "a body whose path holds \"read config from\" is not curl's settings"
+}
+
+# A secret that curl repeats in its diagnostic is hidden in the failure,
+# and in the trace of sh -x: a proxy curl refuses for its scheme, which
+# curl writes out whole, its password with characters that a pattern or
+# sed would read (& * [ ]; a / there would make curl read the address
+# another way); and a password and a key, with a / too, that the fake
+# curl repeats. "wörd" is in each, and must be in neither err nor the
+# trace.
+hidden_setting() {
+  # The client with the variables of the run first (as env takes them),
+  # then the shell, with -x or not, and the command.
+  hidden_run() {
+    env -i HOME="$work/home" WIKI_URL="$url" WIKI_STATE_DIR="$work/state-$shell-hidden" "$@" </dev/null >"$work/out" 2>"$work/err"
+    status=$?
+  }
+  for option in plain -x; do
+    if [ "$option" = plain ]; then run_shell=$shell; else run_shell="$shell -x"; fi
+    # The shell and its option are two words on purpose.
+    # shellcheck disable=SC2086
+    hidden_run PATH="$nojq_path" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY='foo://pxuser:px&*wörd[1]@127.0.0.1:1' $run_shell "$client" list
+    expect 8 "a proxy curl refuses is exit 8 ($option)"
+    has err "[hidden]" "the failure hides the proxy curl repeats ($option)"
+    lacks err "wörd" "no proxy password in the failure or the trace ($option)"
+    # shellcheck disable=SC2086
+    hidden_run PATH="$work/fakes/echo:$work/fakes/nojq:$PATH" WIKI_USER=editor WIKI_PASSWORD="$editor_password" $run_shell "$client" list
+    expect 8 "a curl that repeats the password is exit 8 ($option)"
+    has err "could not use editor:[hidden]" "the failure hides the password curl repeats ($option)"
+    lacks err "wörd" "no password in the failure or the trace ($option)"
+    # shellcheck disable=SC2086
+    hidden_run PATH="$work/fakes/echo:$work/fakes/nojq:$PATH" WIKI_TOKEN='key&*/wörd[2]' $run_shell "$client" list
+    expect 8 "a curl that repeats the key is exit 8 ($option)"
+    has err "could not use Authorization: Bearer [hidden]" "the failure hides the key curl repeats ($option)"
+    lacks err "wörd" "no key in the failure or the trace ($option)"
+  done
 }
 
 # A query's value as the server reads it: "+" a space, "%XX" the byte XX

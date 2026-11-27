@@ -2807,7 +2807,8 @@ curl https://wiki.example/api/markdown/reference
   exist (404 otherwise; nothing is created on the way); a page right after
   `/p/` goes under the space's home page. The title is `?title=`, or else
   made from the slug (`release-notes` is titled "Release notes"), and
-  `?kind=presentation` makes a presentation instead of a document. Both
+  `?kind=presentation` makes a presentation instead of a document, and
+  `?kind=calendar` a calendar. Both
   count only when the page is created. It answers 201, with the page's
   address as `Location` and its `ETag`. `If-None-Match: *` makes the `PUT`
   create only: where a page is already, it is refused with 412 and nothing
@@ -2845,7 +2846,7 @@ curl -u editor:'my password' 'https://wiki.example/api/search?q=on-call+rota&spa
   has its `title`, its `path`, the address of its own listing (`list`), the
   address of its home page's Markdown (`home`), whether it is `encrypted`, its
   `subspaces` and its `pages`: the pages under its home page, each with its
-  `title`, its `kind` (`document` or `presentation`), the address of its
+  `title`, its `kind` (`document`, `presentation` or `calendar`), the address of its
   Markdown for `GET` and `PUT` (`markdown`), when it was last changed
   (`updated`), whether it is a `template`, and the pages under it
   (`children`). The addresses are paths from the wiki's address.
@@ -3441,7 +3442,7 @@ Sections of the wiki's Markdown reference (609 lines); ask for one by its headin
   so a `put` from standard input writes the whole page only after a `get` of
   the page, and a part only after a `get` of that part (a `contents` in
   between changes nothing).
-- **`wiki.sh create PAGE [--title TITLE] [--kind document|presentation]
+- **`wiki.sh create PAGE [--title TITLE] [--kind document|presentation|calendar]
   [--file FILE]`** makes a new page with the Markdown of `FILE` or standard
   input, with `If-None-Match: *`: where a page is already, nothing is written
   and it exits with 5. The page above it, if any, must exist. Its version is

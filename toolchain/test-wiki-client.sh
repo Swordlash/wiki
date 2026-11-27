@@ -1151,6 +1151,10 @@ creating() {
   expect 0 "create a presentation, with no text"
   client list team/projects
   has out "/s/team/projects/p/deck-$shell/  (presentation)" "it is listed as a presentation"
+  client create team/projects "days-$shell" --kind calendar
+  expect 0 "create a calendar, the calendar plugin's kind, with no text"
+  client list team/projects
+  has out "/s/team/projects/p/days-$shell/  (calendar)" "it is listed as a calendar"
   client create team/projects "nothing-$shell/child"
   expect 4 "create under a page that is not there is not found"
   client create team/projects

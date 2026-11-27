@@ -44,14 +44,18 @@ data BuiltinTemplate = BuiltinTemplate
   }
   deriving stock (Eq, Show)
 
--- | Meeting notes, a decision record and a how-to guide, which are
+-- | Meeting notes, a decision record, a how-to guide and a day, which are
 -- documents, and a starter deck, a presentation, in the order they are
--- offered.
+-- offered. The day is a list of the day's entries, @{.day}@
+-- ("Wiki.Core.Markdown.Day"), with an example of each way to write one.
+-- Its author titles the page with its date: @{{date}}@ is the day the page
+-- is made, in UTC, which need not be the day it is about.
 builtinTemplates :: [BuiltinTemplate]
 builtinTemplates =
   [ BuiltinTemplate {key = "meeting-notes", title = "Meeting notes", body = $(embedText "templates/meeting-notes.md"), kind = Document}
   , BuiltinTemplate {key = "decision-record", title = "Decision record", body = $(embedText "templates/decision-record.md"), kind = Document}
   , BuiltinTemplate {key = "how-to", title = "How-to guide", body = $(embedText "templates/how-to.md"), kind = Document}
+  , BuiltinTemplate {key = "day", title = "Day", body = $(embedText "templates/day.md"), kind = Document}
   , BuiltinTemplate {key = "starter-deck", title = "Starter deck", body = $(embedText "templates/starter-deck.md"), kind = Presentation}
   ]
 

@@ -12,6 +12,7 @@ import Halogen.VDom.Types (VDom (..))
 import Protolude
 import Test.Hspec
 import Test.Markdown.Html
+import Wiki.Core.Anchor (renderedText)
 import Wiki.Core.Markdown
 import Wiki.Core.Markdown.Box (BoxColour (..), BoxIcon (..), BoxKind (..), BoxNumbering (..), Numbering (..))
 import Wiki.Core.Markdown.Tasks (Task (..), allTasks, tasksOf)
@@ -278,6 +279,51 @@ spec = describe "Markdown.Render" $ do
         `shows'` "<ul class=\"task-list\"><li class=\"task-list-item\"><input aria-label=\"🎉 todo\" disabled type=\"checkbox\"> <span class=\"task-text\"><span class=\"emoji\" title=\":tada:\">🎉</span> todo</span></li></ul>"
       "1. :tada: first" `shows'` "<ol><li><span class=\"emoji\" title=\":tada:\">🎉</span> first</li></ol>"
       "- \\:tada: text" `shows'` "<ul><li>:tada: text</li></ul>"
+
+  describe "a day's list" $ do
+    let day =
+          T.unlines
+            [ "{.day}"
+            , "- 09:00 Standup"
+            , "- 9:30-10:30 Review of the plan"
+            , "- ! 14:00 Demo for the client"
+            , "- ! Ania's birthday"
+            , "- [ ] 16:00 Call the bank"
+            , "- [x] ! Pay the invoice"
+            , "- Buy milk"
+            ]
+        grouping = defaultOptions {groupDays = True, taskBoxes = Just (\_ _ -> panic "no change is made")}
+        group' label inner = "<div aria-label=\"" <> label <> "\" class=\"day-group\" data-label=\"" <> label <> "\" role=\"group\">" <> inner <> "</div>"
+        grouped =
+          "<div class=\"day\">"
+            <> group'
+              "All day"
+              ( "<ul class=\"task-list\">"
+                  <> "<li class=\"day-highlight\">Ania's birthday</li>"
+                  <> "<li class=\"task-list-item task-done day-highlight\"><input aria-label=\"Pay the invoice\" checked data-task=\"1\" type=\"checkbox\"> <span class=\"task-text\">Pay the invoice</span></li>"
+                  <> "<li>Buy milk</li></ul>"
+              )
+            <> group' "Morning" "<ul><li>09:00 Standup</li><li>9:30-10:30 Review of the plan</li></ul>"
+            <> group' "Noon" "<ul><li class=\"day-highlight\">14:00 Demo for the client</li></ul>"
+            <> group' "Afternoon" "<ul class=\"task-list\"><li class=\"task-list-item\"><input aria-label=\"16:00 Call the bank\" data-task=\"0\" type=\"checkbox\"> <span class=\"task-text\">16:00 Call the bank</span></li></ul>"
+            <> "</div>"
+    it "shows the items under the whole day and the parts of the day, highlights marked and without their mark, tasks with the source's index" $
+      showsWith grouping day grouped
+    it "gives the groups' names no text: the page's text is the items' alone, in the order shown" $ do
+      let shown = either (panic . show) identity (renderMarkdown grouping day)
+      renderedText shown `shouldBe` "Ania's birthday Pay the invoiceBuy milk09:00 Standup9:30-10:30 Review of the plan14:00 Demo for the client 16:00 Call the bank"
+    it "draws the list as one in the editor's preview, after one marker of its first line" $ do
+      html <- renderHtml . renderLines grouping =<< either (panic . show) pure (parseWithLines ("Before.\n\n" <> day))
+      html `shouldBe` "<span aria-hidden=\"true\" class=\"source-line\" data-line=\"1\"></span><p>Before.</p><span aria-hidden=\"true\" class=\"source-line\" data-line=\"4\"></span>" <> grouped
+    it "shows the list as written without the option, as a feed does" $
+      showsWith
+        defaultOptions {taskBoxes = Just (\_ _ -> panic "no change is made")}
+        day
+        ( "<div class=\"day\"><ul><li>09:00 Standup</li><li>9:30-10:30 Review of the plan</li><li>! 14:00 Demo for the client</li><li>! Ania's birthday</li></ul></div>"
+            <> "<ul class=\"task-list\"><li class=\"task-list-item\"><input aria-label=\"16:00 Call the bank\" data-task=\"0\" type=\"checkbox\"> <span class=\"task-text\">16:00 Call the bank</span></li>"
+            <> "<li class=\"task-list-item task-done\"><input aria-label=\"! Pay the invoice\" checked data-task=\"1\" type=\"checkbox\"> <span class=\"task-text\">! Pay the invoice</span></li></ul>"
+            <> "<ul><li>Buy milk</li></ul>"
+        )
 
   describe "tables"
     $ it "writes the header, the rows and each column's alignment"

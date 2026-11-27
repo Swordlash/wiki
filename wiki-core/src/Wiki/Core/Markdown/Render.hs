@@ -177,6 +177,19 @@
 -- page view does not take leaves the box as the browser set it: the view
 -- then counts the box as drawn once more, its item gets a new key, and the
 -- new element shows the state the view has.
+--
+-- __A day's list.__ With 'groupDays', a list marked @{.day}@ (with the
+-- lists the parser cut it into, "Wiki.Core.Markdown.Day"'s
+-- 'Wiki.Core.Markdown.Day.joinDayLists') is a
+-- @\<div class=\"day\">@ of groups: "All day", then the parts of the day
+-- that have an entry, in the order of the clock. Each group is a
+-- @\<div class=\"day-group\">@ around a list of its items. The group's
+-- name is in its @data-label@, which the stylesheet shows, and in its
+-- @aria-label@, and is no text of the page. The items are rendered in the
+-- order of the source and only shown in their groups, as a sorted list's
+-- are, so a task's index is the source's. A highlighted entry's item has
+-- the class @day-highlight@ and does not show its mark. Without
+-- 'groupDays' the list is shown as written.
 module Wiki.Core.Markdown.Render
   ( Options (..)
   , MentionTarget (..)
@@ -208,6 +221,7 @@ import Halogen.HTML.Properties qualified as HP
 import Protolude
 import Wiki.Core.Markdown.Ast
 import Wiki.Core.Markdown.Box (BoxCounter, BoxIcon (..), BoxKind (..), Numbering, alertKindName, boxCaption, boxStyle, countBox, countSection, definedKind, noNumbers, startCounting)
+import Wiki.Core.Markdown.Day (DayEntry (..), dayEntries, dayGroupLabel, dayGroups, dayListOf, joinDayLists, unmarked)
 import Wiki.Core.Markdown.Frame (FrameScheme (..), SvgFrame (..), frameDocument, interactiveClass, svgFrameHeight)
 import Wiki.Core.Markdown.Html qualified as Html
 import Wiki.Core.Markdown.Link
@@ -298,6 +312,12 @@ data Options page w i = Options
   -- ^ How many times the box of the task with this index was drawn anew,
   -- part of its item's key (the module's Haddock says why). None by
   -- default.
+  , groupDays :: Bool
+  -- ^ Whether a day's list (@{.day}@, "Wiki.Core.Markdown.Day") shows its
+  -- items in groups, as the module's Haddock says. Off by default, and a
+  -- day's list is shown as written: a feed is read apart from the wiki,
+  -- without the stylesheet that draws the groups' names. The application
+  -- turns it on.
   }
 
 -- | The user a mention names, as its link shows them.
@@ -352,6 +372,7 @@ defaultOptions =
     , numbering = noNumbers
     , taskBoxes = Nothing
     , taskDrawn = const 0
+    , groupDays = False
     }
 
 -- | What a destination is when nothing is known about the wiki: a URL, used
@@ -394,8 +415,13 @@ renderBlocks opts doc = concat (renderSections opts [doc])
 -- markers. The blocks are one document, as for 'renderBlocks'.
 renderLines :: Options page w i -> [(Maybe Int, Block)] -> [HH.HTML w i]
 renderLines opts located =
-  concat (zipWith (\line html -> marker line <> html) (map fst located) (renderSections opts (map (single . snd) located)))
+  concat (zipWith (\line html -> marker line <> html) (map fst runs) (renderSections opts (map snd runs)))
   where
+    -- A day's list is one block of the page here, though the parser may
+    -- have made it of several, so that it is drawn as one.
+    runs
+      | opts.groupDays = joinDayLists located
+      | otherwise = map (second single) located
     marker = \case
       Just n -> [HH.span [classesProp ["source-line"], HP.attr (HH.AttrName "data-line") (show n), HP.attr (HH.AttrName "aria-hidden") "true"] []]
       Nothing -> []
@@ -543,7 +569,42 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
     contents = tableOfContents (concat sections)
 
     renderBlocks' :: [Block] -> R [HH.HTML w i]
-    renderBlocks' bs = concat <$> traverse renderBlock bs
+    renderBlocks' bs
+      | opts.groupDays = concat <$> traverse run (joinDayLists (map ((),) bs))
+      | otherwise = concat <$> traverse renderBlock bs
+      where
+        run ((), blocks) = case dayListOf blocks of
+          Just (attrs, items) -> renderDay attrs items
+          Nothing -> concat <$> traverse renderBlock blocks
+
+    -- A day's list: its items rendered in the order of the source, so
+    -- that a task's index, the islands' keys and the footnotes' numbers
+    -- are the source's, then shown in their groups ('dayGroups'). Each
+    -- group is an element that names it in an attribute, which the
+    -- stylesheet shows, and in its @aria-label@: it has no text, so the
+    -- page's text (a comment's quote, "Wiki.Core.Anchor") is the items'
+    -- alone. A highlighted entry's item has the class @day-highlight@,
+    -- and its mark is not shown ('unmarked').
+    renderDay :: Attributes -> [ListItem] -> R [HH.HTML w i]
+    renderDay written items = do
+      attrs <- ownAttrs written
+      before <- gets (.sorting)
+      when (sortedClass `elem` classes written) $ modify (\c -> c {sorting = True})
+      let entries = dayEntries items
+          shownItem e item = if e.highlight then unmarked item else item
+      rendered <- sequence [renderItemWith ["day-highlight" | e.highlight] BulletList e.place (shownItem e item) | (e, item) <- zip entries items]
+      modify (\c -> c {sorting = before})
+      let byPlace = M.fromList (zip [0 :: Int ..] (zip items rendered))
+          groupOf (g, es) =
+            let shown = mapMaybe (\e -> M.lookup e.place byPlace) es
+                label = dayGroupLabel g
+             in HH.div
+                  [classesProp ["day-group"], HP.attr (HH.AttrName "data-label") label, HP.attr (HH.AttrName "role") "group", HP.attr (HH.AttrName "aria-label") label]
+                  [ if any (isTask . fst) shown
+                      then keyedListOf BulletList [(key, html) | (_, (key, html, _)) <- shown]
+                      else listOf BulletList [html | (_, (_, html, _)) <- shown]
+                  ]
+      pure [HH.div (idAndClasses attrs []) (map groupOf (dayGroups entries))]
 
     -- An item of a list. A task's checkbox goes before its first
     -- paragraph's text. An item of a bulleted list whose text starts with
@@ -556,25 +617,29 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
     -- (a task's by its index, another item's by its place in the list) and
     -- whether it is a done task, which a sorted list shows last.
     renderItem :: ListKind -> Int -> ListItem -> R (Text, HH.HTML w i, Bool)
-    renderItem kind place item@(ListItem task _) = do
+    renderItem = renderItemWith []
+
+    -- 'renderItem', its @li@ with these classes too.
+    renderItemWith :: [Text] -> ListKind -> Int -> ListItem -> R (Text, HH.HTML w i, Bool)
+    renderItemWith extra kind place item@(ListItem task _) = do
       -- The next task's index: the item's own, if it is a task.
       index <- gets (.tasks)
-      html <- renderItem' kind item
+      html <- renderItem' extra kind item
       let key = case task of
             Just _ -> "task-" <> show index <> "-" <> show (opts.taskDrawn index)
             Nothing -> "item-" <> show place
       pure (key, html, fromMaybe False task)
 
-    renderItem' :: ListKind -> ListItem -> R (HH.HTML w i)
-    renderItem' kind (ListItem task bs) = case task of
+    renderItem' :: [Text] -> ListKind -> ListItem -> R (HH.HTML w i)
+    renderItem' extra kind (ListItem task bs) = case task of
       Nothing | Just (keyword, emoji) <- emojiBullet kind bs -> do
         let bullet = [PNode (emojiSpan ["emoji", "emoji-bullet"] keyword emoji)]
         inner <- case bs of
           Para (_ : xs) : rest -> (:) . HH.p_ <$> withPieces bullet xs [] <*> renderBlocks' rest
           Plain (_ : xs) : rest -> (<>) <$> withPieces bullet xs [] <*> renderBlocks' rest
           _ -> renderBlocks' bs
-        pure (HH.li [classesProp ["emoji-item"]] inner)
-      Nothing -> HH.li_ <$> renderBlocks' bs
+        pure (HH.li [classesProp (["emoji-item"] <> extra)] inner)
+      Nothing -> HH.li [classesProp extra | not (null extra)] <$> renderBlocks' bs
       Just done -> do
         -- Counted before the tasks in it, as the tree orders them.
         index <- state (\c -> (c.tasks, c {tasks = c.tasks + 1}))
@@ -588,7 +653,7 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
           Para xs : rest -> (:) . HH.p_ <$> own xs <*> renderBlocks' rest
           Plain xs : rest -> (<>) <$> own xs <*> renderBlocks' rest
           _ -> (checkbox <>) <$> renderBlocks' bs
-        pure (HH.li [classesProp (["task-list-item"] <> ["task-done" | done])] inner)
+        pure (HH.li [classesProp (["task-list-item"] <> ["task-done" | done] <> extra)] inner)
 
     renderTable :: [Alignment] -> [[Inline]] -> [[[Inline]]] -> R (HH.HTML w i)
     renderTable aligns header rows = do

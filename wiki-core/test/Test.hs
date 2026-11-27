@@ -23,6 +23,7 @@ import Test.Markdown.CompleteMath qualified as CompleteMath
 import Test.Markdown.CompleteOracle qualified as CompleteOracle
 import Test.Markdown.CompleteStarts qualified as CompleteStarts
 import Test.Markdown.Day qualified as Day
+import Test.Markdown.DayList qualified as DayList
 import Test.Markdown.Edit qualified as Edit
 import Test.Markdown.Emoji qualified as Emoji
 import Test.Markdown.Enter qualified as Enter
@@ -83,6 +84,7 @@ main = hspec . parallel . wasmCases $ do
   Spoiler.spec
   Tasks.spec
   Day.spec
+  DayList.spec
   Problems.spec
   Folds.spec
   Path.spec

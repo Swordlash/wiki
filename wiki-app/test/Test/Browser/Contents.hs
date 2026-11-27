@@ -166,7 +166,7 @@ spec m = do
     (form, wiki) <- startWith m (Just "user-admin") (NewPage (slugs ["team"]) Nothing)
     _ <- find form ".new-page-choice"
     choices <- traverse textContent =<< findAll form ".new-page-choice"
-    map (T.takeWhile (/= ' ') . T.strip) choices `shouldBe` ["Blank", "Weekly", "Meeting", "Decision", "How-to"]
+    map (T.takeWhile (/= ' ') . T.strip) choices `shouldBe` ["Blank", "Weekly", "Meeting", "Decision", "How-to", "Day"]
     find form ".new-page-title" >>= (`typeText` "Sync of the 26th")
     chooseStart form "Weekly sync"
     find form ".new-page-view button.primary" >>= click
@@ -198,7 +198,7 @@ spec m = do
     chooseStart ui "Starter deck"
     -- Back to a document: its templates, and blank again.
     chooseKind ui "Document"
-    eventually $ (map (T.takeWhile (/= ' ') . T.strip) <$> (traverse textContent =<< findAll ui ".new-page-choice")) `shouldReturn` ["Blank", "Meeting", "Decision", "How-to"]
+    eventually $ (map (T.takeWhile (/= ' ') . T.strip) <$> (traverse textContent =<< findAll ui ".new-page-choice")) `shouldReturn` ["Blank", "Meeting", "Decision", "How-to", "Day"]
     checked <- filterM (\c -> (== "true") <$> (findIn c "input" >>= (`getProperty` "checked"))) =<< findAll ui ".new-page-choice"
     traverse (fmap (T.takeWhile (/= ' ') . T.strip) . textContent) checked `shouldReturn` ["Blank"]
     chooseKind ui "Presentation"

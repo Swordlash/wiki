@@ -509,6 +509,8 @@ islandOptionsWith island ctx spaceOwn =
     , Md.boxes = ctx.session.boxes
     , -- The page loads the islands' script, which makes the buttons work.
       Md.copyButtons = True
+    , -- The page loads the stylesheet, which shows the groups' names.
+      Md.groupDays = True
     }
   where
     -- The wiki's built-in macros as the administration keeps them, if it

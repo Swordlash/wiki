@@ -216,10 +216,12 @@ component =
           {% end %}
           {% if p.mine %}
             <div class="plugin-own-actions">
-              <label class="button plugin-replace">
-                Replace…
-                <input type="file" multiple aria-label={{ "Replace " <> p.manifest.name }} {{ [attr "accept" ".json,.js,.mjs"] }} onChange={{ FilesChosen (Just (p.manifest.id, p.bundle)) }}>
-              </label>
+              {% if not (reservedById p) %}
+                <label class="button plugin-replace">
+                  Replace…
+                  <input type="file" multiple aria-label={{ "Replace " <> p.manifest.name }} {{ [attr "accept" ".json,.js,.mjs"] }} onChange={{ FilesChosen (Just (p.manifest.id, p.bundle)) }}>
+                </label>
+              {% end %}
               <button type="button" class="plugin-remove" onClick={{ const (Happen (RemoveChosen Mine p.manifest.id p.bundle)) }}>Remove</button>
             </div>
           {% end %}

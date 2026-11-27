@@ -147,7 +147,7 @@ wiki =
         , (pageOf "p2" "s1" (Just "p1") "prn" "Under the intro.") {kind = Presentation}
         , (pageOf "p3" "s1" (Just "p2") "deep" "") {position = 3, template = True}
         , pageOf "p4" "s4" Nothing "page" "In a space three deep."
-        , (pageOf "p5" "s2" Nothing "pages" "A page called pages.") {kind = OtherKind "calendar"}
+        , (pageOf "p5" "s2" Nothing "pages" "A page called pages.") {kind = OtherKind "board"}
         ]
     , threads =
         Map.fromList
@@ -273,7 +273,7 @@ spec = describe "Wiki.Core.Export" $ do
       let kindOf path = (\o -> KeyMap.lookup "kind" o) <$> objectAt path files
       kindOf "spaces/docs/pages/intro/page.json" `shouldBe` Just Nothing
       kindOf "spaces/docs/pages/intro/pages/prn_/page.json" `shouldBe` Just (Just (String "presentation"))
-      kindOf "spaces/docs/spaces/con_/pages/pages/page.json" `shouldBe` Just (Just (String "calendar"))
+      kindOf "spaces/docs/spaces/con_/pages/pages/page.json" `shouldBe` Just (Just (String "board"))
 
     it "writes each attachment's bytes under a file name a file system takes, and a web one only in the record" $ do
       let dir = "spaces/docs/pages/intro/attachments/"

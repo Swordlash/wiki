@@ -1488,11 +1488,19 @@ kinds = describe "page kinds" $ do
     (\p -> p.kind) <$> pageAt run admin "docs" "tour" `shouldReturn` Kind.Document
     void (run admin (setPageKind tour.id Kind.Document) >>= ok)
 
+  it "takes a built-in plugin's kind, a calendar" $ \(Fixture run) -> do
+    blog <- spaceAt run admin "blog"
+    made <- run editor (createPageOf Kind.calendarKind blog.id Nothing "Days" "") >>= ok
+    made.kind `shouldBe` Kind.calendarKind
+    p <- run editor (createPage blog.id Nothing "Later" "") >>= ok
+    (\x -> x.kind) <$> (run editor (setPageKind p.id Kind.calendarKind) >>= ok) `shouldReturn` Kind.calendarKind
+    (\x -> x.kind) <$> pageAt run admin "blog" "days" `shouldReturn` Kind.calendarKind
+
   it "refuses a kind it does not know" $ \(Fixture run) -> do
     blog <- spaceAt run admin "blog"
     hello <- pageAt run admin "blog" "hello-world"
-    run editor (createPageOf (Kind.OtherKind "calendar") blog.id Nothing "Days" "") >>= shouldBeInvalid
-    run editor (setPageKind hello.id (Kind.OtherKind "calendar")) >>= shouldBeInvalid
+    run editor (createPageOf (Kind.OtherKind "board") blog.id Nothing "Days" "") >>= shouldBeInvalid
+    run editor (setPageKind hello.id (Kind.OtherKind "board")) >>= shouldBeInvalid
     (\p -> p.kind) <$> pageAt run admin "blog" "hello-world" `shouldReturn` Kind.Document
 
 --------------------------------------------------------------------------------

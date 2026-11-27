@@ -480,7 +480,7 @@ spec backing = describe "encrypted spaces in the storage" $ do
     -- The space's home page is a document.
     [s.kind | s <- listed, s.id `notElem` [pid, plainId]] `shouldSatisfy` all (== Kind.Document)
     ((\x -> x.kind) <$> (ok =<< as p.ada (sealedPageAt secret.id [made.slug]))) `shouldReturn` Kind.Presentation
-    as p.ada (createSealedPage secret.id (newPageOf (Kind.OtherKind "calendar") otherId Nothing 'c')) >>= (`shouldSatisfy` invalid)
+    as p.ada (createSealedPage secret.id (newPageOf (Kind.OtherKind "board") otherId Nothing 'c')) >>= (`shouldSatisfy` invalid)
 
   -- Backlinks (WP5.88 of docs/PLAN.md): the server cannot read what an
   -- encrypted page links to, so its pages have no list and are in none.

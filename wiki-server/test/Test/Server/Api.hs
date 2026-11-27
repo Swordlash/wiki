@@ -147,7 +147,7 @@ spacesAndPages backing = describe "spaces and pages" $ do
 -- and read as a document from a request that does not say.
 kinds :: Backing -> Spec
 kinds backing = describe "page kinds" $ do
-  it "makes a page a presentation, says so in its summary, and a request without a kind makes a document" $ withRunning backing $ \r -> do
+  it "makes a page a presentation, says so in its summary, and makes a calendar, and a request without a kind makes a document" $ withRunning backing $ \r -> do
     (space, page) <- withSpace r True
     (page :: Page).kind `shouldBe` Kind.Document
     sendJson r methodPut (onPublic r (links.pages.kind page.id)) PageKindChange {kind = Kind.Presentation} >>= jsonAs 403 >>= (`shouldBe` Forbidden)
@@ -157,6 +157,9 @@ kinds backing = describe "page kinds" $ do
     [p.kind | (p :: PageSummary) <- listed, p.id == page.id] `shouldBe` [Kind.Presentation]
     deck <- sendJson r methodPost (onAdmin r (links.spaces.createPage space.id)) NewPage {parent = Nothing, title = "Talk", body = "# Talk", kind = Kind.Presentation} >>= jsonAs 201
     (deck :: Page).kind `shouldBe` Kind.Presentation
+    -- A built-in plugin's kind is taken as a presentation is.
+    days <- sendJson r methodPost (onAdmin r (links.spaces.createPage space.id)) NewPage {parent = Nothing, title = "Days", body = "", kind = Kind.calendarKind} >>= jsonAs 201
+    (days :: Page).kind `shouldBe` Kind.calendarKind
     plain <- send r methodPost (onAdmin r (links.spaces.createPage space.id)) [(hContentType, "application/json")] "{\"parent\":null,\"title\":\"Old client\",\"body\":\"\"}" >>= jsonAs 201
     (plain :: Page).kind `shouldBe` Kind.Document
 
@@ -164,7 +167,7 @@ kinds backing = describe "page kinds" $ do
     (space, page) <- withSpace r False
     home <- maybe (panic "no home page") pure space.homePage
     sendJson r methodPut (onAdmin r (links.pages.kind home)) PageKindChange {kind = Kind.Presentation} >>= jsonAs 400 >>= (`shouldSatisfy` isInvalid)
-    sendJson r methodPut (onAdmin r (links.pages.kind page.id)) PageKindChange {kind = Kind.OtherKind "calendar"} >>= jsonAs 400 >>= (`shouldSatisfy` isInvalid)
+    sendJson r methodPut (onAdmin r (links.pages.kind page.id)) PageKindChange {kind = Kind.OtherKind "board"} >>= jsonAs 400 >>= (`shouldSatisfy` isInvalid)
     sendJson r methodPut (onAdmin r (links.pages.kind (PageId "no-such-page"))) PageKindChange {kind = Kind.Presentation} >>= jsonAs 404 >>= (`shouldBe` NotFound)
   where
     isInvalid = \case

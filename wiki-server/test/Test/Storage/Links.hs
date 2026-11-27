@@ -43,12 +43,12 @@ kinds backing = describe "the pages' kinds, in the check" $ do
     withDemoClosed backing $ \at -> do
       script
         at
-        [ "UPDATE pages SET kind = 'calendar' WHERE slug = 'hello-world';"
+        [ "UPDATE pages SET kind = 'board' WHERE slug = 'hello-world';"
         , "UPDATE pages SET kind = 'presentation' WHERE id IN (SELECT home_page FROM spaces WHERE slug = 'docs');"
         ]
       checkDatabase at >>= \case
         Left (BrokenRecords lines') -> do
-          lines' `shouldSatisfy` any (\l -> "is of a kind this program does not know: calendar" `T.isInfixOf` l)
+          lines' `shouldSatisfy` any (\l -> "is of a kind this program does not know: board" `T.isInfixOf` l)
           lines' `shouldSatisfy` any (\l -> "a home page is a document" `T.isInfixOf` l)
         other -> expectationFailure ("the check said " <> show other)
 

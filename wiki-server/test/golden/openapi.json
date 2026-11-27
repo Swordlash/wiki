@@ -223,7 +223,7 @@
         "type": "object"
       },
       "PageKind": {
-        "description": "A page's kind: document or presentation, or a kind another version of the wiki made, by its name.",
+        "description": "A page's kind: document, presentation or calendar, or a kind another version of the wiki made, by its name.",
         "type": "string"
       },
       "Piece": {

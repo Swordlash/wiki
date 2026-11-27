@@ -3448,11 +3448,11 @@ setPageKindTx pid kind = do
   findPage pid
 
 -- | Refuse a kind this program does not know: a page is made, or made
--- into, a document or a presentation only.
+-- into, a kind of "Wiki.Core.PageKind"'s 'knownKinds' only.
 requireKnownKind :: PageKind -> Tx ()
 requireKnownKind kind =
   unless (kind `elem` knownKinds) $
-    invalid ("A page is a document or a presentation, not “" <> pageKindName kind <> "”.")
+    invalid ("A page is a document, a presentation or a calendar, not “" <> pageKindName kind <> "”.")
 
 -- | Delete a page: the pages under it, and the versions, attachments and
 -- drafts of all of them, go with it, as the schema's foreign keys cascade.

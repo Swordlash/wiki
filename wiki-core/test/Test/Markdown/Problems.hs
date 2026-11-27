@@ -163,7 +163,7 @@ spec = describe "Wiki.Core.Markdown.Problems" $ do
       map (\(l, sev, _) -> (l, sev)) (warned Document deck) `shouldBe` [(3, Warning), (7, Warning), (11, Warning), (16, Warning)]
       warned Presentation deck `shouldBe` []
       -- A page of a kind this program does not know is read as a document.
-      length (warned (OtherKind "calendar") deck) `shouldBe` 4
+      length (warned (OtherKind "board") deck) `shouldBe` 4
     it "warns in a presentation of a heading that opens no slide, below the top level" $ do
       map (\(l, _, m) -> (l, T.take 33 m)) (warned Presentation "# T\n\n## One\n\n> ## Quoted\n\n- ## In a list\n\n### Deeper is fine\n")
         `shouldBe` [(5, "A heading of level one or two ope"), (7, "A heading of level one or two ope")]

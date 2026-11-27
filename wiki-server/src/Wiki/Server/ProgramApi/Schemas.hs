@@ -24,7 +24,12 @@ instance ToSchema PageKind where
   declareNamedSchema _ =
     pure . NamedSchema (Just "PageKind") $
       toParamSchema (Proxy @PageKind)
-        & O.description ?~ ("A page's kind: " <> T.intercalate " or " (map pageKindName knownKinds) <> ", or a kind another version of the wiki made, by its name.")
+        & O.description ?~ ("A page's kind: " <> inWords (map pageKindName knownKinds) <> ", or a kind another version of the wiki made, by its name.")
+    where
+      -- "document, presentation or calendar".
+      inWords names = case reverse names of
+        lastName : before@(_ : _) -> T.intercalate ", " (reverse before) <> " or " <> lastName
+        _ -> T.concat names
 
 -- | A kind in a parameter: its name.
 instance ToParamSchema PageKind where

@@ -2990,7 +2990,26 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   `WIKI_INSECURE=1` in `clients/wiki.sh` (#378); plain HTTP on the
   TLS port is redirected to HTTPS, and HSTS is sent only with
   `--hsts`, off by default because it applies to the host name on
-  every port (#379). **The storage's benchmark runs again (#395,
+  every port (#379). **Two of a reader's writes to one comment
+  (#398, 2026-11-27; found by the comments' own property on #396's
+  CI run, seed 1253759430):** two quick edits of a comment could
+  show the first edit's text after the second's, because a write's
+  answer applied did not mark the other writes out as no longer
+  quiet. Each write now records the part it changes that another
+  write can change too, a comment or a thread's resolved state
+  (`partOf`), and an applied answer holds back the writes out to
+  the same part; the pairs are pinned by an exhaustive example
+  against the function that applies events. Left (the owner, the
+  same day; rounds 1 to 3 each found another pair, and no rule
+  closes them): for two edits of a comment, an edit and a deletion
+  of it, and a resolve and a reopen, the second answer waits for the
+  read after it, where `main` showed it at once; a failed read is
+  said ("Comments could not be refreshed", "Try again"). A rule "a
+  successful deletion is final" was not built: a deleted comment's
+  id can come back (an archive imported into a page keeps its ids;
+  in an encrypted space the client chooses them). Two replies to a
+  thread, or two threads opened together, can show in the order
+  their answers came until a read, as before. **The storage's benchmark runs again (#395,
   2026-11-27):** `wiki-server-bench` had stopped with `NotFound`
   since #229 put pages under their space's home page (its pages had
   no parent, and its page view had been timing a `NotFound`); it

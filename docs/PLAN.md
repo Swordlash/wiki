@@ -2990,8 +2990,13 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   wiki-core only: the entries of a list (`Wiki.Core.Markdown.Day`):
   a time or a span at the start of an item, `!` before it for a
   highlight, the task box, the parts of the day, and the date in a
-  page's title. (2) The page view groups such a list under
-  "Highlights", "All day" and the parts of the day, in the Halogen
+  page's title. (2) The page view groups a list marked `{.day}` (the owner,
+  2026-11-27: as `{.sorted}` marks a list; other lists of the page
+  stay lists, and the calendar reads the same lists) under the
+  parts of the day and "All day", each entry shown once: a
+  highlighted entry stays at its time and is marked there, with no
+  section "Highlights" (the owner, the same day, against WP5.92's
+  first text), in the Halogen
   renderer only (exports, the feed and search show the list as
   written; task numbers stay the source's, as for `{.sorted}`), and
   a built-in template "Day". (3) The kind "calendar" (in

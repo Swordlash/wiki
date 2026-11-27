@@ -961,6 +961,17 @@ spec = describe "Wiki.App.View.Comments.Machine" $ modifyMaxSuccess (max cases) 
       -- it.
       [t | (Older, t) <- (foldl' play w0 [OtherOpens False, Handle, Deliver 0, ReaderEdits 0, ReaderEdits 0, HandleOut 1, Handle, Deliver 0, Reconnect, Deliver 0]).faults] `shouldBe` []
 
+    for_ [("in order", [Deliver 0, Deliver 0]), ("in the other order", [Deliver 1, Deliver 0])] $ \(order, answers) ->
+      it ("shows both of two replies to different threads answered " <> order <> ", the channel silent and the read after them failing" <> how) $
+        -- Codex on #398: two replies out together, to two threads. The
+        -- first answer applied held back the second, whose reply then
+        -- waited for the channel or the read after it; with the channel
+        -- silent and that read failing, it was not shown. Replies to two
+        -- threads do not touch each other: both answers are applied.
+        let w = foldl' play w0 ([OtherOpens False, OtherOpens False, Handle, Deliver 0, ReaderReplies 0, ReaderReplies 1, Handle, Handle] <> answers <> [HandleFail, Deliver 0, HandleFail, Deliver 0])
+         in ([(t.id, [c.id | c <- t.comments]) | t <- readyThreads w.view], w.view.behind)
+              `shouldBe` ([(CommentThreadId "t1", [CommentId "c1", CommentId "c3"]), (CommentThreadId "t2", [CommentId "c2", CommentId "c4"])], True)
+
     it ("leaves a new visit's forms alone when a write sent on an earlier visit of the page is answered" <> how) $
       -- Codex on #284: the reader writes on page A, goes to B and back to
       -- A, and the old write's answer emptied the new visit's form.

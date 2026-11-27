@@ -90,8 +90,9 @@
 -- * a write's answer is taken only on the visit of the page it was sent
 --   on. When the channel told of what it made or changed since it was
 --   sent, the threads have it already; otherwise it is applied only when
---   the threads are as they were when it was sent (another write's answer
---   applied since changed them too), and a read asked after
+--   the threads are as they were when it was sent (an answer applied
+--   since of another write to the same thread changed them too), and a
+--   read asked after
 --   it follows, which puts it in its place ('wrote'). What the answer does
 --   beside the threads is the machine's too, and only then: the comments
 --   view that asked is told it ('Answered'), and a thread opened in the
@@ -230,12 +231,16 @@ data Writing = Writing
   , session :: Maybe Int
   -- ^ For a thread about a quote, the session of quoting it was written
   -- in.
+  , thread :: Maybe CommentThreadId
+  -- ^ The thread the write changes, as its request names it ('writtenTo');
+  -- 'Nothing' for a thread it opens, whose id the server gives.
   , told :: [PageEvent]
   -- ^ What the live channel told about the page since the write was sent.
   , quiet :: Bool
-  -- ^ Whether the threads shown are as they were when the write was sent:
-  -- nothing told, no read's answer taken, no subscription answered, no
-  -- other write's answer applied.
+  -- ^ Whether the threads shown are as they were when the write was sent,
+  -- as far as its answer applied can tell: nothing told, no read's answer
+  -- taken, no subscription answered, and no answer applied of another
+  -- write to the same thread.
   }
   deriving stock (Eq, Show)
 
@@ -411,7 +416,7 @@ step event m
             session = case request of
               OpenThread (Just q) _ -> Just q.session
               _ -> Nothing
-            writing = Writing {page, session, told = [], quiet = True}
+            writing = Writing {page, session, thread = writtenTo request, told = [], quiet = True}
          in (m {written = n, writes = if m.page == Just page then Map.insert n writing m.writes else m.writes}, [Send place n page request])
       -- The answer of a write sent on another visit, of this page or
       -- another, changes nothing and asks nothing: the forms it came from
@@ -456,6 +461,22 @@ opened w answer m = case answer of
 unquiet :: Model -> Model
 unquiet m = m {writes = map (\w -> w {quiet = False}) m.writes}
 
+-- | The writes out to this thread, with the thread changed since they
+-- were sent. A write that opens a thread is to none of them.
+unquietOn :: CommentThreadId -> Model -> Model
+unquietOn tid m = m {writes = map (\w -> if w.thread == Just tid then w {quiet = False} else w) m.writes}
+
+-- | The thread a write changes, by the id its request names: every write
+-- but the opening of a thread, whose id the server gives.
+writtenTo :: Request -> Maybe CommentThreadId
+writtenTo = \case
+  OpenThread _ _ -> Nothing
+  Reply tid _ -> Just tid
+  EditComment tid _ _ -> Just tid
+  DeleteComment tid _ -> Just tid
+  DeleteThread tid -> Just tid
+  Resolve tid _ -> Just tid
+
 -- | The answer to a write sent on this visit, taken. Nothing says where
 -- the write's commit falls among what the channel told, so:
 --
@@ -464,11 +485,18 @@ unquiet m = m {writes = map (\w -> w {quiet = False}) m.writes}
 --   place already: nothing more;
 -- * otherwise, when the threads shown are as they were when the write was
 --   sent, its event is applied, so that the reader sees it at once. The
---   threads then differ from those the other writes out were sent on
---   ('unquiet'): the server may have handled another write before this
---   one or after it, and nothing in that write's answer says which, so
---   that answer is not applied (two edits of one comment, the later one's answer taken
---   first, then the earlier one's, would show the older text);
+--   thread it changed then differs from the one the other writes out to
+--   that thread were sent on ('unquietOn'): the server may have handled
+--   one of them before this write or after it, and nothing in that
+--   write's answer says which, so that answer is not applied (two edits
+--   of one comment, the later one's answer taken first, then the earlier
+--   one's, would show the older text). A write to another thread is left
+--   quiet: every write changes one thread, named by id in its request,
+--   and changes to two threads give the same threads in either order. A
+--   write that opens a thread changes none that a write out names, and
+--   holds back none. Two threads opened together may show in the order
+--   their answers came, not the server's, until a read's answer or the
+--   subscription's;
 -- * either way, a read asked after the answer follows ('reading', which
 --   asks it once the read out, if any, is answered): its answer was read
 --   after the write was made, and it puts the write in its place among
@@ -480,7 +508,7 @@ wrote w answer m = case answer of
     | any (about e) w.told -> (m, [])
     | w.quiet ->
         let m' = m {threads = applied e m.threads, heard = heardNow (remembered e m.threads) m}
-         in lookingFirst (reading (if m'.threads /= m.threads then unquiet m' else m'))
+         in lookingFirst (reading (maybe m' (\tid -> if m'.threads /= m.threads then unquietOn tid m' else m') w.thread))
   _ -> reading m
 
 -- | Whether an event the channel told is about what a write's answer made

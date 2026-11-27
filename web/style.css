@@ -1766,25 +1766,43 @@ pre.numbered > code {
    struck through: its first paragraph's and its other paragraphs', but
    not the lists in it. A highlighted one stays bold. The palette's red
    reads in both schemes: 6.6:1 on the page's background in the light one
-   and 7.5:1 in the dark one, and more than 5:1 under a comment's quote
-   (but not under the quote of the thread open in the panel, which is
-   darker). The colour is not the only sign: the item starts with the
-   word "Missed", which a screen reader reads and the page does not show.
-   The word is drawn here and is no text of the page, so a comment's
-   quote never takes it in. */
+   and 7.5:1 in the dark one, and 5.8:1 and 5.2:1 under a comment's quote.
+   A screen reader hears "Missed" in the name of the task's box, which the
+   renderer writes (Wiki.Core.Markdown.Render). */
 .day-missed > .task-text,
 .day-missed > p {
   color: var(--c-red);
 }
 
-.day-missed::before {
-  content: "Missed:";
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
+/* A link in a missed task's own text is red too, whatever the accent
+   colour of a link or a visited link, and stays underlined, so that it
+   still reads as a link. */
+.day-missed > .task-text a,
+.day-missed > .task-text a:visited,
+.day-missed > p a,
+.day-missed > p a:visited {
+  color: var(--c-red);
+  text-decoration: underline;
+}
+
+/* Under the quote of the thread open in the panel, whose highlight is
+   darker, red text would read badly in the dark scheme (2.8:1). There the
+   text keeps the page's colour (11.6:1 light, 6.1:1 dark) and the task
+   shows as missed by an underline: the palette's red in the light scheme
+   (4.8:1 against the highlight), its orange in the dark one (3.7:1), as
+   red there is 2.8:1. */
+.day-missed > .task-text mark.comment-mark-focused,
+.day-missed > p mark.comment-mark-focused {
+  color: var(--text);
+  text-decoration: underline 2px var(--c-red);
+  text-underline-offset: 0.15em;
+}
+
+@media (prefers-color-scheme: dark) {
+  .day-missed > .task-text mark.comment-mark-focused,
+  .day-missed > p mark.comment-mark-focused {
+    text-decoration-color: var(--c-orange);
+  }
 }
 
 /* A box the reader may tick in the page view (Wiki.App.View.Page). */

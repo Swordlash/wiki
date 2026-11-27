@@ -98,5 +98,8 @@ surface =
 
     handleAction :: Action -> H.HalogenM KindInput Action Empty Void m ()
     handleAction = \case
-      Receive input -> put input
+      -- The page view gives its input at each of its renders: drawn
+      -- again only when it changed, since a calendar of years of days is
+      -- a long list.
+      Receive input -> unlessM (gets (== input)) (put input)
       Followed l click -> followLink l click

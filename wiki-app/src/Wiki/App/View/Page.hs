@@ -165,6 +165,7 @@ import Wiki.App.Live qualified as Live
 import Wiki.App.Plugin (Child (..), KindInput (..), KindView (..), Manifest (..), PluginId, linkTo)
 import Wiki.App.Plugin.Registry (Contributed (..), contributed, optionsFor, plugins, pluginsOn)
 import Wiki.App.Route (Against (..), Route (..), pageRoute)
+import Wiki.App.Route qualified as Route
 import Wiki.App.View.Body qualified as Body
 import Wiki.App.View.Comments qualified as CommentsView
 import Wiki.App.View.Comments.Machine (Threads (..))
@@ -194,7 +195,7 @@ import Wiki.Core.Page (Page (attachments, body, createdAt, createdBy, id, kind, 
 import Wiki.Core.PageKind (PageKind (..), isPresentation)
 import Wiki.Core.Permission (mayMovePage)
 import Wiki.Core.Slug (Slug)
-import Wiki.Core.Space (Space (encryption, homePage, id, name), rootPage)
+import Wiki.Core.Space (Space (encryption, homePage, id, name), pagePath, rootPage)
 import Wiki.Core.User (Avatar, User (id))
 import Wiki.Core.Version (Author (..), Version (..))
 
@@ -627,8 +628,16 @@ component =
       , Just (owner, k) <- [find (\(_, v) -> v.kind == page.kind) (contributed (pluginsOn input.context) (plugins @m)).pageKinds]
       ]
       where
+        -- The pages under it, each with the link to its address. The
+        -- space's pages are indexed by id once a render, and only for a
+        -- page a plugin shows (the view keeps nothing derived from its
+        -- input between renders): a calendar has a page a day, and a
+        -- search of the list for each day and each page above it took
+        -- seconds a render for years of days.
+        index = Map.fromList [(p.id, p) | p <- input.pages]
+        spacePath = spacePathOf input.context.spaces input.space.id
         under =
-          [ Child {page = c, link = linkTo input.context.router (pageRouteOf input.context.spaces input.space input.pages c.id)}
+          [ Child {page = c, link = linkTo input.context.router (maybe Route.Unknown (pageRoute spacePath) (pagePath input.space (`Map.lookup` index) c.id))}
           | c <- input.pages
           , c.parent == Just page.id
           ]

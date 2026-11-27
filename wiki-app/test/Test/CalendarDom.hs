@@ -26,7 +26,7 @@ import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Route (Route (..), route)
 import Wiki.App.Route qualified as R
-import Wiki.App.View.Common (Context (..))
+import Wiki.App.View.Common (Context (..), pageRouteOf)
 import Wiki.App.View.NewPage qualified as NewPage
 import Wiki.App.View.Page qualified as Page
 import Wiki.Core.Id (UserId (..))
@@ -41,6 +41,7 @@ slugs = mapMaybe (rightToMaybe . mkSlug)
 
 orPanic :: (Show e) => Either e a -> a
 orPanic = either (panic . show) identity
+
 
 -- | The team's space of the demo, with a calendar "Days" under its home
 -- page holding two days, a page whose title is no date and a template
@@ -163,6 +164,22 @@ spec = describe "the calendar, a plugin's kind of page" $ do
         click view ".calendar-day a"
         settle view
       readIORef w.went `shouldReturn` [R.Page (slugs ["team"]) (slugs ["days", "2026-11-27"])]
+
+    it "links each day to its page's address in a calendar under a page under the home page" $ withWiki $ \w -> do
+      (year, day) <- runMemDOM . run w.wiki $ do
+        year <- orPanic <$> createPage w.team.id Nothing "Year" ""
+        nested <- orPanic <$> createPageOf calendarKind w.team.id (Just year.id) "Days" ""
+        day <- orPanic <$> createPage w.team.id (Just nested.id) "2026-11-27" ""
+        pure (year, day)
+      ps <- pagesOf w w.team
+      withView (run w.wiki) Page.component (pageInput w w.admin noPlugins w.team ps ["year", "days"]) $ \view -> do
+        settle view
+        listedDays view `shouldReturn` ["Friday, 27 November 2026"]
+        click view ".calendar-day a"
+        settle view
+      -- The address every other part of the wiki gives the day.
+      readIORef w.went `shouldReturn` [pageRouteOf w.spaces w.team ps day.id]
+      pageRouteOf w.spaces w.team ps day.id `shouldBe` R.Page (slugs ["team"]) ([year.slug] <> slugs ["days", "2026-11-27"])
 
     it "shows a calendar as a document while the plugin is off, for the reader or for the wiki" $ withWiki $ \w -> do
       ps <- pagesOf w w.team

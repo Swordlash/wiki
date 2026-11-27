@@ -84,6 +84,7 @@ module Wiki.App.Plugin
   , LinkClick
   , linkProps
   , followLink
+  , openLink
 
     -- * Helpers for surfaces
   , attr
@@ -507,7 +508,7 @@ data Local m = Local
 
 -- | 'Link' is a link to a place of the wiki that the host chose (a
 -- plugin's settings, a page), which the application follows itself
--- ('linkProps', 'followLink'). A plugin cannot name the wiki's routes:
+-- ('linkProps', 'followLink', 'openLink'). A plugin cannot name the wiki's routes:
 -- the host makes each link, and the plugin draws it and follows its
 -- clicks.
 data Link = Link (Router Route) Route
@@ -528,3 +529,10 @@ linkProps (Link router route) onFollow = Router.linkProps router (onFollow . Lin
 -- | Follow a plain click on a 'Link'.
 followLink :: (MonadIO m) => Link -> LinkClick -> H.HalogenM st act slots output m ()
 followLink (Link router _) (LinkClick f) = Router.follow router f
+
+-- | Go to the place of a 'Link', as following a click on it does, for a
+-- click that was not on an @\<a>@: one inside an element a library draws,
+-- which tells the surface in an event of its own (the calendar's month).
+-- The router goes there in this step.
+openLink :: (MonadIO m) => Link -> H.HalogenM st act slots output m ()
+openLink (Link router route) = H.sync (Router.navigate router route)

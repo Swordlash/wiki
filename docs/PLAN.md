@@ -3153,8 +3153,14 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   reads there, orange if red does not): on a day's page, in the
   calendar's view and in the brief. This needs the page's date and
   the present time where the list is drawn, which #397's renderer
-  does not have; it is a small pull request of its own after #397
-  for the day's page, and part of (4) and (5). In the brief, a
+  does not have: #402 for the day's page, and part of (4) and (5).
+  **Not by a ticker (the owner, 2026-11-27: "wystarczy odpalić
+  timer z callbackiem zamiast odświeżania"):** nothing re-renders
+  each minute; one timer runs to the next moment at which a mark
+  can change (the earliest deadline of a task not done), the clock
+  is read when it fires, and the next is set; no timer when nothing
+  can change. On the day's page the page view owns it; in the
+  calendar its machine does, which knows the entries read. In the brief, a
   highlighted task that was missed stays, under the day it belongs
   to, until it is ticked or moved to another day; and a task is
   ticked from the brief, which writes the day's page it is on (a

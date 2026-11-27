@@ -327,12 +327,20 @@ curl_quote() {
 # is read: one could turn on "fail" or change the output, which the
 # client's own options cannot all undo.
 #
-# The sign-in, the proxy and "insecure" (WIKI_INSECURE) are a curl config
-# read from curl's standard input (--config -), a here-document: "user" for
-# a login and password (HTTP Basic), or an Authorization header for a key
-# (WIKI_TOKEN), each value quoted, so none of it is on curl's command line
-# (a proxy's address may hold a password too), and no value can add an
-# option. Standard input is used rather than another descriptor because
+# The sign-in, the proxy, "insecure" (WIKI_INSECURE) and, last, the
+# request's URL (request_url, its query encoded by the script) are a curl
+# config read from curl's standard input (--config -), a here-document:
+# "user" for a login and password (HTTP Basic), or an Authorization header
+# for a key (WIKI_TOKEN), each value quoted, so none of it is on curl's
+# command line (a proxy's address may hold a password too), and no value
+# can add an option. The URL is there so that a request depends on the
+# config being read: a curl whose standard input was taken away (a wrapper
+# that gives it /dev/null) finds no URL and sends nothing, rather than a
+# request without the sign-in or around the proxy. It also keeps what the
+# user typed (an address, the words of a search) off the command line,
+# where MSYS2 would rewrite one that looks like a path for a Windows curl.
+# The command line holds the script's own options and the paths of files
+# alone. Standard input is used rather than another descriptor because
 # every curl reads it: a native Windows curl run from MSYS2 cannot open
 # /dev/fd/3. No request needs curl's standard input for a body: each body
 # is a file (--data-binary @FILE, --upload-file FILE, FILE an absolute
@@ -356,6 +364,7 @@ wiki_curl() {
   fi
   [ -z "$wiki_proxy" ] || settings="$settings${nl}proxy = \"$(curl_quote "$wiki_proxy")\""
   [ "$wiki_insecure" != 1 ] || settings="$settings${nl}insecure"
+  settings="$settings${nl}url = \"$(curl_quote "$request_url")\""
   quiet_end
   curl -q --config - "$@" <<EOF
 $settings
@@ -368,8 +377,8 @@ EOF
 # file is sent.
 expect_header='Expect:'
 
-# One request to the wiki: METHOD, the path under WIKI_URL, then curl's
-# options. The answer's body is in $work/body, its headers in
+# One request to the wiki: METHOD, the path under WIKI_URL (its query, if
+# any, encoded with query_encode), then curl's options. The answer's body is in $work/body, its headers in
 # $work/headers, its status in http_status. The status is 0 when an answer
 # came, whatever its HTTP status, and the body is kept whole (its size is
 # what curl received); otherwise the failure says what to check.
@@ -380,10 +389,11 @@ wiki_request() {
   rm -f "$work/body" "$work/headers" "$work/curl-error"
   : >"$work/body"
   [ "$method" = GET ] || set -- -X "$method" "$@"
+  request_url=$wiki_base/$path
   received=$(wiki_curl -sS -g --proto =http,https --connect-timeout 20 \
     -A "wiki.sh/$WIKI_SH_VERSION" -H "$expect_header" \
     -o "$work/body" -D "$work/headers" -w '%{http_code} %{size_download}' \
-    "$@" "$wiki_base/$path" 2>"$work/curl-error")
+    "$@" 2>"$work/curl-error")
   curl_status=$?
   http_status=${received%% *}
   if [ "$curl_status" = 0 ]; then
@@ -403,15 +413,17 @@ wiki_request() {
     35 | 51 | 53 | 54 | 58 | 59 | 60 | 64 | 66 | 77 | 80 | 82 | 83 | 90 | 91) fail "$EX_CONNECTION" "the secure connection to $wiki_base failed: check its certificate, or WIKI_URL's scheme ($curl_said)" ;;
     52 | 55 | 56) fail "$EX_CONNECTION" "the connection to $wiki_base broke: try again ($curl_said)" ;;
     1 | 3) fail "$EX_USAGE" "WIKI_URL is not an address curl can use: $wiki_base ($curl_said)" ;;
-    # 26 is a file curl could not read: its config (any request), or the
-    # body a put sends (--data-binary @FILE) or an attach (--upload-file).
-    # curl's first line tells them apart by how it begins: "cannot read
-    # config from '-'" for the config, "Failed to open FILE" or "cannot open
-    # 'FILE'" for a body, whose path may hold any words.
-    26)
-      case $curl_said in
-        "cannot read config from "*) fail "$EX_ERROR" "curl cannot read its settings, the sign-in among them, from its standard input ($curl_said): check that the curl first on the PATH (command -v curl) is curl itself, not a wrapper that takes or closes its standard input" ;;
-        *) fail "$EX_ERROR" "cannot read the text to send ($curl_said)" ;;
+    # curl did not read its config: 26 when it could not ("cannot read
+    # config from '-'"), 2 when it read nothing ("no URL specified", the URL
+    # being the config's last line). Another 26 is the file of a body a put
+    # sends (--data-binary @FILE) or an attach (--upload-file): "Failed to
+    # open FILE" or "cannot open 'FILE'", whose path may hold any words, so
+    # the match is on how curl's first line begins.
+    2 | 26)
+      case $curl_status:$curl_said in
+        "26:cannot read config from "* | "2:no URL specified"*) fail "$EX_ERROR" "curl did not read its settings, the sign-in and the address among them, from its standard input ($curl_said): check that the curl first on the PATH (command -v curl) is curl itself, not a wrapper that takes or closes its standard input" ;;
+        26:*) fail "$EX_ERROR" "cannot read the text to send ($curl_said)" ;;
+        *) fail "$EX_ERROR" "curl failed with status $curl_status: $curl_said" ;;
       esac
       ;;
     23) fail "$EX_ERROR" "the answer could not be kept: is the disk full, or a file size limit (ulimit -f) reached? ($curl_said)" ;;
@@ -2112,12 +2124,9 @@ fetch_list() {
     fi
     list_path=api/list/$addr
   fi
-  if [ -n "$2" ]; then
-    set -- -G --data-urlencode "depth=$2"
-  else
-    set --
-  fi
-  wiki_request GET "$list_path" "$@" || return
+  list_query=''
+  [ -z "$2" ] || list_query="?depth=$(query_encode "$2")"
+  wiki_request GET "$list_path$list_query" || return
   check_answer "the space ${list_path#api/list/}" || return
   expect_answer "$list_kind"
 }
@@ -2126,17 +2135,17 @@ fetch_list() {
 # server's 50), as the server's JSON in $work/body.
 fetch_search() {
   words=$1 space=$2 limit=$3
-  set -- -G --data-urlencode "q=$words"
+  search_query="q=$(query_encode "$words")"
   if [ -n "$space" ]; then
     page_address "$space" || return
     if [ -n "$pg" ]; then
       fail "$EX_USAGE" "$space is a page: the search keeps to a space (team/projects)"
       return
     fi
-    set -- "$@" --data-urlencode "space=$addr_space"
+    search_query="$search_query&space=$(query_encode "$addr_space")"
   fi
-  [ -z "$limit" ] || set -- "$@" --data-urlencode "limit=$limit"
-  wiki_request GET api/search "$@" || return
+  [ -z "$limit" ] || search_query="$search_query&limit=$(query_encode "$limit")"
+  wiki_request GET "api/search?$search_query" || return
   check_answer "the search" || return
   expect_answer search
 }
@@ -3092,9 +3101,10 @@ Prefer WIKI_CACERT with your company's CA bundle. With WIKI_INSECURE=1 each
 run says on standard error that the certificate is not checked, and
 WIKI_CACERT is not used.
 
-The password is given to curl on its standard input, never on its command
-line, and wiki.sh writes no file that holds it (the shell may pass the
-input through a temporary file of its own, removed at once). Versions are
+The password, the proxy and each request's address are given to curl on
+its standard input, never on its command line, and wiki.sh writes no file
+that holds them (the shell may pass the input through a temporary file of
+its own, removed at once). Versions are
 remembered under WIKI_STATE_DIR (by default ~/.local/state/wiki), one file
 per page.
 

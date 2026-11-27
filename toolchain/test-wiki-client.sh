@@ -201,16 +201,27 @@ case $public_wiki in
   *) die "the server under /wiki/ logged $public_wiki" ;;
 esac
 
-# Fakes: a curl that records its arguments, then runs the real one (with
-# no file size limit: a test of one sets it for the client alone); a jq
-# that records that it was called, and fails; and a curl that answers
-# every request with 200, the body in the file FAKE_BODY and the
-# Content-Type FAKE_TYPE, as a wrong WIKI_URL or a proxy would.
+# Fakes: a curl that records its arguments and the URL of its config, then
+# runs the real one (with no file size limit: a test of one sets it for the
+# client alone); a jq that records that it was called, and fails; and a
+# curl that answers every request with 200, the body in the file FAKE_BODY
+# and the Content-Type FAKE_TYPE, as a wrong WIKI_URL or a proxy would.
+#
+# The recorder adds its command line to curl.args, which a test empties
+# before the commands it checks, and to curl.args-all, which no test
+# empties, for the checks of what is never on a command line. It keeps the
+# config on its standard input in a file, adds the config's URL to
+# curl.urls, and gives the real curl the file, removed once open.
 mkdir -p "$work/fakes/curl" "$work/fakes/nojq" "$work/fakes/answer"
 cat >"$work/fakes/curl/curl" <<EOF
 #!/bin/sh
 ulimit -S -f unlimited 2>/dev/null
 printf '%s\n' "\$*" >>"$work/curl.args"
+printf '%s\n' "\$*" >>"$work/curl.args-all"
+cat >"$work/curl.stdin.\$\$"
+sed -n 's/^url = "\(.*\)"\$/\1/p' "$work/curl.stdin.\$\$" >>"$work/curl.urls"
+exec <"$work/curl.stdin.\$\$"
+rm -f "$work/curl.stdin.\$\$"
 exec "$real_curl" "\$@"
 EOF
 cat >"$work/fakes/nojq/jq" <<EOF
@@ -281,7 +292,8 @@ exec "$real_mv" "\$@"
 EOF
 # And a curl that records its config, the one the client gives on curl's
 # standard input: it copies the config to curl.config.last and adds it to
-# curl.config, adds its command line to curl.args, then runs the real curl
+# curl.config, adds its command line to curl.config-args (emptied before
+# each run) and to curl.args-all (never emptied), then runs the real curl
 # with that copy on its standard input. With SECRET_DIRS set (directories,
 # one per line, so that a space in one survives), it first scans each: the
 # directory goes to curl.secret-scanned, each file under it that holds
@@ -293,7 +305,8 @@ cat >"$work/fakes/config/curl" <<EOF
 #!/bin/sh
 cat >"$work/curl.config.last"
 cat "$work/curl.config.last" >>"$work/curl.config"
-printf '%s\n' "\$*" >>"$work/curl.args"
+printf '%s\n' "\$*" >>"$work/curl.config-args"
+printf '%s\n' "\$*" >>"$work/curl.args-all"
 if [ -n "\${SECRET_DIRS:-}" ]; then
   printf '%s\n' "\$SECRET_DIRS" | while IFS= read -r dir; do
     if [ ! -d "\$dir" ]; then
@@ -331,7 +344,17 @@ for argument in "\$@"; do
 done
 exec "$real_curl" "\$@"
 EOF
-chmod +x "$work/fakes/config/curl" "$work/fakes/refuse/curl"
+# And a wrapper that takes curl's standard input away, as one that gives
+# it /dev/null would: it adds its command line to curl.args-all and runs
+# the real curl with /dev/null on its standard input, tracing what it sends
+# to nostdin.trace.
+mkdir -p "$work/fakes/nostdin"
+cat >"$work/fakes/nostdin/curl" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$work/curl.args-all"
+exec "$real_curl" "\$@" --trace-ascii "$work/nostdin.trace" </dev/null
+EOF
+chmod +x "$work/fakes/config/curl" "$work/fakes/refuse/curl" "$work/fakes/nostdin/curl"
 chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv" "$work/fakes/pausecp/cp" "$work/fakes/failmv/mv"
 # The PATH the client runs with: the recording curl, and the failing jq
 # unless the MCP server is under test.
@@ -340,9 +363,17 @@ nojq_path=$work/fakes/curl:$work/fakes/nojq:$PATH
 
 # The checks that a password is absent can fail: the recorder sees one on
 # curl's command line, and a trace shows one in a variable.
-env PATH="$curl_path" curl -s -u "editor:$editor_password" http://127.0.0.1:1/ >/dev/null 2>&1
+env PATH="$curl_path" curl -s -u "editor:$editor_password" http://127.0.0.1:1/ </dev/null >/dev/null 2>&1
 check "the recorder sees a password given to curl -u" grep -qF "wörd" "$work/curl.args"
+check "the recorder sees an address given to curl" grep -qF "http://127.0.0.1:1/" "$work/curl.args-all"
 : >"$work/curl.args"
+# The recorder sees the URL of a config on curl's standard input.
+printf 'url = "http://127.0.0.1:1/recorded"\n' | env PATH="$curl_path" curl -q --config - -s >/dev/null 2>&1
+check "the recorder sees the URL of curl's config" grep -qxF "http://127.0.0.1:1/recorded" "$work/curl.urls"
+# The trace of the wrapper without standard input shows a request sent.
+"$work/fakes/nostdin/curl" -q -s -o /dev/null "$public_root/" 2>/dev/null
+check "the trace of the wrapper without standard input shows a request it sent" grep -q '^=> Send header' "$work/nostdin.trace"
+rm -f "$work/nostdin.trace"
 # So does the recorder of the config, which also finds a file that holds
 # one, in a directory whose name has a space, and tells a directory it
 # cannot scan from one where it found nothing.
@@ -351,7 +382,7 @@ nl='
 mkdir -p "$work/secret demo/empty"
 printf 'password = %s\n' "$editor_password" >"$work/secret demo/file"
 printf '' | env PATH="$work/fakes/config:$PATH" SECRET_DIRS="$work/secret demo" curl -s -u "editor:$editor_password" http://127.0.0.1:1/ >/dev/null 2>&1
-check "the recorder of the config sees a password given to curl -u" grep -qF "wörd" "$work/curl.args"
+check "the recorder of the config sees a password given to curl -u" grep -qF "wörd" "$work/curl.config-args"
 check "the recorder of the config finds a file that holds a password, under a space" grep -qxF "$work/secret demo/file" "$work/curl.secret-files"
 check "the recorder of the config scanned that directory" grep -qxF "$work/secret demo" "$work/curl.secret-scanned"
 rm -f "$work/curl.secret-files" "$work/curl.secret-scanned" "$work/curl.secret-errors"
@@ -360,6 +391,9 @@ check "the recorder of the config finds nothing in an empty directory" [ ! -s "$
 check "the recorder of the config says a directory is missing" grep -qxF "no directory $work/secret demo/missing" "$work/curl.secret-errors"
 rm -rf "$work/secret demo" "$work/curl.secret-files" "$work/curl.secret-scanned" "$work/curl.secret-errors" "$work/curl.config" "$work/curl.config.last"
 : >"$work/curl.args"
+: >"$work/curl.config-args"
+: >"$work/curl.args-all"
+: >"$work/curl.urls"
 sh -x -c 'password=$1; : "$password"' sh "$editor_password" 2>"$work/trace" >/dev/null
 check "a trace shows a password in a variable" grep -qF "wörd" "$work/trace"
 
@@ -638,6 +672,7 @@ suite() {
   lacks curl.args "127.0.0.1:1" "the proxy is not on curl's command line"
   insecure_setting
   stdin_setting
+  config_url_setting
 
   # The configuration file, read only when nobody else may read it, through
   # a symbolic link too.
@@ -676,7 +711,13 @@ suite() {
   expect 4 "a section that is not there"
 
   # Nothing of the password on curl's command line, nor in a trace.
-  if grep -qF "wörd" "$work/curl.args"; then fail "a password on curl's command line"; else pass "no password on curl's command line"; fi
+  # curl.args-all holds every command line since the recorders' own
+  # checks, of each curl the commands above ran (the proxy's run, the
+  # config's and the standard input's runs too).
+  if grep -qF "wörd" "$work/curl.args-all"; then fail "a password on curl's command line"; else pass "no password on curl's command line"; fi
+  lacks curl.args-all "http://" "no address of the wiki on curl's command line"
+  lacks curl.args-all "qwertyuiopasdf" "no search word on curl's command line"
+  lacks curl.args-all "jaźń" "no search word outside ASCII on curl's command line"
   check "curl reads the sign-in from its standard input" grep -q -- '^-q --config - ' "$work/curl.args"
   env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$1-trace" \
     "$shell" -x "$client" get "$page" >"$work/out" 2>"$work/err"
@@ -769,16 +810,16 @@ EOF
     check "nothing was sent for ${pair%%|*} ${pair#*|}" [ ! -s "$work/curl.args" ]
   done
   while IFS='|' read -r given expected; do
-    : >"$work/curl.args"
+    : >"$work/curl.urls"
     # A row is one argument or two (a space's path and a page's), split
     # into words on purpose.
     # shellcheck disable=SC2086
     client get $given
     expect 0 "the address $given is read"
-    sent=$(tail -n 1 "$work/curl.args")
+    sent=$(tail -n 1 "$work/curl.urls")
     case $sent in
-      *" $url$expected") pass "$given reaches $expected" ;;
-      *) fail "$given reaches $expected: curl was given $sent" ;;
+      "$url$expected") pass "$given reaches $expected" ;;
+      *) fail "$given reaches $expected: curl's config named $sent" ;;
     esac
   done <<EOF
 /s/team/projects/p/the-wiki/|/api/markdown/s/team/projects/p/the-wiki/
@@ -827,7 +868,7 @@ EOF
     "$real_jq" -nc --arg page "$url/s/team/projects/p/the-wiki/edit/" '{jsonrpc: "2.0", id: 201, method: "tools/call", params: {name: "wiki_read_page", arguments: {path: $page}}}'
     "$real_jq" -nc '{jsonrpc: "2.0", id: 202, method: "tools/call", params: {name: "wiki_list", arguments: {space: "team/edit"}}}'
   } >"$work/mcp-addresses.in"
-  : >"$work/curl.args"
+  : >"$work/curl.urls"
   env -i PATH="$curl_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$state" \
     "$shell" "$client" mcp <"$work/mcp-addresses.in" >"$work/mcp-addresses.out" 2>"$work/mcp-addresses.err"
   if "$real_jq" -e -s 'map(select(.id >= 1 and .id < 200)) | length == 12 and all(.result.isError == true and (.result.content[0].text | test("is not an address of the wiki")))' "$work/mcp-addresses.out" >/dev/null; then
@@ -843,7 +884,7 @@ EOF
     sed 's/^/  reply: /' "$work/mcp-addresses.out" | cut -c1-200 >&2
   fi
   printf '%s\n' "$url/api/markdown/s/team/~edit/p/~history/" "$url/api/markdown/s/team/projects/p/the-wiki/" "$url/api/list/s/team/~edit/" >"$work/expected-sent"
-  sed 's/.* //' "$work/curl.args" >"$work/sent"
+  cp "$work/curl.urls" "$work/sent"
   check "the MCP tools sent nothing for the malformed addresses, and exactly the well-formed ones" cmp -s "$work/sent" "$work/expected-sent"
 }
 
@@ -2323,7 +2364,7 @@ insecure_setting() {
   # then the shell and its arguments.
   insecure_run() {
     : >"$work/curl.config"
-    : >"$work/curl.args"
+    : >"$work/curl.config-args"
     env -i PATH="$work/fakes/config:$PATH" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-insecure" \
       "$@" <"$input" >"$work/out" 2>"$work/err"
     status=$?
@@ -2355,13 +2396,13 @@ insecure_setting() {
   : >"$work/ca.pem"
   insecure_run WIKI_CACERT="$work/ca.pem" "$shell" "$client" list
   expect 0 "list with WIKI_CACERT over http"
-  check "WIKI_CACERT is on curl's command line" grep -qF -- "--config - --cacert $work/ca.pem -sS" "$work/curl.args"
+  check "WIKI_CACERT is on curl's command line" grep -qF -- "--config - --cacert $work/ca.pem -sS" "$work/curl.config-args"
   lacks curl.config "cacert" "WIKI_CACERT is not in curl's config"
   insecure_run WIKI_CACERT="$work/ca.pem" WIKI_INSECURE=1 "$shell" "$client" list
   expect 0 "list with WIKI_CACERT and WIKI_INSECURE=1"
   check "WIKI_INSECURE=1 wins over WIKI_CACERT in curl's config" grep -qx insecure "$work/curl.config"
   lacks curl.config "cacert" "no CA bundle in curl's config with WIKI_INSECURE=1"
-  lacks curl.args "--cacert" "no CA bundle on curl's command line with WIKI_INSECURE=1"
+  lacks curl.config-args "--cacert" "no CA bundle on curl's command line with WIKI_INSECURE=1"
   has err "the server's certificate is not checked (WIKI_INSECURE), and WIKI_CACERT is not used" "the warning says WIKI_CACERT is not used"
 
   # From the configuration file, where a value in the environment wins.
@@ -2422,7 +2463,7 @@ stdin_setting() {
   # then the shell and its arguments; fake names the fake curl.
   stdin_run() {
     : >"$work/curl.config"
-    : >"$work/curl.args"
+    : >"$work/curl.config-args"
     env -i PATH="$work/fakes/$fake:$work/fakes/nojq:$PATH" HOME="$work/home" TMPDIR="$stdin_tmp" SECRET_DIRS="$stdin_tmp$nl$work/state-$shell-stdin" \
       WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-stdin" \
       "$@" <"$input" >"$work/out" 2>"$work/err"
@@ -2432,7 +2473,7 @@ stdin_setting() {
   stdin_run "$shell" "$client" get "$page"
   expect 0 "get with the config on curl's standard input"
   check "the sign-in arrives on curl's standard input" grep -q '^user = "editor:.*wörd' "$work/curl.config"
-  lacks curl.args "wörd" "no password in curl's arguments for a get"
+  lacks curl.config-args "wörd" "no password in curl's arguments for a get"
   {
     cat "$work/out"
     printf 'A line put from standard input, under %s.\n' "$shell"
@@ -2441,7 +2482,7 @@ stdin_setting() {
   stdin_run "$shell" "$client" put "$page"
   expect 0 "put of the text on the user's standard input"
   check "the put's sign-in arrives on curl's standard input" grep -q '^user = "editor:.*wörd' "$work/curl.config"
-  lacks curl.args "wörd" "no password in curl's arguments for a put"
+  lacks curl.config-args "wörd" "no password in curl's arguments for a put"
   input=/dev/null
   stdin_run "$shell" "$client" get "$page"
   expect 0 "get after the put from standard input"
@@ -2458,7 +2499,7 @@ stdin_setting() {
   fake=refuse input=/dev/null
   stdin_run REFUSE=config "$shell" "$client" list
   expect 1 "a curl that cannot read its config is exit 1"
-  has err "curl cannot read its settings, the sign-in among them, from its standard input (cannot read config from '-')" "the failure says curl cannot read its settings, in curl's words"
+  has err "curl did not read its settings, the sign-in and the address among them, from its standard input (cannot read config from '-')" "the failure says curl did not read its settings, in curl's words"
   has err "check that the curl first on the PATH (command -v curl) is curl itself" "the failure says which curl to check"
   lacks err "the text to send" "a config curl cannot read is not the text to send"
   input=$work/restore
@@ -2478,6 +2519,62 @@ stdin_setting() {
   expect 1 "a put whose body's path holds \"read config from\" is exit 1"
   has err "cannot read the text to send (Failed to open $work/read config from here/wiki-sh." "a body whose path holds \"read config from\" is still the text to send"
   lacks err "settings" "a body whose path holds \"read config from\" is not curl's settings"
+}
+
+# A query's value as the server reads it: "+" a space, "%XX" the byte XX
+# (in either case), anything else itself.
+query_decode() {
+  printf '%s' "$1" | LC_ALL=C awk '
+    BEGIN { for (i = 0; i < 256; i++) byte[sprintf("%02X", i)] = i }
+    { text = text (NR > 1 ? "\n" : "") $0 }
+    END {
+      n = length(text)
+      for (i = 1; i <= n; i++) {
+        c = substr(text, i, 1)
+        if (c == "+") printf " "
+        else if (c == "%") { printf "%c", byte[toupper(substr(text, i + 1, 2))]; i += 2 }
+        else printf "%s", c
+      }
+    }'
+}
+
+# The request's URL is the last line of curl's config, so a curl that did
+# not read the config has no URL and sends nothing: not a request without
+# the sign-in, nor one around WIKI_PROXY. And the words of a search are in
+# that URL, encoded by the client, not on the command line: each awkward
+# text reaches the server as typed.
+config_url_setting() {
+  rm -f "$work/nostdin.trace"
+  env -i PATH="$work/fakes/nostdin:$work/fakes/nojq:$PATH" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY=http://127.0.0.1:1 WIKI_STATE_DIR="$work/state-$shell-nostdin" \
+    "$shell" "$client" list </dev/null >"$work/out" 2>"$work/err"
+  status=$?
+  expect 1 "a curl whose standard input was taken away is exit 1"
+  has err "curl did not read its settings, the sign-in and the address among them, from its standard input (no URL specified): check that the curl first on the PATH (command -v curl) is curl itself" "the failure says curl did not read its settings"
+  if [ -f "$work/nostdin.trace" ] && grep -q '^=> Send header' "$work/nostdin.trace"; then
+    fail "a curl whose standard input was taken away sent a request, around WIKI_PROXY"
+  else
+    pass "a curl whose standard input was taken away sent nothing"
+  fi
+
+  # Each text as one argument of search: the URL curl's config names, its
+  # q decoded as the server reads a query, is the text byte for byte; and
+  # the server takes the query (no pages found, or the page with the word).
+  for text in /etc/hosts 'a&b=c d' '1+1 = 2' '100% sure' 'łódź' "line one${nl}line two"; do
+    : >"$work/curl.urls"
+    client search "$text"
+    expect 0 "a search for $text"
+    sent=$(tail -n 1 "$work/curl.urls")
+    case $sent in
+      "$url/api/search?q="*) pass "the search for $text asks for the search" ;;
+      *) fail "the search for $text asks for the search: curl's config named $sent" ;;
+    esac
+    query_decode "${sent#*\?q=}" >"$work/decoded"
+    printf '%s' "$text" >"$work/typed"
+    check "the search for $text sends it as typed" cmp -s "$work/decoded" "$work/typed"
+  done
+  client search 'łódź'
+  has out "Zażółć gęślą jaźń  $second" "the search for a word outside ASCII finds its page"
+  lacks curl.args-all "/etc/hosts" "no search word on curl's command line"
 }
 
 # The MCP server through a pipe: requests of both the current revision
@@ -2588,7 +2685,8 @@ Written through MCP: "quoted", back\slash, ż.
   with_jq=''
   client get "$second"
   check "the wiki holds the long page byte for byte" cmp -s "$work/out" "$work/big-mcp"
-  if grep -qF "wörd" "$work/curl.args"; then fail "a password on curl's command line under mcp"; else pass "no password on curl's command line under mcp"; fi
+  if grep -qF "wörd" "$work/curl.args-all"; then fail "a password on curl's command line under mcp"; else pass "no password on curl's command line under mcp"; fi
+  lacks curl.args-all "http://" "no address of the wiki on curl's command line under mcp"
   # The page's text back, for what runs next.
   input=$work/restore
   client put "$page" --force

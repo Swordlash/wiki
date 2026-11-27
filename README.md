@@ -3273,9 +3273,13 @@ it. Every curl reads its standard input, a native Windows curl under MSYS2
 too. `wiki.sh` writes no file that holds the password: the shell passes the
 input through a pipe, or through a temporary file of its own that it removes
 at once (bash 3.2, macOS's `sh`, always does; a newer bash may for a large
-input). The CA bundle (`WIKI_CACERT`) is no secret
-and is given on curl's command line, so that MSYS2 converts its path for a
-Windows curl.
+input). Each request's address, with the words of a search, goes the same
+way, so a curl that did not read its standard input sends nothing, and fails
+with a message that says so. curl's command line holds the script's own
+options and the paths of files alone (the answer's files, a page's text, an
+attachment, the CA bundle `WIKI_CACERT`, which is no secret). Under MSYS2,
+MSYS2 converts those paths for a native Windows curl; that is untested, and
+MSYS2's own curl (`/usr/bin/curl`) is the tested way there.
 
 curl runs with `-q`, so your `~/.curlrc` is not read: a setting there (`fail`,
 `output`, `url`) cannot change the client's requests or how it reads their

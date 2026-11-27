@@ -3233,6 +3233,19 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   he has no second move ahead; the package is small, of the maker's
   deploy and its script tests, with a `technical: true` entry.
 
+- **Budgets, sheets of expenses as a kind of page (#399; the owner,
+  2026-11-27).** A plugin after the calendar, on its `pageKind`
+  contribution: one page a named sheet, expenses with a day, a
+  category and an amount, views by week, month and year with sums per
+  category or stretch of time, and an option "Settlement" that adds
+  who paid. The data is in the wiki's pages (a month's page under the
+  sheet, a Markdown table), not in a table of the plugin's own: no
+  plugin reaches the database, and a host-owned store of records
+  would have to learn sealing, rotation, conversion, archives and
+  import again. The issue holds the design and what is assumed; a
+  design stage measures the parser on a month's table and the cost in
+  versions before anything is built.
+
 - **Compressing the text of page versions (#241; the owner, 2026-11-11: not
   now).** A version is a whole copy of the page. Versions as diffs were
   weighed and refused (reading a version would need a chain, one bad diff

@@ -1716,6 +1716,39 @@ pre.numbered > code {
   color: var(--muted);
 }
 
+/* A day's list, {.day} (Wiki.Core.Markdown.Render): its groups, "All
+   day" and the parts of the day, each named by its data-label. The name
+   is drawn here and is no text of the page, so a comment's quote never
+   takes it in. */
+.page-body .day-group::before {
+  content: attr(data-label);
+  display: block;
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.page-body .day-group > ul {
+  margin-top: 0.2rem;
+}
+
+/* A group with a task in it is a list of tasks, which has no bullets: its
+   items without a box keep theirs. */
+.page-body .day-group > .task-list > li:not(.task-list-item) {
+  list-style: disc;
+}
+
+/* A highlighted entry, "! " at the start of its item: shown at its time,
+   in the theme's yellow, with a bar before it. */
+.page-body .day-highlight {
+  background: var(--h-yellow);
+  box-shadow: -0.5rem 0 0 var(--h-yellow), -0.7rem 0 0 var(--warning);
+  border-radius: 0 0.2rem 0.2rem 0;
+}
+
 /* A box the reader may tick in the page view (Wiki.App.View.Page). */
 .page-body .task-list-item input:enabled {
   cursor: pointer;

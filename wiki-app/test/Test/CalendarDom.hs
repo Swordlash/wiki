@@ -18,9 +18,9 @@ import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Protolude hiding (find)
 import Test.Harness.MemDom
-import Test.Hspec
+import Test.Hspec hiding (pending)
 import Wiki.Api.Plugins (PluginChoice (..), PluginId (..), PluginState (..), Plugins (..), noPlugins)
-import Wiki.App.Backend (MonadWiki (..), Session, session)
+import Wiki.App.Backend (MonadWiki (..), Session, WikiError (..), session)
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki, switchUser)
 import Wiki.App.Backend.Mem.State (MemState (..))
 import Wiki.App.Demo (demoNow, demoState)
@@ -42,6 +42,9 @@ slugs = mapMaybe (rightToMaybe . mkSlug)
 orPanic :: (Show e) => Either e a -> a
 orPanic = either (panic . show) identity
 
+-- | Let every wait held go, until none is held.
+drain :: HeldWaits -> IO ()
+drain waits = pending waits >>= \ws -> unless (null ws) (traverse_ release ws >> drain waits)
 
 -- | The team's space of the demo, with a calendar "Days" under its home
 -- page holding two days, a page whose title is no date and a template
@@ -146,6 +149,36 @@ spec = describe "the calendar, a plugin's kind of page" $ do
         settle view
       again <- runMemDOM (run w.wiki (getPage w.team.id (slugs ["month"])))
       (\p -> p.kind) <$> again `shouldBe` Right calendarKind
+
+    -- Codex's first round on #401: the fetch of a space's template waits,
+    -- and the plugin went off meanwhile; the create went on with the
+    -- calendar's kind.
+    it "makes no page of a kind whose plugin went off while its template was fetched, and makes it with the plugin on" $ withWiki $ \w -> do
+      _ <- runMemDOM . run w.wiki $ do
+        t <- orPanic <$> createPageOf calendarKind w.team.id Nothing "Calendar template" "A calendar's text."
+        orPanic <$> setPageTemplate t.id True
+      ps <- pagesOf w w.team
+      let create title known = withHeldWaits $ \waits -> withView (run w.wiki) NewPage.component (newPage w noPlugins) {NewPage.pages = ps} $ \view -> do
+            drain waits
+            typeInto view ".new-page-title" title
+            kinds <- findAll view ".new-page-kind-choice input"
+            maybe (expectationFailure "no third kind offered") clickNode (atMay kinds 2)
+            starts <- findAll view ".new-page-choice"
+            traverse (fmap T.strip . textContent) starts >>= (`shouldSatisfy` \ts -> map (T.takeWhile (/= ' ')) ts == ["Blank", "Calendar"])
+            inputs <- findAll view ".new-page-choice input"
+            maybe (expectationFailure "no space template offered") clickNode (atMay inputs 1)
+            click view ".new-page-form button[type=submit]"
+            -- The template's fetch, held.
+            length <$> pending waits `shouldReturn` 1
+            setInput view (newPage w known) {NewPage.pages = ps}
+            drain waits
+          made title = runMemDOM (run w.wiki (getPage w.team.id (slugs [title])))
+      create "Off meanwhile" offForMe
+      ((\p -> p.kind) <$>) <$> made "off-meanwhile" `shouldReturn` Left NotFound
+      -- The same with the plugin still on: the page is made, a calendar,
+      -- from the template.
+      create "On still" noPlugins
+      ((\p -> (p.kind, p.body)) <$>) <$> made "on-still" >>= (`shouldSatisfy` \case Right (k, b) -> k == calendarKind && T.isInfixOf "A calendar's text." b; _ -> False)
 
   describe "the page view" $ do
     it "shows a calendar's text, then its days newest first, and opens a day" $ withWiki $ \w -> do

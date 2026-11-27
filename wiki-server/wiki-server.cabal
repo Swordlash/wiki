@@ -281,7 +281,8 @@ executable wiki-server
 
 -- The storage timed at the size of a big wiki (WP5.16a of docs/PLAN.md):
 -- run by hand to compare two versions of it, and built with everything
--- else so that it keeps compiling. Native only, as the server is.
+-- else so that it keeps compiling. CI's sqlite job runs it once at its
+-- smallest size, so that it keeps working. Native only, as the server is.
 executable wiki-server-bench
   import:           shared
   main-is:          Bench.hs

@@ -4454,7 +4454,9 @@ as Debian's `postgresql` package puts them), and stop it at the end; without
 either, the PostgreSQL half is reported as pending, not passed. The smoke test
 runs its server on PostgreSQL too when `WIKI_TEST_DATABASE_URL` is set
 (`toolchain/smoke-test.sh`, `sh toolchain/smoke-suite.sh server-postgres`). `wiki-server-bench` times the storage on SQLite,
-or with `postgres URL` on an empty PostgreSQL database.
+or with `postgres URL` on an empty PostgreSQL database; with `smallest`
+first, it runs each step once on a small wiki, in under a second, as CI's
+sqlite job does after its tests.
 
 `npm run screenshots` (`wiki-smoke-screenshots`, through `toolchain/smoke-suite.sh`) takes the four screenshots at
 the top of this README from the page `npm run build-wasm` built, in headless

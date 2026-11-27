@@ -581,9 +581,16 @@ jobs:
       if: matrix.group == 'postgres'
       run: sh toolchain/ci-postgres.sh start "$RUNNER_TEMP/postgres-bin" >> "$GITHUB_ENV"
 
+    # The sqlite job also runs the storage's benchmark, each step once on
+    # its smallest wiki (wiki-server/bench/Bench.hs), in under a second, so
+    # that a change of the storage that breaks a step of it fails here.
     - name: Test
       if: matrix.group != 'deploy'
-      run: npm run test-native
+      run: |
+        npm run test-native
+        if [ "${{ matrix.group }}" = sqlite ]; then
+          "$(cabal list-bin -v0 --builddir=dist-newstyle/native wiki-server:exe:wiki-server-bench)" smallest
+        fi
 
     # Runs of the PostgreSQL tests that share one server, as the sessions
     # on one machine share ci-postgres.sh's container: two at once, and one

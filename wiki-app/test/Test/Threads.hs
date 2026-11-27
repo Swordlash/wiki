@@ -945,6 +945,22 @@ spec = describe "Wiki.App.View.Comments.Machine" $ modifyMaxSuccess (max cases) 
       -- they were asked.
       [t | (Older, t) <- (foldl' play w0 [PageAgain, PageAgain, Handle, Handle, Handle, PageAgain, PageAgain, PageAgain, OtherOpens True, HandleOut 2, Handle, OtherEdits 0, Handle, Deliver 0, Reconnect, Deliver 3, Deliver 0, Deliver 2]).faults] `shouldBe` []
 
+    it ("shows no older text when the answers to two edits of one comment come in the other order" <> how) $
+      -- CI on an unrelated pull request (seed 1253759430, after 9,797
+      -- cases): the reader edits a comment twice, the server handles the
+      -- edits in order, the second's answer is applied first, the channel
+      -- is lost, and the first's answer put the first edit's text back.
+      -- The second's answer changed the threads, so the first's is no
+      -- longer applied as it is: a read follows instead.
+      [t | (Older, t) <- (foldl' play w0 [OtherOpens False, Handle, Deliver 0, ReaderEdits 0, Handle, ReaderEdits 0, Handle, Deliver 1, Reconnect, Deliver 0]).faults] `shouldBe` []
+
+    it ("shows no older text when the server handles two edits of one comment in the other order" <> how) $
+      -- The same race with the server handling the second edit first: the
+      -- first's answer, which carries the newer text, is applied first,
+      -- and the second's, with the older text, must not be applied after
+      -- it.
+      [t | (Older, t) <- (foldl' play w0 [OtherOpens False, Handle, Deliver 0, ReaderEdits 0, ReaderEdits 0, HandleOut 1, Handle, Deliver 0, Reconnect, Deliver 0]).faults] `shouldBe` []
+
     it ("leaves a new visit's forms alone when a write sent on an earlier visit of the page is answered" <> how) $
       -- Codex on #284: the reader writes on page A, goes to B and back to
       -- A, and the old write's answer emptied the new visit's form.

@@ -202,6 +202,15 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
     find ui ".page-ticks-save" >>= click
     bodyOf wiki `shouldReturn` T.replace "- [ ] Next" "- [x] Next" tasksText
 
+  it "shows a day's tasks under their parts of the day, and ticks the box the source has" $ runPage $ do
+    (ui, wiki) <- page m "user-admin" dayText
+    (findAll ui ".page-body .day-group" >>= traverse (`getAttribute` "data-label")) `shouldReturn` [Just "All day", Just "Morning", Just "Afternoon"]
+    (findAll ui ".page-body .day .task-text" >>= traverse textContent) `shouldReturn` ["09:00 Send the report", "16:00 Call the bank"]
+    -- The box shown first is the source's second task.
+    findAll ui ".page-body .day input" >>= maybe (expectationFailure "no box in the day's list") click . head
+    find ui ".page-ticks-save" >>= click
+    bodyOf wiki `shouldReturn` T.replace "- [ ] 09:00 Send the report" "- [x] 09:00 Send the report" dayText
+
   it "keeps each box with its task when a sorted list moves it: ticking the first of two unticked tasks ticks it alone" $ runPage $ do
     (ui, _) <- page m "user-admin" tasksText
     sortedLabels ui `shouldReturn` ["New", "Next", "Old"]
@@ -655,6 +664,11 @@ spec m = readsOnce Quiet $ describe "tasks ticked in a page" $ do
 tasksText :: Text
 tasksText =
   "# Tasks\n\n- [ ] Buy milk\n- [ ] Pack\n  - [ ] Shoes\n  - [ ] Coat\n\n{.sorted}\n- [x] Old\n- [ ] New\n- [ ] Next\n"
+
+-- | A page with a day's list whose afternoon task is written before its
+-- morning task, so that the page shows them the other way round.
+dayText :: Text
+dayText = "# Tasks\n\n{.day}\n- [ ] 16:00 Call the bank\n- [ ] 09:00 Send the report\n- Buy milk\n"
 
 -- | The demo's Markdown guide with only its tasks, for the examples that
 -- show it over the stand-in server. The whole guide is long: on a busy

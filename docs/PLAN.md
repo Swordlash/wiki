@@ -3044,10 +3044,12 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   spaces too). This needs one more contribution of the interface, a
   section of the start page. (6) A reader's default calendar: the
   plugin's settings have "Add calendar", which makes a calendar
-  page in the reader's personal space and subscribes them to it. To
-  settle in its design stage: what happens when the personal space
-  is not enabled (it is opt-in, decision 37), and whether the brief
-  links to making today's page when a calendar has none.
+  page in the reader's personal space and subscribes them to it.
+  While the personal space is not enabled (it is opt-in, decision
+  37) the button is disabled, and its title on hover says to enable
+  the personal space to unlock it (the owner, the same day). To
+  settle in its design stage: whether the brief links to making
+  today's page when a calendar has none.
   **Later, each when something needs it:** making
   a day's page that does not exist from a click; `pageAction` and
   `sidebar` contributions (the days folded in the tree); dragging

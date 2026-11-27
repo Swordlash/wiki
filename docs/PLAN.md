@@ -3033,7 +3033,22 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   plain one and there is no route, transaction or model of it. A
   month is then one read per day that has a page, not the one
   request WP5.93 names; the single request is a later optimisation
-  for plain spaces. **Later, each when something needs it:** making
+  for plain spaces. **After the four, the day's brief (the owner, 2026-11-27):** (5)
+  a reader subscribes to any calendar they may view ("Subscribe" on
+  the calendar's page, the plugin's own surface), the subscriptions
+  kept with the plugin's options for the user, which the server
+  already stores; the start page shows "Today": the entries of
+  today's page of every subscribed calendar as one list by the
+  hour, each with the calendar's name in small letters, read
+  through the same capability as the calendar's view (so encrypted
+  spaces too). This needs one more contribution of the interface, a
+  section of the start page. (6) A reader's default calendar: the
+  plugin's settings have "Add calendar", which makes a calendar
+  page in the reader's personal space and subscribes them to it. To
+  settle in its design stage: what happens when the personal space
+  is not enabled (it is opt-in, decision 37), and whether the brief
+  links to making today's page when a calendar has none.
+  **Later, each when something needs it:** making
   a day's page that does not exist from a click; `pageAction` and
   `sidebar` contributions (the days folded in the tree); dragging
   an entry; notifications. Presentations' view half only after the

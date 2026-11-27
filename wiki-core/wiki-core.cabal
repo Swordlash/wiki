@@ -186,6 +186,7 @@ test-suite wiki-core-test
       Test.Markdown.Box
       Test.Markdown.Comments
       Test.Markdown.Day
+      Test.Markdown.DayList
       Test.Markdown.Edit
       Test.Markdown.Complete
       Test.Markdown.CompleteMath

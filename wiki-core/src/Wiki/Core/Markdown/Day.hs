@@ -30,9 +30,11 @@
 -- entry for the whole day, with its text as written for a label. An
 -- unusual item is shown as the author wrote it, never at a wrong time.
 --
--- The source is not changed: the entries are a reading of the list. The
--- page view shows them in the order of their times, under the parts of
--- the day ('DayPart').
+-- The source is not changed: the entries are a reading of the list. A
+-- list marked @{.day}@ on the line before it is a day's list
+-- ('joinDayLists'), and the page view shows its items in groups: the
+-- entries for the whole day first, then the parts of the day in the order
+-- of the clock ('dayGroups').
 module Wiki.Core.Markdown.Day
   ( -- * Entries
     DayEntry (..)
@@ -46,6 +48,18 @@ module Wiki.Core.Markdown.Day
 
     -- * The date of a day's page
   , dayOfTitle
+
+    -- * A page's day lists
+  , dayClass
+  , joinDayLists
+  , dayListOf
+  , pageDayEntries
+  , unmarked
+
+    -- * Groups
+  , DayGroup (..)
+  , dayGroups
+  , dayGroupLabel
   )
 where
 
@@ -53,7 +67,7 @@ import Data.Text qualified as T
 import Data.Time (Day, TimeOfDay (..), makeTimeOfDayValid)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Protolude
-import Wiki.Core.Markdown.Ast (Block (..), Inline (..), ListItem (..), plainText)
+import Wiki.Core.Markdown.Ast (Attributes, Block (..), Footnote (..), Inline (..), ListItem (..), ListKind (..), classes, plainText)
 
 -- | 'DayEntry' is one item of a day's list, read as an entry of the day.
 data DayEntry = DayEntry
@@ -200,3 +214,141 @@ dayOfTitle title = do
     fits i c
       | i == 4 || i == 7 = c == '-'
       | otherwise = isDigit c
+
+-- | The class that makes a list a day's list: @{.day}@ on the line before
+-- the list, or @[[!div]]{.day}@ around it.
+dayClass :: Text
+dayClass = "day"
+
+-- | Some blocks that follow each other (a page's, a quotation's, an
+-- item's), cut into runs: each day's list one run, every other block a
+-- run of its own. Each run keeps what its first block carries (the line
+-- of the source it starts on, for the editor's preview).
+--
+-- A day's list starts with a 'Div' of the class @day@ that holds only
+-- lists. The parser cuts a list where an item with a task box and an
+-- item without one meet ("Wiki.Core.Markdown.Ast"), and @{.day}@ on the
+-- line before a list reaches only the first of the parts. So a 'Div' that
+-- holds one list takes in the lists right after it, as long as each is of
+-- the same kind as the one before (bulleted or numbered) and its first
+-- item's box differs from the last item's of the one before: that is
+-- where the parser cut. Anything else ends the day's list. A 'Div' that
+-- holds several lists (@[[!div]]{.day}@ around a list with tasks in it)
+-- holds them all already and takes in nothing.
+--
+-- The tree cannot tell @{.day}@ from a @[[!div]]{.day}@ around one list,
+-- so the latter takes in a list right after its @[[/div]]@ whose first
+-- item's box differs from its own last item's.
+joinDayLists :: [(a, Block)] -> [(a, [Block])]
+joinDayLists = \case
+  [] -> []
+  (a, b) : rest -> case dayDiv b of
+    Just [only] ->
+      let (taken, after) = takeCut only rest
+       in (a, b : taken) : joinDayLists after
+    _ -> (a, [b]) : joinDayLists rest
+  where
+    takeCut previous = \case
+      (_, next) : rest | continues previous next -> first (next :) (takeCut next rest)
+      rest -> ([], rest)
+
+-- | The lists of a 'Div' of the class @day@ that holds only lists, one at
+-- least.
+dayDiv :: Block -> Maybe [Block]
+dayDiv = \case
+  Div attrs bs | dayClass `elem` classes attrs, not (null bs), all isList bs -> Just bs
+  _ -> Nothing
+  where
+    isList = \case
+      List _ _ -> True
+      _ -> False
+
+-- | Whether the parser cut one list into these two: of the same kind, the
+-- second's first item with a box and the first's last item without one,
+-- or the other way round.
+continues :: Block -> Block -> Bool
+continues (List kind items) (List kind' (ListItem box' _ : _)) =
+  sameKind && maybe False (\(ListItem box _) -> isJust box /= isJust box') (lastMay items)
+  where
+    sameKind = case (kind, kind') of
+      (BulletList, BulletList) -> True
+      (OrderedList _, OrderedList _) -> True
+      _ -> False
+continues _ _ = False
+
+-- | A run of 'joinDayLists' read as a day's list: the 'Div''s attributes
+-- and the items of all its lists, in the order of the source. 'Nothing'
+-- for a run that is not a day's list.
+dayListOf :: [Block] -> Maybe (Attributes, [ListItem])
+dayListOf = \case
+  first'@(Div attrs _) : taken
+    | Just lists <- dayDiv first' -> Just (attrs, concat [items | List _ items <- lists <> taken])
+  _ -> Nothing
+
+-- | The entries of every day's list in some blocks, at any depth (in a
+-- quotation, a box, a spoiler, an item, a footnote), in the order of the
+-- source: what the page view groups, and what the calendar reads. Each
+-- entry's 'place' is its place in its own list.
+pageDayEntries :: [Block] -> [DayEntry]
+pageDayEntries = concatMap run . joinDayLists . map ((),)
+  where
+    run ((), bs) = case dayListOf bs of
+      Just (_, items) -> dayEntries items <> concat [pageDayEntries inner | ListItem _ inner <- items]
+      Nothing -> concatMap inside bs
+    inside = \case
+      BlockQuote bs -> pageDayEntries bs
+      List _ items -> concat [pageDayEntries bs | ListItem _ bs <- items]
+      Div _ bs -> pageDayEntries bs
+      Alert _ _ bs -> pageDayEntries bs
+      Spoiler _ bs -> pageDayEntries bs
+      Footnotes notes -> concat [pageDayEntries bs | Footnote _ _ bs <- notes]
+      _ -> []
+
+-- | An item without its highlight's mark: what the page shows of a
+-- highlighted entry, which a class marks instead. An item that has no
+-- mark is given back as it is.
+unmarked :: ListItem -> ListItem
+unmarked (ListItem box bs) = ListItem box $ case bs of
+  Para xs : rest -> Para (strip xs) : rest
+  Plain xs : rest -> Plain (strip xs) : rest
+  _ -> bs
+  where
+    strip xs = case markOf xs of
+      (True, Str t : more) -> [Str t' | let t' = T.dropWhile (== ' ') t, not (T.null t')] <> more
+      (True, more) -> more
+      (False, _) -> xs
+
+-- | 'DayGroup' is one group the page view shows a day's entries in: the
+-- entries for the whole day, or the timed entries of one part of the day.
+data DayGroup = WholeDay | During DayPart
+  deriving stock (Eq, Show)
+
+-- | A day's entries in groups, each entry in one group, and no group
+-- empty. The entries for the whole day come first, in the order of the
+-- source. Then the timed entries, by their start, entries that start at
+-- the same time in the order of the source, in a group for each part of
+-- the day they fall in. Night comes twice: the hours before six first,
+-- the hours from nine in the evening last.
+dayGroups :: [DayEntry] -> [(DayGroup, [DayEntry])]
+dayGroups entries =
+  [(WholeDay, whole) | not (null whole)]
+    <> [(During (dayPart start), map snd run) | run@((start, _) : _) <- runs]
+  where
+    whole = [e | e <- entries, e.time == AllDay]
+    timed = [(start, e) | e <- entries, Just start <- [startOf e.time]]
+    runs = groupBy ((==) `on` (dayPart . fst)) (sortOn fst timed)
+    startOf = \case
+      AllDay -> Nothing
+      At start -> Just start
+      Span start _ -> Just start
+
+-- | What the page view calls a group.
+dayGroupLabel :: DayGroup -> Text
+dayGroupLabel = \case
+  WholeDay -> "All day"
+  During Dawn -> "Dawn"
+  During Morning -> "Morning"
+  During Noon -> "Noon"
+  During Afternoon -> "Afternoon"
+  During Evening -> "Evening"
+  During Night -> "Night"

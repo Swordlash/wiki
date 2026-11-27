@@ -2990,7 +2990,25 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   `WIKI_INSECURE=1` in `clients/wiki.sh` (#378); plain HTTP on the
   TLS port is redirected to HTTPS, and HSTS is sent only with
   `--hsts`, off by default because it applies to the host name on
-  every port (#379). **Two of a reader's writes to one comment
+  every port (#379). **`clients/wiki.sh` and a curl that reads no
+  descriptor (#400, 2026-11-27; the owner ran it under MSYS2 with
+  `/clang64/bin/curl`):** curl's config (the sign-in, the proxy,
+  `insecure`, and the request's whole address as its last line) goes
+  to curl's standard input for every request, in place of
+  descriptor 3, which a Windows curl cannot read; no address and no
+  text a user typed is on the command line; a curl that read no
+  config has no address and sends nothing. A failure quotes nothing
+  of curl's text (the owner, the same day: curl echoes a rejected
+  proxy with its password, and no pattern takes that out for
+  certain; `main` already showed it): the script's own words, curl's
+  status number, and how to see curl's own words. A search's query
+  is encoded by the script (a space as `%20`). Left (the owner, nine
+  rounds): the suggested command does not carry the client's own
+  settings; with both `all_proxy` and `ALL_PROXY` set the failure
+  names the second; a wrapper that closes its curl's standard input
+  outright leaves curl waiting; a password with a Ctrl-Z byte ends
+  the config early for a Windows curl. Not tested on Windows by
+  anyone: the owner tries `/clang64/bin/curl`. **Two of a reader's writes to one comment
   (#398, 2026-11-27; found by the comments' own property on #396's
   CI run, seed 1253759430):** two quick edits of a comment could
   show the first edit's text after the second's, because a write's

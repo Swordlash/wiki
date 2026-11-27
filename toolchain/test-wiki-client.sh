@@ -2544,12 +2544,30 @@ query_decode() {
 # that URL, encoded by the client, not on the command line: each awkward
 # text reaches the server as typed.
 config_url_setting() {
+  # The text the client's failure quotes from curl, in the line wiki.sh
+  # wrote: the parentheses after LEAD. Its checks name only the start of
+  # curl's words, which curl's versions keep, and the start that the client
+  # itself matches on.
+  quoted_from_curl() {
+    sed -n "s/^wiki\.sh: .*$1(\([^)]*\)).*/\1/p" "$work/err" | head -n 1
+  }
+  # A check that what was quoted begins with START: curl's own line, not a
+  # line of the shell's trace.
+  quotes_curl() {
+    said=$(quoted_from_curl "$1")
+    case $said in
+      "$2"*) pass "$3" ;;
+      *) fail "$3: the failure quotes \"$said\"" ;;
+    esac
+  }
   rm -f "$work/nostdin.trace"
   env -i PATH="$work/fakes/nostdin:$work/fakes/nojq:$PATH" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY=http://127.0.0.1:1 WIKI_STATE_DIR="$work/state-$shell-nostdin" \
     "$shell" "$client" list </dev/null >"$work/out" 2>"$work/err"
   status=$?
   expect 1 "a curl whose standard input was taken away is exit 1"
-  has err "curl did not read its settings, the sign-in and the address among them, from its standard input (no URL specified): check that the curl first on the PATH (command -v curl) is curl itself" "the failure says curl did not read its settings"
+  has err "curl did not read its settings, the sign-in and the address among them, from its standard input (" "the failure says curl did not read its settings"
+  has err "): check that the curl first on the PATH (command -v curl) is curl itself" "the failure says which curl to check"
+  quotes_curl "from its standard input " "no URL specified" "the failure quotes curl's words"
   if [ -f "$work/nostdin.trace" ] && grep -q '^=> Send header' "$work/nostdin.trace"; then
     fail "a curl whose standard input was taken away sent a request, around WIKI_PROXY"
   else
@@ -2561,12 +2579,12 @@ config_url_setting() {
     "$shell" -x "$client" list </dev/null >"$work/out" 2>"$work/err"
   status=$?
   expect 1 "under -x, a curl whose standard input was taken away is exit 1"
-  has err "from its standard input (no URL specified): check" "under -x, the failure quotes curl's own words"
+  quotes_curl "from its standard input " "no URL specified" "under -x, the failure quotes curl's own words"
   env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL=http://127.0.0.1:1 WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-nostdin" \
     "$shell" -x "$client" list </dev/null >"$work/out" 2>"$work/err"
   status=$?
   expect 8 "under -x, a wiki where nothing listens is exit 8"
-  has err "is the wiki running there, and is WIKI_URL right? (Failed to connect to 127.0.0.1 port 1" "under -x, the connection's failure quotes curl's own words"
+  quotes_curl "is WIKI_URL right? " "Failed to connect to 127.0.0.1" "under -x, the connection's failure quotes curl's own words"
 
   # A line break in WIKI_URL, or in a page's path, would add lines to
   # curl's config: refused, and nothing sent (the log of every command

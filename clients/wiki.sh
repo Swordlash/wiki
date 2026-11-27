@@ -216,6 +216,11 @@ load_config() {
     else
       note "the server's certificate is not checked (WIKI_INSECURE)"
     fi
+  elif [ -n "$wiki_cacert" ] && { [ ! -f "$wiki_cacert" ] || [ ! -r "$wiki_cacert" ]; }; then
+    # curl would end with a status that names no file; the path is no
+    # secret, so the refusal names it.
+    fail "$EX_USAGE" "WIKI_CACERT (or cacert in $config_file) names no file wiki.sh can read: $wiki_cacert"
+    return
   fi
   config_loaded=1
 }
@@ -451,14 +456,26 @@ wiki_request() {
   rm -f "$work/curl-error"
   quiet_end
   # How to see curl's own words, for the failures where they say most: the
-  # same address asked by hand, which repeats no secret of the client's.
-  curl_by_hand="to see curl's own words, run: curl -sS -o /dev/null $wiki_base/"
+  # same address asked by hand, which repeats no secret of the client's,
+  # as one argument in single quotes (a base path may hold & or a space),
+  # with -g so that curl takes its brackets and braces as they are.
+  curl_by_hand="to see curl's own words, run: curl -g -sS -o /dev/null '$(printf '%s' "$wiki_base/" | sed "s/'/'\\\\''/g")'"
+  # The proxy in force, by the name of its setting (never its value), for
+  # the failures that a proxy may cause.
+  quiet_begin
+  proxy_in_force
+  quiet_end
+  proxy_note=''
+  [ -z "$proxy_from" ] || proxy_note="; a proxy is in use ($proxy_from): it may be the cause, check it"
   case $curl_status in
     6) fail "$EX_CONNECTION" "cannot find the host of $wiki_base: check WIKI_URL and the network (curl status 6)" ;;
-    7) fail "$EX_CONNECTION" "cannot connect to $wiki_base: is the wiki running there, and is WIKI_URL right? (curl status 7)" ;;
-    28) fail "$EX_CONNECTION" "$wiki_base did not answer in time: check the network (curl status 28)" ;;
+    7) fail "$EX_CONNECTION" "cannot connect to $wiki_base: is the wiki running there, and is WIKI_URL right? (curl status 7)$proxy_note" ;;
+    28) fail "$EX_CONNECTION" "$wiki_base did not answer in time: check the network (curl status 28)$proxy_note" ;;
     35 | 51 | 53 | 54 | 58 | 59 | 60 | 64 | 66 | 77 | 80 | 82 | 83 | 90 | 91) fail "$EX_CONNECTION" "the secure connection to $wiki_base failed: check its certificate, or WIKI_URL's scheme (curl status $curl_status); $curl_by_hand" ;;
-    52 | 55 | 56) fail "$EX_CONNECTION" "the connection to $wiki_base broke: try again (curl status $curl_status)" ;;
+    52 | 55 | 56) fail "$EX_CONNECTION" "the connection to $wiki_base broke: try again (curl status $curl_status)$proxy_note" ;;
+    # 5 is a proxy curl could not use (its address, or its name not found),
+    # 97 a proxy's own refusal (a SOCKS handshake, its sign-in).
+    5 | 97) fail "$EX_ERROR" "the proxy for $wiki_base could not be used (curl status $curl_status): check ${proxy_from:-the proxy settings (WIKI_PROXY, https_proxy, http_proxy, ALL_PROXY)}" ;;
     1 | 3) fail "$EX_USAGE" "WIKI_URL is not an address curl can use: $wiki_base (curl status $curl_status)" ;;
     2 | 26)
       case $curl_status:$curl_class in
@@ -471,6 +488,33 @@ wiki_request() {
     127) fail "$EX_ERROR" "curl is not installed: install it (apt install curl, brew install curl)" ;;
     *) fail "$EX_ERROR" "curl failed (curl status $curl_status); $curl_by_hand" ;;
   esac
+}
+
+# The name of the proxy setting in force for the wiki's address, in
+# proxy_from, or '' for none: WIKI_PROXY when it is set, or else the first
+# of the variables curl reads for the address's scheme that is set
+# (https_proxy, HTTPS_PROXY for https; http_proxy for http, as curl reads
+# no HTTP_PROXY), then ALL_PROXY and all_proxy. NO_PROXY is not read, so
+# the failures say a proxy may be the cause. Called with tracing off, as
+# the values are read.
+proxy_in_force() {
+  proxy_from=''
+  if [ -n "$wiki_proxy" ]; then
+    proxy_from=WIKI_PROXY
+    return 0
+  fi
+  case $wiki_base in
+    https://*) proxy_names='https_proxy HTTPS_PROXY' ;;
+    *) proxy_names='http_proxy' ;;
+  esac
+  for proxy_name in $proxy_names ALL_PROXY all_proxy; do
+    eval "proxy_value=\${$proxy_name:-}"
+    if [ -n "$proxy_value" ]; then
+      proxy_from=$proxy_name
+      break
+    fi
+  done
+  proxy_value=''
 }
 
 # A header of the last answer, by name in lower case: the last block's (an
@@ -3159,7 +3203,7 @@ already, a part's text that would change the page outside it); 7 too many
 failed sign-ins, try again later; 8 no connection. For attach, 5 is a file
 of the name on the page already, and 6 a file over the wiki's limit. When
 curl fails, the message gives curl's status number and none of curl's own
-words, which can repeat a proxy's password; curl -sS -o /dev/null with the
+words, which can repeat a proxy's password; curl -g -sS -o /dev/null with the
 wiki's address shows them.
 EOF
 }

@@ -25,5 +25,5 @@ technical: true
   one it has no words for, it says how to see curl's own:
 
   ```text
-  wiki.sh: the secure connection to https://wiki.example failed: check its certificate, or WIKI_URL's scheme (curl status 60); to see curl's own words, run: curl -sS -o /dev/null https://wiki.example/
+  wiki.sh: the secure connection to https://wiki.example failed: check its certificate, or WIKI_URL's scheme (curl status 60); to see curl's own words, run: curl -g -sS -o /dev/null 'https://wiki.example/'
   ```

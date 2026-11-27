@@ -354,7 +354,20 @@ cat >"$work/fakes/nostdin/curl" <<EOF
 printf '%s\n' "\$*" >>"$work/curl.args-all"
 exec "$real_curl" "\$@" --trace-ascii "$work/nostdin.trace" </dev/null
 EOF
-chmod +x "$work/fakes/config/curl" "$work/fakes/refuse/curl" "$work/fakes/nostdin/curl"
+# And a curl that ends with status 47, which the client has no words
+# for; and one that writes each argument on a line of its own, for the
+# command a failure suggests.
+mkdir -p "$work/fakes/status47" "$work/fakes/argv"
+cat >"$work/fakes/status47/curl" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+exit 47
+EOF
+cat >"$work/fakes/argv/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@"
+EOF
+chmod +x "$work/fakes/config/curl" "$work/fakes/refuse/curl" "$work/fakes/nostdin/curl" "$work/fakes/status47/curl" "$work/fakes/argv/curl"
 chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv" "$work/fakes/pausecp/cp" "$work/fakes/failmv/mv"
 # The PATH the client runs with: the recording curl, and the failing jq
 # unless the MCP server is under test.
@@ -674,6 +687,7 @@ suite() {
   stdin_setting
   config_url_setting
   hidden_setting
+  failure_text_setting
 
   # The configuration file, read only when nobody else may read it, through
   # a symbolic link too.
@@ -2553,23 +2567,66 @@ hidden_setting() {
     # The shell and its option are two words on purpose.
     # shellcheck disable=SC2086
     hidden_run PATH="$nojq_path" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY='foo://pxuser:px wörd "q"@127.0.0.1:1' $run_shell "$client" list
-    shows_nothing_of_curl 1 "WIKI_PROXY with a space and a quote in its password, which curl refuses ($option)" "curl failed" 5
+    shows_nothing_of_curl 1 "WIKI_PROXY with a space and a quote in its password, which curl refuses ($option)" "the proxy for $url could not be used" 5
+    has err "(curl status 5): check WIKI_PROXY" "WIKI_PROXY with a space and a quote: the failure names the setting ($option)"
     # shellcheck disable=SC2086
     hidden_run PATH="$nojq_path" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY='pxuser:pxwörd@127.0.0.1:99999' $run_shell "$client" list
-    shows_nothing_of_curl 1 "WIKI_PROXY without a scheme, its port refused ($option)" "curl failed" 5
+    shows_nothing_of_curl 1 "WIKI_PROXY without a scheme, its port refused ($option)" "the proxy for $url could not be used" 5
     # shellcheck disable=SC2086
     hidden_run PATH="$nojq_path" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY="foo://pxuser:$long_password@127.0.0.1:1" $run_shell "$client" list
     shows_nothing_of_curl 8 "WIKI_PROXY with a password of 300 characters ($option)" "is WIKI_URL right?" 7
+    has err "a proxy is in use (WIKI_PROXY): it may be the cause, check it" "WIKI_PROXY with a long password: the failure says the proxy may be the cause ($option)"
     # HTTPS_PROXY is for an https address; curl refuses the proxy before
     # it connects, so nothing needs to listen there.
     # shellcheck disable=SC2086
     hidden_run PATH="$nojq_path" WIKI_URL=https://127.0.0.1:1 WIKI_USER=editor WIKI_PASSWORD="$editor_password" HTTPS_PROXY='foo://pxuser:pxwörd@127.0.0.1:1' $run_shell "$client" list
     shows_nothing_of_curl 8 "HTTPS_PROXY of a scheme curl refuses ($option)" "is WIKI_URL right?" 7
+    has err "a proxy is in use (HTTPS_PROXY): it may be the cause, check it" "HTTPS_PROXY: the failure says the proxy may be the cause ($option)"
     # shellcheck disable=SC2086
     hidden_run PATH="$nojq_path" WIKI_URL=https://127.0.0.1:1 WIKI_USER=editor WIKI_PASSWORD="$editor_password" HTTPS_PROXY='pxuser:px"wörd@[bad' $run_shell "$client" list
-    shows_nothing_of_curl 1 "HTTPS_PROXY without a scheme, its address refused ($option)" "curl failed" 5
-    has err "to see curl's own words, run: curl -sS -o /dev/null https://127.0.0.1:1/" "HTTPS_PROXY without a scheme: the failure says how to see curl's words ($option)"
+    shows_nothing_of_curl 1 "HTTPS_PROXY without a scheme, its address refused ($option)" "the proxy for https://127.0.0.1:1 could not be used" 5
+    has err "(curl status 5): check HTTPS_PROXY" "HTTPS_PROXY without a scheme: the failure names the variable ($option)"
+    # http_proxy for a plain http address, where nothing listens.
+    # shellcheck disable=SC2086
+    hidden_run PATH="$nojq_path" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" http_proxy='http://pxuser:pxwörd@127.0.0.1:1' $run_shell "$client" list
+    shows_nothing_of_curl 8 "http_proxy where nothing listens ($option)" "is WIKI_URL right?" 7
+    has err "a proxy is in use (http_proxy): it may be the cause, check it" "http_proxy: the failure says the proxy may be the cause ($option)"
   done
+}
+
+# The failures' own advice. The command that shows curl's own words names
+# the address as one argument, whatever its base path holds; a WIKI_CACERT
+# that names no readable file is refused before curl runs; and a failure
+# to connect with no proxy says nothing of one.
+failure_text_setting() {
+  odd_url="http://127.0.0.1:1/team&docs it's[1]"
+  env -i PATH="$work/fakes/status47:$work/fakes/nojq:$PATH" HOME="$work/home" WIKI_URL="$odd_url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-advice" \
+    "$shell" "$client" list </dev/null >"$work/out" 2>"$work/err"
+  status=$?
+  expect 1 "a failure curl has no words for is exit 1"
+  has err "curl failed (curl status 47); to see curl's own words, run: curl -g -sS -o " "the failure says how to see curl's own words"
+  sed -n "s/.*to see curl's own words, run: //p" "$work/err" >"$work/advice"
+  env PATH="$work/fakes/argv:$PATH" sh -c "$(cat "$work/advice")" >"$work/advice-args" 2>&1
+  printf '%s\n' -g -sS -o /dev/null "$odd_url/" >"$work/advice-expected"
+  check "the command it suggests gives curl the address as one argument" cmp -s "$work/advice-args" "$work/advice-expected"
+
+  sent_before=$(wc -l <"$work/curl.args-all")
+  env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_CACERT="$work/no-such-ca.pem" WIKI_STATE_DIR="$work/state-$shell-advice" \
+    "$shell" "$client" list </dev/null >"$work/out" 2>"$work/err"
+  status=$?
+  expect 2 "a WIKI_CACERT that names no file is a wrong use"
+  has err "WIKI_CACERT (or cacert in $work/home/.config/wiki/config) names no file wiki.sh can read: $work/no-such-ca.pem" "the refusal names the setting and the path"
+  check "nothing was sent for a WIKI_CACERT that names no file" [ "$(wc -l <"$work/curl.args-all")" = "$sent_before" ]
+  env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_CACERT="$work/no-such-ca.pem" WIKI_INSECURE=1 WIKI_STATE_DIR="$work/state-$shell-advice" \
+    "$shell" "$client" list </dev/null >"$work/out" 2>"$work/err"
+  status=$?
+  expect 0 "with WIKI_INSECURE=1, WIKI_CACERT is not used, nor checked"
+
+  env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL=http://127.0.0.1:1 WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-advice" \
+    "$shell" "$client" list </dev/null >"$work/out" 2>"$work/err"
+  status=$?
+  expect 8 "no connection, and no proxy, is exit 8"
+  lacks err "a proxy is in use" "with no proxy, the failure says nothing of one"
 }
 
 # A query's value as the server reads it: "+" a space, "%XX" the byte XX

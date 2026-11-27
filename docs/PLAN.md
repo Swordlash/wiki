@@ -2930,7 +2930,24 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   change that starts with a backslash right after the cursor, the
   written text lands inside that change's range (the `/` menu's
   `smallestChange`), and rejecting the change takes the completion
-  with it. `\begin…\end` after it is built and in review (#392).
+  with it. **`\begin…\end` merged (#392), the last cut of #301:**
+  after `\be` in math the list offers KaTeX's environments (19), and
+  choosing one writes `\begin{pmatrix}`, an empty line's place and
+  `\end{pmatrix}`, the cursor between. None is offered when any
+  `\end` follows in the math, when a `%` follows the cursor, in
+  math the page does not close yet unless the next line is absent
+  or empty, or where a macro the editor holds is named `\begin` or
+  `\end`. **Left (the owner, 2026-11-27; rounds 3 to 5):**
+  environments are offered where KaTeX takes none, inside
+  `\text{…}` and as a script without braces (`x^\be`), and KaTeX
+  marks that in the preview (telling text mode from math mode means
+  reading TeX by hand, which rounds 1 and 2 took out); a `\def` of
+  `\begin` or `\end` in a formula of the page, with a delimiter
+  among a space's macros, or added to the page's block since the
+  last check, is not seen (the rule above; round 3's scan of the
+  page was built and taken out again, its own faults being three of
+  round 4's five findings); `\\end` and `\end@name` after the
+  cursor count as an `\end` and hide the environments.
   **The guard of a plain write asks the server by the page (#394,
   found by #389's rounds in the code before it).** Before a save, a
   draft, an attachment, a comment's text or a resolve goes out

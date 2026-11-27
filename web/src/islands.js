@@ -418,7 +418,7 @@ const cropAvatar = (host, file) =>
     .catch((error) => console.error("The avatar's cropper could not be loaded:", error));
 
 // A calendar's month in `host`, with the days in `days` (a JSON array of
-// dates, 2026-11-27) marked. The first call for an element starts the load
+// pairs: a date, 2026-11-27, and the address of its page) marked. The first call for an element starts the load
 // of the month's module and stylesheet, and keeps what it wants on the
 // element (`wikiCalendar`): the days, and the month once it is there. A
 // call while the load is out, or once the month is drawn, changes the days

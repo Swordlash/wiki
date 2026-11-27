@@ -52,6 +52,7 @@ $( browserJS
      , ("js_calendar_months", "wiki_test_calendar_months", Safe, [t|IO Int|])
      , ("js_calendar_today", "wiki_test_calendar_today", Safe, [t|IO JSText|])
      , ("js_history_back_heardPromise", "wiki_test_history_back_heard", Safe, [t|IO (Promise ())|])
+     , ("js_calendar_click", "wiki_test_calendar_click", Safe, [t|JSText -> Bool -> IO Bool|])
      ]
  )
 
@@ -281,6 +282,25 @@ spec m = do
     traverse textContent shown `shouldReturn` ["15"]
     -- The month opens on today's, which is marked.
     length <$> findAll ui (".calendar-month [aria-current=date][data-date='" <> iso today <> "']") `shouldReturn` 1
+    -- The day's number is a link to the day's page: the address the list
+    -- of days links it with.
+    listed <- find ui ".calendar-all-days .calendar-day a" >>= (`getAttribute` "href")
+    (traverse (`getAttribute` "href") shown) `shouldReturn` [listed]
+    listed `shouldSatisfy` maybe False (T.isInfixOf (iso here))
+    -- A click with Ctrl held is the browser's, which opens the address in
+    -- another tab: the page does not take it, and stays. The same click
+    -- without Ctrl is taken, and opens the day, which shows the check can
+    -- fail. (The test keeps the browser from following either.)
+    unsafeIOToPageM (js_calendar_click (toJSText (linkTo here)) True) `shouldReturn` False
+    waitQuiet
+    length <$> findAll ui ".calendar-month" `shouldReturn` 1
+    unsafeIOToPageM (js_calendar_click (toJSText (linkTo here)) False) `shouldReturn` True
+    waitQuiet
+    find ui ".page-view h1" >>= textContent >>= (`shouldBe` iso here)
+    unsafeIOToPageM js_history_back_heard
+    waitQuiet
+    untilAttribute ".calendar-all-days" "open" Nothing
+    -- A reader's own click on the number opens the day's page in this tab.
     find ui (linkTo here) >>= click
     -- The day's page is read from the wiki once the click has gone to it.
     waitQuiet

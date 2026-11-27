@@ -5,7 +5,7 @@
 // page's islands.js there is no month, and the page keeps its list of days.
 
 // Show the month in `host`, with the days in `days` (a JSON array of
-// dates) marked: the first call puts it there, once its module has loaded,
+// pairs of a date and the address of its page) marked: the first call puts it there, once its module has loaded,
 // and a later one changes the days.
 function wiki_calendar_show(host, days) {
   globalThis.wikiIslands?.showCalendar?.(host, days);

@@ -43,15 +43,11 @@
    numbers of the days that have none. */
 .calendar-day-link {
   padding: 0 0.2rem;
-  border: none;
   border-radius: 3px;
-  background: none;
   color: var(--accent);
-  font: inherit;
   font-weight: 600;
   text-decoration: underline;
   text-underline-offset: 2px;
-  cursor: pointer;
 }
 
 .calendar-day-link:hover {

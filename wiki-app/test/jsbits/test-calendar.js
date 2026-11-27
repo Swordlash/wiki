@@ -70,3 +70,22 @@ function wiki_test_calendar_today() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+
+// Click the first element a selector finds with a click made here, with
+// the Ctrl key held or not, and answer whether the page took it: whether
+// something prevented its default. The browser is then kept from doing
+// what it would, so that no tab opens and the test page stays: a listener
+// on the document, which the click reaches after the link's own.
+function wiki_test_calendar_click(selector, ctrl) {
+  const target = document.querySelector(selector);
+  if (!target) return false;
+  let taken = false;
+  const keep = (event) => {
+    taken = event.defaultPrevented;
+    event.preventDefault();
+  };
+  document.addEventListener("click", keep, { once: true });
+  target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ctrlKey: Boolean(ctrl) }));
+  document.removeEventListener("click", keep);
+  return taken;
+}

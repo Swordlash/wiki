@@ -3,7 +3,7 @@
 // Wiki.App.Plugin.Calendar) holds by ref and never looks inside. The month
 // is read-only: FullCalendar's interaction plugin is not bundled, so
 // nothing in it can be dragged or selected. The number of a day that has a
-// page is a button that tells the calendar's page to open the day's page.
+// page is a link to the day's page.
 //
 // web/bundle.sh bundles this file, with FullCalendar, into
 // islands/calendar.js, and web/src/calendar.css into islands/calendar.css,
@@ -19,34 +19,47 @@ import classicTheme from "fullcalendar/themes/classic";
 const isoDay = (date) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 
-// The button of a day that has a page: its number, which tells `host` the
-// day with a `wiki-calendar-day` event when it is clicked.
-const dayButton = (host, day, number) => {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "calendar-day-link";
-  button.dataset.date = day;
-  button.textContent = number;
-  button.setAttribute("aria-label", `Open the day ${day}`);
-  button.addEventListener("click", () => host.dispatchEvent(new CustomEvent("wiki-calendar-day", { detail: day })));
+// Whether a click is one the page follows itself, in this tab: the main
+// button, no modifier key, and nothing that prevented it already. Any
+// other (with Ctrl or Shift, to open a new tab or window) is the
+// browser's. The rule is the one the application's own links follow
+// (haskell-halogen's plainLeftClick); a day's link has no target and is
+// no download.
+const plainLeftClick = (event) =>
+  event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && !event.defaultPrevented;
+
+// The link of a day that has a page: its number, pointing at `address`, the
+// day's page. A plain click is the application's: its default is
+// prevented, and `host` is told the day with a `wiki-calendar-day` event.
+const dayLink = (host, day, address, number) => {
+  const link = document.createElement("a");
+  link.className = "calendar-day-link";
+  link.href = address;
+  link.dataset.date = day;
+  link.textContent = number;
+  link.addEventListener("click", (event) => {
+    if (!plainLeftClick(event)) return;
+    event.preventDefault();
+    host.dispatchEvent(new CustomEvent("wiki-calendar-day", { detail: day }));
+  });
   // FullCalendar hides a day's number from screen readers, which read the
-  // whole date from a hidden text beside it instead. A button must not be
+  // whole date from a hidden text beside it instead. A link must not be
   // hidden from them while it takes the focus: once FullCalendar has put
   // it in the number's place, in the same render, the place is shown to
   // them again. FullCalendar does not write that attribute again while the
   // cell stays.
   queueMicrotask(() => {
-    if (button.parentElement?.getAttribute("aria-hidden") === "true") button.parentElement.removeAttribute("aria-hidden");
+    if (link.parentElement?.getAttribute("aria-hidden") === "true") link.parentElement.removeAttribute("aria-hidden");
   });
-  return button;
+  return link;
 };
 
 // Put a month in `host`, in an element of its own, with the days in `days`
-// (dates, 2026-11-27) marked. The month opens on today's. What is
-// returned changes the days marked (`days(list)`) and takes the month out
-// (`destroy()`).
+// (pairs of a date, 2026-11-27, and the address of its page) marked. The
+// month opens on today's. What is returned changes the days marked
+// (`days(list)`) and takes the month out (`destroy()`).
 export const mount = (host, days) => {
-  let pages = new Set(days);
+  let pages = new Map(days);
   const place = document.createElement("div");
   place.className = "calendar-month-place";
   host.replaceChildren(place);
@@ -55,7 +68,7 @@ export const mount = (host, days) => {
   // cells again with it, reading `pages` as it is then.
   const topContent = () => (info) => {
     const day = isoDay(info.date);
-    return pages.has(day) && !info.inPopover ? { domNodes: [dayButton(host, day, info.dayNumberText)] } : true;
+    return pages.has(day) && !info.inPopover ? { domNodes: [dayLink(host, day, pages.get(day), info.dayNumberText)] } : true;
   };
   const calendar = new Calendar(place, {
     plugins: [dayGridPlugin, classicTheme],
@@ -70,7 +83,7 @@ export const mount = (host, days) => {
   calendar.render();
   return {
     days: (list) => {
-      pages = new Set(list);
+      pages = new Map(list);
       calendar.setOption("dayCellTopContent", topContent());
     },
     destroy: () => {

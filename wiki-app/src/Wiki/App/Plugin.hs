@@ -83,6 +83,7 @@ module Wiki.App.Plugin
   , linkTo
   , LinkClick
   , linkProps
+  , linkAddress
   , followLink
   , openLink
 
@@ -511,7 +512,7 @@ data Local m = Local
 
 -- | 'Link' is a link to a place of the wiki that the host chose (a
 -- plugin's settings, a page), which the application follows itself
--- ('linkProps', 'followLink', 'openLink'). A plugin cannot name the wiki's routes:
+-- ('linkProps', 'followLink', 'openLink', 'linkAddress'). A plugin cannot name the wiki's routes:
 -- the host makes each link, and the plugin draws it and follows its
 -- clicks.
 data Link = Link (Router Route) Route
@@ -528,6 +529,13 @@ newtype LinkClick = LinkClick (Follow Route)
 -- plain click, handed to the component as an action.
 linkProps :: Link -> (LinkClick -> action) -> [HP.IProp I.HTMLa action]
 linkProps (Link router route) onFollow = Router.linkProps router (onFollow . LinkClick) route
+
+-- | The address a 'Link' points at, as 'linkProps' puts it in the
+-- @href@: for a link that a library draws, in an element the surface holds
+-- by ref (the calendar's month), which gives its plain click to the
+-- surface ('openLink') and leaves any other to the browser.
+linkAddress :: Link -> Text
+linkAddress (Link router route) = Router.href router route
 
 -- | Follow a plain click on a 'Link'.
 followLink :: (MonadIO m) => Link -> LinkClick -> H.HalogenM st act slots output m ()

@@ -9,8 +9,9 @@
 --
 -- The surface is a month, drawn by FullCalendar in the browser
 -- ("Wiki.App.Plugin.Calendar.Island"), with the list of the days under it.
--- In the month, the number of each day that has a page is a button that
--- opens the day's page. The list names every day, newest first, each a
+-- In the month, the number of each day that has a page is a link to the
+-- day's page: a plain click opens it in this tab, through the router, and
+-- any other is the browser's. The list names every day, newest first, each a
 -- link to its page. It is folded in a @\<details>@ once the month is drawn,
 -- and open before: on the page the server rendered, while the month's
 -- library loads, and when the library cannot be loaded. It is also the
@@ -42,7 +43,7 @@ import Halogen.TH (hh)
 import Protolude hiding (State)
 import Web.DOM.Internal.Types (Element)
 import Web.Event.Event (EventType (..))
-import Wiki.App.Plugin (Child (..), KindInput (..), KindView (..), Link, LinkClick, Manifest (..), Plugin (..), PluginId, attr, builtin, followLink, linkProps, openLink)
+import Wiki.App.Plugin (Child (..), KindInput (..), KindView (..), Link, LinkClick, Manifest (..), Plugin (..), PluginId, attr, builtin, followLink, linkAddress, linkProps, openLink)
 import Wiki.App.Plugin.Calendar.Island (clickedDay, drawnProblem, dropMonth, showMonth)
 import Wiki.Core.Markdown.Day (dayOfTitle)
 import Wiki.Core.Page (PageSummary (..))
@@ -82,9 +83,11 @@ dayLink under d = (\c -> c.link) <$> lookup d (days under)
 dayName :: Day -> Text
 dayName = toS . formatTime defaultTimeLocale "%A, %-d %B %Y"
 
--- | The dates that have a page, once each: what the month marks.
-datesOf :: [Child] -> [Day]
-datesOf = ordNub . map fst . days
+-- | The dates that have a page, once each, with the address of the first
+-- page of each ('dayLink'): what the month marks, and where each mark
+-- points.
+datesOf :: [Child] -> [(Day, Text)]
+datesOf under = [(d, linkAddress l) | d <- ordNub (map fst (days under)), Just l <- [dayLink under d]]
 
 data State = State
   { input :: KindInput
@@ -110,7 +113,10 @@ data Action
   | Followed Link LinkClick
   | Finalize
 
--- | The month, and the list of the calendar's days under it.
+-- | The month, and the list of the calendar's days under it. It asks
+-- nothing, so it is a plain handler of its input and of the month's
+-- events; it becomes a machine when it reads the days' pages for their
+-- entries (WP5.93's next package, 4b).
 surface :: forall m. (MonadUUID m, MonadIO m) => H.Component (Const Void) KindInput Void m
 surface =
   H.mkComponent

@@ -9,7 +9,8 @@ title: A calendar's page shows a month
   month of today, with today's day tinted. The weeks start on Monday, the
   arrows page to the months before and after, and "Today" comes back.
   The number of each day that has a page is a link: click it to open the
-  day's page. A day without a page is plain. A calendar "Team days" with
+  day's page, or open it in a new tab as any link. A day without a page
+  is plain. A calendar "Team days" with
   these pages under it
 
   ```text

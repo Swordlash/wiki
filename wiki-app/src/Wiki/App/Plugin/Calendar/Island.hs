@@ -9,8 +9,12 @@
 -- The island tells the element two things, in events: that the month is
 -- drawn, or that its library could not be loaded (@wiki-island-drawn@, as
 -- a diagram's element is told; 'drawnProblem'), and that the reader
--- clicked the number of a day that has a page (@wiki-calendar-day@;
--- 'clickedDay').
+-- clicked the number of a day that has a page, a link, with a plain click
+-- (@wiki-calendar-day@; 'clickedDay'). The island decides which clicks
+-- are plain as the application's own links do: the main button and no
+-- modifier key. It prevents the default of those only, and leaves any
+-- other click to the browser, which opens the address in a new tab or
+-- window.
 --
 -- Natively there is no browser: 'showMonth' and 'dropMonth' do nothing,
 -- and a native test dispatches the events itself, made from JSON.
@@ -44,13 +48,13 @@ $( browserJS
  )
 
 -- | Show the month in the element, with these days marked as having a
--- page. The first call for an element starts the load of the month's
+-- page, each a link to the address given with it. The first call for an element starts the load of the month's
 -- library and puts the month in once it has loaded, if the element is
 -- still in the page and nobody dropped the month meanwhile. A later call
 -- changes the days marked, and puts no second month in. It returns at
 -- once: call it in @H.sync@.
-showMonth :: (MonadIO m) => Element -> [Day] -> m ()
-showMonth host days = liftIO (js_show host (toJSText (decodeUtf8 (BSL.toStrict (encode (map iso8601Show days))))))
+showMonth :: (MonadIO m) => Element -> [(Day, Text)] -> m ()
+showMonth host days = liftIO (js_show host (toJSText (decodeUtf8 (BSL.toStrict (encode [(iso8601Show d, address) | (d, address) <- days])))))
 
 -- | Take the month out of the element, or forget that it was wanted
 -- there while its library loads. Call it in @H.sync@.

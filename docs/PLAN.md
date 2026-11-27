@@ -2990,7 +2990,21 @@ fixed (#327), a fault of the test.** An embedded presentation's watch
   `WIKI_INSECURE=1` in `clients/wiki.sh` (#378); plain HTTP on the
   TLS port is redirected to HTTPS, and HSTS is sent only with
   `--hsts`, off by default because it applies to the host name on
-  every port (#379). **After D (the owner, 2026-11-27): the emoji, Mermaid and TikZ
+  every port (#379). **The storage's benchmark runs again (#395,
+  2026-11-27):** `wiki-server-bench` had stopped with `NotFound`
+  since #229 put pages under their space's home page (its pages had
+  no parent, and its page view had been timing a `NotFound`); it
+  now stops at any step whose answer is an error or empty, and CI's
+  sqlite job runs it once at `smallest`, in under a second. Left
+  (the owner, the same day; round 3): the feed's and the sitemap's
+  answers are checked for 200 and not for a seeded page, the blog
+  listing's for something and not for a post, and a tab refused
+  after it subscribed waits (60 s in the checking run). **Found by
+  it, not looked at:** on a wiki of 20,000 pages the blog listing
+  of 2,000 posts with 20 versions each takes about 2.7 s on both
+  databases, and a search for a word on every page about 2.5 s on
+  SQLite (23 ms on PostgreSQL); `docs/scalability-audit.md`
+  estimated the listing at 50 to 100 ms. **After D (the owner, 2026-11-27): the emoji, Mermaid and TikZ
   stay the host's and are not made plugins.** The session's plan of
   2026-11-24 had them behind the interface (the emoji as a
   `command`, the two diagrams as a `block` and a `command` each).

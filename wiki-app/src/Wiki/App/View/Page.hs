@@ -133,8 +133,10 @@
 -- ticked takes the mark off at once. The present time is the reader's,
 -- read from the input's clock (the browser's, 'Wiki.App.Browser.readerClock')
 -- while a day's page is shown: in the view's 'Initialize', when a page is
--- fetched, and once a minute after. An ordinary page reads no clock and
--- renders no more often for it. The initial state has no time, so
+-- fetched, and once a minute after while the page's date is today or
+-- later, since a later time can change a mark only then. A page of a past
+-- date has every task not done missed already, and reads the clock once.
+-- An ordinary page reads no clock and renders no more often for it. The initial state has no time, so
 -- the first render marks nothing, as the server's prerender, which has no
 -- clock, does not: the program adopts that page unchanged, and the marks
 -- come with the render after.
@@ -151,7 +153,7 @@ import Control.Monad.UUID (MonadUUID)
 import Data.Map.Strict qualified as Map
 import Data.Row (type (.+), type (.==))
 import Data.Text qualified as T
-import Data.Time (Day, LocalTime, NominalDiffTime, UTCTime)
+import Data.Time (Day, LocalTime (..), NominalDiffTime, UTCTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Halogen qualified as H
 import Halogen.HTML qualified as HH
@@ -842,7 +844,9 @@ component =
         -- server's prerender has none.
         readClock
         clocked <- gets (\st -> isJust st.input.clock)
-        when clocked . void . H.fork . forever $ H.delay clockTick >> readClock
+        when clocked . void . H.fork . forever $ do
+          H.delay clockTick
+          whenM (gets canChange) readClock
         gets (\st -> st.loaded) >>= \case
           Loading -> load >> H.liftEffect revealFragment
           loaded -> do
@@ -1631,6 +1635,16 @@ clockTick = 60
 -- date ('Wiki.Core.Markdown.Day.dayOfTitle').
 dayShown :: State -> Maybe Day
 dayShown st = pageOf st.loaded >>= \page -> dayOfTitle page.title
+
+-- | Whether a later time can change what the page shown marks: it is a
+-- day's page, and its date is today or later by the time last read (or
+-- no time was read yet). The ticker reads the clock only then: on a page
+-- of a past date every task not done is missed already.
+canChange :: State -> Bool
+canChange st = case (dayShown st, st.present) of
+  (Just day, Just now) -> day >= localDay now
+  (Just _, Nothing) -> True
+  (Nothing, _) -> False
 
 -- | What the page's day's lists mark missed tasks against
 -- ('Md.missedAt'): the date of the day's page shown and the present time,

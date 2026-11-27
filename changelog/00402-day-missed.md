@@ -23,5 +23,5 @@ title: Missed tasks on a day's page
   the parcel" is still to come, and "Buy milk", a task for the whole day,
   is missed only once the day is over. On the page of a day before, every
   task not ticked is red. Ticking a task takes the red off at once,
-  before you save. A page left open turns a task red within a minute of
-  its hour passing. The time is your browser's.
+  before you save. A page left open turns a task red when its hour
+  comes. The time is your browser's.

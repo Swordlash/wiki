@@ -60,7 +60,9 @@ module Wiki.Core.Markdown.Day
   , dayOfTitle
 
     -- * Missed tasks
+  , deadline
   , missed
+  , nextChange
 
     -- * A page's day lists
   , dayClass
@@ -77,7 +79,7 @@ module Wiki.Core.Markdown.Day
 where
 
 import Data.Text qualified as T
-import Data.Time (Day, LocalTime (..), TimeOfDay (..), makeTimeOfDayValid)
+import Data.Time (Day, LocalTime (..), TimeOfDay (..), addDays, makeTimeOfDayValid, midnight)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Protolude
 import Wiki.Core.Markdown.Ast (Attributes, Block (..), Footnote (..), Inline (..), ListItem (..), ListKind (..), classes, plainText)
@@ -233,27 +235,41 @@ dayOfTitle title = do
       | i == 4 || i == 7 = c == '-'
       | otherwise = isDigit c
 
+-- | The moment a task of a day's page is missed from: its deadline. The
+-- arguments are the page's date (the date in its title, 'dayOfTitle') and
+-- the entry. A span's deadline is its end, a start's its start, both on
+-- the page's date; a task for the whole day has the end of its day, the
+-- midnight that starts the next one. A done task and an entry without a
+-- box have none: they are never missed.
+deadline :: Day -> DayEntry -> Maybe LocalTime
+deadline day entry = case entry.task of
+  Just False -> Just $ case entry.time of
+    At start -> LocalTime day start
+    Span _ end -> LocalTime day end
+    AllDay -> LocalTime (addDays 1 day) midnight
+  _ -> Nothing
+
 -- | Whether an entry of a day's page is a missed task: a task that is not
--- done, whose time has passed. The arguments are the page's date (the
--- date in its title, 'dayOfTitle'), the present time where the reader is,
--- and the entry.
+-- done, whose 'deadline' has come by the present time where the reader
+-- is. The arguments are the page's date, the present time and the entry.
 --
 -- Every task of a day before today is missed. A task of today is missed
--- once the present time is later than its time: a span's end, a start's
--- start. A task at 14:00 is not missed at 14:00 exactly, and is missed
--- from the moment after. A task for the whole day is missed only once its
--- day is over, so never on its own day. A task of a later day is never
--- missed, and neither is a done task or an entry without a box.
+-- from its time on: a task at 14:00 is missed at 14:00 exactly. A task for
+-- the whole day is missed only once its day is over, so never on its own
+-- day. A task of a later day is never missed, and neither is a done task
+-- or an entry without a box.
 missed :: Day -> LocalTime -> DayEntry -> Bool
-missed day now entry = case entry.task of
-  Just False -> case compare day now.localDay of
-    LT -> True
-    GT -> False
-    EQ -> case entry.time of
-      AllDay -> False
-      At start -> now.localTimeOfDay > start
-      Span _ end -> now.localTimeOfDay > end
-  _ -> False
+missed day now entry = maybe False (<= now) (deadline day entry)
+
+-- | The next moment at which a day's page marks a task missed that it does
+-- not mark now: the earliest 'deadline' of its entries after the present
+-- time. Until then 'missed' gives the same for every entry, and at that
+-- moment it gives true for one more. 'Nothing' when no deadline is still
+-- to come (a page of a past date, a page with no task to do, a page whose
+-- tasks are all missed already): then no later time changes a mark. The
+-- page view sets one timer to this moment.
+nextChange :: Day -> LocalTime -> [DayEntry] -> Maybe LocalTime
+nextChange day now entries = minimumMay [d | Just d <- map (deadline day) entries, d > now]
 
 -- | The class that makes a list a day's list: @{.day}@ on the line before
 -- the list, or @[[!div]]{.day}@ around it.

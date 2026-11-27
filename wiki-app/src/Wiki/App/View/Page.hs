@@ -132,11 +132,15 @@
 -- are read from the text shown, with the ticks not saved in it, so a box
 -- ticked takes the mark off at once. The present time is the reader's,
 -- read from the input's clock (the browser's, 'Wiki.App.Browser.readerClock')
--- while a day's page is shown: in the view's 'Initialize', when a page is
--- fetched, and once a minute after while the page's date is today or
--- later, since a later time can change a mark only then. A page of a past
--- date has every task not done missed already, and reads the clock once.
--- An ordinary page reads no clock and renders no more often for it. The initial state has no time, so
+-- while a day's page is shown ('watchMarks'): in the view's 'Initialize',
+-- when a page is fetched, and when the text shown changes (a tick, an
+-- untick, a discard). Each read sets one timer to the next moment a mark
+-- can change ("Wiki.Core.Markdown.Day"'s 'nextChange'), which reads the
+-- clock again; there is no timer when no later time changes a mark (a
+-- page of a past date, every deadline come). Each read starts a new
+-- generation of timer, and a timer of an older one does nothing when it
+-- wakes. An ordinary page reads no clock and renders no more often for
+-- it. The initial state has no time, so
 -- the first render marks nothing, as the server's prerender, which has no
 -- clock, does not: the program adopts that page unchanged, and the marks
 -- come with the render after.
@@ -153,7 +157,7 @@ import Control.Monad.UUID (MonadUUID)
 import Data.Map.Strict qualified as Map
 import Data.Row (type (.+), type (.==))
 import Data.Text qualified as T
-import Data.Time (Day, LocalTime (..), NominalDiffTime, UTCTime)
+import Data.Time (Day, LocalTime, NominalDiffTime, UTCTime, diffLocalTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Halogen qualified as H
 import Halogen.HTML qualified as HH
@@ -206,7 +210,7 @@ import Wiki.Core.Id
   , UserId
   )
 import Wiki.Core.Markdown qualified as Md
-import Wiki.Core.Markdown.Day (dayOfTitle)
+import Wiki.Core.Markdown.Day (DayEntry, dayOfTitle, nextChange, pageDayEntries)
 import Wiki.Core.Notification (WatchTarget (..))
 import Wiki.Core.Offered qualified as Offered
 import Wiki.Core.Page (Page (attachments, body, createdAt, createdBy, id, kind, parent, slug, space, template, title, updatedAt, updatedBy), PageSummary (id, parent, title), retitled)
@@ -325,9 +329,13 @@ data State = State
   , owners :: Body.Owners
   -- ^ Who holds the addresses of the page's attachments: the fetch shown,
   -- and those not answered yet ("Wiki.App.View.Body"'s 'Body.Owners').
+  , markTimer :: Int
+  -- ^ The generation of the timer to the next change of a mark
+  -- ('watchMarks'): one more at each read of the clock. A timer that wakes
+  -- under an older generation does nothing.
   , present :: Maybe LocalTime
   -- ^ The present time in the reader's time zone, as the view last read
-  -- it from the input's clock ('readClock'), on a day's page. 'Nothing' in
+  -- it from the input's clock ('watchMarks'), on a day's page. 'Nothing' in
   -- the initial state, so that the first render marks no task missed, and
   -- always where the input has no clock.
   }
@@ -430,6 +438,7 @@ component =
               , chainProblem = Nothing
               , owners = Body.ownersOf noUrlOwner
               , present = Nothing
+              , markTimer = 0
               }
       , render
       , eval =
@@ -838,15 +847,10 @@ component =
       -- received, and the comments are loaded if they were not with it.
       Initialize -> do
         subscribeFeed
-        -- The reader's clock, after the first render: then once a minute,
-        -- so that a day's page left open marks a task once its hour has
-        -- passed. Nothing waits for the ticker. No clock, no ticker: the
-        -- server's prerender has none.
-        readClock
-        clocked <- gets (\st -> isJust st.input.clock)
-        when clocked . void . H.fork . forever $ do
-          H.delay clockTick
-          whenM (gets canChange) readClock
+        -- The reader's clock, after the first render, and a timer to the
+        -- next change of a mark. No clock, no timer: the server's prerender
+        -- has none.
+        watchMarks
         gets (\st -> st.loaded) >>= \case
           Loading -> load >> H.liftEffect revealFragment
           loaded -> do
@@ -1291,7 +1295,7 @@ component =
           -- The addresses shown are this fetch's from now on.
           Body.settleOwned ownersOf' setOwners owner True
           adopt loaded
-          readClock
+          watchMarks
           checkChain
           resolveAvatars
           gets (\st -> pageOf st.loaded) >>= traverse_ (H.raise . Showing)
@@ -1327,22 +1331,38 @@ component =
     stage :: Ticking.Event -> H.HalogenM State Action Slots ViewOutput m ()
     stage event = do
       before <- gets unsaved
+      shownBefore <- gets (\st -> st.staging.shown)
       modify (\st -> st {staging = Ticking.step event st.staging})
       after <- gets unsaved
       when (before /= after) $ H.liftEffect (guardUnload after)
+      -- Another text shown has other tasks to do, and other deadlines.
+      whenM (gets (\st -> st.staging.shown /= shownBefore)) watchMarks
 
-    -- The present time, read from the input's clock, if it has one, while
-    -- a day's page is shown. On any other page nothing is read or written,
-    -- so the view renders no more often than without a clock. A read of
-    -- the browser's clock does not wait.
-    readClock :: H.HalogenM State Action Slots ViewOutput m ()
-    readClock =
-      gets (\st -> guard (isJust (dayShown st)) *> st.input.clock)
-        >>= traverse_
-          ( \clock -> do
-              now <- H.sync (liftIO clock)
-              modify (\st -> st {present = Just now})
-          )
+    -- On a day's page, with a clock: read the present time, keep it, and
+    -- set one timer to the next moment a mark can change ('nextChange'
+    -- over the entries of the text shown), which does the same when it
+    -- wakes. The read starts a new generation ('markTimer'), so a timer set
+    -- before it does nothing when it wakes. No timer when no later time
+    -- changes a mark. On any other page nothing is read or written, so the
+    -- view renders no more often than without a clock. A read of the
+    -- browser's clock does not wait.
+    --
+    -- The timer is 'H.delay': nothing in the program waits for a mark, and
+    -- a counted pause of hours would hold up every wait for the page to be
+    -- quiet (a smoke test's, a native test's 'settle'). The test's clock
+    -- moves it all the same. A timer that wakes late (a laptop that slept)
+    -- reads the real clock, so the marks are right from then on.
+    watchMarks :: H.HalogenM State Action Slots ViewOutput m ()
+    watchMarks = do
+      st <- get
+      for_ ((,) <$> dayShown st <*> st.input.clock) $ \(day, clock) -> do
+        now <- H.sync (liftIO clock)
+        let next = nextChange day now (entriesShown st)
+            generation = st.markTimer + 1
+        modify (\s -> s {present = Just now, markTimer = generation})
+        for_ next $ \at -> void . H.fork $ do
+          H.delay (diffLocalTime at now)
+          whenM (gets (\s -> s.markTimer == generation)) watchMarks
 
     -- Give the box set last the focus, scrolled into view by the least
     -- amount, once the render that follows a change is done (a change of
@@ -1626,25 +1646,16 @@ permanentAddress st page = Router.href st.input.context.router (PermanentLink pa
 copiedTime :: NominalDiffTime
 copiedTime = 2
 
--- | How often the view reads the reader's clock again while a day's page
--- is shown: a minute, the resolution of an entry's time.
-clockTick :: NominalDiffTime
-clockTick = 60
-
 -- | The date of the page shown, when it is a day's page: its title is a
 -- date ('Wiki.Core.Markdown.Day.dayOfTitle').
 dayShown :: State -> Maybe Day
 dayShown st = pageOf st.loaded >>= \page -> dayOfTitle page.title
 
--- | Whether a later time can change what the page shown marks: it is a
--- day's page, and its date is today or later by the time last read (or
--- no time was read yet). The ticker reads the clock only then: on a page
--- of a past date every task not done is missed already.
-canChange :: State -> Bool
-canChange st = case (dayShown st, st.present) of
-  (Just day, Just now) -> day >= localDay now
-  (Just _, Nothing) -> True
-  (Nothing, _) -> False
+-- | The entries of the day's lists of the text shown, with the ticks not
+-- saved in it: what the marks are of. A text that does not parse has
+-- none.
+entriesShown :: State -> [DayEntry]
+entriesShown st = either (const []) pageDayEntries (Md.parseMarkdown st.staging.shown)
 
 -- | What the page's day's lists mark missed tasks against
 -- ('Md.missedAt'): the date of the day's page shown and the present time,

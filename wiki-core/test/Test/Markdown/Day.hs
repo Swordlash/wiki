@@ -289,15 +289,15 @@ spec = describe "Wiki.Core.Markdown.Day" $ do
       missed (addDays (-1) today) (moment today 0 0) (todo (At (at 23 0))) `shouldBe` True
       missed (addDays (-1) today) (moment today 0 0) (todo AllDay) `shouldBe` True
       missed (addDays (-5) today) (moment today 12 0) (todo (Span (at 9 0) (at 10 0))) `shouldBe` True
-    it "misses today's task once its hour has passed, not at its hour or before" $ do
+    it "misses today's task from its hour on, not before" $ do
       missed today (moment today 15 0) (todo (At (at 14 0))) `shouldBe` True
       missed today (moment today 13 0) (todo (At (at 14 0))) `shouldBe` False
-      missed today (moment today 14 0) (todo (At (at 14 0))) `shouldBe` False
-      missed today (addLocalTime 1 (moment today 14 0)) (todo (At (at 14 0))) `shouldBe` True
-    it "misses a span once its end has passed, not while it lasts" $ do
-      missed today (moment today 10 30) (todo (Span (at 9 30) (at 10 30))) `shouldBe` False
+      missed today (moment today 14 0) (todo (At (at 14 0))) `shouldBe` True
+      missed today (addLocalTime (-0.001) (moment today 14 0)) (todo (At (at 14 0))) `shouldBe` False
+    it "misses a span from its end on, not while it lasts" $ do
+      missed today (moment today 10 30) (todo (Span (at 9 30) (at 10 30))) `shouldBe` True
       missed today (moment today 10 0) (todo (Span (at 9 30) (at 10 30))) `shouldBe` False
-      missed today (moment today 10 31) (todo (Span (at 9 30) (at 10 30))) `shouldBe` True
+      missed today (moment today 10 29) (todo (Span (at 9 30) (at 10 30))) `shouldBe` False
     it "misses a task for the whole day only once the day is over" $ do
       missed today (moment today 23 59) (todo AllDay) `shouldBe` False
       missed today (moment (addDays 1 today) 0 0) (todo AllDay) `shouldBe` True
@@ -316,6 +316,31 @@ spec = describe "Wiki.Core.Markdown.Day" $ do
               , counterexample "a task of a later day, missed" (day <= later.localDay || not (missed day later e))
               , counterexample "missed at the earlier moment, not at the later one" (not (missed day earlier e) || missed day later e)
               ]
+
+  describe "nextChange" $ do
+    let entries = [todo (At (at 14 0)), (todo (Span (at 9 0) (at 16 30))) {place = 1}, (todo AllDay) {place = 2}, (todo (At (at 11 0))) {task = Just True, place = 3}]
+    it "is the next deadline of a task to do, its hour, a span's end, or the end of a whole-day task's day" $ do
+      nextChange today (moment today 13 30) entries `shouldBe` Just (moment today 14 0)
+      nextChange today (moment today 14 0) entries `shouldBe` Just (moment today 16 30)
+      nextChange today (moment today 17 0) entries `shouldBe` Just (moment (addDays 1 today) 0 0)
+      nextChange (addDays 1 today) (moment today 17 0) entries `shouldBe` Just (moment (addDays 1 today) 14 0)
+    it "is none on a past day, without a task to do, or once every deadline has come" $ do
+      nextChange (addDays (-1) today) (moment today 0 0) entries `shouldBe` Nothing
+      nextChange today (moment today 9 0) [(todo (At (at 14 0))) {task = Just True}, (todo AllDay) {task = Nothing}] `shouldBe` Nothing
+      nextChange today (moment (addDays 1 today) 0 0) entries `shouldBe` Nothing
+    prop "leaves every mark as it is until the next change, and changes one at it; with none, no mark ever changes" $
+      forAll ((,,,) <$> genDay <*> genMoment <*> resize 6 (listOf genEntry) <*> choose (0, 3 * 86400 :: Int)) $ \(day, now, es, seconds) ->
+        let marks t = map (missed day t) es
+            later = addLocalTime (fromIntegral seconds) now
+         in case nextChange day now es of
+              Nothing -> counterexample "a mark changed after the last change" (marks later === marks now)
+              Just next ->
+                conjoin
+                  [ counterexample "not after now" (property (next > now))
+                  , counterexample "a mark changed before the next change" (later >= next || marks later == marks now)
+                  , counterexample "a mark changed just before the next change" (marks (max now (addLocalTime (-0.001) next)) === marks now)
+                  , counterexample "no mark changed at the next change" (marks next =/= marks now)
+                  ]
 
 -- | The day of the examples of 'missed', and a moment of it.
 today :: Day

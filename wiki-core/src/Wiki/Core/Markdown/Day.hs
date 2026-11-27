@@ -13,6 +13,9 @@
 -- > - [x] ! Pay the invoice
 -- > - Buy milk
 --
+-- The parser makes three lists of this one, cut where the items with a
+-- task box start and end; 'dayEntries' says how to read them as one.
+--
 -- Each item is one entry ('dayEntries'). An item is read from its start,
 -- in this order: the task box, which the parser has already taken off
 -- (@[ ]@ or @[x]@, as in "Wiki.Core.Markdown.Tasks"); then @!@ and a

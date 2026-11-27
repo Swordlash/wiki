@@ -4,7 +4,6 @@
 -- real parser. These run on both backends.
 module Test.Markdown.DayList (spec) where
 
-import Data.List (nub)
 import Data.Time (TimeOfDay (..))
 import Protolude
 import Test.Hspec
@@ -132,6 +131,11 @@ spec = describe "Wiki.Core.Markdown.Day's lists" $ do
                    , ("Night", [2])
                    ]
 
+    it "keeps the night before the day and the night after it apart, with nothing between them" $ do
+      let entries = [entryAt 0 (At (at 22 0)), entryAt 1 (At (at 2 0))]
+      shown entries `shouldBe` [("Night", [1]), ("Night", [0])]
+      map fst (dayGroups entries) `shouldBe` [During Night, LateNight]
+
     it "orders a part by start, equal starts in the order of the source" $
       shown [entryAt 0 (At (at 10 30)), entryAt 1 (Span (at 9 0) (at 11 0)), entryAt 2 (At (at 9 0)), entryAt 3 (At (at 9 15))]
         `shouldBe` [("Morning", [1, 2, 3, 0])]
@@ -149,8 +153,8 @@ spec = describe "Wiki.Core.Markdown.Day's lists" $ do
       forAll genEntries $ \entries ->
         let groups = dayGroups entries
             flat = concatMap snd groups
-            timed = [(s, e.place) | (During _, es) <- groups, e <- es, Just s <- [startOf e]]
-            parts = [p | (During p, _) <- groups]
+            keys = map fst groups
+            timed = [(s, e.place) | (g, es) <- groups, g /= WholeDay, e <- es, Just s <- [startOf e]]
          in conjoin
               [ counterexample "each entry once" (sort (map (\e -> e.place) flat) === map (\e -> e.place) entries)
               , counterexample "no empty group" (all (not . null . snd) groups)
@@ -158,29 +162,39 @@ spec = describe "Wiki.Core.Markdown.Day's lists" $ do
                   takeWhile ((== WholeDay) . fst) groups == take 1 [g | g@(WholeDay, _) <- groups]
                     && [e.place | (WholeDay, es) <- groups, e <- es] == [e.place | e <- entries, e.time == AllDay]
               , counterexample "timed entries by start, then source" (timed === sort timed)
-              , counterexample "each entry in its start's part" (and [Just (dayPart s) == partOf g | (g, es) <- groups, e <- es, Just s <- [startOf e]])
-              , counterexample "no part twice in a row, Night at most at both ends" $
-                  and (zipWith (/=) parts (drop 1 parts)) && length (nub parts) >= length parts - 1
+              , counterexample "each entry in its start's group" (and [groupFor s == g | (g, es) <- groups, e <- es, Just s <- [startOf e]])
+              , counterexample "the groups in one order, each once, whatever else the day holds" (keys === filter (`elem` keys) clockOrder)
               ]
   where
     startOf e = case e.time of
       AllDay -> Nothing
       At s -> Just s
       Span s _ -> Just s
-    partOf = \case
-      WholeDay -> Nothing
-      During p -> Just p
+    -- The groups in the order they are shown, and the group of a start,
+    -- from the hours the owner gave.
+    clockOrder = [WholeDay, During Night, During Dawn, During Morning, During Noon, During Afternoon, During Evening, LateNight]
+    groupFor s
+      | s.todHour < 6 = During Night
+      | s.todHour < 9 = During Dawn
+      | s.todHour < 12 = During Morning
+      | s.todHour < 15 = During Noon
+      | s.todHour < 18 = During Afternoon
+      | s.todHour < 21 = During Evening
+      | otherwise = LateNight
 
 -- | Entries at their places, each for the whole day, at a time or over a
 -- span. The times are on the quarter hour, so that equal starts are
 -- common.
 genEntries :: Gen [DayEntry]
 genEntries = do
-  times <- listOf genTime
+  -- Some days hold night hours only: their night before and night after
+  -- are then next to each other.
+  hours <- elements [[0 .. 23], [0 .. 5] <> [21 .. 23]]
+  times <- listOf (genTime hours)
   pure (zipWith entryAt [0 ..] times)
   where
-    genTime = do
-      start <- (\h q -> at h (q * 15)) <$> choose (0, 23) <*> choose (0, 3)
+    genTime hours = do
+      start <- (\h q -> at h (q * 15)) <$> elements hours <*> choose (0, 3)
       elements [AllDay, At start, Span start (at 23 59)] `suchThat` valid
     valid = \case
       Span s e -> e > s

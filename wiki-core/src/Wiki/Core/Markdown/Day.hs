@@ -334,7 +334,11 @@ unmarked (ListItem box bs) = ListItem box $ case bs of
 
 -- | 'DayGroup' is one group the page view shows a day's entries in: the
 -- entries for the whole day, or the timed entries of one part of the day.
-data DayGroup = WholeDay | During DayPart
+--
+-- Night is two groups: the hours before six ('During' 'Night') and the
+-- hours from nine in the evening ('LateNight'), so that the night before
+-- the day and the night after it stay apart, whatever else the day holds.
+data DayGroup = WholeDay | During DayPart | LateNight
   deriving stock (Eq, Show)
 
 -- | A day's entries in groups, each entry in one group, and no group
@@ -346,11 +350,14 @@ data DayGroup = WholeDay | During DayPart
 dayGroups :: [DayEntry] -> [(DayGroup, [DayEntry])]
 dayGroups entries =
   [(WholeDay, whole) | not (null whole)]
-    <> [(During (dayPart start), map snd run) | run@((start, _) : _) <- runs]
+    <> [(groupOf start, map snd run) | run@((start, _) : _) <- runs]
   where
     whole = [e | e <- entries, e.time == AllDay]
     timed = [(start, e) | e <- entries, Just start <- [startOf e.time]]
-    runs = groupBy ((==) `on` (dayPart . fst)) (sortOn fst timed)
+    runs = groupBy ((==) `on` (groupOf . fst)) (sortOn fst timed)
+    groupOf start
+      | dayPart start == Night && start.todHour >= 12 = LateNight
+      | otherwise = During (dayPart start)
     startOf = \case
       AllDay -> Nothing
       At start -> Just start
@@ -360,6 +367,7 @@ dayGroups entries =
 dayGroupLabel :: DayGroup -> Text
 dayGroupLabel = \case
   WholeDay -> "All day"
+  LateNight -> "Night"
   During Dawn -> "Dawn"
   During Morning -> "Morning"
   During Noon -> "Noon"

@@ -428,77 +428,49 @@ wiki_request() {
     fi
     return 0
   fi
-  # curl's own diagnostic: its first line that begins "curl: ", since under
-  # sh -x the shell's trace lines come before it; the first line when
-  # there is none (the shell's "curl: not found" has no such start). curl
-  # may repeat a value of its config in it (a proxy it refuses, written
-  # out whole, with its user and password), so it is taken with tracing
-  # off, and each secret in it is replaced by [hidden] before any failure
-  # quotes it.
+  # The failures say the script's own words and curl's status, and quote
+  # nothing of what curl wrote: curl may repeat a proxy it refuses, written
+  # out whole with its user and password (from WIKI_PROXY or from the
+  # environment, with a scheme or without, cut off when long), so no part
+  # of its text is shown. Where the status alone cannot tell the cause, the
+  # start of curl's own line (the first that begins "curl: ", as under
+  # sh -x the shell's trace comes first) is read into a class word, with
+  # tracing off, by a fixed sed program; curl's text is never put in a
+  # variable, and its file is removed. 26 is a config curl could not read
+  # ("cannot read config from '-'"), or the file of a body a put sends
+  # (--data-binary @FILE) or an attach (--upload-file), whose path may hold
+  # any words, so the match is on how the line begins. 2 with "no URL
+  # specified" is a config curl did not read: the URL is its last line.
   quiet_begin
-  curl_said=$(sed -n '/^curl: /{p;q;}' "$work/curl-error" 2>/dev/null)
-  [ -n "$curl_said" ] || curl_said=$(head -n 1 "$work/curl-error" 2>/dev/null)
-  curl_said=${curl_said#curl: }
-  curl_said=${curl_said#\(*\) }
-  hide_secrets
+  curl_class=$(sed -n '/^curl: /{
+    s/^curl: \(([0-9]*) \)\{0,1\}//
+    /^cannot read config from /{s/.*/config-unreadable/;p;q;}
+    /^no URL specified/{s/.*/no-url/;p;q;}
+    s/.*/other/;p;q;
+  }' "$work/curl-error" 2>/dev/null)
+  rm -f "$work/curl-error"
   quiet_end
+  # How to see curl's own words, for the failures where they say most: the
+  # same address asked by hand, which repeats no secret of the client's.
+  curl_by_hand="to see curl's own words, run: curl -sS -o /dev/null $wiki_base/"
   case $curl_status in
-    6) fail "$EX_CONNECTION" "cannot find the host of $wiki_base: check WIKI_URL and the network ($curl_said)" ;;
-    7) fail "$EX_CONNECTION" "cannot connect to $wiki_base: is the wiki running there, and is WIKI_URL right? ($curl_said)" ;;
-    28) fail "$EX_CONNECTION" "$wiki_base did not answer in time: check the network ($curl_said)" ;;
-    35 | 51 | 53 | 54 | 58 | 59 | 60 | 64 | 66 | 77 | 80 | 82 | 83 | 90 | 91) fail "$EX_CONNECTION" "the secure connection to $wiki_base failed: check its certificate, or WIKI_URL's scheme ($curl_said)" ;;
-    52 | 55 | 56) fail "$EX_CONNECTION" "the connection to $wiki_base broke: try again ($curl_said)" ;;
-    1 | 3) fail "$EX_USAGE" "WIKI_URL is not an address curl can use: $wiki_base ($curl_said)" ;;
-    # curl did not read its config: 26 when it could not ("cannot read
-    # config from '-'"), 2 when it read nothing ("no URL specified", the URL
-    # being the config's last line). Another 26 is the file of a body a put
-    # sends (--data-binary @FILE) or an attach (--upload-file): "Failed to
-    # open FILE" or "cannot open 'FILE'", whose path may hold any words, so
-    # the match is on how curl's first line begins.
+    6) fail "$EX_CONNECTION" "cannot find the host of $wiki_base: check WIKI_URL and the network (curl status 6)" ;;
+    7) fail "$EX_CONNECTION" "cannot connect to $wiki_base: is the wiki running there, and is WIKI_URL right? (curl status 7)" ;;
+    28) fail "$EX_CONNECTION" "$wiki_base did not answer in time: check the network (curl status 28)" ;;
+    35 | 51 | 53 | 54 | 58 | 59 | 60 | 64 | 66 | 77 | 80 | 82 | 83 | 90 | 91) fail "$EX_CONNECTION" "the secure connection to $wiki_base failed: check its certificate, or WIKI_URL's scheme (curl status $curl_status); $curl_by_hand" ;;
+    52 | 55 | 56) fail "$EX_CONNECTION" "the connection to $wiki_base broke: try again (curl status $curl_status)" ;;
+    1 | 3) fail "$EX_USAGE" "WIKI_URL is not an address curl can use: $wiki_base (curl status $curl_status)" ;;
     2 | 26)
-      case $curl_status:$curl_said in
-        "26:cannot read config from "* | "2:no URL specified"*) fail "$EX_ERROR" "curl did not read its settings, the sign-in and the address among them, from its standard input ($curl_said): check that the curl first on the PATH (command -v curl) is curl itself, not a wrapper that takes or closes its standard input" ;;
-        26:*) fail "$EX_ERROR" "cannot read the text to send ($curl_said)" ;;
-        *) fail "$EX_ERROR" "curl failed with status $curl_status: $curl_said" ;;
+      case $curl_status:$curl_class in
+        26:config-unreadable | 2:no-url) fail "$EX_ERROR" "curl did not read its settings, the sign-in and the address among them, from its standard input (curl status $curl_status): check that the curl first on the PATH (command -v curl) is curl itself, not a wrapper that takes or closes its standard input" ;;
+        26:*) fail "$EX_ERROR" "cannot read the text to send (curl status 26)" ;;
+        *) fail "$EX_ERROR" "curl failed (curl status $curl_status); $curl_by_hand" ;;
       esac
       ;;
-    23) fail "$EX_ERROR" "the answer could not be kept: is the disk full, or a file size limit (ulimit -f) reached? ($curl_said)" ;;
+    23) fail "$EX_ERROR" "the answer could not be kept: is the disk full, or a file size limit (ulimit -f) reached? (curl status 23)" ;;
     127) fail "$EX_ERROR" "curl is not installed: install it (apt install curl, brew install curl)" ;;
-    *) fail "$EX_ERROR" "curl failed with status $curl_status: $curl_said" ;;
+    *) fail "$EX_ERROR" "curl failed (curl status $curl_status); $curl_by_hand" ;;
   esac
-}
-
-# curl_said with every secret of the config replaced by [hidden]: the
-# proxy's address, its user and password (the part before its last @, as
-# curl may print the address in another form), the proxy's password alone,
-# the password and the token. Each is matched as literal text, by the
-# shell's own patterns with the value quoted, so no character of a secret
-# has a meaning of its own. Called with tracing off (quiet_begin).
-hide_secrets() {
-  proxy_rest=${wiki_proxy#*://}
-  proxy_userinfo=''
-  case $proxy_rest in
-    *@*) proxy_userinfo=${proxy_rest%@*} ;;
-  esac
-  proxy_secret=''
-  case $proxy_userinfo in
-    *:*) proxy_secret=${proxy_userinfo#*:} ;;
-  esac
-  for secret in "$wiki_proxy" "$proxy_userinfo" "$proxy_secret" "$wiki_password" "$wiki_token"; do
-    [ -n "$secret" ] || continue
-    rest=$curl_said hidden=''
-    while :; do
-      case $rest in
-        *"$secret"*)
-          hidden="$hidden${rest%%"$secret"*}[hidden]"
-          rest=${rest#*"$secret"}
-          ;;
-        *) break ;;
-      esac
-    done
-    curl_said=$hidden$rest
-  done
-  proxy_rest='' proxy_userinfo='' proxy_secret='' secret='' rest='' hidden=''
 }
 
 # A header of the last answer, by name in lower case: the last block's (an
@@ -3185,7 +3157,10 @@ page was saved since your version (for a create, a page is there already);
 6 refused (not allowed, an encrypted space, a bad request, a space there
 already, a part's text that would change the page outside it); 7 too many
 failed sign-ins, try again later; 8 no connection. For attach, 5 is a file
-of the name on the page already, and 6 a file over the wiki's limit.
+of the name on the page already, and 6 a file over the wiki's limit. When
+curl fails, the message gives curl's status number and none of curl's own
+words, which can repeat a proxy's password; curl -sS -o /dev/null with the
+wiki's address shows them.
 EOF
 }
 

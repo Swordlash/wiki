@@ -354,18 +354,7 @@ cat >"$work/fakes/nostdin/curl" <<EOF
 printf '%s\n' "\$*" >>"$work/curl.args-all"
 exec "$real_curl" "\$@" --trace-ascii "$work/nostdin.trace" </dev/null
 EOF
-# And a curl that repeats its sign-in in its diagnostic, as no real curl
-# was seen to (a real one repeats a proxy it refuses): it reads the "user"
-# or "header" of its config, undoes the config's quoting, writes the value
-# in a "curl: (7)" line, and ends with status 7.
-mkdir -p "$work/fakes/echo"
-cat >"$work/fakes/echo/curl" <<'EOF'
-#!/bin/sh
-said=$(sed -n -e 's/^user = "\(.*\)"$/\1/p' -e 's/^header = "\(.*\)"$/\1/p' | sed 's/\\\(.\)/\1/g')
-printf 'curl: (7) could not use %s\n' "$said" >&2
-exit 7
-EOF
-chmod +x "$work/fakes/config/curl" "$work/fakes/refuse/curl" "$work/fakes/nostdin/curl" "$work/fakes/echo/curl"
+chmod +x "$work/fakes/config/curl" "$work/fakes/refuse/curl" "$work/fakes/nostdin/curl"
 chmod +x "$work/fakes/curl/curl" "$work/fakes/nojq/jq" "$work/fakes/answer/curl" "$work/fakes/pausemv/mv" "$work/fakes/pausecp/cp" "$work/fakes/failmv/mv"
 # The PATH the client runs with: the recording curl, and the failing jq
 # unless the MCP server is under test.
@@ -2511,14 +2500,16 @@ stdin_setting() {
   fake=refuse input=/dev/null
   stdin_run REFUSE=config "$shell" "$client" list
   expect 1 "a curl that cannot read its config is exit 1"
-  has err "curl did not read its settings, the sign-in and the address among them, from its standard input (cannot read config from '-')" "the failure says curl did not read its settings, in curl's words"
+  has err "curl did not read its settings, the sign-in and the address among them, from its standard input (curl status 26)" "the failure says curl did not read its settings, with curl's status"
+  lacks err "cannot read config from" "the failure quotes nothing of curl's words"
   has err "check that the curl first on the PATH (command -v curl) is curl itself" "the failure says which curl to check"
   lacks err "the text to send" "a config curl cannot read is not the text to send"
   input=$work/restore
   stdin_run REFUSE=body "$shell" "$client" put "$page" --force
   input=/dev/null
   expect 1 "a put whose body curl cannot read is exit 1"
-  has err "cannot read the text to send (Failed to open " "a body curl cannot read is the text to send"
+  has err "cannot read the text to send (curl status 26)" "a body curl cannot read is the text to send"
+  lacks err "Failed to open" "the body's failure quotes nothing of curl's words"
   lacks err "settings" "a body curl cannot read is not curl's settings"
   # The same where the body's path holds curl's words for its config: the
   # client's TMPDIR is named so.
@@ -2529,42 +2520,55 @@ stdin_setting() {
   input=/dev/null
   stdin_tmp="$work/stdin tmp"
   expect 1 "a put whose body's path holds \"read config from\" is exit 1"
-  has err "cannot read the text to send (Failed to open $work/read config from here/wiki-sh." "a body whose path holds \"read config from\" is still the text to send"
+  has err "cannot read the text to send (curl status 26)" "a body whose path holds \"read config from\" is still the text to send"
   lacks err "settings" "a body whose path holds \"read config from\" is not curl's settings"
 }
 
-# A secret that curl repeats in its diagnostic is hidden in the failure,
-# and in the trace of sh -x: a proxy curl refuses for its scheme, which
-# curl writes out whole, its password with characters that a pattern or
-# sed would read (& * [ ]; a / there would make curl read the address
-# another way); and a password and a key, with a / too, that the fake
-# curl repeats. "wörd" is in each, and must be in neither err nor the
-# trace.
+# What curl writes is never shown: a proxy curl refuses is written out
+# whole in curl's message (with its user and password, from WIKI_PROXY or
+# from the environment, with a scheme or without, cut off when long), and
+# the failure says the client's own words and curl's status alone. Each
+# proxy below is refused by curl; "pxuser" and "wörd" are in each one's
+# user and password, and neither they nor curl's words are in the failure
+# or in the whole trace of sh -x.
 hidden_setting() {
+  long_password=wörd$(printf '%0296d' 0)
   # The client with the variables of the run first (as env takes them),
   # then the shell, with -x or not, and the command.
   hidden_run() {
-    env -i HOME="$work/home" WIKI_URL="$url" WIKI_STATE_DIR="$work/state-$shell-hidden" "$@" </dev/null >"$work/out" 2>"$work/err"
+    env -i HOME="$work/home" WIKI_STATE_DIR="$work/state-$shell-hidden" "$@" </dev/null >"$work/out" 2>"$work/err"
     status=$?
+  }
+  # Each check of one run: the status, and nothing of the proxy's or of
+  # curl's text.
+  shows_nothing_of_curl() {
+    expect "$1" "$2: exit $1"
+    has err "$3 (curl status $4)" "$2: the failure names the class and curl's status"
+    lacks err "pxuser" "$2: no proxy user in the failure or the trace"
+    lacks err "wörd" "$2: no proxy password in the failure or the trace"
+    lacks err "Unsupported proxy" "$2: none of curl's words in the failure or the trace"
   }
   for option in plain -x; do
     if [ "$option" = plain ]; then run_shell=$shell; else run_shell="$shell -x"; fi
     # The shell and its option are two words on purpose.
     # shellcheck disable=SC2086
-    hidden_run PATH="$nojq_path" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY='foo://pxuser:px&*wörd[1]@127.0.0.1:1' $run_shell "$client" list
-    expect 8 "a proxy curl refuses is exit 8 ($option)"
-    has err "[hidden]" "the failure hides the proxy curl repeats ($option)"
-    lacks err "wörd" "no proxy password in the failure or the trace ($option)"
+    hidden_run PATH="$nojq_path" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY='foo://pxuser:px wörd "q"@127.0.0.1:1' $run_shell "$client" list
+    shows_nothing_of_curl 1 "WIKI_PROXY with a space and a quote in its password, which curl refuses ($option)" "curl failed" 5
     # shellcheck disable=SC2086
-    hidden_run PATH="$work/fakes/echo:$work/fakes/nojq:$PATH" WIKI_USER=editor WIKI_PASSWORD="$editor_password" $run_shell "$client" list
-    expect 8 "a curl that repeats the password is exit 8 ($option)"
-    has err "could not use editor:[hidden]" "the failure hides the password curl repeats ($option)"
-    lacks err "wörd" "no password in the failure or the trace ($option)"
+    hidden_run PATH="$nojq_path" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY='pxuser:pxwörd@127.0.0.1:99999' $run_shell "$client" list
+    shows_nothing_of_curl 1 "WIKI_PROXY without a scheme, its port refused ($option)" "curl failed" 5
     # shellcheck disable=SC2086
-    hidden_run PATH="$work/fakes/echo:$work/fakes/nojq:$PATH" WIKI_TOKEN='key&*/wörd[2]' $run_shell "$client" list
-    expect 8 "a curl that repeats the key is exit 8 ($option)"
-    has err "could not use Authorization: Bearer [hidden]" "the failure hides the key curl repeats ($option)"
-    lacks err "wörd" "no key in the failure or the trace ($option)"
+    hidden_run PATH="$nojq_path" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY="foo://pxuser:$long_password@127.0.0.1:1" $run_shell "$client" list
+    shows_nothing_of_curl 8 "WIKI_PROXY with a password of 300 characters ($option)" "is WIKI_URL right?" 7
+    # HTTPS_PROXY is for an https address; curl refuses the proxy before
+    # it connects, so nothing needs to listen there.
+    # shellcheck disable=SC2086
+    hidden_run PATH="$nojq_path" WIKI_URL=https://127.0.0.1:1 WIKI_USER=editor WIKI_PASSWORD="$editor_password" HTTPS_PROXY='foo://pxuser:pxwörd@127.0.0.1:1' $run_shell "$client" list
+    shows_nothing_of_curl 8 "HTTPS_PROXY of a scheme curl refuses ($option)" "is WIKI_URL right?" 7
+    # shellcheck disable=SC2086
+    hidden_run PATH="$nojq_path" WIKI_URL=https://127.0.0.1:1 WIKI_USER=editor WIKI_PASSWORD="$editor_password" HTTPS_PROXY='pxuser:px"wörd@[bad' $run_shell "$client" list
+    shows_nothing_of_curl 1 "HTTPS_PROXY without a scheme, its address refused ($option)" "curl failed" 5
+    has err "to see curl's own words, run: curl -sS -o /dev/null https://127.0.0.1:1/" "HTTPS_PROXY without a scheme: the failure says how to see curl's words ($option)"
   done
 }
 
@@ -2591,47 +2595,40 @@ query_decode() {
 # that URL, encoded by the client, not on the command line: each awkward
 # text reaches the server as typed.
 config_url_setting() {
-  # The text the client's failure quotes from curl, in the line wiki.sh
-  # wrote: the parentheses after LEAD. Its checks name only the start of
-  # curl's words, which curl's versions keep, and the start that the client
-  # itself matches on.
-  quoted_from_curl() {
-    sed -n "s/^wiki\.sh: .*$1(\([^)]*\)).*/\1/p" "$work/err" | head -n 1
-  }
-  # A check that what was quoted begins with START: curl's own line, not a
-  # line of the shell's trace.
-  quotes_curl() {
-    said=$(quoted_from_curl "$1")
-    case $said in
-      "$2"*) pass "$3" ;;
-      *) fail "$3: the failure quotes \"$said\"" ;;
-    esac
-  }
   rm -f "$work/nostdin.trace"
   env -i PATH="$work/fakes/nostdin:$work/fakes/nojq:$PATH" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_PROXY=http://127.0.0.1:1 WIKI_STATE_DIR="$work/state-$shell-nostdin" \
     "$shell" "$client" list </dev/null >"$work/out" 2>"$work/err"
   status=$?
   expect 1 "a curl whose standard input was taken away is exit 1"
-  has err "curl did not read its settings, the sign-in and the address among them, from its standard input (" "the failure says curl did not read its settings"
-  has err "): check that the curl first on the PATH (command -v curl) is curl itself" "the failure says which curl to check"
-  quotes_curl "from its standard input " "no URL specified" "the failure quotes curl's words"
+  has err "curl did not read its settings, the sign-in and the address among them, from its standard input (curl status 2): check that the curl first on the PATH (command -v curl) is curl itself" "the failure says curl did not read its settings"
+  lacks err "no URL specified" "the failure quotes nothing of curl's words"
   if [ -f "$work/nostdin.trace" ] && grep -q '^=> Send header' "$work/nostdin.trace"; then
     fail "a curl whose standard input was taken away sent a request, around WIKI_PROXY"
   else
     pass "a curl whose standard input was taken away sent nothing"
   fi
-  # Under sh -x, the shell's trace comes before curl's own words in what
-  # curl wrote on standard error: the failures quote curl's.
+  # A password that is a word of curl's message changes nothing: the class
+  # is read from curl's own text.
+  env -i PATH="$work/fakes/nostdin:$work/fakes/nojq:$PATH" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD=URL WIKI_STATE_DIR="$work/state-$shell-nostdin" \
+    "$shell" "$client" list </dev/null >"$work/out" 2>"$work/err"
+  status=$?
+  expect 1 "with the password URL, a curl whose standard input was taken away is exit 1"
+  has err "curl did not read its settings, the sign-in and the address among them, from its standard input (curl status 2)" "with the password URL, the failure says curl did not read its settings"
+  # Under sh -x, the shell's trace comes before curl's own line in what
+  # curl wrote on standard error: the class is read from curl's line, and
+  # nothing of it is in the trace.
   env -i PATH="$work/fakes/nostdin:$work/fakes/nojq:$PATH" HOME="$work/home" WIKI_URL="$url" WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-nostdin" \
     "$shell" -x "$client" list </dev/null >"$work/out" 2>"$work/err"
   status=$?
   expect 1 "under -x, a curl whose standard input was taken away is exit 1"
-  quotes_curl "from its standard input " "no URL specified" "under -x, the failure quotes curl's own words"
+  has err "from its standard input (curl status 2): check" "under -x, the failure is still curl's settings"
+  lacks err "no URL specified" "under -x, nothing of curl's words in the trace"
   env -i PATH="$nojq_path" HOME="$work/home" WIKI_URL=http://127.0.0.1:1 WIKI_USER=editor WIKI_PASSWORD="$editor_password" WIKI_STATE_DIR="$work/state-$shell-nostdin" \
     "$shell" -x "$client" list </dev/null >"$work/out" 2>"$work/err"
   status=$?
   expect 8 "under -x, a wiki where nothing listens is exit 8"
-  quotes_curl "is WIKI_URL right? " "Failed to connect to 127.0.0.1" "under -x, the connection's failure quotes curl's own words"
+  has err "is the wiki running there, and is WIKI_URL right? (curl status 7)" "under -x, the connection's failure gives curl's status"
+  lacks err "Failed to connect" "under -x, nothing of curl's words about the connection"
 
   # A line break in WIKI_URL, or in a page's path, would add lines to
   # curl's config: refused, and nothing sent (the log of every command

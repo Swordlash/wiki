@@ -27,7 +27,7 @@ import Halogen.Router (Router)
 import Halogen.VDom.DOM.Monad.Class (MonadBrowserDOM)
 import Protolude hiding (find, wait)
 import Test.Browser.Mount (slugs, start, startWith, startWritten, testRouter)
-import Test.Browser.Outside (untilAttribute, untilFound)
+import Test.Browser.Outside (untilAttribute, untilFound, watchdogMs)
 import Test.Hspec.Halogen
 import Wiki.App.Assistant (MonadAssistant)
 import Wiki.App.Backend (MonadWiki (..))
@@ -66,11 +66,15 @@ $( browserJS
      , ("js_calendar_fail_first", "wiki_test_calendar_fail_first", Safe, [t|IO ()|])
      , ("js_calendar_unfail", "wiki_test_calendar_unfail", Safe, [t|IO JSText|])
      , ("js_calendar_focused_date", "wiki_test_calendar_focused_date", Safe, [t|IO JSText|])
+     , ("js_calendar_narrowPromise", "wiki_test_calendar_narrow", Safe, [t|JSText -> Int -> Int -> IO (Promise Bool)|])
      ]
  )
 
 js_calendar_release :: IO ()
 js_calendar_release = if inBrowser then wait =<< js_calendar_releasePromise else pure inert
+
+js_calendar_narrow :: JSText -> Int -> Int -> IO Bool
+js_calendar_narrow a1 a2 a3 = if inBrowser then wait =<< js_calendar_narrowPromise a1 a2 a3 else pure inert
 
 js_history_back_heard :: IO ()
 js_history_back_heard = if inBrowser then wait =<< js_history_back_heardPromise else pure inert
@@ -381,7 +385,7 @@ spec m = do
     imported <- fromMaybe [] . decodeStrict . encodeUtf8 . fromJSText <$> unsafeIOToPageM js_calendar_unfail
     imported `shouldBe` ["islands/calendar.js", "islands/calendar.js?attempt=2" :: Text]
 
-  it "keeps the focus on a day's link in the month when the days change" $ runPage $ do
+  it "keeps the focus on a day's link in the month when the days change, and when the month narrows" $ runPage $ do
     let linkOf d = ".calendar-day-link[data-date='" <> iso d <> "']"
         (d12, d20, d27) = (fromGregorian 2026 11 12, fromGregorian 2026 11 20, fromGregorian 2026 11 27)
     unsafeIOToPageM (js_calendar_today (toJSText (iso d27)))
@@ -399,6 +403,11 @@ spec m = do
     after <- unsafeIOToPageM (calendarInput router wiki)
     void (query ui (H.mkTell (SetInput after)))
     untilFound (linkOf d20)
+    (fromJSText <$> unsafeIOToPageM js_calendar_focused_date) `shouldReturn` iso d27
+    -- The month made narrower, as a narrower window makes it: FullCalendar
+    -- draws the cells again, with a new link of the 27th, which keeps the
+    -- focus. The wait is for that new link, or the watchdog.
+    unsafeIOToPageM (js_calendar_narrow (toJSText (linkOf d27)) 360 watchdogMs) `shouldReturn` True
     (fromJSText <$> unsafeIOToPageM js_calendar_focused_date) `shouldReturn` iso d27
     unsafeIOToPageM (js_calendar_today (toJSText ""))
 

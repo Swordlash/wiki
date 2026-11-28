@@ -95,28 +95,26 @@ const oneDateRead = (node, linked) => {
 export const mount = (host, days, now) => {
   const byDay = (list) => new Map(list.map(([day, address, name]) => [day, { address, name }]));
   let pages = byDay(days);
-  // The date of the day's link that had the focus when the days changed:
-  // the cells are drawn again, with new links, and the focus goes to the
-  // new link of that date, if it has one.
-  let refocus = null;
   const place = document.createElement("div");
   place.className = "calendar-month-place";
   host.replaceChildren(place);
-  // The number of each day, a link when the day has a page, made again
-  // each time the days change: a new function is a changed option, and
-  // FullCalendar draws the cells again with it, reading `pages` as it is
-  // then.
+  // The number of each day, a link when the day has a page. FullCalendar
+  // asks for it each time it draws the cell: when the days change (a new
+  // function is a changed option, and the cells are drawn again with it,
+  // reading `pages` as it is then), and when the month's width changes.
+  // The new number takes the place of the old, so a link that held the
+  // focus would lose it: when the focus is on this cell's link as it is
+  // asked for, the new link takes the focus once it is in place.
   const topContent = () => (info) => {
     if (info.inPopover) return true;
     const day = isoDay(info.date);
     const page = pages.get(day);
     const node = page ? dayLink(host, day, page.address, page.name) : dayNumber(day);
+    const focused = document.activeElement;
+    const keepFocus = Boolean(page) && focused instanceof HTMLElement && place.contains(focused) && focused.classList.contains("calendar-day-link") && focused.dataset.date === day;
     queueMicrotask(() => {
       oneDateRead(node, Boolean(page));
-      if (page && refocus === day && node.isConnected) {
-        refocus = null;
-        node.focus({ preventScroll: true });
-      }
+      if (keepFocus && node.isConnected && document.activeElement !== node) node.focus({ preventScroll: true });
     });
     return { domNodes: [node] };
   };
@@ -135,8 +133,6 @@ export const mount = (host, days, now) => {
   calendar.render();
   return {
     days: (list) => {
-      const focused = document.activeElement;
-      refocus = place.contains(focused) && focused.classList.contains("calendar-day-link") ? focused.dataset.date : null;
       pages = byDay(list);
       calendar.setOption("dayCellTopContent", topContent());
     },

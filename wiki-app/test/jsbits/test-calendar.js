@@ -132,3 +132,34 @@ function wiki_test_calendar_unfail() {
 function wiki_test_calendar_focused_date() {
   return document.activeElement?.dataset?.date ?? "";
 }
+
+// Make the month's element this many pixels wide, as a narrower window
+// makes it (the browser test cannot resize its window), and answer, once
+// FullCalendar has drawn the element a selector finds again, whether it
+// did: a promise of true when that element was replaced by a new one,
+// false after `watchdog` milliseconds without.
+function wiki_test_calendar_narrow(selector, width, watchdog) {
+  const before = document.querySelector(selector);
+  const month = document.querySelector(".calendar-month");
+  if (!before || !month) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const replaced = () => {
+      const now = document.querySelector(selector);
+      return now !== null && now !== before;
+    };
+    const observer = new MutationObserver(() => {
+      if (!replaced()) return;
+      observer.disconnect();
+      clearTimeout(timer);
+      // The new link takes the focus in a task's microtasks after it is
+      // put in place, which have run when the next task starts.
+      setTimeout(() => resolve(true));
+    });
+    const timer = setTimeout(() => {
+      observer.disconnect();
+      resolve(false);
+    }, watchdog);
+    observer.observe(month, { childList: true, subtree: true });
+    month.style.width = `${width}px`;
+  });
+}

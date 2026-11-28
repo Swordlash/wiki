@@ -2,12 +2,17 @@
 -- brings, in the real views on the in-memory DOM ("Test.Harness.MemDom"),
 -- over the demo's wiki: "New page" ("Wiki.App.View.NewPage") offers the
 -- kind while the plugin is on and not while it is off, and the page view
--- ("Wiki.App.View.Page") shows a calendar's days after its text while the
--- plugin is on, and the calendar as a document while it is off. Which days
--- are listed, and in which order, is the plugin's pure function's
--- ("Test.Plugins").
+-- ("Wiki.App.View.Page") shows a calendar's month and days after its text
+-- while the plugin is on, and the calendar as a document while it is off.
+-- Which days are listed, and in which order, is the plugin's pure
+-- function's ("Test.Plugins").
+--
+-- The month itself is FullCalendar's, in a browser only
+-- ("Test.Browser.Contents"): natively its element stays empty, and a test
+-- dispatches the events the month's island sends it.
 module Test.CalendarDom (spec) where
 
+import Data.Aeson (object, (.=))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
@@ -16,6 +21,7 @@ import Halogen.Router (Router)
 import Halogen.Router qualified as Router
 import Halogen.Subscription qualified as HS
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
+import Halogen.VDom.DOM.Monad.Native qualified as N
 import Protolude hiding (find)
 import Test.Harness.MemDom
 import Test.Hspec hiding (pending)
@@ -104,6 +110,10 @@ pageInput w who known s ps path =
 -- | The texts of the days the view lists, in order.
 listedDays :: View q i o -> IO [Text]
 listedDays view = findAll view ".calendar-day" >>= traverse (fmap T.strip . textContent)
+
+-- | The element the calendar's month is drawn in.
+month :: View q i o -> IO N.NativeNode
+month view = find view ".calendar-month" >>= maybe (panic "no element for the month") pure
 
 -- | The kinds "New page" offers, by their labels' first word.
 kindsOffered :: View q i o -> IO [Text]
@@ -226,6 +236,47 @@ spec = describe "the calendar, a plugin's kind of page" $ do
         -- A calendar is not made a presentation.
         isJust <$> find view ".page-kind" `shouldReturn` False
         click view ".calendar-day a"
+        settle view
+      readIORef w.went `shouldReturn` [R.Page (slugs ["team"]) (slugs ["days", "2026-11-27"])]
+
+    it "shows the month's element empty, and the days in an open list, as the server renders the page" $ withWiki $ \w -> do
+      ps <- pagesOf w w.team
+      withView (run w.wiki) Page.component (pageInput w w.admin noPlugins w.team ps ["days"]) $ \view -> do
+        settle view
+        -- The month's element is empty, for the island to fill; the list
+        -- is open. The month, once drawn, folds the list in the browser
+        -- ("Test.Browser.Contents"), with a call that does nothing here.
+        textOf view ".calendar-month" `shouldReturn` ""
+        find view ".calendar-all-days" >>= traverse (N.attribute "open") >>= (`shouldBe` Just (Just ""))
+        textOf view ".calendar-all-days summary" `shouldReturn` "All days (2)"
+        listedDays view `shouldReturn` ["Friday, 27 November 2026", "Wednesday, 25 November 2026"]
+
+    it "says the month could not be shown when its library cannot be loaded, until it is drawn after all" $ withWiki $ \w -> do
+      ps <- pagesOf w w.team
+      withView (run w.wiki) Page.component (pageInput w w.admin noPlugins w.team ps ["days"]) $ \view -> do
+        settle view
+        isJust <$> find view ".calendar-month-failed" `shouldReturn` False
+        month view >>= N.dispatch "wiki-island-drawn" (object ["detail" .= ("Failed to fetch dynamically imported module" :: Text)])
+        settle view
+        textOf view ".calendar-month-failed" `shouldReturn` "The month could not be shown."
+        find view ".calendar-all-days" >>= traverse (N.attribute "open") >>= (`shouldBe` Just (Just ""))
+        -- Asked again (the days changed), the library loaded this time.
+        month view >>= N.dispatch "wiki-island-drawn" (object ["detail" .= ("" :: Text)])
+        settle view
+        isJust <$> find view ".calendar-month-failed" `shouldReturn` False
+
+    it "opens the page of a day whose number was clicked in the month, the first of its date, and nothing for a date without one" $ withWiki $ \w -> do
+      -- A second page of the 27th, after the first in the space's order.
+      _ <- runMemDOM . run w.wiki $ orPanic <$> createPage w.team.id (Just w.days.id) "2026-11-27" "Again."
+      ps <- pagesOf w w.team
+      withView (run w.wiki) Page.component (pageInput w w.admin noPlugins w.team ps ["days"]) $ \view -> do
+        settle view
+        -- The 26th has only a template, the 20th nothing.
+        for_ ["2026-11-26", "2026-11-20", "not a date"] $ \d -> do
+          month view >>= N.dispatch "wiki-calendar-day" (object ["detail" .= (d :: Text)])
+          settle view
+        readIORef w.went `shouldReturn` []
+        month view >>= N.dispatch "wiki-calendar-day" (object ["detail" .= ("2026-11-27" :: Text)])
         settle view
       readIORef w.went `shouldReturn` [R.Page (slugs ["team"]) (slugs ["days", "2026-11-27"])]
 

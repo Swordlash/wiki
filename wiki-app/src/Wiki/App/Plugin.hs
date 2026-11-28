@@ -83,7 +83,9 @@ module Wiki.App.Plugin
   , linkTo
   , LinkClick
   , linkProps
+  , linkAddress
   , followLink
+  , openLink
 
     -- * Helpers for surfaces
   , attr
@@ -286,8 +288,11 @@ data Face = Logo Text (Maybe Text) | ChatGlyph | Letter Text
 --
 -- The surface draws from its input alone: it asks no backend, and reads
 -- no clock, so that the page the server renders ahead of the program is
--- the page the program shows. It is not shown on an old version of the
--- page: what the input holds is of the page as it is now.
+-- the page the program shows. What a library draws in the browser, in an
+-- element the surface holds by ref (the calendar's month), comes after
+-- that first render, and the element is empty in it. It is not shown on
+-- an old version of the page: what the input holds is of the page as it
+-- is now.
 data KindView m = KindView
   { kind :: PageKind
   , label :: Text
@@ -509,7 +514,7 @@ data Local m = Local
 
 -- | 'Link' is a link to a place of the wiki that the host chose (a
 -- plugin's settings, a page), which the application follows itself
--- ('linkProps', 'followLink'). A plugin cannot name the wiki's routes:
+-- ('linkProps', 'followLink', 'openLink', 'linkAddress'). A plugin cannot name the wiki's routes:
 -- the host makes each link, and the plugin draws it and follows its
 -- clicks.
 data Link = Link (Router Route) Route
@@ -533,6 +538,20 @@ newtype LinkClick = LinkClick (Follow Route)
 linkProps :: Link -> (LinkClick -> action) -> [HP.IProp I.HTMLa action]
 linkProps (Link router route) onFollow = Router.linkProps router (onFollow . LinkClick) route
 
+-- | The address a 'Link' points at, as 'linkProps' puts it in the
+-- @href@: for a link that a library draws, in an element the surface holds
+-- by ref (the calendar's month), which gives its plain click to the
+-- surface ('openLink') and leaves any other to the browser.
+linkAddress :: Link -> Text
+linkAddress (Link router route) = Router.href router route
+
 -- | Follow a plain click on a 'Link'.
 followLink :: (MonadIO m) => Link -> LinkClick -> H.HalogenM st act slots output m ()
 followLink (Link router _) (LinkClick f) = Router.follow router f
+
+-- | Go to the place of a 'Link', as following a click on it does, for a
+-- click that was not on an @\<a>@: one inside an element a library draws,
+-- which tells the surface in an event of its own (the calendar's month).
+-- The router goes there in this step.
+openLink :: (MonadIO m) => Link -> H.HalogenM st act slots output m ()
+openLink (Link router route) = H.sync (Router.navigate router route)

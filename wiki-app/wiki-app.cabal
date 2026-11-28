@@ -117,6 +117,7 @@ library
       Wiki.App.Plugin.Assistant.Panel
       Wiki.App.Plugin.Assistant.Settings
       Wiki.App.Plugin.Calendar
+      Wiki.App.Plugin.Calendar.Island
       Wiki.App.Plugin.Capability.Assistant
       Wiki.App.Plugin.Errors
       Wiki.App.Plugin.External

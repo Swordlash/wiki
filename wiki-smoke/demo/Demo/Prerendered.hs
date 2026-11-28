@@ -233,6 +233,8 @@ spec site paths visitorGate = do
       , ("mermaid", "The MIT License")
       , ("dompurify", "Apache License")
       , ("@bjorn3/browser_wasi_shim", "Permission is hereby granted")
+      , ("fullcalendar", "MIT License")
+      , ("temporal-polyfill", "MIT License")
       ]
       $ \(name, says) -> case filter ((name <> " ") `Text.isPrefixOf`) entries of
         entry : _ -> expect (says `Text.isInfixOf` entry) ("licenses.txt's " <> Text.unpack name <> " does not say " <> show says)

@@ -2240,18 +2240,29 @@ pre.numbered > code {
   padding-left: 1.2rem;
 }
 
-/* A calendar's days, after its text (the plugin "calendar",
-   Wiki.App.Plugin.Calendar): headed as the attachments are. */
+/* A calendar's month and days, after its text (the plugin "calendar",
+   Wiki.App.Plugin.Calendar). The month is FullCalendar's, styled by
+   islands/calendar.css (web/src/calendar.css), which loads with it; the
+   list of days under it is folded once the month is drawn. */
 .calendar-days {
   margin-top: 2.5rem;
 }
 
-.calendar-days h2 {
-  font-size: 1.1rem;
+.calendar-all-days {
+  margin-top: 1rem;
+}
+
+.calendar-all-days summary {
+  cursor: pointer;
+  font-weight: 600;
 }
 
 .calendar-day-list {
   padding-left: 1.2rem;
+}
+
+.calendar-month-failed {
+  color: var(--muted);
 }
 
 .calendar-empty {

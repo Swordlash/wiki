@@ -39,6 +39,21 @@ const packages = ["build-native", "test-native"].includes(target) ? [] : [
   // HPKE over WebCrypto for the keys sealed to a user (web/src/hpke.js),
   // bundled as islands/hpke.js.
   ["@hpke/core", ["@hpke/core"]],
+  // A calendar's month (web/src/calendar.js and calendar.css), bundled as
+  // islands/calendar.js and islands/calendar.css: every entry point and
+  // stylesheet they import, and those of the Temporal polyfill that
+  // FullCalendar, which takes it as a peer, imports.
+  [
+    "fullcalendar",
+    [
+      "fullcalendar",
+      "fullcalendar/daygrid",
+      "fullcalendar/themes/classic",
+      "fullcalendar/skeleton.css",
+      "fullcalendar/themes/classic/theme.css",
+    ],
+  ],
+  ["temporal-polyfill", ["temporal-polyfill/fns/Instant", "temporal-polyfill/fns/PlainDateTime", "temporal-polyfill/fns/ZonedDateTime"]],
   // Its package.json names no file it ships as its main; web/bundle.sh copies
   // dist/ as it is.
   ["@drgrice1/tikzjax", ["@drgrice1/tikzjax/dist/run-tex.js", "@drgrice1/tikzjax/dist/core.dump.gz"]],

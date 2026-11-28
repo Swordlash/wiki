@@ -1761,6 +1761,78 @@ pre.numbered > code {
   font-weight: normal;
 }
 
+/* A missed task on a day's page (Wiki.App.View.Page): a task not done
+   whose day or hour has passed. Its own text is red, as a done task's is
+   struck through: its first paragraph's and its other paragraphs', but
+   not the lists in it. A highlighted one stays bold. The palette's red
+   reads in both schemes: 6.6:1 on the page's background in the light one
+   and 7.5:1 in the dark one, and 5.8:1 and 5.2:1 under a comment's quote.
+   A screen reader hears "Missed" in the name of the task's box, which the
+   renderer writes (Wiki.Core.Markdown.Render). */
+.day-missed > .task-text,
+.day-missed > p {
+  color: var(--c-red);
+}
+
+/* A link in a missed task's own text is red too, whatever the accent
+   colour of a link or a visited link, and stays underlined, so that it
+   still reads as a link. */
+.day-missed > .task-text a,
+.day-missed > .task-text a:visited,
+.day-missed > p a,
+.day-missed > p a:visited {
+  color: var(--c-red);
+  text-decoration: underline;
+}
+
+/* Under the quote of the thread open in the panel, whose highlight is
+   darker, red text would read badly in the dark scheme (2.8:1). There the
+   text keeps the page's colour (11.6:1 light, 6.1:1 dark) and the task
+   shows as missed by an underline: the palette's red in the light scheme
+   (4.8:1 against the highlight), its orange in the dark one (3.7:1), as
+   red there is 2.8:1. */
+.day-missed > .task-text mark.comment-mark-focused,
+.day-missed > p mark.comment-mark-focused {
+  color: var(--text);
+  text-decoration: underline 2px var(--c-red);
+  text-underline-offset: 0.15em;
+}
+
+@media (prefers-color-scheme: dark) {
+  .day-missed > .task-text mark.comment-mark-focused,
+  .day-missed > p mark.comment-mark-focused {
+    text-decoration-color: var(--c-orange);
+  }
+}
+
+/* In forced colours (Windows' high contrast) the system draws all text in
+   its own colour, and the red is lost: there a missed task's own text has
+   a wavy underline, which the system keeps. It sits lower than a link's
+   own underline, so a link in the task shows both. The focused quote's
+   underline is left out there, as its colour is lost too and the wavy
+   line already says the task is missed. */
+@media (forced-colors: active) {
+  .day-missed > .task-text,
+  .day-missed > p {
+    text-decoration: underline wavy;
+    text-underline-offset: 0.3em;
+  }
+
+  .day-missed > .task-text mark.comment-mark-focused,
+  .day-missed > p mark.comment-mark-focused {
+    text-decoration: none;
+  }
+}
+
+/* A missed task whose item has no text of its own (only a quotation or a
+   code block after its box) has its box ringed in red instead: the ring
+   is on its own box only, not on the tasks inside, and the system keeps
+   it in forced colours, in its own colour. */
+.day-missed:not(:has(> .task-text, > p)) > input {
+  outline: 2px solid var(--c-red);
+  outline-offset: 1px;
+}
+
 /* A box the reader may tick in the page view (Wiki.App.View.Page). */
 .page-body .task-list-item input:enabled {
   cursor: pointer;

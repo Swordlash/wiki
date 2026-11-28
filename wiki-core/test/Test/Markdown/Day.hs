@@ -1,11 +1,12 @@
 -- | A day's entries read from a list ('dayEntries'), the parts of the day
--- ('dayPart') and the date in a page's title ('dayOfTitle'). The lists are
+-- ('dayPart'), the date in a page's title ('dayOfTitle') and the tasks
+-- missed ('missed'). The lists are
 -- parsed by the real parser, so these tests pin what it gives for a
 -- mark and a time too. They run on both backends.
 module Test.Markdown.Day (spec) where
 
 import Data.Text qualified as T
-import Data.Time (TimeOfDay (..), fromGregorian)
+import Data.Time (Day, LocalTime (..), TimeOfDay (..), addDays, addLocalTime, fromGregorian)
 import Protolude
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
@@ -282,6 +283,85 @@ spec = describe "Wiki.Core.Markdown.Day" $ do
     it "reads no date from a title with more in it, or written otherwise" $
       for_ ["2026-11-27 Standup", "Day 2026-11-27", "2026-11-27T10:00", "2026-2-3", "20261127", "-0001-11-27", "+2026-11-27", "12026-11-27", "27.11.2026", ""] $ \title ->
         (title, dayOfTitle title) `shouldBe` (title, Nothing)
+
+  describe "missed" $ do
+    it "misses yesterday's task, whatever the hour, and a task for the whole of yesterday" $ do
+      missed (addDays (-1) today) (moment today 0 0) (todo (At (at 23 0))) `shouldBe` True
+      missed (addDays (-1) today) (moment today 0 0) (todo AllDay) `shouldBe` True
+      missed (addDays (-5) today) (moment today 12 0) (todo (Span (at 9 0) (at 10 0))) `shouldBe` True
+    it "misses today's task from its hour on, not before" $ do
+      missed today (moment today 15 0) (todo (At (at 14 0))) `shouldBe` True
+      missed today (moment today 13 0) (todo (At (at 14 0))) `shouldBe` False
+      missed today (moment today 14 0) (todo (At (at 14 0))) `shouldBe` True
+      missed today (addLocalTime (-0.001) (moment today 14 0)) (todo (At (at 14 0))) `shouldBe` False
+    it "misses a span from its end on, not while it lasts" $ do
+      missed today (moment today 10 30) (todo (Span (at 9 30) (at 10 30))) `shouldBe` True
+      missed today (moment today 10 0) (todo (Span (at 9 30) (at 10 30))) `shouldBe` False
+      missed today (moment today 10 29) (todo (Span (at 9 30) (at 10 30))) `shouldBe` False
+    it "misses a task for the whole day only once the day is over" $ do
+      missed today (moment today 23 59) (todo AllDay) `shouldBe` False
+      missed today (moment (addDays 1 today) 0 0) (todo AllDay) `shouldBe` True
+    it "misses no done task, no entry without a box, and no task of a later day" $ do
+      missed (addDays (-1) today) (moment today 12 0) (todo (At (at 9 0))) {task = Just True} `shouldBe` False
+      missed (addDays (-1) today) (moment today 12 0) (todo (At (at 9 0))) {task = Nothing} `shouldBe` False
+      missed (addDays 1 today) (moment today 23 59) (todo (At (at 0 0))) `shouldBe` False
+      missed (addDays 1 today) (moment today 23 59) (todo AllDay) `shouldBe` False
+    it "reads a highlighted task as any other" $
+      missed today (moment today 15 0) (todo (At (at 14 0))) {highlight = True} `shouldBe` True
+    prop "misses no done task, no entry without a box, no task of a later day; and a task missed stays missed" $
+      forAll ((,,,) <$> genDay <*> genMoment <*> genMoment <*> genEntry) $ \(day, a, b, e) ->
+        let (earlier, later) = (min a b, max a b)
+         in conjoin
+              [ counterexample "a done task or an entry without a box, missed" (e.task == Just False || not (missed day later e))
+              , counterexample "a task of a later day, missed" (day <= later.localDay || not (missed day later e))
+              , counterexample "missed at the earlier moment, not at the later one" (not (missed day earlier e) || missed day later e)
+              ]
+
+  describe "nextChange" $ do
+    let entries = [todo (At (at 14 0)), (todo (Span (at 9 0) (at 16 30))) {place = 1}, (todo AllDay) {place = 2}, (todo (At (at 11 0))) {task = Just True, place = 3}]
+    it "is the next deadline of a task to do, its hour, a span's end, or the end of a whole-day task's day" $ do
+      nextChange today (moment today 13 30) entries `shouldBe` Just (moment today 14 0)
+      nextChange today (moment today 14 0) entries `shouldBe` Just (moment today 16 30)
+      nextChange today (moment today 17 0) entries `shouldBe` Just (moment (addDays 1 today) 0 0)
+      nextChange (addDays 1 today) (moment today 17 0) entries `shouldBe` Just (moment (addDays 1 today) 14 0)
+    it "is none on a past day, without a task to do, or once every deadline has come" $ do
+      nextChange (addDays (-1) today) (moment today 0 0) entries `shouldBe` Nothing
+      nextChange today (moment today 9 0) [(todo (At (at 14 0))) {task = Just True}, (todo AllDay) {task = Nothing}] `shouldBe` Nothing
+      nextChange today (moment (addDays 1 today) 0 0) entries `shouldBe` Nothing
+    prop "leaves every mark as it is until the next change, and changes one at it; with none, no mark ever changes" $
+      forAll ((,,,) <$> genDay <*> genMoment <*> resize 6 (listOf genEntry) <*> choose (0, 3 * 86400 :: Int)) $ \(day, now, es, seconds) ->
+        let marks t = map (missed day t) es
+            later = addLocalTime (fromIntegral seconds) now
+         in case nextChange day now es of
+              Nothing -> counterexample "a mark changed after the last change" (marks later === marks now)
+              Just next ->
+                conjoin
+                  [ counterexample "not after now" (property (next > now))
+                  , counterexample "a mark changed before the next change" (later >= next || marks later == marks now)
+                  , counterexample "a mark changed just before the next change" (marks (max now (addLocalTime (-0.001) next)) === marks now)
+                  , counterexample "no mark changed at the next change" (marks next =/= marks now)
+                  ]
+
+-- | The day of the examples of 'missed', and a moment of it.
+today :: Day
+today = fromGregorian 2026 11 27
+
+moment :: Day -> Int -> Int -> LocalTime
+moment day h m = LocalTime day (at h m)
+
+-- | A task to do, at a time, at the first place of its list.
+todo :: EntryTime -> DayEntry
+todo time = DayEntry {place = 0, task = Just False, highlight = False, time, label = "x"}
+
+-- | An entry with any box, mark and time, and a date near 'today'.
+genEntry :: Gen DayEntry
+genEntry = fst <$> genWritten
+
+genDay :: Gen Day
+genDay = (`addDays` today) <$> choose (-3, 3)
+
+genMoment :: Gen LocalTime
+genMoment = LocalTime <$> genDay <*> (fst <$> genClock)
 
 -- | A list of entries, each with the line it is written as, and the
 -- list's bullet: one for the whole list, since another bullet starts

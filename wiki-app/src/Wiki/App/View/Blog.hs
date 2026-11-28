@@ -58,6 +58,7 @@ import Wiki.App.Backend.Comments (MonadComments)
 import Wiki.App.Backend.Encrypted (MonadEncryption)
 import Wiki.App.Backend.Notifications (MonadNotifications)
 import Wiki.App.Backend.Stars (MonadStars)
+import Wiki.App.Browser (readerClock)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Live (Feed)
 import Wiki.App.Route (Against (..), Route (..))
@@ -154,7 +155,7 @@ component =
         path = spacePathOf ctx.spaces space.id
         homeSummary = homeOf space pages
         -- The home page, by the page view, at its path, the empty one.
-        homeView = HH.slot "home" () PageView.component PageView.Input {context = ctx, space, pages, path = [], version = Nothing, feed} FromHome
+        homeView = HH.slot "home" () PageView.component PageView.Input {context = ctx, space, pages, path = [], version = Nothing, feed, clock = readerClock} FromHome
         -- Whether the home page is shown, by its own view: written, or
         -- commented on.
         homeShown = case loaded of

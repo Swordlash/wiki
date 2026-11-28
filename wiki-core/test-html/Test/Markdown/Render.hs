@@ -3,6 +3,7 @@ module Test.Markdown.Render (spec) where
 
 import Data.Row (Empty, type (.==))
 import Data.Text qualified as T
+import Data.Time (LocalTime (..), TimeOfDay (..), fromGregorian)
 import Halogen qualified as H
 import Halogen.HTML qualified as HH
 import Halogen.HTML.Core (HTML (..))
@@ -324,6 +325,67 @@ spec = describe "Markdown.Render" $ do
             <> "<li class=\"task-list-item task-done\"><input aria-label=\"! Pay the invoice\" checked data-task=\"1\" type=\"checkbox\"> <span class=\"task-text\">! Pay the invoice</span></li></ul>"
             <> "<ul><li>Buy milk</li></ul>"
         )
+
+  describe "a day's list on a day's page" $ do
+    let day =
+          T.unlines
+            [ "{.day}"
+            , "- [ ] 09:00 Standup notes"
+            , "- [ ] ! 11:00 Sign the contract"
+            , "- [x] 10:00 Pay the invoice"
+            , "- [ ] 16:00 Call the bank"
+            , "- [ ] Buy milk"
+            , "- 08:00 Breakfast"
+            ]
+        today = fromGregorian 2026 11 27
+        grouping = defaultOptions {groupDays = True, taskBoxes = Just (\_ _ -> panic "no change is made")}
+        at' d h m = grouping {missedAt = Just (d, LocalTime today (TimeOfDay h m 0))}
+        group' label inner = "<div aria-label=\"" <> label <> "\" class=\"day-group\" data-label=\"" <> label <> "\" role=\"group\">" <> inner <> "</div>"
+        -- A task to do: missed or not, with its other classes, its index
+        -- and its label. A missed one has the class day-missed, and its
+        -- box's accessible name says so.
+        task' :: Bool -> Text -> Int -> Text -> Text
+        task' missed' extra index label =
+          "<li class=\"task-list-item"
+            <> extra
+            <> (if missed' then " day-missed" else "")
+            <> "\"><input aria-label=\""
+            <> (if missed' then "Missed: " else "")
+            <> label
+            <> "\" data-task=\""
+            <> show index
+            <> "\" type=\"checkbox\"> <span class=\"task-text\">"
+            <> label
+            <> "</span></li>"
+        -- The list at noon, with its missed tasks marked or not.
+        shownAtNoon marking =
+          "<div class=\"day\">"
+            <> group' "All day" ("<ul class=\"task-list\">" <> task' False "" 4 "Buy milk" <> "</ul>")
+            <> group' "Dawn" "<ul><li>08:00 Breakfast</li></ul>"
+            <> group'
+              "Morning"
+              ( "<ul class=\"task-list\">"
+                  <> task' marking "" 0 "09:00 Standup notes"
+                  <> "<li class=\"task-list-item task-done\"><input aria-label=\"10:00 Pay the invoice\" checked data-task=\"2\" type=\"checkbox\"> <span class=\"task-text\">10:00 Pay the invoice</span></li>"
+                  <> task' marking " day-highlight" 1 "11:00 Sign the contract"
+                  <> "</ul>"
+              )
+            <> group' "Afternoon" ("<ul class=\"task-list\">" <> task' False "" 3 "16:00 Call the bank" <> "</ul>")
+            <> "</div>"
+    it "marks the tasks not done whose hour has passed, and their boxes' names, and nothing else" $
+      showsWith (at' today 12 0) day (shownAtNoon True)
+    it "marks nothing without a date and a time, or on a day not over yet" $ do
+      html <- markdownWith grouping day
+      html `shouldBe` shownAtNoon False
+      later <- markdownWith (at' (fromGregorian 2026 11 28) 12 0) day
+      later `shouldBe` html
+    it "marks every task not done on a day before today" $ do
+      html <- markdownWith (at' (fromGregorian 2026 11 26) 0 0) day
+      T.count "day-missed" html `shouldBe` 4
+      T.count "aria-label=\"Missed: " html `shouldBe` 4
+    it "adds nothing to the page's text" $ do
+      let textWith opts = renderedText (either (panic . show) identity (renderMarkdown opts day))
+      textWith (at' today 12 0) `shouldBe` textWith grouping
 
   describe "tables"
     $ it "writes the header, the rows and each column's alignment"

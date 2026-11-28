@@ -292,4 +292,5 @@ test-suite wiki-core-html-test
         row-types,
         tagsoup,
         text,
+        time,
         wiki-core

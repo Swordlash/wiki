@@ -163,7 +163,7 @@ withPage gate body = do
     ps <- orPanic <$> listPages blog.id
     post <- orPanic <$> getPage blog.id (slugs ["hello-world"])
     pure (me, spaces, blog, ps, post.id :: PageId)
-  let inputAt path = Page.Input {context = viewContextAs router me spaces 0, space = blog, pages = ps, path = slugs path, version = Nothing, feed = Just live.feed}
+  let inputAt path = Page.Input {context = viewContextAs router me spaces 0, space = blog, pages = ps, path = slugs path, version = Nothing, feed = Just live.feed, clock = Nothing}
   outcome <- withView run Page.component (inputAt ["hello-world"]) $ \view ->
     body
       Rig

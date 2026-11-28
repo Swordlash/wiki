@@ -190,6 +190,12 @@
 -- are, so a task's index is the source's. A highlighted entry's item has
 -- the class @day-highlight@ and does not show its mark. Without
 -- 'groupDays' the list is shown as written.
+--
+-- With 'missedAt' too (the page view of a day's page), the item of a
+-- missed task ('Wiki.Core.Markdown.Day.missed') has the class
+-- @day-missed@, which the stylesheet colours, and its box's @aria-label@
+-- starts with "Missed: ", so that a screen reader says so on the box. Both
+-- are attributes, so the page's text stays the items' alone.
 module Wiki.Core.Markdown.Render
   ( Options (..)
   , MentionTarget (..)
@@ -215,13 +221,14 @@ import DOM.HTML.Indexed qualified as I
 import Data.Map.Strict qualified as M
 import Data.Row (Empty, HasType)
 import Data.Text qualified as T
+import Data.Time (Day, LocalTime)
 import Halogen.HTML qualified as HH
 import Halogen.HTML.Events qualified as HE
 import Halogen.HTML.Properties qualified as HP
 import Protolude
 import Wiki.Core.Markdown.Ast
 import Wiki.Core.Markdown.Box (BoxCounter, BoxIcon (..), BoxKind (..), Numbering, alertKindName, boxCaption, boxStyle, countBox, countSection, definedKind, noNumbers, startCounting)
-import Wiki.Core.Markdown.Day (DayEntry (..), dayEntries, dayGroupLabel, dayGroups, dayListOf, joinDayLists, unmarked)
+import Wiki.Core.Markdown.Day (DayEntry (..), dayEntries, dayGroupLabel, dayGroups, dayListOf, joinDayLists, missed, unmarked)
 import Wiki.Core.Markdown.Frame (FrameScheme (..), SvgFrame (..), frameDocument, interactiveClass, svgFrameHeight)
 import Wiki.Core.Markdown.Html qualified as Html
 import Wiki.Core.Markdown.Link
@@ -318,6 +325,13 @@ data Options page w i = Options
   -- day's list is shown as written: a feed is read apart from the wiki,
   -- without the stylesheet that draws the groups' names. The application
   -- turns it on.
+  , missedAt :: Maybe (Day, LocalTime)
+  -- ^ The date of the day's page being rendered and the present time in
+  -- the reader's time zone: with them, a day's list marks its missed
+  -- tasks ('Wiki.Core.Markdown.Day.missed'), as the module's Haddock
+  -- says. 'Nothing' by default, and nothing is marked: only the page view
+  -- of a day's page sets it, once it has read the reader's clock, so a
+  -- feed, an export, a comment and the server's prerender mark nothing.
   }
 
 -- | The user a mention names, as its link shows them.
@@ -373,6 +387,7 @@ defaultOptions =
     , taskBoxes = Nothing
     , taskDrawn = const 0
     , groupDays = False
+    , missedAt = Nothing
     }
 
 -- | What a destination is when nothing is known about the wiki: a URL, used
@@ -584,7 +599,9 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
     -- stylesheet shows, and in its @aria-label@: it has no text, so the
     -- page's text (a comment's quote, "Wiki.Core.Anchor") is the items'
     -- alone. A highlighted entry's item has the class @day-highlight@,
-    -- and its mark is not shown ('unmarked').
+    -- and its mark is not shown ('unmarked'). A missed task's item has the
+    -- class @day-missed@, and its box is labelled as missed, when
+    -- 'missedAt' is given.
     renderDay :: Attributes -> [ListItem] -> R [HH.HTML w i]
     renderDay written items = do
       attrs <- ownAttrs written
@@ -592,7 +609,9 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
       when (sortedClass `elem` classes written) $ modify (\c -> c {sorting = True})
       let entries = dayEntries items
           shownItem e item = if e.highlight then unmarked item else item
-      rendered <- sequence [renderItemWith ["day-highlight" | e.highlight] BulletList e.place (shownItem e item) | (e, item) <- zip entries items]
+          missedNow e = maybe False (\(day, now) -> missed day now e) opts.missedAt
+          marks e = ["day-highlight" | e.highlight] <> ["day-missed" | missedNow e]
+      rendered <- sequence [renderItemWith (marks e) (missedNow e) BulletList e.place (shownItem e item) | (e, item) <- zip entries items]
       modify (\c -> c {sorting = before})
       let byPlace = M.fromList (zip [0 :: Int ..] (zip items rendered))
           groupOf (g, es) =
@@ -617,21 +636,22 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
     -- (a task's by its index, another item's by its place in the list) and
     -- whether it is a done task, which a sorted list shows last.
     renderItem :: ListKind -> Int -> ListItem -> R (Text, HH.HTML w i, Bool)
-    renderItem = renderItemWith []
+    renderItem = renderItemWith [] False
 
-    -- 'renderItem', its @li@ with these classes too.
-    renderItemWith :: [Text] -> ListKind -> Int -> ListItem -> R (Text, HH.HTML w i, Bool)
-    renderItemWith extra kind place item@(ListItem task _) = do
+    -- 'renderItem', its @li@ with these classes too, and a task's box
+    -- labelled as missed when the flag says so.
+    renderItemWith :: [Text] -> Bool -> ListKind -> Int -> ListItem -> R (Text, HH.HTML w i, Bool)
+    renderItemWith extra missedBox kind place item@(ListItem task _) = do
       -- The next task's index: the item's own, if it is a task.
       index <- gets (.tasks)
-      html <- renderItem' extra kind item
+      html <- renderItem' extra missedBox kind item
       let key = case task of
             Just _ -> "task-" <> show index <> "-" <> show (opts.taskDrawn index)
             Nothing -> "item-" <> show place
       pure (key, html, fromMaybe False task)
 
-    renderItem' :: [Text] -> ListKind -> ListItem -> R (HH.HTML w i)
-    renderItem' extra kind (ListItem task bs) = case task of
+    renderItem' :: [Text] -> Bool -> ListKind -> ListItem -> R (HH.HTML w i)
+    renderItem' extra missedBox kind (ListItem task bs) = case task of
       Nothing | Just (keyword, emoji) <- emojiBullet kind bs -> do
         let bullet = [PNode (emojiSpan ["emoji", "emoji-bullet"] keyword emoji)]
         inner <- case bs of
@@ -643,7 +663,7 @@ renderSectionsWithIds opts prefixed = evalState (traverse section prefixed) (Cou
       Just done -> do
         -- Counted before the tasks in it, as the tree orders them.
         index <- state (\c -> (c.tasks, c {tasks = c.tasks + 1}))
-        let label = nonEmptyOr "Task" (taskLabel bs)
+        let label = (if missedBox then ("Missed: " <>) else identity) (nonEmptyOr "Task" (taskLabel bs))
             enabled = case opts.taskBoxes of
               Nothing -> [HP.disabled True]
               Just onTick -> [HP.attr (HH.AttrName "data-task") (show index), HE.onChecked (onTick index)]

@@ -171,7 +171,7 @@ import Wiki.App.Backend.Notifications (MonadNotifications)
 import Wiki.App.Backend.Plugins (MonadPlugins (..))
 import Wiki.App.Backend.Stars (MonadStars)
 import Wiki.App.Backend.WhatsNew (MonadWhatsNew)
-import Wiki.App.Browser (absoluteUrl, download, historyEntry, historyGo, keepContents, keepHeights, redirectKeepingFragment, replacingEntry, revealFragment, setDocumentTitle, setFavicon, unzipFiles, zipFiles)
+import Wiki.App.Browser (absoluteUrl, download, historyEntry, historyGo, keepContents, keepHeights, readerClock, redirectKeepingFragment, replacingEntry, revealFragment, setDocumentTitle, setFavicon, unzipFiles, zipFiles)
 import Wiki.App.DemoUsers (Demo (..))
 import Wiki.App.Editor.Browser (PickedFile (..), chosenFiles, onPreviewEntry, pickedFiles, readPickedFile)
 import Wiki.App.Favicon (Favicon (..), defaultFavicon, homeFavicon, spaceFavicon)
@@ -1529,7 +1529,7 @@ component =
         pageView space pages path = pageViewOf space pages path Nothing
         -- A version of a page is shown with no live channel: nothing
         -- happens to a version.
-        pageViewOf space pages path version = HH.slot "view" PageSlot PageView.component PageView.Input {context = context st, space, pages, path, version, feed = if shutOut st.session || isJust version then Nothing else st.feed} FromView
+        pageViewOf space pages path version = HH.slot "view" PageSlot PageView.component PageView.Input {context = context st, space, pages, path, version, feed = if shutOut st.session || isJust version then Nothing else st.feed, clock = readerClock} FromView
         blogView space pages page = HH.slot "view" BlogSlot BlogView.component BlogView.Input {context = context st, space, pages, page, feed = if shutOut st.session then Nothing else st.feed} FromView
 
     -- The front page: its page, and under it the spaces and the ones
@@ -1558,7 +1558,7 @@ component =
               [ case here of
                   InSpace _ space pages ->
                     let path = fromMaybe [] (pagePathOf space pages . (\p -> p.id) =<< homeOf space pages)
-                     in HH.slot "view" PageSlot PageView.component PageView.Input {context = context st, space, pages, path, version = Nothing, feed = if shutOut st.session then Nothing else st.feed} FromView
+                     in HH.slot "view" PageSlot PageView.component PageView.Input {context = context st, space, pages, path, version = Nothing, feed = if shutOut st.session then Nothing else st.feed, clock = readerClock} FromView
                   SpaceFailed _ _ e -> failureView e RetryHere
                   _ -> loading
               ]

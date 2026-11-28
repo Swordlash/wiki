@@ -1824,6 +1824,15 @@ pre.numbered > code {
   }
 }
 
+/* A missed task whose item has no text of its own (only a quotation or a
+   code block after its box) has its box ringed in red instead: the ring
+   is on its own box only, not on the tasks inside, and the system keeps
+   it in forced colours, in its own colour. */
+.day-missed:not(:has(> .task-text, > p)) > input {
+  outline: 2px solid var(--c-red);
+  outline-offset: 1px;
+}
+
 /* A box the reader may tick in the page view (Wiki.App.View.Page). */
 .page-body .task-list-item input:enabled {
   cursor: pointer;

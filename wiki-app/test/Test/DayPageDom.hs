@@ -12,10 +12,12 @@
 -- is the pure functions' ("Test.Markdown.Day").
 module Test.DayPageDom (spec) where
 
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time (LocalTime (..), NominalDiffTime, TimeOfDay (..), addLocalTime, diffLocalTime, fromGregorian)
 import Halogen.Router qualified as Router
+import Halogen.Trace qualified as Trace
 import Halogen.VDom.DOM.Monad (MemDOM, runMemDOM)
 import Halogen.VDom.DOM.Monad.Native qualified as N
 import Protolude hiding (find)
@@ -24,6 +26,7 @@ import Test.Hspec
 import Wiki.App.Backend (MonadWiki (..), Session, session)
 import Wiki.App.Backend.Mem (MemWiki, newMemWiki, runMemWiki)
 import Wiki.App.Backend.Mem.State (MemState (..))
+import Wiki.App.Browser (ReaderClock (..))
 import Wiki.App.Demo (demoNow, demoState)
 import Wiki.App.Route (Route (..), route)
 import Wiki.App.View.Page qualified as Page
@@ -55,7 +58,7 @@ morning = "{.day}\n- [ ] 09:00 Write the notes\n"
 -- with yesterday's list.
 data Wiki = Wiki
   { wiki :: IORef MemState
-  , input :: [Text] -> Maybe (IO LocalTime) -> Page.Input
+  , input :: [Text] -> Maybe ReaderClock -> Page.Input
   }
 
 run :: IORef MemState -> MemWiki MemDOM a -> MemDOM a
@@ -92,11 +95,37 @@ clockOf clock = (`addLocalTime` start) <$> now clock
 minutes :: NominalDiffTime -> NominalDiffTime
 minutes = (* 60)
 
--- | The reader's clock, counting its reads.
-countedClock :: TestClock -> IO (IO LocalTime, IO Int)
+-- | The reader's clock over a read of the present time: on the test's
+-- clock, which has no summer time, how long until a moment is the
+-- difference of the two local times.
+readerOf :: TestClock -> IO LocalTime -> ReaderClock
+readerOf clock reading = ReaderClock {readNow = reading, waitUntil = \at -> diffLocalTime at <$> clockOf clock}
+
+-- | The reader's clock, counting its reads of the present time.
+countedClock :: TestClock -> IO (ReaderClock, IO Int)
 countedClock clock = do
   reads' <- newIORef (0 :: Int)
-  pure (modifyIORef' reads' (+ 1) >> clockOf clock, readIORef reads')
+  pure (readerOf clock (modifyIORef' reads' (+ 1) >> clockOf clock), readIORef reads')
+
+-- | The program's trace while the body runs ("Halogen.Trace"): every
+-- tree's events, the view's among them.
+withTrace :: (IORef [Trace.Event] -> IO a) -> IO a
+withTrace body = do
+  events <- newIORef []
+  bracket (Trace.subscribe (\e -> atomicModifyIORef' events (\es -> (e : es, ())))) identity (\_ -> body events)
+
+-- | How many forks of the view's components are alive, made and not
+-- ended: the page view's timer, when nothing else of it waits. The view's
+-- components are those whose root on the page is the root of the view.
+liveForks :: IORef [Trace.Event] -> View q i o -> IO Int
+liveForks events view = do
+  es <- reverse <$> readIORef events
+  root <- headMay <$> N.childNodes view.container
+  let made = ordNub [e.tag.id | e <- es, Trace.Mounted <- [e.what]]
+  mine <- filterM (\i -> (\n -> isJust root && (N.toNative <$> n) == root) <$> Trace.rootNode i) made
+  let forked = Set.fromList [(e.tag.id, f) | e <- es, Trace.Forked f <- [e.what], e.tag.id `elem` mine]
+      ended = Set.fromList [(e.tag.id, f) | e <- es, Trace.ForkEnded f <- [e.what]]
+  pure (Set.size (forked `Set.difference` ended))
 
 -- | Move the test's clock on, and let the view do what that wakes.
 passing :: TestClock -> View q i o -> NominalDiffTime -> IO ()
@@ -137,11 +166,13 @@ spec = describe "a day's page in the page view, with the reader's clock" $ do
         reads' `shouldReturn` 3
 
   it "takes the mark off a task ticked, and leaves no timer for a task ticked before its time" $
-    withTestClock $ \clock -> withWiki $ \w -> do
+    withTrace $ \events -> withTestClock $ \clock -> withWiki $ \w -> do
       (reading, reads') <- countedClock clock
       withView (run w.wiki) Page.component (w.input ["2026-11-27"] (Just reading)) $ \view -> do
         settle view
+        liveForks events view `shouldReturn` 1
         passing clock view (minutes 30)
+        liveForks events view `shouldReturn` 1
         missedItems view `shouldReturn` ["14:00 Call the bank"]
         reads' `shouldReturn` 2
         -- Ticked, not saved: done as the page shows it. Each change of
@@ -154,17 +185,20 @@ spec = describe "a day's page in the page view, with the reader's clock" $ do
         settle view
         isJust <$> find view ".task-done" `shouldReturn` False
         missedItems view `shouldReturn` ["14:00 Call the bank"]
+        -- Each tick set the timer anew and stopped the one before.
+        liveForks events view `shouldReturn` 1
         -- The task at half past four ticked before its time: no deadline
-        -- is left, and the timers set before do nothing when they wake.
+        -- is left, and no timer.
         click view "input[data-task=\"1\"]"
         settle view
         reads' `shouldReturn` 5
+        liveForks events view `shouldReturn` 0
         passing clock view (minutes (3 * 60))
         reads' `shouldReturn` 5
         missedItems view `shouldReturn` ["14:00 Call the bank"]
 
   it "sets a timer again for a task unticked before its time" $
-    withTestClock $ \clock -> withWiki $ \w -> do
+    withTrace $ \events -> withTestClock $ \clock -> withWiki $ \w -> do
       (reading, reads') <- countedClock clock
       withView (run w.wiki) Page.component (w.input ["2026-11-27"] (Just reading)) $ \view -> do
         settle view
@@ -178,6 +212,7 @@ spec = describe "a day's page in the page view, with the reader's clock" $ do
         click view "input[data-task=\"1\"]"
         settle view
         reads' `shouldReturn` 4
+        liveForks events view `shouldReturn` 1
         -- Its timer wakes at half past four, once.
         passing clock view (minutes 89)
         reads' `shouldReturn` 4
@@ -222,14 +257,38 @@ spec = describe "a day's page in the page view, with the reader's clock" $ do
         passing clock view (diffLocalTime (LocalTime (fromGregorian 2027 1 6) (TimeOfDay 9 0 0)) start - elapsed)
         missedItems view `shouldReturn` ["09:00 Write the notes"]
 
+  it "waits what the reader's clock says is left until a deadline, across a jump of the clock" $
+    withTestClock $ \clock -> withWiki $ \w -> do
+      -- The local time jumps an hour forward ten minutes after the start,
+      -- from 13:40 to 14:40, as it does in the night the clocks go
+      -- forward: 14:00 comes ten minutes after the start, not thirty.
+      let jumpAt = minutes 10
+          wall t = addLocalTime (t + (if t >= jumpAt then minutes 60 else 0)) start
+          left t at
+            | at <= wall t = diffLocalTime at (wall t)
+            | t < jumpAt && at > wall jumpAt = diffLocalTime at (wall jumpAt) + (jumpAt - t)
+            | t < jumpAt && at > addLocalTime jumpAt start = jumpAt - t
+            | otherwise = diffLocalTime at (wall t)
+          jumping = ReaderClock {readNow = wall <$> now clock, waitUntil = \at -> (`left` at) <$> now clock}
+      withView (run w.wiki) Page.component (w.input ["2026-11-27"] (Just jumping)) $ \view -> do
+        settle view
+        missedItems view `shouldReturn` []
+        passing clock view (minutes 10)
+        missedItems view `shouldReturn` ["14:00 Call the bank"]
+        -- 16:30 is 110 minutes after 14:40.
+        passing clock view (minutes 109)
+        missedItems view `shouldReturn` ["14:00 Call the bank"]
+        passing clock view (minutes 1)
+        missedItems view `shouldReturn` ["14:00 Call the bank", "16:30 Send the report"]
+
   it "reads the clock again when a day's page is fetched in the same view" $
     withTestClock $ \clock -> withWiki $ \w ->
-      withView (run w.wiki) Page.component (w.input ["notes"] (Just (clockOf clock))) $ \view -> do
+      withView (run w.wiki) Page.component (w.input ["notes"] (Just (readerOf clock (clockOf clock)))) $ \view -> do
         settle view
         passing clock view (minutes 60)
         -- Today's page at half past two: its task at two is missed only
         -- if the view read the clock when it fetched the page.
-        setInput view (w.input ["2026-11-27"] (Just (clockOf clock)))
+        setInput view (w.input ["2026-11-27"] (Just (readerOf clock (clockOf clock))))
         settle view
         missedItems view `shouldReturn` ["14:00 Call the bank"]
 
@@ -254,7 +313,7 @@ spec = describe "a day's page in the page view, with the reader's clock" $ do
             marked <- length <$> N.querySelectorAll ".day-missed" document
             modifyIORef' seen (<> [(tasks, marked)])
             clockOf clock
-      view <- mountIn page (run w.wiki) Page.component (w.input ["2026-11-26"] (Just reading))
+      view <- mountIn page (run w.wiki) Page.component (w.input ["2026-11-26"] (Just (readerOf clock reading)))
       settle view
       -- Yesterday's task is missed at any hour of today, and the first
       -- render drew it unmarked.

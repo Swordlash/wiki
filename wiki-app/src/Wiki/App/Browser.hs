@@ -39,6 +39,7 @@ module Wiki.App.Browser
   , openInTab
   , localTime
   , endOfDay
+  , ReaderClock (..)
   , readerClock
   , consoleWarn
   , keepHeights
@@ -63,7 +64,7 @@ import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.MediaType (MediaType (..))
 import Data.Text qualified as T
-import Data.Time (Day, LocalTime, UTCTime (..), addDays, defaultTimeLocale, formatTime, toGregorian, utc, utcToLocalTime)
+import Data.Time (Day, LocalTime (..), NominalDiffTime, TimeOfDay (..), UTCTime (..), addDays, defaultTimeLocale, formatTime, toGregorian, utc, utcToLocalTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Halogen.JSBits (Inert, JSText, JSVal, Safety (..), browserJS, fromJSBytes, fromJSText, inBrowser, isNull, jsValText, toJSBytes, toJSText)
 import Halogen.JSBits.Fields (Member (..), inlineJS, jsFields)
@@ -622,15 +623,35 @@ endOfDay day
 -- offset from UTC are of the same moment.
 $(inlineJS "js_local_now" "(() => { const d = new Date(); return d.getTime() - d.getTimezoneOffset() * 60000; })()" [t|IO Double|])
 
--- | 'readerClock' reads the present time in the reader's time zone, as
--- their browser keeps it: the page view marks a day's missed tasks with
--- it ("Wiki.Core.Markdown.Day"'s @missed@). WebAssembly has no time zone
--- of its own, so the browser's 'Date' says it. 'Nothing' natively, where
--- there is no reader: the server's prerender reads no clock and marks
--- nothing.
-readerClock :: Maybe (IO LocalTime)
+-- The milliseconds from now until a moment in the reader's time zone, given
+-- as year, month, day, hour and minute: from 'Date' instants, so that a
+-- change of summer time between the two is counted.
+$(inlineJS "js_until_local" "new Date($1, $2 - 1, $3, $4, $5).getTime() - Date.now()" [t|Int -> Int -> Int -> Int -> Int -> IO Double|])
+
+-- | 'ReaderClock' is the reader's clock, as the page view reads it to mark
+-- a day's missed tasks ("Wiki.Core.Markdown.Day"'s @missed@): the present
+-- time in the reader's time zone, and how long it is from now until a
+-- moment of that time zone. The second is not the difference of the two
+-- local times across a change of summer time.
+data ReaderClock = ReaderClock
+  { readNow :: IO LocalTime
+  , waitUntil :: LocalTime -> IO NominalDiffTime
+  }
+
+-- | 'readerClock' is the reader's clock as their browser keeps it.
+-- WebAssembly has no time zone of its own, so the browser's 'Date' says
+-- it. 'Nothing' natively, where there is no reader: the server's prerender
+-- reads no clock and marks nothing.
+readerClock :: Maybe ReaderClock
 readerClock
-  | inBrowser = Just (utcToLocalTime utc . posixSecondsToUTCTime . (/ 1000) . realToFrac <$> js_local_now)
+  | inBrowser =
+      Just
+        ReaderClock
+          { readNow = utcToLocalTime utc . posixSecondsToUTCTime . (/ 1000) . realToFrac <$> js_local_now
+          , waitUntil = \(LocalTime day time) ->
+              let (y, m, d) = toGregorian day
+               in (/ 1000) . realToFrac <$> js_until_local (fromInteger y) m d time.todHour time.todMin
+          }
   | otherwise = Nothing
 
 -- | A warning on the browser's console, for whoever looks there, about

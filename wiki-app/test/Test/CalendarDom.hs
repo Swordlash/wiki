@@ -134,12 +134,33 @@ spec = describe "the calendar, a plugin's kind of page" $ do
         setInput view (newPage w offForWiki') {NewPage.pages = ps}
         settle view
         kindsOffered view `shouldReturn` ["Document", "Presentation"]
-        -- Before this session's read of the plugins answers, or when it
+        -- Before this session's read of what is on answers, or when it
         -- failed, the context holds the defaults: no plugin's kind yet.
         let unread = newPage w noPlugins
-        setInput view unread {NewPage.context = unread.context {pluginsRead = False}, NewPage.pages = ps}
+        setInput view unread {NewPage.context = unread.context {pluginsRead = False, settingsRead = False}, NewPage.pages = ps}
         settle view
         kindsOffered view `shouldReturn` ["Document", "Presentation"]
+        -- What is on read, the list of external plugins not (slow, or
+        -- failed): the calendar is offered.
+        setInput view unread {NewPage.context = unread.context {pluginsRead = False, settingsRead = True}, NewPage.pages = ps}
+        settle view
+        kindsOffered view `shouldReturn` ["Document", "Presentation", "Calendar"]
+
+    it "keeps a calendar chosen when a refresh of the external plugins' list fails, and makes it" $ withWiki $ \w -> do
+      ps <- pagesOf w w.team
+      let form = newPage w noPlugins
+      withView (run w.wiki) NewPage.component form {NewPage.pages = ps} $ \view -> do
+        settle view
+        typeInto view ".new-page-title" "Kept"
+        choices <- findAll view ".new-page-kind-choice input"
+        maybe (expectationFailure "no third kind offered") clickNode (atMay choices 2)
+        settle view
+        setInput view form {NewPage.context = form.context {pluginsRead = False}, NewPage.pages = ps}
+        settle view
+        (traverse checked =<< findAll view ".new-page-kind-choice input") `shouldReturn` [False, False, True]
+        click view ".new-page-form button[type=submit]"
+        settle view
+      ((\p -> p.kind) <$>) <$> runMemDOM (run w.wiki (getPage w.team.id (slugs ["kept"]))) `shouldReturn` Right calendarKind
 
     it "makes a calendar, and a document when the plugin goes off while a calendar is chosen" $ withWiki $ \w -> do
       ps <- pagesOf w w.team

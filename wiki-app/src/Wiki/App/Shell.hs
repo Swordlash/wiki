@@ -2471,7 +2471,7 @@ sameUser :: Session -> Session -> Bool
 sameUser a b = ((\u -> u.id) <$> a.user) == ((\u -> u.id) <$> b.user)
 
 context :: State m -> Context
-context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth, plugins = PluginsMachine.held (Machine.current st.pluginState), external = PluginsMachine.heldInstalled (Machine.current st.pluginState), optionsRefused = (Machine.current st.pluginState).optionsRefused, pluginsRead = PluginsMachine.readIn st.sessionNumber (Machine.current st.pluginState)}
+context st = Context {router = st.router, session = st.session, sessionNumber = st.sessionNumber, spaces = available, icons = st.icons, revision = st.generation, pageWidth = st.chosenWidth, plugins = PluginsMachine.held (Machine.current st.pluginState), external = PluginsMachine.heldInstalled (Machine.current st.pluginState), optionsRefused = (Machine.current st.pluginState).optionsRefused, pluginsRead = PluginsMachine.readIn st.sessionNumber (Machine.current st.pluginState), settingsRead = PluginsMachine.settingsReadIn st.sessionNumber (Machine.current st.pluginState)}
   where
     available =
       st.spaces <> case st.here of

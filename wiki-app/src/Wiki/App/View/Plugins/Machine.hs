@@ -138,6 +138,7 @@ module Wiki.App.View.Plugins.Machine
   , knownNow
   , held
   , readIn
+  , settingsReadIn
   , installedNow
   , heldInstalled
   , stateOf
@@ -657,7 +658,14 @@ installedNow m = m.installed >>= rightToMaybe
 -- number: not the defaults 'held' gives before that read answers, after it
 -- failed, or for a session the model has not been given yet.
 readIn :: Int -> Model -> Bool
-readIn session m = m.session == session && isJust (knownNow m) && isJust (installedNow m)
+readIn session m = settingsReadIn session m && isJust (installedNow m)
+
+-- | Whether what is on is this session's read ('knownNow'), for the
+-- session of this number, whatever became of the read of the external
+-- plugins installed: what a built-in plugin's contribution needs, which
+-- the list of external plugins does not change.
+settingsReadIn :: Int -> Model -> Bool
+settingsReadIn session m = m.session == session && isJust (knownNow m)
 
 -- | The external plugins as the rest of the application sees them (the
 -- context's): what is installed, once read in this session, and before

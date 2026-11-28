@@ -250,16 +250,17 @@ startingBody st = case st.start of
 -- reader, in the registry's order. Only their labels are read here, so
 -- the plugins are taken in 'IO', as the editor takes their diagnostics.
 --
--- A plugin's kind is offered only once this session's read of the plugins
--- has answered ('Context''s @pluginsRead@): before it, or when it failed,
+-- A plugin's kind is offered only once this session's read of what is on
+-- has answered ('Context''s @settingsRead@): before it, or when it failed,
 -- the context holds the defaults, which would offer a kind the reader or
--- the wiki turned off.
+-- the wiki turned off. The read of the external plugins installed is not
+-- waited for: it brings no kind of page.
 kindsOffered :: Context -> [(PageKind, Text, Text)]
 kindsOffered ctx =
   [ (Document, "Document", "A page, read as a document.")
   , (Presentation, "Presentation", "A deck of slides, presented one at a time.")
   ]
-    <> [(k.kind, k.label, k.hint) | ctx.pluginsRead, (_, k) <- (contributed (pluginsOn ctx) (plugins @IO)).pageKinds]
+    <> [(k.kind, k.label, k.hint) | ctx.settingsRead, (_, k) <- (contributed (pluginsOn ctx) (plugins @IO)).pageKinds]
 
 -- | The page the new one goes under, if the route names one; 'Nothing'
 -- for the space's top level, which the backend reads as under the space's

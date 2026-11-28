@@ -995,251 +995,260 @@ runFaulty :: (Event -> Model -> (Model, [Effect])) -> [Step] -> World
 runFaulty faulty = foldl' play start {stepper = faulty}
 
 machine :: Spec
-machine = describe "the plugins' state, on generated runs" $ do
-  for_ [("", start, []), (", over the HTTP backend's cache", startCached, ["a read from the cache"])] $ \(how, w0, more) ->
-    it ("keeps every rule on any run" <> how) $
-      QC.property . QC.checkCoverage . withNumTests 20000 $
-        forAllShrinkShow genRun shrinkRun show $ \run ->
-          let w = foldl' play w0 run
-              reached tag = tag `elem` w.seen
-              covers =
-                [ (15, "a write taken")
-                , (5, "a save taken")
-                , (3, "a write after a save")
-                , (3, "checked settled after a write")
-                , (10, "a load with an ask out")
-                , (3, "a load with a save out")
-                , (1, "a view opened with an ask out")
-                , (1, "a write refused")
-                , (2, "a write lost")
-                , (10, "off for the wiki, read")
-                , (10, "a switch with an ask out")
-                , (2, "a choice after a read learnt another tab's")
-                , (5, "an options write taken")
-                , (1, "an options write refused")
-                , (1, "options chosen after a refusal of options")
-                , (2, "options chosen with an ask out")
-                , (10, "the plugins installed, read")
-                , (3, "an upload taken")
-                , (1, "an upload refused")
-                , (1, "a removal taken")
-                , (3, "a policy saved")
-                , (1, "a stale confirmation")
-                ]
-                  <> [(5, tag) | tag <- more]
-           in foldr (\(n, tag) -> QC.cover n (reached tag) (toS tag)) (counterexample (toS (T.unlines (reverse w.trace) <> "\n" <> T.unlines w.faults)) (null w.faults)) covers
+machine = do
+  describe "the plugins' state, read" $
+    it "knows what is on once its read answered, whatever became of the list of external plugins" $ do
+      let known = Plugins {offForWiki = mempty, mine = mempty}
+          listed = ExternalPlugins {policy = ExternalOff, external = []}
+      map (\m -> (settingsReadIn 0 m, readIn 0 m)) [initialRead (Just known) Nothing 0, initialRead Nothing (Just listed) 0, initialRead (Just known) (Just listed) 0]
+        `shouldBe` [(True, False), (False, False), (True, True)]
+      -- Another session's read is not this one's.
+      settingsReadIn 1 (initialRead (Just known) Nothing 0) `shouldBe` False
+  describe "the plugins' state, on generated runs" $ do
+    for_ [("", start, []), (", over the HTTP backend's cache", startCached, ["a read from the cache"])] $ \(how, w0, more) ->
+      it ("keeps every rule on any run" <> how) $
+        QC.property . QC.checkCoverage . withNumTests 20000 $
+          forAllShrinkShow genRun shrinkRun show $ \run ->
+            let w = foldl' play w0 run
+                reached tag = tag `elem` w.seen
+                covers =
+                  [ (15, "a write taken")
+                  , (5, "a save taken")
+                  , (3, "a write after a save")
+                  , (3, "checked settled after a write")
+                  , (10, "a load with an ask out")
+                  , (3, "a load with a save out")
+                  , (1, "a view opened with an ask out")
+                  , (1, "a write refused")
+                  , (2, "a write lost")
+                  , (10, "off for the wiki, read")
+                  , (10, "a switch with an ask out")
+                  , (2, "a choice after a read learnt another tab's")
+                  , (5, "an options write taken")
+                  , (1, "an options write refused")
+                  , (1, "options chosen after a refusal of options")
+                  , (2, "options chosen with an ask out")
+                  , (10, "the plugins installed, read")
+                  , (3, "an upload taken")
+                  , (1, "an upload refused")
+                  , (1, "a removal taken")
+                  , (3, "a policy saved")
+                  , (1, "a stale confirmation")
+                  ]
+                    <> [(5, tag) | tag <- more]
+             in foldr (\(n, tag) -> QC.cover n (reached tag) (toS tag)) (counterexample (toS (T.unlines (reverse w.trace) <> "\n" <> T.unlines w.faults)) (null w.faults)) covers
 
-  it "sends one ask at a time: a switch flipped while a read is out waits, and the later choice of a plugin takes its place" $ do
-    let w = runOf [Reload, Click 0 PluginOff, Click 1 PluginOff, Click 0 PluginOn]
-    length w.outs `shouldBe` 1
-    w.model.queued `shouldBe` [(0, StateWrite errors PluginOff), (0, StateWrite assistant PluginOn)]
-
-  it "shows the state chosen while its write is out, and the server's once it answered and was read again" $ do
-    let w = runOf [Click 0 PluginOff]
-    shownState w.model assistant `shouldBe` PluginOff
-    let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
-    w1.model.writing `shouldBe` mempty
-    stateOf (sure (maybeToRight () (knownNow w1.model))) assistant `shouldBe` PluginOff
-    w1.outs `shouldSatisfy` null
-
-  it "writes a plugin's options one ask at a time, the later options taking the place of those that wait" $ do
-    let w = runOf [Reload, SetOptions 0 (Just (Number 1)), SetOptions 1 (Just (Number 1)), SetOptions 0 (Just (Number 2))]
-    length w.outs `shouldBe` 1
-    w.model.queued `shouldBe` [(0, OptionsWrite errors (Just (Number 1))), (0, OptionsWrite assistant (Just (Number 2)))]
-    optionsFor assistant (held w.model) `shouldBe` Just (Number 2)
-    let w1 = foldl' play w (concat (replicate 6 [Handle, Deliver 0]))
-    w1.outs `shouldSatisfy` null
-    (\k -> k.mine) <$> knownNow w1.model
-      `shouldBe` Just (Map.fromList [(assistant, PluginChoice {state = PluginDefault, options = Just (Number 2)}), (errors, PluginChoice {state = PluginDefault, options = Just (Number 1)})])
-    w1.faults `shouldBe` []
-
-  it "gives a plugin the options chosen while their write is out, and the server's once it answered" $ do
-    let w = runOf [SetOptions 0 (Just (Number 1))]
-    optionsFor assistant (held w.model) `shouldBe` Just (Number 1)
-    (\k -> k.mine) <$> knownNow w.model `shouldBe` Just mempty
-    let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
-    w1.model.writingOptions `shouldBe` mempty
-    optionsFor assistant (held w1.model) `shouldBe` Just (Number 1)
-    -- Refused: the plugin is given the server's options again, and its
-    -- surfaces are told why; its row is not, which shows its state's.
-    let w2 = foldl' play w1 [SetOptions 0 (Just Null), Handle, Deliver 0]
-    Map.lookup assistant w2.model.optionsRefused `shouldBe` Just (Invalid optionsNull)
-    Map.lookup assistant w2.model.refused `shouldBe` Nothing
-    optionsFor assistant (held w2.model) `shouldBe` Just (Number 1)
-    -- Cleared: nothing is kept for the plugin.
-    let w3 = foldl' play w2 [Handle, Deliver 0, SetOptions 0 Nothing, Handle, Deliver 0, Handle, Deliver 0]
-    optionsFor assistant (held w3.model) `shouldBe` Nothing
-    (\k -> k.mine) <$> knownNow w3.model `shouldBe` Just mempty
-    w3.faults `shouldBe` []
-
-  it "drops a write chosen before another reader signed in, and reads for the new one after the write out answered" $ do
-    let w = runOf [Click 0 PluginOff, Click 1 PluginOff, SwitchUser]
-    -- The new session's read waits for the write out.
-    map (\o -> o.effect) w.outs `shouldSatisfy` \case
-      [WriteState _ p PluginOff] -> p == assistant
-      _ -> False
-    let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0]
-    -- The administrator's first write was out and done; the second waited,
-    -- and went with the administrator's session.
-    Map.lookup (UserId "user-admin") w1.backend.pluginChoices `shouldBe` Just (Map.fromList [(assistant, choice PluginOff)])
-    Map.lookup (UserId "user-editor") w1.backend.pluginChoices `shouldBe` Nothing
-    knownNow w1.model `shouldBe` Just Plugins {offForWiki = mempty, mine = mempty}
-    w1.faults `shouldBe` []
-
-  it "drops options left waiting when the reader changes, in the step that gives the new session" $ do
-    let w = runOf [Reload, SetOptions 0 (Just (Number 1)), SwitchUser]
-    w.model.queued `shouldBe` []
-    w.model.writingOptions `shouldBe` mempty
-    optionsFor assistant (held w.model) `shouldBe` Nothing
-    let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
-    w1.outs `shouldSatisfy` null
-    Map.lookup (UserId "user-admin") w1.backend.pluginChoices `shouldBe` Nothing
-    w1.faults `shouldBe` []
-
-  it "keeps the plugins off for the wiki across a sign-in, until the new reader's read answers" $ do
-    let w = runOf [Tick 1 True, Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0, SwitchUser]
-    w.model.known `shouldBe` Nothing
-    (held w.model).offForWiki `shouldBe` Set.fromList [errors]
-    (held w.model).mine `shouldBe` mempty
-    let w1 = foldl' play w [Lose, Handle, Deliver 0]
-    w1.model.known `shouldBe` Just (Left (Unreachable "lost"))
-    (held w1.model).offForWiki `shouldBe` Set.fromList [errors]
-
-  -- Codex's fourth round on #374. The administrator saves "off for
-  -- everyone", and the shell loads the session, or a view opens, before
-  -- the save answers: the read waits for the save's answer, and sees the
-  -- save, from the server and not from the cache the save empties.
-  for_ [("", start), (", over the HTTP backend's cache", startCached)] $ \(how, w0) ->
-    it ("reads what a save out changed, not beside it" <> how) $ do
-      let w = foldl' play w0 [Tick 0 True, OpenView, Reload]
+    it "sends one ask at a time: a switch flipped while a read is out waits, and the later choice of a plugin takes its place" $ do
+      let w = runOf [Reload, Click 0 PluginOff, Click 1 PluginOff, Click 0 PluginOn]
       length w.outs `shouldBe` 1
+      w.model.queued `shouldBe` [(0, StateWrite errors PluginOff), (0, StateWrite assistant PluginOn)]
+
+    it "shows the state chosen while its write is out, and the server's once it answered and was read again" $ do
+      let w = runOf [Click 0 PluginOff]
+      shownState w.model assistant `shouldBe` PluginOff
       let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
+      w1.model.writing `shouldBe` mempty
+      stateOf (sure (maybeToRight () (knownNow w1.model))) assistant `shouldBe` PluginOff
       w1.outs `shouldSatisfy` null
-      (\k -> k.offForWiki) <$> knownNow w1.model `shouldBe` Just (Set.fromList [assistant])
-      (held w1.model).offForWiki `shouldBe` Set.fromList [assistant]
+
+    it "writes a plugin's options one ask at a time, the later options taking the place of those that wait" $ do
+      let w = runOf [Reload, SetOptions 0 (Just (Number 1)), SetOptions 1 (Just (Number 1)), SetOptions 0 (Just (Number 2))]
+      length w.outs `shouldBe` 1
+      w.model.queued `shouldBe` [(0, OptionsWrite errors (Just (Number 1))), (0, OptionsWrite assistant (Just (Number 2)))]
+      optionsFor assistant (held w.model) `shouldBe` Just (Number 2)
+      let w1 = foldl' play w (concat (replicate 6 [Handle, Deliver 0]))
+      w1.outs `shouldSatisfy` null
+      (\k -> k.mine) <$> knownNow w1.model
+        `shouldBe` Just (Map.fromList [(assistant, PluginChoice {state = PluginDefault, options = Just (Number 2)}), (errors, PluginChoice {state = PluginDefault, options = Just (Number 1)})])
       w1.faults `shouldBe` []
 
-  -- The other: a load of the session learns a choice made in another tab,
-  -- and the section's next choice keeps it, there being one value.
-  it "keeps a choice another tab made, which a load learnt, when the section chooses next" $ do
-    let w = runOf [OtherTab 0 PluginOff, Reload, Handle, Deliver 0]
-    (\k -> k.mine) <$> knownNow w.model `shouldBe` Just (Map.fromList [(assistant, choice PluginOff)])
-    let w1 = foldl' play w [Click 1 PluginOff, Handle, Deliver 0, Handle, Deliver 0]
-    (\k -> k.mine) <$> knownNow w1.model `shouldBe` Just (Map.fromList [(assistant, choice PluginOff), (errors, choice PluginOff)])
-    let w2 = foldl' play w1 [Handle, Deliver 0]
-    (\k -> k.mine) <$> knownNow w2.model `shouldBe` Just (Map.fromList [(assistant, choice PluginOff), (errors, choice PluginOff)])
-    w2.faults `shouldBe` []
+    it "gives a plugin the options chosen while their write is out, and the server's once it answered" $ do
+      let w = runOf [SetOptions 0 (Just (Number 1))]
+      optionsFor assistant (held w.model) `shouldBe` Just (Number 1)
+      (\k -> k.mine) <$> knownNow w.model `shouldBe` Just mempty
+      let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
+      w1.model.writingOptions `shouldBe` mempty
+      optionsFor assistant (held w1.model) `shouldBe` Just (Number 1)
+      -- Refused: the plugin is given the server's options again, and its
+      -- surfaces are told why; its row is not, which shows its state's.
+      let w2 = foldl' play w1 [SetOptions 0 (Just Null), Handle, Deliver 0]
+      Map.lookup assistant w2.model.optionsRefused `shouldBe` Just (Invalid optionsNull)
+      Map.lookup assistant w2.model.refused `shouldBe` Nothing
+      optionsFor assistant (held w2.model) `shouldBe` Just (Number 1)
+      -- Cleared: nothing is kept for the plugin.
+      let w3 = foldl' play w2 [Handle, Deliver 0, SetOptions 0 Nothing, Handle, Deliver 0, Handle, Deliver 0]
+      optionsFor assistant (held w3.model) `shouldBe` Nothing
+      (\k -> k.mine) <$> knownNow w3.model `shouldBe` Just mempty
+      w3.faults `shouldBe` []
 
-  -- Each rule, with a fault put in the step, and a run that shows it: so
-  -- that a rule that says something stays as it was is known able to fail.
-  describe "is shown able to fail, rule by rule" $ do
-    let fails faulty run rule = do
-          let w = runFaulty faulty run
-          w.faults `shouldSatisfy` any (T.isInfixOf rule)
-          -- And the same run with the real step keeps every rule.
-          (runOf run).faults `shouldBe` []
-    it "one ask at a time: a load that reads beside the save out" $
-      fails (\e m -> case e of Refresh -> step e m {flight = Nothing}; _ -> step e m) [Tick 0 True, Reload] "two asks out at once"
-    it "a write chosen in this session: a write queued before the sign-in, sent after it" $
-      fails (\e m -> case e of Given n -> first (\m' -> m' {queued = [(n, x) | (_, x) <- m.queued]}) (step e m); _ -> step e m) [Click 0 PluginOff, Click 1 PluginOff, SwitchUser, Handle, Deliver 0] "not asked for in this session"
-    it "nothing from an earlier session: a lost write's refusal shown to the next reader" $
-      fails
-        ( \e m -> case e of
-            Written t p (Left err) | not (t `madeAfter` m.sessionFrom) -> first (\m' -> m' {refused = Map.insert p err m'.refused}) (step e m)
-            _ -> step e m
-        )
-        [Click 0 PluginOff, Lose, SwitchUser, Handle, Deliver 0]
-        "of an earlier session, changed what is shown"
-    it "nothing from an earlier session: its answer drops options chosen in this one, which wait" $
-      fails
-        ( \e m -> case e of
-            Saved t _ | not (t `madeAfter` m.sessionFrom) -> first (\m' -> m' {queued = []}) (step e m)
-            _ -> step e m
-        )
-        [Tick 1 True, SwitchUser, SetOptions 1 (Just (Number 3)), SetOptions 0 (Just (Number 1)), Handle, Deliver 0]
-        "of an earlier session, changed what is shown"
-    it "a read after a write: a write's answer taken with no read after it" $
-      fails
-        ( \e m -> case (e, step e m) of
-            (Written {}, (m', [Load _])) -> (m' {flight = Nothing}, [])
-            (_, r) -> r
-        )
-        [Click 0 PluginOff, Handle, Deliver 0]
-        "no read was sent after"
-    it "a read after a load: a load of the session that reads nothing" $
-      fails (\e m -> case e of Refresh -> (m, []); _ -> step e m) [Reload] "no read was sent after"
-    it "the server's value once settled: a read's answer not taken" $
-      fails (\e m -> case e of Loaded {} -> first (\m' -> m' {known = m.known}) (step e m); _ -> step e m) [OtherTab 0 PluginOff, Reload, Handle, Deliver 0, Handle, Deliver 0] "where the server has"
-    it "a refusal cleared by a later success: a write's success that keeps it" $
-      fails
-        (\e m -> case e of Written {} -> first (\m' -> m' {refused = Map.union m'.refused m.refused}) (step e m); _ -> step e m)
-        [Click 0 PluginOff, Click 0 PluginOn, Lose, Handle, Deliver 0, Handle, Deliver 0]
-        "whose last write succeeded"
-    it "no read anew on opening: a view that reads what is read already" $
-      fails (\e m -> case e of Opened -> step Refresh m; _ -> step e m) [OpenView] "asks anew on opening"
-    it "the options chosen given while out: a choice of options not kept while its write is out" $
-      fails
-        (\e m -> case e of OptionsChosen {} -> first (\m' -> m' {writingOptions = m.writingOptions}) (step e m); _ -> step e m)
-        [SetOptions 0 (Just (Number 1))]
-        "their write is not answered"
-    it "the last options written: later options queued beside those that wait, not in their place" $
-      fails
-        ( \e m -> case e of
-            OptionsChosen p o | isJust m.flight -> (m {queued = m.queued <> [(m.session, OptionsWrite p o)], writingOptions = Map.insert p o m.writingOptions}, [])
-            _ -> step e m
-        )
-        [Reload, SetOptions 0 (Just (Number 1)), SetOptions 0 (Just (Number 2)), Handle, Deliver 0, Handle, Deliver 0]
-        "where the last chosen are"
-    it "no options shown that are not out: a write of options answered and still shown as out" $
-      fails
-        (\e m -> case e of OptionsWritten {} -> first (\m' -> m' {writingOptions = m.writingOptions}) (step e m); _ -> step e m)
-        [SetOptions 0 (Just (Number 1)), Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
-        "shows changes not out"
-    it "an options refusal told: a refused write of options not kept for the plugin's surfaces" $
-      fails
-        (\e m -> case e of OptionsWritten {} -> first (\m' -> m' {optionsRefused = m.optionsRefused}) (step e m); _ -> step e m)
-        [SetOptions 0 (Just Null), Handle, Deliver 0]
-        "tells the surfaces of"
-    it "an options refusal cleared by a later choice: options chosen that keep it" $
-      fails
-        (\e m -> case e of OptionsChosen {} -> first (\m' -> m' {optionsRefused = m.optionsRefused}) (step e m); _ -> step e m)
-        [SetOptions 0 (Just Null), Handle, Deliver 0, SetOptions 0 (Just (Number 1))]
-        "tells the surfaces of"
-    -- Options chosen while a write of others is out: the refusal of those
-    -- arrives after the choice, and the choice's success clears it.
-    it "an options refusal cleared by a later success: a success of options that keeps it" $
-      fails
-        (\e m -> case e of OptionsWritten _ _ (Right _) -> first (\m' -> m' {optionsRefused = m.optionsRefused}) (step e m); _ -> step e m)
-        [SetOptions 0 (Just Null), SetOptions 0 (Just (Number 1)), Handle, Deliver 0, Handle, Deliver 0]
-        "tells the surfaces of"
-    it "a refused switch not told to the surfaces: a write of a state's refusal told as one of options" $
-      fails
-        (\e m -> case e of Written _ p (Left err) -> first (\m' -> m' {optionsRefused = Map.insert p err m'.optionsRefused}) (step e m); _ -> step e m)
-        [Click 0 PluginOff, Lose, Handle, Deliver 0]
-        "tells the surfaces of"
-    it "an options refusal not on the row: a write of options' refusal shown on the plugin's row" $
-      fails
-        (\e m -> case e of OptionsWritten _ p (Left err) -> first (\m' -> m' {refused = Map.insert p err m'.refused}) (step e m); _ -> step e m)
-        [SetOptions 0 (Just Null), Handle, Deliver 0]
-        "a refusal that is no write of its state's"
-    it "a read after a write of options: its answer taken with no read after it" $
-      fails
-        ( \e m -> case (e, step e m) of
-            (OptionsWritten {}, (m', [Load _])) -> (m' {flight = Nothing}, [])
-            (_, r) -> r
-        )
-        [SetOptions 0 (Just (Number 1)), Handle, Deliver 0]
-        "no read was sent after"
-    it "a read in two requests: the second never sent" $
-      fails
-        ( \e m -> case (e, step e m) of
-            (Loaded {}, (m', [LoadInstalled _])) -> (m' {flight = Nothing}, [])
-            (_, r) -> r
-        )
-        [Reload, Handle, Deliver 0]
-        "the second not sent"
-    it "the server's plugins installed once settled: the second request's answer not taken" $
-      fails (\e m -> case e of LoadedInstalled {} -> first (\m' -> m' {installed = m.installed}) (step e m); _ -> step e m) [SwitchUser, Handle, Deliver 0, Handle, Deliver 0] "where the server has"
+    it "drops a write chosen before another reader signed in, and reads for the new one after the write out answered" $ do
+      let w = runOf [Click 0 PluginOff, Click 1 PluginOff, SwitchUser]
+      -- The new session's read waits for the write out.
+      map (\o -> o.effect) w.outs `shouldSatisfy` \case
+        [WriteState _ p PluginOff] -> p == assistant
+        _ -> False
+      let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0]
+      -- The administrator's first write was out and done; the second waited,
+      -- and went with the administrator's session.
+      Map.lookup (UserId "user-admin") w1.backend.pluginChoices `shouldBe` Just (Map.fromList [(assistant, choice PluginOff)])
+      Map.lookup (UserId "user-editor") w1.backend.pluginChoices `shouldBe` Nothing
+      knownNow w1.model `shouldBe` Just Plugins {offForWiki = mempty, mine = mempty}
+      w1.faults `shouldBe` []
+
+    it "drops options left waiting when the reader changes, in the step that gives the new session" $ do
+      let w = runOf [Reload, SetOptions 0 (Just (Number 1)), SwitchUser]
+      w.model.queued `shouldBe` []
+      w.model.writingOptions `shouldBe` mempty
+      optionsFor assistant (held w.model) `shouldBe` Nothing
+      let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
+      w1.outs `shouldSatisfy` null
+      Map.lookup (UserId "user-admin") w1.backend.pluginChoices `shouldBe` Nothing
+      w1.faults `shouldBe` []
+
+    it "keeps the plugins off for the wiki across a sign-in, until the new reader's read answers" $ do
+      let w = runOf [Tick 1 True, Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0, SwitchUser]
+      w.model.known `shouldBe` Nothing
+      (held w.model).offForWiki `shouldBe` Set.fromList [errors]
+      (held w.model).mine `shouldBe` mempty
+      let w1 = foldl' play w [Lose, Handle, Deliver 0]
+      w1.model.known `shouldBe` Just (Left (Unreachable "lost"))
+      (held w1.model).offForWiki `shouldBe` Set.fromList [errors]
+
+    -- Codex's fourth round on #374. The administrator saves "off for
+    -- everyone", and the shell loads the session, or a view opens, before
+    -- the save answers: the read waits for the save's answer, and sees the
+    -- save, from the server and not from the cache the save empties.
+    for_ [("", start), (", over the HTTP backend's cache", startCached)] $ \(how, w0) ->
+      it ("reads what a save out changed, not beside it" <> how) $ do
+        let w = foldl' play w0 [Tick 0 True, OpenView, Reload]
+        length w.outs `shouldBe` 1
+        let w1 = foldl' play w [Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
+        w1.outs `shouldSatisfy` null
+        (\k -> k.offForWiki) <$> knownNow w1.model `shouldBe` Just (Set.fromList [assistant])
+        (held w1.model).offForWiki `shouldBe` Set.fromList [assistant]
+        w1.faults `shouldBe` []
+
+    -- The other: a load of the session learns a choice made in another tab,
+    -- and the section's next choice keeps it, there being one value.
+    it "keeps a choice another tab made, which a load learnt, when the section chooses next" $ do
+      let w = runOf [OtherTab 0 PluginOff, Reload, Handle, Deliver 0]
+      (\k -> k.mine) <$> knownNow w.model `shouldBe` Just (Map.fromList [(assistant, choice PluginOff)])
+      let w1 = foldl' play w [Click 1 PluginOff, Handle, Deliver 0, Handle, Deliver 0]
+      (\k -> k.mine) <$> knownNow w1.model `shouldBe` Just (Map.fromList [(assistant, choice PluginOff), (errors, choice PluginOff)])
+      let w2 = foldl' play w1 [Handle, Deliver 0]
+      (\k -> k.mine) <$> knownNow w2.model `shouldBe` Just (Map.fromList [(assistant, choice PluginOff), (errors, choice PluginOff)])
+      w2.faults `shouldBe` []
+
+    -- Each rule, with a fault put in the step, and a run that shows it: so
+    -- that a rule that says something stays as it was is known able to fail.
+    describe "is shown able to fail, rule by rule" $ do
+      let fails faulty run rule = do
+            let w = runFaulty faulty run
+            w.faults `shouldSatisfy` any (T.isInfixOf rule)
+            -- And the same run with the real step keeps every rule.
+            (runOf run).faults `shouldBe` []
+      it "one ask at a time: a load that reads beside the save out" $
+        fails (\e m -> case e of Refresh -> step e m {flight = Nothing}; _ -> step e m) [Tick 0 True, Reload] "two asks out at once"
+      it "a write chosen in this session: a write queued before the sign-in, sent after it" $
+        fails (\e m -> case e of Given n -> first (\m' -> m' {queued = [(n, x) | (_, x) <- m.queued]}) (step e m); _ -> step e m) [Click 0 PluginOff, Click 1 PluginOff, SwitchUser, Handle, Deliver 0] "not asked for in this session"
+      it "nothing from an earlier session: a lost write's refusal shown to the next reader" $
+        fails
+          ( \e m -> case e of
+              Written t p (Left err) | not (t `madeAfter` m.sessionFrom) -> first (\m' -> m' {refused = Map.insert p err m'.refused}) (step e m)
+              _ -> step e m
+          )
+          [Click 0 PluginOff, Lose, SwitchUser, Handle, Deliver 0]
+          "of an earlier session, changed what is shown"
+      it "nothing from an earlier session: its answer drops options chosen in this one, which wait" $
+        fails
+          ( \e m -> case e of
+              Saved t _ | not (t `madeAfter` m.sessionFrom) -> first (\m' -> m' {queued = []}) (step e m)
+              _ -> step e m
+          )
+          [Tick 1 True, SwitchUser, SetOptions 1 (Just (Number 3)), SetOptions 0 (Just (Number 1)), Handle, Deliver 0]
+          "of an earlier session, changed what is shown"
+      it "a read after a write: a write's answer taken with no read after it" $
+        fails
+          ( \e m -> case (e, step e m) of
+              (Written {}, (m', [Load _])) -> (m' {flight = Nothing}, [])
+              (_, r) -> r
+          )
+          [Click 0 PluginOff, Handle, Deliver 0]
+          "no read was sent after"
+      it "a read after a load: a load of the session that reads nothing" $
+        fails (\e m -> case e of Refresh -> (m, []); _ -> step e m) [Reload] "no read was sent after"
+      it "the server's value once settled: a read's answer not taken" $
+        fails (\e m -> case e of Loaded {} -> first (\m' -> m' {known = m.known}) (step e m); _ -> step e m) [OtherTab 0 PluginOff, Reload, Handle, Deliver 0, Handle, Deliver 0] "where the server has"
+      it "a refusal cleared by a later success: a write's success that keeps it" $
+        fails
+          (\e m -> case e of Written {} -> first (\m' -> m' {refused = Map.union m'.refused m.refused}) (step e m); _ -> step e m)
+          [Click 0 PluginOff, Click 0 PluginOn, Lose, Handle, Deliver 0, Handle, Deliver 0]
+          "whose last write succeeded"
+      it "no read anew on opening: a view that reads what is read already" $
+        fails (\e m -> case e of Opened -> step Refresh m; _ -> step e m) [OpenView] "asks anew on opening"
+      it "the options chosen given while out: a choice of options not kept while its write is out" $
+        fails
+          (\e m -> case e of OptionsChosen {} -> first (\m' -> m' {writingOptions = m.writingOptions}) (step e m); _ -> step e m)
+          [SetOptions 0 (Just (Number 1))]
+          "their write is not answered"
+      it "the last options written: later options queued beside those that wait, not in their place" $
+        fails
+          ( \e m -> case e of
+              OptionsChosen p o | isJust m.flight -> (m {queued = m.queued <> [(m.session, OptionsWrite p o)], writingOptions = Map.insert p o m.writingOptions}, [])
+              _ -> step e m
+          )
+          [Reload, SetOptions 0 (Just (Number 1)), SetOptions 0 (Just (Number 2)), Handle, Deliver 0, Handle, Deliver 0]
+          "where the last chosen are"
+      it "no options shown that are not out: a write of options answered and still shown as out" $
+        fails
+          (\e m -> case e of OptionsWritten {} -> first (\m' -> m' {writingOptions = m.writingOptions}) (step e m); _ -> step e m)
+          [SetOptions 0 (Just (Number 1)), Handle, Deliver 0, Handle, Deliver 0, Handle, Deliver 0]
+          "shows changes not out"
+      it "an options refusal told: a refused write of options not kept for the plugin's surfaces" $
+        fails
+          (\e m -> case e of OptionsWritten {} -> first (\m' -> m' {optionsRefused = m.optionsRefused}) (step e m); _ -> step e m)
+          [SetOptions 0 (Just Null), Handle, Deliver 0]
+          "tells the surfaces of"
+      it "an options refusal cleared by a later choice: options chosen that keep it" $
+        fails
+          (\e m -> case e of OptionsChosen {} -> first (\m' -> m' {optionsRefused = m.optionsRefused}) (step e m); _ -> step e m)
+          [SetOptions 0 (Just Null), Handle, Deliver 0, SetOptions 0 (Just (Number 1))]
+          "tells the surfaces of"
+      -- Options chosen while a write of others is out: the refusal of those
+      -- arrives after the choice, and the choice's success clears it.
+      it "an options refusal cleared by a later success: a success of options that keeps it" $
+        fails
+          (\e m -> case e of OptionsWritten _ _ (Right _) -> first (\m' -> m' {optionsRefused = m.optionsRefused}) (step e m); _ -> step e m)
+          [SetOptions 0 (Just Null), SetOptions 0 (Just (Number 1)), Handle, Deliver 0, Handle, Deliver 0]
+          "tells the surfaces of"
+      it "a refused switch not told to the surfaces: a write of a state's refusal told as one of options" $
+        fails
+          (\e m -> case e of Written _ p (Left err) -> first (\m' -> m' {optionsRefused = Map.insert p err m'.optionsRefused}) (step e m); _ -> step e m)
+          [Click 0 PluginOff, Lose, Handle, Deliver 0]
+          "tells the surfaces of"
+      it "an options refusal not on the row: a write of options' refusal shown on the plugin's row" $
+        fails
+          (\e m -> case e of OptionsWritten _ p (Left err) -> first (\m' -> m' {refused = Map.insert p err m'.refused}) (step e m); _ -> step e m)
+          [SetOptions 0 (Just Null), Handle, Deliver 0]
+          "a refusal that is no write of its state's"
+      it "a read after a write of options: its answer taken with no read after it" $
+        fails
+          ( \e m -> case (e, step e m) of
+              (OptionsWritten {}, (m', [Load _])) -> (m' {flight = Nothing}, [])
+              (_, r) -> r
+          )
+          [SetOptions 0 (Just (Number 1)), Handle, Deliver 0]
+          "no read was sent after"
+      it "a read in two requests: the second never sent" $
+        fails
+          ( \e m -> case (e, step e m) of
+              (Loaded {}, (m', [LoadInstalled _])) -> (m' {flight = Nothing}, [])
+              (_, r) -> r
+          )
+          [Reload, Handle, Deliver 0]
+          "the second not sent"
+      it "the server's plugins installed once settled: the second request's answer not taken" $
+        fails (\e m -> case e of LoadedInstalled {} -> first (\m' -> m' {installed = m.installed}) (step e m); _ -> step e m) [SwitchUser, Handle, Deliver 0, Handle, Deliver 0] "where the server has"
 
 -- | Runs of uploads and removals, step by step.
 externalRuns :: Spec

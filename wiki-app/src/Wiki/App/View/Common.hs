@@ -158,6 +158,11 @@ data Context = Context
   -- ('Wiki.App.View.Plugins.Machine.readIn'). The built-in plugins run on
   -- the defaults meanwhile; an external plugin, which is sent the page's
   -- text, runs only once this is true.
+  , settingsRead :: Bool
+  -- ^ Whether 'plugins' is what this session's read answered, whatever
+  -- became of the read of 'external'
+  -- ('Wiki.App.View.Plugins.Machine.settingsReadIn'): what a built-in
+  -- plugin's kind of page waits for ("Wiki.App.View.NewPage").
   }
 
 -- | 'PageWidth' is how wide the page view lays a page out on a wide screen

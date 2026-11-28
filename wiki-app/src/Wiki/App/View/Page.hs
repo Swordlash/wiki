@@ -6,7 +6,8 @@
 -- its islands drawn), its attachments, and the actions the current user
 -- may take. Anyone who may read the page may read its source and its
 -- history, present it as slides if it is a presentation
--- ("Wiki.Core.Slides"), and export it as a document
+-- ("Wiki.Core.Slides"), read what a plugin shows of a page of its kind
+-- (a calendar's days: 'Wiki.App.Plugin.KindView'), and export it as a document
 -- ("Wiki.App.View.Export"). Someone who may edit it may also edit it, add
 -- a page under it, and rename, move or delete it. The space's home page,
 -- the page the space opens at, is edited and renamed only by whoever
@@ -130,6 +131,7 @@ module Wiki.App.View.Page
   )
 where
 
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.UUID (MonadUUID)
 import Data.Map.Strict qualified as Map
 import Data.Row (type (.+), type (.==))
@@ -160,7 +162,10 @@ import Wiki.App.Editor.Browser (focusInView, guardUnload)
 import Wiki.App.Islands (MonadIslands)
 import Wiki.App.Live (Feed (..), Heard)
 import Wiki.App.Live qualified as Live
+import Wiki.App.Plugin (Child (..), KindInput (..), KindView (..), Manifest (..), PluginId, linkTo)
+import Wiki.App.Plugin.Registry (Contributed (..), contributed, optionsFor, plugins, pluginsOn)
 import Wiki.App.Route (Against (..), Route (..), pageRoute)
+import Wiki.App.Route qualified as Route
 import Wiki.App.View.Body qualified as Body
 import Wiki.App.View.Comments qualified as CommentsView
 import Wiki.App.View.Comments.Machine (Threads (..))
@@ -190,7 +195,7 @@ import Wiki.Core.Page (Page (attachments, body, createdAt, createdBy, id, kind, 
 import Wiki.Core.PageKind (PageKind (..), isPresentation)
 import Wiki.Core.Permission (mayMovePage)
 import Wiki.Core.Slug (Slug)
-import Wiki.Core.Space (Space (encryption, homePage, id, name), rootPage)
+import Wiki.Core.Space (Space (encryption, homePage, id, name), pagePath, rootPage)
 import Wiki.Core.User (Avatar, User (id))
 import Wiki.Core.Version (Author (..), Version (..))
 
@@ -211,7 +216,7 @@ data Input = Input
   -- ^ The tab's live channel, on a backend that has one.
   }
 
-type Slots = Body.IslandSlots .+ ("deck" .== H.Slot (Const Void) Void Md.IslandKey) .+ ("deckView" .== H.Slot (Const Void) Void ()) .+ ("comments" .== H.Slot CommentsView.Query CommentsView.Output CommentsView.Placement) .+ ("watch" .== H.Slot (Const Void) Void ()) .+ ("star" .== H.Slot (Const Void) Void ()) .+ ("export" .== H.Slot (Const Void) Void ())
+type Slots = Body.IslandSlots .+ ("deck" .== H.Slot (Const Void) Void Md.IslandKey) .+ ("deckView" .== H.Slot (Const Void) Void ()) .+ ("kindView" .== H.Slot (Const Void) Void PluginId) .+ ("comments" .== H.Slot CommentsView.Query CommentsView.Output CommentsView.Placement) .+ ("watch" .== H.Slot (Const Void) Void ()) .+ ("star" .== H.Slot (Const Void) Void ()) .+ ("export" .== H.Slot (Const Void) Void ())
 
 data Loaded
   = Loading
@@ -344,7 +349,7 @@ data Action
   | ReloadLosingTicks
   | DismissTickNote
 
-component :: forall m. (MonadLoad m, MonadComments m, MonadNotifications m, MonadStars m, MonadEncryption m, MonadIslands m, MonadUUID m, MonadIO m) => H.Component ViewQuery Input ViewOutput m
+component :: forall m. (Typeable m, MonadLoad m, MonadComments m, MonadNotifications m, MonadStars m, MonadEncryption m, MonadIslands m, MonadUUID m, MonadUnliftIO m) => H.Component ViewQuery Input ViewOutput m
 component =
   H.mkComponent
     H.ComponentSpec
@@ -443,6 +448,7 @@ component =
                 <> [viewerOf place page | deck]
                 <> [textAndPanel st place rendered text page contents]
                 <> [ticksBar st]
+                <> kindViewOf input page
                 <> Reading.attachmentList page.attachments addresses
                 <> [commentsOf st place text page CommentsView.Below | commentsHere input]
           place = placeOf input page addresses (threadsOf st).people
@@ -538,8 +544,12 @@ component =
         -- document again ("Wiki.Core.PageKind"): for someone who may edit
         -- it, on every page except the space's home page, which is a
         -- document.
+        -- Not on a page of another kind (a calendar), whether its plugin
+        -- is on or off: nothing here makes a page that kind again.
         asPresentation =
-          [[hh|<button type="button" class="page-kind" aria-pressed={{ ariaBool deck }} title="A presentation is shown as slides, each top-level heading opening one" onClick={{ const (SetKind (if deck then Document else Presentation)) }}>Presentation</button>|]]
+          [ [hh|<button type="button" class="page-kind" aria-pressed={{ ariaBool deck }} title="A presentation is shown as slides, each top-level heading opening one" onClick={{ const (SetKind (if deck then Document else Presentation)) }}>Presentation</button>|]
+          | page.kind `elem` [Document, Presentation]
+          ]
 
     -- A note above a version of the page saying which it is, with a link
     -- to the page as it is now.
@@ -605,6 +615,32 @@ component =
     -- before), so that two viewers of one deck do not share them either.
     embedIds :: Md.IslandKey -> Text
     embedIds key = "deck-" <> T.map (\c -> if isAlphaNum c then c else '-') key.source <> "-" <> show key.occurrence <> "-"
+
+    -- What the plugin of the page's kind shows after the page's text
+    -- ('Wiki.App.Plugin.KindView'), when that plugin is on for the reader:
+    -- a calendar's days. Nothing on a version of the page, since the
+    -- pages under it are those of now, and nothing for a kind no plugin
+    -- that is on brings: the page is then a document.
+    kindViewOf :: Input -> Page -> [H.ComponentHTML Action Slots m]
+    kindViewOf input page =
+      [ HH.slot_ "kindView" owner.id k.surface KindInput {page, under, options = optionsFor owner.id input.context.plugins, mayEdit = mayEdit input.context page.space}
+      | isNothing input.version
+      , Just (owner, k) <- [find (\(_, v) -> v.kind == page.kind) (contributed (pluginsOn input.context) (plugins @m)).pageKinds]
+      ]
+      where
+        -- The pages under it, each with the link to its address. The
+        -- space's pages are indexed by id once a render, and only for a
+        -- page a plugin shows (the view keeps nothing derived from its
+        -- input between renders): a calendar has a page a day, and a
+        -- search of the list for each day and each page above it took
+        -- seconds a render for years of days.
+        index = Map.fromList [(p.id, p) | p <- input.pages]
+        spacePath = spacePathOf input.context.spaces input.space.id
+        under =
+          [ Child {page = c, link = linkTo input.context.router (maybe Route.Unknown (pageRoute spacePath) (pagePath input.space (`Map.lookup` index) c.id))}
+          | c <- input.pages
+          , c.parent == Just page.id
+          ]
 
     -- A presentation's viewer, above the page shown as a document (WP5.97
     -- of docs/PLAN.md), fed with the page the view has loaded.

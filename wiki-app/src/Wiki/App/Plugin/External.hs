@@ -29,6 +29,7 @@
 module Wiki.App.Plugin.External
   ( manifestOf
   , runnable
+  , reservedById
   , Heard (..)
   , diagnosticsOf
   )
@@ -37,7 +38,7 @@ where
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Protolude
-import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..))
+import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), reservedPluginIds)
 import Wiki.App.Plugin (Diagnostics (..), Drawn (..), Manifest (..))
 import Wiki.Core.Markdown.Problems (Problem)
 
@@ -56,14 +57,24 @@ manifestOf p = Manifest {id = p.manifest.id, name = p.manifest.name, description
 -- serves their frames: the wiki's while the policy is not off (an
 -- administrator is listed them always, to manage them), and a user's own
 -- while users may add theirs, unless the wiki has a plugin of the same id,
--- which runs in its place.
+-- which runs in its place. A plugin whose id a built-in plugin took after
+-- it was installed ('reservedById') runs neither: it is listed, to be
+-- removed.
 runnable :: ExternalPlugins -> [ExternalPlugin]
 runnable known = filter runs known.external
   where
     wikiIds = Set.fromList [p.manifest.id | p <- known.external, not p.mine]
     runs p
+      | reservedById p = False
       | p.mine = known.policy == ExternalUsers && not (Set.member p.manifest.id wikiIds)
       | otherwise = known.policy /= ExternalOff
+
+-- | Whether a plugin installed has the id of a plugin built into the wiki
+-- ('Wiki.Api.Plugins.External.reservedPluginIds'): one installed before a
+-- built-in plugin took its id. An upload of such an id is refused; one
+-- installed already does not run, and can be removed.
+reservedById :: ExternalPlugin -> Bool
+reservedById p = Set.member p.manifest.id reservedPluginIds
 
 -- | 'Heard' is what an external plugin last answered: the text it was
 -- sent, and the problems it found in that text. The problems' lines are

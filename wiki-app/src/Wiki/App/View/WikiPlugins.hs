@@ -46,6 +46,7 @@ import Wiki.Api.Plugins (PluginId (..))
 import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Owner (..))
 import Wiki.App.Islands.Monad (MonadIslands (..))
 import Wiki.App.Plugin (Manifest (..))
+import Wiki.App.Plugin.External (reservedById)
 import Wiki.App.Plugin.Registry (manifests)
 import Wiki.App.View.Common (attr, errorMessage)
 import Wiki.App.View.PluginUpload (changeText, hostsText, permissionText, readPluginFiles, refusalText, warning)
@@ -196,14 +197,19 @@ component =
             {% end %}
           </ul>
           <p class="plugin-hosts">{{ hostsText p.manifest.hosts }}</p>
+          {% if reservedById p %}
+            <p class="plugin-reserved account-note" role="note">{{ "Its id, " <> p.manifest.id.text <> ", is now a plugin's built into the wiki, so it does not run. Remove it, or install it again under another id." }}</p>
+          {% end %}
           {% for c in maybeToList (Map.lookup key m.changing) %}
             <p class="plugin-changing" role="status">{{ changeText c }}</p>
           {% end %}
           <div class="plugin-own-actions">
-            <label class="button plugin-replace">
-              Replace…
-              <input type="file" multiple aria-label={{ "Replace " <> p.manifest.name }} {{ [attr "accept" ".json,.js,.mjs"] }} onChange={{ FilesChosen (Just (p.manifest.id, p.bundle)) }}>
-            </label>
+            {% if not (reservedById p) %}
+              <label class="button plugin-replace">
+                Replace…
+                <input type="file" multiple aria-label={{ "Replace " <> p.manifest.name }} {{ [attr "accept" ".json,.js,.mjs"] }} onChange={{ FilesChosen (Just (p.manifest.id, p.bundle)) }}>
+              </label>
+            {% end %}
             <button type="button" class="plugin-remove" onClick={{ const (Happen (RemoveChosen TheWiki p.manifest.id p.bundle)) }}>Remove for everyone</button>
           </div>
           {% for e in maybeToList (Map.lookup key m.externalRefused) %}

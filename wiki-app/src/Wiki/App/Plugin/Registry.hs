@@ -37,8 +37,9 @@ import Protolude
 import Wiki.Api.Plugins (PluginChoice (..), PluginState (..), Plugins (..))
 import Wiki.Api.Plugins.External (ExternalPlugin, ExternalPlugins)
 import Wiki.App.Backend (WikiError (..))
-import Wiki.App.Plugin (Agent, Diagnostics, Manifest (..), Options, Plugin (..), PluginId)
+import Wiki.App.Plugin (Agent, Diagnostics, KindView, Manifest (..), Options, Plugin (..), PluginId)
 import Wiki.App.Plugin.Assistant (assistant, assistantId)
+import Wiki.App.Plugin.Calendar (calendar)
 import Wiki.App.Plugin.Errors (errors)
 import Wiki.App.Plugin.External (manifestOf, runnable)
 import Wiki.App.View.Common (Context (..), errorMessage)
@@ -46,7 +47,7 @@ import Wiki.App.View.Common (Context (..), errorMessage)
 -- | Every plugin built into the wiki, in the order their contributions are
 -- shown.
 plugins :: (Typeable m, MonadUUID m, MonadUnliftIO m) => [Plugin m]
-plugins = [assistant, errors]
+plugins = [assistant, errors, calendar]
 
 -- | The manifests of every plugin built into the wiki, in the registry's
 -- order: what the settings list.
@@ -87,12 +88,15 @@ externalOn known installed = [p | p <- runnable installed, isOn known (manifestO
 
 -- | 'Contributed' is what the plugins that are on give the editor and the
 -- pages, each kind of contribution in the plugins' order. The editor has
--- room for one agent: the first plugin's that is on. A plugin's options
+-- room for one agent: the first plugin's that is on. The kinds of page are
+-- what "New page" offers after a document and a presentation, and what the
+-- page view shows a page of the kind with. A plugin's options
 -- are not here: they are reachable whether the plugin is on or off
 -- ('optionsOf').
 data Contributed m = Contributed
   { diagnostics :: [Diagnostics]
   , agent :: Maybe (Manifest, Agent m)
+  , pageKinds :: [(Manifest, KindView m)]
   }
 
 -- | What the plugins among the given ones whose ids are in the set
@@ -102,6 +106,7 @@ contributed chosenIds given =
   Contributed
     { diagnostics = mapMaybe (\p -> p.diagnostics) chosen
     , agent = head [(p.manifest, a) | p <- chosen, Just a <- [p.agent]]
+    , pageKinds = [(p.manifest, k) | p <- chosen, Just k <- [p.pageKind]]
     }
   where
     chosen = filter (\p -> Set.member p.manifest.id chosenIds) given

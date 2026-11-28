@@ -1501,7 +1501,7 @@ setPageTemplateIn pid template st = do
 setPageKindIn :: PageId -> PageKind -> Write Page
 setPageKindIn pid kind st = do
   unless (kind `elem` knownKinds) $
-    Left (Invalid ("A page is a document or a presentation, not “" <> pageKindName kind <> "”."))
+    Left (Invalid ("A page is a document, a presentation or a calendar, not “" <> pageKindName kind <> "”."))
   p <- findPage st pid
   (s, c) <- findSpace st p.space
   requireEdit st c
@@ -1520,7 +1520,7 @@ createPageIn = createPageOfIn Document
 createPageOfIn :: PageKind -> SpaceId -> Maybe PageId -> Text -> Text -> UTCTime -> Write Page
 createPageOfIn kind sid asked title body now st = do
   unless (kind `elem` knownKinds) $
-    Left (Invalid ("A page is a document or a presentation, not “" <> pageKindName kind <> "”."))
+    Left (Invalid ("A page is a document, a presentation or a calendar, not “" <> pageKindName kind <> "”."))
   (s, c) <- findSpace st sid
   let parent = Space.parentOrRoot s asked
   parentPage <- traverse (findPage st) parent

@@ -1,5 +1,6 @@
--- | 'PageKind' is what a page is: a document or a presentation (WP5.97 of
--- docs/PLAN.md, issue #191). The kind is chosen when the page is made and
+-- | 'PageKind' is what a page is: a document, a presentation (WP5.97 of
+-- docs/PLAN.md, issue #191), or a kind a built-in plugin brings, such as
+-- the calendar ('calendarKind'; WP5.93). The kind is chosen when the page is made and
 -- stored with the page, as a space's blog flag is stored with the space.
 -- It decides how the page is shown, never what its Markdown says: a
 -- document is read as a page, and a presentation is presented as slides
@@ -8,14 +9,17 @@
 -- The kind is a property of the page, not of a version: changing it saves
 -- no version, and the history does not show it, as for a template.
 --
--- A kind this program does not know ('OtherKind'), written by a newer
--- program or, later, by a plugin, is kept as it is written and shown as a
--- document. Only the known kinds can be chosen.
+-- A plugin's kind is an 'OtherKind' by its name: wiki-core does not know
+-- the plugins, and a kind with no plugin on to show it is shown as a
+-- document. A kind this program does not know at all, written by a newer
+-- program, is kept as it is written and shown as a document too. Only the
+-- known kinds ('knownKinds') can be chosen.
 module Wiki.Core.PageKind
   ( PageKind (..)
   , pageKindName
   , pageKindOf
   , knownKinds
+  , calendarKind
   , isPresentation
   )
 where
@@ -54,9 +58,17 @@ pageKindOf name = case T.strip name of
   other -> OtherKind other
 
 -- | The kinds a page can be made with or changed to, in the order "New
--- page" offers them.
+-- page" offers them. The kinds of the built-in plugins are here, whether
+-- the plugin is on or off: the server does not know which plugins a reader
+-- has on, and a page of a plugin's kind with the plugin off is shown as a
+-- document. A test keeps every built-in plugin's kind in this list.
 knownKinds :: [PageKind]
-knownKinds = [Document, Presentation]
+knownKinds = [Document, Presentation, calendarKind]
+
+-- | The kind of a calendar's page, which the built-in plugin "calendar"
+-- shows with its days, the pages under it titled with a date.
+calendarKind :: PageKind
+calendarKind = OtherKind "calendar"
 
 -- | Whether a page of this kind is presented as slides.
 isPresentation :: PageKind -> Bool

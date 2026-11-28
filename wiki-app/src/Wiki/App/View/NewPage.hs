@@ -8,8 +8,9 @@
 -- A page created and then left without a word written stays, empty; it is
 -- deleted with the page's Delete, as any other page is.
 --
--- A page is a document or a presentation ("Wiki.Core.PageKind"), chosen
--- first: the two kinds are the form's first choice (the owner, issue
+-- A page is a document or a presentation ("Wiki.Core.PageKind"), or of a
+-- kind a plugin that is on brings (a calendar: 'Wiki.App.Plugin.KindView'),
+-- chosen first: the kinds are the form's first choice (the owner, issue
 -- #191). Then it starts blank, or from a template of that kind
 -- ("Wiki.Core.Template"): one of the space's own (its pages marked
 -- 'Wiki.Core.Page.template'), or one built into the wiki (meeting notes, a
@@ -41,6 +42,8 @@ import Halogen.Router qualified as Router
 import Halogen.TH (hh)
 import Protolude hiding (State)
 import Wiki.App.Backend (MonadWiki (..), Session (..), WikiError (..))
+import Wiki.App.Plugin (KindView (..))
+import Wiki.App.Plugin.Registry (Contributed (..), contributed, plugins, pluginsOn)
 import Wiki.App.Route (Route (..), pageRoute)
 import Wiki.App.View.Common
 import Wiki.Core.Id (PageId)
@@ -72,9 +75,22 @@ data State = State
   -- ^ The kind of page to make.
   , start :: Start
   -- ^ What the page starts from, among the templates of that kind.
-  , creating :: Bool
+  , submitted :: Maybe Submitted
+  -- ^ The submission being carried out, if any. Changed by 'Submit', by
+  -- the answer to its create, and by 'unsubmitted'.
+  , submissions :: Int
+  -- ^ How many submissions were made: the next one's ticket.
   , problem :: Maybe WikiError
   }
+
+-- | 'Submitted' is where a submission is. A submission whose template is
+-- being fetched ('Fetching', with its ticket) is dropped by anything that
+-- changes what it would make: another kind, start, title, parent or space,
+-- or a template no longer offered. The continuation after the fetch
+-- creates the page only while its own ticket is the state's. A create
+-- sent ('Sending') cannot be taken back, and is not dropped.
+data Submitted = Fetching Int | Sending
+  deriving stock (Eq, Show)
 
 -- | What a new page starts from.
 data Start
@@ -91,7 +107,7 @@ component :: forall query m. (MonadWiki m, MonadIO m) => H.Component query Input
 component =
   H.mkComponent
     H.ComponentSpec
-      { initialState = \input -> pure State {input, title = "", kind = Document, start = Blank, creating = False, problem = Nothing}
+      { initialState = \input -> pure State {input, title = "", kind = Document, start = Blank, submitted = Nothing, submissions = 0, problem = Nothing}
       , render
       , eval = H.mkEval H.defaultEval {H.handleAction = handleAction, H.receive = Just . Receive}
       }
@@ -121,8 +137,9 @@ component =
                 </label>
                 <fieldset class="new-page-kind">
                   <legend>Kind</legend>
-                  {{ kindChoice Document "Document" "A page, read as a document." }}
-                  {{ kindChoice Presentation "Presentation" "A deck of slides, presented one at a time." }}
+                  {% for (kind, label, hint) in kindsOffered ctx %}
+                    {{ kindChoice kind label hint }}
+                  {% end %}
                 </fieldset>
                 <fieldset class="new-page-start">
                   <legend>Start from</legend>
@@ -134,7 +151,7 @@ component =
                     {{ choice (BuiltIn t.key) t.title "Built in." }}
                   {% end %}
                 </fieldset>
-                <button type="submit" class="primary" disabled={{ st.creating }}>Create and edit</button>
+                <button type="submit" class="primary" disabled={{ isJust st.submitted }}>Create and edit</button>
                 {{ Router.link ctx.router Followed (leaving input) [HP.class_ "button"] [HH.text "Cancel"] }}
               </form>
             |]
@@ -159,27 +176,54 @@ component =
 
     handleAction :: Action -> H.HalogenM State Action Empty ViewOutput m ()
     handleAction = \case
-      Receive input -> modify (\st -> st {input})
+      Receive input -> modify (received input)
       Followed f -> gets (\st -> st.input.context.router) >>= (`Router.follow` f)
-      Typed title -> modify (\st -> st {title})
+      Typed title -> modify (\st -> unsubmitted st {title})
       -- Another kind has other templates: the page starts blank again.
-      ChoseKind kind -> modify (\st -> st {kind, start = if kind == st.kind then st.start else Blank})
-      Chose start -> modify (\st -> st {start})
+      ChoseKind kind -> modify (\st -> unsubmitted st {kind, start = if kind == st.kind then st.start else Blank})
+      Chose start -> modify (\st -> unsubmitted st {start})
       Submit -> do
         st <- get
         case under st.input of
-          Right parentPage | not st.creating -> do
-            modify (\s -> s {creating = True, problem = Nothing})
+          Right parentPage | isNothing st.submitted -> do
+            let ticket = st.submissions + 1
+            modify (\s -> s {submitted = Just (Fetching ticket), submissions = ticket, problem = Nothing})
             body <- startingBody st
-            result <- createPageOf st.kind st.input.space.id ((\p -> p.id) <$> parentPage) st.title body
-            modify (\s -> s {creating = False})
-            case result of
-              Left e -> modify (\s -> s {problem = Just e})
-              -- The editor, on the page just created: the shell reloads the
-              -- space's pages, which now include it, and navigates there.
-              Right page ->
-                H.raise (Changed (Just (EditPage (spacePathOf st.input.context.spaces st.input.space.id) (fromMaybe [] st.input.parent <> [page.slug]))))
+            -- The fetch of a template waits, and the form may change
+            -- meanwhile (the kind's plugin turned off, then on again):
+            -- the create is decided here, in the step that sends it, by
+            -- the submission's ticket.
+            still <- state (\s -> if s.submitted == Just (Fetching ticket) then (True, s {submitted = Just Sending}) else (False, s))
+            when still $ do
+              result <- createPageOf st.kind st.input.space.id ((\p -> p.id) <$> parentPage) st.title body
+              modify (\s -> s {submitted = Nothing})
+              case result of
+                Left e -> modify (\s -> s {problem = Just e})
+                -- The editor, on the page just created: the shell reloads the
+                -- space's pages, which now include it, and navigates there.
+                Right page ->
+                  H.raise (Changed (Just (EditPage (spacePathOf st.input.context.spaces st.input.space.id) (fromMaybe [] st.input.parent <> [page.slug]))))
           _ -> pass
+
+-- | The form given a new input. A kind no longer offered (its plugin
+-- turned off) is a document again, which starts blank; a space's template
+-- no longer among its pages, or another space, starts blank. Each of
+-- these, and another parent, drops a submission whose template is being
+-- fetched ('unsubmitted').
+received :: Input -> State -> State
+received input st
+  | st.kind `notElem` map (\(k, _, _) -> k) (kindsOffered input.context) = unsubmitted st {input, kind = Document, start = Blank}
+  | input.space.id /= st.input.space.id = unsubmitted st {input, start = Blank}
+  | SpaceTemplate pid <- st.start, pid `notElem` [t.id | t <- templatePages input.pages] = unsubmitted st {input, start = Blank}
+  | input.parent /= st.input.parent = unsubmitted st {input}
+  | otherwise = st {input}
+
+-- | The form with a submission whose template is being fetched dropped:
+-- what it would make has changed. A create already sent stays.
+unsubmitted :: State -> State
+unsubmitted st = case st.submitted of
+  Just (Fetching _) -> st {submitted = Nothing}
+  _ -> st
 
 -- | The new page's body: empty, or the chosen template with its
 -- placeholders filled in. A space template is fetched from the backend
@@ -200,6 +244,23 @@ startingBody st = case st.start of
       today <- utctDay <$> H.sync (liftIO getCurrentTime)
       let author = maybe "" (\u -> u.displayName) st.input.context.session.user
       pure (fillTemplate Placeholders {Template.title = T.strip st.title, Template.date = today, Template.author = author} body)
+
+-- | The kinds the form offers, each with its label and hint: a document,
+-- a presentation, then the kinds of the plugins that are on for the
+-- reader, in the registry's order. Only their labels are read here, so
+-- the plugins are taken in 'IO', as the editor takes their diagnostics.
+--
+-- A plugin's kind is offered only once this session's read of what is on
+-- has answered ('Context''s @settingsRead@): before it, or when it failed,
+-- the context holds the defaults, which would offer a kind the reader or
+-- the wiki turned off. The read of the external plugins installed is not
+-- waited for: it brings no kind of page.
+kindsOffered :: Context -> [(PageKind, Text, Text)]
+kindsOffered ctx =
+  [ (Document, "Document", "A page, read as a document.")
+  , (Presentation, "Presentation", "A deck of slides, presented one at a time.")
+  ]
+    <> [(k.kind, k.label, k.hint) | ctx.settingsRead, (_, k) <- (contributed (pluginsOn ctx) (plugins @IO)).pageKinds]
 
 -- | The page the new one goes under, if the route names one; 'Nothing'
 -- for the space's top level, which the backend reads as under the space's

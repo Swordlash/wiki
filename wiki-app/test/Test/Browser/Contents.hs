@@ -192,7 +192,7 @@ spec m = do
   it "makes a presentation, offering a presentation's templates only, and starts a document again blank" $ runPage $ do
     (ui, wiki) <- startWith m (Just "user-editor") (NewPage (slugs ["blog"]) Nothing)
     kinds <- traverse textContent =<< findAll ui ".new-page-kind-choice"
-    map (T.takeWhile (/= ' ') . T.strip) kinds `shouldBe` ["Document", "Presentation"]
+    map (T.takeWhile (/= ' ') . T.strip) kinds `shouldBe` ["Document", "Presentation", "Calendar"]
     chooseKind ui "Presentation"
     eventually $ (map (T.takeWhile (/= ' ') . T.strip) <$> (traverse textContent =<< findAll ui ".new-page-choice")) `shouldReturn` ["Blank", "Starter"]
     chooseStart ui "Starter deck"
@@ -210,6 +210,36 @@ spec m = do
     made.kind `shouldBe` Kind.Presentation
     T.take 19 made.body `shouldBe` "# Quarterly review\n"
     made.body `shouldSatisfy` (not . T.isInfixOf "{{")
+
+  it "makes a calendar, adds a day under it from the template, lists the day and opens it" $ runPage $ do
+    (ui, wiki) <- startWith m (Just "user-admin") (NewPage (slugs ["team"]) Nothing)
+    chooseKind ui "Calendar"
+    -- A calendar has no templates of its own. Choosing a kind asks
+    -- nothing: the click's settle is the form drawn again, read once.
+    (map (T.takeWhile (/= ' ') . T.strip) <$> (traverse textContent =<< findAll ui ".new-page-choice")) `shouldReturn` ["Blank"]
+    find ui ".new-page-title" >>= (`typeText` "Days")
+    find ui ".new-page-view button.primary" >>= click
+    find ui ".editor-heading" >>= (`shouldHaveText` "Editing Days")
+    (\p -> p.kind) <$> readPage wiki ["team"] ["days"] `shouldReturn` Kind.calendarKind
+    treeLink ui "Days" >>= click
+    find ui ".calendar-empty" >>= (`shouldHaveText` "No days yet. To add one, make a page under this calendar titled with its date, such as 2026-11-27, from the template “Day”.")
+    length <$> findAll ui ".page-actions .page-kind" `shouldReturn` 0
+    -- A day: a page under the calendar, titled with its date, from the
+    -- template "Day".
+    find ui ".page-actions a[href*='/new-page/']" >>= click
+    find ui ".new-page-title" >>= (`typeText` "2026-11-27")
+    chooseStart ui "Day"
+    find ui ".new-page-view button.primary" >>= click
+    find ui ".editor-heading" >>= (`shouldHaveText` "Editing 2026-11-27")
+    day <- readPage wiki ["team"] ["days", "2026-11-27"]
+    day.kind `shouldBe` Kind.Document
+    day.body `shouldSatisfy` T.isInfixOf "{.day}"
+    treeLink ui "Days" >>= click
+    find ui ".calendar-day a" >>= (`shouldHaveText` "Friday, 27 November 2026")
+    length <$> findAll ui ".calendar-empty" `shouldReturn` 0
+    find ui ".calendar-day a" >>= click
+    find ui ".page-view h1" >>= (`shouldHaveText` "2026-11-27")
+    length <$> findAll ui ".calendar-days" `shouldReturn` 0
 
   it "makes a page a presentation, which is offered to be presented, and a document again" $ runPage $ do
     (ui, wiki) <- startWith m (Just "user-admin") (Page (slugs ["docs"]) (slugs ["markdown-guide", "diagrams"]))
@@ -252,6 +282,13 @@ spec m = do
       case labelled of
         c : _ -> findIn c "input" >>= click
         [] -> expectationFailure ("no kind says " <> toS label)
+    -- The link to a page of the space in the sidebar's tree, by its title.
+    treeLink ui title = do
+      links <- findAll ui ".wiki-sidebar .page-tree a"
+      named <- filterM (fmap ((== title) . T.strip) . textContent) links
+      case named of
+        l : _ -> pure l
+        [] -> expectationFailure ("no page in the tree is called " <> toS title)
     chooseStart ui label = do
       choices <- findAll ui ".new-page-choice"
       labelled <- filterM (fmap (T.isPrefixOf label . T.strip) . textContent) choices

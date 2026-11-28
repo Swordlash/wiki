@@ -47,7 +47,7 @@ secretiveManifest =
 
 -- | The plugin: its settings and nothing else.
 secretive :: (Typeable m, MonadIO m) => Plugin m
-secretive = Plugin {manifest = secretiveManifest, diagnostics = Nothing, agent = Nothing, options = Just (Options settings)}
+secretive = Plugin {manifest = secretiveManifest, diagnostics = Nothing, agent = Nothing, pageKind = Nothing, options = Just (Options settings)}
 
 type Slots = ("secret" .== H.Slot (Const Void) FieldOutput FieldSlot)
 

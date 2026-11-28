@@ -170,7 +170,7 @@ genPage = do
 -- | A page's kind: the two this program knows, and one it does not, which
 -- an archive keeps as written.
 genPageKind :: Gen PageKind
-genPageKind = elements [Document, Presentation, OtherKind "calendar"]
+genPageKind = elements [Document, Presentation, OtherKind "board"]
 
 genAvatar :: Gen Avatar
 genAvatar = Avatar <$> genBlobId <*> elements iconMediaTypes

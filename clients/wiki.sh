@@ -2782,7 +2782,7 @@ cmd_create() {
       --file=*) file=${1#--file=} ;;
       --title) [ $# -ge 2 ] || { usage "--title needs a title"; return; }; title=$2; shift ;;
       --title=*) title=${1#--title=} ;;
-      --kind) [ $# -ge 2 ] || { usage "--kind needs document or presentation"; return; }; kind=$2; shift ;;
+      --kind) [ $# -ge 2 ] || { usage "--kind needs document, presentation or calendar"; return; }; kind=$2; shift ;;
       --kind=*) kind=${1#--kind=} ;;
       -*) usage "create does not take $1"; return ;;
       *) take_page_argument "$1" || return ;;
@@ -2791,8 +2791,8 @@ cmd_create() {
   done
   [ -n "$first" ] || { usage "create needs the new page's address, or a space's path and the new page's path"; return; }
   case $kind in
-    '' | document | presentation) ;;
-    *) usage "--kind is document or presentation"; return ;;
+    '' | document | presentation | calendar) ;;
+    *) usage "--kind is document, presentation or calendar"; return ;;
   esac
   load_config || return
   page_address "$first" "$second" || return
@@ -3118,7 +3118,7 @@ wiki.sh: the wiki from a shell, through its API for programs.
       directory of your own, since the put moves that version on. A put
       writes a page that exists and never makes one: at an address with no
       page it is "not found" (exit 4).
-  wiki.sh create PAGE [--title TITLE] [--kind document|presentation] [--file FILE]
+  wiki.sh create PAGE [--title TITLE] [--kind document|presentation|calendar] [--file FILE]
       Make a new page at PAGE (/s/team/p/new-page/, or team new-page) with
       the Markdown of FILE or standard input (none: empty). It only
       creates: a page already there is refused (exit 5) and nothing is

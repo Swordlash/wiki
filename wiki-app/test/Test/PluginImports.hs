@@ -99,7 +99,7 @@ spec = describe "the plugins' imports" $ do
   it "hold for every module of the application" $ do
     modules <- modulesUnder ["Wiki"]
     -- The scan reads the plugins themselves, not an empty directory.
-    let expected = ["Wiki.App.Plugin", "Wiki.App.Plugin.Assistant", "Wiki.App.Plugin.Assistant.Agent", "Wiki.App.Plugin.Assistant.Icons", "Wiki.App.Plugin.Assistant.Options", "Wiki.App.Plugin.Assistant.Panel", "Wiki.App.Plugin.Capability.Assistant", "Wiki.App.Plugin.Errors", "Wiki.App.Plugin.Host", "Wiki.App.Plugin.Registry"]
+    let expected = ["Wiki.App.Plugin", "Wiki.App.Plugin.Assistant", "Wiki.App.Plugin.Assistant.Agent", "Wiki.App.Plugin.Assistant.Icons", "Wiki.App.Plugin.Assistant.Options", "Wiki.App.Plugin.Assistant.Panel", "Wiki.App.Plugin.Calendar", "Wiki.App.Plugin.Capability.Assistant", "Wiki.App.Plugin.Errors", "Wiki.App.Plugin.Host", "Wiki.App.Plugin.Registry"]
     sort [name | (name, _) <- modules, name `elem` expected] `shouldBe` sort expected
     broken <- for modules $ \(name, path) -> do
       source <- decodeUtf8 <$> BS.readFile path

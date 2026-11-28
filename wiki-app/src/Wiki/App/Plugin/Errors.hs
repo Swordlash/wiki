@@ -27,6 +27,7 @@ errors =
     { manifest = builtin "errors" "Errors of formulas and diagrams" "Marks in the editor's text the formulas, diagrams and TikZ pictures that cannot be drawn, with the reason."
     , diagnostics = Just (Diagnostics islandFailures)
     , agent = Nothing
+    , pageKind = Nothing
     , options = Nothing
     }
 

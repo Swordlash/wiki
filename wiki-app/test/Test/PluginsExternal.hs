@@ -85,6 +85,14 @@ registry = describe "which installed plugins run" $ do
     ids (runnable ExternalPlugins {policy = ExternalOff, external = all'}) `shouldBe` []
     ids (runnable ExternalPlugins {policy = ExternalWiki, external = all'}) `shouldBe` ["spell"]
     (map (\p -> p.bundle) . runnable) ExternalPlugins {policy = ExternalUsers, external = all'} `shouldBe` ["a1", "b1"]
+    -- One installed under an id a built-in plugin took since runs under
+    -- no policy, the wiki's or a user's own.
+    let taken = [plugin "calendar" "d1" False, plugin "calendar" "e1" True]
+    for_ [ExternalOff, ExternalWiki, ExternalUsers] $ \policy ->
+      (map (\p -> p.bundle) . runnable) ExternalPlugins {policy, external = all' <> taken} `shouldBe` map (\p -> p.bundle) (runnable ExternalPlugins {policy, external = all'})
+
+  it "runs no user's own plugin under a reserved id, with no plugin of the wiki's of that id to run in its place" $
+    (map (\p -> p.bundle) . runnable) ExternalPlugins {policy = ExternalUsers, external = [plugin "mine" "b1" True, plugin "calendar" "f1" True]} `shouldBe` ["b1"]
 
   it "is on by default, and off as the user or the administrator turned it off, by the rule of the built-in plugins" $ do
     let installed = ExternalPlugins {policy = ExternalUsers, external = [plugin "spell" "a1" False, plugin "mine" "b1" True]}

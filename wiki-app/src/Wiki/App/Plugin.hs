@@ -5,7 +5,8 @@
 -- A plugin is a 'Manifest' and its contributions. A contribution is what
 -- the plugin gives the wiki, and the host calls it: 'Diagnostics',
 -- problems the editor marks in the text; an 'Agent', which works on the
--- page beside the author; and 'Options', the plugin's settings. A
+-- page beside the author; a 'KindView', a kind of page and how its page
+-- is shown; and 'Options', the plugin's settings. A
 -- plugin's own options, which the server keeps for each user in the clear
 -- (decision 69), come with the input of each of its surfaces, and a
 -- surface changes them by telling the host ('SetOptions',
@@ -51,6 +52,11 @@ module Wiki.App.Plugin
   , AgentButton (..)
   , Face (..)
 
+    -- * A kind of page
+  , KindView (..)
+  , KindInput (..)
+  , Child (..)
+
     -- * Options
   , Options (..)
   , OptionsInput (..)
@@ -73,11 +79,11 @@ module Wiki.App.Plugin
   , Local (..)
 
     -- * Links
-  , OptionsLink
-  , optionsLinkTo
+  , Link
+  , linkTo
   , LinkClick
-  , optionsLinkProps
-  , followOptionsLink
+  , linkProps
+  , followLink
 
     -- * Helpers for surfaces
   , attr
@@ -106,6 +112,8 @@ import Wiki.Core.Assistant.Prompt (Span)
 import Wiki.Core.Id (UserId)
 import Wiki.Core.Markdown.Problems (IslandPlace, Problem)
 import Wiki.Core.Markdown.Render (IslandKey)
+import Wiki.Core.Page (Page, PageSummary)
+import Wiki.Core.PageKind (PageKind)
 import Wiki.Core.Vault.Plugin (SecretName (..))
 
 -- 'PluginId' is a plugin's name for the program, the server's type
@@ -152,6 +160,7 @@ data Plugin m = Plugin
   { manifest :: Manifest
   , diagnostics :: Maybe Diagnostics
   , agent :: Maybe (Agent m)
+  , pageKind :: Maybe (KindView m)
   , options :: Maybe (Options m)
   }
 
@@ -266,6 +275,48 @@ data Face = Logo Text (Maybe Text) | ChatGlyph | Letter Text
   deriving stock (Eq, Show)
 
 --------------------------------------------------------------------------------
+-- A kind of page
+
+-- | 'KindView' is a contribution of a kind of page: the 'kind' a page is
+-- made with, its 'label' and 'hint' among the kinds "New page" offers, and
+-- the 'surface' the page view shows on a page of the kind, after the
+-- page's own text. While the plugin is off, "New page" does not offer the
+-- kind, and a page of the kind is shown as a document. The kind must be
+-- one of "Wiki.Core.PageKind"'s @knownKinds@, which the backends take.
+--
+-- The surface draws from its input alone: it asks no backend, and reads
+-- no clock, so that the page the server renders ahead of the program is
+-- the page the program shows. It is not shown on an old version of the
+-- page: what the input holds is of the page as it is now.
+data KindView m = KindView
+  { kind :: PageKind
+  , label :: Text
+  , hint :: Text
+  , surface :: H.Component (Const Void) KindInput Void m
+  }
+
+-- | 'KindInput' is what the page view gives a 'KindView''s surface each
+-- time it renders: the page, the pages directly under it in the space's
+-- order ('Child'), the plugin's options for the reader ('AgentInput''s
+-- @options@), and whether the reader may edit the page's space.
+data KindInput = KindInput
+  { page :: Page
+  , under :: [Child]
+  , options :: Maybe Value
+  , mayEdit :: Bool
+  }
+  deriving stock (Eq)
+
+-- | 'Child' is a page directly under the page shown, as the space's list
+-- of pages holds it (in an encrypted space, with its title decrypted in
+-- this browser), and the link that opens it.
+data Child = Child
+  { page :: PageSummary
+  , link :: Link
+  }
+  deriving stock (Eq)
+
+--------------------------------------------------------------------------------
 -- Options
 
 -- | 'Options' is a plugin's settings: a component the settings page shows
@@ -303,7 +354,7 @@ newtype OptionsOutput = SaveOptions (Maybe Value)
 -- | 'Capabilities' is what a plugin may ask of the host, as functions:
 -- whether a browser is there to run it ('here'; a page rendered ahead of
 -- the program has none); whether the page is a secure context ('secure');
--- a link to the plugin's settings ('optionsLink'); its secrets, in the
+-- a link to the plugin's settings ('optionsLink', a 'Link'); its secrets, in the
 -- user's vault ('secrets'); its cache in this browser ('local'); and the
 -- capabilities that only the writing assistant uses
 -- ("Wiki.App.Plugin.Capability.Assistant").
@@ -316,7 +367,7 @@ newtype OptionsOutput = SaveOptions (Maybe Value)
 data Capabilities m = Capabilities
   { here :: m Bool
   , secure :: m Bool
-  , optionsLink :: OptionsLink
+  , optionsLink :: Link
   , secrets :: Secrets m
   , local :: Local m
   , assistant :: AssistantCapabilities m
@@ -456,23 +507,32 @@ data Local m = Local
 --------------------------------------------------------------------------------
 -- Links
 
--- | 'OptionsLink' is a link to a plugin's settings, which the application
--- follows itself ('optionsLinkProps', 'followOptionsLink').
-data OptionsLink = OptionsLink (Router Route) Route
+-- | 'Link' is a link to a place of the wiki that the host chose (a
+-- plugin's settings, a page), which the application follows itself
+-- ('linkProps', 'followLink'). A plugin cannot name the wiki's routes:
+-- the host makes each link, and the plugin draws it and follows its
+-- clicks.
+data Link = Link (Router Route) Route
+
+-- | Two links are the same when they lead to the same route: the
+-- application has one router. A surface given an input equal to the one
+-- it has draws nothing again.
+instance Eq Link where
+  Link _ a == Link _ b = a == b
 
 -- | The link to a route of this router: for the host, which makes the
--- capabilities.
-optionsLinkTo :: Router Route -> Route -> OptionsLink
-optionsLinkTo = OptionsLink
+-- capabilities and the inputs.
+linkTo :: Router Route -> Route -> Link
+linkTo = Link
 
--- | 'LinkClick' is a plain click on an 'OptionsLink', to follow.
+-- | 'LinkClick' is a plain click on a 'Link', to follow.
 newtype LinkClick = LinkClick (Follow Route)
 
--- | The properties of an @\<a>@ that links to a plugin's settings: its
--- address, and its plain click, handed to the component as an action.
-optionsLinkProps :: OptionsLink -> (LinkClick -> action) -> [HP.IProp I.HTMLa action]
-optionsLinkProps (OptionsLink router route) onFollow = Router.linkProps router (onFollow . LinkClick) route
+-- | The properties of an @\<a>@ that is a 'Link': its address, and its
+-- plain click, handed to the component as an action.
+linkProps :: Link -> (LinkClick -> action) -> [HP.IProp I.HTMLa action]
+linkProps (Link router route) onFollow = Router.linkProps router (onFollow . LinkClick) route
 
--- | Follow a plain click on an 'OptionsLink'.
-followOptionsLink :: (MonadIO m) => OptionsLink -> LinkClick -> H.HalogenM st act slots output m ()
-followOptionsLink (OptionsLink router _) (LinkClick f) = Router.follow router f
+-- | Follow a plain click on a 'Link'.
+followLink :: (MonadIO m) => Link -> LinkClick -> H.HalogenM st act slots output m ()
+followLink (Link router _) (LinkClick f) = Router.follow router f

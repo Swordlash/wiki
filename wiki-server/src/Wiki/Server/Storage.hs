@@ -271,7 +271,7 @@ import Wiki.Api.Links (interactiveForm)
 import Wiki.Api.Notifications (FeedAddress (..), NotificationSettings (..), NotificationSettingsChange (..), Notifications (..), ReadMark, feedAddressOf, maxPeopleFound, searchable)
 import Wiki.Api.Opaque (NewAccountRecord (..), PasswordRecord (..), Stretch)
 import Wiki.Api.Plugins (PluginId (..), WikiPlugins (..), maxPluginsOff)
-import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Owner (..), externalPolicyName, maxOwnPlugins, maxWikiPlugins)
+import Wiki.Api.Plugins.External (ExternalManifest (..), ExternalPlugin (..), ExternalPlugins (..), ExternalPolicy (..), Owner (..), externalPolicyName, maxOwnPlugins, maxWikiPlugins, reservedPluginIds)
 import Wiki.Api.Security (ResetToken (..), resetLifetime)
 import Wiki.Api.ServerSettings (HomePage, MailSettingsOf (..), ProviderSettingsOf (..), ServerSettingsChange, ServerSettingsOf (..), applyChange, checkHomePage, checkServerSettings, defaultHomePage, kindName, secretState, securityName)
 import Wiki.Api.ServerSettings qualified as SS
@@ -1875,8 +1875,10 @@ removeExternal owner p = run Writes $ do
 -- replaced since), and it is not off for the whole wiki. The wiki's run
 -- for a signed-in user, and for the operator, while the policy is not
 -- off; a user's own for that user while the policy lets users add theirs,
--- and not when the wiki has a plugin of the same id. Anyone else, and
--- everything else, is 'Nothing', which the frame's route answers 404.
+-- and not when the wiki has a plugin of the same id. A plugin whose id a
+-- built-in plugin took after it was installed ('reservedPluginIds') runs
+-- for nobody. Anyone else, and everything else, is 'Nothing', which the
+-- frame's route answers 404.
 pluginFrameBundle :: Storage -> Who -> Owner -> PluginId -> BlobId -> IO (Maybe (ExternalManifest, BlobId, FilePath))
 pluginFrameBundle st who owner p blob =
   either (const Nothing) identity
@@ -1901,7 +1903,7 @@ pluginFrameBundle st who owner p blob =
                   if shadowed then pure Nothing else db (loadOneInstalled (Just u) p)
             _ -> pure Nothing
           pure $ case found of
-            Just i | i.bundle == blob, not (Set.member p off), Just file <- blobFile ctx.blobs i.bundle -> Just (i.manifest, i.bundle, file)
+            Just i | i.bundle == blob, not (Set.member p off), not (Set.member p reservedPluginIds), Just file <- blobFile ctx.blobs i.bundle -> Just (i.manifest, i.bundle, file)
             _ -> Nothing
       )
 
@@ -3448,11 +3450,11 @@ setPageKindTx pid kind = do
   findPage pid
 
 -- | Refuse a kind this program does not know: a page is made, or made
--- into, a document or a presentation only.
+-- into, a kind of "Wiki.Core.PageKind"'s 'knownKinds' only.
 requireKnownKind :: PageKind -> Tx ()
 requireKnownKind kind =
   unless (kind `elem` knownKinds) $
-    invalid ("A page is a document or a presentation, not “" <> pageKindName kind <> "”.")
+    invalid ("A page is a document, a presentation or a calendar, not “" <> pageKindName kind <> "”.")
 
 -- | Delete a page: the pages under it, and the versions, attachments and
 -- drafts of all of them, go with it, as the schema's foreign keys cascade.

@@ -89,13 +89,13 @@ spec = describe "JSON" $ do
 
   describe "a page's kind" $ do
     it "is written as its name" $
-      toJSON [Document, Presentation, OtherKind "calendar"] `shouldBe` toJSON ["document", "presentation", "calendar" :: Text]
+      toJSON [Document, Presentation, OtherKind "board"] `shouldBe` toJSON ["document", "presentation", "board" :: Text]
     it "reads a page written before kinds existed as a document" $
       ((\p -> p.kind) <$> (eitherDecode pageWithoutKind :: Either [Char] Page)) `shouldBe` Right Document
     it "reads a summary written before kinds existed as a document" $
       ((\p -> p.kind) <$> (eitherDecode summaryWithoutKind :: Either [Char] PageSummary)) `shouldBe` Right Document
     it "keeps a kind it does not know as written" $
-      eitherDecode "\"calendar\"" `shouldBe` Right (OtherKind "calendar")
+      eitherDecode "\"board\"" `shouldBe` Right (OtherKind "board")
 
   it "refuses a space whose slug breaks the rules" $
     (eitherDecode "{\"id\":\"s1\",\"name\":\"E\",\"slug\":\"Not a slug\",\"parent\":null,\"public\":false}" :: Either [Char] Space)
